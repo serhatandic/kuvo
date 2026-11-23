@@ -6,6 +6,15 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A delayed update from another computer no longer brings back work it already cleared.
+- A bot’s work list on another computer updates when you archive one of its sessions.
+- Letters and conversation reads reach the computer that owns the session, even when it has no SSH name.
+- Adding a Mac over SSH starts the engine in time to verify the installation and copy sign-ins.
+- The main Mac assigns Work Queue numbers after startup using its saved relay lease.
+- One-shot SSH requests can report whether coding agents need a restart to enter the sandbox.
+- Removing Kuvo reports when other computers have yet to receive the desktop’s revocation.
+- A Mac’s backup keeps the computer identity needed to restore it onto a replacement.
+- The coding agents stay reachable during a bridge restart, and Try Again waits for the bridge to come back.
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
 - The Rust server keeps local OpenCode queues and can settle a retried send after a restart.

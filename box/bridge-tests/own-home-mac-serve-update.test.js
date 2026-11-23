@@ -10,6 +10,7 @@ import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -97,7 +98,13 @@ test("a Mac's box's server never says an update is well (its judge does, by the 
     assert.equal((await route("kuvo/attention")).status, 200, "the alias uses the Mac server's live hold");
     await until(() => fs.readdirSync(path.join(K, "updates", "backups")).length === 0, "the copy past its 30 days, gone");
   } finally { await first.stop(); }
-  assert.equal((await route("kuvo/attention")).status, 503, "the selected pipe stays selected while stopped");
+  const pipe = path.join(K, "run", "route");
+  assert.ok(fs.statSync(pipe).isDirectory(), "the route directory stays selected for the next server");
+  await assert.rejects(new Promise((resolve, reject) => {
+    const socket = net.createConnection(path.join(pipe, "ssh"));
+    socket.once("error", reject);
+    socket.once("connect", () => { socket.end(); resolve(); });
+  }), { code: fs.existsSync(path.join(pipe, "ssh")) ? "ECONNREFUSED" : "ENOENT" });
   assert.equal((await route("kuvo/info")).status, 200, "the installed-file probe still answers while stopped");
   assert.equal(fs.existsSync(path.join(K, "run", "update-trial")), true, "still on trial");
   assert.equal(fs.existsSync(path.join(K, "updates", "rollback", "restore.sh")), true, "what was kept to put back stays");

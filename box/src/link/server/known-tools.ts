@@ -14,7 +14,7 @@ import { QUEUE_WORDS } from "../work-queue/tools";
 import { readSettings, SERVERS, valueAt } from "../areas/config";
 
 /** Every one of Kuvo Code's own tools, by name, with its words. */
-export const OWN_TOOL_WORDS: ReadonlyMap<string, ToolWords> = new Map(Object.entries({ ...WORDS, ...VAULT_WORDS, ...SANDBOX_WORDS, ...QUEUE_WORDS }));
+let ownToolWords: ReadonlyMap<string, ToolWords> | undefined;
 
 /** The servers Kuvo Code names itself: an integration's title over the catalog's. */
 const NAMED: ReadonlyMap<string, string> = new Map([
@@ -27,5 +27,8 @@ export function knownTools(settings: unknown = readSettings().settings): KnownTo
   const servers = new Map<string, string>(NAMED);
   const yours = valueAt(settings, SERVERS);
   if (isObject(yours)) for (const name of Object.keys(yours)) if (!servers.has(name)) servers.set(name, "");
-  return { own: OWN_TOOL_WORDS, servers };
+  // The tool implementations can import the dispatcher in turn. Read their
+  // words after the modules have loaded, including in a backup worker.
+  ownToolWords ??= new Map(Object.entries({ ...WORDS, ...VAULT_WORDS, ...SANDBOX_WORDS, ...QUEUE_WORDS }));
+  return { own: ownToolWords, servers };
 }

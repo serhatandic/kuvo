@@ -20,6 +20,7 @@ import path from "node:path";
 import { before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { relayStandIn } from "./relay-stand-in.js";
+import { recordRelayLease, relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 const script = fileURLToPath(LINK_BUNDLE);
@@ -28,6 +29,8 @@ removeAtEnd(support);
 const macHome = path.join(support, "mac");
 const machineHome = path.join(support, "machine");
 for (const home of [macHome, machineHome]) fs.mkdirSync(path.join(home, "run"), { recursive: true });
+// The resident has already installed the layout for durable handoff receipts.
+fs.writeFileSync(path.join(macHome, "folder-version.json"), '{"version":18}\n');
 const write = (file, value) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value), { mode: 0o600 });
@@ -37,19 +40,31 @@ const read = file => { try { return JSON.parse(fs.readFileSync(file, "utf8")); }
 // What a box writes in another process, looked at every few milliseconds until it's there, or
 // until the test runs out of time (`signal`).
 let signal;
-function eventually(found) {
+function eventually(found, label) {
+  const deadline = AbortSignal.any([signal, AbortSignal.timeout(25_000)]);
   return new Promise((resolve, reject) => {
-    const look = async () => {
-      const value = await found();
-      if (!value) return;
+    let looking = false;
+    const finish = (error, value) => {
       clearInterval(timer);
-      resolve(value);
+      deadline.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const abort = () => finish(new Error(label));
+    const look = async () => {
+      if (looking) return;
+      looking = true;
+      try {
+        const value = await found();
+        if (value) finish(null, value);
+      } catch (error) {
+        finish(error);
+      } finally {
+        looking = false;
+      }
     };
     const timer = setInterval(look, 50);
-    signal?.addEventListener("abort", () => {
-      clearInterval(timer);
-      reject(new Error(`it never got there: ${found}`));
-    }, { once: true });
+    deadline.addEventListener("abort", abort, { once: true });
     look();
   });
 }
@@ -116,7 +131,8 @@ Object.assign(process.env, {
   KUVO_HOST_PASSWORD: "host-password",
 });
 const link = await import(LINK_BUNDLE.href);
-const relay = await relayStandIn(link, { changed: () => {} });
+const leases = relayLeaseStandIn({ transferStartsNow: true });
+const relay = await relayStandIn(link, { request: leases.request, changed: () => {} });
 
 // A bot here, and a session on the machine.
 write(path.join(support, "bots", "bot_foreman0001", "bot.json"), { kuvo: 1, id: "bot_foreman0001", name: "Foreman", job: "Runs the release.", look: { color: "sky", shape: "round", face: "calm" }, created: "2026-11-01T09:00:00Z", updated: "2026-11-01T09:00:00Z" });
@@ -158,15 +174,30 @@ const labPid = () => { try { return Number(fs.readFileSync(path.join(machineHome
 let lab = null;
 before(async () => {
   assert.notEqual((await ask("PUT", "kuvo/link/config", { phones: false, machines: true, relay: relay.url, name: "Studio Mac", app: "0.9.0", features: ["mac", "work.elsewhere", "work-queue", "work-queue.elsewhere"] })).json?.state, "failed");
+  // The SSH install already has its identity when the main publishes the membership.
+  const key = link.newKey(), secret = crypto.randomBytes(32), seed = link.newSigningSeed();
+  const peer = { key: link.publicOf(key).toString("base64url"), sign: link.signingKeyOf(seed),
+    address: link.addressOf(secret).toString("base64url"), name: "lab", id: "lab", kind: "machine" };
+  write(path.join(machineHome, "run", "link.json"), {
+    key: key.toString("base64url"), secret: secret.toString("base64url"), sign: seed, phones: [],
+    mac: link.publicOf(macKey).toString("base64url"), macs: [link.publicOf(macKey).toString("base64url")],
+  });
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [peer], moved: [] })).status, 200);
+  link.noteSetupNow(Date.now(), { soon: 0 });
+  const state = link.readLink().setup;
+  assert.equal(state.role, "primary");
+  const grant = leases.seed(state, { [state.primary]: state.sign, [peer.key]: peer.sign }, 500);
+  recordRelayLease(path.join(macHome, "run"), state, { relay: grant });
   const setup = await ask("GET", "kuvo/link/setup");
+  assert.equal(setup.status, 200);
   const result = spawnSync(process.execPath, [script, "setup"], {
-    input: JSON.stringify({ relay: relay.url, name: "lab", mac: link.publicOf(macKey).toString("base64url"), macSign: setup.json.macSign, docs: setup.json.docs, id: "lab" }),
+    input: JSON.stringify({ ...setup.json, relay: relay.url, name: "lab", id: "lab" }),
     env: machineEnv,
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
   lab = JSON.parse(result.stdout.trim().split("\n").at(-1));
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab" }], moved: [] })).status, 200);
+  assert.equal(lab.key, peer.key, result.stdout);
   link.runMacLink();
   link.runMacPeers();
 });
@@ -195,13 +226,13 @@ test("an item kept on a machine takes its number from this Mac and shows in this
 
   // An agent on lab keeps one there (as its tool leaves it), with no number yet: lab asks this Mac.
   write(path.join(machineHome, "run", "work-queue", "queues", "ses_far.json"), { owner: "ses_far", items: [{ id: "wqi_labitemlabitemlabi01", owner: "ses_far", title: "Port the importer", body: "", status: "todo", order: 0, labels: [], notes: [], files: [], links: [], sessions: [], created: { at: Date.now(), by: { session: "ses_far", name: "Importer" } }, updated: { at: Date.now(), by: { session: "ses_far", name: "Importer" } } }] });
-  const numbered = await eventually(() => labQueue("ses_far")[0]?.number);
+  const numbered = await eventually(() => labQueue("ses_far")[0]?.number, "Lab did not number its item");
   assert.ok(numbered > 1, `#${numbered}: from a block this Mac gave, past its own`);
 
   // This Mac's All view: lab's item, saying where it is.
-  const shown = await eventually(async () => (await ask("GET", "kuvo/work-queue?owner=all")).json.items.find(item => item.number === numbered));
+  const shown = await eventually(async () => (await ask("GET", "kuvo/work-queue?owner=all")).json.items.find(item => item.number === numbered), "Lab's item did not reach the Mac's All view");
   assert.equal(shown.title, "Port the importer");
-  assert.deepEqual(shown.computer, { key: lab.key, name: "lab", kind: "machine", id: "lab" });
+  assert.deepEqual(shown.computer, { key: lab.key, name: "lab", kind: "machine" });
   assert.equal((await ask("GET", `kuvo/work-queue/refs?refs=${numbered}`)).json.refs[numbered].computer.name, "lab");
 
   // The local bot edits an unrelated agent's item through the trusted peer.
@@ -237,7 +268,7 @@ test("an item kept on a machine takes its number from this Mac and shows in this
   assert.deepEqual(recovered.events.slice(-2).map(({ by, kind }) => [by, kind]), [[who, "deleted"], [who, "restored"]]);
   const takeBack = await onMac("queue_hand", { item: numbered, to: "ses_lead" });
   assert.equal(takeBack.isError, false, takeBack.text);
-  const receivedHere = await eventually(() => read(path.join(macHome, "run", "work-queue", "queues", "ses_lead.json"))?.items?.find(item => item.number === numbered));
+  const receivedHere = await eventually(() => read(path.join(macHome, "run", "work-queue", "queues", "ses_lead.json"))?.items?.find(item => item.number === numbered), "The item handed back from lab did not reach the Mac");
   assert.equal(receivedHere.owner, "ses_lead");
   assert.deepEqual(receivedHere.events.at(-1).by, who);
 
@@ -245,13 +276,13 @@ test("an item kept on a machine takes its number from this Mac and shows in this
   const handed = await onMac("queue_hand", { item: "#1", to: "ses_far" });
   assert.equal(handed.isError, false, handed.text);
   assert.match(handed.text, /^Handing #1 "Ship the release" to Importer on lab/);
-  const arrived = await eventually(() => labQueue("ses_far").find(item => item.number === 1));
+  const arrived = await eventually(() => labQueue("ses_far").find(item => item.number === 1), "The Mac's item did not reach lab");
   assert.equal(arrived.owner, "ses_far");
   assert.equal(arrived.handedBy, "ses_lead");
   assert.deepEqual(arrived.sessions.map(each => each.session), ["ses_far"]);
-  await eventually(() => !read(path.join(macHome, "run", "work-queue", "queues", "ses_lead.json"))?.items?.some(item => item.number === 1));
+  await eventually(() => !read(path.join(macHome, "run", "work-queue", "queues", "ses_lead.json"))?.items?.some(item => item.number === 1), "The Mac retained its copy after lab accepted the handoff");
   // Still in the bot's view, now on lab, once lab tells it.
-  const inView = await eventually(async () => (await ask("GET", "kuvo/work-queue?owner=ses_lead")).json.items.find(item => item.number === 1 && item.computer));
+  const inView = await eventually(async () => (await ask("GET", "kuvo/work-queue?owner=ses_lead")).json.items.find(item => item.number === 1 && item.computer), "The bot's view did not follow the item to lab");
   assert.equal(inView.computer.name, "lab");
   assert.equal(labQueue("ses_far").filter(item => item.number === 1).length, 1);
 });
@@ -265,9 +296,9 @@ test("an item lab deleted is read whole from lab through this Mac's box and brou
   const whole = await eventually(async () => {
     const answer = await ask("GET", "kuvo/work-queue/items/4321");
     return answer.status === 200 ? answer.json.item : null;
-  });
+  }, "The Mac could not read the deleted item from lab");
   assert.deepEqual([whole.title, whole.body, whole.told, Boolean(whole.removed)], ["Drop the old importer", "Only lab keeps this.", false, true]);
-  assert.deepEqual(whole.computer, { key: lab.key, name: "lab", kind: "machine", id: "lab" });
+  assert.deepEqual(whole.computer, { key: lab.key, name: "lab", kind: "machine" });
   // (All that may be done to a deleted one: bringing it back.)
   assert.deepEqual([whole.can.restore, whole.can.edit, whole.can.delete], [true, false, false]);
   assert.equal((await ask("GET", "kuvo/work-queue?owner=all")).json.items.some(item => item.number === 4321), false, "a deleted item is absent from the active list");

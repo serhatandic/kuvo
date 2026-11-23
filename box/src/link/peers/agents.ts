@@ -24,7 +24,7 @@ import { isChatsFolder } from "../engine/chats";
 import { committedDepartures, frozen, movedAway } from "../moves/records";
 import { readLink } from "../state";
 import { AGENTS_FILE, composeAgents, fitsAgent, isPutAway, keptAgent, MAC_AGENTS_FILE, OWNED_DIGEST, PEER_AGENTS_FILE, PEER_LOCK, readPeerAgents } from "./directory";
-import { mailFor, movedOf, peersOf } from "./known";
+import { localDirectory, mailFor, movedOf, peersOf } from "./known";
 import { tellSeatPeers } from "./seats";
 import { followedSetup } from "../setup/record";
 import { ownComputer } from "../areas/computers";
@@ -33,7 +33,7 @@ import type { DigestEntry } from "../documents/work";
 import type { EngineSession } from "../engine/sessions";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
-import type { AgentsFile, BridgeRecord, ListedAgent, Target, ToldAgents } from "../../shared/records";
+import type { BridgeRecord, ListedAgent, Target, ToldAgents } from "../../shared/records";
 import { FORWARD_EVIDENCE_FEATURE } from "../ownership/forward-evidence";
 import { SCOPED_FORWARD } from "../work-queue/forward-grant";
 import { SUBMITTER_FEATURE } from "../ownership/authority";
@@ -135,7 +135,7 @@ export async function ownAgentsNow(readEngine: () => Target, machine: string | n
 // them (`ownID`: this box's name there).
 export function ownAsLast(ownID: string | null): ListedAgent[] {
   if (ownList) return ownList;
-  try { return ((JSON.parse(fs.readFileSync(AGENTS_FILE, "utf8")) as Partial<AgentsFile> | null)?.agents ?? []).filter(agent => fitsAgent(agent) && (agent.machine ?? null) === ownID); } catch { return []; }
+  return localDirectory().filter(agent => fitsAgent(agent) && (agent.machine ?? null) === ownID);
 }
 
 /** Refresh the directory from the resident session list as changes settle. */
@@ -164,7 +164,7 @@ export function writeAgents(link: LinkState | null = readLink()): void {
   const own = ownAsLast(ownID);
   const composed = composeAgents(own, ownID, peersOf(link), readPeerAgents(), movedOf(link));
   try {
-    const text = JSON.stringify(composed);
+    const text = JSON.stringify(composed.agents.length ? { ...composed, local: own.map(agent => agent.session) } : composed);
     if (textOf(AGENTS_FILE) !== text) writePrivate(AGENTS_FILE, text);
   } catch {}
   // Who can be in its group chats from your other computers, as they told it.

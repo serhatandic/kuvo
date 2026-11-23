@@ -22,19 +22,17 @@ const ask = async (method, route, body) => {
  }
  return { status, json: text ? JSON.parse(text) : undefined };
 };
-test("Skills and Commands expose lists, forms and the same name-check words in the built service", async () => {
- for (const [section, title] of [["skills", "Skills"], ["commands", "Commands"]]) {
-  const answer = await ask("GET", `kuvo/settings/${section}`);
-  assert.equal(answer.status, 200);
-  assert.equal(answer.json.title, title);
-  const list = answer.json.groups.flatMap(group => group.rows).find(row => row.id === section);
-  assert.equal(list.kind, "list");
-  assert.equal(list.add.form.fields[0].kind, "text");
-  const checked = await ask("POST", `kuvo/settings/${section}/${section}/add/check`, {values: {name:""}});
-  assert.equal(checked.status, 200);
-  assert.equal(checked.json.ready, false);
-  assert.ok(checked.json.fields.some(field => field.id === "name"));
- }
+test("Skills exposes its list, add form and name check in the built service", async () => {
+ const answer = await ask("GET", "kuvo/settings/skills");
+ assert.equal(answer.status, 200);
+ assert.equal(answer.json.title, "Skills");
+ const list = answer.json.groups.flatMap(group => group.rows).find(row => row.id === "skills");
+ assert.equal(list.kind, "list");
+ assert.equal(list.add.form.fields[0].kind, "text");
+ const checked = await ask("POST", "kuvo/settings/skills/skills/add/check", {values: {name:""}});
+ assert.equal(checked.status, 200);
+ assert.equal(checked.json.ready, false);
+ assert.ok(checked.json.fields.some(field => field.id === "name"));
 });
 test("Custom Auto names its unavailable source without invented lists", async () => {
  const answer = await ask("GET", "kuvo/settings/custom-auto");

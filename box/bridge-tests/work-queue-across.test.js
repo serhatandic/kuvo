@@ -88,6 +88,15 @@ const fresh = ({ macs = [mac], peers = [mac, lab, here] } = {}) => {
     legacy: Object.fromEntries(macs.map(each => [each.pub, { at: 1, peers: [each.peer, ...peers.filter(peer => peer.peer.kind === "machine").map(peer => peer.peer)] }])),
   });
 };
+// An enrolled machine with a direct route to its setup's main computer.
+const inSetup = () => {
+  const sign = link.signingKeyOf(link.newSigningSeed());
+  link.updateLink(current => ({
+    ...current,
+    macSigns: { [mac.pub]: sign },
+    setup: { id: "set_member".padEnd(26, "0"), role: "member", primary: mac.pub, sign, epoch: 1 },
+  }));
+};
 // What each peer's agents' mail said: their agents, and that they take the Work Queue's mail.
 const agentsTold = (extra = {}) => write(path.join(run, "peer-agents.json"), {
   [lab.pub]: { at: 1, heard: Date.now(), kind: "machine", id: "lab", list: [{ session: "ses_far", name: "Far", kind: "session" }, { session: "ses_wren", name: "Wren", kind: "bot" }], features: ["work-queue", "work-queue.elsewhere"] },
@@ -157,6 +166,7 @@ beforeEach(() => {
   write(path.join(run, "engine.json"), { ...target, version: "0.0.0" });
   sent.length = 0;
   calling.clear();
+  link.forgetQueueMigrated();
   link.forgetQueuesTold();
   link.forgetQueueActs();
   link.queueForwardsSoon.send = () => {};
@@ -296,6 +306,7 @@ test("a computer that isn't answering: its items show as it last told them, none
 });
 
 test("this box tells your other computers its queue as it changes: again until it's had, then not until it changes; too big for one mail, in parts", async () => {
+  inSetup();
   write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[100, 149]] });
   await tool("queue_add", { title: "Fix the login page" }, "ses_child");
   const now = Date.now();
@@ -342,61 +353,36 @@ test("this box tells your other computers its queue as it changes: again until i
   assert.equal((await view("all")).items.some(item => item.number === 2000), false);
 });
 
-test("numbers come from the first computer you set up: a Mac before a machine, the earlier of two Macs; a box hears of an earlier one and moves to it, never back", () => {
+test("legacy setup discovery ranks a Mac before a machine and the earlier Mac before the later one", () => {
   const file = path.join(queues, "numbers.json");
   // A machine set up from two Macs, the later one last (piece 1 took that one): neither told yet.
   fresh({ macs: [mac, later] });
   write(file, { primary: later.pub, leases: [[200, 249]] });
-  assert.equal(link.primaryOf(link.readLink()).peer.key, later.pub, "kept, while nothing says another was set up first");
+  assert.equal(link.rankedPrimary(link.readLink()).peer.key, later.pub, "kept, while nothing says another was set up first");
   // Each tells when it was set up: the earlier one is the primary; lab, a machine set up "earlier"
   // still, never is while there's a Mac.
   write(path.join(queues, "peers", `${mac.pub}.json`), { id: "wqt_aaaaaaaaaaaa", at: 1, heard: 1, kind: "mac", since: 1_000, items: [], owners: [], labels: [] });
   write(path.join(queues, "peers", `${later.pub}.json`), { id: "wqt_bbbbbbbbbbbb", at: 1, heard: 1, kind: "mac", since: 9_000, items: [], owners: [], labels: [] });
   write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_cccccccccccc", at: 1, heard: 1, kind: "machine", since: 10, items: [], owners: [], labels: [] });
-  assert.equal(link.primaryOf(link.readLink()).peer.key, mac.pub);
-  link.notePrimaryNow(link.readLink());
-  assert.equal(link.readNumbers(file).primary, mac.pub, "noted");
+  assert.equal(link.rankedPrimary(link.readLink()).peer.key, mac.pub);
   // Never back to the later one, whatever it says next; and never away from the one kept for one
   // that hasn't said when it was set up (an older box mid-update): only for one known to be earlier.
   write(file, { ...link.readNumbers(file), primary: later.pub });
   write(path.join(queues, "peers", `${later.pub}.json`), { id: "wqt_bbbbbbbbbbbb", at: 1, heard: 1, kind: "mac", items: [], owners: [], labels: [] });
-  assert.equal(link.primaryOf(link.readLink()).peer.key, later.pub, "kept: it hasn't said, and may be the first");
+  assert.equal(link.rankedPrimary(link.readLink()).peer.key, later.pub, "kept: it hasn't said, and may be the first");
   write(path.join(queues, "peers", `${later.pub}.json`), { id: "wqt_bbbbbbbbbbbb", at: 1, heard: 1, kind: "mac", since: 9_000, items: [], owners: [], labels: [] });
-  assert.equal(link.primaryOf(link.readLink()).peer.key, mac.pub, "once it says, the earlier one");
+  assert.equal(link.rankedPrimary(link.readLink()).peer.key, mac.pub, "once it says, the earlier one");
   write(file, { ...link.readNumbers(file), primary: mac.pub });
   write(path.join(queues, "peers", `${later.pub}.json`), { id: "wqt_bbbbbbbbbbbb", at: 2, heard: 2, kind: "mac", since: 9_000, items: [], owners: [], labels: [], primary: { key: later.pub, kind: "mac", since: 9_000 } });
-  assert.equal(link.primaryOf(link.readLink()).peer.key, mac.pub);
+  assert.equal(link.rankedPrimary(link.readLink()).peer.key, mac.pub);
 
   // A Mac this box can't write to (not one of its own), set up first, as lab says: reached through lab.
   const first = box("mac", "Old Mac");
   write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_cccccccccccc", at: 3, heard: 3, kind: "machine", since: 10, items: [], owners: [], labels: [], primary: { key: first.pub, kind: "mac", since: 500 } });
-  const through = link.primaryOf(link.readLink());
+  const through = link.rankedPrimary(link.readLink());
   assert.equal(through.peer.key, first.pub);
   assert.equal(through.via.key, lab.pub);
-  // Its ask goes through lab, naming that Mac, with the highest number this box holds.
-  write(file, { ...link.readNumbers(file), asking: { id: "wqn_throughlab01", count: 50, since: 1 } });
-  sent.length = 0;
-  link.pushNumbers(host, link.readLink());
-  const asked = mailTo(lab).map(each => each.workQueue);
-  assert.equal(asked.length, 1);
-  assert.equal(asked[0].to, first.pub);
-  assert.equal(asked[0].ask.id, "wqn_throughlab01");
-  assert.ok(asked[0].ask.top >= 249);
-  // The block comes back through lab: taken.
-  receive(lab, { workQueue: { give: { id: "wqn_throughlab01", from: 900, to: 949, granted: [] } } });
-  assert.deepEqual(link.readNumbers(file).leases.at(-1), [900, 949]);
-
-  // lab stops naming it a while (it can't say now): this box waits rather than going back to its
-  // Mac; only once it's gone unheard of for days does it take the next.
-  link.notePrimaryNow(link.readLink());
-  assert.equal(link.readNumbers(file).primary, first.pub);
-  write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_cccccccccccc", at: 4, heard: 4, kind: "machine", since: 10, items: [], owners: [], labels: [] });
-  assert.deepEqual(link.primaryOf(link.readLink()), { away: true });
-  link.notePrimaryNow(link.readLink());
-  const lost = link.readNumbers(file).lost;
-  assert.ok(lost, "noted since when");
-  assert.deepEqual(link.primaryOf(link.readLink(), file, lost + 86_400_000), { away: true });
-  assert.equal(link.primaryOf(link.readLink(), file, lost + 4 * 86_400_000).peer.key, mac.pub);
+  assert.deepEqual(link.primaryOf(link.readLink()), { away: true }, "ranking does not route calls or numbering");
 });
 
 test("a machine in a setup numbers from its main computer, whatever a peer says of a Mac set up earlier; a second Mac of yours setting it up leaves it in that setup, never saying it's shared", async () => {
@@ -416,7 +402,7 @@ test("a machine in a setup numbers from its main computer, whatever a peer says 
   link.notePrimaryNow(link.readLink(), { file });
   assert.equal(link.readNumbers(file).primary, mac.pub);
   sent.length = 0;
-  link.pushNumbers(host, link.readLink());
+  await link.pushNumbers(host, link.readLink());
   assert.equal(mailTo(lab).length, 0, "nothing through lab");
   const asked = mailTo(mac).map(each => each.workQueue);
   assert.equal(asked[0]?.ask?.id, "wqn_tothemainmac01");
@@ -445,7 +431,7 @@ test("a machine in a setup numbers from its main computer, whatever a peer says 
   sent.length = 0;
 });
 
-test("a machine its main computer lets go (removed, or not heard from in 30 days) doesn't number on its own at once: it waits for that Mac, as numbering always has, days, before it does", () => {
+test("a machine explicitly removed from its setup numbers on its own", () => {
   const file = path.join(queues, "numbers.json");
   const seed = link.newSigningSeed();
   const sign = link.signingKeyOf(seed);
@@ -458,32 +444,8 @@ test("a machine its main computer lets go (removed, or not heard from in 30 days
   // Its Mac removes it.
   link.updateLink(current => { link.docsWork({ link: current, library }, { key: mac.pub, sign }, { give: [link.signDoc(seed, "peers", 2, { boxes: [{ ...mac.peer, sign }, lab.peer], moved: [], left: [here.pub], ...leads })] }); return current; });
   link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.equal(link.readLink().setup, undefined, "it leads none yet");
-  assert.deepEqual(link.primaryOf(link.readLink(), file), { away: true }, "its items wait, as before");
-  // Days on, unheard: it numbers on its own, and leads a setup of its own.
-  link.notePrimaryNow(link.readLink(), { file });
-  const lost = link.readNumbers(file).lost;
-  assert.ok(lost);
-  write(file, { ...link.readNumbers(file), lost: lost - 4 * 86_400_000 });
-  link.noteSetupNow(Date.now(), { soon: 0 });
-  assert.equal(link.readLink().setup?.role, "primary");
-  assert.deepEqual(link.primaryOf(link.readLink(), file), { self: true });
-});
-
-test("a box asked for numbers on behalf of its primary passes the ask on and the block back, one hop", () => {
-  const file = path.join(queues, "numbers.json");
-  write(file, { primary: mac.pub, leases: [[100, 149]] });
-  // lab can't write to this box's Mac: it asks through this box.
-  receive(lab, { workQueue: { ask: { id: "wqn_labaskslab01", count: 50, top: 70 }, to: mac.pub } });
-  assert.deepEqual(mailTo(mac).map(each => each.workQueue), [{ ask: { id: "wqn_labaskslab01", count: 50, top: 70 }, for: lab.pub }]);
-  // The Mac's block for lab, back to lab; one for no one this box knows goes nowhere.
-  receive(mac, { workQueue: { give: { id: "wqn_labaskslab01", from: 300, to: 349, granted: [] }, for: lab.pub } });
-  assert.deepEqual(mailTo(lab).map(each => each.workQueue), [{ give: { id: "wqn_labaskslab01", from: 300, to: 349, granted: [] } }]);
-  assert.deepEqual(link.readNumbers(file).leases, [[100, 149]], "not this box's");
-  // An ask for another primary than this box's isn't passed on; nor one passed on already.
-  receive(lab, { workQueue: { ask: { id: "wqn_labaskslab02", count: 50 }, to: later.pub } });
-  receive(lab, { workQueue: { ask: { id: "wqn_labaskslab03", count: 50 }, to: mac.pub, for: here.pub } });
-  assert.equal(sent.length, 0);
+  assert.equal(link.readLink().setup, undefined, "the departed computer no longer has a setup");
+  assert.deepEqual(link.primaryOf(link.readLink()), { self: true });
 });
 
 test("the primary moves past what a box that numbered on its own used, and what any of your computers tell it they hold", () => {
@@ -496,7 +458,8 @@ test("the primary moves past what a box that numbered on its own used, and what 
   // past what a chip reads.
   const far = link.giveBlock("box-b", { id: "wqn_movedpast002", count: 50, top: 999_999 }, { file });
   assert.ok(far.to < 1_000_000, `${far.from}–${far.to} still reads as a chip`);
-  // A box that was its own primary and isn't now asks at once.
+  // A box that was its own primary and joins a setup asks at once.
+  inSetup();
   const own = path.join(queues, "numbers.json");
   write(own, { primary: "self", next: 77, leases: [] });
   link.notePrimaryNow(link.readLink());
@@ -787,6 +750,7 @@ test("a change from a client tells your other computers sooner, never more often
 });
 
 test("the primary's labels are this box's: added, renamed, recoloured and removed as it says, one it removes coming off every item here; this box changes none of them, and keeps its own", async () => {
+  inSetup();
   write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[100, 149]] });
   const names = async () => (await route("GET", "kuvo/work-queue/labels")).body.labels.map(each => `${each.id}=${each.name}`);
   receive(mac, { workQueue: telling([], { kind: "mac", labels: [{ id: "lbl_design", name: "Design", color: "sky" }, { id: "lbl_review", name: "Review", color: "mint" }, { id: "lbl_used", name: "Used", color: "pink" }] }) });
@@ -836,65 +800,10 @@ test("the primary's labels are this box's: added, renamed, recoloured and remove
   // Not from another computer than the primary.
   receive(lab, { workQueue: telling([], { labels: [{ id: "lbl_labs", name: "Lab's", color: "coral" }] }) });
   assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_mine-2=Mine"]);
-  // A primary reached through a peer: its list as that peer tells it.
-  const first = box("mac", "Old Mac");
-  receive(lab, { workQueue: telling([], { labels: [{ id: "lbl_old", name: "Old", color: "amber" }], primary: { key: first.pub, kind: "mac", since: 500 } }) });
-  assert.equal(link.primaryOf(link.readLink()).via?.key, lab.pub);
-  receive(lab, { workQueue: telling([], { labels: [{ id: "lbl_old", name: "Old", color: "amber" }], primary: { key: first.pub, kind: "mac", since: 500 } }) });
-  // (Another primary than before: its list is this box's, and what the one before named that it
-  // doesn't stays, as this box's own, on the items that have it: only the same primary's word
-  // takes a label off them.)
-  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine-2=Mine"]);
-  // Nor does a primary that tells no labels at all (a list it lost) take any away.
-  receive(lab, { workQueue: telling([], { labels: [], primary: { key: first.pub, kind: "mac", since: 500 } }) });
-  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine-2=Mine"]);
-  // Told the same again, nothing is written again: the labels' file is as it was.
-  const written = fs.statSync(labelsFile).ino;
-  receive(lab, { workQueue: telling([], { labels: [], primary: { key: first.pub, kind: "mac", since: 500 } }) });
-  assert.equal(fs.statSync(labelsFile).ino, written);
+  // An empty list from the same main cannot delete the labels it already told this box.
+  receive(mac, { workQueue: telling([], { kind: "mac", labels: [] }) });
+  assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_mine-2=Mine"]);
   sent.length = 0;
-});
-
-test("a first computer that's gone (put away, or set up again with new keys) stops being the primary once it hasn't answered for days; heard again, it's the primary again", () => {
-  const file = path.join(queues, "numbers.json");
-  const reach = (away, checked) => {
-    write(path.join(run, "peer-reach.json"), { [mac.pub]: away });
-    write(path.join(run, "peer-reach-checked.json"), { [mac.pub]: checked });
-  };
-  // A machine set up from two Macs: the first one set up is the primary.
-  fresh({ macs: [mac, later] });
-  write(file, { primary: mac.pub, leases: [] });
-  write(path.join(queues, "peers", `${mac.pub}.json`), { id: "wqt_aaaaaaaaaaaa", at: 1, heard: 1, kind: "mac", since: 1_000, items: [], owners: [], labels: [] });
-  write(path.join(queues, "peers", `${later.pub}.json`), { id: "wqt_bbbbbbbbbbbb", at: 1, heard: 1, kind: "mac", since: 9_000, items: [], owners: [], labels: [] });
-  const now = Date.now();
-  assert.equal(link.primaryOf(link.readLink(), file, now).peer.key, mac.pub);
-  // It stops answering: a day, still the primary; past three, and still not there lately, the next.
-  reach(now - 86_400_000, now - 60_000);
-  assert.equal(link.primaryOf(link.readLink(), file, now).peer.key, mac.pub);
-  reach(now - 4 * 86_400_000, now - 60_000);
-  assert.equal(link.primaryOf(link.readLink(), file, now).peer.key, later.pub);
-  link.notePrimaryNow(link.readLink(), { file, now });
-  assert.equal(link.readNumbers(file).primary, later.pub);
-  // Heard from again: the first again.
-  fs.rmSync(path.join(run, "peer-reach.json"));
-  assert.equal(link.primaryOf(link.readLink(), file, now).peer.key, mac.pub);
-  // Away when this box itself went off the relay days ago, not found away since: not gone.
-  write(file, { primary: mac.pub, leases: [] });
-  reach(now - 4 * 86_400_000, now - 4 * 86_400_000);
-  assert.equal(link.primaryOf(link.readLink(), file, now).peer.key, mac.pub);
-
-  // A primary this box reaches only through lab: once lab numbers from another (it found that one
-  // gone), so does this box, without waiting days of its own; while lab can't say, it waits.
-  fs.rmSync(path.join(run, "peer-reach.json"));
-  fresh();
-  const old = box("mac", "Old Mac");
-  write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_cccccccccccc", at: 3, heard: 3, kind: "machine", since: 10, items: [], owners: [], labels: [], primary: { key: old.pub, kind: "mac", since: 500 } });
-  write(file, { primary: old.pub, through: lab.pub, leases: [] });
-  assert.equal(link.primaryOf(link.readLink(), file, now).peer.key, old.pub);
-  write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_cccccccccccc", at: 4, heard: 4, kind: "machine", since: 10, items: [], owners: [], labels: [] });
-  assert.deepEqual(link.primaryOf(link.readLink(), file, now), { away: true });
-  write(path.join(queues, "peers", `${lab.pub}.json`), { id: "wqt_cccccccccccc", at: 5, heard: 5, kind: "machine", since: 10, items: [], owners: [], labels: [], primary: { key: mac.pub, kind: "mac", since: 1_000 } });
-  assert.equal(link.primaryOf(link.readLink(), file, now).peer.key, mac.pub);
 });
 
 test("an issue another computer told of shows as it said, with no gh here; this box reads it only once what was told is old; the newer word wins, never one from a clock set ahead", async () => {

@@ -19,4 +19,7 @@ done
 if [[ "${1:-}" == --prepare ]]; then exit 0; fi
 # Each file launches its own subprocesses and servers. Bound the number of suites
 # competing for time with the combined check's other lanes.
-exec scripts/test-box.sh bridge --test-concurrency=2 '--test-name-pattern=^failure bench:' computer-backups.test.js failure-bench-legacy.test.js folder-version.test.js setup-handover.test.js devices-two-boxes.test.js updates.test.js computers-add.test.js installer-enrollment.test.js install.test.js ssh-route.test.js
+exec scripts/test-box.sh bridge --test-concurrency=2 '--test-name-pattern=^failure bench:' \
+    computer-backups.test.js failure-bench-legacy.test.js folder-version.test.js \
+    box/bridge-tests/setup-handover*.test.js devices-two-boxes.test.js updates.test.js \
+    box/bridge-tests/computers-add*.test.js installer-enrollment.test.js install.test.js ssh-route.test.js

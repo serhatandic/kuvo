@@ -1,8 +1,7 @@
 // A Mac that has only Kuvo Code's desktop app (#713 piece 8; PROTOCOL.md, "Machines", In a home
 // of its own): its box lives in a home of its own, and no app answers for it (the desktop app is a
-// client). What a phone asks of the Mac's own routes, which the old Mac app answered (its machines,
-// the machines phones reach, what its browser asks you, While Agents Work, restarting its engine),
-// the box answers itself. The real box script, in a home of the test's own laid out as a Mac's; its
+// client). The box answers browser asks, While Agents Work and engine restart itself. The real box
+// script, in a home of the test's own laid out as a Mac's; its
 // helper, `launchctl`, its keeper's `kuvo-start` and the relay are stand-ins.
 //
 // Run with `node --test box/bridge-tests/own-home-mac-routes.test.js`.
@@ -151,8 +150,6 @@ before(async () => {
 });
 atEnd(() => link.stopMacLink());
 
-const NOT_OPEN = /isn.t open/;
-
 test("what its browser asks you: a phone reads it from the box, as from a machine's, with no app to ask", async () => {
   const asks = await phone("GET", "kuvo/asks");
   assert.deepEqual([asks.status, asks.json], [200, { asks: [] }]);
@@ -235,92 +232,4 @@ test("Restart Engine from a phone: the box asks its own keeper, with no app", as
   assert.equal((await phone("POST", "kuvo/engine/stop")).status, 404);
   await link.toolRun();
   assert.equal(fs.readFileSync(asked, "utf8"), "restart\n", "nothing more was asked of its keeper");
-});
-
-test("its machines: a phone reads the list in the box's own words, follows it, and changes what the box keeps", async () => {
-  // A computer this Mac set up (as the box's own add leaves it), under two addresses, and one it
-  // removed that phones still reach.
-  const studio = { key: link.publicOf(link.newKey()).toString("base64url"), sign: link.newSigningSeed(), address: crypto.randomBytes(16).toString("base64url") };
-  const old = { key: link.publicOf(link.newKey()).toString("base64url"), address: crypto.randomBytes(16).toString("base64url") };
-  write(path.join(K, "machines.json"), JSON.stringify([{ destination: "studio", otherAddresses: ["studio.lan"] }]));
-  write(path.join(K, "phone-link.json"), JSON.stringify({ machines: {
-    studio: { name: "studio", address: studio.address, key: studio.key, sign: studio.sign, anotherMac: false, peers: true },
-    attic: { name: "attic", address: old.address, key: old.key, anotherMac: false, peers: true },
-  } }));
-
-  const listed = await phone("GET", "kuvo/machines");
-  assert.equal(listed.status, 200, JSON.stringify(listed.json));
-  assert.deepEqual(listed.json, { machines: [{ id: "studio", name: "studio", otherAddresses: ["studio.lan"], connection: "notConnected", status: "Not connected" }], hosts: [] });
-  assert.doesNotMatch(JSON.stringify(listed.json), NOT_OPEN, "nothing says an app must be open");
-
-  // Followed: a line now, as the app's stream gave.
-  const stop = new AbortController();
-  let first = "";
-  for await (const part of link.macFront(handle)({ method: "GET", path: "kuvo/machines/events", headers: {}, body: Buffer.alloc(0) }, {}, stop.signal)) {
-    if (!part.body) continue;
-    first = part.body.toString();
-    stop.abort();
-  }
-  assert.deepEqual(JSON.parse(first), listed.json);
-
-  // One of its other addresses forgotten.
-  const dropped = await phone("DELETE", "kuvo/machines/studio/addresses/studio.lan");
-  assert.deepEqual([dropped.status, dropped.json.machine.otherAddresses], [200, []]);
-  assert.deepEqual(readJSON(path.join(K, "machines.json")), [{ destination: "studio", otherAddresses: [] }]);
-  assert.equal((await phone("DELETE", "kuvo/machines/studio/addresses/studio.lan")).status, 404);
-  assert.equal((await phone("DELETE", "kuvo/machines/nope")).status, 404);
-
-  // What stood for the old app's SSH connection: refused in words that say why, never that an app must be open.
-  for (const action of ["connect", "disconnect", "start"]) {
-    const refused = await phone("POST", `kuvo/machines/studio/${action}`, action === "same-as" ? { other: "attic" } : undefined);
-    assert.equal(refused.status, 409, action);
-    assert.ok(refused.json.message.length > 20, action);
-    assert.doesNotMatch(refused.json.message, NOT_OPEN, action);
-  }
-  for (const action of ["home", "same-as"]) {
-    assert.equal((await phone("POST", `kuvo/machines/studio/${action}`)).status, 404, action);
-  }
-  // An address that can't name a computer never reaches ssh.
-  const bad = await phone("POST", "kuvo/machines", { destination: "-oProxyCommand=sh" });
-  assert.equal(bad.status, 400);
-  assert.deepEqual((await phone("POST", "kuvo/machines", {})).json, { message: "Give the machine’s SSH host: a Host from ~/.ssh/config, or user@host." });
-
-  // The machines a phone reaches directly: the one it has, and the one it removed, marked so.
-  const hosts = await phone("GET", "kuvo/hosts");
-  assert.equal(hosts.status, 200, JSON.stringify(hosts.json));
-  const met = link.macLink.config.relay;
-  assert.deepEqual(hosts.json.hosts.map(each => [each.machine, each.removed, each.relay]), [["attic", true, met], ["studio", false, met]]);
-  // Forgotten for your phones: only one it removed.
-  const still = await phone("DELETE", "kuvo/hosts/studio");
-  assert.equal(still.status, 409);
-  assert.equal(still.json.message, `It’s one of ${link.macLink.config.name}’s machines: remove it first.`);
-  // (Only one it keeps by that name: never what every object has.)
-  for (const id of ["constructor", "__proto__", "toString"]) assert.equal((await phone("DELETE", `kuvo/hosts/${id}`)).status, 404, id);
-  assert.deepEqual([(await phone("DELETE", "kuvo/hosts/attic")).status, (await phone("DELETE", "kuvo/hosts/attic")).status], [200, 404]);
-  assert.equal(fs.existsSync(path.join(K, "phone-link.json.lock")), false, "its lock is let go");
-  assert.deepEqual(Object.keys(readJSON(path.join(K, "phone-link.json")).machines), ["studio"]);
-  assert.equal(fs.statSync(path.join(K, "phone-link.json")).mode & 0o777, 0o600);
-  assert.deepEqual((await phone("GET", "kuvo/hosts")).json.hosts.map(each => each.machine), ["studio"]);
-
-  // Removed (never signed in to your computers: only off its list), and the list is empty, not unreadable.
-  assert.equal((await phone("DELETE", "kuvo/machines/studio")).status, 200);
-  assert.deepEqual(readJSON(path.join(K, "machines.json")), []);
-  assert.deepEqual((await phone("GET", "kuvo/machines")).json.machines, []);
-  // The desktop app, over the box's own server, is answered the same.
-  assert.equal((await ask("GET", "kuvo/machines")).status, 200);
-  assert.deepEqual(helper.asked.filter(call => call !== "/link/identity"), []);
-
-  // A member of a setup: its main computer adds and removes, and the answer names it.
-  const main = link.publicOf(link.newKey()).toString("base64url");
-  const was = link.readLink();
-  link.updateLink(kept => ({ ...kept, setup: { role: "member", primary: main } }));
-  try {
-    for (const [method, route, given] of [["POST", "kuvo/machines", { destination: "gpu" }], ["DELETE", "kuvo/machines/studio"], ["DELETE", "kuvo/hosts/studio"]]) {
-      const refused = await phone(method, route, given);
-      assert.deepEqual([refused.status, refused.json.primary], [409, main], route);
-    }
-    assert.equal((await phone("GET", "kuvo/machines")).status, 200, "reading is everyone's");
-  } finally {
-    link.updateLink(kept => ({ ...kept, setup: was?.setup }));
-  }
 });

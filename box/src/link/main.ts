@@ -111,6 +111,7 @@ import { shareOutputs } from "./areas/setup-outputs";
 import { shareNotices } from "./areas/notices";
 import { shareLibrary } from "./areas/library";
 import { shareSetupLists } from "./lists/setup";
+import { listFollowers } from "./lists/sessions";
 import { pushQueues } from "./work-queue/across";
 import { FORWARDS, forwardsSoon, sendForwards } from "./work-queue/forward";
 import { reachAgainSoon, sendReachAgain } from "./peers/reach-again";
@@ -251,7 +252,7 @@ export { askMainToCheck, consumeFleetCheck, fleetFacts, fleetWith, followPeers, 
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, receiveRelease, releaseRound, requestUpdateNow, startUpdate, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { activationAllowed, fleetTarget, STAGE_WAIT } from "./updates/fleet";
 export { keepLegacyRelease } from "./updates/keep";
-export { publishedShared } from "./setup/shared";
+export { publishedShared, stageShared } from "./setup/shared";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
@@ -432,10 +433,14 @@ async function run(owner?: ClientOwner): Promise<void> {
   const stopServices = resident ? keepResidentServices() : undefined;
   let stopWindowsAwake: (() => void) | undefined;
   let leaving = false;
+  let directoryChanged = false;
+  const noteDirectory = () => { directoryChanged = true; };
+  listFollowers.add(noteDirectory);
   const cleanUp = async (reason: string) => {
     if (leaving) return;
     leaving = true;
     stopWindowsAwake?.();
+    listFollowers.delete(noteDirectory);
     report("link stopping", { reason });
     if (owner) {
       await owner.drain();
@@ -577,6 +582,7 @@ async function run(owner?: ClientOwner): Promise<void> {
   // not sent yet go to the Mac.
   let lastWelcomed = Date.now();
   let lastSetup = "";
+  let publishingDirectory = false;
   refreshOwn(readEngineFile).catch(() => {});
   // Your time zone in its bots' and conversations' folders, kept so as it runs.
   keepZone();
@@ -665,6 +671,11 @@ async function run(owner?: ClientOwner): Promise<void> {
     deliverLeftAnswers().catch(() => {});
     // The rows of sessions here whose lead lives on another computer, told to it as they change.
     if (current?.welcomed) {
+      if (directoryChanged && !publishingDirectory) {
+        directoryChanged = false;
+        publishingDirectory = true;
+        void announce(current, readEngineFile).catch(() => {}).finally(() => { publishingDirectory = false; });
+      }
       void shareNotices(current).catch(() => {});
       void shareOutputs(current).catch(() => {});
       void shareArchived(current).catch(() => {});

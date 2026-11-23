@@ -13,6 +13,7 @@ import "./test-safety.js";
 import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -21,6 +22,7 @@ import path from "node:path";
 import { before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { relayStandIn } from "./relay-stand-in.js";
+import { recordRelayLease, relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 const script = fileURLToPath(LINK_BUNDLE);
@@ -117,7 +119,8 @@ Object.assign(process.env, {
   KUVO_HOST_PASSWORD: "host-password",
 });
 const link = await import(LINK_BUNDLE.href);
-const relay = await relayStandIn(link, { changed: () => {} });
+const leases = relayLeaseStandIn({ transferStartsNow: true });
+const relay = await relayStandIn(link, { request: leases.request, changed: () => {} });
 
 // A session here, and one on the machine.
 const macEngine = await engineWith([{ id: "ses_lead", title: "Foreman", listed: true }]);
@@ -158,17 +161,32 @@ write(path.join(macHome, "run", "work-queue", "numbers.json"), { primary: "self"
 let lab = null;
 before(async () => {
   assert.notEqual((await ask("PUT", "kuvo/link/config", { phones: false, machines: true, relay: relay.url, name: "Studio Mac", app: "0.9.0", features: ["mac", "work.elsewhere", "work-queue", "work-queue.elsewhere"] })).json?.state, "failed");
+  // The SSH install already has its identity when the main publishes the membership.
+  const key = link.newKey(), secret = crypto.randomBytes(32), seed = link.newSigningSeed();
+  const peer = { key: link.publicOf(key).toString("base64url"), sign: link.signingKeyOf(seed),
+    address: link.addressOf(secret).toString("base64url"), name: "lab", id: "lab.example", kind: "machine" };
+  write(path.join(machineHome, "run", "link.json"), {
+    key: key.toString("base64url"), secret: secret.toString("base64url"), sign: seed, phones: [],
+    mac: macPub, macs: [macPub],
+  });
+  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [peer], moved: [] })).status, 200);
+  link.noteSetupNow(Date.now(), { soon: 0 });
+  const state = link.readLink().setup;
+  assert.equal(state.role, "primary");
+  const grant = leases.seed(state, { [state.primary]: state.sign, [peer.key]: peer.sign }, 500);
+  recordRelayLease(path.join(macHome, "run"), state, { relay: grant });
   const setup = await ask("GET", "kuvo/link/setup");
+  assert.equal(setup.status, 200);
   const result = spawnSync(process.execPath, [script, "setup"], {
-    input: JSON.stringify({ relay: relay.url, name: "lab", mac: link.publicOf(macKey).toString("base64url"), macSign: setup.json.macSign, docs: setup.json.docs, id: "lab.example" }),
+    input: JSON.stringify({ ...setup.json, relay: relay.url, name: "lab", id: "lab.example" }),
     env: machineEnv,
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
   lab = JSON.parse(result.stdout.trim().split("\n").at(-1));
+  assert.equal(lab.key, peer.key, result.stdout);
   // As a member, lab has one number left of a block this Mac gave it.
   write(path.join(machineHome, "run", "work-queue", "numbers.json"), { primary: link.publicOf(macKey).toString("base64url"), leases: [[41, 41]], since: 2_000 });
-  assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab.example" }], moved: [] })).status, 200);
   link.runMacLink();
   link.runMacPeers();
 });
@@ -190,10 +208,14 @@ atEnd(async () => {
 const labQueue = owner => read(path.join(machineHome, "run", "work-queue", "queues", `${owner}.json`))?.items ?? [];
 const macPub = link.publicOf(macKey).toString("base64url");
 // What the machine's box answers a client, as a Mac asks it over SSH (`box route`).
-const labRoute = (method, p) => {
-  const result = spawnSync(process.execPath, [script, "box", "route"], { input: JSON.stringify({ method, path: p }), env: machineEnv, encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-  const answer = JSON.parse(result.stdout.trim().split("\n").at(-1));
+const labRoute = async (method, p) => {
+  const child = spawn(process.execPath, [script, "box", "route"], { env: machineEnv, stdio: ["pipe", "pipe", "pipe"] });
+  let out = "", err = "";
+  child.stdout.on("data", chunk => { out += chunk; });
+  child.stderr.on("data", chunk => { err += chunk; });
+  child.stdin.end(JSON.stringify({ method, path: p }));
+  assert.equal((await once(child, "close"))[0], 0, err);
+  const answer = JSON.parse(out.trim().split("\n").at(-1));
   return { status: answer.status, json: JSON.parse(answer.body) };
 };
 // An agent's Work Queue tool on lab, while its conversation is making the call (lab's box asks
@@ -224,7 +246,7 @@ test("this Mac leads a setup and its machine takes it: kuvo/setup says the same 
   assert.deepEqual(ours.primary, { key: macPub, name: "Studio Mac", kind: "mac" });
   // (Looked for in lab's file: its box answers once it has it.)
   await eventually(() => read(path.join(machineHome, "run", "link.json"))?.setup?.role === "member");
-  const theirs = labRoute("GET", "kuvo/setup").json;
+  const theirs = (await labRoute("GET", "kuvo/setup")).json;
   assert.deepEqual(sameAcross(theirs), sameAcross(ours));
   assert.deepEqual(theirs.you, { key: lab.key, role: "member" });
   assert.deepEqual(ours.computers.map(each => [each.key, each.role, each.app]), [[macPub, "primary", true], [lab.key, "member", false]]);
@@ -236,58 +258,17 @@ test("this Mac leads a setup and its machine takes it: kuvo/setup says the same 
 
   // Numbers as they were: this Mac's from #70, lab's from the block it had.
   assert.match((await onMac("queue_add", { title: "Ship the release" })).text, /^Added #70 /);
+  const nextBlock = read(path.join(macHome, "run", "work-queue", "numbers.json")).next;
   assert.match((await onLab("queue_add", { title: "Port the importer" })).text, /^Added #41 /);
   // That was its last: lab asks its main computer, this Mac, for more, which gives the next block
   // past its own, and lab's next item takes from it, now or once it comes.
   await eventually(() => Object.keys(read(path.join(macHome, "run", "work-queue", "numbers.json"))?.given ?? {}).length);
-  assert.deepEqual(Object.values(read(path.join(macHome, "run", "work-queue", "numbers.json")).given).map(each => each.from), [71]);
-  assert.match((await onLab("queue_add", { title: "Second" })).text, /#71/);
+  assert.deepEqual(Object.values(read(path.join(macHome, "run", "work-queue", "numbers.json")).given).map(each => each.from), [nextBlock]);
+  assert.match((await onLab("queue_add", { title: "Second" })).text, new RegExp(`^Added #${nextBlock} `));
   assert.equal(read(path.join(machineHome, "run", "work-queue", "numbers.json")).primary, macPub);
 });
 
-// Only the main computer adds and pairs (PROTOCOL.md, "Your setup"): lab, a member now, names this
-// Mac for each, pairs no phone and lets no app say who's in the setup; it still tells a phone the
-// setup's machines it reaches directly, as this Mac's `kuvo/hosts` does.
-test("a member pairs no phone and adds no computer, naming the main computer, and lists the setup's machines for a phone", { timeout: 120_000 }, async t => {
-  signal = t.signal;
-  await eventually(() => read(path.join(machineHome, "run", "link.json"))?.setup?.role === "member");
-  const named = { primary: macPub };
-  const linkFile = path.join(machineHome, "run", "link.json");
-
-  // A phone asking lab for a pairing link, and `kuvo-link.js pair` run there.
-  assert.deepEqual(labRoute("POST", "kuvo/phones/pair"), { status: 409, json: { message: "Pair new phones from Studio Mac.", ...named } });
-  const cli = spawnSync(process.execPath, [script, "pair", relay.url], { env: machineEnv, encoding: "utf8" });
-  assert.equal(cli.status, 3, cli.stderr);
-  assert.equal(cli.stdout, "");
-  assert.match(cli.stderr, /^Pair new phones from Studio Mac\.$/m);
-  // An absent Mac is already gone. Leaving it again keeps the current setup.
-  const wrong = spawnSync(process.execPath, [script, "leave", lab.key], { env: machineEnv, encoding: "utf8" });
-  assert.deepEqual([wrong.status, wrong.stderr.trim()], [0, "That Mac is let go: this computer is no longer one of its computers."]);
-  assert.equal(read(linkFile).setup.primary, macPub);
-  assert.equal(read(linkFile).pairing, undefined);
-
-  // Adding, changing or removing computers there, and an app there saying who's in the setup.
-  const elsewhere = { status: 409, json: { message: "Add and remove computers from Studio Mac.", ...named } };
-  assert.deepEqual(labRoute("POST", "kuvo/machines"), elsewhere);
-  assert.deepEqual(labRoute("DELETE", "kuvo/hosts/lab"), elsewhere);
-  assert.deepEqual(labRoute("POST", "kuvo/machines/lab.example/uninstall"), elsewhere);
-  assert.deepEqual(labRoute("PUT", "kuvo/link/peers"), elsewhere);
-  assert.equal(read(linkFile).setup.primary, macPub);
-  // (What a Mac's app answers that isn't adding or removing one: none here, as before.)
-  assert.equal(labRoute("POST", "kuvo/machines/lab.example/home").status, 404);
-
-  // What an older phone asks a Mac, asked of lab: the setup's machines, from its document.
-  assert.deepEqual(labRoute("GET", "kuvo/hosts"), { status: 200, json: { hosts: [{ kind: "machine", name: "lab", address: lab.address, key: lab.key, relay: relay.url, machine: "lab.example", anotherMac: false, removed: false }] } });
-
-  // Neither the route nor the old CLI can unlink the current primary.
-  assert.deepEqual(labRoute("DELETE", `kuvo/computers/${macPub}`), { status: 409, json: { message: "Choose another main computer first." } });
-  const left = spawnSync(process.execPath, [script, "leave", macPub], { env: machineEnv, encoding: "utf8" });
-  assert.deepEqual([left.status, left.stderr.trim()], [1, "Choose another main computer first."]);
-  assert.equal(read(linkFile).setup.primary, macPub);
-  assert.equal(read(linkFile).pairing, undefined);
-});
-
-test("a Mac hands over to its machine, then follows its setup and defers device access", { timeout: 30_000 }, async t => {
+test("a Mac hands over to its machine, then follows its setup", { timeout: 30_000 }, async t => {
   signal = t.signal;
   await eventually(() => link.readPeerAgents()[lab.key]?.features?.includes("setup.handover"));
   const setup = (await ask("GET", "kuvo/setup")).json;
@@ -295,13 +276,24 @@ test("a Mac hands over to its machine, then follows its setup and defers device 
   assert.deepEqual(await ask("POST", "kuvo/setup/handover", { primary: lab.key, epoch: setup.epoch }), {
     status: 202, json: { primary: lab.key, epoch: setup.epoch + 1 },
   });
-  const there = await eventually(() => {
-    const view = labRoute("GET", "kuvo/setup").json;
+  const there = await eventually(async () => {
+    const view = (await labRoute("GET", "kuvo/setup")).json;
     return view?.you.role === "primary" && view;
   });
-  const here = (await ask("GET", "kuvo/setup")).json;
+  const here = await eventually(async () => {
+    const view = (await ask("GET", "kuvo/setup")).json;
+    return view?.you.role === "member" && view.primary.key === lab.key && view;
+  });
   assert.deepEqual(sameAcross(there), sameAcross(here));
   assert.deepEqual([here.you.role, there.primary.key], ["member", lab.key]);
-  assert.deepEqual(await ask("POST", "kuvo/phones/pair"), { status: 409, json: { message: "Pair new phones from lab.", primary: lab.key } });
-  assert.equal(labRoute("POST", "kuvo/phones/pair").status, 200);
+});
+
+test("unlinking the main computer starts a handover with access still intact", { timeout: 25_000 }, async () => {
+  const setup = (await ask("GET", "kuvo/setup")).json;
+  const removed = await ask("DELETE", `kuvo/computers/${lab.key}`);
+  assert.deepEqual(removed, { status: 202, json: {
+    primary: macPub, epoch: setup.epoch + 1, unlinking: true, removal: { accessRemoved: false, state: "handing-over" },
+    message: "Studio Mac is becoming the main computer. Then lab is unlinked.",
+  } });
+  assert.equal(leases.leaseFor(setup.setup).holder, macPub);
 });

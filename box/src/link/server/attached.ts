@@ -113,16 +113,18 @@ async function save(attachments: string, bytes: Buffer, name: string): Promise<s
   const given = path.basename(name.replace(/\\/g, "/")).trim();
   const base = ["", ".", ".."].includes(given) ? "attachment" : given;
   try {
-    await fs.mkdir(attachments, { recursive: true });
     let folder = "";
     // A folder that's there already (a name drawn twice) is never shared.
     for (let tries = 0; !folder; tries++) {
       const drawn = path.join(attachments, crypto.randomBytes(4).toString("hex"));
       try {
+        await fs.mkdir(attachments, { recursive: true });
         await fs.mkdir(drawn);
         folder = drawn;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || tries > 8) throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        // Expiry can remove an empty session folder between the two mkdir calls.
+        if ((code !== "EEXIST" && code !== "ENOENT") || tries > 8) throw error;
       }
     }
     const file = path.join(folder, base);
@@ -157,6 +159,7 @@ async function letOldGo(attachments: string): Promise<void> {
       if (movedPayloadFolder(sent) || sent === transcriptPictures) continue;
       try { if ((await fs.stat(path.join(folder, sent))).mtimeMs < before) await fs.rm(path.join(folder, sent), { recursive: true, force: true }); } catch {}
     }
+    try { await fs.rmdir(folder); } catch {}
   }
 }
 

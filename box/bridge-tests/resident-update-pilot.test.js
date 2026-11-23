@@ -59,7 +59,12 @@ test("resident pilot: active sandboxed Codex survives a failed trial and a succe
   assert.deepEqual(provider, { pid: holder.child, canReadBox: false });
   const work = { engine, bridge: bridge.pid, holder: holder.pid, provider: holder.child };
   const sandboxPlugin = path.join(home, "config/opencode/plugins/kuvo-sandbox.js");
-  const pluginSource = fs.readFileSync(sandboxPlugin, "utf8");
+  const installedPlugin = () => {
+    const source = fs.readFileSync(sandboxPlugin, "utf8");
+    assert.match(source, /^const VERSION = "[a-f0-9]{16}"$/m);
+    return source.replace(/^const VERSION = "[a-f0-9]{16}"$/m, "");
+  };
+  const pluginSource = installedPlugin();
   const runningWork = async checkpoint => {
     const now = holderFor(session);
     const pids = { engine: readJSON(path.join(RUN, "engine.json"))?.pid, bridge: readJSON(path.join(RUN, "bridge.json"))?.pid,
@@ -67,7 +72,7 @@ test("resident pilot: active sandboxed Codex survives a failed trial and a succe
     assert.deepEqual(pids, work, checkpoint);
     assert.equal(now.generation, holder.generation);
     assert.ok(Object.values(pids).every(runs), checkpoint);
-    assert.equal(fs.readFileSync(sandboxPlugin, "utf8"), pluginSource, checkpoint);
+    assert.equal(installedPlugin(), pluginSource, checkpoint);
     assert.ok(fs.statSync(path.join(home, "bin", "kuvo-fence")).mode & 0o100);
     assert.equal((await api("GET", `api/session/${session}/prompt-receipt/${accepted}`)).status, 200, checkpoint);
     assert.deepEqual((await api("GET", "api/session/active")).json?.data?.[session], { type: "busy" }, checkpoint);

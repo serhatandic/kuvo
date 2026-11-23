@@ -24,6 +24,7 @@ import type { readBacklogFiles } from "../work-queue/import";
 import type { allocateNumbers, claimNumbers, movePast, numbersToSend, receiveNumbers } from "../work-queue/numbers";
 import type { keepDownloadedRelease, receiveRelease } from "../updates/update";
 import type { readPermissionSettings } from "../permissions";
+import { macLink } from "../state";
 
 type Operations = {
   applySettings: typeof applySettings;
@@ -75,7 +76,9 @@ type Operations = {
   sweepWakeFolders: typeof sweepWakeFolders;
 };
 type Operation = keyof Operations;
-type Request = { [Key in Operation]: { id: number; operation: Key; args: Parameters<Operations[Key]> } }[Operation];
+type Request = { [Key in Operation]: { id: number; operation: Key; args: Parameters<Operations[Key]> } }[Operation] & {
+  macIdentity?: typeof macLink.overlay;
+};
 type Reply = { id: number; value?: unknown; error?: string };
 const role = "kuvo-disk-worker";
 
@@ -125,7 +128,6 @@ if (isDiskWorker) {
         case "siteSignInsHere": value = await (await import("../browser/sites")).siteSignInsHere(...args); break;
         case "sweepWakeFolders": value = (await import("../fence/state")).sweepWakeFolders(...args); break;
         case "readBacklogFiles": value = (await import("../work-queue/import")).readBacklogFiles(...args); break;
-        case "claimNumbers": value = (await import("../work-queue/numbers")).claimNumbers(...args); break;
         case "checkMoveQueueFiles": value = (await import("../work-queue/moves")).checkMoveQueueFiles(...args); break;
         case "clearQueuePlacement": value = (await import("../work-queue/moves")).clearQueuePlacement(...args); break;
         case "forgetWorkQueues": value = (await import("../work-queue/moves")).forgetWorkQueues(...args); break;
@@ -134,10 +136,30 @@ if (isDiskWorker) {
         case "unpackForTransfer": value = await (await import("../moves/bundle")).unpackForTransfer(...args); break;
         case "packQueuesForMove": value = (await import("../work-queue/moves")).packQueuesForMove(...args); break;
         case "verifyQueuePayloads": value = (await import("../work-queue/moves")).verifyQueuePayloads(...args); break;
-        case "movePast": value = (await import("../work-queue/numbers")).movePast(...args); break;
-        case "numbersToSend": value = (await import("../work-queue/numbers")).numbersToSend(...args); break;
-        case "receiveNumbers": value = (await import("../work-queue/numbers")).receiveNumbers(...args); break;
-        case "allocateNumbers": value = (await import("../work-queue/numbers")).allocateNumbers(...args); break;
+        case "claimNumbers":
+        case "movePast":
+        case "numbersToSend":
+        case "receiveNumbers":
+        case "allocateNumbers":
+        {
+          const numbers = await import("../work-queue/numbers");
+          // Number operations are synchronous. They reread membership under the ledger
+          // lock and use the dispatcher's Mac identity only for the duration of that read.
+          const overlay = macLink.overlay;
+          macLink.overlay = request.macIdentity ?? null;
+          try {
+            switch (request.operation) {
+              case "claimNumbers": value = numbers.claimNumbers(...request.args); break;
+              case "movePast": value = numbers.movePast(...request.args); break;
+              case "numbersToSend": value = numbers.numbersToSend(...request.args); break;
+              case "receiveNumbers": value = numbers.receiveNumbers(...request.args); break;
+              case "allocateNumbers": value = numbers.allocateNumbers(...request.args); break;
+            }
+          } finally {
+            macLink.overlay = overlay;
+          }
+          break;
+        }
         case "verifyHeldPack": value = await (await import("../updates/fleet")).verifyHeldPack(...args); break;
         case "keepDownloadedRelease": value = (await import("../updates/update")).keepDownloadedRelease(...args); break;
         case "receiveRelease": value = (await import("../updates/update")).receiveRelease(...args); break;
@@ -154,7 +176,8 @@ class DiskWorker {
   private worker: Worker | undefined;
   private parking?: ReturnType<typeof setTimeout>;
 
-  constructor(private readonly idleMs = 5_000) {}
+  constructor(private readonly usesMacIdentity = false) {}
+  private readonly idleMs = 5_000;
   private next = 0;
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 
@@ -165,7 +188,8 @@ class DiskWorker {
     return new Promise((resolve, reject) => {
       const id = ++this.next;
       this.pending.set(id, { resolve: value => resolve(value as Awaited<ReturnType<Operations[Key]>>), reject });
-      try { worker.postMessage({ id, operation, args }); }
+      const macIdentity = this.usesMacIdentity ? macLink.overlay : undefined;
+      try { worker.postMessage({ id, operation, args, macIdentity }); }
       catch (error) {
         this.pending.delete(id);
         if (!this.pending.size) worker.unref();
@@ -210,10 +234,10 @@ export const removalDisk = new DiskWorker();
 export const folderDisk = new DiskWorker();
 export const settingsDisk = new DiskWorker();
 export const releaseDisk = new DiskWorker();
-export const numberDisk = new DiskWorker();
+export const numberDisk = new DiskWorker(true);
 export const browserDisk = new DiskWorker();
 export const wakeDisk = new DiskWorker();
 export const backlogDisk = new DiskWorker();
 export const queueMoveDisk = new DiskWorker();
-export const numberUpkeepDisk = new DiskWorker();
+export const numberUpkeepDisk = new DiskWorker(true);
 export const moveBundleDisk = new DiskWorker();

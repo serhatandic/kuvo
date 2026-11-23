@@ -137,12 +137,22 @@ test("a message to a group chat waits for the list only when it names someone it
   assert.equal(bridge.asked.filter(each => each.method === "POST").length, 4);
 });
 
-test("without the coding agents' bridge, a machine's group chats say why", async () => {
-  const handle = link.engineHandler(() => ({ port: 1, password: "engine", version: "2.0.32" }), { name: "box" }, () => null);
-  const answer = await ask(handle, "GET", "kuvo/groups");
-  assert.equal(answer.status, 503);
-  assert.ok(answer.json.message);
+test("while the coding agents' bridge is down, clients can read the saved group list and deleting is refused", async t => {
+  const groups = { groups: [{ id: "grp_box0000001" }] };
+  const saved = path.join(home, "run", "lists", "groups.json");
+  fs.rmSync(saved, { force: true });
+  const bridge = await fakeBridge((_request, response) => send(response, 200, groups));
+  t.after(bridge.close);
+  const agents = await runningAs("kuvo-agents", t);
+  let target = { pid: agents, port: bridge.port, password: "agents" };
+  const handle = link.engineHandler(() => ({ port: 1, password: "engine", version: "2.0.32" }), { name: "box" }, () => target);
+  const live = await ask(handle, "GET", "kuvo/groups");
+  assert.deepEqual([live.status, live.json], [200, groups]);
+
+  target = null;
+  const cached = await ask(handle, "GET", "kuvo/groups");
+  assert.deepEqual([cached.status, cached.json], [200, groups]);
   const deleting = await ask(handle, "DELETE", "kuvo/groups/grp_box0000001");
   assert.equal(deleting.status, 503);
-  assert.ok(deleting.json.message);
+  assert.match(deleting.json.message, /coding agents/i);
 });

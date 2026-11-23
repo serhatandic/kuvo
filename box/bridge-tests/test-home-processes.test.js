@@ -18,7 +18,6 @@ function live(pid) {
 
 const safety = new URL("./test-safety.js", import.meta.url).href;
 const bundle = LINK_BUNDLE.href;
-const standIn = new URL("./relay-stand-in.js", import.meta.url).href;
 const keeperSource = new URL("../src/keeper/kuvo-start", import.meta.url);
 
 test("killing a runner leaves no keeper or worker in its test home", { timeout: 15_000 }, async () => {
@@ -47,7 +46,7 @@ test("killing a runner leaves no keeper or worker in its test home", { timeout: 
     const [root, bin, run] = process.argv.slice(1);
     removeTestHomeAtExit(ownPath(root));
     const keeper = spawn("/usr/bin/env", ["-i", "HOME=" + root, "PATH=" + bin + ":/usr/bin:/bin",
-      "/bin/sh", "--", bin + "/kuvo-start", "keep"], { detached: true, stdio: "ignore" });
+      "/bin/sh", bin + "/kuvo-start", "keep"], { detached: true, stdio: ["ignore", "ignore", "inherit"] });
     fs.writeFileSync(run + "/started", String(keeper.pid));
   `, root, bin, run], { stdio: ["ignore", "ignore", "inherit"] });
   const exited = once(runner, "exit");
@@ -78,13 +77,11 @@ test("killing a runner leaves no keeper or worker in its test home", { timeout: 
 const fixtureSource = `
 import { removeTestHomeAtExit } from ${JSON.stringify(safety)};
 import { spawn } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { setTimeout } from "node:timers/promises";
-import { relayStandIn } from ${JSON.stringify(standIn)};
 
 const scenario = process.env.FIXTURE_OUTCOME;
 const root = fs.realpathSync(fs.mkdtempSync("/tmp/k"));
@@ -92,30 +89,25 @@ removeTestHomeAtExit(root);
 const home = path.join(root, ".kuvo-code");
 fs.mkdirSync(path.join(home, "run"), { recursive: true });
 process.env.KUVO_HOME = home;
-const link = await import(${JSON.stringify(bundle)});
-const relay = await relayStandIn(link);
-const secret = crypto.randomBytes(32);
-fs.writeFileSync(path.join(home, "run", "link.json"), JSON.stringify({
-  relay: relay.url, secret: secret.toString("base64url"), key: link.newKey().toString("base64url"),
-  sign: link.newSigningSeed(), name: "leftover-fixture", phones: [],
-  pairing: { token: crypto.randomBytes(16).toString("base64url"), expires: Date.now() + 60_000, issuer: null },
-}));
-const child = spawn(process.execPath, [fileURLToPath(${JSON.stringify(bundle)}), "run"], {
-  cwd: root, env: { PATH: process.env.PATH, HOME: root, KUVO_HOME: home }, detached: true, stdio: ["ignore", "ignore", "inherit"],
+const resident = path.join(home, "bin", "kuvo-link.js");
+fs.mkdirSync(path.dirname(resident), { recursive: true });
+fs.copyFileSync(fileURLToPath(${JSON.stringify(bundle)}), resident);
+const child = spawn(process.execPath, [resident, "serve", "--resident"], {
+  cwd: root, env: { PATH: process.env.PATH, HOME: root, KUVO_HOME: home, TMPDIR: root, KUVO_TEST_NO_PEERS: "1" },
+  detached: true, stdio: ["ignore", "ignore", "inherit"],
 });
 // A keeper that drops its environment still has its script in the registered fixture root.
 const keeper = path.join(root, "keeper");
 fs.writeFileSync(keeper, "while :; do /bin/sleep 1; done\\n");
 const shell = spawn("/usr/bin/env", ["-i", "/bin/sh", keeper], { detached: true, stdio: "ignore" });
-for (let tries = 0; !relay.has(link.addressOf(secret)); tries++) {
-  if (tries === 500 || child.exitCode !== null) throw new Error("The test box didn't connect");
+for (let tries = 0; !fs.existsSync(path.join(home, "run", "serve.json")); tries++) {
+  if (tries === 450 || child.exitCode !== null) throw new Error("The resident didn't publish its address");
   await setTimeout(20);
 }
 fs.writeFileSync(process.env.FIXTURE_READY, JSON.stringify({ root, box: child.pid, keeper: shell.pid, worker: process.pid }));
 if (!scenario.startsWith("SIG")) {
   child.unref();
   shell.unref();
-  relay.close();
 }
 test("fixture", { timeout: 100 }, async () => {
   if (scenario === "test timeout") await setTimeout(500);
@@ -162,7 +154,7 @@ for (const outcome of ["SIGKILL", "SIGTERM", "pass", "assertion failure", "test 
       else assert.equal(code, outcome === "pass" ? 0 : 1, output);
       if (outcome === "test timeout") assert.match(output, /test timed out/);
       if (outcome === "assertion failure") assert.match(output, /intentional fixture failure/);
-      for (let round = 0; round < 40 && fs.existsSync(root); round++) await setTimeout(100);
+      for (let round = 0; round < 65 && (fs.existsSync(root) || live(box) || live(keeper)); round++) await setTimeout(100);
       assert.equal(live(box), false, `box ${box} survived ${outcome}`);
       assert.equal(live(keeper), false, `keeper ${keeper} survived ${outcome}`);
       assert.equal(fs.existsSync(root), false);

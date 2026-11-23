@@ -288,6 +288,7 @@ test("a bot on this Mac starts a session on the machine as if it lived there, th
   assert.equal(macEngine.seen.prompts.filter(each => each.session === "ses_lead").length, 0);
 
   // From here, the bot lists it and stops it, as one of its own.
+  await eventually(() => read(path.join(macHome, "run", "work", "elsewhere", `${lab.key}.json`))?.leads?.ses_lead?.some(row => row.session === made.id));
   const list = await onMac("list_sessions", {});
   assert.match(list.text, new RegExp(`On lab, the latest first:\\n- Sign-in \\(address ${made.id}\\)`));
   assert.deepEqual(await onMac("stop_session", { session: made.id }), { text: "Stopped \"Sign-in\".", isError: false });

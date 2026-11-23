@@ -359,9 +359,13 @@ test("none to run on: choose one", async () => {
   });
 });
 
-test("a coding agent's own subagent runs on what its agent gives it: nothing is said of its model", async () => {
+test("a coding agent's subagent shows its inherited model without offering a model change", async () => {
   const shown = await states("ses_agentSub", "ses_agentOut");
-  assert.deepEqual(Object.keys(shown), ["ses_agentOut"], "its parent, on the same signed-out account, is said");
+  const model = { providerID: "claude-code@work", id: "claude-opus-5-5" };
+  assert.deepEqual(shown, {
+    ses_agentSub: { model, name: "Opus 5.5", runs: true, fixed: true },
+    ses_agentOut: { model, runs: false, missing: "signIn", account: { id: "claude-code@work", name: "Claude Code · Work", label: "Work" } },
+  });
 });
 
 test("none named is refused, and it's only read", async () => {

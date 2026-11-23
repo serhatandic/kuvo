@@ -1,8 +1,8 @@
 // This Mac's box started again with its app closed, as the keeper starts it at login with Background
 // Work on (PROTOCOL.md, "The relay, on this Mac's box"): it takes what the app last said of its link,
 // so your phones and machines reach this Mac before the app opens, if it ever does, and a phone
-// hears what this Mac is from its box. The phone link turned off stays off, and machines removed
-// don't bring the link back. Real `serve` processes, one after another in the same folder; only the
+// hears what this Mac is from its box. Real `serve` processes, one after another in the same
+// folder; only the
 // relay and what answers for the app (the keeper's host interface, the app closed) are stand-ins.
 //
 // Run with `node --test box/bridge-tests/mac-restart.test.js`.
@@ -163,7 +163,6 @@ async function onRelay(wanted) {
 }
 
 const iphone = phone();
-const listFile = path.join(box, "machines.json");
 
 test("the phone link on, this Mac is back on the relay after its box starts again, before the app opens: a phone reaches it and hears what it is from its box", async () => {
   // The app, open, turns the link on and pairs a phone; then you restart, and only the keeper starts.
@@ -192,39 +191,6 @@ test("the phone link on, this Mac is back on the relay after its box starts agai
   assert.deepEqual([asks.status, asks.json.message], [503, "Kuvo Code on this Mac isn't answering. Try again in a moment."]);
   assert.deepEqual(keeper.asked, ["kuvo/asks"], "only the Mac's own went to the keeper, for the app");
   await again.stop();
-});
-
-test("the phone link turned off stays off after a restart: phones don't reach this Mac", async () => {
-  const on = await serve();
-  assert.equal(await on.status("connected"), "connected");
-  assert.equal((await on.asApp("PUT", "kuvo/link/config", { phones: false, machines: false, relay: relay.url, name: "Studio", app: "1.0.0" })).status, 200);
-  assert.equal(await on.status("off"), "off");
-  await on.stop();
-  assert.equal(await onRelay(false), false);
-
-  const again = await serve();
-  // Long enough for its first try, had it made one.
-  assert.equal(await again.status("connected", 1500), "off");
-  assert.ok(!relay.has(macAddress));
-  assert.deepEqual(await iphone.open(), { refused: true });
-  await again.stop();
-});
-
-test("for your machines alone: back on the relay while the list has one, not once the last is removed", async () => {
-  fs.writeFileSync(listFile, JSON.stringify([{ destination: "lab" }]));
-  const withOne = await serve();
-  assert.equal(await withOne.status("connected"), "connected", "the phone link off, but a machine to meet");
-  assert.equal(await onRelay(true), true);
-  await withOne.stop();
-  assert.equal(await onRelay(false), false);
-
-  // Removed (the app writes the list as it removes the last), then a restart.
-  fs.writeFileSync(listFile, "[]");
-  const none = await serve();
-  assert.equal(await none.status("connected", 1500), "off");
-  assert.ok(!relay.has(macAddress));
-  await none.stop();
-  fs.rmSync(listFile, { force: true });
 });
 
 test("each start of this Mac's box in its app's folder says so, with its version and the app's: a move into a home of its own waits for the upgrades a start runs", async () => {

@@ -79,6 +79,8 @@ esac
   // How its engine starts: a bridge that makes way at once once nothing runs.
   write(path.join(run, "launch.env"), [`PATH=${path.join(base, "tools")}:/usr/bin:/bin:/usr/sbin:/sbin`, "LANG=C", "KUVO_SANDBOX=off", "KUVO_TEST_RENEW_SETTLE=0", "KUVO_TEST_RENEW_UPTIME=0", "KUVO_TEST_NO_PEERS=1"].join("\n") + "\n", 0o600);
   write(path.join(run, "launch.notes"), "{}", 0o600);
+  // These scenarios start with a request for an engine, which the resident now starts on demand.
+  write(path.join(run, "engine.now"), "", 0o600);
   const key = () => crypto.randomBytes(32).toString("base64url");
   write(path.join(run, "link.json"), JSON.stringify({ id: "lab", name: "lab", relay: "ws://127.0.0.1:9", secret: key(), key: key(), phones: [] }), 0o600);
   write(path.join(run, "serve.needed"), "", 0o600);
@@ -288,7 +290,7 @@ if (transferring) return ${answer}(request).then(async response => {
     // timer once the bridge has explicitly refused a request for handover.
     const earlier = new Date(Date.now() - 120_000);
     fs.utimesSync(path.join(box.run, "agents.pid"), earlier, earlier);
-    const responder = /return (answer\d*)\(request\)\.finally\(\(\) => answering--\);/;
+    const responder = /return (answer\d*)\(request\)\.finally\(/;
     assert.ok(responder.test(agents));
     const next = agents.replace(responder, (_matched, answer) => `return (async () => {
   const prompt = request.method === "POST" && new URL(request.url).pathname.endsWith("/prompt") ? await request.clone().json() : null;
@@ -298,7 +300,7 @@ if (transferring) return ${answer}(request).then(async response => {
     await Bun.write(accepted, (await accepted.exists() ? await accepted.text() : "") + prompt.id + "\\n");
   }
   return response;
-})().finally(() => answering--);`);
+})().finally(`);
     const file = path.join(box.home, "bin", "kuvo-agents.js");
     write(file + ".new", next);
     fs.renameSync(file + ".new", file);
@@ -406,23 +408,23 @@ test("a held release that isn't what its manifest says is never used, and goes; 
   write(agents, OLDER_BRIDGE);
   // Another version than the one running: not this box's to repair from.
   fs.writeFileSync(path.join(box.home, "bin", "box-version"), "0.9.0");
-  assert.deepEqual(box.repair(), { result: "none", why: "otherVersion" });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "none", why: "otherVersion" });
   fs.writeFileSync(path.join(box.home, "bin", "box-version"), "0.10.0");
   // Signed with a key the box doesn't know: not used.
-  assert.deepEqual(box.repair(crypto.randomBytes(32).toString("base64")), { result: "none", why: "noRelease" });
+  assert.deepEqual(box.repair(crypto.randomBytes(32).toString("base64")), { formatVersion: 1, result: "none", why: "noRelease" });
   assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE);
   // While a Mac puts its files in place, or a rollback runs: not now.
   write(path.join(box.run, "mac-installing"), "");
-  assert.deepEqual(box.repair(), { result: "none", why: "busy" });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "none", why: "busy" });
   fs.rmSync(path.join(box.run, "mac-installing"));
   fs.mkdirSync(path.join(box.run, ".rolling-back"));
-  assert.deepEqual(box.repair(), { result: "none", why: "busy" });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "none", why: "busy" });
   fs.rmSync(path.join(box.run, ".rolling-back"), { recursive: true });
   // Its pack damaged on disk.
   const held = path.join(box.home, "updates", "release");
   const pack = path.join(held, fs.readdirSync(held).find(name => name.endsWith(".tar.gz")));
   fs.appendFileSync(pack, "damage");
-  assert.deepEqual(box.repair(), { result: "damaged", version: "0.10.0" });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "damaged", version: "0.10.0" });
   assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE, "nothing put back from it");
   assert.ok(!fs.existsSync(held), "and it's gone, never handed to another computer");
 });
@@ -432,9 +434,9 @@ test("the release a box runs, kept apart once a newer one is held, is what it re
   fs.renameSync(path.join(box.home, "updates", "release"), path.join(box.home, "updates", "running"));
   const agents = path.join(box.home, "bin", "kuvo-agents.js");
   write(agents, OLDER_BRIDGE);
-  assert.deepEqual(box.repair(), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
   // And looked at again: all as the release says.
-  assert.deepEqual(box.repair(), { result: "sound", version: "0.10.0" });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "sound", version: "0.10.0" });
 });
 
 test("Try Again repairs the coding agents' program and starts them, where they'd stopped", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
@@ -460,11 +462,11 @@ test("nothing is repaired while an update is under way", { skip: bun ? false : N
   const updating = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "kuvo-link"], { stdio: "ignore" });
   atEnd(() => { updating.kill(); });
   write(path.join(box.run, ".updating", "pid"), String(updating.pid));
-  assert.deepEqual(box.repair(), { result: "none", why: "busy" });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "none", why: "busy" });
   assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE);
   updating.kill();
   await new Promise(resolve => updating.once("exit", resolve));
-  assert.deepEqual(box.repair(), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
 });
 
 /** A release feed of the test's own on 127.0.0.1: `/v<version>/boxes.json` and its pack, for each
@@ -499,17 +501,17 @@ test("a box that keeps no release (an older updater kept none) keeps bin/.own un
   const agents = path.join(box.home, "bin", "kuvo-agents.js");
   write(agents, OLDER_BRIDGE);
   // No source: nothing to repair from, and what an older Kuvo kept stays, as what the keeper puts back.
-  assert.deepEqual(await box.repairing(served.pinned, `${feed.base}/nothing`), { result: "none", why: "noRelease" });
+  assert.deepEqual(await box.repairing(served.pinned, `${feed.base}/nothing`), { formatVersion: 1, result: "none", why: "noRelease" });
   assert.ok(fs.existsSync(path.join(box.home, "bin", ".own", "kuvo-wake")));
   assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE);
   // The feed has it: fetched, checked, kept apart, and repaired from.
-  assert.deepEqual(await box.repairing(served.pinned, feed.base), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
+  assert.deepEqual(await box.repairing(served.pinned, feed.base), { formatVersion: 1, result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
   assert.ok(fs.existsSync(path.join(box.home, "updates", "running", "boxes.json")), "kept, to repair from again");
   assert.ok(!fs.existsSync(path.join(box.home, "bin", ".own")), "and only now, what an older Kuvo kept goes");
   // Its feed signed by another key: never used.
   fs.rmSync(path.join(box.home, "updates", "running"), { recursive: true });
   write(agents, OLDER_BRIDGE);
-  assert.deepEqual(await box.repairing(crypto.randomBytes(32).toString("base64"), feed.base), { result: "none", why: "noRelease" });
+  assert.deepEqual(await box.repairing(crypto.randomBytes(32).toString("base64"), feed.base), { formatVersion: 1, result: "none", why: "noRelease" });
   assert.equal(fs.readFileSync(agents, "utf8"), OLDER_BRIDGE);
 });
 
@@ -519,8 +521,8 @@ test("a box holding a newer release than the one it runs fetches the one it runs
   fs.mkdirSync(path.join(box.home, "updates", "release"), { recursive: true });
   for (const name of fs.readdirSync(newer.out)) fs.copyFileSync(path.join(newer.out, name), path.join(box.home, "updates", "release", name));
   write(path.join(box.home, "bin", "kuvo-agents.js"), OLDER_BRIDGE);
-  assert.deepEqual(await box.repairing(served.pinned, `${feed.base}/nothing`), { result: "none", why: "otherVersion" });
-  assert.deepEqual(await box.repairing(served.pinned, feed.base), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
+  assert.deepEqual(await box.repairing(served.pinned, `${feed.base}/nothing`), { formatVersion: 1, result: "none", why: "otherVersion" });
+  assert.deepEqual(await box.repairing(served.pinned, feed.base), { formatVersion: 1, result: "repaired", version: "0.10.0", files: ["bin/kuvo-agents.js"] });
   assert.equal(fs.readFileSync(path.join(box.home, "bin", "box-version"), "utf8").trim(), "0.10.0", "still the version it ran");
 });
 
@@ -542,11 +544,11 @@ test("the keeper's script with another engine line (a rollback that kept a newer
   const keeper = path.join(box.home, "bin", "kuvo-start");
   write(keeper, fs.readFileSync(keeper, "utf8").replace(/^V=.*$/m, "V=1.1.0"), 0o700);
   const before = fs.readFileSync(keeper);
-  assert.deepEqual(box.repair(), { result: "sound", version: "0.10.0" });
-  assert.deepEqual(box.repair(), { result: "sound", version: "0.10.0" }, "every look");
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "sound", version: "0.10.0" });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "sound", version: "0.10.0" }, "every look");
   assert.ok(fs.readFileSync(keeper).equals(before), "its engine line as it was");
   // Something else changed in it: put back, with its engine line.
   write(keeper, before.toString("utf8") + "# changed\n", 0o700);
-  assert.deepEqual(box.repair(), { result: "repaired", version: "0.10.0", files: ["bin/kuvo-start"] });
+  assert.deepEqual(box.repair(), { formatVersion: 1, result: "repaired", version: "0.10.0", files: ["bin/kuvo-start"] });
   assert.ok(fs.readFileSync(keeper).equals(before));
 });

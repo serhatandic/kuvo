@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 // The bridge bench controls relay time and connectivity without touching a deployed relay.
 // Mirrors the relay's `/setup-lease` (kuvo-link-relay, `src/leases.ts`): claim, renew, read and transfer.
 // `transferStartsNow`: a hand-over's new grant starts at once, where the relay starts it when the
@@ -13,6 +17,12 @@ export function relayLeaseStandIn({ transferStartsNow = false } = {}) {
     calls,
     get lease() { return leases.values().next().value; },
     leaseFor(setup) { return leases.get(setup); },
+    seed(setup, roster, high) {
+      const at = now();
+      const lease = { holder: setup.primary, sign: setup.sign, term: 1, starts: at, expires: at + 60_000, high, roster };
+      leases.set(setup.id, lease);
+      return lease;
+    },
     advance(ms) { offset += ms; },
     restart() { graceUntil = now() + 120_000; },
     disconnect(computer) {
@@ -49,4 +59,15 @@ export function relayLeaseStandIn({ transferStartsNow = false } = {}) {
         : { lease: null }));
     },
   };
+}
+
+
+// A fixture which starts after enrollment already has the relay's reserved number range.
+export function recordRelayLease(run, setup, { high = 500, floor = 0, relay } = {}) {
+  const now = { wall: Date.now(), uptime: os.uptime() * 1000 };
+  fs.writeFileSync(path.join(run, "setup-relay-lease.json"), JSON.stringify({
+    setup: setup.id, holder: setup.primary, sign: setup.sign, term: relay?.term ?? 1,
+    expires: relay?.expires ?? now.wall + 60_000, high, numberFloor: floor, relayHost: false,
+    since: now, validAfter: now, duration: 60_000,
+  }));
 }

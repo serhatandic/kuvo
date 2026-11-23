@@ -212,8 +212,9 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {}, re
       while (!all.every(([, state]) => state.closeHeard)) await new Promise(resolve => waitingForClose.push(resolve));
     },
     close: () => new Promise(resolve => {
-      for (const socket of sockets.keys()) socket.destroy();
       server.close(() => resolve());
+      server.closeAllConnections();
+      for (const socket of sockets.keys()) socket.destroy();
     }),
   };
 }
