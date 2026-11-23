@@ -1,4 +1,4 @@
-//! Installer requests share the setup's authenticated `act` / `acted` mail.
+//! Add and unlink requests share the setup's authenticated forwarding mail.
 //! The originating request alone holds the installer token. The main only sees its hash.
 
 use std::{
@@ -6,12 +6,17 @@ use std::{
     time::Duration,
 };
 
-use kuvo_wire::keys::encode;
+use hmac::{Hmac, Mac};
+use kuvo_wire::{
+    json::canonical,
+    keys::{decode_exact, encode},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use tokio::{sync::oneshot, task::JoinSet, time::Instant};
 
-use super::{Command, Owner, Response, SetupHandle};
+use super::{Command, Owner, Response, SetupHandle, Unlink};
 use crate::{
     Error,
     edits::Submitter,
@@ -32,26 +37,48 @@ const RETRY: Duration = Duration::from_secs(5);
 
 type Reply = oneshot::Sender<Result<Response, Error>>;
 
-pub(crate) enum AddRequest {
+pub(crate) enum ComputerRequest {
     Checklist,
     Offer {
         invite: String,
         selection: Selection,
     },
     Ssh(Action),
+    Unlink {
+        key: String,
+        request: Unlink,
+    },
 }
 
-impl AddRequest {
+impl ComputerRequest {
     fn allowed_for(&self) -> Duration {
         Duration::from_secs(match self {
             Self::Checklist => 20,
             Self::Offer { .. } => 45,
             Self::Ssh(Action::Page) => 20,
-            Self::Ssh(_) => 45,
+            Self::Ssh(_) | Self::Unlink { .. } => 45,
         })
     }
 
-    fn to_act(&self, at: u64, id: String, position: &Position, by: Submitter) -> Act {
+    fn outgoing(&self, at: u64, id: String, position: &Position, by: Submitter) -> Outgoing {
+        if let Self::Unlink { key, request } = self {
+            let grant = matches!(by, Submitter::Paired { .. }).then(|| ForwardGrant {
+                setup: position.id.clone(),
+                operation: request.operation().unwrap_or(&id).to_owned(),
+                submitter: by,
+            });
+            return Outgoing {
+                act: Act {
+                    id,
+                    at,
+                    area: "computers".into(),
+                    method: "DELETE".into(),
+                    item: key.clone(),
+                    body: json!(request),
+                },
+                grant,
+            };
+        }
         let (method, item, input) = match self {
             Self::Checklist => ("GET", "credentials".into(), None),
             Self::Offer { invite, selection } => (
@@ -62,30 +89,34 @@ impl AddRequest {
                 })),
             ),
             Self::Ssh(action) => action.wire(),
+            Self::Unlink { .. } => unreachable!(),
         };
         let actor = match by {
             Submitter::Computer => None,
             Submitter::Paired { key, pairing } => Some(Device { key, pairing }),
         };
-        Act {
-            id,
-            at,
-            area: AREA.into(),
-            method: method.into(),
-            item,
-            body: Scope {
-                setup: position.id.clone(),
-                epoch: position.epoch,
-                actor,
-                input,
+        Outgoing {
+            act: Act {
+                id,
+                at,
+                area: AREA.into(),
+                method: method.into(),
+                item,
+                body: json!(Scope {
+                    setup: position.id.clone(),
+                    epoch: position.epoch,
+                    actor,
+                    input
+                }),
             },
+            grant: None,
         }
     }
 
     fn mutates(&self) -> bool {
         match self {
             Self::Checklist => false,
-            Self::Offer { .. } => true,
+            Self::Offer { .. } | Self::Unlink { .. } => true,
             Self::Ssh(action) => action.changes(),
         }
     }
@@ -98,24 +129,23 @@ struct Act {
     area: String,
     method: String,
     item: String,
-    body: Scope,
+    #[serde(default)]
+    body: Value,
 }
 
 impl Act {
-    fn request(&self) -> Option<AddRequest> {
-        if self.area != AREA
-            || !self
-                .id
-                .strip_prefix("wqa_")
-                .is_some_and(|id| safe_token(id, 16, 40))
-        {
-            return None;
-        }
+    fn valid_id(&self) -> bool {
+        self.id
+            .strip_prefix("wqa_")
+            .is_some_and(|id| safe_token(id, 16, 40))
+    }
+
+    fn addition(&self, scope: &Scope) -> Option<ComputerRequest> {
         match (self.method.as_str(), self.item.as_str()) {
-            ("GET", "credentials") => Some(AddRequest::Checklist),
+            ("GET", "credentials") => Some(ComputerRequest::Checklist),
             ("POST", "code") => {
-                let given = self.body.input.as_ref()?;
-                Some(AddRequest::Offer {
+                let given = scope.input.as_ref()?;
+                Some(ComputerRequest::Offer {
                     invite: given["invite"]
                         .as_str()
                         .filter(|id| safe_token(id, 43, 43))?
@@ -123,9 +153,57 @@ impl Act {
                     selection: Selection::read(given.get("credentials").cloned())?,
                 })
             }
-            _ => {
-                Action::read(&self.method, &self.item, self.body.input.clone()).map(AddRequest::Ssh)
+            _ => Action::read(&self.method, &self.item, scope.input.clone())
+                .map(ComputerRequest::Ssh),
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct ForwardGrant {
+    setup: String,
+    operation: String,
+    submitter: Submitter,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScopedAct {
+    act: Act,
+    grant: ForwardGrant,
+    owner: String,
+    #[serde(default)]
+    replay_only: bool,
+}
+
+struct Outgoing {
+    act: Act,
+    grant: Option<ForwardGrant>,
+}
+
+impl Outgoing {
+    fn envelope(&self, to: &str) -> Value {
+        let act = &self.act;
+        match &self.grant {
+            Some(grant) => {
+                json!({"scopedAct": {"act": act, "grant": grant, "owner": to, "replayOnly": false}, "at": act.at})
             }
+            None => json!({"act": act, "at": act.at}),
+        }
+    }
+
+    fn spool(&self, to: &str, key: &[u8; 32]) -> Value {
+        let act = &self.act;
+        match &self.grant {
+            Some(grant) => {
+                let mut mac =
+                    Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key size");
+                mac.update(b"kuvo-relay-scoped-spool-v1\0");
+                mac.update(canonical(&json!([to, [act, grant]])).as_bytes());
+                let seal = encode(&mac.finalize().into_bytes());
+                json!({"formatVersion": 1, "to": to, "scopedAct": act, "grant": grant, "seal": seal})
+            }
+            None => json!({"formatVersion": 1, "to": to, "act": act}),
         }
     }
 }
@@ -156,8 +234,8 @@ impl Scope {
 }
 
 struct Pending {
-    target: String,
-    act: Act,
+    position: Position,
+    outgoing: Outgoing,
     deadline: Instant,
     next: Instant,
     reply: Reply,
@@ -223,8 +301,8 @@ impl SetupHandle {
     ) -> Result<Response, Error> {
         let token = encode(&random::<24>()?);
         let offer = self
-            .request_command(Command::AddViaMain(
-                AddRequest::Offer {
+            .request_command(Command::ComputerViaMain(
+                ComputerRequest::Offer {
                     invite: installer::hash(&token),
                     selection,
                 },
@@ -236,9 +314,9 @@ impl SetupHandle {
 }
 
 impl Owner {
-    pub(super) async fn begin_add_request(
+    pub(super) async fn begin_computer_request(
         &mut self,
-        request: AddRequest,
+        mut request: ComputerRequest,
         by: Submitter,
         reply: Reply,
     ) -> Result<(), Error> {
@@ -247,12 +325,18 @@ impl Owner {
             return Ok(());
         };
         if !by.current(&self.link) {
-            let _ = reply.send(Ok(refused(403, UNPAIRED)));
+            let message = match request {
+                ComputerRequest::Unlink { .. } => "The submitting device no longer has access.",
+                _ => UNPAIRED,
+            };
+            let _ = reply.send(Ok(refused(403, message)));
             return Ok(());
         }
         let position = setup.position.clone();
         if setup.role == Role::Primary {
-            if self.forwarding.jobs.len() >= 32 {
+            if let ComputerRequest::Unlink { key, request } = request {
+                let _ = reply.send(self.unlink_computer(key, request, by).await);
+            } else if self.forwarding.jobs.len() >= 32 {
                 let _ = reply.send(Ok(refused(503, "Too many installer requests are waiting.")));
             } else {
                 self.prepare_add(request, position, by, Where::Local(reply));
@@ -266,18 +350,33 @@ impl Owner {
             let _ = reply.send(Ok(refused(503, NO_MAIN)));
             return Ok(());
         };
+        if let ComputerRequest::Unlink { key, request } = &mut request {
+            let refused = if !request.valid() {
+                Some(refused(400, "Send a valid removal request."))
+            } else if decode_exact::<32>(key).is_none() {
+                Some(refused(404, "That isn’t one of your computers."))
+            } else if request.requests_wipe() {
+                Some(refused(409, "Wipe preparation is unavailable."))
+            } else if self.link.disabled(&self.roster()?, &self.own()?.public) {
+                Some(refused(409, CHANGED))
+            } else {
+                None
+            };
+            if let Some(answer) = refused {
+                let _ = reply.send(Ok(answer));
+                return Ok(());
+            }
+            request.bind_operation()?;
+        }
         let sent = Instant::now();
         let deadline = sent + request.allowed_for();
         let id = format!("wqa_{}", encode(&random::<16>()?));
-        let act = request.to_act(lease::wall(), id.clone(), &position, by);
+        let outgoing = request.outgoing(lease::wall(), id.clone(), &position, by);
         let spool = if request.mutates() {
             let path = format!("run/work-queue/forward/{id}.json");
             if self
                 .files
-                .write(
-                    &path,
-                    &json!({"formatVersion": 1, "to": position.primary, "act": act}),
-                )
+                .write(&path, &outgoing.spool(&position.primary, &self.own()?.key))
                 .is_err()
             {
                 let _ = reply.send(Ok(refused(503, NO_MAIN)));
@@ -287,12 +386,13 @@ impl Owner {
         } else {
             None
         };
-        self.send(&target, json!({"act": act, "at": act.at})).await;
+        self.send(&target, outgoing.envelope(&position.primary))
+            .await;
         self.forwarding.pending.insert(
             id,
             Pending {
-                target: position.primary,
-                act,
+                position,
+                outgoing,
                 deadline,
                 next: sent + RETRY,
                 reply,
@@ -304,7 +404,7 @@ impl Owner {
 
     fn prepare_add(
         &mut self,
-        request: AddRequest,
+        request: ComputerRequest,
         position: Position,
         by: Submitter,
         destination: Where,
@@ -317,20 +417,20 @@ impl Owner {
             .and_then(std::sync::Weak::upgrade);
         self.forwarding.jobs.spawn(async move {
             let result = match request {
-                AddRequest::Checklist => {
+                ComputerRequest::Checklist => {
                     PreparedRequest::Checklist(Inventory::read(&files).await.checklist())
                 }
-                AddRequest::Ssh(action) => match ssh {
+                ComputerRequest::Ssh(action) => match ssh {
                     Some(ssh) => PreparedRequest::Ssh(ssh.execute(action, by.clone()).await),
                     None => PreparedRequest::Failed(refused(
                         503,
                         "Kuvo’s local server hasn’t started yet. Try again in a moment.",
                     )),
                 },
-                AddRequest::Offer { invite, selection } if selection.empty() => {
+                ComputerRequest::Offer { invite, selection } if selection.empty() => {
                     PreparedRequest::Offer { invite, seed: None }
                 }
-                AddRequest::Offer { invite, selection } => {
+                ComputerRequest::Offer { invite, selection } => {
                     let inventory = Inventory::read(&files).await;
                     match inventory.capture(&files, &selection) {
                         Ok(seed) => PreparedRequest::Offer {
@@ -343,6 +443,7 @@ impl Owner {
                         Err((status, message)) => PreparedRequest::Failed(refused(status, message)),
                     }
                 }
+                ComputerRequest::Unlink { .. } => unreachable!("the setup owner commits unlink"),
             };
             Finished {
                 destination,
@@ -361,7 +462,13 @@ impl Owner {
         let Ok(act) = serde_json::from_value::<Act>(value.clone()) else {
             return Ok(());
         };
-        let Some(request) = act.request() else {
+        if act.area != AREA || !act.valid_id() {
+            return Ok(());
+        }
+        let Ok(scope) = serde_json::from_value::<Scope>(act.body.clone()) else {
+            return Ok(());
+        };
+        let Some(request) = act.addition(&scope) else {
             return Ok(());
         };
         let now = lease::wall();
@@ -371,12 +478,12 @@ impl Owner {
         {
             return Ok(());
         }
-        let by = act.body.by();
+        let by = scope.by();
         let Some(setup) = self
             .link
             .setup()
             .ok()
-            .filter(|setup| setup.role == Role::Primary && act.body.in_setup(&setup.position))
+            .filter(|setup| setup.role == Role::Primary && scope.in_setup(&setup.position))
         else {
             self.add_answer(from, &act.id, refused(409, CHANGED)).await;
             return Ok(());
@@ -386,7 +493,7 @@ impl Owner {
             self.add_answer(from, &act.id, refused(403, UNPAIRED)).await;
             return Ok(());
         }
-        if let AddRequest::Offer { invite, selection } = &request
+        if let ComputerRequest::Offer { invite, selection } = &request
             && self.link.installer_invites.contains_key(invite)
         {
             let consent = if selection.empty() {
@@ -400,7 +507,7 @@ impl Owner {
             self.add_answer(from, &act.id, answer).await;
             return Ok(());
         }
-        let cache = if matches!(&request, AddRequest::Ssh(action) if action.changes()) {
+        let cache = if matches!(&request, ComputerRequest::Ssh(action) if action.changes()) {
             let wire = serde_json::to_string(&act).expect("forwarded SSH request serializes");
             let digest = installer::hash(&wire);
             if let Some(old) = self
@@ -438,16 +545,80 @@ impl Owner {
         Ok(())
     }
 
-    pub(super) fn receive_add_answer(&mut self, from: &str, value: &Value) {
+    pub(super) async fn receive_forwarded_unlink(
+        &mut self,
+        from: &str,
+        unscoped: Option<&Value>,
+        scoped: Option<&Value>,
+    ) -> Result<(), Error> {
+        let parsed = match (unscoped, scoped) {
+            (Some(value), None) => parse_unlink_act(value).map(|act| (act, Submitter::Computer)),
+            (None, Some(value)) => {
+                let readable_version = |value: &Value| {
+                    value
+                        .get("formatVersion")
+                        .is_none_or(|version| matches!(version.as_u64(), Some(0 | 1)))
+                };
+                if !readable_version(value) || !readable_version(&value["grant"]) {
+                    return Ok(());
+                }
+                serde_json::from_value::<ScopedAct>(value.clone())
+                    .ok()
+                    .filter(|given| {
+                        !given.replay_only
+                            && matches!(given.grant.submitter, Submitter::Paired { .. })
+                            && safe_token(&given.grant.operation, 1, 80)
+                            && self.own().is_ok_and(|own| own.public == given.owner)
+                            && self
+                                .link
+                                .setup()
+                                .is_ok_and(|setup| setup.position.id == given.grant.setup)
+                            && value["act"].get("action").is_none()
+                    })
+                    .map(|given| (given.act, given.grant.submitter))
+            }
+            _ => None,
+        };
+        let Some((act, by)) = parsed else {
+            return Ok(());
+        };
+        let now = lease::wall();
+        if act.area != "computers"
+            || act.method != "DELETE"
+            || !act.valid_id()
+            || now.saturating_sub(act.at) > 50_000
+            || act.at > now + 15_000
+            || !self
+                .link
+                .setup()
+                .is_ok_and(|setup| setup.role == Role::Primary)
+        {
+            return Ok(());
+        }
+        let Some(peer) = self.host(from) else {
+            return Ok(());
+        };
+        let answer = match serde_json::from_value::<Option<Unlink>>(act.body) {
+            Ok(request) => self
+                .unlink_computer(act.item, request.unwrap_or_default(), by)
+                .await
+                .unwrap_or_else(|error| refused(503, &error.to_string())),
+            Err(_) => refused(400, "Send a valid removal request."),
+        };
+        self.send(&peer, json!({"acted": {"id": act.id, "status": answer.status, "value": answer.value}, "at": lease::wall()})).await;
+        Ok(())
+    }
+
+    pub(super) fn receive_computer_answer(&mut self, from: &str, value: &Value) {
         let Some(id) = value["id"].as_str() else {
             return;
         };
         let matches = self.forwarding.pending.get(id).is_some_and(|pending| {
-            pending.target == from
+            pending.position.primary == from
                 && self.link.setup().is_ok_and(|setup| {
                     setup.role == Role::Member
                         && setup.position.primary == from
-                        && pending.act.body.in_setup(&setup.position)
+                        && pending.position == setup.position
                 })
         });
         if matches && let Some(pending) = self.forwarding.pending.remove(id) {
@@ -531,7 +702,7 @@ impl Owner {
         }
     }
 
-    pub(super) async fn retry_add_requests(&mut self) {
+    pub(super) async fn retry_computer_requests(&mut self) {
         let now = Instant::now();
         self.forwarding
             .completed
@@ -548,9 +719,7 @@ impl Owner {
                 continue;
             };
             let current = self.link.setup().is_ok_and(|setup| {
-                setup.role == Role::Member
-                    && setup.position.primary == pending.target
-                    && pending.act.body.in_setup(&setup.position)
+                setup.role == Role::Member && setup.position == pending.position
             });
             if pending.reply.is_closed() || pending.deadline <= now || !current {
                 let answer = if current {
@@ -561,8 +730,8 @@ impl Owner {
                 pending.finish(&self.files, answer);
                 continue;
             }
-            if let Some(peer) = self.host(&pending.target) {
-                self.send(&peer, json!({"act": pending.act, "at": pending.act.at}))
+            if let Some(peer) = self.host(&pending.position.primary) {
+                self.send(&peer, pending.outgoing.envelope(&pending.position.primary))
                     .await;
             }
             pending.next = now + RETRY;
@@ -576,4 +745,11 @@ fn refused(status: u16, message: &str) -> Response {
         status,
         value: json!({"message": message}),
     }
+}
+
+fn parse_unlink_act(value: &Value) -> Option<Act> {
+    if value.get("action").is_some() {
+        return None;
+    }
+    serde_json::from_value(value.clone()).ok()
 }

@@ -112,7 +112,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
             platform: kuvo_os::platform::Platform::current(),
         },
     );
-    let (backup_mail, _backup_receiver) = if let Some(relay) = peers.relay_handle()
+    let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
             account.clone(),
@@ -125,7 +125,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         (None, None)
     };
-    let _daily_backups = kuvo_setup::backup::routes::register(
+    let daily_backups = kuvo_setup::backup::routes::register(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
         account,
@@ -169,10 +169,20 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
+    let finishing = setup.handle();
     let result = resident
-        .serve(dispatcher, Arc::new(devices), super::shutdown())
+        .serve(dispatcher, Arc::new(devices), async {
+            tokio::select! {
+                () = finishing.wait_for_local_wipe() => {},
+                () = super::shutdown() => {},
+            }
+        })
         .await;
     session_source.abort();
+    let _ = session_source.await;
+    drop(daily_backups);
+    drop(backup_receiver);
+    drop(setup);
     result?;
     Ok(())
 }

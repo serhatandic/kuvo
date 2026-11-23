@@ -15,7 +15,7 @@ use tokio::sync::{oneshot, watch};
 
 use crate::{
     Error, SetupHandle,
-    actor::{Command, Request, Response, Unlink, View},
+    actor::{Command, Request, Response, Unlink, View, computer_requests::ComputerRequest},
     edits::{Edit, Submitter, Target},
     preferences::PersonalityChange,
     seed::source::Selection,
@@ -160,8 +160,8 @@ impl SetupHandle {
                 async move {
                     let by = submitter(&call.request.caller)?;
                     let answer = setup
-                        .request(Command::AddViaMain(
-                            crate::actor::add_forward::AddRequest::Checklist,
+                        .request(Command::ComputerViaMain(
+                            crate::actor::computer_requests::ComputerRequest::Checklist,
                             by,
                         ))
                         .await?;
@@ -257,14 +257,15 @@ impl SetupHandle {
                 }
             },
         );
-        self.register_unlink::<delete_kuvo_computers_key::Spec>(routes, false);
-        self.register_unlink::<post_kuvo_computers_key_unlink::Spec>(routes, true);
+        self.register_unlink::<delete_kuvo_computers_key::Spec>(routes, None);
+        self.register_unlink::<post_kuvo_computers_key_unlink::Spec>(routes, Some(false));
+        self.register_unlink::<post_kuvo_computers_key_unlink_and_wipe::Spec>(routes, Some(true));
         self.register_edits(routes);
         self.register_personalities(routes);
         self.register_clock(routes);
     }
 
-    fn register_unlink<R>(&self, routes: &mut Registry, explicit: bool)
+    fn register_unlink<R>(&self, routes: &mut Registry, wipe: Option<bool>)
     where
         R: RouteSpec<Body = ()> + JsonStatus<200> + Send + Sync + 'static,
         <R as JsonStatus<200>>::Body: serde::de::DeserializeOwned,
@@ -276,7 +277,7 @@ impl SetupHandle {
                 let by = submitter(&call.request.caller)?;
                 let key = call.param("key").unwrap_or_default().to_owned();
                 let body = &call.request.body;
-                let request = if body.is_empty() {
+                let mut request = if body.is_empty() {
                     Unlink::default()
                 } else {
                     serde_json::from_slice::<Option<Unlink>>(body)
@@ -285,9 +286,13 @@ impl SetupHandle {
                         })?
                         .unwrap_or_default()
                 };
+                request.on_route(wipe);
                 respond(
                     setup
-                        .request(Command::UnlinkComputer(key, request, explicit, by))
+                        .request(Command::ComputerViaMain(
+                            ComputerRequest::Unlink { key, request },
+                            by,
+                        ))
                         .await?,
                 )
             }

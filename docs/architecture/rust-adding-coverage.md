@@ -24,6 +24,9 @@ the races that span removal, backup, moves, and an authority change.
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
 | U4 | [A main with incoming devices off still revokes a device and delivers a machine unlink](../../box/crates/kuvo_setup/tests/live.test.mjs) | A Rust main reads the persisted off setting through the Mac Helper path. It refuses a new pairing, publishes a signed desktop revocation and finishes a machine unlink while the setting stays off. |
 | U5 | [Uninstalling a stopped machine clears its desktop identity and sign-ins but retains work](../../protocol/conformance/removal.test.mjs) | `uninstall --check` inspects a stopped machine. Uninstall retires the desktop and credential files, marks the machine off, preserves work and can be repeated. Live shutdown, startup entries, backup preparation and remote uninstall remain open. |
+| U6 | [A member forwards an unlink and receives the main’s saved decision](../../protocol/conformance/removal.test.mjs) | The relay holds main-to-member traffic through the commit. The forwarded request and a direct replay return the same signed decision without advancing the membership revision. |
+| U7 | [The only computer commits a wipe and erases only its old installation](../../protocol/conformance/removal.test.mjs) | A standalone Unix resident returns the signed reinstall offer, stops accepting clients and retires its directory. A sibling reached through a symlink stays intact. The scenario uses an isolated account, no keeper, and no configured backup. |
+| U8 | [A Rust wipe resumes against its detached directory and leaves a replacement alone](../../protocol/conformance/removal.test.mjs) | A fresh process can finish erasing the authorized directory after a crash. The receipt's stored device and inode must match, and the new installation at the original path stays intact. |
 
 ## Stored and inherited cases
 
@@ -45,8 +48,8 @@ the races that span removal, backup, moves, and an authority change.
   and uninstall cases here. The setup map also assigns the cross-phase cases
   below. C7 covers receiving a local seed. C10 covers selecting and delivering
   machine-held credentials by installer code. Mac Helper-held keys, SSH
-  credential delivery, the member’s incoming-device switch, wiping, and
-  release packaging stay open.
+  credential delivery, the member’s incoming-device switch, member wipe,
+  configured backup and move integration at wipe, and release packaging stay open.
 
 ## Verification
 
@@ -146,13 +149,18 @@ exists. The directory entries are included with the respective files.
 | `box`, `box/approval.json`, `run/fence`, `run/fence/agents.md` | **6.1.** Startup materializes approval and sandbox defaults, and `fence/state.ts` projects the sandbox note. |
 | `run/socket.key`, `run/ssh-for`, `run/vault.sock` | **1.4, 6.2.** `kuvo_server/src/ssh.rs` uses the rendezvous key. The TypeScript browser and shared setup client also read it. `link/home.ts` and the fence name the per-session SSH credentials and vault broker paths. |
 
-No path in this inventory was declared unread. The source search covered the
+The stopped-uninstall command also returned matching `--check`, uninstall and
+replay JSON after replacing the scratch absolute paths. The six remaining
+entries and file hashes matched. The last-computer wipe fixture removes the
+home on both binaries and leaves the same receipt format and sibling file.
+
+No path in these inventories was declared unread. The source search covered the
 box, Rust crates and desktop. The [move's machine differential](rust-move-coverage.md#verdicts-for-the-machine-differentials)
 covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. Four have coverage, 28 have partial coverage, and 162 are open. Of the open cases, 131 list 2.3 as an owner.
+This map lists 194 reference cases, including expanded parameterized cases. Four have coverage, 31 have partial coverage, and 159 are open. Of the open cases, 128 list 2.3 as an owner.
 
 ### computers-add
 
@@ -318,7 +326,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [a saved wipe approval is tied to the old installation and only the erasing phase removes it](../../box/test/install-offer.test.ts#L8) | Open | 2.3 |
+| [a saved wipe approval is tied to the old installation and only the erasing phase removes it](../../box/test/install-offer.test.ts#L8) | U8 verifies the identity of a detached directory and preserves a replacement. Resume through the installer and app-owned approval and stopping remain open. | 2.3, 6.2 |
 | [an app member wipe resumes after detach and yields only a member receipt](../../box/test/install-offer.test.ts#L47) | Open | 2.3 |
 
 ### install-verdict
@@ -409,7 +417,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 | [an unmatched pre-join pairing requires an explicit enrollment decision](../../box/bridge-tests/setup-handover-access.test.js#L96) | Open | 2.3 |
 | [local uninstall refuses a primary before clearing identity or stopping it](../../box/bridge-tests/setup-handover-access.test.js#L124) | Open | 2.3 |
 | [access routes return committed receipts from the main and through a member](../../box/bridge-tests/setup-handover-access.test.js#L143) | U1 proves the main’s durable unlink receipt. Access variants and member forwarding are open. | 2.3 |
-| [forwarded computer changes carry receipts through the member route](../../box/bridge-tests/setup-handover-access.test.js#L163) | Open | 2.3 |
+| [forwarded computer changes carry receipts through the member route](../../box/bridge-tests/setup-handover-access.test.js#L163) | U6 covers a forwarded plain unlink and a lost reply. Paired-device replay after revocation, other computer changes, and a writer handover remain open. | 2.3, 5.2 |
 | [a scoped rename cannot overwrite a later name after primary handover](../../box/bridge-tests/setup-handover-access.test.js#L173) | Open | 2.3 |
 | [live permission replies from paired clients expire across pc5 reconnect](../../box/bridge-tests/setup-handover-access.test.js#L207) | Open | 2.2, 2.3 |
 | [clients share machine changes and revocations across three boxes](../../box/bridge-tests/setup-handover-access.test.js#L303) | Open | 2.3 |
@@ -421,7 +429,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Four
 | [unsupported erase layout stays pending and can cancel without losing work](../../box/bridge-tests/setup-handover-removal.test.js#L279) | Open | 2.3 |
 | [a missing computer stays wipe-pending across primary restart](../../box/bridge-tests/setup-handover-removal.test.js#L296) | Open | 2.3 |
 | [a lost disk closes a pending wipe and preserves the key revocations](../../box/bridge-tests/setup-handover-removal.test.js#L309) | Open | 2.3 |
-| [unlinking the only computer wipes its local setup](../../box/bridge-tests/setup-handover-removal.test.js#L327) | Open | 2.3 |
+| [unlinking the only computer wipes its local setup](../../box/bridge-tests/setup-handover-removal.test.js#L327) | U7 verifies the signed receipt and directory retirement on a sole Unix resident without a keeper or configured backup. The full three-computer prelude, action list, keeper, and reinstall handling remain open. | 2.3, 7.1, 8.1 |
 | [a sole primary can supersede and cancel a prepared removal](../../box/bridge-tests/setup-handover-removal.test.js#L366) | Open | 2.3 |
 | [a pending wipe follows the setup through handover](../../box/bridge-tests/setup-handover-removal.test.js#L395) | Open | 2.3 |
 | [a failed pre-wipe backup leaves the removed computer’s data in place](../../box/bridge-tests/setup-handover-removal.test.js#L412) | Open | 2.3, 2.5 |

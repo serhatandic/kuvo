@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use self::{address::Address, connect::Destination, transport::HostKey};
 use crate::{
     SetupHandle,
-    actor::{Command, Response, add_forward::AddRequest},
+    actor::{Command, Response, computer_requests::ComputerRequest},
     edits::Submitter,
     preferences,
     routes::{response_refusal, submitter, typed},
@@ -441,7 +441,7 @@ impl Adding {
     async fn follow(&self, action: Action, by: Submitter) -> Result<Response, Refusal> {
         if self.member() {
             self.setup
-                .request(Command::AddViaMain(AddRequest::Ssh(action), by))
+                .request(Command::ComputerViaMain(ComputerRequest::Ssh(action), by))
                 .await
         } else {
             Ok(self.execute(action, by).await)

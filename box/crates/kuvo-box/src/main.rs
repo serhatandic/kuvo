@@ -35,6 +35,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         _ => None,
     };
     let seed = (word(0), word(1), args.len()) == (Some("box"), Some("seed"), 2);
+    let wipe = (word(0), args.len()) == (Some("wipe-member"), 1);
+    let serve = (word(0), args.len()) == (Some("serve"), 1);
     let uninstall = if word(0) == Some("uninstall") {
         if args[1..].iter().any(|word| word != "--check") {
             eprintln!("Usage: kuvo-box uninstall [--check]");
@@ -50,7 +52,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         _ => None,
     };
     let command = match (word(0), word(1), args.len()) {
-        (Some("serve"), _, 1) => None,
+        _ if serve || wipe => None,
         _ if join
             || ssh_enroll.is_some()
             || seed
@@ -71,7 +73,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (Some("route-to"), _, 1) => Some(ssh::Command::RouteTo),
         _ => {
             return Err(
-                "usage: kuvo-box serve | install --join | installer-recovery issue|apply | box seed | uninstall [--check] | route [--internal [path]] | route-to (set KUVO_HOME)"
+                "usage: kuvo-box serve | install --join | installer-recovery issue|apply | box seed | uninstall [--check] | wipe-member | route [--internal [path]] | route-to (set KUVO_HOME)"
                     .into(),
             );
         }
@@ -81,6 +83,13 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .filter(|path| path.is_absolute())
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     let home = Home::new(home)?;
+    if wipe || serve {
+        match kuvo_setup::wipe::finish(home.root())? {
+            true => return Ok(ExitCode::SUCCESS),
+            false if wipe => return Ok(ExitCode::FAILURE),
+            false => {}
+        }
+    }
     if let Some(check) = uninstall {
         let outcome = kuvo_setup::uninstall::run(&home, check);
         println!("{}", outcome.value);
@@ -147,6 +156,13 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             serve::run(home.root()).await
         }
     });
+    if serve && result.is_ok() && kuvo_setup::wipe::pending(home.root())? {
+        // Let resident tasks and blocking file writers finish before detaching their home.
+        drop(runtime);
+        return Ok(ExitCode::from(u8::from(!kuvo_setup::wipe::finish(
+            home.root(),
+        )?)));
+    }
     // An addressed SSH exchange can finish while its stdin is still open. The
     // source is stdio, so Tokio's blocking read only ends when that SSH channel closes.
     runtime.shutdown_background();

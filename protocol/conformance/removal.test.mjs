@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxBinary, boxCommand, isolatedEnv, readJSON, scratch, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 const fromMac = { "x-kuvo-from": "mac" };
@@ -18,7 +18,6 @@ test("uninstalling a stopped machine clears its desktop identity and sign-ins bu
   const home = path.join(root, "box");
   const env = isolatedEnv(root);
   write(path.join(home, "folder-version.json"), '{"version":23}\n');
-  write(path.join(home, "run", "link.json"), '{"phones":[],"name":"Test machine"}\n');
   write(path.join(home, "desktop", "identity"), "fixture identity");
   write(path.join(home, "box", "keys", "KUVO_KEY_SAMPLE"), "fixture key");
   write(path.join(home, "run", "launch.notes"), "fixture launch notes");
@@ -56,6 +55,86 @@ test("uninstalling a stopped machine clears its desktop identity and sign-ins bu
   }
   assert.equal(fs.readFileSync(path.join(home, "data", "retained.txt"), "utf8"), "saved work");
   assert.equal((await run()).result, "uninstalled");
+  assert.equal(fs.existsSync(path.join(home, "run", "link.json")), false);
+});
+
+test("the only computer commits a wipe and erases only its old installation", {
+  timeout: 35000, skip: process.platform === "win32" && "Native startup and shutdown belong to the Windows keeper.",
+}, async t => {
+  const root = fs.realpathSync(scratch());
+  const binary = boxBinary();
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const relay = await localRelay();
+  const local = path.join(home, "data", "fixture.txt");
+  const outside = path.join(env.HOME, "untouched.txt");
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "run", "link.json"), '{"name":"Last computer","phones":[]}');
+  write(local, "erase this work");
+  write(outside, "outside the installation");
+  fs.symlinkSync(outside, path.join(home, "data", "outside-link"));
+  const resident = startBox({ binary, home, env, relay });
+  t.after(async () => {
+    await resident.stop();
+    await relay.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const record = await resident.ready();
+  const before = await request(record, "GET", "kuvo/setup");
+  assert.equal(before.status, 200, before.text);
+  const setup = before.json.setup;
+  const key = before.json.you.key;
+  const operation = Buffer.alloc(16, 90).toString("base64url");
+  const answer = await request(record, "POST", `kuvo/computers/${key}/unlink`, { operation }, fromMac);
+  assert.equal(answer.status, 200, answer.text);
+  assert.deepEqual(answer.json.removal, { operation, state: "wipe-pending", accessRemoved: true });
+  assert.equal(answer.json.offer, "reinstall-local");
+  assert.equal(answer.json.status, "committed");
+  const marker = path.join(env.HOME, ".kuvo-code-removal-receipts", "last-setup-wipe");
+  await until(() => fs.existsSync(marker) && !readJSON(marker).phase,
+    () => `The old installation was not erased. ${resident.log()}`);
+  assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
+  assert.equal(fs.existsSync(home), false);
+  assert.equal(fs.readFileSync(outside, "utf8"), "outside the installation");
+});
+
+test("a Rust wipe resumes against its detached directory and leaves a replacement alone", {
+  skip: (process.platform === "win32" || boxBinary().typescript) && "The Rust stopped-machine recovery command.",
+}, async t => {
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const receipts = path.join(env.HOME, ".kuvo-code-removal-receipts");
+  const operation = Buffer.alloc(16, 91).toString("base64url");
+  const setup = "set_" + Buffer.alloc(16, 15).toString("base64url");
+  const marker = path.join(receipts, "last-setup-wipe");
+  const detached = path.join(receipts, `erase-${operation}`);
+  write(path.join(detached, "old.txt"), "old installation");
+  write(path.join(home, "new.txt"), "new installation");
+  fs.chmodSync(receipts, 0o700);
+  const journal = source => {
+    write(marker, JSON.stringify({ setup, operation, source, phase: "erasing", formatVersion: 1 }));
+    fs.chmodSync(marker, 0o600);
+  };
+  const run = async () => {
+    const child = boxCommand(boxBinary(), home, env, { url: "ws://127.0.0.1:1" }, ["wipe-member"]);
+    t.after(() => child.stop());
+    child.child.stdin.end();
+    return { ...await child.exited, log: child.log() };
+  };
+  const identity = p => { const { dev, ino } = fs.lstatSync(p, { bigint: true }); return `${dev}:${ino}`; };
+  journal(identity(home));
+  const refused = await run();
+  assert.equal(refused.code, 1, refused.log);
+  assert.match(refused.log, /The folder to erase has changed\./);
+  assert.equal(fs.existsSync(detached), true);
+  journal(identity(detached));
+  const finished = await run();
+  assert.equal(finished.code, 0, finished.log);
+  assert.equal(fs.existsSync(detached), false);
+  assert.equal(fs.readFileSync(path.join(home, "new.txt"), "utf8"), "new installation");
+  assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
 });
 
 test("the main revokes an offline computer once and keeps the unlink receipt after restart", { timeout: 90000 }, async t => {
@@ -101,6 +180,56 @@ test("the main revokes an offline computer once and keeps the unlink receipt aft
   assert.equal(link().shared.membershipAndAccess.sequence, accepted.sequence);
   const conflict = await after(method, route, { operation: Buffer.alloc(16, 99).toString("base64url") }, fromMac);
   assert.equal(conflict.status, 409, conflict.text);
+});
+
+test("a member forwards an unlink and receives the main’s saved decision", { timeout: 90000 }, async t => {
+  const { computer, leases, relay } = await bench(t);
+  const main = await computer("Studio");
+  const member = await computer("Workshop");
+  const other = await computer("Lab");
+  const primary = main.connect(await main.start().ready());
+  const setup = (await primary("GET", "kuvo/setup")).json.setup;
+  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
+  for (const computer of [member, other]) {
+    const offer = await primary("POST", "kuvo/computers/add/code", {}, fromMac);
+    assert.equal(offer.status, 201, offer.text);
+    const joined = await computer.join(offer.json.code);
+    assert.equal(joined.code, 0, joined.log);
+  }
+  const ask = member.connect(await member.start().ready());
+  const load = home => readJSON(path.join(home, "run", "link.json"));
+  const mainState = () => load(main.home).shared.membershipAndAccess;
+  const [studio, workshop, lab] = mainState().value.boxes;
+  assert.deepEqual([studio.name, workshop.name, lab.name], ["Studio", "Workshop", "Lab"]);
+  await until(() => load(member.home).shared?.membershipAndAccess?.value.boxes.some(peer => peer.key === lab.key),
+    "The member did not see Lab before unlinking it.");
+  const route = `kuvo/computers/${lab.key}/unlink`;
+  const operation = Buffer.alloc(16, 151).toString("base64url");
+  let dropped = false;
+  const resume = relay.intercept(Buffer.from(studio.address, "base64url"), Buffer.from(workshop.address, "base64url"), () => {
+    dropped ||= mainState().value.removals?.[lab.key]?.operation === operation;
+    return true;
+  });
+  const pending = ask("POST", route, { operation }, fromMac);
+  let early;
+  pending.then(answer => { early = answer; });
+  try {
+    await until(() => {
+      assert.ok(!early, early?.text);
+      return dropped;
+    }, "The main did not publish the forwarded unlink.");
+  } finally {
+    resume();
+  }
+  const answered = await pending;
+  assert.equal(answered.status, 200, answered.text);
+  assert.deepEqual(answered.json.removal, { operation, state: "unlinked", accessRemoved: true });
+  const accepted = mainState();
+  const replay = await primary("POST", route, { operation }, fromMac);
+  assert.equal(replay.status, 200, replay.text);
+  assert.deepEqual(replay.json, answered.json);
+  assert.equal(mainState().sequence, accepted.sequence);
+  assert.deepEqual(accepted.value.left, [lab.key]);
 });
 
 test("a released computer enrolls again when its retained work is unchanged", {

@@ -33,8 +33,8 @@ use crate::{
 };
 
 mod activity;
-pub(crate) mod add_forward;
 mod adding;
+pub(crate) mod computer_requests;
 mod device_access;
 mod edit_delivery;
 mod handover;
@@ -78,6 +78,13 @@ impl SetupHandle {
     pub async fn phone_activity(&self) {
         activity::record(&self.activity, activity::Activity::Seen).await;
     }
+
+    pub async fn wait_for_local_wipe(&self) {
+        let mut views = self.views.clone();
+        if views.wait_for(|view| view.local_wipe).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
 }
 
 struct SetupLink {
@@ -120,6 +127,7 @@ pub(crate) struct View {
     pub clock: Value,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
+    local_wipe: bool,
 }
 
 pub(crate) struct Request {
@@ -129,7 +137,7 @@ pub(crate) struct Request {
 
 pub(crate) enum Command {
     Welcome(bool),
-    AddViaMain(add_forward::AddRequest, edits::Submitter),
+    ComputerViaMain(computer_requests::ComputerRequest, edits::Submitter),
     InstallerCode(Option<crate::seed::source::Prepared>, edits::Submitter),
     InstallerCancellation(installer::Cancellation),
     SshAdmission(edits::Submitter),
@@ -157,7 +165,6 @@ pub(crate) enum Command {
         request: crate::backup::boundary::Approval,
     },
     RenameComputer(String, String, edits::Submitter),
-    UnlinkComputer(String, Unlink, bool, edits::Submitter),
     DeviceChange(device_access::Mutation),
     ReadEdit(edits::Target),
     SubmitEdit(edits::Edit, edits::Submitter),
@@ -350,7 +357,7 @@ impl PreparedSetup {
             pending_handover: None,
             unlink_challenge: None,
             pending_devices: HashMap::new(),
-            forwarding: add_forward::Forwarding::default(),
+            forwarding: computer_requests::Forwarding::default(),
             ssh,
             forwarded_handover: None,
             next: Instant::now(),
@@ -836,6 +843,7 @@ fn make_view(
         setup: view,
         access,
         ownership,
+        local_wipe: crate::wipe::LocalWipe::from(link).is_some(),
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
             Err(Error::PersonalityVersion(version)) => Err(version),
@@ -864,7 +872,7 @@ struct Owner {
     pending_handover: Option<Handover>,
     unlink_challenge: Option<removal::Challenge>,
     pending_devices: HashMap<String, device_access::Pending>,
-    forwarding: add_forward::Forwarding,
+    forwarding: computer_requests::Forwarding,
     ssh: watch::Receiver<Option<std::sync::Weak<crate::ssh::Adding>>>,
     forwarded_handover: Option<Handover>,
     next: Instant,
@@ -928,7 +936,7 @@ impl Owner {
                     }
                     self.expire_handover().await;
                     self.expire_device_changes();
-                    self.retry_add_requests().await;
+                    self.retry_computer_requests().await;
                     self.refresh();
                 }
             }
@@ -1137,8 +1145,8 @@ impl Owner {
             self.ask_device_change(mutation, reply).await;
             return;
         }
-        if let Command::AddViaMain(request, by) = command {
-            if let Err(error) = self.begin_add_request(request, by, reply).await {
+        if let Command::ComputerViaMain(request, by) = command {
+            if let Err(error) = self.begin_computer_request(request, by, reply).await {
                 eprintln!("sending installer request: {error}");
             }
             return;
@@ -1212,9 +1220,6 @@ impl Owner {
             } => {
                 self.keep_ssh_address(key, invite, destination, identity, distro, by)
                     .await
-            }
-            Command::UnlinkComputer(key, request, explicit, by) => {
-                self.unlink_computer(key, request, explicit, by).await
             }
             Command::RenameComputer(key, name, by) => self.rename_computer(key, name, by).await,
             Command::ReadEdit(target) => {
@@ -1386,7 +1391,7 @@ impl Owner {
                     .await?;
                 Ok(Response::ok(json!(receipt)))
             }
-            Command::Handover { .. } | Command::DeviceChange(_) | Command::AddViaMain(..) => {
+            Command::Handover { .. } | Command::DeviceChange(_) | Command::ComputerViaMain(..) => {
                 unreachable!("this request can wait on relay mail")
             }
         }

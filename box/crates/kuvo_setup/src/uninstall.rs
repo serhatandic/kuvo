@@ -311,7 +311,7 @@ fn named(name: &str, prefix: &str) -> bool {
         .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
 }
 
-fn live_processes(files: &Files) -> Result<Vec<&'static str>, Error> {
+pub(crate) fn live_processes(files: &Files) -> Result<Vec<&'static str>, Error> {
     let mut running = Vec::new();
     for (file, role) in PROCESSES {
         let Some(record) = files.read::<Value>(file)? else {
@@ -325,9 +325,10 @@ fn live_processes(files: &Files) -> Result<Vec<&'static str>, Error> {
         else {
             continue;
         };
-        if ProcessIdentity::read(pid)
-            .map_err(|source| at(&files.path(file), source))?
-            .is_some()
+        if pid != std::process::id()
+            && ProcessIdentity::read(pid)
+                .map_err(|source| at(&files.path(file), source))?
+                .is_some()
         {
             running.push(*role);
         }

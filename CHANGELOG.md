@@ -31,6 +31,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A Rust computer can add a fresh account over SSH when it has the compatible release to copy.
 - An installer code can carry the sign-ins and keys you select from a Rust computer. Retry the same code if the new computer’s engine could not save them.
 - Uninstall on a stopped, standalone Rust computer can clear its desktop identity and local credentials while retaining its saved work.
+- Wiping the last standalone Rust computer stops its Unix resident and erases its installation when it has no keeper or configured backup.
 
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
 - The Rust server reads saved move results and shows moves reported by your other computers.

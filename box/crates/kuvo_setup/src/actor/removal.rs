@@ -24,16 +24,58 @@ use crate::{
         ComputerKind, Link, Membership, Peer, Position, Role, Setup, SharedKind, receipt,
         safe_token,
     },
-    object, random,
+    object, random, wipe,
 };
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Unlink {
+    #[serde(skip_serializing_if = "Option::is_none")]
     operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     wipe: Option<bool>,
     #[serde(flatten)]
     extra: Map<String, Value>,
+}
+
+impl Unlink {
+    pub(super) fn operation(&self) -> Option<&str> {
+        self.operation.as_deref()
+    }
+
+    pub(crate) fn on_route(&mut self, wipe: Option<bool>) {
+        if wipe.is_some() {
+            self.wipe = wipe;
+        }
+    }
+
+    pub(super) fn valid(&self) -> bool {
+        self.operation
+            .as_deref()
+            .is_none_or(|op| safe_token(op, 22, 43))
+            && !self.extra.contains_key("save")
+    }
+
+    pub(super) fn requests_wipe(&self) -> bool {
+        self.wipe == Some(true) || self.prepares_wipe()
+    }
+
+    fn prepares_wipe(&self) -> bool {
+        ["prepare", "retryPreparation", "resolve", "supersedes"]
+            .iter()
+            .any(|field| self.extra.contains_key(*field))
+    }
+
+    pub(super) fn bind_operation(&mut self) -> Result<String, Error> {
+        match &self.operation {
+            Some(operation) => Ok(operation.clone()),
+            None => {
+                let operation = encode(&random::<16>()?);
+                self.operation = Some(operation.clone());
+                Ok(operation)
+            }
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,16 +128,10 @@ impl Owner {
     pub(super) async fn unlink_computer(
         &mut self,
         key: String,
-        request: Unlink,
-        explicit: bool,
+        mut request: Unlink,
         by: Submitter,
     ) -> Result<Response, Error> {
-        if request
-            .operation
-            .as_deref()
-            .is_some_and(|op| !safe_token(op, 22, 43))
-            || request.extra.contains_key("save")
-        {
+        if !request.valid() {
             return Ok(answer(400, "Send a valid removal request."));
         }
         if decode_exact::<32>(&key).is_none() {
@@ -108,18 +144,20 @@ impl Owner {
         if setup.role != Role::Primary {
             return Ok(answer(409, "Only the main computer can remove a computer."));
         }
-        if key == setup.position.primary {
-            return Ok(answer(409, "Change the main computer before unlinking it."));
-        }
-        if !explicit && request.wipe == Some(true)
-            || ["prepare", "retryPreparation", "resolve", "supersedes"]
-                .iter()
-                .any(|field| request.extra.contains_key(*field))
-        {
+        if request.prepares_wipe() {
             return Ok(answer(409, "Wipe preparation is unavailable."));
         }
 
         let mut roster = self.roster()?;
+        if key == setup.position.primary {
+            if roster.boxes.len() == 1 {
+                return self.wipe_last(setup, roster, request).await;
+            }
+            return Ok(answer(409, "Change the main computer before unlinking it."));
+        }
+        if request.requests_wipe() {
+            return Ok(answer(409, "Wipe preparation is unavailable."));
+        }
         if let Some(record) = removal_for(&roster, &key) {
             if !record.plain()
                 || request
@@ -165,10 +203,7 @@ impl Owner {
                 "The wipe preparation changed. Refresh the removal and try again.",
             ));
         }
-        let operation = match request.operation {
-            Some(operation) => operation,
-            None => encode(&random::<16>()?),
-        };
+        let operation = request.bind_operation()?;
         if self.link.shared_outcomes.contains_key(&operation) {
             return Ok(answer(
                 409,
@@ -217,6 +252,81 @@ impl Owner {
             eprintln!("publishing accepted removal: {error}");
         }
         Ok(unlinked(&operation, Some(proof)))
+    }
+
+    async fn wipe_last(
+        &mut self,
+        setup: Setup,
+        mut roster: Membership,
+        mut request: Unlink,
+    ) -> Result<Response, Error> {
+        if let Some(kept) = wipe::LocalWipe::from(&self.link) {
+            return if request.operation().is_some_and(|op| op != kept.operation) {
+                Ok(answer(
+                    409,
+                    "A wipe is already scheduled for this computer.",
+                ))
+            } else {
+                let saved = receipt(
+                    self.own()?,
+                    &setup.position,
+                    kept.operation.clone(),
+                    &self.link.shared_outcomes[&kept.operation],
+                )?;
+                Ok(local_wipe_reply(&kept.operation, saved))
+            };
+        }
+        self.can_write()?;
+        let home = self.files.root().to_path_buf();
+        if let Err(error) = tokio::task::spawn_blocking(move || wipe::check(&home))
+            .await
+            .map_err(|_| Error::Invalid("checking local wipe layout"))?
+        {
+            return Ok(answer(409, &error.to_string()));
+        }
+        let operation = request.bind_operation()?;
+        if self.link.shared_outcomes.contains_key(&operation) {
+            return Ok(answer(
+                409,
+                "This setup already has a decision for this removal.",
+            ));
+        }
+        let record = Removal {
+            peer: roster.boxes[0].clone(),
+            operation: operation.clone(),
+            wipe: true,
+            delivered: false,
+            extra: object(json!({"local": true})),
+        };
+        insert_removal(&mut roster, &record)?;
+        if let Some(devices) = roster
+            .extra
+            .get_mut("devices")
+            .and_then(Value::as_object_mut)
+        {
+            devices.insert("phones".into(), json!([]));
+        }
+        let mut next = self.link.clone();
+        let proof = next.put(
+            self.own()?,
+            SharedKind::MembershipAndAccess,
+            json!(roster),
+            None,
+            Some(operation.clone()),
+        )?;
+        next.extra.insert(
+            "localWipe".into(),
+            json!(wipe::LocalWipe {
+                setup: setup.position.id,
+                operation: operation.clone()
+            }),
+        );
+        for path in ["pairing", "appPairing"] {
+            next.extra.shift_remove(path);
+        }
+        next.extra.insert("phones".into(), json!([]));
+        self.commit(next).await?;
+        Ok(local_wipe_reply(&operation, proof))
     }
 
     pub(super) async fn offer_unlinks(&self) -> Result<(), Error> {
@@ -674,6 +784,14 @@ fn unlinked(operation: &str, save: Option<crate::Receipt>) -> Response {
         value = with_receipt(value, save);
     }
     Response::ok(value)
+}
+
+fn local_wipe_reply(operation: &str, save: crate::Receipt) -> Response {
+    Response::ok(with_receipt(
+        json!({"removal": {"operation": operation, "state": "wipe-pending", "accessRemoved": true},
+        "offer": "reinstall-local"}),
+        save,
+    ))
 }
 
 fn answer(status: u16, message: &str) -> Response {

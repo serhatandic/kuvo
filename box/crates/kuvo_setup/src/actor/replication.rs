@@ -275,6 +275,7 @@ impl Owner {
                     "phoneSync",
                     "act",
                     "acted",
+                    "scopedAct",
                 ]
                 .iter()
                 .any(|field| envelope.0.contains_key(*field)) =>
@@ -309,8 +310,13 @@ impl Owner {
                 {
                     self.receive_add_request(&from, act).await?;
                 }
+                let act = envelope.0.get("act");
+                let scoped = envelope.0.get("scopedAct");
+                if scoped.is_some() || act.is_some_and(|act| act["area"] == "computers") {
+                    self.receive_forwarded_unlink(&from, act, scoped).await?;
+                }
                 if let Some(answer) = envelope.0.get("acted") {
-                    self.receive_add_answer(&from, answer);
+                    self.receive_computer_answer(&from, answer);
                 }
             }
             _ => {}
