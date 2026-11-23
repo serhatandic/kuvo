@@ -143,6 +143,20 @@ class HeavyTests(unittest.TestCase):
             mac.let_go()
         self.assertEqual(self.run_heavy("mac", "true")[0], 0)
 
+    def test_box_cargo_has_its_own_slot(self):
+        desktop = Held([HEAVY, "rust"], self.env)
+        try:
+            self.assertEqual(self.run_heavy("rust-box", "true"), (0, ""))
+            box = Held([HEAVY, "rust-box"], self.env)
+            try:
+                code, said = self.run_heavy("rust-box", "true")
+                self.assertEqual(code, WAITS, said)
+                self.assertIn("Another rust-box job is running", said)
+            finally:
+                box.let_go()
+        finally:
+            desktop.let_go()
+
     # How a lane's line goes, below, on mac: the one lane with a single slot for every caller
     # (box and mac-build have two).
     def test_a_second_job_of_a_kind_waits_for_the_first_and_runs_after_it(self):
@@ -834,7 +848,7 @@ class HeavyTests(unittest.TestCase):
 
     def test_status_says_for_each_lane_who_holds_it_whether_it_runs_and_who_waits(self):
         lanes = self.status()
-        self.assertEqual(sorted(lanes), ["box", "mac", "mac-build", "rust"])
+        self.assertEqual(sorted(lanes), ["box", "mac", "mac-build", "rust", "rust-box"])
         job = Held([HEAVY, "box"], self.env)
         try:
             self.assertRegex(self.status()["box"], r"^box: slot 1 pid \d+ \(.+\), held \d+s, running \d+s; slot 2 free; none waiting$")
