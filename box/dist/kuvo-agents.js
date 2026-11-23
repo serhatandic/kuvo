@@ -6067,7 +6067,7 @@ function replies(body, answers, headers) {
 }
 function whyNot(name, status, started) {
   if (status === 401)
-    return `The ${name} server turned down its sign-in, so its tools aren't available for now. If the user asks for something from it, tell them to sign in to it again in Kuvo Code (Settings \u203A Integrations, or its key in Settings \u203A MCP Servers), and carry on with the rest`;
+    return `The ${name} server turned down its sign-in, so its tools aren't available for now. If the user asks for something from it, tell them to sign in to it again in Kuvo Code (Marketplace \u203A Apps, or its key in Settings \u203A MCP Servers), and carry on with the rest`;
   if (status === 403)
     return `The ${name} server turned this down (HTTP 403): its sign-in or key may not be allowed to do it`;
   if (started)
@@ -34142,4 +34142,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents fc06376575d3eac34fb4d1bcb775f75da8cb6cdea5518ea616574eca81cabfed
+// Built from Packages/Box/src/agents 4733b55f4ae8e30ed8873a8f92a3c030963987d97e54f66eb00fbf9a3fbe9f3d
