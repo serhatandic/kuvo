@@ -2,6 +2,7 @@ import "./safety"
 import { expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { windowsProfile } from "../src/shared/account"
+import { platformFacts } from "../src/shared/platform"
 import { localIpc, type WindowsPipeAdapter } from "../src/shared/local-ipc.js"
 import { joinWindowsPath, windowsEnvValue, windowsNativePath, windowsWirePath } from "../src/shared/windows-paths"
 import { windowsProcessState } from "../src/shared/windows-process"
@@ -83,4 +84,15 @@ test("SSH and each holder get separate pipe names for each box home", () => {
   const first = "a1".repeat(32)
   expect(new Set([name(first, "ssh"), name(first, "holder:000000000001"),
     name(first, "holder:000000000002"), name("b2".repeat(32), "ssh")]).size).toBe(4)
+})
+
+test("a Linux shell with a leftover WSL variable still has Linux capabilities", () => {
+  const before = process.env.WSL_DISTRO_NAME
+  process.env.WSL_DISTRO_NAME = "Ubuntu-24.04"
+  try {
+    expect(platformFacts("linux", "6.8.0-generic")).toEqual({ platform: "linux", wsl: false })
+  } finally {
+    if (before === undefined) delete process.env.WSL_DISTRO_NAME
+    else process.env.WSL_DISTRO_NAME = before
+  }
 })

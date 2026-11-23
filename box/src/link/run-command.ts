@@ -107,6 +107,7 @@ export async function forgetLoginEnv(): Promise<void> {
 // The commands running now, by a name of each's: stopped when this process ends (a newer box
 // taking over, an update), and `ended` called for each.
 const running = new Map<string, { pid: number; ended?: () => void }>();
+export const commandsWorking = () => running.size > 0;
 process.once("exit", () => {
   for (const { pid, ended } of running.values()) {
     try { process.kill(-pid, "SIGKILL"); } catch {}

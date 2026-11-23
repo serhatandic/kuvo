@@ -1,3 +1,4 @@
+import { wslFacts } from "../../shared/wsl";
 import { forwardDecisionKey } from "../ownership/forward-evidence";
 import { submitterAuthority } from "../ownership/authority";
 import { forwardGrant } from "../work-queue/forward-grant";
@@ -127,6 +128,7 @@ function agentsFact(): NonNullable<ToldComputer["agents"]> {
 export function ownComputer(target = fleetTarget(), now = Date.now()): ToldComputer {
   const facts = fleetFacts();
   system ??= { name: systemName() };
+  const wsl = wslFacts();
   const atWork = atWorkHere();
   const asking = askingOf(keptList());
   let engine: string | undefined;
@@ -136,12 +138,13 @@ export function ownComputer(target = fleetTarget(), now = Date.now()): ToldCompu
     ...(version ? { version } : {}),
     ...(engine ?? (IS_MAC ? MAC_ENGINE_VERSION : null) ? { engine: (engine ?? MAC_ENGINE_VERSION)! } : {}),
     ...(system.name ? { system: system.name } : {}),
+    ...(wsl ? { wsl } : {}),
     working: atWork.length,
     atWork: atWork.slice(0, MOST_AT_WORK),
     waiting: asking.length,
     asking: asking.slice(0, MOST_ASKING),
     ...(oldAppAttached() ? { oldApp: true as const } : {}),
-    ...(!IS_MAC || clientTransportsLayoutReady(K) ? { addresses: ownAddresses() } : {}),
+    ...(!IS_MAC || clientTransportsLayoutReady(K) ? { addresses: wsl ? (wsl.host && wsl.distro ? [wsl.host] : []) : ownAddresses() } : {}),
     // The Kuvo it runs, and the signed release it hands to your other computers that are behind.
     ...facts,
     layout: KUVO_FOLDER_LAYOUT,
@@ -236,7 +239,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const told = readPeerAgents();
   const tries = readTries();
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, kuvo, engine, system: runs, agents, addresses, fleetUpdate } = ownComputer(target, now);
+  const { version, kuvo, engine, system: runs, agents, addresses, fleetUpdate, wsl } = ownComputer(target, now);
   const direct = clientTransportsLayoutReady(K);
   const atWork = atWorkHere();
   const features = ownFeatures();
@@ -250,6 +253,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     via: "here",
     ...reachOf(link, ownAddress(link)),
     ...(direct && addresses?.length ? { ssh: addresses } : {}),
+    ...(direct && wsl?.distro ? { sshDistro: wsl.distro } : {}),
+    ...(wsl ? { wsl } : {}),
     ...(version ? { version } : {}),
     ...(kuvo ? { kuvo } : {}),
     ...(engine ? { engine } : {}),
@@ -292,8 +297,12 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     const gone = away && !(awayFor < QUIET_GRACE);
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
     const features = said?.features && !said.featuresCut ? said.features : undefined;
-    const saved = direct ? sshAddressOf(peer.key)?.destination : undefined;
-    const ssh = direct ? [...new Set([...(saved ? [saved] : []), ...(mine?.addresses ?? [])])].filter(address => !addressProblem(address)).slice(0, 8) : [];
+    const saved = direct ? sshAddressOf(peer.key) : undefined;
+    const sshDistro = saved?.wslDistro ?? mine?.wsl?.distro;
+    // WSL's VM addresses don't belong to Windows OpenSSH. Only use its saved
+    // Windows SSH address or the hostname it advertised with the distro.
+    const addresses = mine?.wsl || saved?.wslDistro ? (mine?.wsl?.host ? [mine.wsl.host] : []) : mine?.addresses;
+    const ssh = direct ? [...new Set([...(saved ? [saved.destination] : []), ...(addresses ?? [])])].filter(address => !addressProblem(address)).slice(0, 8) : [];
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -304,7 +313,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       via: "relay",
       // (Where a client of yours reaches it itself.)
       ...reachOf(link, peer.address),
-      ...(ssh.length ? { ssh } : {}),
+      ...(ssh.length && (!mine?.wsl || sshDistro) ? { ssh, ...(sshDistro ? { sshDistro } : {}) } : {}),
+      ...(mine?.wsl ? { wsl: mine.wsl } : {}),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !gone ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features, compatibility: computerCompatibility(features) } : {}),
       // (Off: with when it was last heard from.)

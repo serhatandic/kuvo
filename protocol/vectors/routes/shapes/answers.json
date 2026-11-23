@@ -7022,6 +7022,16 @@
          "ssh?": {
           "list": "string"
          },
+         "sshDistro?": "string",
+         "wsl?": {
+          "object": {
+           "version": {
+            "literal": 2
+           },
+           "distro?": "string",
+           "host?": "string"
+          }
+         },
          "working?": "number",
          "atWork?": {
           "list": {
@@ -7857,6 +7867,16 @@
          "relay?": "string",
          "ssh?": {
           "list": "string"
+         },
+         "sshDistro?": "string",
+         "wsl?": {
+          "object": {
+           "version": {
+            "literal": 2
+           },
+           "distro?": "string",
+           "host?": "string"
+          }
          },
          "working?": "number",
          "atWork?": {
@@ -12276,6 +12296,15 @@
          "literal": "machine"
         },
         "name": "string",
+        "wsl?": {
+         "object": {
+          "version": {
+           "literal": 2
+          },
+          "distro?": "string",
+          "host?": "string"
+         }
+        },
         "bridge": "string",
         "engine": {
          "oneOf": [
