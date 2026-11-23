@@ -152,16 +152,30 @@ test("a new chat keeps its session marks and appears in the local session list",
   assert.equal(started.json.info.metadata.kuvo.chat, started.json.folder);
   assert.equal(started.json.info.metadata.kuvo.approval, "askFirst");
 
-  const watch = Buffer.from(JSON.stringify({ sessions: "kuvo/sessions/list/events" })).toString("base64url");
+  const watch = Buffer.from(JSON.stringify({
+    sessions: "kuvo/sessions/list/events",
+    setup: "kuvo/setup/sessions/events",
+  })).toString("base64url");
   const line = await openLine(resident, "?watch=" + watch);
   t.after(() => line.close());
+  let local = false;
+  let published = false;
   for await (const frame of line.frames()) {
-    if (!frame.d?.sessions?.[started.json.session]) continue;
-    assert.equal(frame.d.sessions[started.json.session].kind, "chat");
-    assert.equal(frame.d.sessions[started.json.session].title, "New conversation");
-    return;
+    const facts = frame.t === "sessions" && frame.d?.sessions?.[started.json.session];
+    if (facts) {
+      assert.equal(facts.kind, "chat");
+      assert.equal(facts.title, "New conversation");
+      local = true;
+    }
+    const row = frame.t === "setup" && frame.d?.sessions?.find(row => row.id === started.json.session);
+    if (row) {
+      assert.equal(row.facts.title, "New conversation");
+      assert.equal(row.here, true);
+      published = true;
+    }
+    if (local && published) return;
   }
-  assert.fail("the new chat did not reach the line");
+  assert.fail("the new chat did not reach both lists on the line");
 });
 
 test("a stopped queue replays its send and protects an undone message from an old removal", { timeout: 45000 }, async t => {
