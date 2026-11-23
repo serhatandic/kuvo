@@ -61,6 +61,7 @@ pub struct View {
     pub(crate) lists: BTreeMap<ComputerKey, Arc<Copy<Lists>>>,
     pub(crate) notice_copies: BTreeMap<ComputerKey, Arc<Copy<History>>>,
     pub(crate) notices: Arc<History>,
+    pub(crate) move_notices: Arc<crate::moves::Notices>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
     work_calls: bool,
@@ -385,6 +386,7 @@ impl Resident {
             activities,
             announced: Arc::new(kept::read(&run.join("peer-agents.json")).unwrap_or_default()),
             notices: Arc::new(notices::load(&run, telling)),
+            move_notices: Arc::new(crate::moves::Notices::load(&run)),
             relay_connected: false,
             work_calls: false,
             endpoint,
@@ -413,7 +415,7 @@ impl Resident {
         round.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
-            .map(|relay| Publisher::start(relay.sender.clone()));
+            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone()));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
         let mut pending_trust = None;
         let mut setup_rosters = None;
@@ -486,10 +488,14 @@ impl Resident {
                             Ok((resident, result)) => {
                                 self = resident;
                                 match result {
-                                    Ok(Some(key)) => if let Some(publisher) = &mut publisher {
-                                        publisher.request(self.view.clone(), now, Refresh::Peer(key));
+                                    Ok(received) => {
+                                        if let (Some(key), Some(publisher)) = (received.refresh, &mut publisher) {
+                                            publisher.request(self.view.clone(), now, Refresh::Peer { key, ask: received.ask });
+                                        }
+                                        if let (Some((host, reply)), Some(relay)) = (received.reply, &relay) {
+                                            let _ = relay.sender.mail(host, reply).await;
+                                        }
                                     },
-                                    Ok(None) => {},
                                     Err(error) => eprintln!("Keeping peer state: {error}"),
                                 }
                             }
@@ -510,15 +516,21 @@ impl Resident {
                         publisher = None;
                     }
                 },
-                _ = round.tick() => if let Some(publisher) = &mut publisher {
-                    publisher.request(self.view.clone(), clock(), Refresh::None);
+                _ = round.tick() => {
+                    let now = clock();
+                    if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, now) {
+                        eprintln!("Keeping moves on other computers: {error}");
+                    }
+                    if let Some(publisher) = &mut publisher {
+                        publisher.request(self.view.clone(), now, Refresh::None);
+                    }
                 },
             }
             publish.send_replace(Arc::new(self.view.clone()));
         }
     }
 
-    fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Option<ComputerKey>> {
+    fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Received> {
         match event {
             relay::Event::Unreachable(address) => {
                 if let Some(peer) = self.view.roster.at_address(address) {
@@ -535,8 +547,22 @@ impl Resident {
                 ..
             } => {
                 let Some(peer) = self.view.roster.member(&key) else {
-                    return Ok(None);
+                    return Ok(Received::default());
                 };
+                // Conversation stream parts and in-memory queue reads do
+                // not change the durable reach projection.
+                if payload
+                    .get("sessionFollow")
+                    .and_then(|value| value.get("part"))
+                    .is_some_and(Value::is_object)
+                    || payload
+                        .get("workQueue")
+                        .and_then(|value| value.get("memory"))
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                {
+                    return Ok(Received::default());
+                }
                 let id = encode(&key);
                 let back = Arc::make_mut(&mut self.view.reach).heard(&self.run, &id)?;
                 let before = self.view.announced.get(&id);
@@ -559,7 +585,7 @@ impl Resident {
                     })
                 }) {
                     let mut all = (*self.view.announced).clone();
-                    all.insert(id, entry);
+                    all.insert(id.clone(), entry);
                     kept::write(&self.run.join("peer-agents.json"), &all)?;
                     self.view.announced = Arc::new(all);
                 }
@@ -591,12 +617,33 @@ impl Resident {
                         &mut self.activity_parts,
                     )?;
                 }
+                if let Some(moving) = payload.remove("moving") {
+                    Arc::make_mut(&mut self.view.move_notices).take(
+                        &self.run,
+                        &self.view.roster,
+                        key,
+                        moving,
+                        now,
+                    )?;
+                }
                 let ask = payload.get("ask").and_then(Value::as_str) == Some("agents");
-                return Ok((back || was_quiet || ask).then_some(key));
+                let reply = if let (Some(movement), Some(host)) = (payload.get("move"), peer.host())
+                {
+                    crate::moves::receipt::replay(&self.run, &id, movement, now)
+                        .map_err(io::Error::other)?
+                        .map(|reply| (host, reply))
+                } else {
+                    None
+                };
+                return Ok(Received {
+                    refresh: (back || was_quiet || ask).then_some(key),
+                    ask,
+                    reply,
+                });
             }
             _ => {}
         }
-        Ok(None)
+        Ok(Received::default())
     }
 }
 
@@ -702,10 +749,17 @@ fn take_copy<T: DeserializeOwned + Serialize>(
     Ok(())
 }
 
+#[derive(Default)]
+struct Received {
+    refresh: Option<ComputerKey>,
+    ask: bool,
+    reply: Option<(Host, Envelope)>,
+}
+
 enum Refresh {
     None,
     All,
-    Peer(ComputerKey),
+    Peer { key: ComputerKey, ask: bool },
 }
 
 struct Publisher {
@@ -720,12 +774,18 @@ impl Drop for Publisher {
 }
 
 impl Publisher {
-    fn start(relay: relay::Sender) -> Self {
-        let (tx, mut rx) = mpsc::channel(16);
+    fn start(relay: relay::Sender, run: PathBuf) -> Self {
+        let (tx, mut rx) = mpsc::channel::<(View, Millis, Refresh)>(16);
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
             let mut announcements = BTreeMap::new();
+            let mut moves = crate::moves::Announcer::default();
             while let Some((view, now, refresh)) = rx.recv().await {
+                match refresh {
+                    Refresh::None => moves.announce(&run, &view.roster, &relay, now).await,
+                    Refresh::Peer { ask: true, .. } => moves.repeat(),
+                    _ => {}
+                }
                 publish_round(
                     &relay,
                     view,
@@ -852,7 +912,7 @@ async fn publish_round(
             continue;
         };
         let forced = matches!(refresh, Refresh::All)
-            || matches!(refresh, Refresh::Peer(key) if key == peer.key);
+            || matches!(refresh, Refresh::Peer { key, .. } if key == peer.key);
         let known = view.announced.get(&encode(&peer.key));
         let before = announcements.get(&peer.key);
         if forced

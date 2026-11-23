@@ -9,15 +9,15 @@ function identity(seed, prefix) {
   return { key, pub };
 }
 
-export function seedPeerSetup(home, relay, own = 1) {
+export function seedPeerSetup(home, relay, own = 1, count = 2) {
   const bytes = (value, size = 32) => Buffer.alloc(size, value);
-  const computers = [1, 2].map(number => {
+  const computers = Array.from({ length: count }, (_, index) => index + 1).map(number => {
     const seed = bytes(number);
     const secret = bytes(number + 50);
     const noise = identity(seed, "302e020100300506032b656e04220420");
     const signer = identity(seed, "302e020100300506032b657004220420");
     const row = { key: noise.pub, address: relayAddress(secret).toString("base64url"),
-      name: number === 1 ? "Studio" : "Lab", kind: "machine", sign: signer.pub };
+      name: ["Studio", "Lab", "Spare"][number - 1], kind: "machine", sign: signer.pub };
     const signed = (kind, body) => {
       const document = Buffer.from(JSON.stringify({ v: 1, kind, origin: signer.pub, n: 1, body }));
       const signature = sign(null, Buffer.concat([Buffer.from("kuvo-link doc v1\0"), document]), signer.key);
@@ -42,7 +42,7 @@ export function seedPeerSetup(home, relay, own = 1) {
     setup: { ...setup, managed: true, checkpointed: true, role: own === 1 ? "primary" : "member", sign: main.row.sign },
     sharedSetup: id, shared, leadership: { 1: main.signed("leadership", { setup, relayTerm: 1, checkpoint: hash }) },
   });
-  return { main: main.row, member: member.row, save };
+  return { main: main.row, member: member.row, spare: computers[2]?.row, save };
 }
 
 export function seedAwaySession(home, relay) {
