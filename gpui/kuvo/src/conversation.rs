@@ -100,8 +100,9 @@ pub struct ConversationView {
     /// conversation's model again as it goes up.
     models_changed: Option<u64>,
     entries: Vec<Entry>,
-    /// The message "Show in conversation" brings into view as soon as its row is here (the Library).
-    reveal: Option<String>,
+    /// The message "Show in conversation" brings into view as soon as its row is here (the Library),
+    /// or the row it was read up to as the window last closed, and how far down it the view starts.
+    reveal: Option<(String, gpui::Pixels)>,
     chat_references: crate::queue::chat_references::ChatReferences,
     /// The row under the pointer: its reply shows its time, Copy and Quote at its end.
     hovered_row: Option<String>,
@@ -154,6 +155,8 @@ pub struct ConversationView {
     /// has been used, so only the last one's timer takes the check away.
     copied: Option<(String, u64)>,
     client: BoxClient,
+    /// This computer's box, which it's read through (another computer's included).
+    nearest: BoxClient,
     live: bool,
     _queue_follow: Option<Follow<Followed<Queue>>>,
     tasks: Vec<Task<()>>,
@@ -204,9 +207,9 @@ impl ConversationView {
         &self.client
     }
 
-    /// A conversation of `client`'s box. `live`: follow it there (the app); else it shows what
+    /// A conversation of `client`'s box, followed through `nearest`. Otherwise it shows what
     /// it's handed ([`ConversationView::take`]), for tests and shots.
-    pub fn new(client: BoxClient, session: String, composer: Entity<Composer>, live: bool, cx: &mut Context<Self>) -> ConversationView {
+    pub fn new(client: BoxClient, nearest: &BoxClient, computer: Option<&str>, session: String, composer: Entity<Composer>, live: bool, cx: &mut Context<Self>) -> ConversationView {
         let outgoing = cx.subscribe(&composer, |this: &mut ConversationView, _, event: &ComposerEvent, cx| {
             if matches!(event, ComposerEvent::Outgoing) {
                 this.show_outgoing(cx);
@@ -254,6 +257,7 @@ impl ConversationView {
             transcript: cx.focus_handle(),
             copied: None,
             client: client.clone(),
+            nearest: nearest.clone(),
             live,
             _queue_follow: None,
             tasks: Vec::new(),
@@ -275,10 +279,9 @@ impl ConversationView {
         // Its Activity pinned or unpinned: drawn again, with the card or without.
         cx.subscribe(&view.bars, |_, _, _: &crate::work_bars::PinChanged, cx| cx.notify()).detach();
         if live {
-            // (Another computer's: its newest messages through this computer's box, which keeps
-            // its last copy for while that computer's away.)
-            let carried = view.carried(cx);
-            let follow = Rc::new(client.follow_conversation_carried(&session, Timing::default(), carried));
+            // (Another computer's through this computer's box, which keeps its last copy for while
+            // that computer's away.)
+            let follow = Rc::new(nearest.follow_conversation(&session, Timing::default()));
             let updates = follow.updates().clone();
             view.follow = Some(follow);
             view._follow_task = Some(cx.spawn(async move |this, cx| {
@@ -289,7 +292,7 @@ impl ConversationView {
                 }
             }));
             // What it asks, as the box words it, now and as it changes.
-            let asks = client.follow_asks(&session);
+            let asks = computer.map_or_else(|| client.follow_asks(&session), |computer| nearest.follow_peer_asks(&session, computer));
             let updates = asks.updates().clone();
             view._asks_follow = Some(asks);
             // What waits its turn, now and as it changes.
@@ -336,10 +339,9 @@ impl ConversationView {
         &self.session
     }
 
-    /// This computer's box, carrying the conversation from another computer (none for its own).
-    pub fn carried(&self, cx: &App) -> Option<kuvo_box::follow::Carried> {
-        let carried = self.composer.read(cx).delivery_box()?.carried()?;
-        (!carried.client().same_connection(&self.client)).then_some(carried)
+    /// This computer's box, which it's read through.
+    pub fn nearest(&self) -> &BoxClient {
+        &self.nearest
     }
 
     /// Its computer not answering, as its box says it: what's shown is its last copy.
@@ -1181,22 +1183,45 @@ impl ConversationView {
     /// in; once it's loaded, if it isn't yet (a conversation still opening). One that never comes
     /// (older than what's read) leaves the conversation where it opens.
     pub fn reveal_message(&mut self, message: &str, cx: &mut Context<Self>) {
-        self.reveal = Some(message.to_owned());
+        self.reveal = Some((message.to_owned(), px(0.)));
+        self.reveal_now();
+        cx.notify();
+    }
+
+    /// Where it's read up to (none: at its latest, following it), as the window keeps it to open
+    /// there again; what's still to be brought into view, until it is.
+    pub fn read_at(&self) -> Option<crate::yours::ReadAt> {
+        if let Some((row, offset)) = &self.reveal {
+            return Some(crate::yours::ReadAt { row: row.clone(), offset: f32::from(*offset) });
+        }
+        if self.entries.is_empty() || self.list.is_following() {
+            return None;
+        }
+        let top = self.list.list_state().logical_scroll_top();
+        let entry = self.entries.get(top.item_ix)?;
+        Some(crate::yours::ReadAt { row: entry.key().to_owned(), offset: f32::from(top.offset_in_item) })
+    }
+
+    /// Scrolled to where it was read up to (`Self::read_at`), once that row is here; one that
+    /// never comes (older than what's read) leaves it at its latest.
+    pub fn read_from(&mut self, at: &crate::yours::ReadAt, cx: &mut Context<Self>) {
+        self.reveal = Some((at.row.clone(), px(at.offset.max(0.))));
         self.reveal_now();
         cx.notify();
     }
 
     fn reveal_now(&mut self) {
-        let Some(message) = self.reveal.as_deref() else { return };
-        let Some(ix) = self.entries.iter().position(|entry| match entry {
+        let Some((message, offset)) = self.reveal.clone() else { return };
+        let message = message.as_str();
+        let Some(ix) = self.entries.iter().position(|entry| entry.key() == message || match entry {
             Entry::Words { step, .. } | Entry::Sent { step, .. } => step.id == message,
             Entry::Steps { items, .. } => items.iter().any(|(step, _)| step.id == message),
-            entry => entry.key() == message,
+            _ => false,
         }) else { return };
         self.reveal = None;
         let list = self.list.list_state();
         list.pause_following_tail();
-        list.scroll_to(gpui::ListOffset { item_ix: ix, offset_in_item: px(0.) });
+        list.scroll_to(gpui::ListOffset { item_ix: ix, offset_in_item: offset });
     }
 
     fn show_rows(&mut self, new: Vec<Entry>, revisions: Vec<u64>) {
@@ -2016,13 +2041,7 @@ impl ConversationView {
 /// handed to [`ConversationView::take`] as a follow would hand it.
 #[cfg(feature = "stand-in")]
 pub fn read_now(client: &BoxClient, session: &str) -> kuvo_box::Result<kuvo_box::Conversation> {
-    read_now_carried(client, None, session)
-}
-
-/// The same, through `carried` (this computer's box) for another computer's conversation.
-#[cfg(feature = "stand-in")]
-pub fn read_now_carried(client: &BoxClient, carried: Option<&kuvo_box::follow::Carried>, session: &str) -> kuvo_box::Result<kuvo_box::Conversation> {
-    kuvo_box::follow::read_at_once(client, carried, session)
+    kuvo_box::follow::read_at_once(client, session)
 }
 
 impl Render for ConversationView {

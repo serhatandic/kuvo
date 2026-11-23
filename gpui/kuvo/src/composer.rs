@@ -1311,6 +1311,12 @@ impl Composer {
         self.next_to_go(cx);
     }
 
+    pub(crate) fn set_session_client(&mut self, client: BoxClient, delivery: Option<kuvo_box::queue::DeliveryBox>) {
+        self.home = client.clone();
+        self.client = client;
+        self.set_delivery_box(delivery);
+    }
+
     pub(crate) fn set_delivery_box(&mut self, delivery: Option<kuvo_box::queue::DeliveryBox>) {
         self.delivery_box = delivery;
     }

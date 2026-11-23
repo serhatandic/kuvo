@@ -3,9 +3,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { needsYouIn } from "../areas/waiting";
+import { allItems, queueFollowers as workQueueFollowers } from "../work-queue/store";
+import { itemsElsewhere } from "../work-queue/across";
 import { botsWithNow } from "../areas/bots";
 import type { Infer } from "../../shared/shape";
-import { START_CATALOG } from "../../shared/routes/sessions";
+import { START_CATALOG, type SessionFacts, type SessionList } from "../../shared/routes/sessions";
 import { writePrivate } from "../../shared/files";
 import { parsed } from "../../shared/json";
 import { fitsShape } from "../../shared/shape";
@@ -23,9 +26,12 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink } from "../state";
 import { listsHere } from "../work/model-rule";
 import { listComputer } from "./computer";
-import { answerFrom, keepsList, keptList, listFollowers, listNow } from "./sessions";
+import { listedProjects, projectPage, shownOfCursor, waitingSessions } from "./rule";
+import { answerFrom, archivedGroups, keepsList, keptList, listFollowers, listNow } from "./sessions";
 
+export const PAGE_ROUTE = /^kuvo\/sessions\/page$/;
 export const SETUP_SESSION_LIST_ROUTE = /^kuvo\/setup\/sessions\/list\/events$/;
+export const SETUP_WAIT_COUNTS = /^kuvo\/setup\/waiting\/counts(\/events)?$/;
 export const SETUP_LIST_ROUTE = /^kuvo\/setup\/(sessions|waiting|queues|runs-on)\/events$/;
 
 type Readers = Pick<RouteContext, "readEngine" | "bridge">;
@@ -165,7 +171,56 @@ export async function shareSetupLists(host: Pick<LinkHost, "send">, readers: Rea
 
 type Topic = "session-list" | "sessions" | "waiting" | "queues" | "runs-on";
 
+async function mergedSessionList(context: RouteContext, link = readLink(), saved = peerSetupLists(link)): Promise<SessionList | undefined> {
+  const computer = listComputer(link);
+  const [peers, here] = await Promise.all([saved, readList(context, context.signal)]);
+  if (!here && !peers.length) return;
+  const listing: SessionList = here ? answerFrom(here, null) : {
+    at: "peers", full: true, sessions: {}, projects: {}, projectOrder: [], startProject: null,
+    needsYou: [], archivedGroups: [],
+  };
+  for (const [id, facts] of Object.entries(listing.sessions)) listing.sessions[id] = { ...facts, computer };
+  for (const [directory, facts] of Object.entries(listing.projects)) listing.projects[directory] = { ...facts, computer };
+  const archived = [...listing.archivedGroups];
+  const waiting = new Map(listing.needsYou?.map(row => [row.session, row]));
+  const moved = movedOf(link);
+  for (const { saved, origin } of peers) {
+    const stamp = (actions: readonly ("open" | "manage")[] = []) => ({
+      computer: origin.computer,
+      on: { ...origin.computer, away: origin.away, lastSeen: origin.lastSeen, updating: origin.updating, actions: origin.away ? [] : actions },
+    });
+    const keyOf = (directory: string) => `${origin.computer.id}:${directory}`;
+    const peerRows: Record<string, SessionFacts> = {};
+    for (const { id, facts, actions } of saved.sessions) {
+      const before = listing.sessions[id];
+      if (before && !(before.away && !before.on && moved.get(id) === origin.computer.id) ||
+          moved.has(id) && moved.get(id) !== origin.computer.id) continue;
+      const row = { ...facts, ...stamp(actions) };
+      if (facts.kind === "project") {
+        const directory = facts.project ?? facts.directory;
+        row.project = keyOf(directory);
+      }
+      peerRows[id] = row;
+      listing.sessions[id] = row;
+    }
+    for (const { session, asks } of saved.waiting) {
+      const kind = peerRows[session]?.kind;
+      if (kind === "chat" || kind === "project") waiting.set(session, { session, asks });
+    }
+    const projects = saved.projects.map(({ directory, facts }) => ({
+      directory: keyOf(directory), name: facts.name ?? (path.posix.basename(directory) || directory),
+    }));
+    const peerProjects = listedProjects(peerRows, { projects });
+    for (const [directory, facts] of Object.entries(peerProjects)) listing.projects[directory] = { ...facts, ...stamp() };
+    archived.push(...archivedGroups(peerRows, peerProjects));
+  }
+  const needsYou = [...waiting.values()].sort((a, b) =>
+    (listing.sessions[b.session]?.asked ?? 0) - (listing.sessions[a.session]?.asked ?? 0) || a.session.localeCompare(b.session));
+  return { ...listing, needsYou, archivedGroups: archived };
+}
+
 async function merged(topic: Topic, context: RouteContext) {
+  if (topic === "session-list") return mergedSessionList(context);
   const link = readLink();
   const computer = listComputer(link);
   const local: { computer: typeof computer; away: boolean; lastSeen?: number; updating?: true; here?: true } = { computer, away: false, here: true };
@@ -185,41 +240,6 @@ async function merged(topic: Topic, context: RouteContext) {
         ...(origin.away || origin.updating ? { away: true, ...(origin.lastSeen !== undefined ? { lastSeen: origin.lastSeen } : {}), ...(origin.updating ? { updating: true } : {}) } : {}),
       }))],
     };
-  }
-
-  if (topic === "session-list") {
-    const [peers, here] = await Promise.all([peerSetupLists(link), readList(context, context.signal)]);
-    if (!here) return;
-    const listing = answerFrom(here, null);
-    for (const [id, facts] of Object.entries(listing.sessions)) listing.sessions[id] = { ...facts, computer };
-    for (const [directory, facts] of Object.entries(listing.projects)) listing.projects[directory] = { ...facts, computer };
-    const moved = movedOf(link);
-    const stamp = (origin: typeof local, actions: readonly ("open" | "manage")[] = []) => ({
-      computer: origin.computer,
-      on: { ...origin.computer, away: origin.away, lastSeen: origin.lastSeen, updating: origin.updating, actions: origin.away ? [] : actions },
-    });
-    for (const { saved, origin } of peers) {
-      const keyOf = (directory: string) => `${origin.computer.id}:${directory}`;
-      const project = (directory: string) => ({
-        name: path.posix.basename(directory) || directory, asking: 0, working: 0, ...stamp(origin),
-      });
-      // The peer snapshot already contains all session rows, so remote projects need no owner cursor.
-      for (const { directory, facts: { shown: _, more: __, total: ___, ...facts } } of saved.projects)
-        listing.projects[keyOf(directory)] = { ...project(directory), ...facts };
-      for (const { id, facts, actions } of saved.sessions) {
-        const before = listing.sessions[id];
-        if (before && !(before.away && !before.on && moved.get(id) === origin.computer.id) ||
-            moved.has(id) && moved.get(id) !== origin.computer.id) continue;
-        const row = { ...facts, ...stamp(origin, actions) };
-        if (facts.kind === "project") {
-          const directory = facts.project ?? facts.directory;
-          row.project = keyOf(directory);
-          listing.projects[row.project] ??= project(directory);
-        }
-        listing.sessions[id] = row;
-      }
-    }
-    return listing;
   }
 
   const [peers, here] = await Promise.all([peerSetupLists(link), ownRows(context)]);
@@ -259,4 +279,63 @@ export async function* setupListsRoute(context: RouteContext, match: RegExpMatch
     for (const set of followers) set.add(tell);
     return () => { for (const set of followers) set.delete(tell); };
   }, signal, { every: 3_000 });
+}
+
+/** Counts for the workspace rail. The notifications client still follows each owner's own counts. */
+export async function* setupWaitCountsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
+  const counts = async () => {
+    const link = readLink();
+    const reading = peerSetupLists(link);
+    const [listing, peers] = await Promise.all([mergedSessionList(context, link, reading), reading]);
+    if (!listing) return undefined;
+    const asking = new Set(Object.entries(listing.sessions)
+      .filter(([, facts]) => facts.asked !== undefined && !facts.archived && !facts.away).map(([id]) => id));
+    const bots = new Set(botsWithNow().filter(bot => bot.now.asking > 0).map(bot => bot.id));
+    for (const { saved, origin } of peers) {
+      for (const [id, bot] of Object.entries(saved.bots ?? {})) {
+        if (bot.now.asking > 0 && listing.sessions[bot.session]?.computer?.id === origin.computer.id) bots.add(id);
+      }
+    }
+    return {
+      sessions: waitingSessions(listing.sessions),
+      bots: bots.size,
+      queue: needsYouIn([...allItems(), ...itemsElsewhere("all", link).items], asking),
+    };
+  };
+  if (!match[1]) {
+    const counted = await counts();
+    return counted ? yield* json(200, counted) : yield* json(503, { message: "The session list isn’t ready." });
+  }
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  yield* followedLive(counts, tell => {
+    const followers = [listFollowers, peerListFollowers, workQueueFollowers];
+    for (const set of followers) set.add(tell);
+    return () => { for (const set of followers) set.delete(tell); };
+  }, signal, { every: 3_000 });
+}
+
+/** `GET kuvo/sessions/page?project=<key>&cursor=<its more's>`: a project's list as far as "Show
+ * more" has opened it, in the box's order (PROTOCOL.md, "Session lists"); without a cursor, as far
+ * as it shows first. A client asks again with the same cursor as the list changes. */
+export async function* pageRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
+  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
+  const project = query.get("project");
+  if (!project) return yield* json(400, { message: "Name the project: project=<its key>." });
+  const cursor = query.get("cursor");
+  const at = cursor ? shownOfCursor(cursor) : undefined;
+  if (at === null) return yield* json(400, { message: "That cursor isn't one this box gave. Read the list again." });
+  // Peer projects use the same rows as the merged sidebar, including the last copy of an away box.
+  if (/^[\w-]{43}:/.test(project)) {
+    const merged = await mergedSessionList(context);
+    if (!merged) return yield* json(503, { message: "The session list isn’t ready." });
+    return yield* json(200, { project, ...projectPage(merged.sessions, project, at) });
+  }
+  const list = await listNow(context, signal ?? undefined);
+  if (!list) return yield* json(503, { message: "The engine isn’t running." });
+  const facts = Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts]));
+  return yield* json(200, { project, ...projectPage(facts, project, at) });
 }

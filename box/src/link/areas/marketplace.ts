@@ -1,4 +1,5 @@
 // Marketplace clients read box-authored cards and submit explicit install, sign-in and Add actions.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,13 +10,14 @@ import { readPeerAgents } from "../peers/directory";
 import type { Target } from "../../shared/records";
 import { acquireEngine } from "../engine/lifetime";
 import { workQueueClient } from "./work-queue";
-import { answerSkills, githubSkill, isSkillFolder, localSkill, SKILLS_FOLDER, skillAbout, skillName, SkillFailure, type SkillPackage } from "./skills";
+import { answerSkills, githubSkill, isSkillFolder, localSkill, SKILLS_FOLDER, SKILL_TRASH_FOLDER, skillAbout, skillName, SkillFailure, type SkillPackage } from "./skills";
 import { skillDocument, skillsHere, skillsSection } from "./settings-skills";
 import { catalog, endpoint, itemID, refreshCatalog, sha256, type Agent, type CatalogSkill } from "../marketplace/catalog";
 import { addBot, botOptions, projectBotScopes } from "../marketplace/bots";
 import { cancelSignIn, cleanRemovedConnections, connectionState, connectToken, disconnect, finishSignIn, projectApps, signInStatus, startSignIn } from "../marketplace/connections";
-import { installations, installedApp, installedSkill, no, projectSkills, saveInstallations, skillRevision,
-  type Installations, type InstalledApp, type InstalledSkill } from "../marketplace/installations";
+import { installations, installedApp, installedSkill, no, projectSkills, removalFor, saveInstallations, skillRevision,
+  type Installations, type InstalledApp, type InstalledSkill, type RemovedSkill } from "../marketplace/installations";
+import { archivedSkill, engineSkillOffers, folderSkills, type BuiltinSkill } from "../marketplace/skill-sources";
 import { ownKey, peersOf, type Peer } from "../peers/known";
 import { computerName } from "../peers/computer-name";
 import { awaySince } from "../peers/reach";
@@ -27,6 +29,7 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 import type { SettingItem } from "../../shared/routes/settings-pages";
 
 const ROOT = "kuvo/marketplace";
+const SKILL_REMOVAL = "marketplace.skills.remove";
 const success = (value: unknown): Acted => ({ status: 200, value });
 const missing = () => no(404, "There’s no Marketplace item here.");
 const methodError = () => no(405, "That action isn’t available.");
@@ -119,9 +122,33 @@ async function catalogView(context: RouteContext, state: Installations, query: U
     const shown = cardSkill(skill);
     return { ...shown, title: shown.name ?? shown.id, summary: shown.description ?? "", category: YOUR_SKILLS };
   });
-  const local = await localSkills();
+  const found = await discoverSkills(context);
+  const removalNames = new Set(state.removedSkills?.filter(each => !each.restored).map(each => each.name));
+  const occupied = new Set([...installed.keys(), ...catalogNames]);
+  const local = found.folders.filter(each => !removalNames.has(each.id) && !removalNames.has(path.basename(each.folder)) && !occupied.has(each.id)).flatMap(each => {
+    occupied.add(each.id);
+    return [{ id: each.id, title: each.title, summary: each.summary, location: each.folder,
+      category: YOUR_SKILLS, origin: "found", installed: true, actions: [removeAction(each.title)] }];
+  });
+  const builtins = [...found.builtins.map(skill => ({ skill, removed: removalFor(state, skill.id) })),
+    ...(state.removedSkills ?? []).flatMap(removed => !removed.restored && removed.builtin ? [{ skill: removed.builtin, removed }] : [])]
+    .filter(({ skill }) => {
+      if (occupied.has(skill.id)) return false;
+      occupied.add(skill.id);
+      return true;
+    }).map(({ skill, removed }) => ({ ...skill, text: undefined, location: "Built in",
+      category: removed ? "Built In" : YOUR_SKILLS, origin: removed ? "catalog" : "found",
+      installed: !removed, actions: removed ? [{ id: "add", title: "Install" }] : [removeAction(skill.title, true)] }));
   const addedBots = agentBots();
   const here = await skillsHere(context);
+  const archiveFolders = new Set<string>();
+  const deleted = here.deleted?.filter(item => {
+    const archived = archivedSkill(item.id);
+    if (!archived) return true;
+    if (removalFor(state, archived.name)?.key !== archived.key || archiveFolders.has(archived.folder)) return false;
+    archiveFolders.add(archived.folder);
+    return true;
+  });
   // (Whether each installed skill is on here; a skill only in the catalog has no switch.)
   const withHere = <T extends { id: string; installed: boolean }>(items: T[]) => here.problem !== undefined ? items
     : items.map(item => item.installed ? { ...item, enabled: here.enabled(item.id), ...(here.canSwitch ? {} : { switchWhy: "Permissions are set as something other than a list. Change them in the settings file." }) } : item);
@@ -139,14 +166,12 @@ async function catalogView(context: RouteContext, state: Installations, query: U
         const detail = [...needs, plural(agent.skills.length, "skill"), ...(botCount ? [`${plural(botCount, "bot")} added`] : [])].join(" · ");
         return { ...agent, botCount, detail, actions: [{ id: "add", title: "Add" }] };
       }), query),
-      { ...area("skills", "Skills", withHere([...skills, ...managed, ...local.filter(skill => !installed.has(skill.id)),
-        ...(here.problem !== undefined ? [] : here.found.filter(skill => !installed.has(skill.id) && !catalogNames.has(skill.id) && !local.some(each => each.id === skill.id))
-          .map(skill => ({ ...skill, category: YOUR_SKILLS, origin: "found", installed: true })))]), query,
+      { ...area("skills", "Skills", withHere([...skills, ...managed, ...local, ...builtins]), query,
         [{ id: "preview", title: "Add from Link or Folder", form: PREVIEW_FORM }, { id: "create", title: "New Skill", form: CREATE_FORM }]),
         // This computer's own: whether each skill is on here, Recently Deleted and Other Places.
         here: here.problem !== undefined ? { problem: here.problem } : {
           computer: context.info.name, switchTitle: `Use on ${context.info.name}`,
-          deleted: { title: "Recently Deleted", note: SKILL_DELETION, items: here.deleted, action: { id: "restore", title: "Restore" } },
+          deleted: { title: "Recently Deleted", note: SKILL_DELETION, items: deleted, action: { id: "restore", title: "Restore" } },
           places: { title: "Other Places", note: "A folder, or the address of a skill catalog with an index.json, where agents also find skills.",
             items: here.places.map((place, index) => ({ id: String(index), title: place })),
             add: { id: "add", title: "Add Place", form: { title: "Add a Place", submit: "Add", fields: [{ id: "place", title: "A folder, or the address of a skill catalog" }] } },
@@ -197,21 +222,22 @@ function area<T extends { title: string; summary: string; category: string }>(id
     empty: search ? "No items match your search." : "There’s nothing here yet." };
 }
 
-async function localSkills() {
-  const listed = await answerSkills("GET", "kuvo/skills", undefined, null);
-  const value = listed.value;
-  if (!("folders" in value)) return [];
-  const rows = [];
-  for (const id of value.folders.filter(isSkillFolder)) {
-    if (fs.existsSync(path.join(SKILLS_FOLDER, id, ".kuvo-marketplace.json"))) continue;
-    const got = await answerSkills("GET", `kuvo/skills/${id}`, undefined, null);
-    if (!("text" in got.value)) continue;
-    const about = skillAbout(got.value.text);
-    rows.push({ id, title: about.name ?? id, summary: about.description ?? "", category: YOUR_SKILLS, origin: "local",
-      installed: true, source: value.github[id] });
-  }
-  return rows;
+const removeAction = (title: string, builtin = false) => ({
+  id: "remove", title: "Remove", style: "destructive",
+  confirm: { title: `Remove ${title}?`, body: builtin
+    ? "This built-in skill will be removed from all your computers. You can add it again from the Kuvo catalog."
+    : "This skill will be removed from all your computers. You can restore its files from Recently Deleted for 30 days.",
+  button: "Remove" },
+});
+
+async function discoverSkills(context: RouteContext) {
+  const { builtins, folders: places } = await engineSkillOffers(context);
+  return { builtins, places, folders: folderSkills(places) };
 }
+
+const revisionFor = (value: unknown) => sha256(Buffer.from(JSON.stringify(value)));
+const builtinAvailable = (skill: BuiltinSkill) => ({ version: "built-in", revision: revisionFor(skill), files: [] });
+const markdownFile = (text: string) => ({ path: "SKILL.md", data: Buffer.from(text).toString("base64"), sha256: sha256(Buffer.from(text)) });
 
 interface Preview { skill: InstalledSkill; expires: number }
 const previews = new Map<string, Preview>();
@@ -264,36 +290,55 @@ function sharedMutation(item: string, body: Record<string, unknown>): Acted {
       if (old && skillRevision(old) === skillRevision(next)) return success({ installed: true });
       if ((old ? skillRevision(old) : undefined) !== body.was) return no(409, "The installed skill changed. Read it again first.");
       if (filesOnThisBox(name)) return no(409, "A skill with that name already exists on the main computer.");
-      return { ...state, skills: [...state.skills.filter(skill => skill.name !== name), next] };
+      return { ...state, skills: [...state.skills.filter(skill => skill.name !== name), next],
+        ...(state.removedSkills ? { removedSkills: state.removedSkills.filter(each => each.name !== name) } : {}) };
     }
     if (item === "agent-skills" && typeof body.id === "string") {
       const agent = offeredAgents().find(each => each.id === body.id && each.version === body.version);
       if (!agent) return no(409, "This agent changed. Read it again before adding it.");
       const additions = agent.skills.filter(id => !state.skills.some(each => each.name === id)).map(id => offerSkill(catalog().skills.find(skill => skill.id === id)!));
       if (additions.some(skill => filesOnThisBox(skill.name))) return no(409, "A skill required by this agent already exists as a local skill on the main computer.");
-      return additions.length ? { ...state, skills: [...state.skills, ...additions] } : success({ installed: true });
+      return additions.length ? { ...state, skills: [...state.skills, ...additions],
+        ...(state.removedSkills ? { removedSkills: state.removedSkills.filter(each => !additions.some(skill => skill.name === each.name)) } : {}) } : success({ installed: true });
     }
-    if (typeof body.id !== "string" || !itemID.test(body.id)) return missing();
-    if (item === "remove-app") return state.apps.some(app => app.id === body.id)
+    if (!isSkillFolder(body.id)) return missing();
+    if (item === "remove-app" && itemID.test(body.id)) return state.apps.some(app => app.id === body.id)
       ? { ...state, apps: state.apps.filter(app => app.id !== body.id) } : success({ installed: false });
-    if (item === "remove-skill") {
-      const old = state.skills.find(skill => skill.name === body.id);
-      if (!old) return success({ installed: false });
-      if (body.was !== skillRevision(old)) return no(409, "The installed skill changed. Read it again first.");
-      return { ...state, skills: state.skills.filter(skill => skill.name !== body.id) };
+    if (item === "remove-skill" || item === "remove-skill-everywhere") {
+      const id = body.id;
+      const old = state.skills.find(skill => skill.name === id);
+      if (removalFor(state, id) || item === "remove-skill" && !old) return success({ installed: false });
+      if (old ? body.was !== skillRevision(old) : body.managed === true) return no(409, "The installed skill changed. Read it again first.");
+      const builtin = isObject(body.builtin) && body.builtin.id === id && typeof body.builtin.title === "string"
+        && body.builtin.title.length > 0 && body.builtin.title.length <= 1024 && typeof body.builtin.summary === "string"
+        && body.builtin.summary.length <= 4096 ? { id, title: body.builtin.title, summary: body.builtin.summary } : undefined;
+      const removed: RemovedSkill = { name: id, key: crypto.randomUUID(), ...(builtin ? { builtin } : {}),
+        ...(old ? { managed: { origin: old.origin, ...(old.version ? { version: old.version } : {}), ...(old.source ? { source: old.source } : {}) } } : {}) };
+      return { ...state, skills: state.skills.filter(skill => skill.name !== id),
+        removedSkills: [...(state.removedSkills ?? []).filter(each => each.name !== id), removed] };
+    }
+    if (item === "restore-skill") {
+      const id = body.id;
+      const removed = removalFor(state, id);
+      if (!removed || body.key !== removed.key) return no(409, "This skill’s removal changed. Read it again first.");
+      const skill = removed.managed ? { ...removed.managed, name: id, files: body.files } : undefined;
+      if (skill && !installedSkill(skill)) return no(422, "The archived skill’s files could not be verified.");
+      if (state.skills.some(each => each.name === id)) return no(409, "A skill already uses that name.");
+      return { ...state, skills: skill ? [...state.skills, skill as InstalledSkill] : state.skills,
+        removedSkills: state.removedSkills?.map(each => each === removed ? { name: each.name, key: each.key, restored: true } : each) };
     }
     return missing();
   });
 }
 
-function reconcile(state = installations()): string[] {
-  return [...projectSkills(state), ...projectApps(state.apps), ...projectBotScopes(state)];
+function reconcile(state = installations(), places: string[] = []): string[] {
+  return [...projectSkills(places), ...projectApps(state.apps), ...projectBotScopes(state)];
 }
-function applied(result: Acted): Acted {
+function applied(result: Acted, places: string[] = []): Acted {
   if (result.status !== 200) return result;
   const value = isObject(result.value) ? result.value : {};
   const state = isObject(value.installations) ? value.installations as unknown as Installations : undefined;
-  return { status: 200, value: { ...value, ...(state ? { installations: undefined } : {}), problems: reconcile(state) } };
+  return { status: 200, value: { ...value, ...(state ? { installations: undefined } : {}), problems: reconcile(state, places) } };
 }
 
 async function send(peer: Peer, command: PeerCommand, context: RouteContext): Promise<Acted> {
@@ -301,15 +346,17 @@ async function send(peer: Peer, command: PeerCommand, context: RouteContext): Pr
   const result = await forwardAct({ ...peer, name: computerName(peer) }, "Marketplace", { ...command, area: "marketplace" }, context.signal);
   return "refused" in result ? no(result.status, result.refused) : result;
 }
-async function save(item: string, body: Record<string, unknown>, context: RouteContext): Promise<Acted> {
+async function save(item: string, body: Record<string, unknown>, context: RouteContext, places: string[] = []): Promise<Acted> {
   const primary = primaryOf();
   if ("peer" in primary) {
+    if ((item === "remove-skill-everywhere" || item === "restore-skill") && !takesForwarded(primary.peer.key, SKILL_REMOVAL))
+      return no(409, `Update Kuvo Code on ${computerName(primary.peer)} to remove or restore setup-wide skills.`);
     const result = await send(primary.peer, { method: "POST", item, body }, context);
     // The accepted replica may still be in flight. Only project the signed value once it arrives.
     return result;
   }
   if (!("self" in primary)) return no(503, "Marketplace changes are waiting for the main computer.");
-  return applied(sharedMutation(item, body));
+  return applied(sharedMutation(item, body), places);
 }
 
 function replyError(error: unknown): Acted {
@@ -335,7 +382,7 @@ async function agentAction(agent: Agent, action: string, body: Record<string, un
 /** Work Queue peer mail: install only on the primary or create an explicitly addressed local bot. */
 export async function marketplaceForPeer(act: Act, targets: Targets): Promise<Acted> {
   try {
-    if (act.method === "POST" && /^(?:save-app|save-skill|remove-app|remove-skill|agent-skills)$/.test(act.item)) {
+    if (act.method === "POST" && /^(?:save-app|save-skill|remove-app|remove-skill|remove-skill-everywhere|restore-skill|agent-skills)$/.test(act.item)) {
       if (readLink()?.setup?.role !== "primary") return no(409, "Marketplace changes are waiting for the main computer.");
       return applied(sharedMutation(act.item, act.body ?? {}));
     }
@@ -382,7 +429,9 @@ async function appAction(context: RouteContext, id: string, action: string | und
 }
 
 async function skillAction(context: RouteContext, id: string, action: string | undefined, verb: string,
-  body: Record<string, unknown>, skill: InstalledSkill | undefined): Promise<Acted> {
+  body: Record<string, unknown>, state: Installations): Promise<Acted> {
+  const skill = state.skills.find(each => each.name === id);
+  const removed = removalFor(state, id);
   const listed = catalog().skills.find(each => each.id === id);
   if (action === "update-preview" && verb === "POST" && skill?.source) return stagePreview(candidate(await githubSkill({
     ...skill.source, ref: typeof body.ref === "string" ? body.ref : skill.source.ref,
@@ -392,17 +441,23 @@ async function skillAction(context: RouteContext, id: string, action: string | u
     if (filesOnThisBox(id)) return no(409, "A local skill already uses that name.");
     return save("save-skill", { skill: offerSkill(listed), was: body.was }, context);
   }
+  if (action === "add" && verb === "POST" && removed?.builtin) {
+    const available = builtinAvailable(removed.builtin);
+    if (body.version !== available.version || body.revision !== available.revision) return no(409, "Review the skill before adding it.");
+    return save("restore-skill", { id, key: removed.key }, context);
+  }
   if (action) return missing();
   if (verb === "GET" && (skill || listed)) {
     const info = skill ?? offerSkill(listed!);
     return success({ ...cardSkill(info), title: listed?.title ?? cardSkill(info).name ?? id,
       summary: listed?.summary ?? cardSkill(info).description, category: listed?.category ?? YOUR_SKILLS, files: info.files, installed: !!skill,
       available: listed ? { version: listed.version, revision: skillRevision(offerSkill(listed)), files: listed.files } : undefined,
-      actions: skill ? [{ id: "remove", title: "Remove", style: "destructive", confirm: { title: `Remove ${listed?.title ?? cardSkill(info).name ?? id}?`,
-        body: "It's removed from all your computers. You can install it again later.", button: "Remove" } }, ...(skill.source ? [{ id: "update-preview", title: "Check for Update" }] : []),
+      actions: skill ? [removeAction(listed?.title ?? cardSkill(info).name ?? id), ...(skill.source ? [{ id: "update-preview", title: "Check for Update" }] : []),
         ...(!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit", form: editForm(listed?.title ?? cardSkill(info).name ?? id, skillText(info)) }] : [])] : [{ id: "add", title: "Install Skill" }] });
   }
-  if (skill && verb === "DELETE") return save("remove-skill", { id, was: body.was }, context);
+  if (skill && verb === "DELETE") {
+    return save("remove-skill-everywhere", { id, was: body.was, managed: true }, context);
+  }
   if (skill && verb === "PATCH") {
     if (skill.source || skill.origin === "catalog") return no(409, "Edit a copy of this skill or install an updated version.");
     const markdown = skill.files.find(file => file.path === "SKILL.md")!;
@@ -410,30 +465,33 @@ async function skillAction(context: RouteContext, id: string, action: string | u
     if (!edit) return no(400, "Give the skill a description and instructions.");
     return save("save-skill", { skill: { ...skill, files: skill.files.map(file => file.path === "SKILL.md" ? edit.files[0] : file) }, was: body.was }, context);
   }
-  if (!skill && filesOnThisBox(id)) {
-    const legacy = `kuvo/skills/${encodeURIComponent(id)}`;
-    if (verb === "GET") {
-      // This computer's own skill, read and written by the skills routes: its card, its text as its
-      // revision, and the same actions as a Marketplace skill.
-      const got = await answerSkills("GET", legacy, undefined, null);
-      if (!("text" in got.value)) return got;
-      const text = got.value.text;
-      const about = skillAbout(text);
-      return success({ id, title: about.name ?? id, summary: about.description ?? "", category: YOUR_SKILLS, origin: "local", installed: true,
-        revision: text, files: [{ path: "SKILL.md", data: Buffer.from(text).toString("base64"), sha256: sha256(Buffer.from(text)) }],
-        actions: [{ id: "remove", title: "Delete", style: "destructive", confirm: { title: `Delete ${about.name ?? id}?`,
-          body: "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.", button: "Delete" } },
-          { id: "edit", title: "Edit", form: editForm(about.name ?? id, text) }] });
-    }
-    if (verb === "DELETE") return answerSkills(verb, legacy, body, null);
-    if (verb === "PATCH") {
-      const old = await answerSkills("GET", legacy, undefined, null);
-      if (!("text" in old.value)) return old;
-      if (typeof body.description !== "string" || !body.description.trim() || typeof body.instructions !== "string")
-        return no(400, "Give the skill a description and instructions.");
-      const text = skillDocument(skillAbout(old.value.text).name ?? id, body.description, body.instructions, old.value.text);
-      return answerSkills("PUT", legacy, { was: body.was, text }, null);
-    }
+  if (removed?.builtin && verb === "GET") return success({ ...removed.builtin, category: "Built In",
+    origin: "catalog", installed: false, available: builtinAvailable(removed.builtin), actions: [{ id: "add", title: "Install Skill" }] });
+  if (removed) return missing();
+
+  const found = await discoverSkills(context);
+  const folder = found.folders.find(each => each.id === id);
+  const builtin = found.builtins.find(each => each.id === id);
+  const info = folder ?? builtin;
+  if (!info) return missing();
+  const { title, summary, text } = info;
+  const revision = revisionFor(folder ? [folder.folder, text] : [id, "built-in"]);
+  const own = folder?.folder === path.join(SKILLS_FOLDER, id);
+  const legacy = `kuvo/skills/${encodeURIComponent(id)}`;
+  const legacyState = own ? (await answerSkills("GET", "kuvo/skills", undefined)).value : {};
+  const source = "github" in legacyState ? legacyState.github[id] : undefined;
+  if (verb === "GET") return success({ id, title, summary, category: YOUR_SKILLS, origin: own ? "local" : "found",
+    location: folder?.folder ?? "Built in", installed: true, revision, source, files: text ? [markdownFile(text)] : [],
+    actions: [removeAction(title, !folder), ...(own && !source && text ? [{ id: "edit", title: "Edit", form: editForm(title, text) }] : [])] });
+  if (verb === "DELETE") {
+    if (body.was !== revision) return no(409, "The installed skill changed. Read it again first.");
+    return save("remove-skill-everywhere", { id, ...(folder ? {} : { builtin: { id, title, summary } }) }, context, found.places);
+  }
+  if (verb === "PATCH" && own && text) {
+    if (body.was !== revision) return no(409, "The installed skill changed. Read it again first.");
+    if (typeof body.description !== "string" || !body.description.trim() || typeof body.instructions !== "string")
+      return no(400, "Give the skill a description and instructions.");
+    return answerSkills("PUT", legacy, { was: text, text: skillDocument(skillAbout(text).name ?? id, body.description, body.instructions, text) });
   }
   return missing();
 }
@@ -485,7 +543,20 @@ export async function* marketplaceRoute(context: RouteContext): AsyncGenerator<A
       const result = await save("save-skill", { skill, was: body.was }, context);
       return yield* json(result.status, { ...(isObject(result.value) ? result.value : {}), id: skill.name });
     }
-    // This computer's own skills, as Settings › Skills kept them: Recently Deleted and Other Places.
+    if (action === "/skills/restore" && verb === "POST" && typeof body.id === "string") {
+      // Reading Recently Deleted applies its retention period before accepting a restore.
+      await answerSkills("GET", "kuvo/skill-trash", undefined);
+      const archived = archivedSkill(body.id);
+      if (archived) {
+        const removed = removalFor(state, archived.name);
+        if (!removed || removed.key !== archived.key) return yield* json(409, { message: "This skill has already been restored or installed again." });
+        if (fs.lstatSync(archived.folder, { throwIfNoEntry: false })) return yield* json(409, { message: "A skill already uses that folder." });
+        const files = removed.managed ? localSkill(path.join(SKILL_TRASH_FOLDER, body.id)).files : undefined;
+        const result = await save("restore-skill", { id: archived.name, key: archived.key, files }, context);
+        return yield* json(result.status, result.value);
+      }
+    }
+    // Legacy Recently Deleted entries and Other Places still use the Settings routes.
     if ((action === "/skills/restore" && verb === "POST") || (action === "/skills/places" && (verb === "POST" || verb === "DELETE"))) {
       const at = action === "/skills/restore" ? `trash-${String(body.id ?? "")}` : verb === "POST" ? "places" : `place-${Number(body.index)}`;
       if (action === "/skills/places" && verb === "DELETE" && !(Number.isInteger(body.index) && (body.index as number) >= 0)) return yield* json(400, { message: "Choose a place to remove." });
@@ -512,7 +583,7 @@ export async function* marketplaceRoute(context: RouteContext): AsyncGenerator<A
     }
     let result: Acted;
     if (area === "apps") result = await appAction(context, id, command, verb, body, state.apps.find(each => each.id === id));
-    else if (area === "skills") result = await skillAction(context, id, command, verb, body, state.skills.find(each => each.name === id));
+    else if (area === "skills") result = await skillAction(context, id, command, verb, body, state);
     else {
       const agent = offeredAgents().find(each => each.id === id);
       if (!agent) result = missing();

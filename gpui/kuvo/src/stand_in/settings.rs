@@ -680,6 +680,12 @@ impl Settings {
         self.more_sections.push((section, page));
     }
 
+    /// The value of a row on a section a test added (`add_section`), as it is now.
+    pub fn row_value(&self, section: &str, row: &str) -> Option<Value> {
+        let (_, page) = self.more_sections.iter().find(|(listed, _)| listed["id"] == serde_json::json!(section))?;
+        page["groups"].as_array()?.iter().flat_map(|group| group["rows"].as_array().into_iter().flatten()).find(|each| each["id"] == serde_json::json!(row)).map(|each| each["value"].clone())
+    }
+
     /// The folders also allowed, in place of the sample's.
     pub fn set_allowed(&mut self, allowed: Vec<Value>) {
         self.allowed = allowed;
@@ -730,11 +736,14 @@ impl Settings {
         self.next += 1;
         let method_id = body["methodID"].as_str().unwrap_or_default();
         let device = method_id == "device";
+        // (Claude Code's ends on a code to paste back, as a box says once its page is the one it
+        // printed; the others come back by themselves.)
         let accepts_code = agents && account.starts_with("claude-code");
+        let instructions = if device { "Enter the code on the page." } else if accepts_code { "Sign in on Claude’s page, then paste its code here." } else if agents { "Finish signing in with ChatGPT in your browser." } else { "" };
         let mut attempt = json!({
             "attemptID": id, "url": format!("https://sign-in.stand-in.invalid/{account}/{method_id}{}", if device { "?user_code=WDJB-MJHT" } else { "" }),
-            "instructions": if device { "Enter the code on the page." } else { "" },
-            "mode": "auto", "acceptsCode": accepts_code,
+            "instructions": instructions,
+            "mode": if accepts_code { "code" } else { "auto" }, "acceptsCode": accepts_code,
             "time": { "created": 0, "expires": 900_000 },
         });
         let mut status = if account == "poe" {

@@ -38,7 +38,7 @@ import type { GroupRunner } from "./groups/runner"
 import type { GroupStore } from "./groups/store"
 import { shell, shellOutput, shells, stopShell } from "./shells"
 import type { Integration, Model, Session } from "./wire"
-import { summarizeAt } from "../shared/context"
+import { compactionChoice, summarizeAt, summarizeSetting, type SummarizeSetting } from "../shared/context"
 
 export interface Context {
   roster: Roster
@@ -207,12 +207,17 @@ export async function integration(agent: Agent, accounts: AccountRefresh, fresh 
   }
 }
 
-/** A session as the app reads it: its context with where it's summarized by itself (PROTOCOL.md, "Session context"). */
-export function withSummarizeAt(session: Session): Session {
+/** A session as the app reads it: its context with where it's summarized by itself, and the box's
+ * setting that decides it, to offer on the conversation (`summarize`), where its agent takes it
+ * (PROTOCOL.md, "Session context"). */
+export function withSummarizeAt(session: Session): Session & { summarize?: SummarizeSetting } {
+  const kind = parseProvider((session.contextModel ?? session.model)?.providerID ?? "")?.kind
+  const choice = compactionChoice()
+  const summarize = summarizeSetting(kind, choice)
   const context = session.context
-  if (!context) return session
-  const at = summarizeAt(parseProvider((session.contextModel ?? session.model)?.providerID ?? "")?.kind, context.window)
-  return at === undefined ? session : { ...session, context: { ...context, summarizeAt: at } }
+  const at = context && summarizeAt(kind, context.window, choice)
+  const measured = context && at !== undefined ? { ...session, context: { ...context, summarizeAt: at } } : session
+  return summarize ? { ...measured, summarize } : measured
 }
 
 function page<T extends { id: string }>(items: T[], url: URL): { data: T[]; cursor: { next?: string; previous?: string } } {
@@ -375,6 +380,7 @@ export function handler(context: Context, transferring?: () => boolean) {
             if (status.status === "complete") pending.finish()
             if (status.status !== "pending") { pending.stop(); attempts.delete(d!) }
             if (status.status === "failed") return located({ status: "failed", message: failureWords("failed", status.message) })
+            // (`mode` as it stands now: a page that came late decides it.)
             return located(status.status === "pending" ? { ...status, acceptsCode: pending.attempt.acceptsCode, mode: pending.attempt.mode } : status)
           }
           if (method === "POST" && e === "complete") {

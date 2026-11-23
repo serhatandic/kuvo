@@ -54,6 +54,9 @@
               },
               {
                "literal": "fullAccessOff"
+              },
+              {
+               "literal": "windows"
               }
              ]
             },
@@ -73,6 +76,9 @@
               },
               {
                "literal": "fullAccessOff"
+              },
+              {
+               "literal": "windows"
               }
              ]
             },
@@ -113,6 +119,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -128,6 +137,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -165,6 +177,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -180,6 +195,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -232,6 +250,9 @@
               },
               {
                "literal": "fullAccessOff"
+              },
+              {
+               "literal": "windows"
               }
              ]
             },
@@ -251,6 +272,9 @@
               },
               {
                "literal": "fullAccessOff"
+              },
+              {
+               "literal": "windows"
               }
              ]
             },
@@ -291,6 +315,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -306,6 +333,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -343,6 +373,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -358,6 +391,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -427,6 +463,9 @@
           },
           {
            "literal": "fullAccessOff"
+          },
+          {
+           "literal": "windows"
           }
          ]
         },
@@ -462,6 +501,9 @@
              },
              {
               "literal": "fullAccessOff"
+             },
+             {
+              "literal": "windows"
              }
             ]
            },
@@ -477,6 +519,9 @@
              },
              {
               "literal": "fullAccessOff"
+             },
+             {
+              "literal": "windows"
              }
             ]
            },
@@ -549,6 +594,9 @@
           },
           {
            "literal": "fullAccessOff"
+          },
+          {
+           "literal": "windows"
           }
          ]
         },
@@ -584,6 +632,9 @@
              },
              {
               "literal": "fullAccessOff"
+             },
+             {
+              "literal": "windows"
              }
             ]
            },
@@ -599,6 +650,9 @@
              },
              {
               "literal": "fullAccessOff"
+             },
+             {
+              "literal": "windows"
              }
             ]
            },
@@ -631,6 +685,9 @@
         },
         {
          "literal": "fullAccessOff"
+        },
+        {
+         "literal": "windows"
         }
        ]
       }
@@ -6114,6 +6171,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6136,7 +6195,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6158,6 +6237,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6180,7 +6261,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6212,6 +6313,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6234,7 +6337,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6258,6 +6381,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6280,7 +6405,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6303,6 +6448,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6325,7 +6472,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6366,6 +6533,8 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "fill?": "number",
+        "seen?": "number",
         "line?": {
          "object": {
           "words": "string",
@@ -6388,7 +6557,27 @@
             }
            ]
           },
-          "short?": "string"
+          "short?": "string",
+          "phase?": {
+           "oneOf": [
+            {
+             "literal": "getting-ready"
+            },
+            {
+             "literal": "ready"
+            },
+            {
+             "literal": "switching"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "fill?": "number"
          }
         },
         "state": {
@@ -6673,7 +6862,26 @@
         "shown?": "bool",
         "title?": "string",
         "detail?": "string",
-        "warning?": "bool"
+        "warning?": "bool",
+        "phase?": {
+         "oneOf": [
+          {
+           "literal": "getting-ready"
+          },
+          {
+           "literal": "ready"
+          },
+          {
+           "literal": "switching"
+          },
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        }
        }
       },
       "wipePending?": {
@@ -7004,6 +7212,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7026,7 +7236,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7048,6 +7278,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7070,7 +7302,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7102,6 +7354,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7124,7 +7378,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7148,6 +7422,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7170,7 +7446,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7193,6 +7489,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7215,7 +7513,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7256,6 +7574,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7278,7 +7598,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7358,7 +7698,26 @@
         "shown?": "bool",
         "title?": "string",
         "detail?": "string",
-        "warning?": "bool"
+        "warning?": "bool",
+        "phase?": {
+         "oneOf": [
+          {
+           "literal": "getting-ready"
+          },
+          {
+           "literal": "ready"
+          },
+          {
+           "literal": "switching"
+          },
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "done"
+          }
+         ]
+        }
        }
       },
       "wipePending?": {
@@ -7689,6 +8048,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7711,7 +8072,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7733,6 +8114,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7755,7 +8138,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7787,6 +8190,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7809,7 +8214,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7833,6 +8258,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7855,7 +8282,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7878,6 +8325,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7900,7 +8349,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -7941,6 +8410,8 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "fill?": "number",
+             "seen?": "number",
              "line?": {
               "object": {
                "words": "string",
@@ -7963,7 +8434,27 @@
                  }
                 ]
                },
-               "short?": "string"
+               "short?": "string",
+               "phase?": {
+                "oneOf": [
+                 {
+                  "literal": "getting-ready"
+                 },
+                 {
+                  "literal": "ready"
+                 },
+                 {
+                  "literal": "switching"
+                 },
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "fill?": "number"
               }
              },
              "state": {
@@ -11248,7 +11739,13 @@
             "literal": "line.kept-conversation"
            },
            {
+            "literal": "line.merged-library"
+           },
+           {
             "literal": "line.merged-sessions"
+           },
+           {
+            "literal": "line.merged-waiting"
            },
            {
             "literal": "line.peer-conversation"
@@ -11258,6 +11755,9 @@
            },
            {
             "literal": "marketplace"
+           },
+           {
+            "literal": "marketplace.skills.remove"
            },
            {
             "literal": "mcp.catalog"
@@ -11456,6 +11956,9 @@
            },
            {
             "literal": "sessions.list.start"
+           },
+           {
+            "literal": "sessions.location"
            },
            {
             "literal": "sessions.mentions"
@@ -12228,7 +12731,13 @@
             "literal": "line.kept-conversation"
            },
            {
+            "literal": "line.merged-library"
+           },
+           {
             "literal": "line.merged-sessions"
+           },
+           {
+            "literal": "line.merged-waiting"
            },
            {
             "literal": "line.peer-conversation"
@@ -12238,6 +12747,9 @@
            },
            {
             "literal": "marketplace"
+           },
+           {
+            "literal": "marketplace.skills.remove"
            },
            {
             "literal": "mcp.catalog"
@@ -12436,6 +12948,9 @@
            },
            {
             "literal": "sessions.list.start"
+           },
+           {
+            "literal": "sessions.location"
            },
            {
             "literal": "sessions.mentions"
@@ -19739,6 +20254,138 @@
    }
   },
   {
+   "route": "GET kuvo/setup/library/events",
+   "feature": "line.merged-library",
+   "answers": {
+    "200": {
+     "object": {
+      "items": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "image"
+           },
+           {
+            "literal": "document"
+           },
+           {
+            "literal": "page"
+           },
+           {
+            "literal": "other"
+           }
+          ]
+         },
+         "type": "string",
+         "how": {
+          "oneOf": [
+           {
+            "literal": "shown"
+           },
+           {
+            "literal": "generated"
+           },
+           {
+            "literal": "attached"
+           }
+          ]
+         },
+         "path": "string",
+         "bot?": "string",
+         "session?": "string",
+         "group?": "string",
+         "message?": "string",
+         "part?": "string",
+         "at": "number",
+         "hidden?": "number",
+         "there": "bool",
+         "thumbnail": "bool",
+         "computer?": {
+          "object": {
+           "key": "string",
+           "name": "string",
+           "here?": "bool"
+          }
+         }
+        }
+       }
+      },
+      "more": "bool",
+      "sources": {
+       "object": {
+        "bots": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "look?": {
+            "object": {
+             "color?": "string",
+             "shape?": "string",
+             "face?": "string"
+            }
+           },
+           "computer": "string"
+          }
+         }
+        },
+        "you": "bool"
+       }
+      },
+      "computers": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "here?": "bool",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "here"
+           },
+           {
+            "literal": "there"
+           },
+           {
+            "literal": "away"
+           },
+           {
+            "literal": "older"
+           },
+           {
+            "literal": "failed"
+           }
+          ]
+         },
+         "message?": "string",
+         "seen?": "number"
+        }
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/library",
    "feature": "library",
    "answers": {
@@ -19851,7 +20498,8 @@
            }
           ]
          },
-         "message?": "string"
+         "message?": "string",
+         "seen?": "number"
         }
        }
       }
@@ -21429,6 +22077,8 @@
       "message?": "string",
       "url?": "string",
       "instructions?": "string",
+      "mode?": "string",
+      "acceptsCode?": "bool",
       "userCode?": "string",
       "pasteAddress?": "bool",
       "returnToBox?": "string",
@@ -22918,6 +23568,9 @@
       "reason?": {
        "oneOf": [
         {
+         "literal": "windows"
+        },
+        {
          "literal": "kernel"
         },
         {
@@ -23033,6 +23686,9 @@
       "reason?": {
        "oneOf": [
         {
+         "literal": "windows"
+        },
+        {
          "literal": "kernel"
         },
         {
@@ -23147,6 +23803,9 @@
       "restart?": "bool",
       "reason?": {
        "oneOf": [
+        {
+         "literal": "windows"
+        },
         {
          "literal": "kernel"
         },
@@ -25124,6 +25783,117 @@
      }
     },
     "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/sessions/:session/location",
+   "feature": "sessions.location",
+   "answers": {
+    "200": {
+     "oneOf": [
+      {
+       "object": {
+        "place": {
+         "oneOf": [
+          {
+           "literal": "engine"
+          },
+          {
+           "literal": "agents"
+          }
+         ]
+        },
+        "running": "bool"
+       }
+      },
+      {
+       "object": {
+        "on": {
+         "object": {
+          "id": "string",
+          "name": "string",
+          "away": "bool",
+          "lastSeen?": "number",
+          "updating?": "bool",
+          "actions": {
+           "list": {
+            "oneOf": [
+             {
+              "literal": "open"
+             },
+             {
+              "literal": "manage"
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     ]
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/peer-session/:computer/:session/location",
+   "feature": "sessions.location",
+   "answers": {
+    "200": {
+     "object": {
+      "place": {
+       "oneOf": [
+        {
+         "literal": "engine"
+        },
+        {
+         "literal": "agents"
+        }
+       ]
+      },
+      "running": "bool"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
      "object": {
       "message": "string"
      }
@@ -27642,6 +28412,47 @@
         }
        }
       }
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/setup/waiting/counts",
+   "feature": "line.merged-waiting",
+   "answers": {
+    "200": {
+     "object": {
+      "sessions": "number",
+      "bots": "number",
+      "queue": "number"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/setup/waiting/counts/events",
+   "feature": "line.merged-waiting",
+   "answers": {
+    "200": {
+     "object": {
+      "sessions": "number",
+      "bots": "number",
+      "queue": "number"
      }
     },
     "405": {

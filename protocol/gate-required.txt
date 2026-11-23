@@ -46,6 +46,8 @@ limits.bar
 limits.rings
 limits.titles
 line
+line.merged-library
+line.merged-waiting
 marketplace
 messages.commands
 messages.compaction-words
@@ -69,6 +71,7 @@ sessions.archived-groups
 sessions.asks
 sessions.asks.box
 sessions.list
+sessions.location
 sessions.mentions
 sessions.models
 sessions.needsYou

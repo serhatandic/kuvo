@@ -1,12 +1,12 @@
 # Kuvo on Windows
 
-Work Queue #699 · Design, 22 November 2026 · Source references at `5f36f7184`. Windows and WSL trials are pending.
+Work Queue #699 · Design, 22 November 2026 · Source references at `5f36f7184`. The Windows and WSL trial ran on 23 November 2026 ([results](../../.claude/notes/699-windows-trial.md)).
 
 **Before 0.8, ship the GPUI desktop and both box options: WSL2 and native Windows.** Each works with the app closed, owns its work and pairs directly. Build WSL first to exercise the contracts, then native. The [November 15 inventory](../../.claude/notes/699-windows-box.md) has the older port details. The [current architecture](how-kuvo-works.md) removes the need to port split serve and a separate box-services worker. The [engine and browser start on demand](small-computer.md), [accounts use upstream sign-ins](agent-accounts.md), and [one event line per client per box](message-delivery.md) covers reconnects across all transports.
 
 ## The box
 
-Source paths in this table are relative to `box/src/`.
+Source paths in this table are relative to `box/src/`. See the [native primitive contracts and path vectors](../../protocol/PROTOCOL.md#windows-box-primitives-699).
 
 | Piece | Today and what Windows needs |
 | --- | --- |
@@ -17,7 +17,7 @@ Source paths in this table are relative to `box/src/`.
 | Engine | `shared/engine-pin.json:1`, `keeper/kuvo-start:77`. Windows OpenCode and Bun builds exist. Verify execution of the published `@opencode/cli-windows-x64@2.2.6` artifact, `BUN_BE_BUN=1`, SQLite, contained directories and PTYs. If the embedded runtime fails, trial a pinned bundled Bun while keeping OpenCode unmodified. WSL uses the Linux pin. [OpenCode](https://opencode.ai/docs/), [Pinned npm artifact](https://registry.npmjs.org/@opencode%2fcli-windows-x64/2.2.6), [Bun](https://bun.sh/docs/installation) |
 | Browser | `link/browser/install.ts:49,102`, `browser/kuvo-browser.js:612,690`. Add a pinned Windows Chrome for Testing archive and validate `chrome.exe` CDP pipes, profile locking and cookies under the box account. Keep the idle shutdown and existing view/tools protocol. WSL runs Linux headless Chrome. [Chrome for Testing assets](https://googlechromelabs.github.io/chrome-for-testing/) |
 | SSH and relay | `link/add/scripts.ts:145`, `link/add/flow.ts:101`, `link/server/ssh-pipe.ts:162`, `link/relay/host.ts:126`, `link/peers/mail.ts:52`. Native OpenSSH Server needs a platform probe and fixed binary-clean launcher for `route-to` and `route`. Mac/Linux clients use ordinary SSH and the negotiated entry (current POSIX command in `gpui/kuvo_box/src/ssh.rs:112`). For WSL, prefer paired relay or reach a distro sshd on an explicitly configured endpoint. Both boxes dial the existing Noise relay directly. Verify pairing, peer mail, reconnect, and moves across path formats. [Windows OpenSSH](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration), [WSL networking](https://learn.microsoft.com/en-us/windows/wsl/networking) |
-| Sandbox | `link/fence/state.ts:102,457`. Native reports unavailable with a Windows reason. Existing Auto behavior asks about shell commands without a saved approval (`agents/sessions.ts:3250`). Full Access stays explicit. WSL2 uses the Linux Auto accident guard only after capability and interop checks. Keep the vault on its encrypted-file path for Windows, protected by native ACLs, and report capability gaps such as vault SSH agent or keep-awake from the box. `link/vault/store.ts:184,212` |
+| Sandbox | Unavailable on Windows (coming soon), for both WSL2 and native. |
 
 ### Coding agents
 
@@ -35,7 +35,7 @@ The box discovers the install and uses its own sign-in (`agents/roster.ts:61`, `
 
 Zed provides GPUI's Win32 windowing, DirectWrite and GPU backend at the dependency in `gpui/Cargo.toml:14` (Windows backend in `gpui/Cargo.lock:2197`). Compile Kuvo at that pin first. Replace Mac bundle and home discovery, use Credential Manager for the desktop pairing key, and give the installed app a signed per-user package and updater (recommend signed MSIX/App Installer, subject to trial). The app invokes the packaged box installer/start command and attaches via `run/serve.json` and loopback HTTP. For WSL it invokes the distro launcher via `wsl.exe` and obtains the record from that distro. Validate the server's build and generation before attaching (`gpui/kuvo_box/src/place.rs:171` currently cannot identify Windows processes). Both use the existing transport, line and browser view. See `gpui/kuvo/src/main.rs:157,177,205`, `gpui/kuvo/src/keeper.rs:27,59`, `gpui/kuvo_box/src/install.rs:42,311` and `gpui/kuvo_box/src/local.rs:83`. [GPUI platforms](https://github.com/zed-industries/zed/blob/main/crates/gpui/README.md), [Zed Windows requirements](https://zed.dev/docs/installation#windows), [App Installer updates](https://learn.microsoft.com/en-us/windows/msix/app-installer/app-installer-file-overview)
 
-WSL reuses the Linux workers, installer, update and sandbox. Its cost is distro lifecycle, networking and cross-filesystem projects. Native avoids the distro and uses the Windows toolchain directly. Its cost is process ownership, filesystem semantics, installer/startup and worker adapters. Since November 15, both paths have fewer resident processes to launch, one stream to recover, and one release selection to restore. Native still needs the keeper's recovery behavior and agent-holder continuity.
+WSL reuses the Linux workers, installer and update. Its cost is distro lifecycle, networking and cross-filesystem projects. Native avoids the distro and uses the Windows toolchain directly. Its cost is process ownership, filesystem semantics, installer/startup and worker adapters. Since November 15, both paths have fewer resident processes to launch, one stream to recover, and one release selection to restore. Native still needs the keeper's recovery behavior and agent-holder continuity.
 
 ## Sessions in order
 
@@ -43,25 +43,25 @@ WSL reuses the Linux workers, installer, update and sandbox. Its cost is distro 
 | --- | --- | ---: |
 | 1 | Run the trial below in a disposable Windows account or VM, with smoke probes first. | 6–9 |
 | 2 | Build `scripts/windows-box-check.sh` and `scripts/windows-bridge-check.sh` over SSH, like `scripts/lokum-*-check.sh`. Stage the checkout in a fresh private test home. Extend `box/bridge-tests/test-safety.js:164` to isolate `HOME`, `USERPROFILE`, app data, temp, caches and credentials, including credential-store isolation via the disposable account. Run box tests with pinned Bun and bridge tests with pinned Node. Support filters and WSL, preserve status, report skips and footprint, clean only the run's files and processes. | 6–9 |
-| 3 | Complete WSL box lifecycle, distro facts, reachability and validated Linux Auto behavior. | 16–23 |
-| 4 | Add native platform, path, process and IPC primitives, with protocol vectors. | 18–26 |
+| 3 | Complete the WSL box lifecycle, distro facts and reachability. | 12–17 |
+| 4 | Establish native platform and profile discovery, path vectors, PID start-identity checks and the shared local IPC contract. Validate the Win32 bindings in the trial. | 18–26 |
 | 5 | Add the box-owned keeper, wake firing, installer, logon task and signed update/rollback. Preserve the shell entry and legacy restore for supported Mac/Linux upgrades. | 24–34 |
 | 6 | Bring up native engine, Git, PTY, SSH and browser flows. | 14–20 |
 | 7–11 | One session per native agent, in table order. Prove a turn, reconnect, cancellation and handover. | 3–5 each |
 | 12 | GPUI Windows build, packaging/updater, and local native/WSL attach. Draft the box choice before implementing it. | 14–22 |
 | 13 | Two-option release pilot, mixed-platform updates and moves, docs, uninstall and footprint. | 6–9 |
 
+**115–171 hours total.**
+
 **The 26 trial checks** (record OS, architecture, versions and pass/fail). Use smoke probes for session 1 and run the full target-area tests once session 2 has isolated them.
 
-- **WSL (1–12):** 1 Landlock/namespaces, 2 Linux box/bridge smoke and Auto fixtures, 3 interop boundaries with Windows tools/drives, 4 keep alive through terminal close and sleep, 5 cron/systemd on and off, 6 hidden logon task and cleanup, 7 loopback and sign-in callbacks under NAT/mirrored/VPN, 8 SSH wrapper and distro sshd with binary stdio, 9 headless Chrome without WSLg, 10 all five Linux sign-ins and turns with host PATH contamination, 11 `/mnt/c` Git/watch/modes, 12 due wake over suspend.
-- **Native (13–26):** 13 engine/runtime/SQLite/config/PTY, 14 hidden starter and child windows, 15 Job Objects/PID identity/ConPTY/`.cmd`, 16 named pipe ACLs and key across users, 17 Chrome pipes/profile/credentials across logon and SSH, 18 locked files and interrupted selector/rollback with a live holder, 19 task restart and signed-out behavior, 20 SSH probe/binary stdio/forward/disconnect plus relay line replay and send receipts, 21 Git Bash/CRLF/symlinks/credentials, 22 five native sign-ins/turns/stops, 23 long paths, 24 Defender/SmartScreen/firewall, 25 ARM64 engine and Chrome emulation if in scope, 26 roaming profiles and NTFS identity/rename/delete behavior.
+- **WSL (1–12):** 1 WSL2 detection with interop on and off, 2 Linux box/bridge smoke, 3 interop boundaries with Windows tools/drives, 4 keep alive through terminal close and sleep, 5 cron/systemd on and off, 6 hidden logon task and cleanup, 7 loopback and sign-in callbacks under NAT/mirrored/VPN, 8 SSH wrapper and distro sshd with binary stdio, 9 headless Chrome without WSLg, 10 all five Linux sign-ins and turns with host PATH contamination, 11 `/mnt/c` Git/watch/modes, 12 due wake over suspend.
+- **Native (13–26):** 13 engine/runtime/SQLite/config/PTY, 14 hidden starter and child windows, 15 process creation identity, PID reuse, Job Objects, ConPTY and `.cmd`, 16 same-SID pipe access across sign-in and SSH, rejection of other SIDs, remote peers and wrong keys, stale-listener recovery and holder handover, 17 Chrome pipes/profile/credentials across logon and SSH, 18 locked files and interrupted selector/rollback with a live holder, 19 task restart and signed-out behavior, 20 SSH probe/binary stdio/forward/disconnect plus relay line replay and send receipts, 21 Git Bash/CRLF/symlinks/credentials, 22 five native sign-ins/turns/stops, 23 drive and UNC paths, case-sensitive NTFS and long paths, 24 Defender/SmartScreen/firewall, 25 ARM64 engine and Chrome emulation if in scope, 26 roaming profiles and NTFS identity/rename/delete behavior.
 
 ## Decisions and access
 
 - **D1–D3.** Use a local NTFS profile with `%USERPROFILE%\.kuvo-code` and checked ACLs. Propose `%LOCALAPPDATA%` if roaming support is needed. Share a box-code keeper with a stable bootstrap that can roll back a broken release. Require user-installed Git for Windows for Kuvo commands.
 - **D4, user's decision.** Approve the certificate, name and icon for a small signed, windowless starter. Recommend the starter only launch the box under the user's account. Trial headless launch to confirm what it needs to do.
-- **D5–D6.** Draft two or three light/dark choices with the box's own capability facts. Recommend WSL where Linux Auto is available and allow existing Windows-drive projects where the box can state and enforce its actual limits.
-- **D7, user decided.** Ship native with Kuvo's sandbox unavailable in the first release, alongside WSL with Linux Auto where supported.
 - **D8–D9.** Default to per-user sign-in startup. Leave pre-sign-in operation and WSL SSH exposure to explicit user setup. Prefer paired relay for WSL. Start with Windows 11 x64 and confirm ARM64 scope and the desktop package channel.
 
 **Needed from the user:** a Windows 11 x64 PC or VM, its tailnet hostname, OpenSSH Server enabled, and a disposable standard-account username with the test SSH public key authorized. Enable WSL2 with Ubuntu 24.04 and provide Git for Windows. Confirm when sleep, sign-out and reboot trials are OK. Keep Defender on and arrange interactive upstream sign-ins as needed. Use an administrator only for user-run setup that requires it. Confirm ARM64 scope and signing details when packaging is due.

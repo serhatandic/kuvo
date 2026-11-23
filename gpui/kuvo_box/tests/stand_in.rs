@@ -212,12 +212,41 @@ fn last_words(update: &ConversationUpdate) -> Option<String> {
 }
 
 #[test]
+fn a_conversation_opens_from_another_computer() {
+    let computer = "a".repeat(43);
+    let base = format!("kuvo/peer-session/{computer}/ses_codex");
+    let peer = base.clone();
+    let stand_in = StandInBox::start(move |seen| {
+        let route = seen.route();
+        if route == format!("{peer}/location") {
+            return Answer::json(200, json!({ "place": "agents", "running": false }));
+        }
+        if route == format!("{peer}/messages") {
+            return Answer::json(200, json!({ "data": [assistant("msg_remote", "From the Mini.", 2.0)] }));
+        }
+        match route {
+            "kuvo/info" => Answer::json(200, mac_info(current_features())),
+            "kuvo/sessions/ses_codex/location" => Answer::json(200, json!({
+                "on": { "id": computer, "name": "Mini", "away": false, "actions": ["open", "manage"] }
+            })),
+            _ => Answer::json(404, json!({})),
+        }
+    });
+    let _events = stand_in.stream_for(&format!("{base}/events"));
+    let (_home, _serve, client) = this_mac(&stand_in);
+    let follow = client.follow_conversation("ses_codex", at_once());
+    let update = follow.next_blocking().unwrap();
+    assert_eq!(last_words(&update).as_deref(), Some("From the Mini."), "{update:?}");
+    assert!(matches!(update, ConversationUpdate::Conversation(chat) if chat.place == Where::Agents));
+}
+
+#[test]
 fn a_conversation_streams_its_words_and_is_read_again_as_steps_end() {
     let stored = std::sync::Arc::new(std::sync::Mutex::new(json!([user("msg_1", "Hi", 1.0)])));
     let messages = stored.clone();
     let stand_in = StandInBox::start(move |seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "api/session/ses_1" => Answer::json(200, json!({ "data": { "id": "ses_1" } })),
+        "kuvo/sessions/ses_1/location" => Answer::json(200, json!({ "place": "engine", "running": false })),
         // Newest first, as asked.
         "api/session/ses_1/message" => {
             let mut newest: Vec<Value> = messages.lock().unwrap().as_array().unwrap().clone();
@@ -290,8 +319,9 @@ fn a_running_conversation_keeps_delivery_and_live_steps_across_reconnect() {
             let route = seen.route();
             if route == "kuvo/info" {
                 Answer::json(200, mac_info(current_features()))
-            } else if route == place.session_route(session, "") {
-                Answer::json(200, json!({ "data": { "id": session } }))
+            } else if route == "kuvo/sessions/ses_live/location" {
+                let side = if place == Where::Engine { "engine" } else { "agents" };
+                Answer::json(200, json!({ "place": side, "running": true }))
             } else if route == place.session_route("active", "") {
                 Answer::json(200, json!({ "data": { (session): {} } }))
             } else if route == place.session_route(session, "/message") {
@@ -393,14 +423,14 @@ fn a_running_conversation_keeps_delivery_and_live_steps_across_reconnect() {
 fn a_coding_agents_conversation_is_read_from_its_bridge() {
     let stand_in = StandInBox::start(|seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "api/session/ses_cc" => Answer::json(404, json!({})),
-        "kuvo/agents/api/session/ses_cc" => Answer::json(200, json!({ "data": { "id": "ses_cc" } })),
+        "kuvo/sessions/ses_cc/location" => Answer::json(200, json!({ "place": "agents", "running": false })),
         "kuvo/agents/api/session/ses_cc/message" => Answer::json(200, json!({ "data": [assistant("msg_2", "From Claude Code.", 2.0), user("msg_1", "Hi", 1.0)] })),
-        "api/session/ses_none" | "kuvo/agents/api/session/ses_none" => Answer::json(404, json!({})),
+        "kuvo/sessions/ses_none/location" => Answer::json(404, json!({ "message": "That conversation isn’t there any more." })),
         _ => Answer::json(500, json!({})),
     });
     let (_home, _serve, client) = this_mac(&stand_in);
-    let place = client.where_is("ses_cc").unwrap();
+    let location = client.where_is("ses_cc").unwrap();
+    let place = client.conversation_runtime("ses_cc", &location).unwrap().place;
     assert_eq!(place, Where::Agents);
     let messages = client.messages("ses_cc", place, 50).unwrap();
     assert_eq!(messages.iter().map(Message::id).collect::<Vec<_>>(), vec!["msg_1", "msg_2"]);
@@ -521,7 +551,7 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
     let reads = std::sync::atomic::AtomicUsize::new(0);
     let stand_in = StandInBox::start(move |seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "api/session/ses_1" => Answer::json(200, json!({ "data": { "id": "ses_1" } })),
+        "kuvo/sessions/ses_1/location" => Answer::json(200, json!({ "place": "engine", "running": false })),
         "api/session/active" => Answer::json(200, json!({ "data": { "ses_1": {} } })),
         "api/session/ses_1/message" => {
             match reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
@@ -574,12 +604,13 @@ fn a_read_landing_mid_reply_keeps_the_words_streamed_so_far() {
 fn a_conversation_that_isnt_there_ends_its_follow_saying_so() {
     let stand_in = StandInBox::start(|seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        _ => Answer::json(404, json!({})),
+        "kuvo/sessions/ses_gone/location" => Answer::json(404, json!({ "message": "That conversation isn’t there any more." })),
+        _ => Answer::json(500, json!({})),
     });
     let (_home, _serve, client) = this_mac(&stand_in);
     let follow = client.follow_conversation("ses_gone", at_once());
     match follow.next_blocking() {
-        Some(ConversationUpdate::Gone(refusal)) => assert_eq!(refusal.message, "This conversation isn’t on this Mac any more."),
+        Some(ConversationUpdate::Gone(refusal)) => assert_eq!(refusal.message, "That conversation isn’t there any more."),
         other => panic!("gone, not {other:?}"),
     }
     assert!(follow.next_blocking().is_none(), "the follow ended");
@@ -614,7 +645,7 @@ fn a_conversation_shows_each_message_by_its_parts_and_pages_back() {
     let older: Vec<Value> = (1..4).rev().map(|n| user_with(n, json!(null))).collect();
     let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.path.as_str()) {
         (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
-        (_, "api/session/ses_1") => Answer::json(200, json!({ "data": { "id": "ses_1" } })),
+        (_, "kuvo/sessions/ses_1/location") => Answer::json(200, json!({ "place": "engine", "running": false })),
         (_, "api/session/ses_1/message?limit=100&order=desc") => Answer::json(200, json!({ "data": newest, "cursor": { "next": "c1" } })),
         (_, "api/session/ses_1/message?limit=100&cursor=c1") => Answer::json(200, json!({ "data": older, "cursor": { "next": "c2" } })),
         // The box reads each text from before: "text 5" was sent with /goal.
@@ -668,7 +699,7 @@ fn a_message_that_ran_a_command_reads_as_typed_by_its_id() {
     let plain = json!({ "type": "user", "id": "msg_plain", "time": { "created": 1 }, "text": "hello" });
     let stand_in = StandInBox::start(move |seen| match (seen.method.as_str(), seen.route()) {
         (_, "kuvo/info") => Answer::json(200, mac_info(current_features())),
-        (_, "api/session/ses_1") => Answer::json(200, json!({ "data": { "id": "ses_1" } })),
+        (_, "kuvo/sessions/ses_1/location") => Answer::json(200, json!({ "place": "engine", "running": false })),
         (_, "api/session/ses_1/message") => Answer::json(200, json!({ "data": [made.clone(), plain.clone()] })),
         ("POST", "kuvo/messages/parts") => {
             let body = seen.body.clone().unwrap();
@@ -699,7 +730,7 @@ fn after_a_gap_a_conversation_starts_again_from_its_newest() {
     let later = gap.clone();
     let stand_in = StandInBox::start(move |seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
-        "api/session/ses_1" => Answer::json(200, json!({ "data": { "id": "ses_1" } })),
+        "kuvo/sessions/ses_1/location" => Answer::json(200, json!({ "place": "engine", "running": false })),
         "api/session/ses_1/message" if seen.path.contains("cursor=") => Answer::json(200, json!({ "data": [user(6), user(5), user(4)] })),
         "api/session/ses_1/message" => {
             if later.load(std::sync::atomic::Ordering::SeqCst) {
@@ -728,7 +759,7 @@ fn after_a_gap_a_conversation_starts_again_from_its_newest() {
 
 
 /// What waits on you is followed as the box says it: its counts now, and again as they change
-/// (`kuvo/waiting/events`), with nothing counted here.
+/// (`kuvo/setup/waiting/counts/events`), with nothing counted here.
 #[test]
 fn what_waits_on_you_follows_the_boxs_counts() {
     use kuvo_box::areas::Waiting;
@@ -737,7 +768,7 @@ fn what_waits_on_you_follows_the_boxs_counts() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),
         _ => Answer::json(404, json!({})),
     });
-    let lines = stand_in.stream_for("kuvo/waiting/events");
+    let lines = stand_in.stream_for("kuvo/setup/waiting/counts/events");
     let (_home, _serve, client) = this_mac(&stand_in);
     let follow = client.follow_waiting();
     lines.send(json!({ "sessions": 2, "bots": 1, "queue": 0 }).to_string()).unwrap();

@@ -9,8 +9,8 @@
 
 import { createHash } from "node:crypto"
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
-import { dirname, join, resolve, sep } from "node:path"
-import { marketplaceScope, MARKETPLACE_SKILL_MARKER } from "../shared/marketplace"
+import { basename, dirname, join, resolve, sep } from "node:path"
+import { marketplaceScope, MARKETPLACE_SKILL_MARKER, removedSkillNames } from "../shared/marketplace"
 import type { TurnHooks } from "./agent"
 import type { EngineLink } from "./engine"
 
@@ -31,6 +31,11 @@ export function setSkillSource(engine: EngineLink | undefined, folder: string | 
 
 /** Where the sets of skills agents read go (`skillsFolder`), once the bridge knows its home. */
 export const skillsRoot = (): string | undefined => (home ? join(home, "skills") : undefined)
+
+export const removedSkills = (): Set<string> => {
+  const box = process.env.KUVO_HOME ?? (home ? join(home, "..", "box") : undefined)
+  return box ? removedSkillNames(box) : new Set()
+}
 
 const listed = new Map<string, { at: number; skills: Promise<Skill[]> }>()
 /** What the engine last said, by folder: the skills' own folders (an agent reading one isn't working outside the project). */
@@ -105,9 +110,10 @@ export async function skillsFor(directory: string, own: string[], off: (name: st
   const seen = new Set<string>()
   const skills: Skill[] = []
   const scope = marketplaceScope(directory)
+  const removed = removedSkills()
   for (const skill of await engineSkills(directory)) {
     if (scope && existsSync(join(skill.folder, MARKETPLACE_SKILL_MARKER)) && !scope.skills.includes(skill.name)) continue
-    if (!existsSync(join(skill.folder, "SKILL.md"))) continue
+    if (removed.has(skill.name) || removed.has(basename(skill.folder)) || !existsSync(join(skill.folder, "SKILL.md"))) continue
     if (seen.has(skill.name) || off(skill.name) || within(skill.folder, own)) continue
     seen.add(skill.name)
     skills.push(skill)

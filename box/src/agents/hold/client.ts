@@ -13,11 +13,15 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import { EventEmitter } from "node:events"
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
-import net from "node:net"
+import type net from "node:net"
 import { join } from "node:path"
 import { PassThrough, Writable } from "node:stream"
-import program from "./program.js" with { type: "text" }
+import { ipcSource } from "./ipc-source" with { type: "macro" }
+import { localIpc } from "../../shared/local-ipc.js"
+import holderSource from "./program.js" with { type: "text" }
 import { runsAs } from "../../shared/platform"
+
+const program = ipcSource() + "\n" + holderSource
 
 export const HOLD_PROTO = "hold/1"
 /** How long a holder has to start, or to answer a bridge attaching. */
@@ -53,6 +57,7 @@ export interface HoldRecord {
  * run as they always have, unheld.
  */
 export function holdFolder(boxHome: string): string | undefined {
+  if (process.platform === "win32") return undefined
   const own = join(boxHome, "run", "agents", "hold")
   // (A slash, a 12-letter id and ".sock": 18 bytes.)
   return Buffer.byteLength(own) + 18 < (process.platform === "darwin" ? 104 : 108) ? own : undefined
@@ -94,6 +99,8 @@ function programIn(folder: string): string {
  * number since) is a leftover: removed, never signalled.
  */
 export function heldIn(folder: string): HoldRecord[] {
+  // Until the Windows process adapter is installed, an unverified record must stay on disk.
+  if (process.platform === "win32") return []
   let names: string[]
   try {
     names = readdirSync(folder)
@@ -147,6 +154,7 @@ export interface HoldOptions {
 
 /** Starts `command` under a holder of its own, and attaches to it as its first bridge. */
 export async function hold(command: string[], options: HoldOptions): Promise<Held> {
+  if (process.platform === "win32") throw new Error("Kuvo's secure Windows named pipes are unavailable.")
   const id = randomBytes(6).toString("hex")
   const key = randomBytes(24).toString("hex")
   const path = programIn(options.folder)
@@ -213,7 +221,8 @@ export async function attach(folder: string, record: HoldRecord, from?: number, 
 }
 
 async function connect(folder: string, id: string, key: string, generation: number, holder: number, from?: number, complete: boolean | "provisional" = false): Promise<Held> {
-  const socket = net.connect(join(folder, `${id}.sock`))
+  const opening = localIpc(join(folder, `${id}.sock`)).connect()
+  const socket = opening instanceof Promise ? await opening : opening
   const held = new Held(id, holder, socket, complete === "provisional")
   socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, complete: Boolean(complete), ...(from !== undefined ? { from } : {}) }) + "\n")
   // (A holder that doesn't answer, wedged, is given up on.)

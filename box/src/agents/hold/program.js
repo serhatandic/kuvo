@@ -8,7 +8,7 @@
 //
 // Protocol-agnostic, and changed rarely: a newer one is used only for agents started after it, and
 // older ones live on until their agent ends. Plain JavaScript on Node's modules alone, so the
-// bridge writes it out and runs it on its own Bun (client.ts), small, apart from the bridge's code.
+// bridge embeds the shared IPC module, writes the program out and runs it on its own Bun (client.ts).
 //
 // usage: <bun> kuvo-hold.js <folder> <id> <kind>, with one line on stdin: {key, spec}
 //   kind: "jsonrpc" (Codex, ACP: requests the agent sent that no bridge answered are sent again to
@@ -30,12 +30,12 @@
 import { spawn } from "node:child_process"
 import { randomBytes, timingSafeEqual } from "node:crypto"
 import { appendFileSync, closeSync, openSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs"
-import net from "node:net"
 import { join } from "node:path"
 
 const PROTO = "hold/1"
 const [folder, id, kind] = process.argv.slice(2)
-const socketPath = join(folder ?? "", `${id}.sock`)
+const ipc = localIpc(join(folder ?? "", `${id}.sock`))
+const socketPath = ipc.path
 const recordPath = join(folder ?? "", `${id}.json`)
 const journalPath = join(folder ?? "", `${id}.journal`)
 /** Most asks it keeps open for a bridge to come (the oldest go first). */
@@ -420,7 +420,15 @@ function fromBridge(socket, frame) {
   else if (frame.bye && exited && pinned === undefined) leave()
 }
 
-const server = net.createServer((socket) => {
+function serverError(error) {
+  report("holder server error", { code: error?.code })
+  console.error("kuvo-hold:", error?.message ?? error)
+  signal("SIGTERM")
+  process.exit(1)
+}
+
+rmSync(socketPath, { force: true })
+const server = ipc.listen((socket) => {
   let hello = false
   const late = setTimeout(() => !hello && socket.destroy(), HELLO_WITHIN)
   socket.on("error", () => {})
@@ -452,21 +460,17 @@ const server = net.createServer((socket) => {
     },
     { most: () => (hello ? Infinity : HELLO_BYTES) },
   )
+}, {
+  onError: serverError,
+  onListening: () => {
+    report("holder listening")
+    writeRecord()
+    if (!controller && !ending) waitForBridge()
+    // Ready: said once to the bridge starting it, and its stdout let go (that bridge may be gone soon).
+    process.stdout.write(JSON.stringify({ ready: PROTO, pid: process.pid, child: child.pid ?? null }) + "\n", () => process.stdout.destroy())
+  },
 })
-server.on("error", (error) => {
-  report("holder server error", { code: error?.code })
-  console.error("kuvo-hold:", error?.message ?? error)
-  signal("SIGTERM")
-  process.exit(1)
-})
-rmSync(socketPath, { force: true })
-server.listen(socketPath, () => {
-  report("holder listening")
-  writeRecord()
-  if (!controller && !ending) waitForBridge()
-  // Ready: said once to the bridge starting it, and its stdout let go (that bridge may be gone soon).
-  process.stdout.write(JSON.stringify({ ready: PROTO, pid: process.pid, child: child.pid ?? null }) + "\n", () => process.stdout.destroy())
-})
+void server.ready.catch(serverError)
 
 /** With no bridge attached, its agent is stopped after a while (none came to adopt it). */
 function waitForBridge() {

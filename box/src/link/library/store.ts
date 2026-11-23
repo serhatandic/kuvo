@@ -201,17 +201,8 @@ export class LibraryStore {
 
   /** What's in the Library for `filter`, newest first; `names` tells a bot's name for a search. */
   list(filter: Filter = {}, names: (bot: string) => string | undefined = () => undefined, computer = ""): Item[] {
-    const words = (filter.query ?? "").toLowerCase().split(/\s+/).filter(Boolean)
-    const source = filter.source && filter.source !== "all" ? filter.source : undefined
     return [...this.items.values()]
-      .filter((item) => Boolean(item.hidden) === Boolean(filter.hidden))
-      .filter((item) => !filter.kind || item.kind === filter.kind)
-      .filter((item) => !source || (source === "you" ? !item.bot : item.bot === source))
-      .filter((item) => {
-        if (!words.length) return true
-        const said = [item.name, item.bot ? names(item.bot) ?? "" : "you", computer].join("\n").toLowerCase()
-        return words.every((word) => said.includes(word))
-      })
+      .filter(matchesLibrary(filter, names, computer))
       .sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1))
   }
 
@@ -273,5 +264,18 @@ export class LibraryStore {
       if (typeof item.id !== "string" || typeof item.path !== "string" || typeof item.at !== "string") continue
       this.items.set(item.id, item)
     }
+  }
+}
+
+/** The same filter applies to this computer's index and to a peer's kept copy. */
+export function matchesLibrary(filter: Filter, names: (bot: string) => string | undefined, computer: string) {
+  const words = (filter.query ?? "").toLowerCase().split(/\s+/).filter(Boolean)
+  const source = filter.source && filter.source !== "all" ? filter.source : undefined
+  return (item: Pick<Item, "name" | "kind" | "bot"> & { hidden?: unknown }) => {
+    if (Boolean(item.hidden) !== Boolean(filter.hidden) || (filter.kind && item.kind !== filter.kind)) return false
+    if (source && (source === "you" ? Boolean(item.bot) : item.bot !== source)) return false
+    if (!words.length) return true
+    const said = [item.name, item.bot ? names(item.bot) ?? "" : "you", computer].join("\n").toLowerCase()
+    return words.every(word => said.includes(word))
   }
 }

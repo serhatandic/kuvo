@@ -21,6 +21,7 @@ import { textOf, writePrivate } from "../files";
 import { BOX, IS_MAC } from "../home";
 import { holdsBack, isParticular, permissionsHere, refreshedRules } from "../bots/tell";
 import { hasFormerAsks } from "./former-asks";
+import { windowsFenceReason } from "../fence/state";
 import { sandboxGap } from "./sandbox";
 import type { KitRule } from "../bots/kit";
 
@@ -87,14 +88,16 @@ export function allowOtherComputers(on: boolean, file = APPROVAL_FILE): void {
 
 /** The approval a new conversation here gets where its client didn't say: Auto the first time on
  * this computer, then the last one you picked here; Auto while Full Access, picked
- * last, is switched off here since. */
+ * last, is switched off here since. On Windows, Ask First takes the place of Auto. */
 export function defaultApproval(file = APPROVAL_FILE): Approval {
   const kept = keptHere(file);
-  return isApproval(kept.last) && (kept.last !== "fullAccess" || kept.fullAccess === true) ? kept.last : "auto";
+  const wanted = isApproval(kept.last) && (kept.last !== "fullAccess" || kept.fullAccess === true) ? kept.last : "auto";
+  return wanted === "auto" && windowsFenceReason() ? "askFirst" : wanted;
 }
 
 /** Keeps `approval` as the last one you picked on this computer. */
 export function rememberApproval(approval: Approval, file = APPROVAL_FILE): void {
+  if (approval === "auto" && windowsFenceReason()) return;
   if (keptHere(file).last !== approval) keepHere({ last: approval }, file);
 }
 
@@ -111,7 +114,7 @@ export function approvalsSince(file = APPROVAL_FILE): number {
 
 /** Why one can't be had here now, as a word a client maps and in words; none where it can. */
 export interface Unavailable {
-  reason: "sandbox" | "fullAccessOff";
+  reason: "sandbox" | "fullAccessOff" | "windows";
   why: string;
 }
 
@@ -134,6 +137,8 @@ const SANDBOX_WHY = {
 export function unavailable(approval: Approval, { agents = false }: Where = {}): Unavailable | null {
   if (approval === "fullAccess" && !fullAccessAllowed()) return { reason: "fullAccessOff", why: "Full Access isn't confirmed on this computer yet: confirm it first." };
   if (approval === "auto") {
+    const windows = windowsFenceReason();
+    if (windows) return windows;
     const gap = sandboxGap(agents);
     if (gap) return { reason: "sandbox", why: SANDBOX_WHY[gap] };
   }

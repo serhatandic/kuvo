@@ -261,13 +261,24 @@ to open the conversation, `pause` or `resume` for the box's `…/queue/hold` or 
 and `messages` for the per-session queue. The owning box validates each action when asked.
 
 Feature `line.merged-sessions` adds `kuvo/setup/sessions/list/events`. Follow this topic in
-place of the single-box session-list topic. It sends full `kuvo/sessions/list` snapshots,
-including the answering box's project order, start project, pending runtimes and archived
-groups. Every session and project includes `computer: {id, name}`. Remote rows also carry
+place of the single-box session-list topic when the box advertises the feature. Read capabilities
+again when opening the line so an existing subscription can switch after a box update.
+The merged topic sends full `kuvo/sessions/list` snapshots,
+including the answering box's project order, start project and pending runtimes. Archived
+groups include each peer's archived sessions. If the answering box has no local list yet,
+it can still serve its peers' last snapshots, with a null start project. `needsYou` includes
+peer chat and project asks from the same snapshots. Every session and
+project includes `computer: {id, name}`. Remote rows also carry
 `on: {id, name, away, lastSeen?, updating?, actions}`. Remote projects are keyed by
 `<computer-id>:<directory>`, and their sessions reference that key in `project`. The box
-chooses one row for each session ID. The snapshot includes every listed session in a remote
-project, so remote projects have no paging cursor.
+chooses one row for each session ID. A remote project's `shown`, `total` and `more` are
+computed from the merged rows. Pass the same project key to `GET kuvo/sessions/page` with
+the supplied cursor. The answering box pages its last saved copy even while the peer is away.
+
+Feature `line.merged-waiting` adds `GET kuvo/setup/waiting/counts` and its `/events` topic.
+Each state is `{sessions, bots, queue}`, calculated from the session, bot activity and Work Queue
+copies this box already has, including peer copies in the first state. The count is a setup total.
+The per-computer `kuvo/waiting/events` remains for clients combining per-computer system notifications.
 
 For **Runs on**, address `POST kuvo/sessions` to the chosen box by the usual local, paired
 relay or addressed SSH route. Pass its public ID as `computer` alongside the ordinary start
@@ -277,11 +288,21 @@ box returns `409` before creating anything. A local start can omit `computer` or
 
 #### Opening a conversation through another box
 
+Feature `sessions.location`. Ask the nearest box for `GET kuvo/sessions/<session>/location`
+when opening a session by ID. The box uses its kept session list, newly confirmed starts,
+recorded moves and peer lists. It does not contact a runtime or another box for this lookup. A local conversation
+returns `{place, running}`, with `place` either `engine` or `agents`. A peer conversation
+returns `{on: {id, name, away, actions, lastSeen?, updating?}}`, using the merged-list
+computer and actions. A known away conversation still returns `200`. A lookup returns `404`
+with the box's message only if the session is unknown, or `503` if its local list cannot yet
+say. Use the peer's ID to address live reads and the owner's actions.
+
 Feature `line.peer-conversation`. A bot's existing `session` is the ID of its conversation.
 On the nearest box, use `kuvo/peer-session/<computer>/<session>/<resource>` as a GET or a line
 topic, where the computer is the owning box's ID. Use the bot's home computer or the session
 row's `computer.id`.
 
+- With `sessions.location`, `location` gives the owner's `{place, running}` from its kept list.
 - `session` and `messages` return the owner's session and message page. The page takes the
   usual message query.
 - `events` streams that conversation's live events. The owner chooses the runtime and filters
@@ -2219,6 +2240,15 @@ conversation is summarized by itself: Claude Code, Codex and Grok, unless the ch
 agent's own margin decides. Where it's absent, a client draws no mark. Clients draw used of window
 with a mark at `summarizeAt` (the desktop app's Activity, as a strip and on its pinned card).
 
+It also adds `data.summarize` (at the top of `data`, there before anything is measured too) where
+that setting applies to the session's agent (Claude Code, Codex and Grok): `{value, label, choices:
+[{id, title, line?}], line}`, the setting to offer on the conversation, in the box's words
+(`label` "Summarize at"; `choices` "200k", "400k" with `line` "Default", "600k", "Never"; `line`
+"All conversations"). `value` is the current choice's `id` (`"200000"`, `"400000"`, `"600000"`,
+`"never"`). A client changes it with `PATCH kuvo/settings/conversations {row: "compaction", value,
+was}`, which changes it for every conversation on that computer: the setting is the computer's own
+(`box/conversation-compaction.json`), not shared across a setup.
+
 ### Session lists
 
 What each session is, and where every client's lists show it (`sessions.list`): the box decides it
@@ -3962,11 +3992,23 @@ did: the box keeps working as itself ("For released Macs").
     `GET kuvo/computers/events` can include a top-level `fleetUpdate` and
     `computers[].fleetUpdate`. They are present once the setup has an accepted target. An older
     computer that has not reported its progress can still be shown behind.
-    - A row has `{current, target, state, canRetry, line, lastFailureAt?, currentSha256?, targetSha256?}`. `current` can be null.
-      `line` `{words, tone, short?}` is what the row shows, all the box's: `words` ("Ready for
+    - A row has `{current, target, state, canRetry, line, lastFailureAt?, currentSha256?, targetSha256?, fill?, seen?}`. `current` can be null.
+      `fill` is how far a `getting-ready` computer is in getting the release ready, 0 to 1, where
+      it's known (the box pulls it part by part from another of your computers; another computer's
+      as it last told it, for the same target). It never steps back for a target. `seen` is when an
+      `off` computer was last heard from, in Unix milliseconds.
+      `line` `{words, tone, short?, phase?, fill?}` is what the row shows, all the box's: `words` ("Ready for
       beta.41", "beta.40 · Can’t be reached: updates when it’s back"), `tone` (`done`, `working`, `warning`
       where it can't update for a reason you can fix, `blocked` where it can't until the next
-      release, `off`), and on `warning` the few words a narrow place shows (`short`). `canRetry`
+      release, `off`), and on `warning` the few words a narrow place shows (`short`). `phase` is
+      where the row is, which only goes forward: `getting-ready` ("Getting ready · 72%" with
+      `fill` under 1, else "Getting ready…"), `ready` ("Ready for beta.44"), `switching`
+      ("Switching to beta.44…"), `done` (up to date, "beta.44 · Up to date", and only then), or
+      `off` ("beta.43 · seen 2h ago" where `seen` is known: "seen just now", "seen 5 min ago",
+      "seen 2h ago", "seen yesterday", "seen 3 days ago"; else "Can’t be reached: updates when it’s
+      back"). A row that can't update has no `phase`; its `tone` says. `tone` stays as older
+      clients read it (`done` for ready too). The words of an off row change with time: the
+      computers stream sends a new line when they do (it reads again every 15 seconds). `canRetry`
       says Try Again is offered on the row. A client draws these and decides neither.
       `requiresUpdate` is a predecessor compatibility field. States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
       "downloading" | "waiting" | "switching"`, optional `runningTurns`, null if unknown),
@@ -3993,11 +4035,27 @@ did: the box keeps working as itself ("For released Macs").
       retry after failure or five minutes without progress. Its relay owner consumes the request
       and starts the same no-cut path used by automatic updates. In a setup with an accepted
       release, `POST kuvo/update {now: true}` uses the same eligibility rule.
-    - The summary's `shown`, `title`, `detail` and `warning` are the words to draw: shown while
-      computers get ready ("Updating to beta.41 · 2 of 3 ready", off computers left out; `detail`
-      "Everything works on beta.40 while your computers get ready.") or where one can't update for
-      a reason you can fix (`warning`: "spare-linux can't update to beta.41", `detail` its name and
-      reason, Try Again on its row). Hidden otherwise.
+    - The summary's `shown`, `title`, `detail`, `warning` and `phase` are what to draw. `phase` says
+      where the setup's update is, counting every computer with an update state (T, off ones
+      included), the ones up to date (D) and the ones ready (R):
+      - `getting-ready`: none up to date or switching, some getting ready. "Getting beta.44
+        ready", or "Getting beta.44 ready · R of T" once some are ready; `detail` "Your computers
+        stay on beta.43 meanwhile." (or "Your computers keep what they run meanwhile." where they
+        run different versions).
+      - `ready`: every one that can be reached is ready, none switched. "beta.44 is ready · R of
+        T", "They switch next."
+      - `switching`: some up to date or switching, others not yet. "Switching to beta.44 · D of T
+        done", "N still on beta.43." (or "N still to switch." where they run different versions).
+      - `waiting`: nothing in progress, some up to date, some off. "beta.44 · D of T up to date",
+        "spare-linux updates when it’s back." (or "N computers update when they’re back.").
+      - `done`: all up to date. "All T on beta.44" ("Up to date on beta.44" for one computer), no
+        `detail`.
+      It's shown while in progress (`getting-ready`, `ready`, `switching`), where one can't update
+      for a reason you can fix (`warning`: "spare-linux can't update to beta.41", `detail` its name
+      and reason, Try Again on its row; `phase` still says where the rest are), and, `waiting` or
+      `done`, for ten minutes after the update finished, on a box that saw it in progress. The box
+      keeps that in `run/fleet-finished.json` (`{target, finishedAt?}`); one that never saw it
+      under way doesn't show it. Hidden otherwise, with no `detail`. `stage` is as before.
     - Check for Updates (`POST kuvo/update {now: true}`) on a member answers `202` with `message`
       (its main checks now, or once it's back) and keeps the request in `run/fleet-check.json`; its
       relay owner sends the main peer mail `release` `{check: true}` once the main is reached, and
@@ -5043,14 +5101,21 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     `integration.updated` and `model.updated` follow, and how an update went before is gone.
   - Signing in to an agent: `POST kuvo/agents/api/integration/<provider>/connect/oauth {methodID,
     remote}` → `{data: {attemptID, url, instructions, mode, acceptsCode?, userCode?, time}}`; `GET
-    …/connect/oauth/<attempt>` → its status (`pending`, with `url`, `instructions`, `userCode` and
-    `message` as they come;
+    …/connect/oauth/<attempt>` → its status (`pending`, with `mode` and `acceptsCode`, and `url`,
+    `instructions`, `userCode` and `message` as they come;
     `complete`; `failed` with `message`; `expired`); `POST …/connect/oauth/<attempt>/complete
-    {code}` for one with `acceptsCode`; `DELETE …/connect/oauth/<attempt>` to give up. A key:
+    {code}` for one with `acceptsCode`; `DELETE …/connect/oauth/<attempt>` to give up. `mode` says
+    how it ends as it stands: `code` where it ends on a code to paste here (the page in use is the
+    one the agent's command printed: on another device, or taken because nothing reached the
+    browser, a page that comes late included, so a status can turn it to `code`), with
+    `instructions` to match (Claude Code: "Sign in on Claude’s page, then paste its code here.");
+    else `auto`, it comes back by itself (Claude Code: "Finish signing in on Claude’s page."). A
+    client shows the code field for `code`. `acceptsCode` stays as before, for older clients: a
+    code can be pasted (Claude Code's page may still give one where it can't come back). A key:
     `POST …/connect/key {key}`. The box sets `remote` from the request’s transport. With
     `remote: true` the page is for another computer or the phone,
     so it doesn't come back to the computer's `localhost`: Claude Code's ends on a code to paste
-    back (`acceptsCode`), Codex's and Grok's are device codes (`userCode`, shown beside the page,
+    back (`mode: "code"`), Codex's and Grok's are device codes (`userCode`, shown beside the page,
     to copy), Cursor's finishes by itself, and Antigravity's Google page comes back to
     `http://127.0.0.1:<port>/?…` on the computer: open it in a web view, stop where it's sent
     there, and hand that address to the computer with `kuvo/sign-in/return` (below); the attempt
@@ -5367,7 +5432,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
     computer doing the sign-in, which the box explains.
   - `GET kuvo/sign-in/status?integration=<id>&attempt=<id>[&agents=1][&wait=<seconds>]` → the
     attempt's status as the engine (or the bridge) says it (`status`, `message?`, `url?`,
-    `instructions?`, `userCode?`), with `failure` once it's `failed` or `expired`: what a client
+    `instructions?`, `userCode?`, and, pending on the bridge, `mode` and `acceptsCode`, above), with
+    `failure` once it's `failed` or `expired`: what a client
     shows, the page's OAuth code in words (`access_denied`: turned down on its page) and the
     a plain fallback message otherwise. A client asks it as the sign-in goes (every second or so), in
     place of the engine's status route. With `wait` (at most 25), the box asks the engine each
@@ -6256,8 +6322,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   while that computer answers. The box checks what it can without the bot (`400 {"message"}` for an
   empty name, a look there isn't, a model or job that isn't one, no field a change has, or one too
   big for a mail, over 32,000 characters as JSON) and leaves the rest to that computer; `404` for a
-  bot no computer lists (or a computer it doesn't know, without `removed`), `503` when it can't keep
-  it now. It holds each sealed with its own
+  bot no computer lists (or a computer it doesn't know, without `removed`). When there is a
+  destination, the box returns `403` if the caller cannot hold the change, or `503` if the box
+  can't keep it now. It holds each sealed with its own
   secret (this Mac's box, only as its app gives it, in memory) in `run/bots-held/<id>.json`, and
   its refusals the same way, so what anything else there leaves isn't sent or shown.
   An `effort` is held too (`bots.effort`), and goes only to a computer whose `features` say
@@ -6956,7 +7023,9 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
       named for what they count, then each model's; each `{window, title, left, tone, words}`:
       `left`, what's left (0 to 1) for its bar; `tone` `calm`, `warning` or `danger`.
     - How fast it's going: the box keeps each window's readings (from any of your computers, as the
-      row has them; through a restart, in `limits.json`'s `paces`) and, where it has three or more
+      row has them; through a restart, in `limits.json`'s `paces`). It keeps readings spaced by
+      time so frequent reads preserve the stretch. Older readings, a moved reset time, and a
+      lower reading alone don't start a new trail. Where the box has three or more readings
       over a quarter of a recent stretch (a fifth of the window, half an hour to a day; a quarter
       hour at least), takes the rate between the stretch's first and last. Used up: "Back at
       {reset}" (`danger`). On pace to be used up before it starts over: "38% left · runs out
@@ -8111,9 +8180,11 @@ item on its way to another computer (`handing`) goes with the move and is sent f
 
 - **Told**: each box tells every such peer its Work Queue, unasked, so the others have it while it
   sleeps: `{workQueue: {told: {id, at, kind, since, top, primary?: {key, kind, since?},
-  items, owners, labels}}}`. `items` are its items as a view gives them (without `can`) (not deleted ones; the
-  100 latest Done; 1,500 at most), each with `handedFrom` (who handed it on) and
-  `mentionTargets` (stable IDs it mentions), an issue's or pull
+  items, removed?, owners, labels}}}`. `items` are active items as a view gives them (without `can`)
+  and the latest Done items. The optional `removed` contains deleted summaries and their deletion
+  stamps. The first Work Queue state puts kept removed summaries in Deleted, with their computer
+  and Restore available only while the owner answers. Each summary may have `handedFrom` (who handed
+  it on) and `mentionTargets` (stable IDs it mentions). An issue's or pull
   request's with `seen` and `keptIn` as this box last read it (`seen.checked`, when it last asked
   GitHub); `owners` names their
   owners; `labels` its labels (`[{id, name, color}]`); `kind`, `since` and `top` how it numbers, `primary` the
@@ -8821,6 +8892,55 @@ what it knows, and the bridge notes it each time the phone comes in. The machine
 address. The bridge reads the file every 30 seconds: a phone taken off loses its sessions,
 and with no phones and no pairing waiting the bridge stops. The bridge notes when a phone last
 used the machine (`run/link.seen`).
+
+### Windows box primitives (#699)
+
+This is the contract for the native Windows port. A WSL box uses POSIX paths, process records
+and Unix sockets. The box recognizes native Windows as `win32` and WSL as Linux with a
+WSL/Microsoft kernel release or `WSL_DISTRO_NAME`. This is independent of the box's role
+(`kind`). The WSL kernel signal works on stock kernels with Windows interop off.
+
+- **Paths.** On native Windows a box sends file and folder paths with forward slashes, including
+  the drive letter or UNC share (`C:/Users/Ada/Project`, `//Server/Share/Project`). A client
+  quotes the value as required by JSON or its URL field and sends the same spelling back, with
+  both UNC leading slashes and all case intact. The box converts separators at the OS edge.
+  The lexical codec rejects relative and current-drive paths, device and extended namespace
+  paths, streams and dot segments. It neither resolves a junction nor decides whether two paths
+  name the same file. Native file identity and access checks must use OS handles, including on
+  NTFS directories with case sensitivity enabled. The shared
+  [vectors](vectors/file-addresses/windows.json) cover drive roots, UNC share roots, casing and
+  paths with spaces and Unicode. Existing POSIX paths and `file:` URL fields keep their
+  respective formats.
+- **Profile and programs.** Native Kuvo starts under the selected user's local profile
+  (`%USERPROFILE%\.kuvo-code`). `HOME` from Git Bash does not pick a different profile.
+  Before opening a native box, the launcher needs to verify the profile's ownership by token SID
+  and check that its ACL keeps the box's keys private. The native PATH reads environment names
+  case-insensitively and separates absolute entries with semicolons, including quoted entries
+  with an embedded semicolon. Explicit executable and shim resolution belongs to native
+  launcher work. WSL uses Linux paths and executables.
+- **Process records.** Native `run/serve.json`, `run/engine.json`, `run/bridge.json`
+  and holder records pair `pid` with `startIdentity`, the exact unsigned creation FILETIME
+  in decimal string form. This preserves all 64 bits and is distinct from `started` timestamps
+  used for display. The Windows adapter opens the process, reads its creation FILETIME and
+  checks that its handle is unsignaled. A missing, unreadable or incomplete identity gives no
+  authority to attach, signal or remove the record. A confirmed exit or mismatched identity is
+  stale. A stop that must terminate uses the same checked handle so PID reuse cannot redirect
+  it. The auth password and generation still apply. The check is box-owned, and macOS and Linux
+  still use their existing record readers.
+- **Private IPC.** The resident SSH dispatcher and agent holders use the same local byte-stream
+  abstraction with the same framing and keys as before. The native endpoint name is
+  `\\.\pipe\kuvo-<hex>`, where hex is HMAC-SHA256 keyed by the box's existing
+  `run/socket.key` bytes over `kuvo-local-ipc-v1`, NUL, the user SID, NUL, and `ssh` or
+  `holder:<id>`. The name alone grants no access. The adapter creates a first instance with
+  an explicit protected, user-SID DACL and `PIPE_REJECT_REMOTE_CLIENTS`. A pre-existing pipe
+  blocks a new owner. The client checks the server's SID on the opened handle before sending
+  the SSH socket key or the holder's own key. Holders retain their per-holder keys, sequence
+  and generation checks during handover. Failed bind, SID verification or key exchange closes
+  the connection. Unix keeps the existing socket addresses, ownership checks and cleanup.
+
+The Windows path codec, process comparison and IPC contract are testable on Unix. Native
+launcher and route adoption and the Win32 SID, handle and named-pipe bindings require the
+Windows trials in the [port plan](../docs/architecture/windows.md).
 
 ### This Mac's box
 
@@ -10632,6 +10752,15 @@ seconds since 1970.
   other computer's part as last read (`run/library/peers/<key>.json`, the latest lists asked, never a
   search with words): one away or not answering is listed with that part and `seen` (ms, when it was
   read), its `message` saying it's as last seen, and none only the very first time.
+- `GET kuvo/setup/library/events?…` (feature `line.merged-library`) is the Library's topic on
+  `kuvo/line`. It takes the same filters and returns the same shape. Boxes publish their own
+  Library metadata as authenticated peer mail (`libraryCopy`, optionally in parts), independently
+  of a Library being open. Each receiver keeps the latest copy in `run/peers/<key>/library-v1.json`.
+  The first state includes kept copies, and changing tabs, bots or search words filters those
+  copies on the box. Before a reachable peer has ever supplied a copy, there is no partial first
+  state. An away peer's rows keep their computer and `seen` time, with `there` and `thumbnail`
+  false. The snapshot carries metadata and source names, with bytes read from the file's owner
+  only when asked. The previous list routes remain available to older clients.
 - `GET kuvo/library/events?…`: `application/x-ndjson`, the Library now, then again as this computer's
   part changes or, asked again every 20 seconds, another's does. Its first line doesn't wait for your
   other computers: each is its part as last read (`state: there` with `seen`), until it answers.
@@ -11470,6 +11599,11 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   client asks you the first time you pick it), for a bot's conversation and its work as for any
   other (before bridge 0.9.188 bots had Auto at most). A bot's conversation from before there were
   approvals starts with this computer's default, as a new one (before bridge 0.9.189, Auto).
+- On native Windows and WSL, Auto is unavailable. Both option lists return `unavailable:
+  {reason: "windows", why: "Coming soon on Windows."}` for Auto, and setting Auto on an existing
+  conversation returns 409 with that reason. Ask First replaces Auto as the default and is
+  effective for a conversation that already names Auto. Ask First, Accept Edits and confirmed
+  Full Access are available as usual.
 - Where one can't be had now, it fails closed: a conversation set to Auto asks first while the
   sandbox isn't running, and one set to Full Access comes down to Auto while it isn't confirmed on
   this computer. It stays set to what you picked, and comes back to it once it can.
@@ -11517,7 +11651,7 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   you picked, what it comes to here now (`held` `{reason, why}`, the last step down, when that's
   less), whether it's in Plan mode, and each one (`options`: `{approval, held?, unavailable?}`):
   `held` where it can be picked and asks first for now (Auto without the sandbox), `unavailable`
-  where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `fullAccessOff`
+  where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `windows` (Auto unavailable on Windows), `fullAccessOff`
   (and `bot` from a box before 0.9.188). Only a read: its rules come to what it shows within the box's round. 404 `{message}` for a
   conversation that isn't here, 503 with no engine or bridge. A coding agent's subagent (#950) asks
   in the conversation that started it, so it runs with that one's approval: it answers that one's,
@@ -11525,7 +11659,7 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
 - `PUT kuvo/sessions/<id>/approval` `{approval}`: sets it, on the engine's conversation or the
   coding agents'; 200 as `GET` answers (Auto without the sandbox is kept, `held`), 400 for one that
   isn't one of them or a coding agent's subagent (changed in its conversation), 409 `{message, reason}` for Full Access where it can't be picked
-  (`fullAccessOff`), 502 where the engine didn't take it.
+  (`fullAccessOff`) or Auto on Windows (`windows`), 502 where the engine didn't take it.
 - `GET kuvo/approval`: this computer's `{fullAccess, default, auto: {engine, agents}, otherComputers?}`
   (#764: and `options: {engine, agents}`, each mode a new conversation can start in there, as a
   conversation's own `options` say them, which a new conversation's mode menu shows as they are)
@@ -11786,6 +11920,8 @@ what may be decided without asking. Every conversation is Interactive until it's
 
 Each box runs its agents' commands in a sandbox (`sandbox` in `features` and its asks, `sandbox.asks`, bridge 0.9.118) wherever
 it can, with no switch: the way out is per command (the card that asks you about one it refused).
+Native Windows and WSL return `able: false, on: false, agents: false, reason: "windows"`, with
+`why: "Coming soon on Windows."` and no retry action.
 On, each command the engine runs (an agent's shell tool, and yours with `!`) reads everything but
 what's below, and in your home folder adds and changes files (`homeWrites`) but never deletes or
 moves one there (on macOS, Seatbelt's `file-write-unlink`, which a move takes too, is left out; on
@@ -13052,6 +13188,12 @@ whole Insights screen as a box makes it. It takes `period` (7, 30 or 90),
 row's `id`), `computer` or `session` to narrow it. Every grouping is made
 by the box; a client draws it as it comes:
 
+For a selected computer, or across the setup, a reachable Insights peer without a completed
+first copy keeps the summary in `loading`. The final peer page records coverage, and the first
+ready summary includes the records already indexed from those peers. An away computer's
+indexed usage remains included. The saved summary key includes the selected peers and the
+presence of their kept copies, so a summary from before a computer joined can't stand in for it.
+
 - `totals`: `cost` (USD at current API rates), `tokens` (every token,
   cache reads included) and `cacheRate` (cached input over all input,
   null where no input was counted). Every row and standout has the same
@@ -13157,21 +13299,29 @@ leaves previously installed endpoints and skill bytes at the version reviewed by
   box. For a catalog skill, `POST skills/<id>/add` takes the available `{version,revision,was?}`.
   `POST skills/create` takes `{name,description,instructions}`. To edit an authored or folder
   skill, use `PATCH skills/<id>` with `{description,instructions,was}`. `DELETE skills/<id>`
-  takes `{was}` for a shared skill. `was` is the installed revision from details. To update an
+  takes `{was}`, the revision from details, for any installed skill. The details supply the
+  destructive action and its confirmation words, including for `origin: "found"` cards. A folder
+  skill is removed setup-wide by skill name and each computer moves its own folders to Recently
+  Deleted. The same removal suppresses a skill if its original service syncs it back. A removed
+  built-in has no trash entry. It appears in the Kuvo catalog with `available` and an `add` action,
+  using the same add route as other catalog skills. To update an
   installed GitHub skill, explicitly ask `POST skills/<id>/update-preview` and install with its
-  preview ID and the previous revision. Legacy local skills still use the existing skills routes.
+  preview ID and the previous revision. Older clients can still use the legacy local skills routes.
 - **This computer's skills.** Marketplace › Skills holds what Settings › Skills did, for the computer
   answering. The skills area carries `here`: `{computer, switchTitle, deleted, places}`, or
   `{problem}` (words) when they can't be read. Each installed skill, and each skill its engine finds
   in another folder (`origin: "found"`, with `location`: a path or "Built in"), has `enabled`, and
   `switchWhy` when it can't be switched. `POST skills/<id>/enabled` with `{on}` turns it on or off
   on this computer. `deleted` is Recently Deleted (`{title, note, items, action}`): `POST
-  skills/restore` with `{id}` brings one back. `places` is Other Places (`{title, note, items, add,
+  skills/restore` with `{id}` restores a folder to its original location and lifts the
+  setup-wide removal. Each computer restores the copies it archived. `places` is Other Places (`{title, note, items, add,
   remove}`): `POST skills/places` with `{place}` adds one; `DELETE skills/places` with `{index}`
   removes one. The skills area's `preview` and `create` actions, and a skill's `edit`, carry the
   `form` a client draws as it is (fields with `kind` `lines` for several lines, `mono`, `value`
   and `line`, the words under a field). A skill in this computer's own folder answers its details
-  like any other, with its text as `revision`.
+  like any other, with an opaque `revision` for edits and removals. The
+  `marketplace.skills.remove` feature advertises setup-wide removal and restore support between boxes.
+  The setup primary signs the removal or restore, and each box applies it when received.
 - **Delivery.** Installed app definitions and the reviewed skill bytes are accepted by the setup
   primary and published in signed setup state. The Work Queue peer mail carries requests to the
   primary and bot creation to the selected owner. An offline computer projects the last accepted

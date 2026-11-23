@@ -307,7 +307,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       ...(ssh.length ? { ssh } : {}),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !gone ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features, compatibility: computerCompatibility(features) } : {}),
-      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine, away, awayFor) } : {}),
+      // (Off: with when it was last heard from.)
+      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine, away, awayFor, said?.heard, now) } : {}),
       // What's at work there, as it last said: nothing seen at work once it's been away a while;
       // nothing said by one that never said it (an older box).
       ...(mine?.working !== undefined ? (gone ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
@@ -434,13 +435,14 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
     const target = fleetTarget();
     const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), target);
     const pending = [...pendingWipes(readLink()), ...pendingPreparations()];
-    const fleetUpdate = fleetSummary(computers, target);
+    const fleetUpdate = fleetSummary(computers, target, Date.now());
     return { computers, ...(fleetUpdate ? { fleetUpdate } : {}), ...(pending.length ? { wipePending: pending } : {}) };
   };
   if (!match[1]) return yield* json(200, await read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
   // A line now, and one as it changes: its peers, what they told, which are away (their files),
-  // and its own sessions starting and stopping work; and every 15 s for the rest (its limits).
+  // and its own sessions starting and stopping work; and every 15 s for the rest (its limits, how far
+  // it is in getting a release ready, an off computer's "seen 2h ago", a finished update's while).
   // (Of its list's changes, only which are at work: it changes with every step of a run.)
   const atWork = () => JSON.stringify(atWorkHere().slice(0, MOST_HERE));
   const listen = (told: () => void) => {

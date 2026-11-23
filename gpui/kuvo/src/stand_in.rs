@@ -139,6 +139,7 @@ struct State {
     model_states: HashMap<String, Value>,
     /// What each session's `data.context` says (`{used, window?, summarizeAt?}`), where a test said.
     contexts: HashMap<String, Value>,
+    summarize: HashMap<String, Value>,
     /// The coding agents' bridge can't say its models now (it's starting again).
     agents_unknown: bool,
     /// Your starred models, as `kuvo/models/starred` keeps them.
@@ -749,6 +750,45 @@ impl StandIn {
         self.fleet_update(summary, rows);
     }
 
+    /// The setup's update at one of its six phases (0 to 5), in the box's wire format: all getting
+    /// ready, some ready, all ready, switching, up to date but one off, all up to date.
+    pub fn fleet_phase(&self, phase: usize) {
+        let (target, current) = ("0.8.0-beta.44", "0.8.0-beta.43");
+        let row = |step: &str| -> Value {
+            let (state, words, tone, phase, fill): (&str, String, &str, &str, Option<f64>) = match step {
+                "ready" => ("ready", "Ready for beta.44".into(), "done", "ready", None),
+                "switching" => ("updating", "Switching to beta.44…".into(), "working", "switching", None),
+                "done" => ("up-to-date", "beta.44 · Up to date".into(), "done", "done", None),
+                "off" => ("off", "beta.43 · seen 2h ago".into(), "off", "off", None),
+                filling => {
+                    let fill: f64 = filling.parse().unwrap_or(0.);
+                    ("getting-ready", format!("Getting ready · {}%", (fill * 100.).round()), "working", "getting-ready", Some(fill))
+                }
+            };
+            let mut line = json!({ "words": words, "tone": tone, "phase": phase });
+            if let Some(fill) = fill { line["fill"] = json!(fill); }
+            let mut row = json!({ "current": if state == "up-to-date" { target } else { current }, "target": target, "state": state, "canRetry": false, "line": line });
+            if state == "updating" { row["stage"] = json!("switching"); }
+            row
+        };
+        let (steps, summary_phase, title, detail): ([&str; 4], &str, &str, Option<&str>) = match phase {
+            0 => (["0.72", "0.40", "0.15", "0.58"], "getting-ready", "Getting beta.44 ready", Some("Your computers stay on beta.43 meanwhile.")),
+            1 => (["ready", "0.81", "ready", "0.64"], "getting-ready", "Getting beta.44 ready · 2 of 4", Some("Your computers stay on beta.43 meanwhile.")),
+            2 => (["ready"; 4], "ready", "beta.44 is ready · 4 of 4", Some("They switch next.")),
+            3 => (["done", "switching", "ready", "ready"], "switching", "Switching to beta.44 · 1 of 4 done", Some("3 still on beta.43.")),
+            4 => (["done", "done", "done", "off"], "waiting", "beta.44 · 3 of 4 up to date", Some("old-mini updates when it’s back.")),
+            _ => (["done"; 4], "done", "All 4 on beta.44", None),
+        };
+        let keys = ["key_stand_in", "key_devbox", "key_studio", "key_old"];
+        let rows = keys.iter().zip(steps).map(|(key, step)| (*key, row(step))).collect();
+        let done = steps.iter().filter(|step| **step == "done").count();
+        let mut summary = json!({ "target": target, "stage": "downloading", "done": done, "updating": 0, "behind": 0, "failed": 0,
+            "dismissed": false, "failures": [], "shown": true, "warning": false, "title": title, "phase": summary_phase });
+        if let Some(detail) = detail { summary["detail"] = json!(detail); }
+        self.more_computers(0);
+        self.fleet_update(summary, rows);
+    }
+
     /// Try Again for a computer is refused with `words`, as a box whose release moved on says.
     pub fn retry_refused(&self, words: &str) {
         self.state().areas.retry_refused = Some(words.to_owned());
@@ -1292,6 +1332,13 @@ impl StandIn {
     /// "Session context"): `{used, window?, summarizeAt?}`.
     pub fn set_context(&self, session: &str, context: Value) {
         self.state().contexts.insert(session.to_owned(), context);
+    }
+
+    /// What `session`'s `GET api/session/<id>` offers of where it's summarized (`data.summarize`),
+    /// its choice in use following this stand-in's Settings › Conversations, where a test added it
+    /// (`add_settings_section`).
+    pub fn set_summarize(&self, session: &str, summarize: Value) {
+        self.state().summarize.insert(session.to_owned(), summarize);
     }
 
     /// `session`'s subagents that are done, newest first (as `kuvo/work/subagents/<session>` lists
@@ -1907,6 +1954,7 @@ impl State {
 
     /// One of the areas' answers (`kuvo/waiting`, `kuvo/computers`…), as it is now.
     fn area(&self, method: &str, route: &str) -> Option<(u16, Value)> {
+        let route = if route == "kuvo/setup/waiting/counts" { "kuvo/waiting" } else { route };
         areas::answer(&self.areas, method, route, self.made.unwrap_or_else(now_ms), self.needs_you().len(), self.bots.asking())
     }
 
@@ -2502,7 +2550,7 @@ impl StandIn {
                 if state.areas.fleet.is_some() { features.push(crate::fleet::FEATURE); }
                 // (A machine's box shows its browser live; a Mac's has none of its own.)
                 if state.elsewhere { features.push(kuvo_box::browser_view::FEATURE); }
-                if state.delivery_enabled { features.extend([kuvo_box::queue::DELIVERY_FEATURE, kuvo_box::follow::KEPT_FEATURE]); }
+                if state.delivery_enabled { features.push(kuvo_box::queue::DELIVERY_FEATURE); }
                 if state.setup_lists { features.extend([kuvo_box::sessions::SETUP_LISTS, kuvo_box::sessions::MERGED_SESSIONS]); }
                 features.push(crate::insights::SUMMARY);
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
@@ -2531,7 +2579,7 @@ impl StandIn {
             }
             // Another computer's conversation, carried: its newest page as that computer answers
             // it, kept; while it's away, the copy kept, said to be its last.
-            ("GET", ["kuvo", "peer-session", computer, session, "messages"]) if state.delivery_enabled => {
+            ("GET", ["kuvo", "peer-session", computer, session, "messages"]) => {
                 let (computer, session) = ((*computer).to_owned(), (*session).to_owned());
                 let peer = state.peers.get(&computer).cloned();
                 let standing = state.setup_standing.get(&computer).copied();
@@ -3115,14 +3163,59 @@ impl StandIn {
                 state.emit("session.model.selected", json!({ "sessionID": session }));
                 answer(200, json!({}))
             }
+            ("GET", ["kuvo", "sessions", session, "location"]) => {
+                if state.sessions.contains_key(*session) {
+                    return answer(200, json!({ "place": "engine", "running": state.running.contains(*session) }));
+                }
+                // Another computer's, as the setup's lists say it: on that computer, as it stands.
+                let peers: Vec<(String, StandIn)> = state.peers.iter().map(|(key, peer)| (key.clone(), peer.clone())).collect();
+                let standing = state.setup_standing.clone();
+                drop(state);
+                for (key, peer) in peers {
+                    let (has, name) = { let there = peer.state(); (there.sessions.contains_key(*session), there.name()) };
+                    if !has { continue; }
+                    let mut on = json!({ "id": key, "name": name, "away": false, "actions": ["open", "manage"] });
+                    match standing.get(&key) {
+                        Some((_, true)) => on["updating"] = json!(true),
+                        Some((since, false)) => {
+                            on["away"] = json!(true);
+                            on["lastSeen"] = json!(since);
+                            on["actions"] = json!([]);
+                        }
+                        None => {}
+                    }
+                    return answer(200, json!({ "on": on }));
+                }
+                answer(404, json!({ "message": "That conversation isn’t there any more." }))
+            }
+            // Where another computer's runs, asked of it through this box.
+            ("GET", ["kuvo", "peer-session", computer, session, "location"]) => {
+                let peer = state.peers.get(*computer).cloned();
+                let session = (*session).to_owned();
+                drop(state);
+                match peer {
+                    Some(peer) if !peer.state().down => Transport::send(&peer, &Request::get(format!("kuvo/sessions/{session}/location"))),
+                    Some(_) => answer(503, json!({ "message": "The conversation’s computer isn’t answering." })),
+                    None => answer(404, json!({ "message": "There’s no such computer in this setup." })),
+                }
+            }
             ("GET", ["api", "session", "active"]) => {
                 let active: serde_json::Map<String, Value> = state.running.iter().map(|session| (session.clone(), json!({}))).collect();
                 answer(200, json!({ "data": active }))
             }
-            ("GET", ["api", "session", session]) if state.sessions.contains_key(*session) => match state.contexts.get(*session) {
-                Some(context) => answer(200, json!({ "data": { "id": session, "context": context } })),
-                None => answer(200, json!({ "id": session })),
-            },
+            ("GET", ["api", "session", session]) if state.sessions.contains_key(*session) => {
+                let mut data = json!({ "id": session });
+                if let Some(context) = state.contexts.get(*session) { data["context"] = context.clone(); }
+                if let Some(mut summarize) = state.summarize.get(*session).cloned() {
+                    // (Its choice in use is the setting's, as a box reads it.)
+                    if let Some(value) = state.settings.row_value("conversations", "compaction") { summarize["value"] = value; }
+                    data["summarize"] = summarize;
+                }
+                match state.contexts.contains_key(*session) || state.summarize.contains_key(*session) {
+                    true => answer(200, json!({ "data": data })),
+                    false => answer(200, json!({ "id": session })),
+                }
+            }
             ("GET", ["api", "session", session, "message"]) if state.sessions.contains_key(*session) => {
                 let all = state.messages.get(*session).cloned().unwrap_or_default();
                 let limit: usize = query(path, "limit").and_then(|limit| limit.parse().ok()).unwrap_or(100);
@@ -3521,7 +3614,7 @@ impl Transport for StandIn {
             return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
         }
         // What waits on you, or your computers, followed: as it is now, then a line as it changes.
-        if let Some(once) = route.strip_suffix("/events").filter(|once| matches!(*once, "kuvo/waiting" | "kuvo/computers" | "kuvo/agents/api/kuvo/limits")) {
+        if let Some(once) = route.strip_suffix("/events").filter(|once| matches!(*once, "kuvo/waiting" | "kuvo/setup/waiting/counts" | "kuvo/computers" | "kuvo/agents/api/kuvo/limits")) {
             let (sender, receiver) = channel();
             let id = {
                 let mut state = self.state();
@@ -3535,7 +3628,7 @@ impl Transport for StandIn {
                     if let Some((_, now)) = state.area("GET", once) {
                         let _ = sender.send(now.to_string());
                     }
-                    if once == "kuvo/waiting" { state.waits.insert(id, sender) } else { state.computers.insert(id, sender) };
+                    if matches!(once, "kuvo/waiting" | "kuvo/setup/waiting/counts") { state.waits.insert(id, sender) } else { state.computers.insert(id, sender) };
                 }
                 id
             };
@@ -3574,7 +3667,7 @@ impl Transport for StandIn {
             return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
         }
         // The Library, followed: as its query lists it now, then again as something's removed.
-        if route == "kuvo/library/events" {
+        if route == "kuvo/setup/library/events" {
             let (sender, receiver) = channel();
             let id = {
                 let mut state = self.state();

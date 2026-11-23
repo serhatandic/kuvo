@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
-use kuvo_box::follow::{ConversationUpdate, Timing};
+use kuvo_box::follow::{ConversationUpdate, ListUpdate, Timing};
 use kuvo_box::line::LineTiming;
 use kuvo_box::messages::{Content, Message};
 use kuvo_box::transport::{Closer, Request, Response, Stream, Transport};
@@ -40,6 +40,7 @@ struct State {
     /// `404` with nothing said.
     before_the_line: bool,
     restarts: usize,
+    session_info: Option<(u16, Value)>,
 }
 
 #[derive(Clone, Default)]
@@ -110,7 +111,11 @@ impl Transport for StandIn {
         }
         let json = |status: u16, value: Value| Ok(Response { status, content_type: Some("application/json".into()), body: value.to_string().into_bytes() });
         match (request.method.as_str(), request.route()) {
-            ("GET", "api/session/ses_1") => json(200, json!({ "data": { "id": SESSION } })),
+            ("GET", "kuvo/info") if state.session_info.is_some() => {
+                let (status, value) = state.session_info.as_ref().unwrap();
+                json(*status, value.clone())
+            }
+            ("GET", "kuvo/sessions/ses_1/location") => json(200, json!({ "place": "engine", "running": true })),
             ("GET", "api/session/active") => json(200, json!({ "data": { (SESSION): {} } })),
             ("GET", "api/session/ses_1/message") => {
                 state.reads += 1;
@@ -154,6 +159,34 @@ impl Transport for StandIn {
                 }
             }
         }
+        let local = "kuvo/sessions/list/events";
+        let merged = "kuvo/setup/sessions/list/events";
+        if let Some(name) = state.names.get(merged).or_else(|| state.names.get(local)) {
+            let mut sessions = json!({ "ses_here": { "kind": "chat", "directory": "/chats", "created": 1, "updated": 1 } });
+            if state.names.contains_key(merged) {
+                sessions["ses_peer"] = json!({ "kind": "chat", "directory": "/chats", "created": 2, "updated": 2,
+                    "on": { "id": "peer", "name": "Another Mac", "away": false, "actions": ["open"] } });
+            }
+            let _ = live.send(format!("{}\n", json!({ "t": name, "d": {
+                "at": state.line, "full": true, "archivedGroups": [], "sessions": sessions,
+            } })).into_bytes());
+        }
+        for (route, name) in &state.names {
+            let local = route.starts_with("kuvo/library/events?");
+            let merged = route.starts_with("kuvo/setup/library/events?");
+            if local || merged {
+                let computer = if merged { "Mac mini" } else { "MacBook" };
+                let _ = live.send(format!("{}\n", json!({ "t": name, "d": {
+                    "items": [], "computers": [{ "key": "mini", "name": computer, "state": "there" }],
+                } })).into_bytes());
+            }
+        }
+        let local_waiting = "kuvo/waiting/events";
+        let setup_waiting = "kuvo/setup/waiting/counts/events";
+        if let Some(name) = state.names.get(setup_waiting).or_else(|| state.names.get(local_waiting)) {
+            let sessions = usize::from(state.names.contains_key(setup_waiting));
+            let _ = live.send(format!("{}\n", json!({ "t": name, "d": { "sessions": sessions, "bots": 0, "queue": 0 } })).into_bytes());
+        }
         state.live = Some(live);
         hold(Closer::nothing());
         Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(BufReader::new(Pipe(receiver, Vec::new()))), closer: Closer::nothing() })
@@ -166,6 +199,34 @@ impl Transport for StandIn {
     fn describe(&self) -> String {
         "Mac mini".into()
     }
+}
+
+#[test]
+fn a_session_list_picks_up_peer_sessions_after_a_failed_first_box_info_read() {
+    session_list_picks_up_peer_sessions_after_reconnect(503, json!({ "message": "The box is starting." }));
+}
+
+#[test]
+fn a_session_list_picks_up_peer_sessions_after_the_box_updates() {
+    session_list_picks_up_peer_sessions_after_reconnect(200, json!({ "kind": "mac", "name": "Mac mini", "features": [] }));
+}
+
+fn session_list_picks_up_peer_sessions_after_reconnect(status: u16, initial_info: Value) {
+    let box_ = StandIn::default();
+    box_.state().session_info = Some((status, initial_info));
+    let client = BoxClient::new(box_.clone());
+    let follow = client.follow_sessions(at_once());
+    let ListUpdate::Listing(first) = follow.next_blocking().unwrap() else { panic!("the local list") };
+    assert_eq!(first.sidebar().chats, ["ses_here"]);
+
+    // The next connection can read the capabilities of the box that now answers.
+    box_.state().session_info = Some((200, json!({ "kind": "mac", "name": "Mac mini", "features": ["line.merged-sessions"] })));
+    box_.restart();
+    let ListUpdate::Listing(next) = follow.next_blocking().unwrap() else { panic!("the list after reconnect") };
+    assert_eq!(next.sidebar().chats, ["ses_peer", "ses_here"]);
+    assert_eq!(next.computer_of("ses_peer").unwrap().name, "Another Mac");
+    follow.stop();
+    box_.drop_stream();
 }
 
 fn at_once() -> Timing {
@@ -333,5 +394,41 @@ fn a_computer_still_on_the_release_before_the_line_is_waited_for_never_said_to_n
     match follow.next_blocking().expect("the list comes") {
         kuvo_box::follow::Followed::Now(list) => assert_eq!(list.computers.iter().map(|computer| computer.name.as_str()).collect::<Vec<_>>(), ["Mac mini"]),
         kuvo_box::follow::Followed::Failed(error) => panic!("a computer that's updating is never an error: {error}"),
+    }
+}
+
+#[test]
+fn library_follows_a_filtered_setup_topic_on_every_connection() {
+    let box_ = StandIn::default();
+    let client = BoxClient::new(box_.clone());
+    client.line().set_timing(LineTiming { retry_after: Duration::ZERO, ..LineTiming::default() });
+    let follow = client.follow_library(&kuvo_box::library::LibraryQuery {
+        source: Some("bot_ada".into()),
+        kind: Some(kuvo_box::library::LibraryKind::Document),
+        words: "board brief".into(),
+    });
+    for _ in 0..2 {
+        match follow.next_blocking().expect("the Library comes") {
+            kuvo_box::follow::Followed::Now(list) => assert_eq!(list.computers[0].name, "Mac mini"),
+            kuvo_box::follow::Followed::Failed(error) => panic!("{error}"),
+        }
+        box_.restart();
+    }
+    let expected = "kuvo/setup/library/events?source=bot_ada&kind=document&q=board%20brief";
+    for path in box_.opened().iter().take(2) {
+        let watch = query(path, "watch").expect("the line takes its topics");
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(watch).unwrap();
+        let watch: HashMap<String, String> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(watch.values().map(String::as_str).collect::<Vec<_>>(), [expected]);
+    }
+}
+
+#[test]
+fn setup_waiting_counts_include_a_peers_ask_on_first_draw() {
+    let client = BoxClient::new(StandIn::default());
+    let follow = client.follow_waiting();
+    match follow.next_blocking().expect("the waiting count comes") {
+        kuvo_box::follow::Followed::Now(waiting) => assert_eq!(waiting.sessions, 1),
+        kuvo_box::follow::Followed::Failed(error) => panic!("{error}"),
     }
 }

@@ -142,6 +142,10 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     && (!filters.owners || filters.owners.includes(item.owner))
     && (!filters.labels || (item.labels.length ? item.labels.some(each => filters.labels!.includes(each)) : filters.labels.includes("none")));
   const found = (item: Parameters<typeof says>[1]) => !q || says(q, item, names);
+  const remote = ({ handedFrom: _, overdue: __, ...item }: Elsewhere) => ({
+    ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)),
+    can: canOf(item, { away: away.has(item.computer.key), apart: !takesForwarded(item.computer.key), attaching: takesForwarded(item.computer.key, ATTACHMENTS) }),
+  });
   return {
     owner,
     statuses: [...STATUSES],
@@ -154,10 +158,13 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
     today: todayHere(),
     items: byPlace([
       ...all.filter(item => !item.removed && found(item)).map(summary).filter(kept),
-      ...elsewhere.items.filter(item => found(item) && kept(item)).map(({ handedFrom: _, overdue: __, ...item }) => ({ ...item, ...(overdueOf(item) ? { overdue: true } : {}), labels: item.labels.filter(each => names.has(each)), can: canOf(item, { away: away.has(item.computer.key), apart: !takesForwarded(item.computer.key), attaching: takesForwarded(item.computer.key, ATTACHMENTS) }) })),
+      ...elsewhere.items.filter(item => found(item) && kept(item)).map(remote),
     ]),
     owners: [...owners, ...elsewhere.owners.filter(each => !named.has(each.owner))],
-    removed: all.filter(item => item.removed && found(item)).sort((a, b) => b.removed!.at - a.removed!.at).map(summary).filter(kept),
+    removed: [
+      ...all.filter(item => item.removed && found(item)).map(summary).filter(kept),
+      ...elsewhere.removed.filter(item => found(item) && kept(item)).map(remote),
+    ].sort((a, b) => b.removed!.at - a.removed!.at),
     computers: elsewhere.computers,
     ...(q ? { q } : {}),
     ...(Object.keys(filters).length ? { filters } : {}),

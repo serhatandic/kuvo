@@ -106,12 +106,16 @@ const ACCOUNT_CATALOG = object({ agents: list(CATALOG_ACCOUNT), engine: list(CAT
 export const SIGN_IN_STARTED = object({ "attemptID?": string, "url?": string, "instructions?": string, "mode?": string, "acceptsCode?": bool, "pasteAddress?": bool, "returnToBox?": string, "userCode?": string, "time?": any });
 
 /** How a started sign-in is going, as the engine (or the coding agents' bridge) says, with, once it
- * ended without signing in (`failed`, `expired`), what a client says of it (`failure`). */
+ * ended without signing in (`failed`, `expired`), what a client says of it (`failure`). Pending, how
+ * it ends as it stands now (`mode`: `code`, on a code to paste here; `auto`, it comes back by
+ * itself), which a page that comes late can change, and whether a code can be pasted (`acceptsCode`). */
 export const SIGN_IN_STATUS = object({
   status: string,
   "message?": string,
   "url?": string,
   "instructions?": string,
+  "mode?": string,
+  "acceptsCode?": bool,
   "userCode?": string,
   "pasteAddress?": bool,
   "returnToBox?": string,

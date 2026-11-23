@@ -233,6 +233,11 @@ impl BoxClient {
         follow_lines(self, format!("{}/events", route(session)))
     }
 
+    /// Follow another computer's asks through this box's line.
+    pub fn follow_peer_asks(&self, session: &str, computer: &str) -> Follow<Followed<Asks>> {
+        follow_lines(self, crate::messages::peer_route(computer, session, "asks/events"))
+    }
+
     /// Answers `ask` in `session`. A refusal says why (an answer that didn't fit, or one already
     /// answered: `404`).
     pub fn answer_ask(&self, session: &str, ask: &str, answer: &Answer) -> Result<()> {

@@ -6,6 +6,7 @@ import "../safety"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { ENGINE_SERVICES, EngineAccounts, engineEndpoints } from "../../src/usage/engine-limits"
 import { BOX_ONLY_SERVICES, Limits, limitsRoutes, type AccountLimits } from "../../src/usage/limits"
+import type { LimitRow } from "../../src/usage/limits-rows"
 
 const real = { ...engineEndpoints }
 const NOW = Date.parse("2026-11-08T20:00:00.000Z")
@@ -320,4 +321,22 @@ test("an account's mark in Accounts is the service its limits are read as", asyn
   const { readerServices } = await import("../../src/usage/engine-limits")
   const { ENGINE_SERVICES } = await import("../../src/shared/limits")
   for (const [provider, service] of Object.entries(readerServices())) expect([provider, ENGINE_SERVICES[provider]]).toEqual([provider, service])
+})
+
+test("OpenCode Go's 30-day window shows a forecast after frequent refreshes", async () => {
+  const minute = 60_000
+  let now = NOW
+  const resetsAt = new Date(NOW + 30 * 24 * 60 * minute).toISOString()
+  answers["/opencodeGo"] = () => Response.json({ usage: { monthly: { percent: 42, resetsAt } } })
+  const engine = new EngineAccounts(async () => ({ data: [credential("opencode-go", { type: "api", key: "go-key" })] }))
+  const limits = new Limits(() => engine.accounts(), undefined, () => now, () => engine.refresh())
+  await limits.tick()
+  for (let step = 1; step <= 8 * 60; step++) {
+    now = NOW + step * minute
+    await limits.readAgain(engine.accounts()[0]!.provider)
+  }
+  const { data } = await (await limitsRoutes(limits, "GET", [])).json() as { data: { rows: LimitRow[] } }
+  expect(data.rows[0]!.card!.lines.map(line => [line.title, line.words.map(word => word.text).join("")])).toEqual([
+    ["Monthly", "58% left · lasts until reset"],
+  ])
 })

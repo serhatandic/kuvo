@@ -56,10 +56,14 @@ pub(crate) enum Said {
 }
 
 type Sink = Arc<dyn Fn(Said) + Send + Sync>;
+type RefreshRoute = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 struct Topic {
     route: String,
     sink: Sink,
+    refresh: Option<RefreshRoute>,
+    /// Reopen if a failed capability read leaves this route unconfirmed on a live line.
+    unconfirmed_since: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -173,11 +177,25 @@ impl Line {
     /// Follows `route` on the line: `sink` hears each thing it says, on the line's own thread, until
     /// the [`Watch`] goes.
     pub(crate) fn watch(self: &Arc<Self>, route: String, sink: impl Fn(Said) + Send + Sync + 'static) -> Watch {
+        self.watch_topic(route, None, false, sink)
+    }
+
+    /// Refreshes a negotiated route before opening the line. A failed read keeps the last route.
+    pub(crate) fn watch_negotiated(
+        self: &Arc<Self>, route: String, unconfirmed: bool, refresh: impl Fn() -> Option<String> + Send + Sync + 'static,
+        sink: impl Fn(Said) + Send + Sync + 'static,
+    ) -> Watch {
+        self.watch_topic(route, Some(Arc::new(refresh)), unconfirmed, sink)
+    }
+
+    fn watch_topic(self: &Arc<Self>, route: String, refresh: Option<RefreshRoute>, unconfirmed: bool, sink: impl Fn(Said) + Send + Sync + 'static) -> Watch {
         let (name, start) = {
             let mut state = self.state();
             state.next += 1;
             let name = state.next.to_string();
-            state.topics.insert(name.clone(), Topic { route, sink: Arc::new(sink) });
+            state.topics.insert(name.clone(), Topic {
+                route, sink: Arc::new(sink), refresh, unconfirmed_since: unconfirmed.then(Instant::now),
+            });
             state.version += 1;
             state.empty = None;
             let start = !state.running;
@@ -216,6 +234,23 @@ impl Line {
     /// The topics as the box is told them: `{name: route}`.
     fn topics(state: &State) -> Value {
         Value::Object(state.topics.iter().map(|(name, topic)| (name.clone(), Value::String(topic.route.clone()))).collect())
+    }
+
+    fn refresh_routes(&self) {
+        let refreshers: Vec<_> = self.state().topics.iter()
+            .filter_map(|(name, topic)| Some((name.clone(), topic.refresh.as_ref()?.clone())))
+            .collect();
+        for (name, refresh) in refreshers {
+            let route = refresh();
+            let mut state = self.state();
+            if let Some(topic) = state.topics.get_mut(&name) {
+                topic.unconfirmed_since = route.is_none().then(Instant::now);
+                if let Some(route) = route && topic.route != route {
+                    topic.route = route;
+                    state.version += 1;
+                }
+            }
+        }
     }
 
     /// Tells the box the topics as they are now, on a line it has open (`kuvo/line/watch`): one
@@ -295,7 +330,7 @@ impl Line {
     /// Reads the line, opening it again as it drops, until it's ended.
     fn run(self: Arc<Self>) {
         let mut retry = self.timing().retry_after;
-        // The watchdog: a line silent too long is closed, so it's opened again.
+        // Reopen after silence or when a failed capability read has left a topic provisional.
         let watchdog = Arc::downgrade(&self);
         let _ = thread::Builder::new().name("kuvo-box line quiet".into()).spawn(move || {
             while let Some(line) = watchdog.upgrade() {
@@ -305,7 +340,8 @@ impl Line {
                     return;
                 }
                 let last = state.heard.into_iter().chain(state.since).max();
-                if state.closer.is_some() && last.is_some_and(|last| last.elapsed() >= quiet) {
+                let route_due = state.topics.values().any(|topic| topic.unconfirmed_since.is_some_and(|since| since.elapsed() >= quiet));
+                if state.closer.is_some() && (route_due || last.is_some_and(|last| last.elapsed() >= quiet)) {
                     let closer = state.closer.take();
                     // Counted from now: it's opened again before it's called quiet again.
                     state.since = Some(Instant::now());
@@ -323,6 +359,7 @@ impl Line {
                 self.woken.notify_all();
                 return;
             }
+            self.refresh_routes();
             let streams = self.transport.streams();
             let (path, resumed, version) = {
                 let mut state = self.state();

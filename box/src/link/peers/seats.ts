@@ -22,6 +22,8 @@ import { LETTER_MEMORY } from "../letters/lifetime";
 import { LETTER_ID, SENDING, letterTries } from "../letters/letter";
 import { IS_MAC, RUN } from "../home";
 import { macLink, readLink } from "../state";
+import { standingOf } from "./lists";
+import { readReach } from "./reach";
 import { readPeerAgents } from "./directory";
 import { mailFor, ownKey, peersOf } from "./known";
 import type { ToldAgents } from "../../shared/records";
@@ -213,15 +215,24 @@ export async function takeSeat(sender: MailSender, payload: Record<string, unkno
 
 // Who can be in this box's group chats from your other computers: each peer (taking a chat's turns
 // when its `features` say `groups.seats`), and the bots it told of, by their id.
-export function seatPeers(link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents()): SeatPeers {
+export function seatPeers(link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents(), now = Date.now()): SeatPeers {
   const peers = peersOf(link);
   const key = link ? ownKey(link) : null;
   const name = plainName(IS_MAC ? macLink.config?.name : link?.name) || os.hostname();
   const setup = followedSetup(link);
   const insightOrigins = historicalInsightOrigins(link);
+  const reach = readReach();
   return {
     ...(key ? { self: { key, name } } : {}),
-    boxes: peers.map(peer => ({ key: peer.key, name: plainName(peer.name) || "another computer", seats: (told[peer.key]?.features ?? []).includes("groups.seats") })),
+    boxes: peers.map(peer => {
+      const features = told[peer.key]?.features;
+      return {
+        key: peer.key, name: plainName(peer.name) || "another computer", seats: features?.includes("groups.seats") ?? false,
+        // (Away as its rows say it, `standingOf`: not while it only restarts into a new release.)
+        insights: features && !features.includes("usage.insights") ? "unsupported"
+          : standingOf(peer.key, reach[peer.key] !== undefined, told[peer.key]?.heard, reach, told, now).away ? "away" : "connected",
+      };
+    }),
     bots: peers.flatMap(peer => (told[peer.key]?.list ?? []).filter(agent => agent.kind === "bot" && agent.id)
       .map(agent => ({ id: agent.id!, name: agent.name, job: agent.about ?? "", box: peer.key, session: agent.session, ...(agent.look ? { look: agent.look } : {}) }))),
     // (The usage panel's settings go only between its boxes. `null` only once that's settled, a

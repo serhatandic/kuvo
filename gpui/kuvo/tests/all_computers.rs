@@ -73,7 +73,8 @@ fn another_computers_sessions_show_under_its_project_and_open_through_that_compu
     cx.run_until_parked();
     // Its conversation was read on devbox, and nothing of it asked of this computer's box.
     assert!(!devbox.seen_at("GET", "api/session/ses_releases/message").is_empty(), "read where it runs: {:?} / here: {:?}", devbox.seen().iter().map(|s| s.path.clone()).collect::<Vec<_>>(), stand_in.seen()[before..].iter().map(|s| s.path.clone()).collect::<Vec<_>>());
-    assert!(stand_in.seen()[before..].iter().all(|seen| !seen.path.contains("ses_releases")), "this computer's box isn't asked of another's session");
+    // (Through this computer's box, as its follow reads it: the box carries it from devbox.)
+    assert!(stand_in.seen()[before..].iter().filter(|seen| seen.path.contains("ses_releases")).all(|seen| seen.path.starts_with("kuvo/sessions/ses_releases/location") || seen.path.starts_with("kuvo/peer-session/key_devbox/ses_releases/")), "this computer's box only carries another's session");
 }
 
 #[gpui::test]

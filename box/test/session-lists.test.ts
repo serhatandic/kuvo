@@ -1751,3 +1751,36 @@ test("a Git worktree's sessions are filed under its project, including a removed
     rmSync(tree, { recursive: true })
   }
 })
+
+test("a conversation update only sends parents whose subagent rows changed", async () => {
+  add("ses_list_parent", work, 110)
+  add("ses_list_child", work, 120, { parentID: "ses_list_parent" })
+  add("ses_list_newer_child", work, 130, { parentID: "ses_list_parent" })
+  add("ses_list_other", work, 140)
+  const stop = keepList()
+  try {
+    await listPlaceHeard("engine", target)
+    const first = (await ask("kuvo/sessions/list")).lines[0]
+    expect(first.sessions.ses_list_parent.subagents).toEqual(["ses_list_newer_child", "ses_list_child"])
+
+    sessions.get("ses_list_other").time.updated = 200
+    await noteListEvent("engine", target, { type: "session.updated", data: { sessionID: "ses_list_other" } })
+    workOut()
+    const delta = (await ask(`kuvo/sessions/list?since=${first.at}`)).lines[0]
+    expect(Object.keys(delta.sessions)).toEqual(["ses_list_other"])
+    expect(delta.sessions.ses_list_other.updated).toBe(200)
+
+    active.add("ses_list_child")
+    await noteListEvent("engine", target, { type: "session.execution.started", data: { sessionID: "ses_list_child" } })
+    workOut()
+    const started = (await ask(`kuvo/sessions/list?since=${delta.at}`)).lines[0]
+    expect(Object.keys(started.sessions).sort()).toEqual(["ses_list_child", "ses_list_parent"])
+    expect(started.sessions.ses_list_parent.subagents).toEqual(["ses_list_child", "ses_list_newer_child"])
+    expect(started.sessions.ses_list_child.running).toBe(true)
+  } finally {
+    stop()
+    active.delete("ses_list_child")
+    for (const id of ["ses_list_parent", "ses_list_child", "ses_list_newer_child", "ses_list_other"]) sessions.delete(id)
+    rmSync(LIST_FILE, { force: true })
+  }
+})

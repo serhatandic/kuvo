@@ -1,0 +1,12 @@
+{
+  "bun": {
+    "version": "1.4.2",
+    "linux-x64": "36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913",
+    "windows-x64": "ce4c17497b2f29712a99d3d53f028de28cd42e3bacb8589599e7f000e49b6405"
+  },
+  "node": {
+    "version": "24.22.2",
+    "linux-x64": "48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75",
+    "windows-x64": "ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2"
+  }
+}

@@ -24,7 +24,7 @@ import { filedProjects, projectFollowers, readProjects } from "../areas/projects
 import { botFollowers, botHere } from "../bots/here";
 import { awaySessions, moveFollowers, MOVES } from "../moves/records";
 import { askFollowers, readAsks, type AskWords } from "../glance/asked";
-import { factsOf, folderOf, kindOf, listedProjects, needsYou, projectOrder, projectPage, shownOfCursor, withSubagents, type ListPlace, type Stopped } from "./rule";
+import { factsOf, folderOf, kindOf, listedProjects, needsYou, projectOrder, withSubagents, type ListPlace, type Stopped } from "./rule";
 import { isJudged, judgingFollowers } from "../work/tree";
 import { listedWork, workBot, type ListedWork } from "../work/listed-work";
 import { inTime, repositoryOf } from "../work/project-trees";
@@ -38,7 +38,6 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 import { backgroundFollowers, readBackground } from "../work/background";
 
 export const LIST_ROUTE = /^kuvo\/sessions\/list(\/events)?$/;
-export const PAGE_ROUTE = /^kuvo\/sessions\/page$/;
 export const LIST_FILE = path.join(RUN, "lists", "sessions.json");
 
 /** How many sessions gone are kept for `since`, and for how long. */
@@ -226,12 +225,11 @@ function withViewed(read: EngineSession, before: EngineSession | undefined): Eng
   return viewed > (Number(read.time?.viewed) || 0) ? { ...read, time: { ...read.time, viewed } } : read;
 }
 
-/** Every session in `sessions` (the engine's or the bridge's, each once) with its facts, and the
- * projects. */
-export function listOfSessions(sessions: EngineSession[], place: ListPlace, known?: BoxKnows): { sessions: Record<string, SessionFacts>; projects: Record<string, ListedProject> } {
+/** Every session in `sessions` (the engine's or the bridge's, each once) with its facts. */
+function sessionFacts(sessions: EngineSession[], place: ListPlace, known?: BoxKnows): Record<string, SessionFacts> {
   const facts: Record<string, SessionFacts> = {};
   for (const session of sessions) if (typeof session?.id === "string" && !(session.id in facts)) facts[session.id] = factsNow(session, place, known);
-  return { sessions: facts, projects: listedProjects(facts, place) };
+  return facts;
 }
 
 /** Every session on `target`, subagents' too, page after page; null where its list can't be read. */
@@ -306,7 +304,18 @@ function sameFacts(a: SessionFacts, b: SessionFacts, ignoring?: "updated"): bool
   if (a === b) return true;
   const keys = Object.keys(a) as (keyof SessionFacts)[];
   if (keys.length !== Object.keys(b).length) return false;
-  return keys.every(key => key === ignoring || a[key] === b[key]);
+  return keys.every(key => {
+    if (key === ignoring || a[key] === b[key]) return true;
+    // These are rebuilt as the list is worked out. Their values, including subagent order,
+    // determine what clients need to hear again.
+    if (key === "subagents" || key === "line") {
+      const before = a[key], after = b[key];
+      return before !== undefined && after !== undefined &&
+        before.length === after.length && before.every((id, at) => id === after[at]);
+    }
+    if (key === "messages") return a.messages?.via === b.messages?.via && a.messages?.note === b.messages?.note;
+    return false;
+  });
 }
 
 const projectsSaid = (projects: Record<string, ListedProject>, withUpdated: boolean) =>
@@ -678,6 +687,21 @@ async function recentEngineActivity(target: Target, id: string, created: number,
   return page.data[0]?.time?.created ?? created;
 }
 
+// A start answers before the list's next read. Keep the runtime the box already heard
+// during that gap, including when it heard the engine's event before the start answered.
+const justCreated = new Map<string, { place: "engine" | "agents"; at: number }>();
+
+export function noteSessionCreated(id: string, place: "engine" | "agents", now = Date.now()): void {
+  justCreated.set(id, { place, at: now });
+  if (justCreated.size > 256) justCreated.delete(justCreated.keys().next().value!);
+}
+
+export function createdRuntime(id: string, now = Date.now()) {
+  const created = justCreated.get(id);
+  if (created && now - created.at < 60_000) return { place: created.place, running: false };
+  return undefined;
+}
+
 /** Takes in an event from `name` (the engine, or the bridge, at `target`): a session read again as
  * it's made or changes, its run starting or ending; dropped as it's deleted. What it says from
  * moment to moment (thinking, blocked, `moments.ts`) and a look at it on any client
@@ -688,6 +712,8 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   if (!keepsList() || typeof event?.type !== "string") return;
   const id = event.data?.sessionID ?? event.data?.info?.id;
   if (typeof id !== "string" || !id.startsWith("ses")) return;
+  if (event.type === "session.created") noteSessionCreated(id, name === "bridge" ? "agents" : "engine");
+  if (event.type === "session.deleted") justCreated.delete(id);
   if (event.type === "session.viewed") {
     // (Read whole now: it's read again once that's in, so the look isn't lost.)
     reading.get(name)?.add(id);
@@ -808,7 +834,7 @@ const pendingPlaces = (): string[] => (places.has("bridge") || bridgeTarget() ==
  * `before` had them. */
 function withPending(sessions: EngineSession[], placeOf: Record<string, string>, running: Set<string>, pending: string[], before: Kept | null, knows?: BoxKnows, stopped?: ReadonlyMap<string, Stopped>, wakeTurns?: ReadonlySet<string>): Listed {
   const box = placeNow(running, sessions, knows, undefined, stopped);
-  const listed = listOfSessions(sessions, { ...box, wakeTurns }, knows).sessions;
+  const listed = sessionFacts(sessions, { ...box, wakeTurns }, knows);
   const work: Record<string, ListedWork> = {};
   for (const session of sessions) {
     const entry = listedWork(session);
@@ -1024,22 +1050,4 @@ export async function* listRoute(context: RouteContext, match: RegExpMatchArray)
   } finally {
     listFollowers.delete(told);
   }
-}
-
-/** `GET kuvo/sessions/page?project=<folder>&cursor=<its more's>`: a project's list as far as "Show
- * more" has opened it, in the box's order (PROTOCOL.md, "Session lists"); without a cursor, as far
- * as it shows first. A client asks again with the same cursor as the list changes. */
-export async function* pageRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, signal, json } = context;
-  if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
-  const query = new URLSearchParams(request.path.split("?")[1] ?? "");
-  const project = query.get("project");
-  if (!project) return yield* json(400, { message: "Name the project: project=<its folder>." });
-  const cursor = query.get("cursor");
-  const at = cursor ? shownOfCursor(cursor) : undefined;
-  if (at === null) return yield* json(400, { message: "That cursor isn't one this box gave. Read the list again." });
-  const list = await listNow(context, signal ?? undefined);
-  if (!list) return yield* json(503, { message: "The engine isn’t running." });
-  const facts = Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts]));
-  return yield* json(200, { project, ...projectPage(facts, project, at) });
 }

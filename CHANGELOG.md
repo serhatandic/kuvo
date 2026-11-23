@@ -9,6 +9,27 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A conversation on another computer that's restarting, updating or off now shows its last messages, readable and scrollable, with one quiet line under it ("mini-local isn't answering · seen 5m", or "is updating"), instead of an empty page saying "It may be asleep or offline." or "Kuvo is restarting." You can still write: messages wait and go once it's back, and the conversation catches up by itself.
 - While a computer switches to a new Kuvo release, its bots and sessions keep their usual look, saying "Updating…", instead of turning grey. A computer that's quiet for under a minute is shown as live; "seen …" is only for one that's really off.
 
+- The Work Queue’s Deleted list includes items kept on your other computers.
+
+- The Library opens with files from your other computers, including when you switch to a tab or bot you haven’t browsed before.
+- The workspace badges count items waiting on you across your computers.
+- Insights waits for a reachable computer’s first usage copy before showing a total for the setup.
+- Conversation links open sessions on the computer they run on, with their live replies, queue and asks.
+- Editing or deleting a bot that’s gone tells you the bot is no longer there.
+
+- Weekly and monthly usage cards keep enough readings to say whether a limit will last until it resets, even when usage is read frequently or the box restarts.
+
+- The Sessions sidebar picks up your other computers' sessions when the box reconnects after starting or updating.
+- Sessions from your other computers show under their projects, with **Show more** and the project total. Their last lists stay available if this computer's session list is still loading, and archived sessions appear in the sidebar's Archived view.
+- The mode picker shows Auto as coming soon for native Windows and WSL2 boxes. New conversations there start in Ask First by default.
+
+- Reopening the app goes back to the bot's conversation you left, on this computer or another, instead of the bot's settings page when its computer took a moment to answer. A conversation you'd scrolled up in opens where you were reading, and the side panel opens again if you'd left it open.
+- The main view's rounded corner beside the rail has one clean edge again, instead of a faint square corner showing past it.
+- Every skill in Marketplace has Remove. Folder skills go to Recently Deleted on each computer, and removed built-ins can be added again from the Kuvo catalog.
+
+- The update in the title bar only moves forward: each computer is grey while it gets ready (with how far, where Kuvo knows), blue once it's ready and while it switches, and green only once it's up to date. Its title says where the update is, a computer that's off says when it was last seen, and it stays for ten minutes after your computers finish, saying so.
+- A conversation's Activity shows its context bar from 0, and you can pick where conversations are summarized right under it: 200k, 400k, 600k or Never, the same setting as Settings › Conversations on that computer.
+- Signing in to a coding agent is one short sheet for every agent: where its sign-in ends on a code to paste back, the field is there at once, ready to paste into; where it finishes by itself, it just waits. Open the Page Again is there if the page didn't open, and × closes it.
 - Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
 - The Library shows your other computers' items at once, and keeps showing them while a computer is away or not answering, as they were when it was last seen.

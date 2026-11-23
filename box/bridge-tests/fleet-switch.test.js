@@ -34,7 +34,7 @@ function json(file, value) { write(file, JSON.stringify(value)); }
 const read = file => JSON.parse(fs.readFileSync(file, "utf8"));
 const shell = word => "'" + word.replaceAll("'", "'\\''") + "'";
 
-function release({ layout = 23, broken = false, version = NEXT, origin = "http://127.0.0.1:1", realLink = false } = {}) {
+function release({ layout = 23, broken = false, version = NEXT, origin = "http://127.0.0.1:1", realLink = false, padding = 0 } = {}) {
   const folder = fs.mkdtempSync(path.join(directory, "release-"));
   const files = path.join(folder, "files");
   const keeper = `#!/bin/sh
@@ -56,6 +56,8 @@ else process.exitCode = 1;
     "config/opencode/plugins/fixture.js": "export {};\n",
   };
   if (realLink) contents["bin/kuvo-link.js"] = fs.readFileSync(bundle);
+  // (Bytes that don't compress: a pack of several parts.)
+  if (padding) contents["bin/padding"] = crypto.randomBytes(padding);
   for (const [file, bytes] of Object.entries(contents)) write(path.join(files, file), bytes, file === "bin/kuvo-start" ? 0o700 : 0o600);
   json(path.join(files, "box.json"), { version, engine: "1.0.0", files: Object.fromEntries(Object.entries(contents).map(([name, bytes]) => [name, sha256(bytes)])) });
   const name = `box-${version}.tgz`;
@@ -235,7 +237,9 @@ test("T1: main prepares with two online members, commits first, and the off memb
     return box.fleetSummary(rows, box.fleetTarget());
   `);
   assert.equal(summary.shown, true);
-  assert.equal(summary.title, "Updating to beta.41 · 3 of 3 ready");
+  assert.equal(summary.phase, "ready");
+  assert.equal(summary.title, "beta.41 is ready · 3 of 4");
+  assert.equal(summary.detail, "They switch next.");
   const switched = await activate(main, pack);
   assert.equal(switched.result, "updated", switched.message);
   assert.equal((await facts(main)).kuvo, OLD, "start guard still owns the switch");
@@ -268,11 +272,15 @@ test("T1: main prepares with two online members, commits first, and the off memb
     tell(main, node, ready);
     await usesBox(node);
   }
-  const settled = await call(main, `
+  // Done but for the one the main still finds away: said so for ten minutes, as the main saw it
+  // under way.
+  const [settled, later] = await call(main, `
     const rows = await box.listComputers("Node", null);
-    return box.fleetSummary(rows, box.fleetTarget());
+    const target = box.fleetTarget();
+    return [box.fleetSummary(rows, target), box.fleetSummary(rows, target, Date.now() + 10 * 60_000 + 1)];
   `);
-  assert.equal(settled.shown, false);
+  assert.deepEqual([settled.shown, settled.phase, settled.title, settled.detail], [true, "waiting", "beta.41 · 3 of 4 up to date", "Node 3 updates when it’s back."]);
+  assert.equal(later.shown, false);
   assert.deepEqual(hosted.hits, Array(3).fill("/" + pack.name));
 });
 
@@ -410,20 +418,32 @@ for (const old of [{ version: "0.8.0-beta.35", layout: 18 }, { version: OLD, lay
   });
 }
 
-test("the setup's update is said in the box's words: shown only while computers get ready or one can be fixed", requiresBun, async () => {
+test("the setup's update is said in the box's words: shown while computers get ready or one can be fixed, and for a while once it's done", requiresBun, async () => {
   const { nodes: [main] } = fleet([OLD]);
   const row = (name, state, current, more = {}) => ({ name, fleetUpdate: { state, current, target: NEXT, canRetry: false, ...more } });
   const say = rows => call(main, "return box.fleetSummary(input.rows, { version: input.target })", { rows, target: NEXT });
   const room = "There isn’t room on it to keep its data while it updates.";
 
+  // Nothing you can do, on a box that never saw this update under way: a computer that's off, or one
+  // that can't take this release, hides it.
+  const quietRows = [row("spare-linux", "off", OLD), row("spare-linux", "cannot", OLD, { reason: "beta.41 doesn’t run here.", fixable: false })];
+  for (const rest of quietRows) {
+    const quiet = await say([row("main-linux", "up-to-date", NEXT), row("macbook", "up-to-date", "0.8.0-beta.42"), rest]);
+    assert.equal(quiet.shown, false);
+    assert.equal(quiet.warning, false);
+    assert.equal(quiet.detail, undefined);
+  }
+
   const preparing = await say([row("main-linux", "ready", OLD), row("mac-mini", "getting-ready", OLD), row("macbook", "ready", OLD), row("spare-linux", "off", "0.8.0-beta.38")]);
   assert.equal(preparing.shown, true);
   assert.equal(preparing.warning, false);
-  assert.equal(preparing.title, "Updating to beta.41 · 2 of 3 ready", "counts ready, and leaves the one that's off out");
-  assert.equal(preparing.detail, "Everything works on beta.40 while your computers get ready.");
+  assert.equal(preparing.phase, "getting-ready");
+  assert.equal(preparing.title, "Getting beta.41 ready · 2 of 4", "counts ready, of all of them");
+  assert.equal(preparing.detail, "Your computers stay on beta.40 meanwhile.");
 
   const mixed = await say([row("main-linux", "getting-ready", OLD), row("mac-mini", "getting-ready", "0.8.0-beta.39")]);
-  assert.equal(mixed.detail, "Everything keeps working while your computers get ready.");
+  assert.equal(mixed.title, "Getting beta.41 ready");
+  assert.equal(mixed.detail, "Your computers keep what they run meanwhile.");
 
   const fixable = await say([row("main-linux", "up-to-date", NEXT), row("spare-linux", "cannot", OLD, { reason: room, fixable: true, canRetry: true })]);
   assert.equal(fixable.shown, true);
@@ -434,13 +454,9 @@ test("the setup's update is said in the box's words: shown only while computers 
   const two = await say([row("a", "cannot", OLD, { reason: room, fixable: true }), row("b", "cannot", OLD, { reason: room, fixable: true })]);
   assert.equal(two.title, "2 computers can’t update to beta.41");
 
-  // Nothing you can do: a computer that's off, or one that can't take this release, hides it.
-  for (const rest of [row("spare-linux", "off", OLD), row("spare-linux", "cannot", OLD, { reason: "beta.41 doesn’t run here.", fixable: false })]) {
-    const quiet = await say([row("main-linux", "up-to-date", NEXT), row("macbook", "up-to-date", "0.8.0-beta.42"), rest]);
-    assert.equal(quiet.shown, false);
-    assert.equal(quiet.warning, false);
-    assert.equal(quiet.detail, undefined);
-  }
+  // Seen under way here: done but for the one that's off, it says so.
+  const waiting = await say([row("main-linux", "up-to-date", NEXT), row("macbook", "up-to-date", "0.8.0-beta.42"), quietRows[0]]);
+  assert.deepEqual([waiting.shown, waiting.phase, waiting.title, waiting.detail], [true, "waiting", "beta.41 · 2 of 3 up to date", "spare-linux updates when it’s back."]);
 });
 
 test("each computer's row says in the box's words how its update stands, and whether Try Again is offered", requiresBun, async () => {
@@ -448,16 +464,68 @@ test("each computer's row says in the box's words how its update stands, and whe
   const sha = "a".repeat(64);
   const room = "There isn’t room on it to keep its data while it updates.";
   const cases = [
-    [{ kuvo: NEXT }, false, { words: "beta.41 · Up to date", tone: "done" }, false],
-    [{ kuvo: "0.8.0-beta.42" }, false, { words: "beta.42 · Up to date", tone: "done" }, false],
-    [{ kuvo: OLD, staged: { version: NEXT, sha256: sha } }, false, { words: "Ready for beta.41", tone: "done" }, false],
-    [{ kuvo: OLD }, false, { words: "Getting beta.41 ready…", tone: "working" }, false],
-    [{ kuvo: OLD }, true, { words: "beta.40 · Can’t be reached: updates when it’s back", tone: "off" }, false],
+    [{ kuvo: NEXT }, false, { words: "beta.41 · Up to date", tone: "done", phase: "done" }, false],
+    [{ kuvo: "0.8.0-beta.42" }, false, { words: "beta.42 · Up to date", tone: "done", phase: "done" }, false],
+    [{ kuvo: OLD, staged: { version: NEXT, sha256: sha } }, false, { words: "Ready for beta.41", tone: "done", phase: "ready" }, false],
+    [{ kuvo: OLD }, false, { words: "Getting ready…", tone: "working", phase: "getting-ready" }, false],
+    [{ kuvo: OLD }, true, { words: "beta.40 · Can’t be reached: updates when it’s back", tone: "off", phase: "off" }, false],
     [{ kuvo: OLD, cannot: { version: NEXT, sha256: sha, reason: room, fixable: true } }, false, { words: `beta.40 · ${room}`, tone: "warning", short: "Can’t update" }, true],
     [{ kuvo: OLD, cannot: { version: NEXT, sha256: sha, reason: "beta.41 doesn’t run here.", fixable: false } }, false, { words: "beta.40 · beta.41 doesn’t run here. · Updates with the next release", tone: "blocked" }, false],
   ];
   const rows = await call(main, "return input.cases.map(([facts, away]) => box.peerFleetUpdate({ version: input.target, sha256: input.sha }, facts, away))", { cases, target: NEXT, sha });
   rows.forEach((row, ix) => assert.deepEqual([row.line, row.canRetry], [cases[ix][2], cases[ix][3]], JSON.stringify(cases[ix][0])));
+});
+
+test("a computer getting a release from another of yours says how far it got, and never steps back", requiresBun, async () => {
+  // (Its pack's address can't be reached: it comes part by part from the computer that holds it.)
+  const pack = release({ padding: 100_000 });
+  const { nodes: [main, holder], tell } = fleet([OLD, OLD]);
+  tell(main, holder, { kuvo: OLD, candidate: NEXT });
+  const seen = await call(main, `
+    const { readFileSync } = await import("node:fs");
+    const pack = readFileSync(input.file);
+    const queue = [];
+    const options = { ...opts, start() { return true; }, send(peer, mail) {
+      queue.push(mail.want ? { version: mail.want, boxes: input.boxes, size: pack.length }
+        : { version: mail.version, i: mail.part, d: pack.subarray(mail.part * 30000, (mail.part + 1) * 30000).toString("base64") });
+      return true;
+    } };
+    box.fleetWith(options);
+    const deliver = count => { for (const mail of queue.splice(0, count)) box.takeReleaseMail({ key: input.holder }, mail, options); };
+    const partsAsked = async () => {
+      for (let tries = 0; tries < 500 && !queue.length; tries++) await new Promise(done => setTimeout(done, 10));
+      if (!queue.length) throw new Error("No parts were asked for.");
+    };
+    const row = () => { const update = box.localFleetUpdate(box.fleetTarget()); return [update.state, update.fill ?? null, update.line.words, update.line.phase]; };
+    const seen = [];
+    box.followPeers(options);
+    seen.push(row());
+    deliver(1);
+    await partsAsked();
+    const parts = box.pullUnderWay().parts;
+    seen.push(row());
+    deliver(2);
+    seen.push(row());
+    // Its pull starts again (Try Again, another computer): the row keeps how far it got.
+    box.forgetFleet();
+    queue.length = 0;
+    box.followPeers(options);
+    deliver(1);
+    await partsAsked();
+    deliver(1);
+    seen.push(row());
+    deliver(2);
+    seen.push(row());
+    return { parts, seen };
+  `, { file: path.join(pack.folder, pack.name), boxes: pack.boxes, holder: holder.peer.key });
+  assert.equal(seen.parts, 4);
+  assert.deepEqual(seen.seen, [
+    ["getting-ready", null, "Getting ready…", "getting-ready"],
+    ["getting-ready", 0, "Getting ready · 0%", "getting-ready"],
+    ["getting-ready", 0.5, "Getting ready · 50%", "getting-ready"],
+    ["getting-ready", 0.5, "Getting ready · 50%", "getting-ready"],
+    ["getting-ready", 0.75, "Getting ready · 75%", "getting-ready"],
+  ]);
 });
 
 test("Check for Updates on a member asks its main to look at the feed, at once or once it's back", requiresBun, async () => {

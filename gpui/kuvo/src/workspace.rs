@@ -54,8 +54,29 @@ const WELCOME_AGAIN: Duration = Duration::from_secs(2);
 pub const NARROW: Pixels = px(820.);
 /// How far back the window remembers where it's been.
 const HISTORY: usize = 100;
+
+/// How far a conversation's scrolled within a row before where it's read up to is kept again.
+const READ_AT_STRETCH: f32 = 120.;
 /// The raised panel's leading edge, between the rail and the sidebar.
 const CARD_EDGE: Pixels = px(1.);
+
+/// The raised panel's rounded corner, kept clean of what's inside it. GPUI clips children to a
+/// square, so a sidebar's or a page's own background would show its square corner past the
+/// panel's rounded one: a second edge along the corner and down the side. This lays the window's
+/// background over just that sliver, drawn last, under the panel's own edge (borders draw after
+/// children), so every area gets one rounded edge without rounding each page itself.
+///
+/// It's a quad whose border is the fill: placed a radius above and left of the panel, rounded at
+/// twice the radius, its inner curve lands exactly on the inside of the panel's edge.
+fn card_corner(background: gpui::Hsla) -> gpui::Div {
+    let r = radius::CARD;
+    // Insets are from inside the panel's 1px edge.
+    let mut corner = div().absolute().top(-(r + CARD_EDGE)).left(-(r + CARD_EDGE)).right_0().bottom_0().rounded_tl(r * 2.).border_color(background);
+    let widths = &mut corner.style().border_widths;
+    widths.top = Some((r + CARD_EDGE).into());
+    widths.left = Some((r + CARD_EDGE).into());
+    corner
+}
 
 struct SidebarDrag {
     from: Pixels,
@@ -86,6 +107,8 @@ struct Restoring {
     /// The rows picked in the other areas, picked again at once: unpicked once their list is
     /// read without them.
     picks: Vec<(Area, String)>,
+    /// Where each conversation was read up to, by its session: brought into view as it opens.
+    reading: std::collections::BTreeMap<String, crate::yours::ReadAt>,
 }
 
 /// A bot's own conversation, shown in Bots in its page's place.
@@ -292,6 +315,7 @@ pub struct Workspace {
     /// Sessions started here on another computer (picked in Runs on), by that computer's key, until
     /// the setup's list says where they are.
     started_on: HashMap<String, String>,
+    opening_session: Option<Task<()>>,
     /// Where a new session or bot can run, as the nearest box says it (`kuvo/setup/runs-on`).
     runs_on: Vec<kuvo_box::models::RunsOnComputer>,
     _runs_on_follow: Option<Follow<Followed<kuvo_box::models::RunsOn>>>,
@@ -329,6 +353,11 @@ pub struct Workspace {
     panel: Entity<SidePanel>,
     panel_open: bool,
     panel_width: Pixels,
+    /// Where the conversations open were read up to as last kept (`keep_place`), by session, and
+    /// what follows their scrolling to keep it again as it moves on.
+    reading_kept: std::collections::BTreeMap<String, crate::yours::ReadAt>,
+    _open_reading: Option<Subscription>,
+    _bot_reading: Option<Subscription>,
     resizing: Option<(Pixels, Pixels)>,
     sidebar_drag: Option<SidebarDrag>,
     quick_search: Option<quick_search::QuickSearch>,
@@ -558,6 +587,7 @@ impl Workspace {
             landing_picked: false,
             started: HashMap::new(),
             started_on: HashMap::new(),
+            opening_session: None,
             runs_on: Vec::new(),
             _runs_on_follow: None,
             unsent: HashSet::new(),
@@ -582,6 +612,9 @@ impl Workspace {
             panel: side_panel,
             panel_open: false,
             panel_width: panel::WIDTH,
+            reading_kept: Default::default(),
+            _open_reading: None,
+            _bot_reading: None,
             resizing: None,
             sidebar_drag: None,
             quick_search: None,
@@ -772,8 +805,10 @@ impl Workspace {
         // (Its own computer's box: another computer's conversation is read there.)
         let client = view.read(cx).client().clone();
         {
-            let carried = view.read(cx).carried(cx);
-            let update = match crate::conversation::read_now_carried(&client, carried.as_ref(), session) {
+            // (Through this computer's box, as its follow reads it: another computer's last copy
+            // while that computer's away.)
+            let nearest = view.read(cx).nearest().clone();
+            let update = match crate::conversation::read_now(&nearest, session) {
                 Ok(conversation) => kuvo_box::ConversationUpdate::Conversation(conversation),
                 Err(kuvo_box::Error::Refused(refusal)) if refusal.status == 404 => kuvo_box::ConversationUpdate::Gone(refusal),
                 Err(error) => kuvo_box::ConversationUpdate::Failed(error),
@@ -1867,16 +1902,21 @@ impl Workspace {
             // (Started here on another computer, before the setup's list has it.)
             None if self.started_on.contains_key(session) => self.client.peer(&self.started_on[session]),
             None => Some(self.client.clone()),
-            Some(on) if on.opens() => self.client.peer(&on.id),
-            Some(_) => None,
+            Some(on) => self.client_for_peer(on),
         }
+    }
+
+    fn client_for_peer(&self, on: &kuvo_box::sessions::OnComputer) -> Option<BoxClient> {
+        on.opens().then(|| self.client.peer(&on.id)).flatten()
     }
 
     /// Opens a conversation where it belongs: a bot's own in Bots (that bot picked), any other in
     /// Sessions. Every "open this conversation" goes through here.
     pub fn open_session(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) {
-        // (Another computer's that can't be opened now: its row says why, and nothing opens.)
-        let Some(client) = self.client_for(session) else { return };
+        self.open_session_at(session, None, window, cx);
+    }
+
+    fn open_session_on(&mut self, session: &str, client: BoxClient, computer: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(bot) = self.own_bot(session, cx) {
             self.open_bot_chat(&bot, session, None, window, cx);
             return;
@@ -1885,7 +1925,7 @@ impl Workspace {
         self.session_menu.active_popover = None;
         self.session_menu.action_error = None;
         self.record(Nav::Session(session.to_owned()), cx);
-        if self.opened() == Some(session) {
+        if self.opened() == Some(session) && self.conversation().is_some_and(|view| view.read(cx).client().same_connection(&client)) {
             // Already open (back to it from another area): the keyboard goes back to it.
             if let Some(view) = self.conversation() {
                 window.focus(&view.focus_handle(cx), cx);
@@ -1895,19 +1935,38 @@ impl Workspace {
         }
         self.unsent.remove(session);
         let live = self.live;
-        let composer = self.composer_for(session, window, cx);
+        let composer = self.composer_on(session, client.clone(), computer.clone(), window, cx);
         // Only the composer on screen asks again for what the box couldn't say.
         self.show_composer(Some(&composer), cx);
-        let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer, live, cx));
+        let view = cx.new(|cx| ConversationView::new(client, &self.client, computer.as_deref(), session.to_owned(), composer, live, cx));
         // (Not a bot's own, as far as the box has said yet: a bot's opens in Bots, above.)
         self.wire_bars(&view, None, cx);
         self.wire_wakes(&view, session, cx);
         self.wire_shown_files(&view, cx);
+        self._open_reading = Some(self.follow_reading(&view, session, cx));
         window.focus(&view.focus_handle(cx), cx);
         self.open = Open::Conversation { view, session: session.to_owned() };
         self.show_refuses(cx);
         self.place_panel(cx);
         cx.notify();
+    }
+
+    /// Keeps where `session`'s conversation is read up to as it's scrolled: once it's moved on a
+    /// row, or a stretch of a long one, from where it was last kept (not a write for each step of
+    /// a scroll).
+    fn follow_reading(&self, view: &Entity<ConversationView>, session: &str, cx: &mut Context<Self>) -> Subscription {
+        let session = session.to_owned();
+        cx.observe(view, move |this, view, cx| {
+            let now = view.read(cx).read_at();
+            let moved = match (now.as_ref(), this.reading_kept.get(&session)) {
+                (None, None) => false,
+                (Some(now), Some(kept)) => now.row != kept.row || (now.offset - kept.offset).abs() >= READ_AT_STRETCH,
+                _ => true,
+            };
+            if moved {
+                this.keep_place(cx);
+            }
+        })
     }
 
     /// Gives a conversation this window's computer key (for remote shown-file downloads) and a
@@ -2002,13 +2061,14 @@ impl Workspace {
         self.in_bot_chat = true;
         let client = self.bot_client(bot, session, cx);
         let computer = self.elsewhere_bot(bot, cx).map(|there| there.computer_key);
-        let composer = self.composer_on(session, client, computer, window, cx);
+        let composer = self.composer_on(session, client, computer.clone(), window, cx);
         if self.bot_chat.as_ref().is_none_or(|chat| chat.session != session) {
             let (client, live) = (self.bot_client(bot, session, cx), self.live);
-            let view = cx.new(|cx| ConversationView::new(client, session.to_owned(), composer.clone(), live, cx));
+            let view = cx.new(|cx| ConversationView::new(client, &self.client, computer.as_deref(), session.to_owned(), composer.clone(), live, cx));
             self.wire_bars(&view, Some(bot.to_owned()), cx);
             self.wire_wakes(&view, session, cx);
             self.wire_shown_files(&view, cx);
+            self._bot_reading = Some(self.follow_reading(&view, session, cx));
             #[cfg(feature = "stand-in")]
             if !self.live {
                 self.read_conversation_at_once(&view, session, cx);
@@ -2134,14 +2194,6 @@ impl Workspace {
         self.show_composer(shown.as_ref(), cx);
     }
 
-    /// `session`'s composer: the one it had, with its draft (its model read again, as it may have
-    /// changed meanwhile), or a new one.
-    fn composer_for(&mut self, session: &str, window: &mut Window, cx: &mut Context<Self>) -> Entity<Composer> {
-        let client = self.client_for(session).unwrap_or_else(|| self.client.clone());
-        let computer = self.listing.computer_of(session).map(|on| on.id.clone());
-        self.composer_on(session, client, computer, window, cx)
-    }
-
     /// A session's composer reads its settings from the owner and sends through this box.
     fn composer_on(&mut self, session: &str, client: BoxClient, computer: Option<String>, window: &mut Window, cx: &mut Context<Self>) -> Entity<Composer> {
         let delivery = kuvo_box::queue::DeliveryBox::new(self.client.clone(), computer);
@@ -2149,13 +2201,12 @@ impl Workspace {
         let folder = self.listing.facts(session).map(|facts| facts.directory.clone());
         if let Some((composer, _)) = self.composers.get(session) {
             let composer = composer.clone();
-            if self.live {
-                composer.update(cx, |composer, cx| {
-                    if !composer.set_folder(folder, cx) {
-                        composer.read_models(cx);
-                    }
-                });
-            }
+            composer.update(cx, |composer, cx| {
+                composer.set_session_client(client, delivery);
+                if self.live && !composer.set_folder(folder, cx) {
+                    composer.read_models(cx);
+                }
+            });
             return composer;
         }
         let live = self.live;
@@ -2294,7 +2345,8 @@ impl Workspace {
                 if let Some(computer) = computer {
                     self.started_on.insert(session.clone(), computer.clone());
                 }
-                let composer = self.composer_for(session, window, cx);
+                let client = self.client_for(session).unwrap_or_else(|| self.client.clone());
+                let composer = self.composer_on(session, client, computer.clone(), window, cx);
                 composer.update(cx, |composer, cx| {
                     if let Some(sent) = sent {
                         composer.take_sent(written, files.clone(), sent.clone(), cx);
@@ -2361,6 +2413,7 @@ impl Workspace {
         let open = self.panel_open;
         self.place_panel(cx);
         self.panel.update(cx, |panel, cx| panel.set_shown(open, cx));
+        self.keep_place(cx);
         cx.notify();
     }
 
@@ -2415,7 +2468,10 @@ impl Workspace {
             },
         };
         // (Another computer's session: its files, terminals, browser and Changes are that one's.)
-        let elsewhere = key.as_deref().filter(|session| self.listing.computer_of(session).is_some()).and_then(|session| self.client_for(session));
+        let elsewhere = self.bot_chat().map(|(_, view)| view).or_else(|| self.conversation())
+            .map(|view| view.read(cx).client())
+            .filter(|client| !client.same_connection(&self.client))
+            .cloned();
         self.panel.update(cx, |panel, cx| panel.set_conversation_on(key, place, elsewhere, cx));
     }
 
@@ -2438,6 +2494,7 @@ impl Workspace {
 
     pub fn end_resize(&mut self, cx: &mut Context<Self>) {
         if self.resizing.take().is_some() {
+            self.keep_place(cx);
             cx.notify();
         }
     }
@@ -2445,6 +2502,7 @@ impl Workspace {
     /// Its width as it first opened.
     pub fn reset_panel_width(&mut self, cx: &mut Context<Self>) {
         self.panel_width = panel::WIDTH;
+        self.keep_place(cx);
         cx.notify();
     }
 
@@ -2881,13 +2939,40 @@ impl Workspace {
 
     /// The Library's "Show in conversation": the conversation, brought to the message once it's there.
     pub fn open_session_at(&mut self, session: &str, message: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_session(session, window, cx);
-        let view = match self.bot_chat() {
-            Some((_, view)) => Some(view.clone()),
-            None => self.conversation().cloned(),
-        };
+        self.opening_session = None;
+        // A row or a session just started here already has the box's address. Links can arrive
+        // before the merged list, so ask the nearest box where to open one it hasn't listed yet.
+        if self.live && self.listing.facts(session).is_none() && !self.started_on.contains_key(session) {
+            let (session, message) = (session.to_owned(), message.map(str::to_owned));
+            let nearest = self.client.clone();
+            let id = session.clone();
+            let read = cx.background_executor().spawn(async move { nearest.where_is(&id) });
+            self.opening_session = Some(cx.spawn_in(window, async move |this, cx| {
+                let located = read.await;
+                this.update_in(cx, |this, window, cx| {
+                    let (client, computer) = match located {
+                        Ok(kuvo_box::messages::Location::Peer { on }) => {
+                            let Some(client) = this.client_for_peer(&on) else { return };
+                            (client, Some(on.id))
+                        }
+                        _ => (this.client.clone(), None),
+                    };
+                    this.open_session_on(&session, client, computer, window, cx);
+                    this.reveal_in_session(&session, message.as_deref(), cx);
+                }).ok();
+            }));
+            return;
+        }
+        let Some(client) = self.client_for(session) else { return };
+        let computer = self.listing.computer_of(session).map(|on| on.id.clone()).or_else(|| self.started_on.get(session).cloned());
+        self.open_session_on(session, client, computer, window, cx);
+        self.reveal_in_session(session, message, cx);
+    }
+
+    fn reveal_in_session(&self, session: &str, message: Option<&str>, cx: &mut Context<Self>) {
+        let view = self.bot_chat().map(|(_, view)| view).or_else(|| self.conversation());
         if let Some(message) = message
-            && let Some(view) = view
+            && let Some(view) = view.filter(|view| view.read(cx).session() == session)
         {
             view.update(cx, |view, cx| view.reveal_message(message, cx));
         }
@@ -3208,6 +3293,16 @@ impl Workspace {
         }
         self.restoring.session = spot.session;
         self.restoring.bot = spot.bot;
+        self.restoring.reading = spot.reading;
+        // (Opened as it was, not toggled: that would keep a place before this one's restored.)
+        if spot.panel_open && !self.panel_open {
+            self.panel_open = true;
+            self.place_panel(cx);
+            self.panel.update(cx, |panel, cx| panel.set_shown(true, cx));
+        }
+        if let Some(width) = spot.panel_width {
+            self.panel_width = px(width).max(panel::NARROWEST);
+        }
         let area = spot.area.as_deref().and_then(|slug| Area::ALL.into_iter().find(|area| area.slug() == slug && !matches!(area, Area::Settings | Area::Sessions)));
         if let Some(area) = area {
             self.show_area_as_kept(area, window, cx);
@@ -3250,6 +3345,7 @@ impl Workspace {
         self.restoring_now = true;
         self.open_session_now(&session, window, cx);
         self.restoring_now = false;
+        self.read_from_kept(&session, cx);
         if let Some((history, at)) = history {
             (self.history, self.at) = (history, at);
             self.area = area;
@@ -3267,22 +3363,26 @@ impl Workspace {
     }
 
     /// Bots' list is read: last time's bot conversation opens again where Bots is in front and
-    /// the bot's still there; gone, Bots shows its own page.
+    /// the bot's still there; gone, Bots shows its own page. Until the list can say (its box not
+    /// answering yet, as while it starts, or its other computers' bots not said yet), it waits:
+    /// a bot not read yet isn't gone, and its page isn't where the window was.
     fn restore_bot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bot) = self.restoring.bot.clone() else { return };
         let Some(view) = self.area_view(Area::Bots).cloned() else { return };
+        let session = self.bot_session(&bot, cx);
         match view.read(cx).bots() {
-            Reading::NotYet => return,
-            // (Not read: what Bots shows says so.)
-            Reading::Failed(_) => {
-                self.restoring.bot = None;
-                return;
-            }
+            Reading::NotYet | Reading::Failed(_) => return,
             Reading::Ready(_) if self.area != Area::Bots => return,
+            Reading::Ready(bots) if session.is_none() => {
+                let listed_elsewhere = bots.elsewhere.iter().any(|each| each.id == bot && !each.unlisted);
+                if listed_elsewhere || bots.held_unsaid {
+                    return;
+                }
+            }
             Reading::Ready(_) => {}
         }
         self.restoring.bot = None;
-        match self.bot_session(&bot, cx) {
+        match session {
             Some(session) => {
                 let yours = window.focused(cx).filter(|focused| *focused != self.focus && *focused != self.landing.focus_handle(cx));
                 self.restoring_now = true;
@@ -3290,6 +3390,7 @@ impl Workspace {
                 self.open_bot_chat(&bot, &session, None, window, cx);
                 (self.folded, self.shown_narrow) = (folded, shown_narrow);
                 self.restoring_now = false;
+                self.read_from_kept(&session, cx);
                 if let Some(yours) = yours {
                     window.focus(&yours, cx);
                 }
@@ -3303,6 +3404,18 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// The conversation of `session` just opened again goes to where it was read up to last time.
+    fn read_from_kept(&mut self, session: &str, cx: &mut Context<Self>) {
+        let Some(at) = self.restoring.reading.remove(session) else { return };
+        let view = match &self.bot_chat {
+            Some(chat) if chat.session == session => Some(chat.view.clone()),
+            _ => self.conversation().filter(|_| self.opened() == Some(session)).cloned(),
+        };
+        if let Some(view) = view {
+            view.update(cx, |view, cx| view.read_from(&at, cx));
+        }
     }
 
     /// Rows picked again as the window opened: one its list no longer has is unpicked (the list
@@ -3351,7 +3464,22 @@ impl Workspace {
         }
         let session = self.restoring.session.clone().or_else(|| self.opened().map(str::to_owned));
         let bot = self.restoring.bot.clone().or_else(|| self.bot_chat.as_ref().filter(|_| self.in_bot_chat).map(|chat| chat.bot.clone()));
-        let spot = crate::yours::Spot { sidebar_folded: self.folded, area: self.kept_area.clone(), session, bot, picked };
+        // Where each conversation open is read up to; what's still to open, as it was kept.
+        let mut reading = std::collections::BTreeMap::new();
+        if self.restoring.session.is_some() || self.restoring.bot.is_some() {
+            reading = self.restoring.reading.clone();
+        }
+        let open = self.conversation().zip(self.opened()).map(|(view, session)| (session.to_owned(), view.clone()));
+        let bots = self.bot_chat.as_ref().map(|chat| (chat.session.clone(), chat.view.clone()));
+        for (session, view) in open.into_iter().chain(bots) {
+            match view.read(cx).read_at() {
+                Some(at) => reading.insert(session, at),
+                None => reading.remove(&session),
+            };
+        }
+        self.reading_kept = reading.clone();
+        let panel_width = (self.panel_width != panel::WIDTH).then(|| f32::from(self.panel_width));
+        let spot = crate::yours::Spot { sidebar_folded: self.folded, area: self.kept_area.clone(), session, bot, picked, reading, panel_open: self.panel_open, panel_width };
         crate::yours::keep(crate::yours::Moved::Spot(key, spot), cx);
     }
 
@@ -3365,6 +3493,7 @@ impl Workspace {
     /// Notes going to `nav`, unless that's where the window is (or it's going back or forward).
     /// Where the window is now is kept as it settles (`keep_place`).
     fn record(&mut self, nav: Nav, cx: &mut Context<Self>) {
+        self.opening_session = None;
         // A move of yours in Sessions: the conversation it was to open again goes unopened.
         if !self.restoring_now && matches!(nav, Nav::Session(_) | Nav::Landing) {
             self.restoring.session = None;
@@ -4545,7 +4674,8 @@ impl Render for Workspace {
                         .children(sidebar)
                         .child(div().debug_selector(|| "workspace-content".into()).relative().flex_1().min_w_0().h_full().child(content))
                         .children(panel)
-                        .children(sheet),
+                        .children(sheet)
+                        .child(card_corner(c.background)),
                 ),
             )
             .children(self.render_quick_search(cx))

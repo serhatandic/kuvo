@@ -14,7 +14,7 @@ use kuvo_box::artifacts::{Artifact, Outputs, Version};
 use kuvo_box::background::{Activity, ActivitySession, Background};
 use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
 use kuvo_box::follow::Followed;
-use kuvo_box::session_context::{ContextSize, short_tokens};
+use kuvo_box::session_context::{ContextSize, SessionContext, Summarize, short_tokens};
 use kuvo_box::{BoxClient, Follow, Where};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRow, TypeSize,
@@ -80,6 +80,10 @@ pub struct WorkBars {
     place: Option<Where>,
     /// How full its context is, as its box last said (none: it doesn't say, or not yet measured).
     context: Option<ContextSize>,
+    /// Where it's summarized by itself, to pick in the popover, as its box offers it.
+    summarize: Option<Summarize>,
+    /// Why the summarize point picked last didn't take, in its box's words.
+    summarize_failure: Option<String>,
     /// Its context was read (or couldn't be): the popover draws once it has.
     context_heard: bool,
     context_reads: u64,
@@ -160,6 +164,8 @@ impl WorkBars {
             work_seen: None,
             place: None,
             context: None,
+            summarize: None,
+            summarize_failure: None,
             context_heard: false,
             context_reads: 0,
             told: None,
@@ -567,17 +573,47 @@ impl WorkBars {
         self.context_reads += 1;
         let read = self.context_reads;
         let (client, session, place) = (self.client.clone(), self.session.clone(), self.place);
-        let work = move || -> kuvo_box::Result<(Where, Option<ContextSize>)> {
-            let place = match place { Some(place) => place, None => client.where_is(&session)? };
-            Ok((place, client.session_context(&session, place)?))
+        let work = move || -> kuvo_box::Result<(Where, SessionContext)> {
+            if let Some(place) = place {
+                return Ok((place, client.session_context_and_point(&session, place)?));
+            }
+            let location = client.where_is(&session)?;
+            let place = client.conversation_runtime(&session, &location)?.place;
+            let owner = client.conversation_owner(&location).ok_or_else(|| kuvo_box::Error::Unreachable(client.describe()))?;
+            Ok((place, owner.session_context_and_point(&session, place)?))
         };
-        let then = move |this: &mut WorkBars, result: kuvo_box::Result<(Where, Option<ContextSize>)>, cx: &mut Context<Self>| {
+        let then = move |this: &mut WorkBars, result: kuvo_box::Result<(Where, SessionContext)>, cx: &mut Context<Self>| {
             if this.context_reads != read { return; }
             this.context_heard = true;
             if let Ok((place, context)) = result {
                 this.place = Some(place);
-                this.context = context;
+                this.context = context.size;
+                this.summarize = context.summarize;
             }
+            cx.notify();
+        };
+        if self.live {
+            self.spawn(cx, work, then);
+        } else {
+            let result = work();
+            then(self, result, cx);
+        }
+    }
+
+    /// Picks where conversations are summarized (a choice's id), through its box's setting, then
+    /// reads its context again for where the box puts the mark now.
+    fn pick_summarize(&mut self, choice: String, cx: &mut Context<Self>) {
+        if self.summarize.as_ref().is_some_and(|summarize| summarize.value == choice) {
+            return;
+        }
+        self.summarize_failure = None;
+        let client = self.client.clone();
+        let work = move || client.pick_summarize_point(&choice);
+        let then = |this: &mut WorkBars, result: kuvo_box::Result<()>, cx: &mut Context<Self>| {
+            if let Err(error) = result {
+                this.summarize_failure = Some(kuvo_box::accounts::said(&error));
+            }
+            this.read_context(cx);
             cx.notify();
         };
         if self.live {
@@ -981,6 +1017,18 @@ impl WorkBars {
         card.update(cx, |card, cx| card.show_outputs_kind_with(kind, client, live, window, cx));
     }
 
+    /// Its popover opened with the summarize point's menu open over it (shots).
+    #[cfg(feature = "stand-in")]
+    pub fn open_activity_picking_summarize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_activity_with_wakes(false, window, cx);
+        let Some(card) = self.handle.view().and_then(|view| view.downcast::<ActivityCard>().ok()) else { return };
+        let Some(summarize) = self.summarize.clone() else { return };
+        let menu = summarize_menu(summarize, cx.entity().downgrade(), cx);
+        let handle = card.read(cx).summarize_menu.clone();
+        handle.open(menu, window, cx);
+        card.update(cx, |_, cx| cx.notify());
+    }
+
     /// Its popover opened still loading, as it shows until every section has been read (shots).
     #[cfg(feature = "stand-in")]
     pub fn open_activity_loading(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1077,6 +1125,8 @@ struct ActivityCard {
     _subagents: Option<(Follow<Followed<kuvo_box::subagents::Subagents>>, Task<()>)>,
     /// Pinned: drawn as the slim card at the top right of the conversation, kept open as you chat.
     pinned: bool,
+    /// The summarize point's menu, while it's open (the card stays open under it).
+    summarize_menu: PopoverMenuHandle,
     /// Held loading, to show how it looks (shots).
     #[cfg(feature = "stand-in")]
     held_loading: bool,
@@ -1137,6 +1187,7 @@ impl ActivityCard {
             reading: None,
             more: None,
             loaded_pages: 1,
+            summarize_menu: PopoverMenuHandle::default(),
             _wake_read: schedule.as_ref().map(|schedule| cx.observe(schedule, |_, _, cx| cx.notify())),
             wake_schedule: schedule,
             force_wakes,
@@ -1683,35 +1734,48 @@ impl ActivityCard {
             .into_any_element()
     }
 
-    /// How full its context is, as its box says: used of its model's window, with a mark where it's
-    /// summarized by itself; near there, in the warning colour, saying so. None where it doesn't say.
+    /// How full its context is, as its box says: used of its model's window (from 0 before a
+    /// measurement), with a mark where it's summarized by itself and, under it, that point to pick
+    /// (the box's setting, for every conversation); near it, in the warning colour. None where its
+    /// box says neither.
     fn context_strip(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
-        let context = bars.context?;
+        let context = bars.context;
+        let summarize = bars.summarize.clone();
+        if context.is_none() && summarize.is_none() {
+            return None;
+        }
         let c = cx.theme().colors.clone();
-        let near = context_near(&context);
-        let words = context_words(&context);
-        let selector = format!("activity-context-words-{words}");
-        let figures = div()
-            .debug_selector(move || selector)
-            .text_mono(TypeSize::Caption)
-            .when(!self.pinned, |d| d.medium())
-            .text_color(if near { c.warning } else if self.pinned { c.text_muted } else { c.text })
-            .child(words);
-        let note = context.summarize_at.filter(|_| near).map(|at| {
+        let near = context.as_ref().is_some_and(context_near);
+        let figures = context.as_ref().map(|context| {
+            let words = context_words(context);
+            let selector = format!("activity-context-words-{words}");
+            div()
+                .debug_selector(move || selector)
+                .text_mono(TypeSize::Caption)
+                .when(!self.pinned, |d| d.medium())
+                .text_color(if near { c.warning } else if self.pinned { c.text_muted } else { c.text })
+                .child(words)
+        });
+        let control = if self.pinned {
+            self.pinned_controls(cx)
+        } else {
+            Button::icon_only("activity-pin", IconName::Pin, "Pin beside the conversation")
+                .ghost()
+                .size(ButtonSize::Small)
+                .on_click(cx.listener(|this, _, window, cx| this.set_pinned(true, false, window, cx)))
+                .into_any_element()
+        };
+        let top = div().flex().items_center().justify_between().gap(space::S2)
+            .child(div().min_w_0().flex().items_baseline().gap(space::S1_5)
+                .child(div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child("Context"))
+                .children(figures))
+            .child(control);
+        // (Where the box doesn't offer the point to pick, near it says so on a line of its own.)
+        let note = context.and_then(|context| context.summarize_at).filter(|_| near && summarize.is_none()).map(|at| {
             div().debug_selector(|| "activity-context-near".into()).text_ui(TypeSize::Caption).text_color(c.warning)
                 .child(format!("Summarizes at {}", short_tokens(at)))
         });
-        let top = if self.pinned {
-            div().flex().items_center().justify_between().gap(space::S2)
-                .child(div().min_w_0().flex().items_baseline().gap(space::S1_5)
-                    .child(div().flex_none().text_ui(TypeSize::Small).medium().text_color(c.text).child("Context"))
-                    .child(figures))
-                .child(self.pinned_controls(cx))
-        } else {
-            div().flex().items_baseline().justify_between()
-                .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child("Context"))
-                .child(figures)
-        };
+        let picker = summarize.map(|summarize| self.summarize_row(summarize, near, cx));
         Some(div()
             .debug_selector(|| "activity-context".into())
             .px(space::S2)
@@ -1720,9 +1784,50 @@ impl ActivityCard {
             .flex_col()
             .gap(space::S1_5)
             .child(top)
-            .children(context_bar(&context, cx))
+            .children(context.as_ref().and_then(|context| context_bar(context, cx)))
             .children(note)
+            .children(picker)
+            .children(bars.summarize_failure.clone().map(|why| kuvo_ui::Notice::said("activity-summarize-failure", kuvo_ui::Tone::Warning, why)))
             .into_any_element())
+    }
+
+    /// "Summarize at", and the point in use, which opens the choices: the box's setting for
+    /// every conversation, as Settings › Conversations has it.
+    fn summarize_row(&self, summarize: Summarize, near: bool, cx: &Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let open = self.summarize_menu.is_open();
+        let current = summarize.current().map(|choice| choice.title.clone()).unwrap_or_else(|| summarize.value.clone());
+        let selector = format!("activity-summarize-at-{current}");
+        let trigger = div()
+            .id("activity-summarize")
+            .debug_selector(move || selector)
+            .flex()
+            .items_center()
+            .gap(space::S0_5)
+            .px(space::S1_5)
+            .h(px(20.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .when(open, |d| d.bg(c.hover))
+            .hover(|d| d.bg(c.hover))
+            .text_color(if near { c.warning } else { c.text })
+            .child(current)
+            .child(Icon::new(IconName::ChevronDown).size(IconSize::XSmall).color(if near { c.warning } else { c.text_muted }));
+        let label = summarize.label.clone();
+        let activity = self.activity.clone();
+        let menu = PopoverMenu::new("activity-summarize-menu", trigger, move |_, cx| summarize_menu(summarize.clone(), activity.clone(), cx))
+        .with_handle(self.summarize_menu.clone())
+        .align_right();
+        div()
+            .when(near, |d| d.debug_selector(|| "activity-context-near".into()))
+            .flex()
+            .items_center()
+            .justify_between()
+            .text_ui(TypeSize::Caption)
+            .text_color(if near { c.warning } else { c.text_muted })
+            .child(label)
+            .child(menu)
+            .into_any_element()
     }
 
     /// Unpin (back to the popover), at the pinned card's top right: the one way the card goes.
@@ -2823,9 +2928,10 @@ impl Render for ActivityCard {
         let cap = if self.preview.is_some() { px(560.) } else { px(480.) };
         let max_h = cap.min((window.viewport_size().height - px(120.)).max(px(160.)));
         let top = (self.preview.is_none() && self.drilldown.is_none()).then(|| {
-            let strip = self.context_strip(bars, cx);
-            let ruled = strip.is_some();
-            div().flex().flex_col().child(self.heading(cx)).children(strip)
+            // (Its context, with Pin, heads it where the box says how full it is; else "Activity".)
+            let top = self.context_strip(bars, cx);
+            let ruled = top.is_some();
+            div().flex().flex_col().child(top.unwrap_or_else(|| self.heading(cx)))
                 .when(ruled, |d| d.child(div().my(space::S1_5).h(px(1.)).w_full().bg(c.border)))
         });
         let content = if let Some((name, preview)) = &self.preview {
@@ -2931,7 +3037,8 @@ impl Render for ActivityCard {
                     cx.stop_propagation();
                 }
             }))
-            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.dismiss(cx)))
+            // (A click in the summarize point's menu, drawn over its edge, isn't outside it.)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| if !this.summarize_menu.is_open() { this.dismiss(cx) }))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .tab_group()
             .occlude()
@@ -2952,6 +3059,27 @@ impl Render for ActivityCard {
     }
 }
 
+/// The summarize point's choices, the one in use checked, in its box's words; picking one sends
+/// it to the box.
+fn summarize_menu(summarize: Summarize, activity: WeakEntity<WorkBars>, cx: &mut App) -> Entity<kuvo_ui::menu::Menu> {
+    cx.new(|cx| {
+        let mut menu = kuvo_ui::menu::Menu::new(cx).width(px(150.));
+        for choice in &summarize.choices {
+            let (id, activity) = (choice.id.clone(), activity.clone());
+            let mut entry = kuvo_ui::menu::MenuEntry::new(choice.title.clone()).checked(choice.id == summarize.value)
+                .on_select(move |_, cx| { activity.update(cx, |bars, cx| bars.pick_summarize(id.clone(), cx)).ok(); });
+            if let Some(line) = &choice.line {
+                entry = entry.detail(line.clone());
+            }
+            menu = menu.entry(entry);
+        }
+        if let Some(line) = &summarize.line {
+            menu = menu.separator().header(line.clone());
+        }
+        menu
+    })
+}
+
 /// "412k of 1M", or "412k used" where its box doesn't know the model's window.
 fn context_words(context: &ContextSize) -> String {
     match context.window {
@@ -2970,7 +3098,8 @@ fn context_bar(context: &ContextSize, cx: &App) -> Option<AnyElement> {
     let window = context.window.filter(|window| *window > 0)? as f32;
     let c = &cx.theme().colors;
     let near = context_near(context);
-    let fill = (context.used as f32 / window).clamp(0.015, 1.);
+    // (From 0: nothing used yet draws no sliver.)
+    let fill = if context.used == 0 { 0. } else { (context.used as f32 / window).clamp(0.015, 1.) };
     let tick = context.summarize_at.map(|at| at as f32 / window).filter(|tick| *tick > 0. && *tick < 1.);
     Some(div()
         .debug_selector(|| "activity-context-bar".into())
@@ -2978,15 +3107,16 @@ fn context_bar(context: &ContextSize, cx: &App) -> Option<AnyElement> {
         .w_full()
         .h(px(3.))
         .rounded(radius::PILL)
-        .bg(c.border)
+        .bg(c.text.opacity(0.1))
         .child(div().h_full().w(relative(fill)).rounded(radius::PILL).bg(if near { c.warning } else { c.text_muted }))
         .children(tick.map(|tick| div()
             .debug_selector(|| "activity-context-tick".into())
             .absolute()
-            .top(px(-2.))
+            .top(px(-3.))
             .left(relative(tick))
             .w(px(1.))
-            .h(px(7.))
+            .h(px(9.))
+            .rounded(px(1.))
             .bg(if near { c.warning } else { c.border_strong })))
         .into_any_element())
 }

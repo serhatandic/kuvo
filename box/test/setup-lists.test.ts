@@ -5,14 +5,14 @@ import "./safety"
 // conversations use the same list and peer protocol after the engine/bridge read.
 
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
+const features = ["line.merged-library", "work-queue.elsewhere", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
@@ -27,7 +27,7 @@ const agentProviders = ["claude-code", "codex-cli", "antigravity", "grok-cli", "
 const agentNames = ["claude", "codex", "antigravity", "grok", "cursor"] as const;
 const codingSession = (agent: string) => `ses_fixture${agent}`;
 
-function pair(codingAgents = false, bridgeDelivery = false) {
+function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = false, managed = false } = {}) {
   const root = mkdtempSync(path.join(process.env.KUVO_HOME!, "setup-lists-"));
   const device = newKey();
   const boxes = ["near", "far"].map((name, i) => {
@@ -37,7 +37,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
     const session = `ses_${name}`;
     const model = { providerID: name, id: `model-${name}` };
     const project = path.join(home, "project");
-    const time = { created: 100 + i, updated: 200 + i };
+    const time: { created: number; updated: number; archived?: number } = { created: 100 + i, updated: 200 + i };
     const cases: Record<string, { id: string; title: string; time: typeof time; directory?: string; location?: { directory: string } }> = {
       [session]: { id: session, title: `Session on ${name}`, directory: project, time },
     };
@@ -120,7 +120,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
     const run = async (command: object): Promise<any> => {
       const child = Bun.spawn([process.execPath, worker, "kuvo-agents"], {
         env: { ...process.env, KUVO_HOME: home, HOME: root, TMPDIR: root },
-        stdin: Buffer.from(JSON.stringify({ command, port: engine.port, bridgePort: bridge?.port })), stdout: "pipe", stderr: "pipe",
+        stdin: Buffer.from(JSON.stringify({ command, port: engine.port, bridgePort: bridge?.port, withLibrary })), stdout: "pipe", stderr: "pipe",
       });
       try {
         const [status, stdout, stderr] = await Promise.all([child.exited, child.stdout.text(), child.stderr.text()]);
@@ -138,7 +138,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
     });
     return { key, secret, home, computer, peer, model, session, cases, run, read, engine, engineState, bridge, linked, opened, prompt, prompts, bridgePrompts, permissions, messages };
   });
-  const setup = "setup_" + "a".repeat(32);
+  const setup = (managed ? "set_" : "setup_") + "a".repeat(32);
   for (const box of boxes) {
     const run = path.join(box.home, "run");
     mkdirSync(run, { recursive: true });
@@ -147,7 +147,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
     writeFileSync(path.join(run, "link.json"), JSON.stringify({
       formatVersion: 1, key: box.key.toString("base64url"), secret: box.secret.toString("base64url"), name: box.computer.name,
       phones: [{ key: keyOf(device), name: "Desktop", from: "pair", kind: "desktop", pairing: "test" }],
-      setup: { id: setup, role: "member", primary: boxes[0]!.computer.id, checkpointed: true },
+      setup: { id: setup, role: "member", primary: boxes[0]!.computer.id, checkpointed: true, ...(managed ? { managed: true, epoch: 1 } : {}) },
       sharedSetup: setup, shared: { membershipAndAccess: { value: { boxes: boxes.map(other => other.peer) } } },
     }));
     writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify(Object.fromEntries(peers.map(other =>
@@ -167,6 +167,97 @@ async function share(from: Box, to: Box, waiting?: string) {
   const frames = await from.run({ kind: "publish", waiting });
   expect(frames.length).toBeGreaterThan(0);
   expect(await to.run({ kind: "receive", frames })).toBe(true);
+}
+
+test("a new conversation opens before it appears in the list", async () => {
+  const setup = pair();
+  try {
+    // The engine has created the conversation, but has sent no list or event since it did.
+    await share(setup.near, setup.far);
+    const { started, location } = await setup.near.run({ kind: "start-and-locate" });
+    expect(started).toBe(200);
+    expect(location.status).toBe(200);
+    expect(JSON.parse(location.text)).toEqual({ place: "engine", running: false });
+  } finally { setup.close(); }
+}, 30_000);
+
+test("a conversation only known from a peer list opens on its computer", async () => {
+  const setup = pair(true, true);
+  const { near, far } = setup;
+  let a: ReturnType<Box["linked"]> | undefined;
+  let b: ReturnType<Box["linked"]> | undefined;
+  const nearReady = Promise.withResolvers<void>();
+  const farReady = Promise.withResolvers<void>();
+  const replies = new Map<string, ReturnType<typeof Promise.withResolvers<{ status: number; text: string }>>>();
+  try {
+    await share(far, near);
+    a = near.linked(message => {
+      if (message.ready) nearReady.resolve();
+      if (message.frame) b!.send({ frame: message.frame });
+      if (message.failure) for (const reply of replies.values()) reply.reject(new Error(message.failure));
+      if (message.replyTo) replies.get(message.replyTo)?.resolve(message.routeAnswer);
+    });
+    b = far.linked(message => {
+      if (message.ready) farReady.resolve();
+      if (message.frame) a!.send({ frame: message.frame });
+    });
+    await Promise.all([nearReady.promise, farReady.promise]);
+    for (const id of [far.session, ...agentNames.map(codingSession)]) {
+      const read = (path: string) => {
+        const reply = Promise.withResolvers<{ status: number; text: string }>();
+        replies.set(path, reply);
+        a!.send({ call: { path }, replyTo: path });
+        return reply.promise;
+      };
+      const found = await read(`kuvo/sessions/${id}/location`);
+      expect(found.status).toBe(200);
+      const { on } = JSON.parse(found.text);
+      expect(on).toEqual({ ...far.computer, away: false, actions: ["open", "manage"] });
+      const runtime = await read(`kuvo/peer-session/${on.id}/${id}/location`);
+      expect(runtime.status).toBe(200);
+      expect(JSON.parse(runtime.text)).toEqual({ place: id === far.session ? "engine" : "agents", running: false });
+    }
+  } finally {
+    a?.kill();
+    b?.kill();
+    await Promise.all([a?.exited, b?.exited]);
+    setup.close();
+  }
+}, 30_000);
+
+test("a conversation on an away computer is still known", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    await awayAWhile(near, far);
+    const found = await near.read(`kuvo/sessions/${far.session}/location`);
+    expect(found.status).toBe(200);
+    expect(JSON.parse(found.text)).toEqual({ on: { ...far.computer, away: true, lastSeen: expect.any(Number), actions: [] } });
+  } finally { setup.close(); }
+}, 30_000);
+
+test("a conversation absent from the setup is unknown", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    await share(near, far);
+    const found = await near.read("kuvo/sessions/ses_unknown/location");
+    expect(found.status).toBe(404);
+    expect(JSON.parse(found.text)).toEqual({ message: "That conversation isn’t there any more." });
+  } finally { setup.close(); }
+}, 30_000);
+
+/** `far` went off a while ago, as `near` knows it: the relay found it not there two minutes ago,
+ * and its last copies came then. (Quiet under a minute, a computer is just live.) */
+async function awayAWhile(near: Box, far: Box, at = Date.now() - 2 * 60_000) {
+  const folder = path.join(near.home, "run", "peers", far.computer.id);
+  for (const name of ["lists-v1.json", "library-v1.json"]) {
+    const file = path.join(folder, name);
+    if (existsSync(file)) writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), seen: at }));
+  }
+  return near.run({ kind: "away", address: far.peer.address, at });
 }
 
 async function line(box: Box) {
@@ -257,6 +348,63 @@ test("a computer going away keeps its rows with the same last-seen time and no a
   } finally { setup.close(); }
 }, 30_000);
 
+test("the sidebar pages a peer's worktree sessions under their project, even while that peer is away", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const template = far.cases[far.session]!;
+    const project = template.directory!;
+    const worktree = path.join(far.home, "worktree");
+    const git = (...args: string[]) => {
+      const result = Bun.spawnSync(["git", "-C", project, ...args]);
+      if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+    };
+    git("init");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "Initial");
+    git("worktree", "add", "--detach", worktree);
+    const ids = Array.from({ length: 17 }, (_, i) => {
+      const id = `ses_worktree${i}`;
+      far.cases[id] = { ...template, id, directory: worktree, time: { ...template.time, updated: 1000 - i } };
+      return id;
+    }).concat(far.session);
+    const archived = "ses_archived_worktree";
+    far.cases[archived] = { ...template, id: archived, directory: worktree, time: { ...template.time, archived: 900 } };
+    await share(far, near);
+    expect(await awayAWhile(near, far)).toBe(true);
+
+    const { listing } = await line(near);
+    const key = `${far.computer.id}:${project}`;
+    expect(listing.sessions[ids[0]!]).toMatchObject({ directory: worktree, project: key, on: { ...far.computer, away: true } });
+    expect(listing.projects[key]).toMatchObject({ shown: ids.slice(0, 6), total: 18, more: { count: 10 } });
+    expect(listing.projects[`${far.computer.id}:${worktree}`]).toBeUndefined();
+    expect(listing.archivedGroups).toContainEqual({ directory: key, title: "project", kind: "project", sessions: [archived] });
+    const page = async (cursor: string) => {
+      const answer = await near.read(`kuvo/sessions/page?${new URLSearchParams({ project: key, cursor })}`);
+      expect(answer.status).toBe(200);
+      return JSON.parse(answer.text);
+    };
+    const next = await page(listing.projects[key].more.cursor);
+    expect(next).toMatchObject({ project: key, sessions: ids.slice(0, 16), total: 18, more: { count: 2 } });
+    expect(await page(next.more.cursor)).toEqual({ project: key, sessions: ids, total: 18, more: null });
+  } finally { setup.close(); }
+}, 30_000);
+
+test("the sidebar shows a peer's saved sessions while this computer has no local list yet", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    near.engineState.down = true;
+    const watch = Buffer.from(JSON.stringify({ listing: targets.listing })).toString("base64url");
+    const answer = await near.read(`kuvo/line?once=1&watch=${watch}`);
+    expect(answer.status).toBe(200);
+    const listing = JSON.parse(answer.text.trim().split("\n")[1]!).d;
+    expect(Object.keys(listing?.sessions ?? {})).toEqual([far.session]);
+    expect(fitsShape(SESSION_LIST, listing)).toBe(true);
+    expect(listing.startProject).toBeNull();
+  } finally { setup.close(); }
+}, 30_000);
+
 test("Runs on lists this computer's models and its peers' at once after a restart, while its engine and peers are silent", async () => {
   const setup = pair();
   const { near, far } = setup;
@@ -325,6 +473,9 @@ test("a computer switching to a new release isn't away: its rows stay live, said
     expect(row).toMatchObject({ computer: far.computer, away: false, updating: true, actions: ["open", "manage"] });
     expect(row.lastSeen).toBeUndefined();
     expect(merged.waiting.waiting).toEqual([expect.objectContaining({ session: far.session, away: false, updating: true })]);
+    // Its conversation is still located there, and opens: its kept copy, said to be updating.
+    const found = await near.read(`kuvo/sessions/${far.session}/location`);
+    expect(JSON.parse(found.text)).toEqual({ on: { ...far.computer, away: false, updating: true, actions: ["open", "manage"] } });
     // Its bots too: as they are, said to be updating, never greyed as away.
     writeFileSync(told, JSON.stringify({ [far.peer.key]: { features, at: 100, heard: Date.now() - 3 * 60_000, list: [{ kind: "bot", id: "bot_mira", name: "Mira", session: "ses_mira" }], computer: {
       kuvo: "0.8.0-beta.43", fleetUpdate: { state: "updating", stage: "switching", current: "0.8.0-beta.43", target: "0.8.0-beta.44", canRetry: false },
@@ -408,7 +559,10 @@ test("the nearest box opens another computer’s bot chat, follows its turn and 
     });
     await Promise.all([readyA.promise, readyB.promise]);
 
-    const base = `kuvo/peer-session/${far.computer.id}/${far.session}`;
+    const location = await near.read(`kuvo/sessions/${far.session}/location`);
+    expect(location.status).toBe(200);
+    const owner = JSON.parse(location.text).on.id;
+    const base = `kuvo/peer-session/${owner}/${far.session}`;
     far.permissions.push({ id: "per_fixture", sessionID: far.session, action: "edit", resources: ["README.md"] });
     a.send({ watch: { turn: base + "/events", queue: base + "/queue/events", asks: base + "/asks/events" } });
     a.send({ read: base + "/session" });
@@ -655,3 +809,82 @@ test("five drafts wait two minutes for their computer and go once in order when 
     setup.close();
   }
 }, 40_000);
+
+test("the Library’s first state includes an away computer’s kept files even on a never-opened bot tab", async () => {
+  const setup = pair(false, false, { withLibrary: true });
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    const library = "kuvo/setup/library/events?source=bot_ada&kind=document&q=brief";
+    const watch = Buffer.from(JSON.stringify({ library })).toString("base64url");
+    await awayAWhile(near, far);
+    const { status, text } = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}` });
+    expect(status).toBe(200);
+    const [, first] = text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "library", d: {
+      items: [
+        { name: "brief.pdf", there: false, computer: { key: far.computer.id, name: "far" } },
+        { name: "brief.pdf", there: true, computer: { key: near.computer.id, name: "near", here: true } },
+      ],
+      computers: [
+        { key: near.computer.id, state: "here" },
+        { key: far.computer.id, state: "away", seen: expect.any(Number) },
+      ],
+    } });
+  } finally { setup.close(); }
+});
+
+test("the rail’s first waiting count includes a peer’s kept ask", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near, far.session);
+    const topic = "kuvo/setup/waiting/counts/events";
+    const watch = Buffer.from(JSON.stringify({ waiting: topic })).toString("base64url");
+    const answer = await near.read(`kuvo/line?once=1&watch=${watch}`);
+    expect(answer.status).toBe(200);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "waiting", d: { sessions: 1, bots: 0, queue: 0 } });
+  } finally { setup.close(); }
+});
+
+test("the sidebar’s first Needs you list includes a peer’s kept ask", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near, far.session);
+    const listing = await line(near);
+    expect(listing.listing.needsYou).toEqual([{
+      session: far.session, asks: { kind: "permission", summary: "asks to run a command" },
+    }]);
+  } finally { setup.close(); }
+});
+
+test("the Work Queue’s first Deleted list keeps items from a computer that is away", async () => {
+  const setup = pair(false, false, { managed: true });
+  const { near, far } = setup;
+  try {
+    const id = "wqi_labitemlabitemlabi02";
+    const at = Date.now();
+    const stamp = { at, by: { user: true } };
+    const queues = path.join(far.home, "run", "work-queue", "queues");
+    mkdirSync(queues, { recursive: true });
+    writeFileSync(path.join(queues, `${far.session}.json`), JSON.stringify({ owner: far.session, items: [{
+      id, owner: far.session, title: "Drop the old importer", status: "todo", order: 0, priority: "normal",
+      labels: [], notes: [], files: [], links: [], sessions: [], created: stamp, updated: stamp, removed: stamp,
+    }] }));
+    const frames = await far.run({ kind: "publish-queue" });
+    expect(frames.length).toBeGreaterThan(0);
+    expect(await near.run({ kind: "receive", frames })).toBe(true);
+    const watch = Buffer.from(JSON.stringify({ queue: "kuvo/work-queue/events?owner=all&glance=1&counts=1" })).toString("base64url");
+    const answer = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away: far.peer.address });
+    expect(answer.status).toBe(200);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "queue", d: {
+      items: [], counts: { removed: 1 }, computers: [{ key: far.computer.id }], removed: [{
+        id, title: "Drop the old importer", computer: { key: far.computer.id, name: "far" },
+        removed: stamp, can: { restore: false, edit: false, delete: false },
+      }],
+    } });
+  } finally { setup.close(); }
+});
