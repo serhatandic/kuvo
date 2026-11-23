@@ -269,3 +269,43 @@ test("a send keeps what the user wrote and the parts that went with it", { timeo
     assert.deepEqual(stored.metadata.kuvo.parts, row.parts, row.about);
   }
 });
+
+test("the line shows a reordered queue and Send Now interrupts the running step", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-reorder");
+  const id = "ses_reorder";
+  here.engine.sessions.push(sessionOf({ id, title: "Reorder", directory: here.home }));
+  here.engine.running.add(id);
+  const record = await here.start().ready();
+  const path = "kuvo/sessions/" + id;
+  for (const item of ["msg_A", "msg_B", "msg_C"]) {
+    const send = await request(record, "POST", path + "/send", { id: item, words: item, delivery: "queue" });
+    assert.equal(send.status, 200);
+  }
+  const watch = Buffer.from(JSON.stringify({ queue: path + "/queue/events" })).toString("base64url");
+  const line = await openLine(record, "?watch=" + watch);
+  try {
+    const frames = line.frames();
+    const nextItems = async () => {
+      for (;;) {
+        const { done, value } = await frames.next();
+        assert.ok(!done, "the queue line closed");
+        if (value.d?.items) return value.d.items.map(item => item.id);
+      }
+    };
+    assert.deepEqual(await nextItems(), ["msg_A", "msg_B", "msg_C"]);
+    const reorder = await request(record, "POST", path + "/queue/reorder", {
+      item: "msg_C", anchor: "msg_A", before: true,
+    });
+    assert.equal(reorder.status, 200);
+    assert.deepEqual(reorder.json.items.map(item => item.id), ["msg_C", "msg_A", "msg_B"]);
+    assert.deepEqual(await nextItems(), ["msg_C", "msg_A", "msg_B"]);
+    const now = await request(record, "POST", path + "/queue/msg_C/now");
+    assert.equal(now.status, 200);
+    assert.deepEqual(here.engine.interrupted, [{ session: id, resume: true }]);
+    assert.equal(here.engine.inboxes.get(id).find(item => item.id === "msg_C").delivery, "steer");
+    assert.equal(here.engine.inboxes.get(id).find(item => item.id === "msg_A").delivery, "queue");
+  } finally {
+    line.close();
+  }
+});
