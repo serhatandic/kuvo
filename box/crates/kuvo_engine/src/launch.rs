@@ -136,8 +136,9 @@ impl Worker {
         ]
         .map(OsString::from)
         .into();
-        let log = tempfile::NamedTempFile::new_in(home.join("run"))?
-            .persist(home.join("run/engine.log"))?;
+        let log_path = home.join("run/engine.log");
+        kuvo_store::files::write_atomic(&log_path, b"")?;
+        let log = fs::OpenOptions::new().write(true).open(log_path)?;
         spawn.stdout = Stdio::File(log.try_clone()?);
         spawn.stderr = Stdio::File(log);
         let mut process = spawn.spawn_recoverable(&format!("kuvo-engine-{token}"))?;
@@ -154,14 +155,9 @@ impl Worker {
         };
         // Publish as soon as the process has an identity so even a restart during
         // warm-up can recover it. Clients get the address only after health passes.
-        let mut file = tempfile::NamedTempFile::new_in(home.join("run"))?;
-        serde_json::to_writer(&mut file, &record)?;
-        let started = file
-            .as_file()
-            .metadata()
-            .and_then(|meta| meta.modified())
-            .ok();
-        file.persist(home.join("run/engine.json"))?;
+        let path = home.join("run/engine.json");
+        kuvo_store::files::write_atomic(&path, &serde_json::to_vec(&record)?)?;
+        let started = fs::metadata(path).and_then(|meta| meta.modified()).ok();
         process.leave_running_on_drop();
         Ok(Self {
             record,

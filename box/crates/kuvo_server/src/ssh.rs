@@ -23,10 +23,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::{
-    Caller, DispatchRequest, Dispatcher, Pairing, Transport,
-    resident::{private_dir, random},
-};
+use crate::{Caller, DispatchRequest, Dispatcher, Pairing, Transport, resident::random};
 
 const PACKET: usize = 64 * 1024;
 const ACCEPTED: &[u8] = &[1];
@@ -152,7 +149,7 @@ impl Listener {
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             let folder = run.join("route");
-            private_dir(&folder)?;
+            kuvo_store::files::create_private_dirs(&folder)?;
             let key = ensure_key(&run)?;
             let _runtime = runtime.enter();
             let ipc = Endpoint::new(&folder.join("ssh"), &key, Channel::Ssh)?.bind()?;
@@ -188,24 +185,26 @@ fn parse_key(raw: &str) -> io::Result<[u8; 32]> {
 }
 
 fn ensure_key(run: &Path) -> io::Result<[u8; 32]> {
-    use std::io::Write;
+    use kuvo_store::files;
+
     let path = run.join("socket.key");
-    if let Ok(key) = fs::read_to_string(&path).and_then(|value| parse_key(&value)) {
+    let kept = || fs::read_to_string(&path).and_then(|value| parse_key(&value));
+    if let Ok(key) = kept() {
         return Ok(key);
     }
     let key = random::<32>()?;
-    let mut temp = tempfile::NamedTempFile::new_in(run)?;
-    writeln!(temp, "{}", hex::encode(key))?;
-    match temp.persist_noclobber(&path) {
-        Ok(_) => Ok(key),
-        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
-            if let Ok(key) = fs::read_to_string(&path).and_then(|value| parse_key(&value)) {
+    let bytes = format!("{}\n", hex::encode(key));
+    match files::write_new(&path, bytes.as_bytes()) {
+        Ok(()) => Ok(key),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            if let Ok(key) = kept() {
                 return Ok(key);
             }
-            error.file.persist(&path)?;
+            // Listener::bind is called with the resident ownership guard held.
+            files::write_atomic(&path, bytes.as_bytes())?;
             Ok(key)
         }
-        Err(error) => Err(error.error),
+        Err(error) => Err(error),
     }
 }
 

@@ -9,8 +9,8 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use kuvo_os::process::ProcessIdentity;
 use kuvo_protocol::version::SERVE_RECORD_VERSION;
+use kuvo_store::{files, locks::OwnedLock};
 use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, task::JoinSet, time};
 use tokio_util::sync::CancellationToken;
@@ -34,7 +34,7 @@ pub struct Resident {
     http: TcpListener,
     ssh: ssh::Listener,
     run: PathBuf,
-    _owner: Owner,
+    _owner: OwnedLock,
 }
 
 impl Resident {
@@ -47,12 +47,23 @@ impl Resident {
             .as_millis() as u64;
         let run = home.join("run");
         let owner_run = run.clone();
-        let Some(owner) = tokio::task::spawn_blocking(move || Owner::claim(&owner_run))
-            .await
-            .map_err(io::Error::other)??
-        else {
+        let owner = tokio::task::spawn_blocking(move || {
+            OwnedLock::acquire(&owner_run.join(".client-owner"), Duration::ZERO).map_err(|error| {
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "The resident box already runs.",
+                    )
+                } else {
+                    error
+                }
+            })
+        })
+        .await
+        .map_err(io::Error::other)??;
+        if stopped(&run).await? {
             return Ok(None);
-        };
+        }
         let http = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let port = http.local_addr()?.port();
         let ssh = ssh::Listener::bind(&run).await?;
@@ -75,19 +86,20 @@ impl Resident {
             run,
             _owner: owner,
         };
-        resident.publish()?;
-        Ok(Some(resident))
+        // The publishing task owns the guard even if the async caller cancels.
+        tokio::task::spawn_blocking(move || {
+            resident.publish()?;
+            Ok(Some(resident))
+        })
+        .await
+        .map_err(io::Error::other)?
     }
 
     fn publish(&self) -> io::Result<()> {
-        use std::io::Write;
-        let mut pid = tempfile::NamedTempFile::new_in(&self.run)?;
-        write!(pid, "{}", self.record.pid)?;
-        pid.persist(self.run.join("link.pid"))?;
-        let mut draft = tempfile::NamedTempFile::new_in(&self.run)?;
-        serde_json::to_writer(&mut draft, &self.record)?;
-        draft.persist(self.run.join("serve.json"))?;
-        Ok(())
+        let record = serde_json::to_vec(&self.record)?;
+        let pid = self.record.pid.to_string();
+        files::write_atomic(&self.run.join("link.pid"), pid.as_bytes())?;
+        files::write_atomic(&self.run.join("serve.json"), &record)
     }
 
     pub fn record(&self) -> &ServeRecord {
@@ -175,84 +187,4 @@ pub(crate) fn random<const N: usize>() -> io::Result<[u8; N]> {
 async fn stopped(run: &Path) -> io::Result<bool> {
     Ok(tokio::fs::try_exists(run.join("off")).await?
         || tokio::fs::try_exists(run.join("paused")).await?)
-}
-
-struct Owner {
-    path: PathBuf,
-    marker: String,
-}
-
-impl Owner {
-    fn claim(run: &Path) -> io::Result<Option<Self>> {
-        private_dir(run)?;
-        let path = run.join(".client-owner");
-        let marker = format!(
-            "owner-{}-{}",
-            std::process::id(),
-            hex::encode(random::<8>()?)
-        );
-        let draft = tempfile::tempdir_in(run)?;
-        fs::File::create(draft.path().join(&marker))?;
-        if fs::symlink_metadata(&path).is_ok() {
-            Self::reclaim(&path)?;
-        }
-        fs::rename(draft.path(), &path).map_err(|error| {
-            io::Error::new(error.kind(), format!("Claiming the resident home: {error}"))
-        })?;
-        let owner = Self { path, marker };
-        Ok((!run.join("off").exists() && !run.join("paused").exists()).then_some(owner))
-    }
-
-    fn reclaim(path: &Path) -> io::Result<()> {
-        let live = || {
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "The resident box already runs.",
-            )
-        };
-        if !fs::symlink_metadata(path)?.is_dir() {
-            return Err(live());
-        }
-        let mut entries = fs::read_dir(path)?;
-        let Some(entry) = entries.next().transpose()? else {
-            return fs::remove_dir(path);
-        };
-        if entries.next().is_some() {
-            return Err(live());
-        }
-        let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(|name| {
-            let (pid, token) = name.strip_prefix("owner-")?.split_once('-')?;
-            (token.len() == 16 && token.bytes().all(|b| b.is_ascii_hexdigit()))
-                .then(|| pid.parse().ok())
-                .flatten()
-        }) else {
-            return Err(live());
-        };
-        if ProcessIdentity::read(pid)?.is_some() {
-            return Err(live());
-        }
-        // Remove only the stale marker observed above. A newer nonempty owner directory wins.
-        fs::remove_file(entry.path())?;
-        fs::remove_dir(path)
-    }
-}
-
-impl Drop for Owner {
-    fn drop(&mut self) {
-        if fs::remove_file(self.path.join(&self.marker)).is_ok() {
-            let _ = fs::remove_dir(&self.path);
-        }
-    }
-}
-
-pub(crate) fn private_dir(path: &Path) -> io::Result<()> {
-    let mut dirs = fs::DirBuilder::new();
-    dirs.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        dirs.mode(0o700);
-    }
-    dirs.create(path)
 }
