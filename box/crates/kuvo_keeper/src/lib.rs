@@ -7,6 +7,9 @@ mod readiness;
 mod release;
 mod worker;
 
+#[cfg(windows)]
+pub mod windows;
+
 pub use readiness::resident_info;
 pub use release::Release;
 pub use worker::wait_for_stop;

@@ -1081,14 +1081,18 @@ dependencies = [
 name = "kuvo_keeper"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "hex",
  "kuvo_os",
  "kuvo_server",
  "kuvo_store",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

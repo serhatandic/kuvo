@@ -1,5 +1,6 @@
 [package]
 name = "kuvo-box"
+default-run = "kuvo-box"
 version.workspace = true
 edition.workspace = true
 license-file.workspace = true
