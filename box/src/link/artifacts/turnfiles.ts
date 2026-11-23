@@ -1,5 +1,6 @@
 // Files a turn changed that no tool call named (a command's output), looked for as the turn ends:
-// in a git repository, what git status lists (so what git ignores is left out); elsewhere, a walk
+// in a git repository, what git status lists (so what git ignores is left out) and what the turn's
+// own commits hold (renders it made and committed before it ended); elsewhere, a walk
 // of the folder for files changed since the turn began, which stops at a limit. The same on macOS
 // and Linux: plain directory reads and git, no watch.
 
@@ -85,7 +86,7 @@ export async function changedSince(
     }))
     for (const path of matching) if (path && found.length < fileLimit) found.push(path)
   }
-  const paths = top && await fromGit(top, folder)
+  const paths = top && await fromGit(top, folder, since - clockSlack)
   if (paths) {
     const candidates = paths.filter(path => allowed(path) && keep(path.slice(folder.length + 1)))
     for (let i = 0; i < candidates.length && found.length < fileLimit; i += 32) await check(candidates.slice(i, i + 32))
@@ -119,16 +120,30 @@ export async function changedSince(
   return found
 }
 
-/** What git status lists under `folder`: changed and new files, each by its whole path. */
-async function fromGit(top: string, folder: string): Promise<string[] | undefined> {
-  const args = await ownArgsLater(["-C", folder, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."])
-  if (!args) return undefined
-  const out = await new Promise<string | undefined>(done => execFile("git", args, {
+/** Most of the turn's own commits looked through. */
+const commitLimit = 100
+
+/** `git` with `args` under `folder`, its output; none when it fails. */
+async function git(folder: string, args: string[]): Promise<string | undefined> {
+  const own = await ownArgsLater(["-C", folder, ...args])
+  if (!own) return undefined
+  return new Promise<string | undefined>(done => execFile("git", own, {
     timeout: 15_000,
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
   }, (error, stdout) => done(error ? undefined : stdout)))
+}
+
+/**
+ * What git status lists under `folder` (changed and new files), and what commits made since `since`
+ * (ms) added or changed there, which status no longer lists: each by its whole path.
+ */
+async function fromGit(top: string, folder: string, since: number): Promise<string[] | undefined> {
+  const [out, committed] = await Promise.all([
+    git(folder, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]),
+    git(folder, ["log", `--since=@${Math.floor(since / 1000)}`, `-n${commitLimit}`, "--no-merges", "--diff-filter=ACMR", "--name-only", "-z", "--format=", "HEAD", "--", "."]),
+  ])
   if (out === undefined) return undefined
   const paths: string[] = []
   const entries = out.split("\0")
@@ -140,6 +155,12 @@ async function fromGit(top: string, folder: string): Promise<string[] | undefine
     if (entry[0] === "D" || entry[1] === "D") continue
     const path = join(top, entry.slice(3))
     if (path.startsWith(folder + sep)) paths.push(path)
+  }
+  // (Each commit's names, each after a NUL, with a newline before the next commit's.)
+  const listed = new Set(paths)
+  for (const name of (committed ?? "").split("\0").map(name => name.replace(/^\n+/, "")).filter(Boolean)) {
+    const path = join(top, name)
+    if (path.startsWith(folder + sep) && !listed.has(path)) listed.add(path), paths.push(path)
   }
   return paths
 }

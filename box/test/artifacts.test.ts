@@ -706,6 +706,45 @@ describe("files a command made", () => {
   })
 })
 
+// #928: an Antigravity session rendered 12 shots with a command, committed them, and its Outputs
+// said "No outputs yet": at the turn's end git status no longer listed them.
+describe("files a command made and the turn committed", () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+  const git = (repo: string, args: string[], date?: string) =>
+    spawnSync("git", ["-C", repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args], { env: { ...process.env, ...(date ? { GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date } : {}) } })
+
+  for (const agent of ["claude", "codex", "antigravity", "grok", "cursor", "engine"]) {
+    test(`are its outputs (${agent}), not what was committed before it`, async () => {
+      recorder = record(store, { bots }).recorder
+      const from: Source = { name: "bridge", session: async (id) => engine.sessions.get(id), agent: () => agent }
+      const repo = join(root, "repo")
+      mkdirSync(join(repo, "gpui", "shots"), { recursive: true })
+      spawnSync("git", ["init", "-q", repo])
+      // Rendered and committed an hour before: not this turn's.
+      const old = join(repo, "gpui", "shots", "old-light.png")
+      writeFileSync(old, png)
+      const hourAgo = new Date(Date.now() - 3_600_000)
+      utimesSync(old, hourAgo, hourAgo)
+      git(repo, ["add", "-A"])
+      git(repo, ["commit", "-qm", "earlier"], hourAgo.toISOString())
+      session("ses_shots", repo)
+      await hear2(from, [{ type: "session.execution.started", data: { sessionID: "ses_shots" } }])
+      // `cargo run --bin shots`, then `git commit`: nothing left for git status by the turn's end.
+      for (const name of ["draft-outputs-a-light.png", "draft-outputs-a-dark.png"]) writeFileSync(join(repo, "gpui", "shots", name), png)
+      git(repo, ["add", "-A"])
+      expect(git(repo, ["commit", "-qm", "drafts"]).status).toBe(0)
+      expect(spawnSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }).stdout).toBe("")
+      await hear2(from, [{ type: "session.execution.succeeded", data: { sessionID: "ses_shots" } }])
+      const names = (await route("GET", "kuvo/artifacts?session=ses_shots")).value.artifacts.map((artifact: any) => artifact.name).sort()
+      expect(names).toEqual(["draft-outputs-a-dark.png", "draft-outputs-a-light.png"])
+    })
+  }
+
+  async function hear2(from: Source, events: Event[]) {
+    for (const event of events) await recorder.heard(from, event)
+  }
+})
+
 describe("what the agent's browser downloads", () => {
   /** As the box's browser tells the record, once a download is done. */
   async function note(body: unknown) {
