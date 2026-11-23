@@ -1,0 +1,165 @@
+// Session and message behavior through the selected resident and its engine API.
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { test } from "node:test";
+import { request } from "./adapter.mjs";
+import { bench } from "./bench.mjs";
+import { sessionOf } from "./engine.mjs";
+
+const vectors = JSON.parse(fs.readFileSync(new URL("../vectors/message-parts.json", import.meta.url)));
+
+test("messages saved before parts were kept still show their parts", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("message-parts");
+  const resident = await here.start().ready();
+  const response = await request(resident, "POST", "kuvo/messages/parts", {
+    texts: vectors.read.map(row => row.text),
+  });
+  assert.equal(response.status, 200);
+  for (const [index, row] of vectors.read.entries()) {
+    assert.deepEqual(response.json.parts[index], row.parts, row.about);
+  }
+});
+
+test("a session reports the latest measured step until a summary supersedes it", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-context");
+  const model = { id: "wide", providerID: "test" };
+  const session = {
+    ...sessionOf({ id: "ses_context" }),
+    model,
+    tokens: { input: 3_000_000 },
+  };
+  here.engine.sessions.push(session);
+  here.engine.models = [{ ...model, limit: { context: 1_000_000 } }];
+  const resident = await here.start().ready();
+  const read = async () => {
+    const response = await request(resident, "GET", "api/session/ses_context");
+    assert.equal(response.status, 200);
+    return response.json.data;
+  };
+  assert.deepEqual(await read(), { ...session, contextWindow: 1_000_000 });
+
+  here.engine.models = [];
+  const step = { type: "assistant", model, tokens: { input: 10, output: 8, reasoning: 2, cache: { read: 400_000, write: 500 } } };
+  here.engine.messages.set(session.id, [step]);
+  assert.deepEqual(await read(), {
+    ...session,
+    contextWindow: 1_000_000,
+    context: { used: 400_520, window: 1_000_000 },
+  });
+
+  here.engine.messages.set(session.id, [{ type: "compaction", status: "completed" }, step]);
+  assert.deepEqual(await read(), { ...session, contextWindow: 1_000_000 });
+});
+
+test("rename and archive keep session notes, and a subagent goes with its conversation", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-actions");
+  const notes = { kuvo: { startedBy: "ses_starter", archived: true }, another: { kept: true } };
+  here.engine.sessions.push(
+    { ...sessionOf({ id: "ses_project", title: "Before", directory: here.home }), metadata: notes },
+    sessionOf({ id: "ses_child", title: "Child", parent: "ses_project" }),
+  );
+  const resident = await here.start().ready();
+  const path = "kuvo/sessions/ses_project";
+  const rename = await request(resident, "POST", path + "/rename", { title: "  After  " });
+  assert.equal(rename.status, 200);
+  assert.equal(rename.json.info.title, "After");
+  assert.deepEqual(rename.json.info.metadata, notes);
+
+  const stale = await request(resident, "POST", path + "/archive", { archived: false, was: { updated: 0, archived: true } });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.json.message, "It changed since you read it.");
+
+  const unarchive = await request(resident, "POST", path + "/archive", { archived: false, was: { updated: 1, archived: true } });
+  assert.equal(unarchive.status, 200);
+  assert.deepEqual(unarchive.json.info.metadata, {
+    kuvo: { startedBy: "ses_starter" }, another: { kept: true }, "kuvo.archived": false,
+  });
+  const child = await request(resident, "DELETE", "kuvo/sessions/ses_child");
+  assert.equal(child.status, 409);
+  assert.match(child.json.message, /subagent/);
+  const deleted = await request(resident, "DELETE", path);
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(deleted.json, { session: "ses_project" });
+  assert.equal((await request(resident, "GET", "api/session/ses_project")).status, 404);
+});
+
+test("a busy conversation can steer, edit and remove messages in its queue", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-queue");
+  const session = "ses_queue";
+  here.engine.sessions.push(sessionOf({ id: session, title: "Busy", directory: here.home }));
+  here.engine.running.add(session);
+  const resident = await here.start().ready();
+  const path = "kuvo/sessions/" + session;
+  const send = (id, words) => request(resident, "POST", path + "/send", { id, words, delivery: "queue" }, { "x-kuvo-client": "app" });
+  assert.equal((await send("msg_first", "first")).status, 200);
+  assert.equal((await send("msg_edit", "edit me")).status, 200);
+  assert.equal((await send("msg_drop", "take back")).status, 200);
+
+  const steer = await request(resident, "POST", path + "/queue/msg_first/steer");
+  assert.equal(steer.status, 200);
+  assert.deepEqual(here.engine.interrupted, []);
+  assert.deepEqual(here.engine.inboxes.get(session).map(row => [row.id, row.delivery]),
+    [["msg_first", "steer"], ["msg_edit", "queue"], ["msg_drop", "queue"]]);
+  const removed = await request(resident, "DELETE", path + "/queue/msg_edit?receipt=msg_undo");
+  assert.equal(removed.status, 200);
+  assert.equal(removed.json.removed.words, "edit me");
+  assert.equal(removed.json.removed.before, "msg_drop");
+  assert.equal(removed.json.removed.receipt, "msg_undo");
+  assert.equal((await request(resident, "DELETE", path + "/queue/msg_drop")).status, 200);
+  assert.equal((await send("msg_changed", "edited words")).status, 200);
+  assert.deepEqual(here.engine.inboxes.get(session).map(row => [row.id, row.payload.metadata.kuvo.parts.words]),
+    [["msg_first", "first"], ["msg_changed", "edited words"]]);
+});
+
+test("repeating the same send after the resident loses its reply leaves one message", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-retry");
+  const session = "ses_recovery";
+  here.engine.sessions.push(sessionOf({ id: session, title: "Restart", directory: here.home }));
+  const first = here.start();
+  const initial = await first.ready();
+  const path = "kuvo/sessions/" + session + "/send";
+  const message = { id: "msg_lostReply", words: "One copy" };
+  const accepted = new Promise(resolve => { here.engine.holdPrompt = { id: message.id, accepted: resolve }; });
+  const original = request(initial, "POST", path, message).catch(() => null);
+  await accepted;
+  first.child.kill("SIGKILL");
+  await first.exited;
+  await original;
+
+  const resumed = await here.start().ready();
+  const sent = await request(resumed, "POST", path, message);
+  assert.equal(sent.status, 200);
+  assert.deepEqual(sent.json, {});
+  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [message.id]);
+  assert.deepEqual((await request(resumed, "POST", path, message)).json, sent.json);
+});
+
+test("a new chat keeps its session marks and appears in the local session list", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-start");
+  const resident = await here.start().ready();
+  const started = await request(resident, "POST", "kuvo/sessions", { title: "New conversation", chat: true, approval: "askFirst" });
+  assert.equal(started.status, 200);
+  assert.equal(started.json.title, "New conversation");
+  assert.equal(started.json.project, null);
+  assert.equal(started.json.folder, here.home + "/chats");
+  assert.equal(started.json.info.metadata.kuvo.chat, started.json.folder);
+  assert.equal(started.json.info.metadata.kuvo.approval, "askFirst");
+
+  const { openLine } = await import("./adapter.mjs");
+  const watch = Buffer.from(JSON.stringify({ sessions: "kuvo/sessions/list/events" })).toString("base64url");
+  const line = await openLine(resident, "?watch=" + watch);
+  t.after(() => line.close());
+  for await (const frame of line.frames()) {
+    if (!frame.d?.sessions?.[started.json.session]) continue;
+    assert.equal(frame.d.sessions[started.json.session].kind, "chat");
+    assert.equal(frame.d.sessions[started.json.session].title, "New conversation");
+    return;
+  }
+  assert.fail("the new chat did not reach the line");
+});

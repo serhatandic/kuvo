@@ -46,7 +46,11 @@ pub enum State {
 #[derive(Clone)]
 pub struct Engine {
     pub(crate) upstream: Upstream,
-    home: PathBuf,
+    pub(crate) context_windows: crate::context::Windows,
+    pub(crate) home: PathBuf,
+    pub(crate) queues: crate::queue::QueueStore,
+    pub(crate) message_clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    turns: std::sync::Arc<[tokio::sync::Semaphore; 64]>,
     version: String,
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<State>,
@@ -115,11 +119,30 @@ impl Engine {
         );
         Ok(Self {
             upstream,
+            turns: std::sync::Arc::new(std::array::from_fn(|_| tokio::sync::Semaphore::new(1))),
+            context_windows: crate::context::Windows::open(&home),
+            queues: crate::queue::QueueStore::open(&home),
+            message_clock: Default::default(),
             home,
             version,
             commands,
             state,
         })
+    }
+
+    pub(crate) async fn turn(&self, session: &str) -> tokio::sync::SemaphorePermit<'_> {
+        // A stable stripe within this engine ensures writers of one session run in order.
+        let hash = session.bytes().fold(0usize, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(usize::from(byte))
+        });
+        self.turns[hash % self.turns.len()]
+            .acquire()
+            .await
+            .expect("the engine's turns stay open")
+    }
+
+    pub(crate) fn states(&self) -> watch::Receiver<State> {
+        self.state.clone()
     }
 
     pub async fn state(&self) -> State {
