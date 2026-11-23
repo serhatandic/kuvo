@@ -451,7 +451,7 @@ pub(crate) fn zone(files: &Files, link: &Link) -> Result<Option<Zone>, Error> {
 }
 
 fn title(name: &str) -> String {
-    name.replace('_', " ")
+    name.replace('_', " ").replace('/', " › ")
 }
 
 pub(crate) fn clock(files: &Files, link: &Link) -> Result<Value, Error> {
@@ -463,14 +463,15 @@ pub(crate) fn clock(files: &Files, link: &Link) -> Result<Value, Error> {
     let seconds = timezone.to_offset(Timestamp::now()).seconds();
     let minutes = seconds.unsigned_abs() / 60;
     let offset = if minutes == 0 {
-        "UTC".to_owned()
+        "GMT".to_owned()
     } else {
-        format!(
-            "UTC{}{hours:02}:{minute:02}",
-            if seconds < 0 { "-" } else { "+" },
-            hours = minutes / 60,
-            minute = minutes % 60
-        )
+        let sign = if seconds < 0 { "−" } else { "+" };
+        let (hours, minutes) = (minutes / 60, minutes % 60);
+        if minutes == 0 {
+            format!("GMT{sign}{hours}")
+        } else {
+            format!("GMT{sign}{hours}:{minutes:02}")
+        }
     };
     let name = link
         .name

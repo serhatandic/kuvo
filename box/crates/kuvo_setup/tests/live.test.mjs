@@ -213,7 +213,11 @@ test("clock changes are persisted and stale settings revisions are refused", { t
   const given = { row: "time-zone", value: "Europe/Istanbul", was: read.revision };
   const answer = await box.ask("PATCH", route, given);
   assert.equal(answer.status, 200, answer.text);
-  assert.equal(answer.json.groups[0].rows[0].value, "Europe/Istanbul");
+  const accepted = answer.json.groups[0].rows[0];
+  assert.equal(accepted.value, "Europe/Istanbul");
+  assert.deepEqual(accepted.choices.find(choice => choice.id === accepted.value),
+    { id: "Europe/Istanbul", title: "Europe › Istanbul" });
+  if (fs.existsSync("/usr/share/zoneinfo/Europe/Istanbul")) assert.match(accepted.line, /GMT\+3 now\./);
   assert.equal(answer.json.status, "committed");
   assert.equal(fs.readFileSync(path.join(box.home, "wakes", "timezone"), "utf8"), "Europe/Istanbul");
   const stale = await box.ask("PATCH", route, { ...given, value: "Asia/Tokyo" });
