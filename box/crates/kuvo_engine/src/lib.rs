@@ -17,6 +17,7 @@ mod queue;
 mod search;
 mod send;
 mod session_list;
+mod session_move;
 mod sessions;
 mod start_session;
 mod typed;
@@ -34,6 +35,7 @@ pub const FEATURES: &[&str] = &["search", "sessions.models", "typed", "typed.dra
 pub use launch::pinned_version;
 pub use lifetime::{Engine, State, Timing};
 pub use session_list::LocalSessions;
+pub use session_move::{MoveEngineError, SessionMove};
 
 impl Engine {
     pub fn register(&self, routes: &mut Registry) -> LocalSessions {

@@ -1,26 +1,28 @@
 // Node's directory entry for `node --test protocol/conformance`.
+const areas = new Map([
+  ["resident", "./resident.test.mjs"],
+  ["peers", "./peers.test.mjs"],
+  ["removal", "./removal.test.mjs"],
+  ["adding", "./adding.test.mjs"],
+  ["two-boxes", "./two-boxes.test.mjs"],
+  ["moves", "./moves.test.mjs"],
+  ["holder", "./holder.test.mjs"],
+  ["compat", "./compat.test.mjs"],
+  ["clock", "./clock.test.mjs"],
+  ["engine-sessions", "./engine-sessions.test.mjs"],
+  ["engine-typed", "./engine-typed.test.mjs"],
+  ["engine-delivery", "./engine-delivery.test.mjs"],
+  ["engine-asks", "./engine-asks.test.mjs"],
+  ["engine-search", "./engine-search.test.mjs"],
+  ["engine-models", "./engine-models.test.mjs"],
+  ["engine-live", "./engine-live.test.mjs"],
+  ["engine-worktree", "./engine-worktree.test.mjs"],
+  ["stored-formats", "./stored-formats.test.mjs"],
+]);
 const area = process.env.KUVO_CONFORMANCE_AREA;
-if (!area || area === "resident") await import("./resident.test.mjs");
-if (!area || area === "peers") await import("./peers.test.mjs");
-if (!area || area === "removal") await import("./removal.test.mjs");
-if (!area || area === "adding") await import("./adding.test.mjs");
-if (!area || area === "two-boxes") await import("./two-boxes.test.mjs");
-if (!area || area === "moves") await import("./moves.test.mjs");
-if (!area || area === "holder") await import("./holder.test.mjs");
-if (!area || area === "compat") await import("./compat.test.mjs");
-if (!area || area === "clock") await import("./clock.test.mjs");
-if (!area || area === "engine-sessions") await import("./engine-sessions.test.mjs");
-if (!area || area === "engine-typed") await import("./engine-typed.test.mjs");
-if (!area || area === "engine-delivery") await import("./engine-delivery.test.mjs");
-if (!area || area === "engine-asks") await import("./engine-asks.test.mjs");
-if (!area || area === "engine-search") await import("./engine-search.test.mjs");
-if (!area || area === "engine-models") await import("./engine-models.test.mjs");
-if (!area || area === "engine-live") await import("./engine-live.test.mjs");
+if (!area) {
+  for (const file of areas.values()) await import(file);
+}
 if (area === "engine-golden") await import("./engine-golden.test.mjs");
-if (!area || area === "engine-worktree") await import("./engine-worktree.test.mjs");
-if (!area || area === "stored-formats") await import("./stored-formats.test.mjs");
-if (![
-  "removal", "adding", "resident", "peers", "two-boxes", "moves", "holder", "compat", "clock", "stored-formats",
-  "engine-sessions", "engine-typed", "engine-delivery", "engine-asks", "engine-search",
-  "engine-models", "engine-live", "engine-golden", "engine-worktree",
-].includes(area)) await import("./routes.test.mjs");
+else if (!areas.has(area)) await import("./routes.test.mjs");
+else await import(areas.get(area));

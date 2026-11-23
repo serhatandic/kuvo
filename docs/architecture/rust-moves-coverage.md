@@ -14,6 +14,7 @@ It does not yet drive a transfer or change ownership over the relay.
 | Other computers | A third computer sees an authenticated in-progress snapshot and receives its removal on the move event stream. Both residents run the same case. |
 | Lost switch reply | A TypeScript source restarts with a pending switch. The Rust destination restarts with its verified, generation-bound receipt. Over the local relay, the source sees completion and records the departure. The test seeds the committed copy and does not transfer a conversation. |
 | Golden receipt | Both residents open a current TypeScript golden home and keep its switch receipt byte for byte. |
+| OpenCode export and rollback | `Engine::session_move` holds one engine lease. The scenario reads a paginated child tree, imports with the destination directory and ownership receipt, and recovers an import whose reply was lost after OpenCode accepted it. A receipt for another move leaves the copy intact. |
 | Bound decision | A real Rust resident receives authenticated queries for an unknown move, a different generation and a different hash before it answers the valid retry. The reply proves the committed generation and inventory only. |
 | Stored formats | The manifest reader accepts unmarked and stamped v0, v1, v2 and v3. Writers use v1 for plain bundles, v2 when they carry session notes, and v3 when they carry forwarding evidence, as the TypeScript packer does. Rust storage scenarios also check immutable receipts, independent hints, and the unmarked legacy decision map after reopening. |
 | Differential | Both residents answer the same three listing and outcome requests and preserve the same seeded move files. The full inventory still differs in unrelated bootstrap, usage, library, engine-list and setup files. |
@@ -32,7 +33,8 @@ committed decisions that can be sealed. A live activation journal belongs to the
 The three shared move scenarios and five Rust storage and relay cases passed on
 macOS, WSL2 with GNU libc, static Linux musl under WSL2, and native Windows.
 The macOS workspace compile check, the mixed switch-reply scenario, and the
-TypeScript–Rust reach differential also passed.
+TypeScript–Rust reach differential also passed. The OpenCode export and rollback
+scenario passed on the same four Rust targets.
 
 ## Peer reach files
 
@@ -58,13 +60,14 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 209 declarations. Two have matching peer coverage from 2.2, 13 have partial
-proof, and 194 are open here or assigned to their existing owner. A storage or mail proof
+below counts 209 declarations. Two have matching peer coverage from 2.2, 15 have partial
+proof, and 192 are open here or assigned to their existing owner. A storage or mail proof
 alone never marks a full transfer scenario covered.
 
 | Reference | Cases | Status and remaining owner |
 |---|---|---|
-| [moves](../../box/bridge-tests/moves.test.js) | 1–16 | Open, 2.4 transfer and lookup. OpenCode inventory, queue and import semantics need 3.2, bot/group and queue effects need 5.1–5.3. |
+| [moves](../../box/bridge-tests/moves.test.js) | 7 | Partial, the OpenCode seam exports descendants across child-list pages. Bundle delivery and placement on the other computer remain 2.4. |
+| | 1–6, 8–16 | Open, 2.4 transfer and lookup. OpenCode inventory, queue and import semantics need 3.2, bot/group and queue effects need 5.1–5.3. |
 | [moves-elsewhere](../../box/bridge-tests/moves-elsewhere.test.js) | 1 | Partial, authenticated snapshots and a stream removal are exercised. Add both parties' successive clear and independent projections in 2.4. |
 | | 2 | Partial, filtering one's own moves is exercised. Add malformed inputs, non-members, sender clock changes and injected expiry in 2.4. |
 | | 3 | Open, prove expiry on a quiet peer with an injected clock in 2.4. |
@@ -76,7 +79,8 @@ alone never marks a full transfer scenario covered.
 | | 20, 34 | Partial, switch recovery or terminal client receipt is exercised with seeded state. Add removal fencing (2.3 and 2.4) and source cleanup against a failing engine (2.4 and 3.2). |
 | | 37 | Partial, live progress names come from accepted membership in the third-computer scenario. Add source and recipient progress during an initiated transfer in 2.4. |
 | | 1–8, 10–18, 21–23, 25, 27–30, 32–33, 35–36, 38–55 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
-| [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 1–12, 15–17, 21–22 | Open, 2.4 replay and rollback with engine and group effects from 3.2 and 5.3. |
+| [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 21 | Partial, rollback after an uncertain import checks its OpenCode receipt. Keeping an old unproven journal held through relay recovery remains 2.4. |
+| | 1–12, 15–17, 22 | Open, 2.4 replay and rollback with engine and group effects from 3.2 and 5.3. |
 | | 13–14, 18–20, 23–24 | Open, 2.4 ordinary letters, notes and delayed delivery, including forwarding after a move. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 1–3, 9–18 | Open, 2.4 owner mutation claims, observations, replay and handoff evidence. Queue and session effects depend on 5.2 and 3.2. |
 | | 4–6 | Setup-owned, 2.1. See [setup coverage](rust-setup-coverage.md). |
@@ -104,10 +108,11 @@ start of that range and include a parameterized declaration once.
 
 ## Next transfer seam
 
-The OpenCode port exposes session listing and held inbox reconciliation. A live move needs a
-named engine boundary for inspecting, fencing, exporting, importing and retiring a session tree
-and its paused queue. It must provide import ownership proof for rollback and serialize new
-prompt admissions with the source's final comparison. Native lanes, group copies, Work Queue
-files, and forwarded-edit evidence then use the same transfer protocol with their own data
-owners. The proof still needs a real session going each way over a mixed relay and deliberate
-interruption of every transfer step.
+The OpenCode port exposes session listing, held inbox reconciliation, and the
+`SessionMove` handle for paginated exports, import, and receipt-checked rollback.
+The peer worker still needs to reserve and fence sessions across processes, settle prompt
+writes before the source's final comparison, and install the paused queue before activation.
+The transport and journal must drive these operations in order and recover each interrupted
+step. Native lanes, group copies, Work Queue files, and forwarded-edit evidence use the
+same transfer protocol with their own data owners. The proof still needs a real session
+going each way over a mixed relay, handoffs, and letters routed by `ownerOf`.
