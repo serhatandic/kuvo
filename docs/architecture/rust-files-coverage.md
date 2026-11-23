@@ -66,5 +66,7 @@ Counts: 19 cases; 12 covered, 2 partly, 5 left (all of folders-suggested).
   Rust phrase differently.
 - `kuvo/file` bytes through the Rust `box route` command, and a Rust test of a file that changes
   while it's sent.
-- OSes: tested on macOS only. Linux and native Windows (the `file://` seam takes drive letters and
-  UNC hosts, untested) are left.
+- OSes: the conformance area and the differential run on macOS. On native Windows,
+  `kuvo_services` cross-builds (llvm-mingw, `x86_64-pc-windows-gnullvm`) and its unit tests pass
+  there, the `file://` seam's drive letters, network hosts and refusals included; the files
+  conformance area on Windows (both boxes) and anything on Linux are left.

@@ -209,6 +209,28 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn file_addresses_read_as_node_reads_them_on_windows() {
+        let named = |uri: &str| file_url_path(uri);
+        assert_eq!(
+            named("file:///C:/a/b%20c%C5%9F.txt"),
+            Some(PathBuf::from(r"C:\a\b cş.txt"))
+        );
+        assert_eq!(
+            named("file://server/share/x"),
+            Some(PathBuf::from(r"\\server\share\x"))
+        );
+        for refused in [
+            "file:///a/b",
+            "file:///C:/a%5Cb",
+            "file:///C:/a%2fb",
+            "file:///C:/%ff",
+        ] {
+            assert_eq!(named(refused), None, "{refused}");
+        }
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn text_takes_a_full_path_in_base64url_only_without_an_address() {
