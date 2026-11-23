@@ -40,19 +40,32 @@ const read = file => { try { return JSON.parse(fs.readFileSync(file, "utf8")); }
 const waitingForChange = [];
 const poke = () => { for (const resolve of waitingForChange.splice(0)) resolve(); };
 let signal;
-function eventually(found) {
+function eventually(found, label, ms = 24_000) {
   return new Promise((resolve, reject) => {
-    const look = async () => {
-      const value = await found();
-      if (!value) return;
+    let looking = false;
+    const limit = setTimeout(() => finish(new Error(label)), ms);
+    const abort = () => finish(signal.reason);
+    const finish = (error, value) => {
       clearInterval(timer);
-      resolve(value);
+      clearTimeout(limit);
+      signal?.removeEventListener("abort", abort);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const look = async () => {
+      if (looking) return;
+      looking = true;
+      try {
+        const value = await found();
+        if (value) finish(null, value);
+      } catch (error) {
+        finish(error);
+      } finally {
+        looking = false;
+      }
     };
     const timer = setInterval(look, 20);
-    signal?.addEventListener("abort", () => {
-      clearInterval(timer);
-      reject(new Error(`it never got there: ${found}`));
-    }, { once: true });
+    signal?.addEventListener("abort", abort, { once: true });
     look();
   });
 }
@@ -71,11 +84,19 @@ const listening = server => new Promise(resolve => server.listen(0, "127.0.0.1",
 async function engineWith(sessions) {
   const seen = { prompts: [], interrupted: [], compacted: [], replied: [], asks: new Map() };
   const all = new Map(sessions.map(each => [each.id, { time: { created: Date.now(), updated: Date.now() }, directory: "/work", ...each }]));
+  const events = new Set();
   const server = http.createServer(async (request, response) => {
     const given = await body(request);
     const url = new URL(request.url, "http://x");
     const send = (status, data) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(status < 400 ? { data } : { message: data }));
     if (request.headers.authorization !== `Basic ${Buffer.from("opencode:pw").toString("base64")}`) return response.writeHead(401).end();
+    if (url.pathname === "/api/event") {
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.flushHeaders();
+      events.add(response);
+      response.on("close", () => events.delete(response));
+      return;
+    }
     if (url.pathname === "/api/session" && request.method === "GET") {
       const parent = url.searchParams.get("parentID");
       let listed = [...all.values()].filter(each => (parent && parent !== "null" ? each.parentID === parent : !each.parentID));
@@ -90,7 +111,12 @@ async function engineWith(sessions) {
     const rest = match[2] ?? "";
     if (!rest && request.method === "GET") return send(200, session);
     if (!rest && request.method === "PATCH") {
-      if (given.metadata) session.metadata = given.metadata;
+      if (given.metadata) {
+        session.metadata = given.metadata;
+        session.time.updated = Math.max(Date.now(), session.time.updated + 1);
+        const event = { type: "session.metadata.updated", data: { sessionID: id } };
+        for (const stream of events) stream.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
       return send(200, session);
     }
     if (rest === "/prompt") {
@@ -196,19 +222,23 @@ async function ask(method, p, given) {
 const onMac = async (name, args) => (await ask("POST", "kuvo/agent-tools", { name, arguments: args, session: "ses_lead" })).json;
 // A tool on lab, from Wren's conversation, as kuvo-browser.js asks it there: a process of its own.
 const machineEnv = { PATH: process.env.PATH, HOME: support, KUVO_HOME: machineHome, TMPDIR: support };
-function onLab(name, args) {
+function labRoute(method, pathname, body) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script, "box", "route"], { env: machineEnv, stdio: ["pipe", "pipe", "inherit"] });
     let out = "";
     child.stdout.on("data", chunk => { out += chunk; });
     child.on("error", reject);
-    child.on("close", () => {
-      const said = JSON.parse(out.trim().split("\n").pop());
-      resolve(JSON.parse(said.body));
+    child.on("close", code => {
+      try {
+        assert.equal(code, 0, out);
+        const said = JSON.parse(out.trim().split("\n").pop());
+        resolve({ status: said.status, json: JSON.parse(said.body) });
+      } catch (error) { reject(error); }
     });
-    child.stdin.end(JSON.stringify({ method: "POST", path: "kuvo/agent-tools", body: { name, arguments: args, session: "ses_wren" } }));
+    child.stdin.end(JSON.stringify({ method, path: pathname, body }));
   });
 }
+const onLab = async (name, args) => (await labRoute("POST", "kuvo/agent-tools", { name, arguments: args, session: "ses_wren" })).json;
 const labPid = () => { try { return Number(fs.readFileSync(path.join(machineHome, "run", "link.pid"), "utf8")); } catch { return 0; } };
 async function stopLab() {
   const pid = labPid();
@@ -256,10 +286,13 @@ const rowsOn = (home, key) => read(path.join(home, "run", "work", "elsewhere", `
 test("a bot that moved here lists, reads, answers, summarizes and stops the sessions it left on the machine", { timeout: 90_000 }, async t => {
   signal = t.signal;
   // The machine tells this Mac of them, unasked, as soon as it sees the move.
-  const kept = await eventually(() => rowsOn(macHome, lab.key)?.leads?.ses_lead?.length === 3 && rowsOn(macHome, lab.key));
+  const kept = await eventually(() => rowsOn(macHome, lab.key)?.leads?.ses_lead?.length === 3 && rowsOn(macHome, lab.key), "The Mac did not receive the three work rows from lab");
   assert.deepEqual(kept.leads.ses_lead.map(row => row.session).sort(), ["ses_left1", "ses_left2", "ses_left3"], "only the bot's own");
   // One of them put away since.
-  labEngine.all.get("ses_left3").metadata.kuvo.archived = true;
+  const archive = await labRoute("POST", "kuvo/sessions/ses_left3/archive", { archived: true });
+  assert.equal(archive.status, 200, JSON.stringify(archive));
+  assert.equal(labEngine.all.get("ses_left3").metadata["kuvo.archived"], true);
+  await eventually(() => rowsOn(macHome, lab.key)?.leads?.ses_lead?.length === 2, "Lab did not publish the two remaining work rows after archive");
 
   const list = await onMac("list_sessions", {});
   assert.equal(list.isError, false);
@@ -298,9 +331,9 @@ test("a bot that moved here lists, reads, answers, summarizes and stops the sess
 
 test("with the machine's link down: in under 2 s the bot hears it isn't answering, with the rows it has; a stop it gives then is done once it's back", { timeout: 90_000 }, async t => {
   signal = t.signal;
-  await eventually(() => rowsOn(macHome, lab.key));
+  await eventually(() => rowsOn(macHome, lab.key), "The Mac did not receive lab's work rows");
   await stopLab();
-  await eventually(() => !relay.has(Buffer.from(lab.address, "base64url")));
+  await eventually(() => !relay.has(Buffer.from(lab.address, "base64url")), "Lab did not disconnect from the relay");
 
   const began = Date.now();
   const list = await onMac("list_sessions", {});
@@ -322,21 +355,24 @@ test("with the machine's link down: in under 2 s the bot hears it isn't answerin
 
   // It's back: the stop is done, and how it went comes to the bot as a message.
   startLab();
-  await eventually(() => labEngine.seen.interrupted.includes("ses_left2"));
-  const told = await eventually(() => macEngine.seen.prompts.find(each => each.session === "ses_lead"));
+  await eventually(() => relay.has(Buffer.from(lab.address, "base64url")), "Lab did not reconnect to receive the saved stop");
+  // Move the outbox clock past its retry interval after the simulated outage.
+  await link.sendOutbox(link.macLink.host, undefined, Date.now() + 61_000);
+  await eventually(() => labEngine.seen.interrupted.includes("ses_left2"), "Lab did not do the saved stop after reconnecting");
+  const told = await eventually(() => macEngine.seen.prompts.find(each => each.session === "ses_lead"), "The Mac did not deliver lab's stop receipt to the bot");
   assert.equal(told.text, "[On lab] Stopped \"Billing\".");
   assert.equal(told.metadata?.kuvo?.note?.from, "lab", "as that computer's own word");
   // Once: nothing of it is left on its way, on either box, to come again.
   const onItsWay = home => { try { return fs.readdirSync(path.join(home, "run", "outbox", "sending")).filter(name => name.endsWith(".json")); } catch { return []; } };
-  await eventually(() => !onItsWay(macHome).length && !onItsWay(machineHome).length);
+  await eventually(() => !onItsWay(macHome).length && !onItsWay(machineHome).length, "The stop or receipt stayed in the outbox");
   assert.equal(macEngine.seen.prompts.filter(each => each.session === "ses_lead").length, 1);
   assert.equal(labEngine.seen.interrupted.filter(each => each === "ses_left2").length, 1);
 });
 
 test("the other way: a bot that moved to the machine reaches the sessions it left on this Mac, and a stop waits for this Mac's link", { timeout: 120_000 }, async t => {
   signal = t.signal;
-  await eventually(() => relay.has(Buffer.from(lab.address, "base64url")));
-  const kept = await eventually(() => rowsOn(machineHome, mac)?.leads?.ses_wren?.length && rowsOn(machineHome, mac));
+  await eventually(() => relay.has(Buffer.from(lab.address, "base64url")), "Lab did not return to the relay");
+  const kept = await eventually(() => rowsOn(machineHome, mac)?.leads?.ses_wren?.length && rowsOn(machineHome, mac), "Lab did not receive the Mac's work rows");
   assert.deepEqual(kept.leads.ses_wren.map(row => row.session), ["ses_mleft1"]);
 
   const list = await onLab("list_sessions", {});
@@ -347,7 +383,7 @@ test("the other way: a bot that moved to the machine reaches the sessions it lef
 
   // This Mac's link stops: the machine hears it isn't answering, and its stop waits for it.
   link.stopMacLink();
-  await eventually(() => !relay.has(macAddress));
+  await eventually(() => !relay.has(macAddress), "The Mac did not disconnect from the relay");
   // (A process of its own, as a machine's tools are: its call goes the moment the machine's link
   // sees it in its outbox, and the answer is the relay's word that this Mac isn't there, never the
   // call's 20 s wait running out. Not timed to the second: on a busy Mac, starting the process
@@ -360,7 +396,7 @@ test("the other way: a bot that moved to the machine reaches the sessions it lef
   assert.match(stop.text, /^Studio Mac isn't answering .+ Your stop is kept/);
   assert.ok(!macEngine.seen.interrupted.includes("ses_mleft1"));
   link.runMacLink();
-  await eventually(() => macEngine.seen.interrupted.includes("ses_mleft1"));
-  const told = await eventually(() => labEngine.seen.prompts.find(each => each.session === "ses_wren"));
+  await eventually(() => macEngine.seen.interrupted.includes("ses_mleft1"), "The Mac did not do the saved stop after reconnecting");
+  const told = await eventually(() => labEngine.seen.prompts.find(each => each.session === "ses_wren"), "Lab did not deliver the Mac's stop receipt to the bot");
   assert.equal(told.text, "[On Studio Mac] Stopped \"Docs pass\".");
 });
