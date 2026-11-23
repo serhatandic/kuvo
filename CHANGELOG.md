@@ -12,6 +12,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Sessions from your other computers show under their projects, with **Show more** and the project total. Their last lists stay available if this computer's session list is still loading, and archived sessions appear in the sidebar's Archived view.
 - The mode picker shows Auto as coming soon for native Windows and WSL2 boxes. New conversations there start in Ask First by default.
 
+- Reopening the app goes back to the bot's conversation you left, on this computer or another, instead of the bot's settings page when its computer took a moment to answer. A conversation you'd scrolled up in opens where you were reading, and the side panel opens again if you'd left it open.
 - The main view's rounded corner beside the rail has one clean edge again, instead of a faint square corner showing past it.
 - Every skill in Marketplace has Remove. Folder skills go to Recently Deleted on each computer, and removed built-ins can be added again from the Kuvo catalog.
 

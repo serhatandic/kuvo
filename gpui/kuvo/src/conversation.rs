@@ -100,8 +100,9 @@ pub struct ConversationView {
     /// conversation's model again as it goes up.
     models_changed: Option<u64>,
     entries: Vec<Entry>,
-    /// The message "Show in conversation" brings into view as soon as its row is here (the Library).
-    reveal: Option<String>,
+    /// The message "Show in conversation" brings into view as soon as its row is here (the Library),
+    /// or the row it was read up to as the window last closed, and how far down it the view starts.
+    reveal: Option<(String, gpui::Pixels)>,
     chat_references: crate::queue::chat_references::ChatReferences,
     /// The row under the pointer: its reply shows its time, Copy and Quote at its end.
     hovered_row: Option<String>,
@@ -1147,22 +1148,45 @@ impl ConversationView {
     /// in; once it's loaded, if it isn't yet (a conversation still opening). One that never comes
     /// (older than what's read) leaves the conversation where it opens.
     pub fn reveal_message(&mut self, message: &str, cx: &mut Context<Self>) {
-        self.reveal = Some(message.to_owned());
+        self.reveal = Some((message.to_owned(), px(0.)));
+        self.reveal_now();
+        cx.notify();
+    }
+
+    /// Where it's read up to (none: at its latest, following it), as the window keeps it to open
+    /// there again; what's still to be brought into view, until it is.
+    pub fn read_at(&self) -> Option<crate::yours::ReadAt> {
+        if let Some((row, offset)) = &self.reveal {
+            return Some(crate::yours::ReadAt { row: row.clone(), offset: f32::from(*offset) });
+        }
+        if self.entries.is_empty() || self.list.is_following() {
+            return None;
+        }
+        let top = self.list.list_state().logical_scroll_top();
+        let entry = self.entries.get(top.item_ix)?;
+        Some(crate::yours::ReadAt { row: entry.key().to_owned(), offset: f32::from(top.offset_in_item) })
+    }
+
+    /// Scrolled to where it was read up to (`Self::read_at`), once that row is here; one that
+    /// never comes (older than what's read) leaves it at its latest.
+    pub fn read_from(&mut self, at: &crate::yours::ReadAt, cx: &mut Context<Self>) {
+        self.reveal = Some((at.row.clone(), px(at.offset.max(0.))));
         self.reveal_now();
         cx.notify();
     }
 
     fn reveal_now(&mut self) {
-        let Some(message) = self.reveal.as_deref() else { return };
-        let Some(ix) = self.entries.iter().position(|entry| match entry {
+        let Some((message, offset)) = self.reveal.clone() else { return };
+        let message = message.as_str();
+        let Some(ix) = self.entries.iter().position(|entry| entry.key() == message || match entry {
             Entry::Words { step, .. } | Entry::Sent { step, .. } => step.id == message,
             Entry::Steps { items, .. } => items.iter().any(|(step, _)| step.id == message),
-            entry => entry.key() == message,
+            _ => false,
         }) else { return };
         self.reveal = None;
         let list = self.list.list_state();
         list.pause_following_tail();
-        list.scroll_to(gpui::ListOffset { item_ix: ix, offset_in_item: px(0.) });
+        list.scroll_to(gpui::ListOffset { item_ix: ix, offset_in_item: offset });
     }
 
     fn show_rows(&mut self, new: Vec<Entry>, revisions: Vec<u64>) {
