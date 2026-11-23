@@ -2020,6 +2020,8 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
   const { folder, run, plist, engine, bridge, journal, swap, adopted, until, env, start, installHelper, nextEngine, stop } = machineFixture(name, {
     workerReadyMs: rollback || workerFailure ? 9_000 : undefined,
   });
+  // The previous job already has work when Helper is installed.
+  write(path.join(run, "engine.now"), "");
   const legacy = spawn("sh", [start, "keep"], { env, stdio: "ignore" });
   try {
     await until(() => bridge().pid && engine().pid, "legacy workers should start");
