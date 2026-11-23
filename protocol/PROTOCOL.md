@@ -6301,8 +6301,9 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   while that computer answers. The box checks what it can without the bot (`400 {"message"}` for an
   empty name, a look there isn't, a model or job that isn't one, no field a change has, or one too
   big for a mail, over 32,000 characters as JSON) and leaves the rest to that computer; `404` for a
-  bot no computer lists (or a computer it doesn't know, without `removed`), `503` when it can't keep
-  it now. It holds each sealed with its own
+  bot no computer lists (or a computer it doesn't know, without `removed`). When there is a
+  destination, the box returns `403` if the caller cannot hold the change, or `503` if the box
+  can't keep it now. It holds each sealed with its own
   secret (this Mac's box, only as its app gives it, in memory) in `run/bots-held/<id>.json`, and
   its refusals the same way, so what anything else there leaves isn't sent or shown.
   An `effort` is held too (`bots.effort`), and goes only to a computer whose `features` say
