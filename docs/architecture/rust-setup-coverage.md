@@ -181,9 +181,13 @@ unmarked historical homes and exercise that boundary.
   device writer. Its primary and forwarded paths use the same durable
   membership transaction. Device routes and relay session grants use this
   adapter in 2.2b.
+- After the 3.2a merge, one session-page handler uses local engine records for
+  folder projects and reads the merged peer list for computer-qualified
+  projects. The away-worktree test checks paging and invalid-cursor refusal
+  after the remote computer disconnects.
 - The accepted edit history handles preference fields. Text passages, session
-  notes, work inventory and operational moves remain the owning areas'
-  responsibility. The local Mac helper adapter authenticates the host before
+  notes, work inventory and operational moves are assigned in the coverage map.
+  The local Mac helper adapter authenticates the host before
   proving an identity. A real signed Helper and installed Keychain rehearsal
   remains separate from the stand-in.
 
@@ -229,7 +233,7 @@ unmarked historical homes and exercise that boundary.
 The comparison uses stopped copies of a signed TypeScript home. The search
 covered the desktop, released and current link sources, scripts, and the Rust
 resident. Reproduce the reader search with
-`git grep -n -E 'link[.](seen|version)|SEEN_FILE|VERSION_FILE|PROCESS_RECORD|setup-card[.]json|socket[.]key|keyNow' -- gpui scripts box/src box/crates`
+`git grep -n -E 'link[.](seen|version)|SEEN_FILE|VERSION_FILE|PROCESS_RECORD|setup-card[.]json|socket[.]key|keyNow|sharedOutcomes' -- gpui scripts box/src box/crates`
 and `git grep -n -F 'run/link.seen' v0.7.2 -- '*.swift'`.
 Two runs reported 53 and 55 startup leaf differences as background services wrote
 their files. The paths in the table also serve as search terms. Some writers split
@@ -239,7 +243,7 @@ paths into components, including `RUN`, `BOX`, `BOTS` and `WORK_FOLDER`.
 |---|---|---|
 | `run/link.seen` | Released `RemoteEngine.swift` uses its mtime to leave an engine running on quit. Rust writes an empty marker on authenticated non-app traffic with the same five-minute throttle. | Covered in B22 for the resident. 7.3 and 9.3 for the released reader drill. |
 | `run/link.version` | `link/areas/info.ts` reports it and the legacy setup command compares it with the running link's own build. The move's `PROCESS_RECORD` excludes it. Rust writes its resident build as plain UTF-8 without a newline. Build identifiers differ. | Covered in B22 for the writer. 7.1 for selector and rollback. |
-| `run/link.json` relay, `keyNow`, `own` and `sharedOutcomes` | `setup/lead.ts`, `main.ts` and `documents/work.ts` read these fields. Both preserve an existing relay. The differential run preserved that field. The startup fallback accepts ws/wss and strips a terminal slash. Rust carries the current static key and keeps the prior eight, publishes signed counters on connection, and treats absent outcomes as empty. Installed link identity changes and caller ordering remain covered by the respective integration phases. | 2.3 rotation and installer. 9.3 mixed startup order. |
+| `run/link.json` relay, `keyNow`, `own` and `sharedOutcomes` | `setup/lead.ts`, `main.ts`, `documents/work.ts` and `setup/shared.ts` read these fields. Both preserve an existing relay. The differential run preserved that field. The startup fallback accepts ws/wss and strips a terminal slash. Rust carries the current static key and keeps the prior eight, publishes signed counters on connection, and serializes an empty outcome map as `{}`. Installed link identity changes and caller ordering remain covered by the respective integration phases. | 2.3 rotation and installer. 9.3 mixed startup order. |
 | `run/setup-card.json` | `add/scripts.ts` prints it and `setup/judge.ts` reads it. Rust writes the versioned card at startup. The TS bench can finish before its periodic write. Active queue item and live usage inputs depend on their owner. | 2.3 discovery. 5.2 queue and card input. |
 | `run/socket.key`, `run/route/ssh`, `run/ssh-for`, `run/vault.sock` | `server/ssh-pipe.ts` and the Rust server use the same local secret encoding and addressed socket. Independently created secrets vary. Rust closes its socket on shutdown. Vault and SSH session directory state are read by `vault/ssh.ts` and `vault/holder.ts`. | 1.4 local transport. 6.2 vault and session directory. |
 | `run/lists/sessions.json`, `run/notices/teller`, `run/outbox/sending`, `run/moves` | Reader in `notices/told.ts` checks the live writer PID; peer list and move code read the session and move records. A move preserves durable records. Empty runtime directories have no desktop, installer or updater reader in the search. | 2.2 lists and notices. 2.4 moves. 1.5 letter interoperability. |
