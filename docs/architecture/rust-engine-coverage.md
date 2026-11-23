@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 122 of
-411 declarations are covered, 91 are partial and 198 are gaps.
-Row 3.2 retains 162 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 124 of
+411 declarations are covered, 90 are partial and 197 are gaps.
+Row 3.2 retains 160 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -111,7 +111,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
 | `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20 | 2, 6–8, 10–13, 15–19, 21–24, 26 | 3.2 · 6–8, 10, 15–16, 20, 23–24, 26<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–22<br>6.3 · 7–8, 15–16, 24 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
-| `box/test/session-lists.test.ts` (47) | 4–5, 10 | 3, 15–16, 19–20, 23–24, 46 | 1–2, 6–9, 11–14, 17–18, 21–22, 25–45, 47 | 3.2 · 1–3, 6–9, 11–17, 19–24, 26–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
+| `box/test/session-lists.test.ts` (47) | 4–5, 10, 24, 27 | 3, 15–16, 19–20, 23, 46 | 1–2, 6–9, 11–14, 17–18, 21–22, 25–26, 28–45, 47 | 3.2 · 1–3, 6–9, 11–17, 19–23, 26, 28–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
 | `box/test/session-notes.test.ts` (8) | 2 | 6 | 1, 3–5, 7–8 | 3.2 · 1, 3–8 |
 | `box/test/session-notes-writers.test.ts` (7) | 3 | 1 | 2, 4–7 | 3.2 · 1–2, 4–7<br>7.3 · 6 |
 | `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |

@@ -261,18 +261,31 @@ test("waiting counts include a bot’s delegated ask and open Work Queue items o
     JSON.stringify({ formatVersion: 1, items }));
   const item = (letter, status, extra = {}) => ({ id: "wqi_" + letter.repeat(20), title: letter, status, ...extra });
   const linked = item("l", "todo", { sessions: [{ session: work.id }], updated: { at: 2 } });
-  queue("usr_you", [item("a", "needs-you"), item("r", "needs-you", { removed: { at: 1 } }), linked]);
-  queue("ses_root", [item("d", "done", { sessions: [{ session: work.id }] }), { ...linked, updated: { at: 1 } }]);
+  queue("usr_you", [
+    item("a", "needs-you"), item("b", "needs-you", { sessions: [{ session: work.id }] }),
+    item("r", "needs-you", { removed: { at: 1 } }), linked,
+  ]);
+  queue("ses_root", [
+    item("d", "done", { sessions: [{ session: work.id }] }),
+    item("c", "canceled", { sessions: [{ session: work.id }] }),
+    { ...linked, updated: { at: 1 } },
+  ]);
   const record = await here.start().ready();
   const counts = async () => (await request(record, "GET", "kuvo/waiting")).json;
-  await until(async () => (await counts()).queue === 1, "the saved Needs you item");
-  assert.deepEqual(await counts(), { sessions: 0, bots: 0, queue: 1 });
+  await until(async () => (await counts()).queue === 2, "the saved Needs you items");
+  assert.deepEqual(await counts(), { sessions: 0, bots: 0, queue: 2 });
+  assert.equal((await request(record, "POST", "kuvo/waiting", {})).status, 405);
   await until(() => here.engine.subscribers() > 0, "the resident to follow asks");
   const form = { id: "form_scoutextra", sessionID: work.id, title: "Choose next step", fields: [] };
   here.engine.forms.set(work.id, [form]);
   here.engine.emit({ type: "form.created", data: { form } });
   await until(async () => (await counts()).sessions === 1, "the session to ask");
-  assert.deepEqual(await counts(), { sessions: 1, bots: 1, queue: 2 });
+  assert.deepEqual(await counts(), { sessions: 1, bots: 1, queue: 3 });
+  const dismissed = await request(record, "POST", `kuvo/sessions/${work.id}/asks/${form.id}`,
+    { dismiss: true }, { "x-kuvo-from": "app" });
+  assert.equal(dismissed.status, 200, dismissed.text);
+  await until(async () => (await counts()).sessions === 0, "the dismissed ask to stop counting");
+  assert.deepEqual(await counts(), { sessions: 0, bots: 0, queue: 2 });
 });
 
 test("raw and card permission replies honor a Block saved after the ask arrived", { timeout: 45000 }, async t => {
