@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use http::{Request, Response, StatusCode, Version, header};
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -15,11 +16,16 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
+use kuvo_protocol::version::{ROUTE_VERSION, ROUTE_VERSION_HEADER};
 use subtle::ConstantTimeEq;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
     time::{self, Instant},
+};
+use tokio_tungstenite::{
+    WebSocketStream,
+    tungstenite::{handshake::derive_accept_key, protocol::Role},
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
 
@@ -33,6 +39,7 @@ pub(crate) async fn serve(
 ) {
     let _ = socket.set_nodelay(true);
     let socket = Arc::new(socket);
+    let socket_shutdown = leaving.clone();
     let connection = http1::Builder::new()
         .timer(TokioTimer::new())
         .header_read_timeout(Duration::from_secs(65))
@@ -42,11 +49,15 @@ pub(crate) async fn serve(
                 let authorization = authorization.clone();
                 let dispatcher = dispatcher.clone();
                 let socket = socket.clone();
+                let shutdown = socket_shutdown.clone();
                 async move {
-                    Ok::<_, Infallible>(answer(request, &authorization, dispatcher, socket).await)
+                    Ok::<_, Infallible>(
+                        answer(request, &authorization, dispatcher, socket, shutdown).await,
+                    )
                 }
             }),
-        );
+        )
+        .with_upgrades();
     tokio::pin!(connection);
     tokio::select! {
         _ = &mut connection => {},
@@ -95,13 +106,13 @@ fn empty(status: StatusCode) -> Response<ResponseBody> {
 }
 
 async fn answer(
-    request: Request<Incoming>,
+    mut request: Request<Incoming>,
     authorization: &str,
     dispatcher: Dispatcher,
     socket: Arc<TcpStream>,
+    shutdown: CancellationToken,
 ) -> Response<ResponseBody> {
-    let (head, body) = request.into_parts();
-    let mut given = head.headers.get_all(header::AUTHORIZATION).iter();
+    let mut given = request.headers().get_all(header::AUTHORIZATION).iter();
     if !given
         .next()
         .is_some_and(|given| bool::from(given.as_bytes().ct_eq(authorization.as_bytes())))
@@ -109,6 +120,11 @@ async fn answer(
     {
         return empty(StatusCode::UNAUTHORIZED);
     }
+    let upgrade = request
+        .headers()
+        .contains_key(header::UPGRADE)
+        .then(|| hyper::upgrade::on(&mut request));
+    let (head, body) = request.into_parts();
     let Some(path) = head
         .uri
         .path_and_query()
@@ -132,18 +148,19 @@ async fn answer(
         .headers
         .get("x-kuvo-internal")
         .is_some_and(|value| value == "1");
+    let request = DispatchRequest {
+        method: head.method,
+        path,
+        headers: head.headers,
+        body: body.to_bytes(),
+        caller: Caller::Local(Transport::Http { origin, internal }),
+    };
+    if let Some(upgrade) = upgrade {
+        return upgrade_socket(request, dispatcher, upgrade, shutdown.child_token()).await;
+    }
     let cancel = CancellationToken::new();
     let guard = cancel.clone().drop_guard();
-    let reply = dispatcher.dispatch(
-        DispatchRequest {
-            method: head.method,
-            path,
-            headers: head.headers,
-            body: body.to_bytes(),
-            caller: Caller::Local(Transport::Http { origin, internal }),
-        },
-        cancel,
-    );
+    let reply = dispatcher.dispatch(request, cancel);
     let Reply {
         status,
         mut headers,
@@ -177,6 +194,92 @@ async fn answer(
     });
     *response.status_mut() = status;
     *response.headers_mut() = headers;
+    response
+}
+
+async fn upgrade_socket(
+    request: DispatchRequest,
+    dispatcher: Dispatcher,
+    upgrade: hyper::upgrade::OnUpgrade,
+    cancel: CancellationToken,
+) -> Response<ResponseBody> {
+    let headers = &request.headers;
+    let key = headers.get(header::SEC_WEBSOCKET_KEY).filter(|key| {
+        key.as_bytes().len() == 24
+            && STANDARD
+                .decode(key.as_bytes())
+                .is_ok_and(|key| key.len() == 16)
+    });
+    let connection = headers.get_all(header::CONNECTION).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+        })
+    });
+    let valid = headers
+        .get(header::UPGRADE)
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+        && headers
+            .get(header::SEC_WEBSOCKET_VERSION)
+            .is_some_and(|value| value == "13")
+        && connection;
+    let Some(key) = key.filter(|_| valid) else {
+        return empty(StatusCode::BAD_REQUEST);
+    };
+    let accept = derive_accept_key(key.as_bytes());
+    let guard = cancel.clone().drop_guard();
+    let socket = match dispatcher.open_socket(request, cancel.clone()).await {
+        Ok(socket) => socket,
+        Err(error) => {
+            let Reply {
+                status,
+                mut headers,
+                body,
+            } = error.reply();
+            headers.insert(
+                ROUTE_VERSION_HEADER,
+                ROUTE_VERSION.parse().expect("route version header"),
+            );
+            return Response::builder()
+                .status(status)
+                .body(ResponseBody {
+                    inner: body,
+                    _cancel: Some(guard),
+                })
+                .map(|mut response| {
+                    *response.headers_mut() = headers;
+                    response
+                })
+                .expect("valid socket refusal");
+        }
+    };
+    tokio::spawn(async move {
+        let _guard = guard;
+        if let Ok(stream) = upgrade.await {
+            let websocket =
+                WebSocketStream::from_raw_socket(TokioIo::new(stream), Role::Server, None).await;
+            let _ = socket.bridge(websocket, cancel).await;
+        }
+    });
+    let mut response = empty(StatusCode::SWITCHING_PROTOCOLS);
+    let headers = response.headers_mut();
+    headers.insert(
+        header::UPGRADE,
+        "websocket".parse().expect("websocket header"),
+    );
+    headers.insert(
+        header::CONNECTION,
+        "Upgrade".parse().expect("connection header"),
+    );
+    headers.insert(
+        header::SEC_WEBSOCKET_ACCEPT,
+        accept.parse().expect("base64 accept header"),
+    );
+    headers.insert(
+        ROUTE_VERSION_HEADER,
+        ROUTE_VERSION.parse().expect("route version header"),
+    );
     response
 }
 

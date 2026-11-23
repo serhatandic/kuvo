@@ -68,12 +68,13 @@ impl ProcessIdentity {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Debug)]
 pub enum Stdio {
     #[default]
     Null,
     Pipe,
     Inherit,
+    File(std::fs::File),
 }
 
 pub struct Spawn {
@@ -100,6 +101,26 @@ impl Spawn {
     }
 
     pub fn spawn(&self) -> io::Result<ChildGroup> {
+        self.launch(None)
+    }
+
+    /// Start a worker that can be handed over to the next resident after it is recorded.
+    /// The unique recovery name identifies the process tree on Windows.
+    pub fn spawn_recoverable(&self, recovery_name: &str) -> io::Result<ChildGroup> {
+        if recovery_name.is_empty()
+            || !recovery_name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid recovery name",
+            ));
+        }
+        self.launch(Some(recovery_name))
+    }
+
+    fn launch(&self, recovery_name: Option<&str>) -> io::Result<ChildGroup> {
         let valid = |value: &OsStr| !value.as_encoded_bytes().contains(&0);
         if !self.executable.path().is_absolute()
             || self.cwd.as_deref().is_some_and(|path| !path.is_absolute())
@@ -116,7 +137,7 @@ impl Spawn {
                 "process requires an absolute executable and valid arguments, directory and environment",
             ));
         }
-        sys::spawn(self)
+        sys::spawn(self, recovery_name)
     }
 }
 
@@ -131,6 +152,12 @@ pub struct ChildGroup {
 impl ChildGroup {
     pub fn identity(&self) -> &ProcessIdentity {
         &self.identity
+    }
+
+    /// Keep the worker alive when the resident exits. Call only after publishing
+    /// the recovery record. Explicit stop and wait still own the process tree.
+    pub fn leave_running_on_drop(&mut self) {
+        self.owner.leave_running_on_drop();
     }
 
     /// Request application-level shutdown before waiting. Unix also sends SIGTERM to the group.
@@ -166,4 +193,41 @@ pub(crate) fn invalid_path(path: &Path) -> io::Error {
         io::ErrorKind::InvalidInput,
         format!("not an executable path: {}", path.display()),
     )
+}
+
+/// A worker started by an earlier resident. Its executable is checked before
+/// opening it and its start identity guards against recycled process IDs.
+pub struct AdoptedProcess(sys::Adopted);
+
+impl AdoptedProcess {
+    pub fn open(
+        pid: u32,
+        expected_start: Option<&str>,
+        matches_executable: impl FnOnce(&Path) -> bool,
+        recovery_name: Option<&str>,
+    ) -> io::Result<Option<Self>> {
+        let Some(identity) = ProcessIdentity::read(pid)? else {
+            return Ok(None);
+        };
+        if expected_start.is_some_and(|start| start != identity.start_identity) {
+            return Ok(None);
+        }
+        let executable = match sys::executable(pid) {
+            Ok(path) => path,
+            Err(_) if identity.state() == ProcessState::Stale => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if !matches_executable(&executable) || identity.state() != ProcessState::Live {
+            return Ok(None);
+        }
+        sys::Adopted::open(identity, recovery_name).map(|worker| worker.map(Self))
+    }
+
+    pub fn identity(&self) -> &ProcessIdentity {
+        self.0.identity()
+    }
+
+    pub fn stop(&mut self, grace: Duration) -> io::Result<()> {
+        self.0.stop(grace)
+    }
 }
