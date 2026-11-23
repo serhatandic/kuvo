@@ -560,7 +560,13 @@ async fn attachment_retention() {
         available: false.into(),
     });
     let files = home.join("attachments");
-    for session in ["ses_source", "ses_branch", "ses_inMove", "ses_gone"] {
+    for session in [
+        "ses_source",
+        "ses_sourceWin",
+        "ses_branch",
+        "ses_inMove",
+        "ses_gone",
+    ] {
         let folder = files.join(session);
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("notes.txt"), session).unwrap();
@@ -583,7 +589,11 @@ async fn attachment_retention() {
     .unwrap();
     fs::write(
         work.join("attachment-words.json"),
-        br#"[{"type":"user","text":"file:///scratch/attachments/ses_source/notes.txt"}]"#,
+        serde_json::to_vec(&json!([
+            {"type":"user","text":"file:///scratch/attachments/ses_source/notes.txt"},
+            {"type":"user","text":r"C:\scratch\attachments\ses_sourceWin\notes.txt"},
+        ]))
+        .unwrap(),
     )
     .unwrap();
     assert!(server.engine.reconcile_attachments().await.is_err());
@@ -594,11 +604,13 @@ async fn attachment_retention() {
     server.engine.reconcile_attachments().await.unwrap();
     assert!(!files.join("ses_gone").exists());
     assert!(files.join("ses_source/notes.txt").exists());
+    assert!(files.join("ses_sourceWin/notes.txt").exists());
     assert!(files.join("ses_branch/notes.txt").exists());
     assert!(files.join("ses_inMove/notes.txt").exists());
     fs::write(&show, b"[]").unwrap();
     server.engine.reconcile_attachments().await.unwrap();
     assert!(!files.join("ses_source").exists());
+    assert!(!files.join("ses_sourceWin").exists());
     assert!(!files.join("ses_branch").exists());
     assert!(files.join("ses_inMove/notes.txt").exists());
     server.stop().await;

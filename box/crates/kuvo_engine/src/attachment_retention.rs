@@ -167,7 +167,8 @@ async fn shown(
         if owners.agents {
             messages.extend(source.transcript(id).await?);
         }
-        let kept = serde_json::to_string(&messages)?.to_ascii_lowercase();
+        let mut kept = serde_json::to_string(&messages)?.replace(r"\\", "/");
+        kept.make_ascii_lowercase();
         for file in candidates {
             if kept.contains(&format!("attachments/{}/", file.to_ascii_lowercase())) {
                 retain.insert(file.clone());
