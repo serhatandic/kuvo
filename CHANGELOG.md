@@ -35,7 +35,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Wiping the last standalone Rust computer stops its Unix resident and erases its installation when it has no keeper or configured backup.
 
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
-- The Rust server reads saved move results and shows moves reported by your other computers.
+- The Rust server moves OpenCode chats with their wake-ups, waiting messages and attached files, and keeps letters going to the computer that owns the chat.
 
 - The Rust server keeps local OpenCode queues and can settle a retried send after a restart.
 - The Rust server retains local drafts and their receipts, reads OpenCode questions and permissions, and searches local conversations.

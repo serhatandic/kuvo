@@ -9,8 +9,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DIR_NOT_EMPTY, ERROR_LOCK_VIOLATION,
-        ERROR_SHARING_VIOLATION,
+        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_DIR_NOT_EMPTY, ERROR_INVALID_NAME,
+        ERROR_LOCK_VIOLATION, ERROR_SHARING_VIOLATION,
     },
     Storage::FileSystem::{
         DELETE, FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -24,6 +24,14 @@ use windows_sys::Win32::{
 
 pub fn private_dirs(folder: &Path) -> io::Result<()> {
     fs::create_dir_all(folder)
+}
+
+pub fn restore_symbolic_link(path: &Path, relative: &Path, directory: bool) -> io::Result<()> {
+    if directory {
+        std::os::windows::fs::symlink_dir(relative, path)
+    } else {
+        std::os::windows::fs::symlink_file(relative, path)
+    }
 }
 
 // The account's Kuvo home supplies the inheritable ACL on Windows.
@@ -61,15 +69,18 @@ fn wide(path: &Path) -> io::Result<Vec<u16>> {
     Ok(wide)
 }
 
-fn retry(mut operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+fn retry(extra: Option<u32>, mut operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_millis(500);
     loop {
         match operation() {
             Err(error)
-                if matches!(
-                    error.raw_os_error().map(|code| code as u32),
-                    Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION | ERROR_ACCESS_DENIED)
-                ) && Instant::now() < deadline =>
+                if error.raw_os_error().is_some_and(|code| {
+                    let code = code as u32;
+                    matches!(
+                        code,
+                        ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION | ERROR_ACCESS_DENIED
+                    ) || extra == Some(code)
+                }) && Instant::now() < deadline =>
             {
                 thread::sleep(Duration::from_millis(10))
             }
@@ -81,8 +92,10 @@ fn retry(mut operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {
 pub fn replace(from: &Path, to: &Path) -> io::Result<()> {
     let source = wide(from)?;
     let target = wide(to)?;
-    retry(
-        || match move_file(&source, &target, MOVEFILE_REPLACE_EXISTING) {
+    // A live move saw INVALID_NAME while replacing a valid journal. Retry
+    // within the same window as sharing errors once both paths are resolved.
+    retry(Some(ERROR_INVALID_NAME), || {
+        match move_file(&source, &target, MOVEFILE_REPLACE_EXISTING) {
             Err(error)
                 if matches!(
                     error.raw_os_error().map(|code| code as u32),
@@ -94,8 +107,8 @@ pub fn replace(from: &Path, to: &Path) -> io::Result<()> {
                 rename_open(from, to, &target)
             }
             result => result,
-        },
-    )
+        }
+    })
 }
 
 fn rename_open(from: &Path, to: &Path, target: &[u16]) -> io::Result<()> {
@@ -152,7 +165,7 @@ fn move_file(from: &[u16], to: &[u16], options: u32) -> io::Result<()> {
 pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     let from = wide(from)?;
     let to = wide(to)?;
-    retry(|| move_file(&from, &to, 0))
+    retry(None, || move_file(&from, &to, 0))
 }
 
 pub fn launcher_runs(pid: u32) -> io::Result<bool> {
@@ -187,14 +200,46 @@ pub fn directory_id(path: &Path) -> Option<u64> {
 
 pub fn file_stamp(path: &Path) -> io::Result<crate::files::FileStamp> {
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_INFO, FILE_READ_ATTRIBUTES,
-        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
     };
 
     let file = OpenOptions::new()
         .access_mode(FILE_READ_ATTRIBUTES)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
+    opened_file_stamp(&file)
+}
+
+pub fn open_payload(path: &Path) -> io::Result<File> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        GetFileInformationByHandle,
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the file is open and info is valid writable storage for its metadata.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if !file.metadata()?.is_file()
+        || info.nNumberOfLinks != 1
+        || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Managed payload is not a regular file with one link",
+        ));
+    }
+    Ok(file)
+}
+
+pub fn opened_file_stamp(file: &File) -> io::Result<crate::files::FileStamp> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_BASIC_INFO, FILE_ID_INFO, FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx,
+    };
     let mut times = FILE_BASIC_INFO::default();
     let mut id = FILE_ID_INFO::default();
     // SAFETY: file is live and each buffer is valid for the requested information class.

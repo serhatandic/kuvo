@@ -1,12 +1,16 @@
 use std::{
-    fs::{self, DirBuilder, File, Permissions},
+    fs::{self, DirBuilder, File, Metadata, OpenOptions, Permissions},
     io,
-    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
 };
 
 pub fn private_dirs(folder: &Path) -> io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(folder)
+}
+
+pub fn restore_symbolic_link(path: &Path, relative: &Path, _: bool) -> io::Result<()> {
+    std::os::unix::fs::symlink(relative, path)
 }
 
 pub fn private_file(file: &File) -> io::Result<()> {
@@ -87,9 +91,31 @@ pub fn directory_id(path: &Path) -> Option<u64> {
 }
 
 pub fn file_stamp(path: &Path) -> io::Result<crate::files::FileStamp> {
+    Ok(stamp(&fs::metadata(path)?))
+}
+
+pub fn open_payload(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.nlink() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Managed payload is not a regular file with one link",
+        ));
+    }
+    Ok(file)
+}
+
+pub fn opened_file_stamp(file: &File) -> io::Result<crate::files::FileStamp> {
+    Ok(stamp(&file.metadata()?))
+}
+
+fn stamp(meta: &Metadata) -> crate::files::FileStamp {
     use std::time::UNIX_EPOCH;
 
-    let meta = fs::metadata(path)?;
     let created_ns = meta
         .created()
         .ok()
@@ -98,14 +124,14 @@ pub fn file_stamp(path: &Path) -> io::Result<crate::files::FileStamp> {
             Err(before) => -(before.duration().as_nanos() as i128),
         });
     let nanos = |secs, nanos| i128::from(secs) * 1_000_000_000 + i128::from(nanos);
-    Ok(crate::files::FileStamp {
+    crate::files::FileStamp {
         device: meta.dev(),
         file: u128::from(meta.ino()),
         created_ns,
         modified_ns: nanos(meta.mtime(), meta.mtime_nsec()),
         changed_ns: nanos(meta.ctime(), meta.ctime_nsec()),
         size: meta.len(),
-    })
+    }
 }
 
 pub fn remove_tree(path: &Path) -> io::Result<()> {

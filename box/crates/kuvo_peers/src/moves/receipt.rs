@@ -80,6 +80,10 @@ impl<'a> Receipts<'a> {
         Self { run }
     }
 
+    pub(super) fn is_decided(&self, id: &str) -> Result<bool, Error> {
+        Ok(valid(id) && self.read(id)?.is_some())
+    }
+
     pub fn for_peer(&self, id: &str, peer: &str) -> Result<Option<Decision>, Error> {
         if !valid(id) {
             return Ok(None);
@@ -252,7 +256,7 @@ pub(crate) fn replay(
 }
 
 impl Bundle {
-    fn matches(&self, given: &Value) -> bool {
+    pub(super) fn matches(&self, given: &Value) -> bool {
         let generation_matches = match (self.generation, given.get("generation")) {
             (None, None) => true,
             (Some(generation), Some(given)) => given.as_f64() == Some(generation as f64),
