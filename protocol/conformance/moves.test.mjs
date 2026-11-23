@@ -880,10 +880,12 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.equal(fs.readFileSync(path.join(target, "paused"), "utf8"), "moving:" + id);
   release();
   relay.replay(switchPacket);
-  const left = await until(() => {
-    try { return readJSON(path.join(here.home, "run/moves/left.json")).find(row => row.id === id); }
-    catch { return false; }
-  }, () => "The source did not retire its previous wake-up folder\n" + srcProcess.log(), 15000);
+  const logs = () => srcProcess.log() + "\n" + dstProcess.log();
+  await moveRetired(here, id, logs);
+  const first = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.json.state, "done", first.text);
+  const left = readJSON(path.join(here.home, "run/moves/left.json")).find(row => row.id === id);
   assert.ok(!fs.existsSync(folder));
   assert.equal(fs.readFileSync(path.join(left.trash, "wake.txt"), "utf8"), wake);
   assert.equal(readJSON(path.join(left.trash, "conversation.json"))[0].info.id, session);
@@ -892,18 +894,16 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.equal(fs.readFileSync(path.join(target, "paused"), "utf8"), savedPause);
   if (process.platform !== "win32") assert.equal(fs.readlinkSync(path.join(target, "current")), "wake.txt");
 
-  if (binary.typescript) return;
   fs.unlinkSync(path.join(target, "paused"));
   await readyToMove(destination, session, main);
   const back = await request(destination, "POST", "kuvo/moves", { kind: "chat", id: session, to: main.key, receipt: true })
     .catch(error => { throw new Error("Starting the return move\n" + dstProcess.log(), { cause: error }); });
   assert.equal(back.status, 202, back.text);
-  await until(async () => {
-    const reply = await request(destination, "GET", "kuvo/moves/receipt?id=" + back.json.move.id)
-      .catch(error => { throw new Error("Waiting for the return move\n" + dstProcess.log() + "\n" + srcProcess.log(), { cause: error }); });
-    assert.notEqual(reply.json?.state, "failed", reply.text);
-    return reply.json?.state === "done" && !fs.existsSync(target);
-  }, "The unpaused wake-up folder did not return", 20000);
+  await moveRetired(there, back.json.move.id, logs);
+  const returned = await request(destination, "GET", "kuvo/moves/receipt?id=" + back.json.move.id);
+  assert.equal(returned.status, 200, returned.text);
+  assert.equal(returned.json.state, "done", returned.text);
+  assert.ok(!fs.existsSync(target));
   assert.ok(!fs.existsSync(path.join(folder, "paused")));
   assert.equal(fs.readFileSync(path.join(folder, "wake.txt"), "utf8"), wake);
   assert.equal(fs.readFileSync(path.join(folder, "directory"), "utf8"), sourceChats);
