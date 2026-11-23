@@ -1048,3 +1048,19 @@ test("a remote bot's tools are resolved on its owner before the first session co
     setup.close();
   }
 }, 30_000);
+
+test("the Dock counts a bot's own ask once when both the Sessions and Bots rails include it", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    const folder = path.join(far.home, "bots", "bot_far");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id: "bot_far", name: "Remote bot" }));
+    writeFileSync(path.join(folder, "session"), far.session);
+    await share(far, near, far.session);
+    const watch = Buffer.from(JSON.stringify({ waiting: "kuvo/setup/waiting/counts/events" })).toString("base64url");
+    const answer = await near.read(`kuvo/line?once=1&watch=${watch}`);
+    const [, first] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "waiting", d: { sessions: 1, bots: 1, dock: 1 } });
+  } finally { setup.close(); }
+}, 30_000);

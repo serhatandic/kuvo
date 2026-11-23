@@ -196,7 +196,7 @@ impl Notifier {
 
     /// What waits for you on a computer, as its box counts it.
     pub fn take_waiting(&mut self, computer: &str, waiting: Waiting, cx: &mut Context<Self>) {
-        self.waiting.insert(computer.to_owned(), waiting.sessions + waiting.bots);
+        self.waiting.insert(computer.to_owned(), waiting.dock.unwrap_or(waiting.sessions + waiting.bots));
         self.update_badge(cx);
     }
 

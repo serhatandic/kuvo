@@ -1057,6 +1057,7 @@ pub struct HereAtWork {
 /// How many things wait on you in each area, across the box, as it counts them (`kuvo/waiting`).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Waiting {
+    pub dock: Option<usize>,
     #[serde(default, rename = "pendingComputers")]
     pub pending_computers: Vec<SetupComputer>,
     #[serde(default)]

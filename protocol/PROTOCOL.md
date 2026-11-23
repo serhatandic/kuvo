@@ -274,8 +274,8 @@ computed from the merged rows. Pass the same project key to `GET kuvo/sessions/p
 the supplied cursor. The answering box pages its last saved copy even while the peer is away.
 
 Feature `line.merged-waiting` adds `GET kuvo/setup/waiting/counts` and its `/events` topic.
-Each state is `{sessions, bots, queue}`, calculated from the session, bot activity and Work Queue
-copies this box already has, including peer copies in the first state. The count is a setup total.
+Each state is `{sessions, bots, queue, dock}`, calculated from the session, bot activity and Work Queue
+copies this box already has, including peer copies in the first state. The `dock` total counts an ask once when it appears under both Sessions and Bots.
 The per-computer `kuvo/waiting/events` continues to serve the local computer’s counts.
 
 Conversation activity's optional `lastSeenSessions` names kept delegated sessions whose owner is

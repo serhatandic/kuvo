@@ -351,7 +351,7 @@ export const BOT_NOW = object({
 });
 /** What waits on you in each area, across the box (`kuvo/waiting`): the sessions "Needs you" lists,
  * the bots with a session waiting, and the Work Queue's items a session linked to them waits for. */
-export const WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number, ...PENDING_COMPUTERS });
+export const WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number, "dock?": number, ...PENDING_COMPUTERS });
 
 /** The list (`kuvo/sessions/list`): where it's at (`since` resumes from it), whether it's whole
  * (`full`) or only what changed since, the sessions by id, those gone since, its projects, and the

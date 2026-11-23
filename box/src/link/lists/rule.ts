@@ -204,8 +204,12 @@ export function needsYou(sessions: Readonly<Record<string, SessionFacts>>, asks?
  * there, a goal it put to you, what it asks before it does it), which the lists file under their
  * bots. Each session once, whatever it asks and however many times; not archived, this box's own
  * copy. */
+export function sessionWaits(facts: SessionFacts): boolean {
+  return facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat" || facts.kind === "bot") && !facts.archived && !facts.away;
+}
+
 export function waitingSessions(sessions: Readonly<Record<string, SessionFacts>>): number {
-  return Object.values(sessions).filter(facts => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat" || facts.kind === "bot") && !facts.archived && !facts.away).length;
+  return Object.values(sessions).filter(sessionWaits).length;
 }
 
 /** What a bot's sessions come to, which its state is worked out from (`botNow`): `now` but its state.

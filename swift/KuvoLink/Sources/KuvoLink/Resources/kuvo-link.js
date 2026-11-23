@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 676b79b115f3
+// Kuvo folder layout 23 f2a0b1ad580c
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "676b79b115f3";
+var BRIDGE_VERSION = "f2a0b1ad580c";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24712,7 +24712,7 @@ var init_sessions2 = __esm(() => {
     "blocked?": number,
     "blockedBy?": words("error", "limit")
   });
-  WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number, ...PENDING_COMPUTERS });
+  WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number, "dock?": number, ...PENDING_COMPUTERS });
   SESSION_LIST = object({
     ...PENDING_COMPUTERS,
     at: string,
@@ -59168,8 +59168,11 @@ function botOf2(session, kind, place) {
 function needsYou(sessions, asks) {
   return Object.entries(sessions).filter(([, facts]) => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat") && !facts.archived && !facts.away).sort(([a, one], [b, other]) => other.asked - one.asked || a.localeCompare(b)).map(([session]) => ({ session, asks: asks?.get(session) ?? { kind: "other", summary: "waits on you" } }));
 }
+function sessionWaits(facts) {
+  return facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat" || facts.kind === "bot") && !facts.archived && !facts.away;
+}
 function waitingSessions(sessions) {
-  return Object.values(sessions).filter((facts) => facts.asked !== undefined && (facts.kind === "project" || facts.kind === "chat" || facts.kind === "bot") && !facts.archived && !facts.away).length;
+  return Object.values(sessions).filter(sessionWaits).length;
 }
 function botsNow(sessions, seen) {
   const bots = {};
@@ -78281,6 +78284,9 @@ async function* setupWaitCountsRoute(context, match) {
           bots.add(id);
       }
     }
+    const waiting = Object.values(listing.sessions).filter(sessionWaits);
+    const countedBots = new Set(waiting.flatMap((facts) => [facts.bot, ...(facts.line ?? []).map((id) => listing.sessions[id]?.bot)]));
+    const dock = waiting.length + [...bots].filter((bot) => !countedBots.has(bot)).length;
     const queue = itemsElsewhere("all", link);
     const pending = [
       ...listing.pendingComputers ?? [],
@@ -78289,7 +78295,8 @@ async function* setupWaitCountsRoute(context, match) {
     ];
     return {
       pendingComputers: [...new Map(pending.map((computer) => [computer.id, computer])).values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
-      sessions: waitingSessions(listing.sessions),
+      sessions: waiting.length,
+      dock,
       bots: bots.size,
       queue: needsYouIn([...allItems(), ...queue.items], asking)
     };
@@ -91415,6 +91422,7 @@ sandbox.needsYou
 sandbox.opens
 sandbox.report
 sandbox.words
+search.setup
 sessions.actions
 sessions.archived-groups
 sessions.asks
@@ -91425,11 +91433,8 @@ sessions.mentions
 sessions.models
 sessions.needsYou
 sessions.start.empty
-search.setup
 settings
-search.setup
 settings.flows
-search.setup
 settings.vault
 setup.ready
 setup.welcomed

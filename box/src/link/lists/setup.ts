@@ -27,7 +27,7 @@ import { readLink } from "../state";
 import { listsHere } from "../work/model-rule";
 import { pendingComputers } from "../peers/pending";
 import { listComputer } from "./computer";
-import { listedProjects, projectPage, shownOfCursor, waitingSessions } from "./rule";
+import { listedProjects, projectPage, shownOfCursor, sessionWaits } from "./rule";
 import { answerFrom, archivedGroups, keepsList, keptList, listFollowers, listNow } from "./sessions";
 
 export const PAGE_ROUTE = /^kuvo\/sessions\/page$/;
@@ -302,6 +302,9 @@ export async function* setupWaitCountsRoute(context: RouteContext, match: RegExp
         if (bot.now.asking > 0 && listing.sessions[bot.session]?.computer?.id === origin.computer.id) bots.add(id);
       }
     }
+    const waiting = Object.values(listing.sessions).filter(sessionWaits);
+    const countedBots = new Set(waiting.flatMap(facts => [facts.bot, ...(facts.line ?? []).map(id => listing.sessions[id]?.bot)]));
+    const dock = waiting.length + [...bots].filter(bot => !countedBots.has(bot)).length;
     const queue = itemsElsewhere("all", link);
     const pending = [
       ...(listing.pendingComputers ?? []),
@@ -310,7 +313,8 @@ export async function* setupWaitCountsRoute(context: RouteContext, match: RegExp
     ];
     return {
       pendingComputers: [...new Map(pending.map(computer => [computer.id, computer])).values()].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
-      sessions: waitingSessions(listing.sessions),
+      sessions: waiting.length,
+      dock,
       bots: bots.size,
       queue: needsYouIn([...allItems(), ...queue.items], asking),
     };

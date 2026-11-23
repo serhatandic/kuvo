@@ -28836,6 +28836,7 @@
       "sessions": "number",
       "bots": "number",
       "queue": "number",
+      "dock?": "number",
       "pendingComputers?": {
        "list": {
         "object": {
@@ -28867,6 +28868,7 @@
       "sessions": "number",
       "bots": "number",
       "queue": "number",
+      "dock?": "number",
       "pendingComputers?": {
        "list": {
         "object": {
@@ -29185,6 +29187,7 @@
       "sessions": "number",
       "bots": "number",
       "queue": "number",
+      "dock?": "number",
       "pendingComputers?": {
        "list": {
         "object": {
@@ -29211,6 +29214,7 @@
       "sessions": "number",
       "bots": "number",
       "queue": "number",
+      "dock?": "number",
       "pendingComputers?": {
        "list": {
         "object": {
