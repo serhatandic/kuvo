@@ -3565,7 +3565,7 @@ impl Transport for StandIn {
             return Ok(Stream { status: 200, content_type: Some("application/x-ndjson".into()), reader: Box::new(Pieces { receiver, piece: Vec::new(), at: 0, sse: false }), closer });
         }
         // The Library, followed: as its query lists it now, then again as something's removed.
-        if route == "kuvo/library/events" {
+        if route == "kuvo/setup/library/events" {
             let (sender, receiver) = channel();
             let id = {
                 let mut state = self.state();

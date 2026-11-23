@@ -12,7 +12,7 @@ import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { SESSION_LIST, SETUP_QUEUES, SETUP_SESSIONS, SETUP_WAITING, RUNS_ON } from "../src/shared/routes/sessions";
 import { fitsShape } from "../src/shared/shape";
 
-const features = ["bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
+const features = ["line.merged-library", "bots.peer-activity", "line.setup-lists", "line.peer-conversation", "data.queued-device-authority", "typed.draft", "typed.delivery"];
 const worker = path.join(import.meta.dir, "fixtures", "setup-lists", "box.ts");
 const keyOf = (key: Buffer) => publicOf(key).toString("base64url");
 const targets = {
@@ -27,7 +27,7 @@ const agentProviders = ["claude-code", "codex-cli", "antigravity", "grok-cli", "
 const agentNames = ["claude", "codex", "antigravity", "grok", "cursor"] as const;
 const codingSession = (agent: string) => `ses_fixture${agent}`;
 
-function pair(codingAgents = false, bridgeDelivery = false) {
+function pair(codingAgents = false, bridgeDelivery = false, withLibrary = false) {
   const root = mkdtempSync(path.join(process.env.KUVO_HOME!, "setup-lists-"));
   const device = newKey();
   const boxes = ["near", "far"].map((name, i) => {
@@ -118,7 +118,7 @@ function pair(codingAgents = false, bridgeDelivery = false) {
     const run = async (command: object): Promise<any> => {
       const child = Bun.spawn([process.execPath, worker, "kuvo-agents"], {
         env: { ...process.env, KUVO_HOME: home, HOME: root, TMPDIR: root },
-        stdin: Buffer.from(JSON.stringify({ command, port: engine.port, bridgePort: bridge?.port })), stdout: "pipe", stderr: "pipe",
+        stdin: Buffer.from(JSON.stringify({ command, port: engine.port, bridgePort: bridge?.port, withLibrary })), stdout: "pipe", stderr: "pipe",
       });
       try {
         const [status, stdout, stderr] = await Promise.all([child.exited, child.stdout.text(), child.stderr.text()]);
@@ -608,3 +608,26 @@ test("five drafts wait two minutes for their computer and go once in order when 
     setup.close();
   }
 }, 40_000);
+
+test("the Library’s first state includes an away computer’s kept files even on a never-opened bot tab", async () => {
+  const setup = pair(false, false, true);
+  const { near, far } = setup;
+  try {
+    await share(far, near);
+    const library = "kuvo/setup/library/events?source=bot_ada&kind=document&q=brief";
+    const watch = Buffer.from(JSON.stringify({ library })).toString("base64url");
+    const { status, text } = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away: far.peer.address });
+    expect(status).toBe(200);
+    const [, first] = text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    expect(first).toMatchObject({ t: "library", d: {
+      items: [
+        { name: "brief.pdf", there: false, computer: { key: far.computer.id, name: "far" } },
+        { name: "brief.pdf", there: true, computer: { key: near.computer.id, name: "near", here: true } },
+      ],
+      computers: [
+        { key: near.computer.id, state: "here" },
+        { key: far.computer.id, state: "away", seen: expect.any(Number) },
+      ],
+    } });
+  } finally { setup.close(); }
+});

@@ -10716,6 +10716,15 @@ seconds since 1970.
   other computer's part as last read (`run/library/peers/<key>.json`, the latest lists asked, never a
   search with words): one away or not answering is listed with that part and `seen` (ms, when it was
   read), its `message` saying it's as last seen, and none only the very first time.
+- `GET kuvo/setup/library/events?…` (feature `line.merged-library`) is the Library's topic on
+  `kuvo/line`. It takes the same filters and returns the same shape. Boxes publish their own
+  Library metadata as authenticated peer mail (`libraryCopy`, optionally in parts), independently
+  of a Library being open. Each receiver keeps the latest copy in `run/peers/<key>/library-v1.json`.
+  The first state includes kept copies, and changing tabs, bots or search words filters those
+  copies on the box. Before a reachable peer has ever supplied a copy, there is no partial first
+  state. An away peer's rows keep their computer and `seen` time, with `there` and `thumbnail`
+  false. The snapshot carries metadata and source names, with bytes read from the file's owner
+  only when asked. The previous list routes remain available to older clients.
 - `GET kuvo/library/events?…`: `application/x-ndjson`, the Library now, then again as this computer's
   part changes or, asked again every 20 seconds, another's does. Its first line doesn't wait for your
   other computers: each is its part as last read (`state: there` with `seen`), until it answers.

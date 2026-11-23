@@ -2,13 +2,17 @@
 // HTTP endpoint and carries encrypted frames in place of the relay.
 
 import { writeFileSync } from "node:fs";
-import { BRIDGE_FILE } from "../../../src/link/home";
+import { join } from "node:path";
+import { RUN, BRIDGE_FILE } from "../../../src/link/home";
 import { sendOwnerMessages } from "../../../src/link/ownership/messages";
 import { machineLink, readLink } from "../../../src/link/state";
 import type { LinkHost } from "../../../src/link/relay/host";
 import { IKInitiator } from "../../../src/link/crypto/noise";
 import { pauseForUser } from "../../../src/link/engine/queue";
 import { noteAskEvent } from "../../../src/link/glance/asked";
+import { shareLibrary } from "../../../src/link/areas/library";
+import { libraryService } from "../../../src/link/library/service";
+import { servicesFile, servicesRecordFormat } from "../../../src/shared/box-services";
 import { shareSetupLists } from "../../../src/link/lists/setup";
 import { peerMail, receiveMail } from "../../../src/link/peers/mail";
 import { noteUnreachable } from "../../../src/link/peers/reach";
@@ -19,7 +23,19 @@ import { engineHandler } from "../../../src/link/server/router";
 import { answerSshRoute, sshLine } from "../../../src/link/server/ssh-route";
 import { bridgeRecordFormat, type EngineRecord } from "../../../src/shared/records";
 
-const { port, bridgePort, command } = await Bun.stdin.json();
+const { port, bridgePort, command, withLibrary } = await Bun.stdin.json();
+if (withLibrary) {
+  const name = readLink()!.name!;
+  const library = libraryService(join(RUN, "test-library"), {
+    bots: join(RUN, "test-bots"), sessions: join(RUN, "test-sessions"),
+    computer: () => name, platform: process.platform,
+  });
+  const file = join(RUN, "brief.pdf");
+  writeFileSync(file, "brief");
+  library.store.hand({ path: file, bot: "bot_ada", how: "shown", at: new Date(Date.UTC(2026, 10, 20 + Number(name === "far"))) });
+  const services = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: library.handle });
+  writeFileSync(servicesFile(RUN), JSON.stringify(servicesRecordFormat.write({ port: services.port, password: "a".repeat(48), pid: process.pid })));
+}
 const readers = {
   readEngine: () => ({ port, password: "test" }) as EngineRecord,
   bridge: () => bridgePort ? { port: Number(bridgePort), password: "test", pid: process.pid } : null,
@@ -49,7 +65,8 @@ async function run() {
         await pauseForUser(command.waiting);
       }
       const frames: string[] = [];
-      await shareSetupLists({ send: frame => { frames.push(frame.toString("base64url")); } }, readers);
+      const host: Pick<LinkHost, "send"> = { send: frame => { frames.push(frame.toString("base64url")); } };
+      await Promise.all([shareSetupLists(host, readers), shareLibrary(host)]);
       return frames;
     }
     case "receive": {
@@ -67,6 +84,7 @@ async function run() {
       noteUnreachable(Buffer.from(command.address, "base64url"));
       return true;
     case "route":
+      if (command.away) noteUnreachable(Buffer.from(command.away, "base64url"));
       return await route(command.path);
     case "start": {
       const computer = command.target;

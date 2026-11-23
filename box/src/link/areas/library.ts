@@ -10,6 +10,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { writePrivate } from "../../shared/files";
 
+import { LIBRARY_COPY } from "../../shared/routes/library";
+import { fitsShape, object, type Infer } from "../../shared/shape";
+import { followedLive } from "../follow";
+import { readPeerAgents } from "../peers/directory";
+import { peerSnapshots } from "../peers/lists";
+import { filterOf } from "../library/routes";
+import { matchesLibrary } from "../library/store";
+import type { LinkHost } from "../relay/host";
+
 import { readServices } from "../../shared/box-services";
 import type { Target } from "../../shared/records";
 import { isObject } from "../../shared/json";
@@ -25,6 +34,24 @@ import type { Computer } from "../work-queue/view";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 
 export const LIBRARY_FEATURE = "library";
+export const MERGED_LIBRARY_FEATURE = "line.merged-library";
+export const MERGED_LIBRARY_ROUTE = "kuvo/setup/library/events";
+const copyShape = object(LIBRARY_COPY);
+type LibraryCopy = Infer<typeof copyShape>;
+export const libraryCopies = peerSnapshots<LibraryCopy>("libraryCopy", "library-v1.json", MERGED_LIBRARY_FEATURE, LIBRARY_COPY);
+
+let publishing = false;
+export async function shareLibrary(host: Pick<LinkHost, "send">): Promise<void> {
+  if (publishing) return;
+  publishing = true;
+  try {
+    await libraryCopies.push(host, async () => {
+      const reply = await services("/peer-copy", "", "GET", undefined, AbortSignal.timeout(5_000));
+      const value: unknown = await reply?.json().catch(() => null);
+      return fitsShape(copyShape, value) ? value as LibraryCopy : null;
+    });
+  } finally { publishing = false; }
+}
 export const LIBRARY_ROUTE = /^kuvo\/library(?:\/(?:events|lib_[0-9a-f]{24}(?:\/(?:file|thumbnail|hide))?))?$/;
 /** What a peer is asked: its list, or one of its items' routes. */
 const PEER_ITEM = /^(?:list|lib_[0-9a-f]{24}(?:\/(?:file|thumbnail|hide))?)$/;
@@ -282,6 +309,53 @@ export async function* libraryRoute(context: RouteContext): AsyncGenerator<Answe
     return;
   }
   return yield* json(answer.status, value);
+}
+
+/** The desktop's topic reads peer copies before publishing any state. No mail round is needed
+ * to open another tab, switch bots or search. The legacy cache can seed queries it already knew. */
+export async function* mergedLibraryRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Read it with GET." });
+  const query = listQuery(request);
+  const filter = filterOf(new URLSearchParams(query));
+  if (typeof filter === "string") return yield* json(400, { message: filter });
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  let emitted = false;
+  yield* followedLive(async () => {
+    const link = readLink();
+    const agents = readPeerAgents();
+    const [here, remote] = await Promise.all([
+      ownPart(query, signal, link),
+      Promise.all(peersOf(link).map(async (peer): Promise<Asked | undefined> => {
+        const computer = computerOf(peer);
+        const copy = await libraryCopies.read(peer.key);
+        const legacy = copy ? undefined : keptPart(peer.key, query);
+        const kept = copy ?? legacy;
+        const aged = copy && Date.now() - copy.seen > 180_000;
+        const away = awaySince(peer.key) !== null || (kept && offRelay()) || aged;
+        if (!kept) {
+          const features = agents[peer.key]?.features;
+          if (away) return { computer, state: "away", message: `${computer.name} isn’t answering now, so its part of the Library isn’t shown.` };
+          if (features && !features.includes(MERGED_LIBRARY_FEATURE)) return { computer, state: "older", message: `${computer.name} needs a newer Kuvo Code to show its Library here.` };
+          return undefined;
+        }
+        const part: Part | undefined = copy ? {
+          items: copy.items.filter(matchesLibrary(filter, id => copy.botNames[id], computer.name)),
+          sources: { bots: [...copy.sources.bots], you: copy.sources.you },
+        } : legacy?.part;
+        if (!part) return undefined;
+        if (away) return { computer, state: "away", seen: kept.seen, message: lastSeen(computer.name),
+          part: { ...part, items: part.items.map(item => ({ ...item, there: false, thumbnail: false })) } };
+        return { computer, state: "there", part };
+      })),
+    ]);
+    if (!emitted && (remote.some(part => part === undefined) || (!here.part && !remote.some(part => part?.part)))) return undefined;
+    emitted = true;
+    return merged([here, ...remote.filter(part => part !== undefined)]);
+  }, tell => {
+    libraryCopies.followers.add(tell);
+    return () => { libraryCopies.followers.delete(tell); };
+  }, signal, { every: 3_000 });
 }
 
 /**

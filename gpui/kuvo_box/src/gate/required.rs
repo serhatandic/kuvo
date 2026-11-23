@@ -48,6 +48,7 @@ pub const REQUIRED: &[&str] = &[
     "limits.rings",
     "limits.titles",
     "line",
+    "line.merged-library",
     "marketplace",
     "messages.commands",
     "messages.compaction-words",

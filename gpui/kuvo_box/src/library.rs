@@ -136,6 +136,9 @@ pub struct PartComputer {
     pub state: PartState,
     #[serde(default)]
     pub message: Option<String>,
+    /// When this box last received the away computer’s copy, in milliseconds since 1970.
+    #[serde(default)]
+    pub seen: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -183,7 +186,7 @@ impl BoxClient {
     /// The Library now, then again as it changes.
     pub fn follow_library(&self, query: &LibraryQuery) -> Follow<Followed<Library>> {
         let query = query.query();
-        follow_lines(self, format!("kuvo/library/events{query}"))
+        follow_lines(self, format!("kuvo/setup/library/events{query}"))
     }
 
     /// Its thumbnail's bytes (a PNG, or the picture as it is).
