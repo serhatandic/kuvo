@@ -257,19 +257,20 @@ function checkedChange(given: unknown): { change: BotChange } | { error: string 
 }
 
 /** What `holdEdit` answers: held (202), or why not. */
-export type HoldAnswer = { status: 202; value: { held: HeldEdit } } | { status: 400 | 404 | 409 | 503; value: { message: string } };
+export type HoldAnswer = { status: 202; value: { held: HeldEdit } } | { status: 400 | 403 | 404 | 409 | 503; value: { message: string } };
 
 /** A change to `bot` (or its delete), which lives on another of your computers, held here for it:
  * on top of what's held already, a field at a time, a delete over all of it. `on`: the computer as
  * the client names it, for one this box hasn't heard of the bot from; with `removed`, one this box
  * doesn't know now (a machine you removed), held until it's one of its computers again. */
-export function holdEdit(bot: string, given: { change: unknown } | { delete: true }, on: string | null | undefined, { removed = false, now = Date.now(), scope }: { removed?: boolean; now?: number; scope?: BotEditScope } = {}): HoldAnswer {
-  const no = (status: 400 | 404 | 409 | 503, message: string): HoldAnswer => ({ status, value: { message } });
+export function holdEdit(bot: string, given: { change: unknown } | { delete: true }, on: string | null | undefined, { removed = false, now = Date.now(), authorized, scope }: { removed?: boolean; now?: number; authorized: boolean; scope?: BotEditScope }): HoldAnswer {
+  const no = (status: 400 | 403 | 404 | 409 | 503, message: string): HoldAnswer => ({ status, value: { message } });
   if (!BOT_ID.test(bot)) return no(404, "That bot isn’t there any more.");
   const link = readLink();
   const keeper = keeperOf(bot, on, link);
   const named = removed && on ? plainName(on).slice(0, 200) : "";
   if (!keeper && !named) return no(404, "That bot isn’t there any more.");
+  if (!authorized) return no(403, "Use a paired Kuvo Code client to hold this change.");
   const computer = keeper ? shownName(keeper) : named;
   if ("change" in given && isObject(given.change) && "work" in given.change) return no(409, `${computer} isn’t connected: change its work settings once it’s back.`);
   const checked = "change" in given ? checkedChange(given.change) : null;

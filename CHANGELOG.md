@@ -11,6 +11,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The Library opens with files from your other computers, including when you switch to a tab or bot you haven’t browsed before.
 - The workspace badges count items waiting on you across your computers.
 - Insights waits for a reachable computer’s first usage copy before showing a total for the setup.
+- Editing or deleting a bot that’s gone tells you the bot is no longer there.
+
 - Weekly and monthly usage cards keep enough readings to say whether a limit will last until it resets, even when usage is read frequently or the box restarts.
 
 - The Sessions sidebar picks up your other computers' sessions when the box reconnects after starting or updating.

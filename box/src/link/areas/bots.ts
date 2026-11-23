@@ -72,10 +72,11 @@ export async function* botRoute(context: RouteContext, oneBot: RegExpMatchArray)
     const link = readLink();
     const setup = followedSetup(link);
     const submitter = submitterOf(context, link, true);
-    if (!submitter || (submitter.kind !== "computer" && !setup))
-      return yield* json(403, { message: "Use a paired Kuvo Code client to hold this change." });
-    const scope = setup && (setup.managed || submitter.kind !== "computer") ? { setup: setup.id, submitter } : undefined;
-    const held = holdEdit(id, deleting ? { delete: true } : { change: parsed(request.body) }, owner && !owner.local ? owner.key : query.get("on"), { removed: query.has("removed"), scope });
+    const authorized = !!submitter && (submitter.kind === "computer" || !!setup);
+    const scope = setup && submitter && (setup.managed || submitter.kind !== "computer") ? { setup: setup.id, submitter } : undefined;
+    const held = holdEdit(id, deleting ? { delete: true } : { change: parsed(request.body) }, owner && !owner.local ? owner.key : query.get("on"), {
+      removed: query.has("removed"), authorized, scope,
+    });
     return yield* json(held.status, held.value);
   }
   const { status, value } = !deleting
