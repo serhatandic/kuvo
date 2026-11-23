@@ -27,6 +27,15 @@ import type { KitRule } from "../bots/kit";
 export const APPROVALS = ["askFirst", "acceptEdits", "auto", "fullAccess"] as const;
 export type Approval = typeof APPROVALS[number];
 export const isApproval = (value: unknown): value is Approval => APPROVALS.includes(value as Approval);
+
+/** Each one's name and what it does, in one line, as every client shows them (the model picker's
+ * permissions; PROTOCOL.md, "Approval", `options`). */
+export const APPROVAL_WORDS: Record<Approval, { title: string; detail: string }> = {
+  askFirst: { title: "Ask First", detail: "Asks before it edits files or runs commands." },
+  acceptEdits: { title: "Accept Edits", detail: "Edits files in the project on its own; asks before commands." },
+  auto: { title: "Auto", detail: "Works on its own inside the sandbox; asks before anything beyond it." },
+  fullAccess: { title: "Full Access", detail: "Runs everything outside the sandbox and never asks." },
+};
 const RANK: Record<Approval, number> = { askFirst: 0, acceptEdits: 1, auto: 2, fullAccess: 3 };
 /** The lower of two: a session never does more on its own than the one that started it. */
 export const lowerOf = (a: Approval, b: Approval): Approval => (RANK[a] <= RANK[b] ? a : b);
