@@ -69,7 +69,7 @@ The `engine-sessions` and `engine-worktree` conformance areas use the selected
 resident binary, a scratch home, and the same loopback engine stand-in.
 `kuvo_engine/tests/resident.rs` additionally interrupts an inbox transfer
 after the first message, restarts the resident, and checks delivery order.
-The reference inventory below covers 207 named test cases and the 38
+The reference inventory below covers 294 named test cases and the 38
 message-parts vectors. A row with partial coverage records the gaps.
 
 | TypeScript source | Cases | Rust scenario and gaps |
@@ -77,7 +77,7 @@ message-parts vectors. A row with partial coverage records the gaps.
 | `box/test/message-parts.test.ts` and `protocol/vectors/message-parts.json` | 18 cases, 38 vectors | The legacy parts route checks all 13 read vectors. The send scenario checks text and metadata in 23 compose vectors for fields, quotes, widgets, comments, file notes and phone decoration. Same-ID replay and Undo are covered separately. The full attachment-copy path, model-specific file handling, setup-wide naming, forwarding to the agents runtime, and the validation and refusal variants still need checks. |
 | `box/test/engine-context.test.ts` | 1 | Latest step occupancy, cached model window and completed-summary invalidation are covered together. |
 | `box/test/engine-swap-inboxes.test.ts` | 2 | The Rust resident test covers strict inventory pagination, refusal of incomplete reads, and ordered recovery across restart with a new send arriving during an interrupted transfer. |
-| `box/test/queue-stop.test.ts` | 6 | An arriving removal is covered across Stop, send and removal. Timing of concurrent Stop and engine submission, named arrivals across restart or Resume, and the unlisted arrival cases still need their own scenarios. |
+| `box/test/queue-stop.test.ts` | 6 | Arriving removal is covered with both a stopped queue and a running step. Timing of concurrent Stop and engine submission, named arrivals across restart or Resume, and the unlisted arrival cases still need their own scenarios. |
 | `box/test/queue-items.test.ts` | 25 | Busy steering, edit/removal, relative order, paused queue persistence, old removal after Undo and arriving removal run through HTTP. Reordering and Send Now are checked through the queue topic and the engine inbox. Fault injection, attachment references, interrupted Undo, pending handoff races, wake summaries, limit release and queue-topic reconnect coverage are incomplete. |
 | `box/test/resident-delivery.test.ts` | 2 | Local OpenCode delivery has a restart scenario. Other coding agents and the Work Queue attachment check remain in their owning phases. |
 | `box/test/session-actions.test.ts` | 26 | Rename, stale revision, legacy unarchive preserving other notes, delete and subagent refusal run together. Pin, archived menus and project deletion warnings, stopped asks, wake-ups, move authority, bulk delete, Settings and concurrent revisions need further parity checks. |
@@ -85,11 +85,17 @@ message-parts vectors. A row with partial coverage records the gaps.
 | `box/test/session-lists.test.ts` | 47 | A new local row reaches the line. Other list changes, change races, recovery from an old snapshot, filesystem changes, worktree filing and activity from the engine database are gaps. Asks, bots, background watches and Work Queue counts follow in their owning phases. |
 | `box/test/session-notes.test.ts` and `box/test/session-notes-writers.test.ts` | 15 | Archive after rename preserves existing notes. Simultaneous writers, cancellation, and compatibility with the old cross-process locks remain uncovered. |
 | `box/bridge-tests/queue.test.js` and `queue-live.test.js` | 57 | Covers busy steering without interruption, stop and queued replay, removal, Undo, and transfer recovery. The pinned-engine smoke includes start, rename, stop, queued-send replay, removal and delete. Full multi-turn resume, remaining Send Now variants, failure and limit handling, liveness, carry, file references, and the bridge-specific paths remain incomplete. |
-| `box/bridge-tests/start-session.test.js` | 5 | The worktree conformance case uses Git and covers ancestry from a subagent, refusal of an unrelated folder and filing under the linked worktree's project from creation. Marking failure, wake promises, worktree creation and sibling-folder filing still need their original scenarios. |
+| `box/bridge-tests/start-session.test.js` | 5 | The worktree conformance cases use Git. They cover ancestry from a subagent, refusal of an unrelated folder, filing under the linked worktree's project from creation, and a new worktree's Git branch and saved record. Marking failure, wake promises and sibling-folder filing still need their original scenarios. |
+| `box/test/typed.test.ts` and `box/test/draft-orphan.test.ts` | 14 | The local send restart scenario exercises the same acceptance boundary. The typed decision, draft, and addressed submission routes need their own parity cases, including contested claims and restore behavior. Model refusal uses the 3.2b model seam. |
+| `box/test/conversation.test.ts` and `box/test/conversation-activity.test.ts` | 5 | Full transcript excerpts, activity from related sessions and group or bot activity remain open. |
+| `box/test/message-words.test.ts` and `box/test/session-news-kinds.test.ts` | 16 | Message pages and the event topic agree on summary titles. Tool wording, failed-step display, news and caller-specific titles still need the original cases. |
+| `box/test/projects-worktrees.test.ts` and `box/test/start-cancelled-worktree.test.ts` | 8 | Start-session tests cover a registered worktree. Unregistered worktree discovery, cancellation cleanup and refusal of newer project records remain open. |
+| `box/bridge-tests/worktrees.test.js` and `worktrees-where.test.js` | 44 | The start-session cases cover creation through Git or the engine. Worktree location and Settings routes, branch naming, preservation, removal and the remaining creation cases need separate coverage. |
 
 ### Implementation and remaining parity work
 
-The Rust queue uses the TypeScript index and waiting payload paths. A
+The Rust queue uses the TypeScript index and waiting payload paths and the
+shared Rust atomic file writer. A
 per-session turn orders writes and an owned permit serializes durable index
 replacement off the resident executor. Removal and Undo leave a spent token
 so a retry cannot take a new occurrence. Direct sends journal the original
