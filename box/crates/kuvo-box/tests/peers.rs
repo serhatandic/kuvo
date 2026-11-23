@@ -855,6 +855,8 @@ async fn an_away_worktree_pages_under_its_own_computers_project() {
         let page = |cursor: String| {
             format!("kuvo/sessions/page?project={key}%3A%2Fscratch%2Fsource&cursor={cursor}")
         };
+        let (status, _) = request(&record, "GET", &page("s10000.0".into()), None, false).await;
+        assert_eq!(status, 400);
         let cursor = first["projects"][&project]["more"]["cursor"]
             .as_str()
             .unwrap()

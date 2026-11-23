@@ -185,68 +185,23 @@ pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
             }
         },
     );
-    registry.register::<get_kuvo_sessions_page::Spec, _, _>(Access::Any, move |call| {
-        let answer = (|| {
-            let project = query(&call.request.path, "project")
-                .filter(|p| !p.is_empty())
-                .ok_or_else(|| {
-                    Refusal::new(
-                        StatusCode::BAD_REQUEST,
-                        "Name the project: project=<its key>.",
-                    )
-                })?;
-            let (shown, step) = query(&call.request.path, "cursor")
-                .filter(|c| !c.is_empty())
-                .map_or(Some((6, 0)), |cursor| parse_cursor(&cursor))
-                .ok_or_else(|| {
-                    Refusal::new(
-                        StatusCode::BAD_REQUEST,
-                        "That cursor isn't one this box gave. Read the list again.",
-                    )
-                })?;
-            let view = peers.view();
-            let sessions = if project.split_once(':').is_some_and(|(key, _)| {
-                key.len() == 43 && kuvo_wire::keys::decode_exact::<32>(key).is_some()
-            }) {
-                view.sidebar(peers.now()).map(|list| list.sessions)
-            } else {
-                view.local.list.as_ref().map(|list| {
-                    list.sessions
-                        .iter()
-                        .map(|(id, row)| (id.clone(), row.facts.clone()))
-                        .collect()
-                })
-            }
-            .ok_or_else(|| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, NOT_READY))?;
-            Ok(RouteReply::json::<200>(lists::page(
-                &sessions, &project, shown, step,
-            )))
-        })();
-        std::future::ready(answer)
-    });
     register_devices(registry, devices);
     register_attention(registry);
+}
+
+pub fn merged_project_page(
+    peers: &Reader,
+    project: &str,
+    shown: usize,
+    step: u32,
+) -> Option<get_kuvo_sessions_page::Status200> {
+    let sidebar = peers.view().sidebar(peers.now())?;
+    Some(lists::page(&sidebar.sessions, project, shown, step))
 }
 
 fn query(path: &str, key: &str) -> Option<String> {
     form_urlencoded::parse(path.split_once('?')?.1.as_bytes())
         .find_map(|(name, value)| (name == key).then(|| value.into_owned()))
-}
-
-fn parse_cursor(cursor: &str) -> Option<(usize, u32)> {
-    let (shown, step) = cursor.strip_prefix('s')?.split_once('.')?;
-    if !(1..=5).contains(&shown.len())
-        || !(1..=2).contains(&step.len())
-        || !shown
-            .bytes()
-            .chain(step.bytes())
-            .all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-    let shown = shown.parse().ok()?;
-    let step = step.parse().ok()?;
-    ((6..=5000).contains(&shown) && step <= 20).then_some((shown, step))
 }
 
 fn read<R>(
