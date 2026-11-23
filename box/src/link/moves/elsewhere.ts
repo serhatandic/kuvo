@@ -17,6 +17,7 @@ import { writePrivate } from "../files";
 import { mailFor, ownKey, peersOf } from "../peers/known";
 import type { MailSender, Peer } from "../peers/known";
 import type { LinkHost } from "../relay/host";
+import { pendingComputers } from "../peers/pending";
 import { readLink } from "../state";
 import { listedMoves, MOVES, movesChanged, shownMove } from "./records";
 
@@ -49,16 +50,12 @@ let saidAt = 0;
 
 /** This box's moves told to its peers by the relay connection that's up (`host`), at each of its
  * looks (`keepMoving`): when they changed (a move began, went a stage on or ended), or a minute after
- * they were last told while any are under way. A box that has had nothing moving says nothing. One
+ * they were last told while any are under way. A first empty snapshot confirms there is no move. One
  * the connection took for none of them (it's closing, or not welcomed yet): said again next look. */
 export function tellMoving(host: Pick<LinkHost, "send"> | null | undefined, now = Date.now()): void {
   const moves = sent(listedMoves().map(shownMove));
   const these = JSON.stringify(moves.map(({ id, stage, waiting }) => [id, stage, waiting === true]));
-  if (these === saidLast && (!moves.length || now - saidAt < AGAIN)) return;
-  if (saidLast === null && !moves.length) {
-    saidLast = these;
-    return;
-  }
+  if (saidAt && these === saidLast && (!moves.length || now - saidAt < AGAIN)) return;
   const link = readLink();
   const peers = peersOf(link);
   let told = !peers.length;
@@ -113,10 +110,10 @@ export function takeMoving(sender: MailSender, given: unknown, now = Date.now())
   if (!isObject(given) || !Array.isArray(given.moves)) return;
   if (!peersOf(readLink()).some(peer => peer.key === sender.key)) return;
   const kept = readSaid();
-  for (const [key, one] of Object.entries(kept)) if (!fresh(one, now)) delete kept[key];
+  const keys = new Set(peersOf(readLink()).map(peer => peer.key));
+  for (const key of Object.keys(kept)) if (!keys.has(key)) delete kept[key];
   const moves = given.moves.slice(0, MOST_MOVES).map(takenMove).filter((move): move is Move => move !== null);
-  if (moves.length) kept[sender.key] = { at: now, moves };
-  else delete kept[sender.key];
+  kept[sender.key] = { at: now, moves };
   try { writePrivate(FILE, JSON.stringify(elsewhereFormat.write(kept))); } catch {}
   movesChanged();
 }
@@ -125,11 +122,16 @@ export function takeMoving(sender: MailSender, given: unknown, now = Date.now())
  * moves no longer show, and a client reading that peer for them stops. */
 export function forgetQuiet(now = Date.now()): void {
   const kept = readSaid();
-  const quiet = Object.keys(kept).filter(key => !fresh(kept[key], now));
+  const quiet = Object.keys(kept).filter(key => kept[key]?.moves?.length && !fresh(kept[key], now));
   if (!quiet.length) return;
-  for (const key of quiet) delete kept[key];
+  for (const key of quiet) kept[key] = { at: kept[key]!.at, moves: [] };
   try { writePrivate(FILE, JSON.stringify(elsewhereFormat.write(kept))); } catch {}
   movesChanged();
+}
+
+export function pendingMoves() {
+  const kept = readSaid();
+  return pendingComputers("line.pending-computers", key => !!kept[key]);
 }
 
 /** The moves your other computers said they have under way between them (`peers`: this box's now),

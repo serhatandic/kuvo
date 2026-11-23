@@ -11,7 +11,8 @@ export const CARRIED = object({ session: string });
 
 export type Carried = Infer<typeof CARRIED>;
 
-export const LIST_COMPUTER = object({ id: string, name: string });
+export { LIST_COMPUTER };
+import { LIST_COMPUTER, PENDING_COMPUTERS } from "./list-computers";
 
 /** A session started: its address, title, folder and project (null for a chat), whether it shows
  * beside the conversation that started it, and with `wait`, its first answer (null for none yet).
@@ -281,8 +282,12 @@ const REMOTE_LIST_COMPUTER = object({
   ...LIST_COMPUTER.object, away: bool, "lastSeen?": number, "updating?": bool, actions: list(words("open", "manage")),
 });
 
-export const LOCAL_CONVERSATION_LOCATION = object({ place: words("engine", "agents"), running: bool });
-export const CONVERSATION_LOCATION = oneOf(LOCAL_CONVERSATION_LOCATION, object({ on: REMOTE_LIST_COMPUTER }));
+const CONVERSATION_TOOLS = object({
+  directory: nullable(string),
+  ready: object({ files: bool, changes: bool, browser: bool, terminal: bool }),
+});
+export const LOCAL_CONVERSATION_LOCATION = object({ place: words("engine", "agents"), running: bool, "tools?": CONVERSATION_TOOLS });
+export const CONVERSATION_LOCATION = oneOf(LOCAL_CONVERSATION_LOCATION, object({ on: REMOTE_LIST_COMPUTER, "tools?": CONVERSATION_TOOLS }));
 
 export const SESSION_FACTS = object({
   kind: words(...SESSION_KINDS),
@@ -350,12 +355,12 @@ export const BOT_NOW = object({
 });
 /** What waits on you in each area, across the box (`kuvo/waiting`): the sessions "Needs you" lists,
  * the bots with a session waiting, and the Work Queue's items a session linked to them waits for. */
-export const WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
+export const WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number, "dock?": number, ...PENDING_COMPUTERS });
 
 /** The list (`kuvo/sessions/list`): where it's at (`since` resumes from it), whether it's whole
  * (`full`) or only what changed since, the sessions by id, those gone since, its projects, and the
  * places it couldn't read now (`bridge`: the coding agents' sessions as they were last read). */
-export const SESSION_LIST = object({
+export const SESSION_LIST = object({ ...PENDING_COMPUTERS,
   at: string,
   "full?": bool,
   sessions: map(SESSION_FACTS),
@@ -382,16 +387,16 @@ export const SETUP_QUEUE = object({
 });
 const OFFERED_AGENT = object({ id: string, name: string });
 export const START_CATALOG = object({ offered: MODELS_OFFERED, agents: list(OFFERED_AGENT) });
-export const SETUP_SESSIONS = object({
+export const SETUP_SESSIONS = object({ ...PENDING_COMPUTERS,
   sessions: list(object({ ...SETUP_SESSION.object, ...LIST_ORIGIN })),
   projects: list(object({ ...SETUP_PROJECT.object, ...LIST_ORIGIN })),
 });
-export const SETUP_WAITING = object({ waiting: list(object({ ...SETUP_WAIT.object, ...LIST_ORIGIN })) });
-export const SETUP_QUEUES = object({ queues: list(object({ ...SETUP_QUEUE.object, ...LIST_ORIGIN })) });
+export const SETUP_WAITING = object({ ...PENDING_COMPUTERS, waiting: list(object({ ...SETUP_WAIT.object, ...LIST_ORIGIN })) });
+export const SETUP_QUEUES = object({ ...PENDING_COMPUTERS, queues: list(object({ ...SETUP_QUEUE.object, ...LIST_ORIGIN })) });
 /** Where a new session can run: this computer (`here`) and each other computer with its last
  * catalog. One that's away is still listed, with when it was last seen, and can't be started on.
  * `pending`: this computer just started and its catalog is the one it saved last. */
-export const RUNS_ON = object({ computers: list(object({ computer: LIST_COMPUTER, "here?": bool, "pending?": bool, "away?": bool, "lastSeen?": number, "updating?": bool, ...START_CATALOG.object })) });
+export const RUNS_ON = object({ ...PENDING_COMPUTERS, computers: list(object({ computer: LIST_COMPUTER, "here?": bool, "pending?": bool, "away?": bool, "lastSeen?": number, "updating?": bool, ...START_CATALOG.object })) });
 
 export type SessionKind = (typeof SESSION_KINDS)[number];
 export type SessionFacts = Infer<typeof SESSION_FACTS>;

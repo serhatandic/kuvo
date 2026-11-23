@@ -5,6 +5,7 @@
 // shapes it answers in. Times are seconds since 1970.
 
 import { bool, BYTES, list, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 
 const KIND = words("memory", "skill", "image", "page", "document", "download", "code", "file");
 
@@ -67,7 +68,24 @@ export const ARTIFACT_CHANGES = oneOf(
   object({ style: words("pair", "none"), from: nullable(number), to: number }),
 );
 
+const OUTPUT_FIELDS = {
+  id: string, path: string, name: string, kind: KIND, type: string,
+  gone: nullable(number), updated: nullable(number), pinned: bool,
+  latest: object({ n: number, hash: nullable(string), "reason?": string }),
+} as const;
+export const OUTPUT_COPY = { artifacts: list(object({ ...OUTPUT_FIELDS, sessions: list(string) })) };
+export const SETUP_OUTPUTS = object({ ...PENDING_COMPUTERS,
+  artifacts: list(object({
+    ...OUTPUT_FIELDS, artifactId: string, computer: object({ id: string, name: string, "here?": bool }), away: bool, "lastSeen?": number,
+  })),
+  next: nullable(string),
+});
+
 export const ARTIFACT_ROUTES: RouteShape[] = [
+  // Outputs of the conversation and delegated sessions on this setup, from kept owner copies.
+  { route: "GET kuvo/setup/outputs", feature: "line.merged-outputs", answers: { 200: SETUP_OUTPUTS } },
+
+  { route: "GET kuvo/setup/outputs/events", feature: "line.merged-outputs", answers: { 200: SETUP_OUTPUTS } },
   // A scope's things (one of `session=`, `bot=`, `group=`, `project=`), pinned first; page with `before`.
   { route: "GET kuvo/artifacts", feature: "artifacts", answers: { 200: ARTIFACT_LIST } },
   // Every version made in a scope, newest first, each with its thing; `by=<bot>` for one bot's.

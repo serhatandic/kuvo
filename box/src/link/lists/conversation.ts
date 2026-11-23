@@ -1,13 +1,18 @@
 // The owning box's read side of a conversation addressed through another member.
 
 import { StringDecoder } from "node:string_decoder";
+import { FEATURES } from "../../shared/features";
+import { macFeatures } from "../../shared/routes/mac";
+import { IS_MAC } from "../home";
+import { readPeerAgents } from "../peers/directory";
 import { isObject, parsed } from "../../shared/json";
+import { collected } from "../server/sent-once";
 import { sessionHere } from "../areas/glance";
 import { acquireSessionEngine } from "../engine/lifetime";
 import { targetsOf } from "../letters/tools";
 import { awaySessions } from "../moves/records";
 import { ownerOf, mayActivate } from "../ownership/resolve";
-import { createdRuntime, keptList } from "./sessions";
+import { createdDirectory, createdRuntime, keptList } from "./sessions";
 import { movedOf, ownKey, peersOf } from "../peers/known";
 import { peerSetupLists } from "../peers/lists";
 import { readLink } from "../state";
@@ -31,6 +36,34 @@ function localLocation(list: ReturnType<typeof keptList>, id: string) {
   return { place: entry.place === "bridge" ? "agents" : "engine", running: entry.facts.running === true };
 }
 
+function toolsAt(directory: string | undefined, features: readonly string[] | undefined) {
+  const folder = directory?.startsWith("/") ? directory : null;
+  return {
+    directory: folder,
+    ready: {
+      files: folder !== null && features?.includes("folders.files") === true,
+      changes: folder !== null && features?.includes("git.status") === true,
+      browser: features?.includes("browser.view") === true,
+      terminal: features?.includes("pty.socket") === true,
+    },
+  };
+}
+
+const wantsTools = (path: string) => new URLSearchParams(path.split("?")[1]).get("tools") === "1";
+const ownTools = (directory?: string) => toolsAt(directory, IS_MAC ? macFeatures() : FEATURES);
+
+async function readPeerTools(context: RouteContext, computer: string, session: string) {
+  if (!context.redispatch) return;
+  const signal = AbortSignal.timeout(5_000);
+  const stop = context.signal ? AbortSignal.any([signal, context.signal]) : signal;
+  const path = `kuvo/peer-session/${computer}/${session}/location?tools=1`;
+  try {
+    const answer = await collected(context.redispatch({ ...context.request, path }, stop));
+    const value = answer.status === 200 ? parsed(answer.body) : undefined;
+    return isObject(value) && isObject(value.tools) ? value.tools : undefined;
+  } catch { return undefined; }
+}
+
 /** Locate a conversation from the local list and the lists already received over peer mail. */
 export async function* conversationLocation(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
@@ -41,8 +74,11 @@ export async function* conversationLocation(context: RouteContext, match: RegExp
   const owner = ownerOf({ kind: "conversations", id }, { link, name: context.info.name });
   const list = keptList();
   const here = localLocation(list, id);
-  if (here && owner?.local !== false && (!journal || (link && journal === ownKey(link))) && mayActivate({ kind: "conversations", id }, { link }))
-    return yield* json(200, here);
+  const withTools = wantsTools(request.path);
+  if (here && owner?.local !== false && (!journal || (link && journal === ownKey(link))) && mayActivate({ kind: "conversations", id }, { link })) {
+    const directory = list?.sessions[id]?.facts.directory || createdDirectory(id);
+    return yield* json(200, { ...here, ...(withTools ? { tools: ownTools(directory) } : {}) });
+  }
 
   const peers = await peerSetupLists(link);
   const destination = journal ?? owner?.key;
@@ -51,7 +87,11 @@ export async function* conversationLocation(context: RouteContext, match: RegExp
     const row = saved.sessions.find(row => row.id === id);
     if (!row) continue;
     const { computer, away, ...details } = origin;
-    return yield* json(200, { on: { ...computer, away, ...details, actions: away ? [] : row.actions } });
+    const ready = away || details.updating ? undefined : readPeerAgents()[computer.id]?.features;
+    const directory = row.facts.directory;
+    const latestTools = withTools && ready && !directory ? await readPeerTools(context, computer.id, id) : undefined;
+    return yield* json(200, { on: { ...computer, away, ...details, actions: away ? [] : row.actions },
+      ...(withTools ? { tools: latestTools ?? toolsAt(directory, ready) } : {}) });
   }
 
   // A move or an ownership announcement can arrive before its destination's list.
@@ -59,7 +99,9 @@ export async function* conversationLocation(context: RouteContext, match: RegExp
   if (peer) {
     const saved = peers.find(({ origin }) => origin.computer.id === peer.key)?.origin;
     const away = saved?.away ?? (owner?.key === peer.key ? !owner.reachable : true);
-    return yield* json(200, { on: { id: peer.key, name: peer.name, away, actions: away ? [] : ["open"] } });
+    const latestTools = withTools && !away ? await readPeerTools(context, peer.key, id) : undefined;
+    return yield* json(200, { on: { id: peer.key, name: peer.name, away, actions: away ? [] : ["open"] },
+      ...(withTools ? { tools: latestTools ?? toolsAt(undefined, away ? undefined : readPeerAgents()[peer.key]?.features) } : {}) });
   }
   if (!list || list.pending?.length || list.sessions[id] || owner || journal) return yield* json(503, notReady);
   return yield* json(404, gone);
@@ -118,7 +160,14 @@ export async function* ownConversation(context: RouteContext, match: RegExpMatch
   const list = keptList();
   const known = localLocation(list, id);
   if (resource === "location") {
-    if (known) return yield* json(200, known);
+    const withTools = wantsTools(request.path);
+    const directory = list?.sessions[id]?.facts.directory || createdDirectory(id);
+    if (withTools && (!known || !directory) && !list?.gone[id]) {
+      const place = await sessionHere(targetsOf(context), id, stop).catch(() => undefined);
+      if (place) return yield* json(200, { place: place.target.port === bridge()?.port ? "agents" : "engine",
+        running: known?.running ?? false, tools: ownTools(place.data.location?.directory ?? place.data.directory) });
+    }
+    if (known) return yield* json(200, { ...known, ...(withTools ? { tools: ownTools(directory) } : {}) });
     if (!list || list.pending?.length || list.sessions[id]) return yield* json(503, notReady);
     return yield* json(404, gone);
   }

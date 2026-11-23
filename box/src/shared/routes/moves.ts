@@ -2,6 +2,7 @@
 // of your computers, the boxes doing it between themselves; clients ask once and watch.
 
 import { bool, type Infer, list, literal, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 
 /** What can move: a bot (by its ID), a chat (by its session) or a group chat (by its ID). */
 export const MOVE_KIND = words("bot", "chat", "group");
@@ -56,7 +57,7 @@ export const MOVED_AWAY = object({ session: string, key: string, at: number });
  * your other computers said they have under way (left out when none), and the conversations that
  * moved away from here lately (left out when none): a client that has a row of one from this box,
  * or hears of one from it, leaves it out too, and finds it where it went. */
-export const MOVES = object({ moves: list(MOVE), away: list(string), "elsewhere?": list(MOVES_ELSEWHERE), "moved?": list(MOVED_AWAY) });
+export const MOVES = object({ ...PENDING_COMPUTERS, moves: list(MOVE), away: list(string), "elsewhere?": list(MOVES_ELSEWHERE), "moved?": list(MOVED_AWAY) });
 /** A move that ended well: where it went. */
 export const MOVED = object({ move: MOVE, "note?": string });
 export const MOVE_ACCEPTED = object({ move: MOVE });

@@ -219,7 +219,7 @@ export async function peerRoutes(parts: PeerParts | undefined, method: string, p
 }
 
 /** Your other computers and their bots, as the link last said. */
-type PeerBox = { name: string; seats: boolean; insights?: "connected" | "away" | "unsupported" }
+type PeerBox = { name: string; seats: boolean; insights?: "connected" | "away" | "unsupported"; limits?: "connected" | "away" }
 
 export class LinkDirectory implements PeerDirectory, LimitsDirectory {
   private boxes = new Map<string, PeerBox>()
@@ -248,7 +248,8 @@ export class LinkDirectory implements PeerDirectory, LimitsDirectory {
     for (const box of given.boxes) {
       if (!box || typeof box.key !== "string" || !box.key) continue
       const insights = box.insights === "connected" || box.insights === "away" || box.insights === "unsupported" ? box.insights : undefined
-      boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true, insights })
+      const limits = box.limits === "connected" || box.limits === "away" ? box.limits : undefined
+      boxes.set(box.key, { name: typeof box.name === "string" && box.name ? box.name : "another computer", seats: box.seats === true, insights, limits })
     }
     this.boxes = boxes
     const self = given.self
@@ -283,7 +284,11 @@ export class LinkDirectory implements PeerDirectory, LimitsDirectory {
   }
 
   insightPeers() {
-    return [...this.boxes].map(([key, { insights }]) => ({ key, insights }))
+    return [...this.boxes].map(([key, { name, insights }]) => ({ key, name, insights }))
+  }
+
+  limitPeers() {
+    return [...this.boxes].map(([key, { name, limits }]) => ({ key, name, limits }))
   }
 
   insightOrigins(): { key: string; name: string }[] {

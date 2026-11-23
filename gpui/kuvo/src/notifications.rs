@@ -19,8 +19,8 @@ pub struct Post {
 }
 use kuvo_box::BoxClient;
 use kuvo_box::areas::Waiting;
-use kuvo_box::follow::{Followed};
-use kuvo_box::notices::{Told, ToldNotice};
+use kuvo_box::follow::{Follow, Followed};
+use kuvo_box::notices::{SetupTold, Told, ToldNotice};
 
 use crate::yours;
 
@@ -100,20 +100,17 @@ impl Open {
     }
 }
 
-/// One computer followed.
-#[derive(Default)]
-struct Computer {
-    waiting: usize,
-    /// Which client it's followed with ([`kuvo_box::boxes::Boxes::client_made`]): another one
-    /// (paired anew, found elsewhere) is followed afresh.
-    made: Option<u64>,
-    _follows: Vec<Box<dyn std::any::Any>>,
-    _tasks: Vec<Task<()>>,
+struct Following {
+    client: BoxClient,
+    _notices: Follow<Followed<SetupTold>>,
+    _waiting: Follow<Followed<Waiting>>,
+    _tasks: [Task<()>; 2],
 }
 
 pub struct Notifier {
     effects: Effects,
-    computers: HashMap<String, Computer>,
+    waiting: HashMap<String, usize>,
+    following: Option<Following>,
     /// The notices each computer has told already, by id (none until its first read, whose
     /// notices are from before this app was there). Kept while a computer's follow comes and
     /// goes (a drop, a new address), so what it told meanwhile still shows when it's back.
@@ -129,45 +126,55 @@ impl Notifier {
     pub fn new(effects: Effects, cx: &mut Context<Self>) -> Notifier {
         // The Dock's switch turned: its count goes, or comes back.
         let yours = cx.observe_global::<yours::Store>(|this: &mut Notifier, cx| this.update_badge(cx));
-        Notifier { effects, computers: HashMap::new(), seen: HashMap::new(), badge: None, _yours: yours }
+        Notifier { effects, waiting: HashMap::new(), following: None, seen: HashMap::new(), badge: None, _yours: yours }
     }
 
-    /// Follows the computers in `clients` (by key, with which client each is: see `made`) and lets
-    /// go of the others.
-    pub fn follow(&mut self, clients: Vec<(String, Option<u64>, BoxClient)>, cx: &mut Context<Self>) {
-        let now: HashMap<&String, Option<u64>> = clients.iter().map(|(key, made, _)| (key, *made)).collect();
-        self.computers.retain(|key, computer| now.get(key).is_some_and(|made| *made == computer.made));
-        for (key, made, client) in clients {
-            if self.computers.contains_key(&key) {
-                continue;
-            }
-            let notices = client.follow_notices();
-            let waiting = client.follow_waiting_on_computer();
-            let (told, waits) = (notices.updates().clone(), waiting.updates().clone());
-            let told_key = key.clone();
-            let told_task = cx.spawn(async move |this, cx| {
-                while let Ok(update) = told.recv().await {
-                    if let Followed::Now(told) = update
-                        && this.update(cx, |this, cx| this.take_notices(&told_key, told, cx)).is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-            let waits_key = key.clone();
-            let waits_task = cx.spawn(async move |this, cx| {
-                while let Ok(update) = waits.recv().await {
-                    if let Followed::Now(waiting) = update
-                        && this.update(cx, |this, cx| this.take_waiting(&waits_key, waiting, cx)).is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-            let follows: Vec<Box<dyn std::any::Any>> = vec![Box::new(notices), Box::new(waiting)];
-            self.computers.insert(key, Computer { waiting: 0, made, _follows: follows, _tasks: vec![told_task, waits_task] });
+    /// Follows the setup through its nearest box. The Dock gets one total from that box.
+    pub fn follow(&mut self, client: Option<BoxClient>, cx: &mut Context<Self>) {
+        let Some(client) = client else {
+            self.following = None;
+            self.waiting.clear();
+            self.update_badge(cx);
+            return;
+        };
+        if self.following.as_ref().is_some_and(|following| following.client.same_connection(&client)) {
+            return;
         }
+        let notices = client.follow_setup_notices();
+        let waiting = client.follow_waiting();
+        let (told, waits) = (notices.updates().clone(), waiting.updates().clone());
+        let told_task = cx.spawn(async move |this, cx| {
+            while let Ok(update) = told.recv().await {
+                if let Followed::Now(told) = update
+                    && this.update(cx, |this, cx| this.take_setup_notices(told, cx)).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let waits_task = cx.spawn(async move |this, cx| {
+            while let Ok(update) = waits.recv().await {
+                if let Followed::Now(waiting) = update
+                    && this.update(cx, |this, cx| this.take_waiting("", waiting, cx)).is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.following = Some(Following { client, _notices: notices, _waiting: waiting, _tasks: [told_task, waits_task] });
         self.update_badge(cx);
+    }
+
+    fn take_setup_notices(&mut self, told: SetupTold, cx: &mut Context<Self>) {
+        let mut notices = HashMap::<String, Vec<ToldNotice>>::new();
+        for row in told.notices {
+            notices.entry(row.computer.id).or_default().push(row.told);
+        }
+        for origin in told.origins {
+            let notices = notices.remove(&origin.computer.id).unwrap_or_default();
+            let id = if origin.computer.id == "here" { "" } else { &origin.computer.id };
+            self.take_notices(id, Told { telling: origin.telling, notices }, cx);
+        }
     }
 
     /// What a computer told lately: each notice new since its last read is shown, by your
@@ -189,7 +196,7 @@ impl Notifier {
 
     /// What waits for you on a computer, as its box counts it.
     pub fn take_waiting(&mut self, computer: &str, waiting: Waiting, cx: &mut Context<Self>) {
-        self.computers.entry(computer.to_owned()).or_default().waiting = waiting.sessions + waiting.bots;
+        self.waiting.insert(computer.to_owned(), waiting.dock.unwrap_or(waiting.sessions + waiting.bots));
         self.update_badge(cx);
     }
 
@@ -223,7 +230,7 @@ impl Notifier {
 
     /// What the Dock counts now.
     pub fn count(&self, cx: &App) -> usize {
-        if yours::now(cx).notifications.dock { self.computers.values().map(|computer| computer.waiting).sum() } else { 0 }
+        if yours::now(cx).notifications.dock { self.waiting.values().sum() } else { 0 }
     }
 
     fn update_badge(&mut self, cx: &mut Context<Self>) {

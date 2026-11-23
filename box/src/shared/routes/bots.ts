@@ -2,6 +2,7 @@
 // made, changed, deleted, brought here from another computer and told what it is now.
 
 import { any, bool, type Infer, list, literal, map, NOTHING, nullable, number, object, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 import { LIMITS } from "./work";
 import { BOT_NOW } from "./sessions";
 
@@ -93,7 +94,7 @@ export const REFUSED_EDIT = object({ bot: string, box: string, computer: string,
  * computers, and what those refused lately (`bots.held`); and the bots that live on your other
  * computers, as each last told this box (`bots.elsewhere`). None of the three while this box
  * can't check what it holds: a client keeps what it last heard. */
-export const BOTS = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
+export const BOTS = object({ ...PENDING_COMPUTERS, bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
 /** An edit held here for the computer its bot lives on. */
 export const HELD = object({ held: HELD_EDIT });
 

@@ -672,6 +672,19 @@ export class ArtifactStore {
     return { artifacts, next: null }
   }
 
+  /** Session output metadata, without version bodies or patches, for the setup's Activity card. */
+  *sessionOutputs(sessions?: readonly string[]): IterableIterator<Summary> {
+    const scopes: Scope[] = sessions ? sessions.map(session => ({ session })) : [{}]
+    const seen = new Set<string>()
+    for (const scope of scopes) {
+      for (const artifact of this.artifacts.values(scope)) {
+        if (seen.has(artifact.id) || !artifact.where.sessions.length || !artifact.versions.some(version => !version.before)) continue
+        seen.add(artifact.id)
+        yield summary(artifact)
+      }
+    }
+  }
+
   private readonly files = new Map<string, string>()
 
   /** Old journal paths can name one file through different links. Resolve them off the read path. */

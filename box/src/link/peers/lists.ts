@@ -39,6 +39,7 @@ type PeerSnapshot<T> = T & { at: number; seen: number };
 export function peerSnapshots<Value extends object>(
   name: string, file: string, feature: string, fields: Record<string, Shape>,
   variant: (value: Value, features: readonly string[]) => Value = value => value,
+  spacing = SPACING,
 ) {
   const told = object({ at: number, ...fields });
   const kept = object({ seen: number, ...told.object });
@@ -116,7 +117,7 @@ export function peerSnapshots<Value extends object>(
     const ready = peers.filter(peer => {
       const before = sent.get(peer.key);
       return peer.address && agents[peer.key]?.features?.includes(feature) &&
-        (!before || refresh.has(peer.key) || now - before.sent >= (reach[peer.key] === undefined ? SPACING : AGAIN));
+        (!before || refresh.has(peer.key) || now - before.sent >= (reach[peer.key] === undefined ? spacing : AGAIN));
     });
     if (!ready.length) return;
     const value = await currentValue();

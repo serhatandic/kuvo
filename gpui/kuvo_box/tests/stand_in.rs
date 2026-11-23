@@ -743,10 +743,10 @@ fn what_waits_on_you_follows_the_boxs_counts() {
     let (_home, _serve, client) = this_mac(&stand_in);
     let follow = client.follow_waiting();
     lines.send(json!({ "sessions": 2, "bots": 1, "queue": 0 }).to_string()).unwrap();
-    assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 2, bots: 1, queue: 0 })));
+    assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 2, bots: 1, queue: 0, ..Waiting::default() })));
     // An ask is answered: the box says its counts again.
     lines.send(json!({ "sessions": 1, "bots": 1, "queue": 0 }).to_string()).unwrap();
-    assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 1, bots: 1, queue: 0 })));
+    assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 1, bots: 1, queue: 0, ..Waiting::default() })));
 }
 
 #[test]

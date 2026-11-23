@@ -358,6 +358,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
         const { readEngineFile, bridgeTarget } = await import("../engine/client");
         return marketplaceForPeer(act, { readEngine: readEngineFile, bridge: bridgeTarget });
       }
+      case "search": return (await import("../areas/search")).searchForPeer(act);
       case "library": return (await import("../areas/library")).libraryForPeer(act);
       default: return actForPeer(act, places().targets);
     }

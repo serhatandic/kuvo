@@ -691,10 +691,10 @@ async function recentEngineActivity(target: Target, id: string, created: number,
 
 // A start answers before the list's next read. Keep the runtime the box already heard
 // during that gap, including when it heard the engine's event before the start answered.
-const justCreated = new Map<string, { place: "engine" | "agents"; at: number }>();
+const justCreated = new Map<string, { place: "engine" | "agents"; at: number; directory?: string }>();
 
-export function noteSessionCreated(id: string, place: "engine" | "agents", now = Date.now()): void {
-  justCreated.set(id, { place, at: now });
+export function noteSessionCreated(id: string, place: "engine" | "agents", directory?: string, now = Date.now()): void {
+  justCreated.set(id, { place, at: now, directory: directory ?? createdDirectory(id, now) });
   if (justCreated.size > 256) justCreated.delete(justCreated.keys().next().value!);
 }
 
@@ -702,6 +702,11 @@ export function createdRuntime(id: string, now = Date.now()) {
   const created = justCreated.get(id);
   if (created && now - created.at < 60_000) return { place: created.place, running: false };
   return undefined;
+}
+
+export function createdDirectory(id: string, now = Date.now()) {
+  const created = justCreated.get(id);
+  return created && now - created.at < 60_000 ? created.directory : undefined;
 }
 
 /** Takes in an event from `name` (the engine, or the bridge, at `target`): a session read again as

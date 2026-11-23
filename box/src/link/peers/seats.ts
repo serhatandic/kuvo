@@ -227,6 +227,7 @@ export function seatPeers(link: LinkState | null = readLink(), told: Record<stri
       const features = told[peer.key]?.features;
       return {
         key: peer.key, name: plainName(peer.name) || "another computer", seats: features?.includes("groups.seats") ?? false,
+        limits: reach[peer.key] === undefined ? "connected" : "away",
         insights: features && !features.includes("usage.insights") ? "unsupported" : reach[peer.key] === undefined ? "connected" : "away",
       };
     }),

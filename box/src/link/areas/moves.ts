@@ -7,7 +7,7 @@ import type { Move, MoveKind, MovePlaces, MoveReceipt, Moves } from "../../share
 import { plainName } from "../../shared/text";
 import { followed } from "../follow";
 import { beginMove, confirmedOutcome, placesFor, readOutcome, startMove } from "../moves/move";
-import { movesElsewhere } from "../moves/elsewhere";
+import { movesElsewhere, pendingMoves } from "../moves/elsewhere";
 import { awaySessions, listedMoves, moveFollowers, movedAway, readMove, shownMove } from "../moves/records";
 import { peersOf } from "../peers/known";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -31,6 +31,7 @@ const movesNow = (): Moves => {
   const elsewhere = movesElsewhere(peers);
   const moved = movedAway().map(({ session, key, at }) => ({ session, key, at }));
   return {
+    pendingComputers: pendingMoves(),
     moves: listedMoves().map(record => withWords(shownMove(record), nameOf(record.peer))),
     away: awaySessions(),
     ...(elsewhere.length ? { elsewhere: elsewhere.map(heard => ({ ...heard, moves: heard.moves.map(move => {

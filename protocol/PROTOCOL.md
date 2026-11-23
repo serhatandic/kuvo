@@ -170,6 +170,19 @@ Feature `line`. A client opens one stream to each box, and everything it follows
 - **Older box.** A `404` for `kuvo/line` means a box from before the line, which is updating. Retry
   as after a drop, keep what each topic last said, and never show the `404`.
 
+Setup-wide topics publish the kept peer copies in their first state. `pendingComputers`
+names reachable setup members whose first copy is still coming. An empty copy is complete.
+Away peers keep their last-seen rows and cannot act on this line.
+
+Notice IDs remain stable with their owner. Read the setup's `dock` count directly to avoid
+counting an ask twice across Sessions and Bots. Activity counts only current work and exposes
+last-seen sessions separately. Activity Output bytes and archived-session actions go to each row's
+owner. The archive owner rechecks its own confirmation revision before a write.
+
+A conversation's owner supplies its directory and tool readiness. Search asks reachable peers
+at query time and reports `awayComputers` separately from `unavailableComputers`. The matching
+snippets travel in memory and each owner keeps its own transcript index.
+
 ## Setup-wide lists
 
 Features `line.setup-lists`, `line.merged-sessions` and `line.merged-waiting`. The nearest box
