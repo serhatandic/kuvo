@@ -10,6 +10,7 @@ import "./test-safety.js";
 import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -89,8 +90,8 @@ async function answer(handle, method, p, body) {
 // A file sent from a phone to `session` with a message: where the box kept it, as the message's
 // note says.
 let messages = 0;
-async function sent(engine, session, name) {
-  const handle = link.engineHandler(() => engine.target);
+async function sent(engine, session, name, box = link) {
+  const handle = box.engineHandler(() => engine.target);
   const files = [{ uri: `data:application/octet-stream;base64,${Buffer.from(name).toString("base64")}`, name }];
   // Each message its own id, as a client gives it: one under an id sent already is taken once.
   messages += 1;
@@ -294,7 +295,7 @@ test("a conversation moving to another computer, moved there, or a copy here let
   }
 });
 
-test("files older than two weeks still go, kept a folder for each session or as before", async () => {
+test("files older than two weeks still go, kept a folder for each session or as before", async t => {
   const engine = await place({ ses_old1: {} });
   const weeksAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
   const flat = path.join(kept, "0ld0ld00");
@@ -304,8 +305,19 @@ test("files older than two weeks still go, kept a folder for each session or as 
     fs.writeFileSync(path.join(folder, "old.txt"), "old");
     fs.utimesSync(folder, weeksAgo, weeksAgo);
   }
-  const fresh = await sent(engine, "ses_old1", "new.txt");
-  assert.equal(fs.existsSync(flat), false);
-  assert.equal(fs.existsSync(path.join(kept, "ses_old2")), false, "its session's folder, left empty, with it");
+  // Restart the dispatcher so this scenario has its own expiry schedule.
+  const box = await import(new URL("?attachment-expiry", LINK_BUNDLE).href);
+  const nestedSession = path.dirname(nested);
+  const watcher = fs.watch(kept);
+  t.after(() => watcher.close());
+  const fresh = await sent(engine, "ses_old1", "new.txt", box);
+  const deadline = AbortSignal.timeout(3000);
+  while (fs.existsSync(flat) || fs.existsSync(nestedSession)) {
+    await once(watcher, "change", { signal: deadline }).catch(error => {
+      if (!deadline.aborted) throw error;
+      assert.equal(fs.existsSync(flat), false, "old flat files expire");
+      assert.equal(fs.existsSync(nestedSession), false, "the empty session folder goes with its expired files");
+    });
+  }
   assert.ok(fs.existsSync(fresh));
 });
