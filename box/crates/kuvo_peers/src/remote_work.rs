@@ -366,15 +366,22 @@ impl Owner {
     async fn send(&mut self, view: &View, send: Outgoing) -> io::Result<()> {
         match send {
             Outgoing::Mail { key, envelope } => self.mail(view, key, envelope).await,
-            Outgoing::Failed { id, lead, reason } => {
-                if let Some(waiter) = self.waiting.remove(id.as_str()) {
-                    let _ = waiter.reply.send(Ok(Outcome::Failed(reason)));
-                } else {
+            Outgoing::Failed(failure) => {
+                if let Some(waiter) = self.waiting.remove(failure.id.as_str()) {
+                    let _ = waiter
+                        .reply
+                        .send(Ok(Outcome::Failed(failure.why().to_owned())));
+                } else if failure.notifies() {
+                    let computer = view
+                        .roster
+                        .member(&failure.key)
+                        .map_or("another computer", |member| &member.name);
+                    let answer = Answer::refused(failure.queued_words(computer));
                     self.work
-                        .deliver(&id, &lead, &Answer::refused(reason))
+                        .deliver(&failure.id, &failure.lead, &answer)
                         .await?;
                 }
-                self.calls.finish(&id)?;
+                self.calls.finish(&failure.id)?;
             }
         }
         Ok(())
@@ -432,7 +439,10 @@ fn home(view: &View, reader: &Reader, session: &str, now: Millis) -> Home {
     if ownership.frozen.contains(session) {
         return Home::Frozen;
     }
-    if view.local.holds(session) {
+    if view.local.holds(session)
+        || ownership.held.contains(&entry)
+        || view.local.created.contains_key(session)
+    {
         return Home::Local;
     }
     let known = view.moved(session, now).and_then(|key| decode_exact(&key));

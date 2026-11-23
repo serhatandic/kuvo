@@ -1219,6 +1219,7 @@ mod work {
     const LEAD: &str = "ses_business";
     const BILLING: &str = "ses_billing";
     const OTHER: &str = "ses_other";
+    const MISSING: &str = "ses_missing";
     const STOPPED: &str = "Stopped Billing";
     const LIST: &str = r#"{"rows":[{"session":"ses_billing","state":"idle"}]}"#;
 
@@ -1239,6 +1240,11 @@ mod work {
             call: &'a MailedCall,
         ) -> WorkFuture<'a, Admission> {
             Box::pin(async move {
+                if call.request.session() == Some(MISSING) {
+                    return Ok(Admission::Reject(format!(
+                        "There's no session {MISSING} on this computer."
+                    )));
+                }
                 if call.from != LEAD || call.request.session().is_some_and(|id| id != BILLING) {
                     return Ok(Admission::Refused(Answer::refused(
                         "Only sessions started by this lead",
@@ -1462,6 +1468,156 @@ mod work {
         }
     }
 
+    async fn work_observer(url: &str, id: u8, peer: u8) -> Relay {
+        let mut observer = Relay::start(Config {
+            url: url.into(),
+            key: [id + 3; 32],
+            secret: [id; 32],
+            grants: HashMap::new(),
+            peers: vec![member(peer).host().unwrap()],
+            hello: BoxHello {
+                v: 1,
+                name: "Observer".into(),
+                app: "test".into(),
+                kind: ComputerKind::Machine,
+                engine: None,
+            },
+        });
+        while !matches!(observer.events.recv().await, Some(Event::Connected(_))) {}
+        observer
+    }
+
+    async fn send_work_mail(observer: &Relay, to: u8, fields: Value) {
+        observer
+            .sender
+            .mail(
+                member(to).host().unwrap(),
+                kuvo_wire::mail::Envelope(fields.as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn next_rows(observer: &mut Relay) -> Value {
+        loop {
+            match observer.events.recv().await {
+                Some(Event::Mail { envelope, .. }) => {
+                    if let Some(rows) = envelope.0.get("rows") {
+                        return rows.clone();
+                    }
+                }
+                Some(_) => {}
+                None => panic!("the work rows relay stopped"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn work_rows_go_only_to_the_leads_computer_retry_until_acknowledged_and_wait_while_away()
+    {
+        time::timeout(Duration::from_secs(27), async {
+            let listener = relay_socket().await;
+            let url = relay_url(&listener);
+            let peers = Destinations::default();
+            let _relay = run_relay_with(listener, peers.clone());
+            let b = tempfile::tempdir().unwrap();
+            let other_lead = "ses_anotherlead";
+            let a_key = encode(&key(1));
+            let c_key = encode(&key(3));
+            write(
+                b.path(),
+                "run/work/homes.json",
+                json!({
+                    (LEAD): {"key":a_key,"at":NOW}, (other_lead):{"key":c_key,"at":NOW},
+                }),
+            );
+            let (engine_b, _) = engine(b.path());
+            let now = Arc::new(AtomicI64::new(NOW));
+            let mut a = work_observer(&url, 1, 2).await;
+            let mut c = work_observer(&url, 3, 2).await;
+            let (b_box, work) = start_work(&url, 2, b.path(), &[3, 1], now.clone(), engine_b).await;
+            let mut reader = b_box.reader();
+            while !reader.view().relay_connected {
+                reader.changed().await.unwrap();
+            }
+            let announce =
+                |at| json!({"at":at,"agents":{"at":at,"list":[],"features":["work.elsewhere"]}});
+            send_work_mail(&a, 2, announce(NOW)).await;
+            send_work_mail(&c, 2, announce(NOW)).await;
+            ready(&b_box, 1, b.path()).await;
+            ready(&b_box, 3, b.path()).await;
+            let snapshot = |title, both| {
+                let row = |session| json!([{"session":session,"title":title,"state":"idle"}]);
+                let mut leads = json!({(LEAD):row(BILLING)});
+                if both {
+                    leads[other_lead] = row(OTHER);
+                }
+                serde_json::from_value(leads).unwrap()
+            };
+            work.publish(snapshot("First copy", false)).await.unwrap();
+            let first = next_rows(&mut a).await;
+            assert_eq!(first["leads"][LEAD][0]["title"], "First copy");
+            assert_eq!(
+                read(b.path(), "run/work/pushed.json")
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>(),
+                [&a_key]
+            );
+
+            let ack = json!({"delivered":{"id":first["id"],"ok":true},"at":NOW});
+            send_work_mail(&c, 2, ack.clone()).await;
+            now.store(NOW + 61_000, Ordering::Relaxed);
+            let repeated = next_rows(&mut a).await;
+            assert_eq!(repeated["id"], first["id"]);
+            assert_eq!(repeated["at"], NOW + 61_000);
+            send_work_mail(&a, 2, ack).await;
+            while read(b.path(), "run/work/pushed.json")[&a_key]["done"] != true {
+                reader.changed().await.unwrap();
+            }
+
+            let destination = peers.lock().await[&member(1).address.unwrap()].clone();
+            drop(a);
+            destination.closed().await;
+            let b_relay = b_box.relay_handle().unwrap();
+            b_relay
+                .sender
+                .mail(
+                    member(1).host().unwrap(),
+                    kuvo_wire::mail::Envelope(Default::default()),
+                )
+                .await
+                .unwrap();
+            let is_away = |home: &Path| {
+                fs::read(home.join("run/peer-reach.json"))
+                    .ok()
+                    .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+                    .is_some_and(|copy| copy[&a_key] == NOW + 61_000)
+            };
+            while !is_away(b.path()) {
+                reader.changed().await.unwrap();
+            }
+
+            now.store(NOW + 80_000, Ordering::Relaxed);
+            work.publish(snapshot("Fresh copy", true)).await.unwrap();
+            let theirs = next_rows(&mut c).await;
+            assert_eq!(theirs["leads"][other_lead][0]["title"], "Fresh copy");
+            assert_eq!(theirs["leads"][LEAD], Value::Null);
+            let pushed = read(b.path(), "run/work/pushed.json");
+            assert_eq!(pushed[&a_key]["id"], first["id"]);
+            assert_eq!(pushed[&a_key]["done"], true);
+
+            let mut a = work_observer(&url, 1, 2).await;
+            send_work_mail(&a, 2, announce(NOW + 80_000)).await;
+            let returned = next_rows(&mut a).await;
+            assert_eq!(returned["leads"][LEAD][0]["title"], "Fresh copy");
+            assert_ne!(returned["id"], first["id"]);
+        })
+        .await
+        .expect("rows go only to the owner and retry until its receipt");
+    }
+
     #[tokio::test]
     async fn peers_announce_changes_answer_refreshes_and_repeat_after_ten_minutes() {
         time::timeout(Duration::from_secs(18), async {
@@ -1473,13 +1629,7 @@ mod work {
             let now = Arc::new(AtomicI64::new(NOW));
             // The observing computer sends no startup advertisements of its own. The
             // announcement carrying the attached work feature ends the initial exchange.
-            let mut observer = Relay::start(Config {
-                url: url.clone(), key: [5; 32], secret: [2; 32], grants: HashMap::new(),
-                peers: vec![member(1).host().unwrap()],
-                hello: BoxHello { v: 1, name: "Observer".into(), app: "test".into(),
-                    kind: ComputerKind::Machine, engine: None },
-            });
-            while !matches!(observer.events.recv().await, Some(Event::Connected(_))) {}
+            let mut observer = work_observer(&url, 2, 1).await;
             let (a_box, _) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
             let b_relay = observer.handle();
             let events = &mut observer.events;
@@ -1654,6 +1804,11 @@ mod work {
         let handle = resident.relay_handle().unwrap();
         let mut events = handle.subscribe().unwrap();
         let id = given["id"].clone();
+        let suffix = id.as_str().unwrap().strip_prefix("cal_").unwrap();
+        assert!(
+            (16..=40).contains(&suffix.len()),
+            "invalid call fixture {id}"
+        );
         let answer = format!("{}-a", id.as_str().unwrap());
         let envelope =
             kuvo_wire::mail::Envelope(json!({"call":given,"at":NOW}).as_object().unwrap().clone());
@@ -1698,9 +1853,10 @@ mod work {
             let b = tempfile::tempdir().unwrap();
             let (engine_a, _) = engine(a.path());
             let (engine_b, _) = engine(b.path());
+            write(b.path(), "run/work/homes.json", json!({"ses_wronghome":{"key":encode(&key(3)), "at":NOW}}));
             let now = Arc::new(AtomicI64::new(NOW));
             let (a_box, _) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
-            let (b_box, _) = start_work(&url, 2, b.path(), &[1], now.clone(), engine_b.clone()).await;
+            let (b_box, _) = start_work(&url, 2, b.path(), &[1, 3], now.clone(), engine_b.clone()).await;
             ready(&a_box, 2, a.path()).await;
             let given = |id: &str, tool: &str, args: Value, made: i64| json!({
                 "id":id,"tool":tool,"from":LEAD,"as":{"name":"Business","rules":[],"free":true},
@@ -1716,7 +1872,7 @@ mod work {
             let old = peers.lock().await[&member(2).address.unwrap()].clone();
             drop(b_box);
             old.closed().await;
-            let (b_box, _) = start_work(&url, 2, b.path(), &[1], now, engine_b.clone()).await;
+            let (b_box, _) = start_work(&url, 2, b.path(), &[1, 3], now, engine_b.clone()).await;
             ready(&b_box, 1, b.path()).await;
             assert_eq!(send_wire_call(&a_box, call).await, (receipt, answer));
             assert_eq!(fs::read_to_string(engine_b.effects.join(id)).unwrap(), STOPPED);
@@ -1750,6 +1906,29 @@ mod work {
                 "why":"That isn't something another computer can do here.",
             }));
             assert!(letter.is_null());
+
+            let mut local = kuvo_peers::lists::Local::default();
+            local.ownership.held.insert((kuvo_peers::directory::RecordScope::Session, "ses_ownlead".into()));
+            let mut reader = b_box.reader();
+            b_box.local(local).await;
+            while reader.view().local.ownership.held.is_empty() { reader.changed().await.unwrap(); }
+            let stop = |id| given(id, "stop_session", json!({"session":BILLING}), NOW);
+            let mut own = stop("cal_local00001234567");
+            own["from"] = "ses_ownlead".into();
+            assert_eq!(send_wire_call(&a_box, own).await.0, json!({
+                "id":"cal_local00001234567","ok":false,
+                "why":"That conversation is on this computer: another can't speak for it.",
+            }));
+            let mut claimed = stop("cal_claim00123456789");
+            claimed["from"] = "ses_wronghome".into();
+            let (receipt, _) = send_wire_call(&a_box, claimed).await;
+            assert_eq!((receipt["ok"].clone(), receipt["retry"].clone()), (json!(false), json!(true)));
+            let mut old = stop("cal_stale00123456789");
+            old["at"] = (NOW - 172_800_000).into();
+            let (receipt, _) = send_wire_call(&a_box, old).await;
+            assert_eq!((receipt["ok"].clone(), receipt["retry"].clone()), (json!(false), json!(true)));
+            assert_eq!(fs::read_dir(&engine_b.effects).unwrap().count(), 26);
+
         }).await.unwrap();
     }
 
@@ -1779,7 +1958,7 @@ mod work {
             Outgoing::Mail { envelope, .. } => {
                 envelope.0["call"]["id"].as_str().unwrap().to_owned()
             }
-            Outgoing::Failed { .. } => panic!("retry unexpectedly failed"),
+            Outgoing::Failed(_) => panic!("retry unexpectedly failed"),
         };
         let one = send(&mut outbox, NOW + 1, PeerState::Away);
         assert_eq!(one.len(), 1);
@@ -1799,7 +1978,7 @@ mod work {
 
     #[tokio::test]
     async fn an_away_computer_keeps_its_last_work_rows_and_the_stop_reaches_it_on_return() {
-        time::timeout(Duration::from_secs(22), async {
+        time::timeout(Duration::from_secs(30), async {
             let listener = relay_socket().await;
             let url = relay_url(&listener);
             let peers = Destinations::default();
@@ -1897,16 +2076,31 @@ mod work {
                 .find(|entry| entry["call"]["tool"] == "stop_session")
                 .unwrap();
             assert_eq!(offer["from"], LEAD);
+            let quiet = a_work.call(key(2), LEAD.into(), request(Tool::StopSession, json!({"session":MISSING})),
+                true, true).await.unwrap();
+            assert!(matches!(quiet, Outcome::Away { kept: true, sent: false }));
+            let doomed = a_work.call(key(2), LEAD.into(), request(Tool::StopSession, json!({"session":MISSING})),
+                true, false).await.unwrap();
+            assert!(matches!(doomed, Outcome::Away { kept: true, sent: false }));
+
 
             now.store(NOW + 80_000, Ordering::Relaxed);
             let (returned, fresh_work) =
                 start_work(&url, 2, b.path(), &[1], now, engine_b.clone()).await;
             away(a_box.reader(), key(2), false).await;
+            let mut results = vec![mailbox.recv().await.unwrap(), mailbox.recv().await.unwrap()];
+            results.sort();
+            assert_eq!(results, [
+                (LEAD.into(), format!("[Not done] Your stop_session for {MISSING} on Computer 2: There's no session {MISSING} on this computer.")),
+                (LEAD.into(), "[On Computer 2] Stopped Billing".into()),
+            ]);
+            write(a.path(), "run/outbox/sending/cal_ticket0000000000.json", json!({
+                "call": request(Tool::AnswerAsk, json!({"session":BILLING,"decision":"allow"})),
+                "peer":encode(&key(2)), "from":LEAD, "to":"", "at":NOW - 86_400_000,
+            }));
             let (lead, words) = mailbox.recv().await.unwrap();
-            assert_eq!(
-                (lead.as_str(), words.as_str()),
-                (LEAD, "[On Computer 2] Stopped Billing")
-            );
+            assert_eq!(lead, LEAD);
+            assert_eq!(words, format!("[Not done] Your answer_ask for {BILLING} on Computer 2 wasn't done: that computer wasn't back in time. An allow waits a day at most, as what it was for may have changed. Look at what it asks with list_sessions once it's back."));
             assert_eq!(fs::read_dir(&engine_b.effects).unwrap().count(), 2);
             assert!(mailbox.try_recv().is_err());
 

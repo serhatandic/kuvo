@@ -42,6 +42,19 @@ pub enum Tool {
 }
 
 impl Tool {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ListSessions => "list_sessions",
+            Self::StopSession => "stop_session",
+            Self::CompactSession => "compact_session",
+            Self::AnswerAsk => "answer_ask",
+            Self::StartSession => "start_session",
+            Self::ListModels => "list_models",
+            Self::ListProjects => "list_projects",
+            Self::StopWork => "stop_work",
+        }
+    }
+
     pub(crate) fn feature(self) -> &'static str {
         match self {
             Self::StartSession | Self::ListModels | Self::ListProjects | Self::StopWork => {
@@ -247,6 +260,7 @@ impl Answer {
 #[derive(Clone, Debug)]
 pub enum Admission {
     Ready,
+    Reject(String),
     Permission(Permission),
     Refused(Answer),
     Retry(String),
@@ -580,9 +594,11 @@ impl Calls {
             }
             let moved = matches!(home(&call.from), Home::Peer(_));
             let reason = if now.saturating_sub(call.at) > call.call.lifetime() {
-                Some("that computer wasn't back in time.")
+                Some(FailureReason::Expired {
+                    allow: call.call.allows(),
+                })
             } else if moved {
-                Some("you moved to another computer before it could go. Ask again from there.")
+                Some(FailureReason::Moved)
             } else if state == PeerState::Removed {
                 self.remove(&id)?;
                 continue;
@@ -593,11 +609,7 @@ impl Calls {
                 if call.quiet && !call.wait {
                     self.remove(&id)?;
                 } else {
-                    work.push(Outgoing::Failed {
-                        id,
-                        lead: call.from,
-                        reason: reason.into(),
-                    });
+                    work.push(Outgoing::Failed(Failure::new(id, key, call, reason)));
                 }
                 continue;
             }
@@ -612,14 +624,19 @@ impl Calls {
                 continue;
             }
             let envelope = packet(json!({"at":now, "call":MailedCall {
-                id: id.clone(), from: call.from.clone(), made: call.at, at: now, request:call.call,
+                id: id.clone(), from: call.from.clone(), made: call.at, at: now, request:call.call.clone(),
             }}));
             if envelope.encode().len() > MAX_PLAINTEXT {
-                work.push(Outgoing::Failed {
-                    id,
-                    lead: call.from,
-                    reason: "It's too long to send.".into(),
-                });
+                if call.quiet && !call.wait {
+                    self.remove(&id)?;
+                } else {
+                    work.push(Outgoing::Failed(Failure::new(
+                        id,
+                        key,
+                        call,
+                        FailureReason::TooLong,
+                    )));
+                }
                 continue;
             }
             if call.sent_to.as_deref() != Some(&call.peer) {
@@ -660,14 +677,20 @@ impl Calls {
             self.remove(&receipt.id)?;
             return Ok(None);
         }
-        Ok(Some(Outgoing::Failed {
-            id: receipt.id.clone(),
-            lead: call.from,
-            reason: receipt
-                .why
-                .clone()
-                .unwrap_or_else(|| "It wasn't accepted there.".into()),
-        }))
+        let why = receipt
+            .why
+            .as_deref()
+            .filter(|why| !why.is_empty())
+            .map_or_else(
+                || "It couldn't be done there.".into(),
+                |why| prefix(why, 500),
+            );
+        Ok(Some(Outgoing::Failed(Failure::new(
+            receipt.id.clone(),
+            key,
+            call,
+            FailureReason::Refused(why),
+        ))))
     }
 
     pub async fn receive(
@@ -762,6 +785,9 @@ impl Calls {
             }
         }
         let admission = work.inspect(key, &call).await;
+        if let Ok(Admission::Reject(why)) = &admission {
+            return Ok(no(&prefix(why, 500), false));
+        }
         let answer = match self.apply(key, &call, now, work, admission).await {
             Ok(answer) => answer,
             Err(reason) => return Ok(no(&prefix(&reason, 500), true)),
@@ -795,7 +821,7 @@ impl Calls {
     ) -> Result<Answer, String> {
         let temporary = |error| format!("It couldn't be done now: {error}");
         match admission.map_err(temporary)? {
-            Admission::Retry(why) => return Err(why),
+            Admission::Retry(why) | Admission::Reject(why) => return Err(why),
             Admission::Refused(answer) => return Ok(answer),
             Admission::Permission(check) if call.request.allows() => {
                 if let Some(answer) = check.refusal(&call.request.lead, call.made, now) {
@@ -1020,11 +1046,77 @@ pub enum Outgoing {
         key: ComputerKey,
         envelope: Envelope,
     },
-    Failed {
-        id: Id,
-        lead: String,
-        reason: String,
-    },
+    Failed(Failure),
+}
+
+pub struct Failure {
+    pub id: Id,
+    pub key: ComputerKey,
+    pub lead: String,
+    tool: Tool,
+    target: String,
+    reason: FailureReason,
+    notify: bool,
+}
+
+enum FailureReason {
+    Expired { allow: bool },
+    Moved,
+    Refused(String),
+    TooLong,
+}
+
+impl Failure {
+    fn new(id: Id, key: ComputerKey, call: Pending, reason: FailureReason) -> Self {
+        Self {
+            id,
+            key,
+            lead: call.from,
+            tool: call.call.tool,
+            target: call.call.session().unwrap_or_default().into(),
+            reason,
+            notify: !call.quiet && !call.call.tool.waits(),
+        }
+    }
+
+    pub(crate) fn notifies(&self) -> bool {
+        self.notify
+    }
+
+    pub fn why(&self) -> &str {
+        match &self.reason {
+            FailureReason::Expired { .. } => "that computer wasn't back in time.",
+            FailureReason::Moved => {
+                "you moved to another computer before it could go. Ask again from there."
+            }
+            FailureReason::Refused(why) => why,
+            FailureReason::TooLong => "It's too long to send.",
+        }
+    }
+
+    pub fn queued_words(&self, computer: &str) -> String {
+        let tool = self.tool.name();
+        let session = &self.target;
+        let why = self.why();
+        match self.reason {
+            FailureReason::Expired { allow } => {
+                let further = if allow {
+                    " An allow waits a day at most, as what it was for may have changed. Look at what it asks with list_sessions once it's back."
+                } else {
+                    ""
+                };
+                format!(
+                    "[Not done] Your {tool} for {session} on {computer} wasn't done: {why}{further}"
+                )
+            }
+            FailureReason::Moved => {
+                format!("[Not done] Your {tool} for {session} wasn't done: {why}")
+            }
+            FailureReason::Refused(_) | FailureReason::TooLong => {
+                format!("[Not done] Your {tool} for {session} on {computer}: {why}")
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
