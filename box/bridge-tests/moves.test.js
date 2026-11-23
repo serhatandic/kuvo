@@ -8,6 +8,7 @@
 //
 // Run with `node --test box/bridge-tests/moves.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -23,7 +24,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 // What's under way, as `kuvo/moves` says it (not what moved away lately, `moved`, which stays two days).
 const underWay = ({ moved: _moved, ...rest } = {}) => rest;
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const support = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-moves-")));
 const macHome = path.join(support, "mac");
 const machineHome = path.join(support, "machine");
@@ -199,7 +200,7 @@ Object.assign(process.env, {
   KUVO_HOST_URL: `http://127.0.0.1:${appHost.address().port}`,
   KUVO_HOST_PASSWORD: "host-password",
 });
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const relay = await relayStandIn(link, { changed: () => {} });
 
 // A chat on this Mac, with a wake-up; a bot on the machine, in its own folder.

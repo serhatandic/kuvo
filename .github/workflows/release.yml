@@ -64,10 +64,6 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yml
-
-  # Beside CI's jobs, so a wrong tag fails in seconds.
   verify:
     name: verify release tag
     runs-on: ubuntu-24.04
@@ -128,7 +124,7 @@ jobs:
 
   release:
     name: build and publish
-    needs: [ci, verify]
+    needs: verify
     # Only a v* tag (which verify checked is on main) or a dry run from main gets the secrets.
     if: >-
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
@@ -156,10 +152,10 @@ jobs:
         with:
           node-version: 24
 
-      # For writing the box's files (box/src/release/files.ts), the Bun CI builds the box with.
+      # For writing the box's files (box/src/release/files.ts), the box's pinned Bun.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.4.2
+          bun-version-file: box/.bun-version
 
       - name: Choose the version
         shell: bash

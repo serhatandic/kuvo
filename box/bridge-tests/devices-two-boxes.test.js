@@ -9,6 +9,7 @@
 //
 // Run with `node --test box/bridge-tests/devices-two-boxes.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -22,7 +23,7 @@ import { legacyBuild } from "./failure-bench-legacy.js";
 import { relayStandIn } from "./relay-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const support = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-devices-two-")));
 removeAtEnd(support);
 const macHome = path.join(support, "mac");
@@ -122,7 +123,7 @@ Object.assign(process.env, {
   KUVO_HOST_URL: `http://127.0.0.1:${appHost.address().port}`,
   KUVO_HOST_PASSWORD: "host-password",
 });
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const relay = await relayStandIn(link, { changed: () => {} });
 
 const macEngine = await engineWith("ses_lead");
@@ -647,7 +648,7 @@ if (process.argv[2] === "cut") fs.renameSync = (from, to) => {
   if (to === ${JSON.stringify(ledger)}) process.kill(process.pid, "SIGKILL");
   rename(from, to);
 };
-const link = await import(${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)});
+const link = await import(${JSON.stringify(LINK_BUNDLE.href)});
 link.askToSend();
 `);
     const cut = spawnSync(process.execPath, [boot, "cut"], { env: workshopEnv, encoding: "utf8", timeout: 10_000 });

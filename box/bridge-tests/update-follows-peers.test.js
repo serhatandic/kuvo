@@ -1,5 +1,6 @@
 // Computer version display and the automatic check schedule.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -12,7 +13,7 @@ const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-follows-peers-"));
 const home = path.join(testHome, ".kuvo-code");
 removeAtEnd(testHome);
 process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const RUN = path.join(home, "run");
 
 function write(file, text, mode = 0o644) {

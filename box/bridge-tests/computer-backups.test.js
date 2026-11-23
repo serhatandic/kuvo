@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -825,7 +826,7 @@ test("vault export needs its separate key and imports without inherited grants",
 
 test("the built box previews a destination before enabling and requires the local app", () => {
   const owner = scratch(), dest = scratch();
-  const link = JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href);
+  const link = JSON.stringify(LINK_BUNDLE.href);
   bunIn(owner, `
     import assert from "node:assert/strict";
     import fs from "node:fs";
@@ -1454,7 +1455,7 @@ test("restored transcripts open managed bytes at changed and occupied paths and 
     import path from "node:path";
     import { fileURLToPath } from "node:url";
     import { Database } from "bun:sqlite";
-    import { serveBox } from ${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)};
+    import { serveBox } from ${JSON.stringify(LINK_BUNDLE.href)};
     import { ArtifactStore } from ${artifactStore};
     import { restoreStatus } from ${url("restore")};
     const root = process.env.KUVO_HOME;

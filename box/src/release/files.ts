@@ -95,8 +95,7 @@ function browser(root: string, file: string): Buffer {
   return data;
 }
 
-/** What built from the box's sources is kept in git (scripts/check-built.sh says whether it's what
- * they build now). */
+/** Read a bundle prepared by scripts/build-built.sh. */
 function built(root: string, file: string): Buffer {
   const data = fs.readFileSync(path.join(root, file));
   if (!data.length) throw new Error(`${file} is empty.`);
@@ -123,7 +122,7 @@ export function boxFiles(root: string, version: string): BoxFile[] {
     { path: "config/opencode/plugins/kuvo-code.js", mode: 0o644, data: fs.readFileSync(path.join(root, "box/src/plugins/kuvo-code.js")) },
     // The link (with the vault's and the phones' keys passing through it, yours alone to read),
     // the coding agents' bridge and the browser.
-    { path: "bin/kuvo-link.js", mode: 0o600, data: built(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js") },
+    { path: "bin/kuvo-link.js", mode: 0o600, data: built(root, "box/dist/kuvo-link.js") },
     { path: "bin/kuvo-agents.js", mode: 0o644, data: marked(built(root, "box/dist/kuvo-agents.js")) },
     { path: "bin/kuvo-browser.js", mode: 0o644, data: browser(root, "box/dist/kuvo-browser.js") },
     // Settings › Integrations and › MCP Servers: a machine's, a Mac's box's, and the popular servers.

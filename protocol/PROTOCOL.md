@@ -6,8 +6,8 @@ through the relay or SSH. Boxes talk to each other as peers, by end-to-end encry
 the relay. Read [How Kuvo works](../docs/architecture/how-kuvo-works.md) first.
 
 **What's where.** Every route is documented in its definition in `box/src/shared/routes`: its
-feature, what it takes and answers, and a comment saying what it's for. `scripts/check-built.sh
---build` writes them all into `protocol/ROUTES.md`, a readable list kept out of git. This file holds only what a route can't say:
+feature, what it takes and answers, and a comment saying what it's for. `scripts/build-built.sh`
+writes them into `protocol/ROUTES.md`, a readable list kept out of git. This file holds only what a route can't say:
 the principles, the wire below the routes, and the few rules per area that a client must know.
 Add a rule here only when the route can't say it, and keep it to a few lines. Shared test vectors
 are in `vectors/`.

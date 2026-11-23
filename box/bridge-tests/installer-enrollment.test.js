@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, randomBytes } from "node:crypto";
@@ -12,7 +13,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { relayStandIn } from "./relay-stand-in.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const link = await import(script);
 const temp = fs.realpathSync(fs.mkdtempSync("/tmp/kuvo-enroll-"));
 removeAtEnd(temp);

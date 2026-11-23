@@ -11,6 +11,7 @@
 //
 // Run with `node --test box/bridge-tests/compatibility.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -24,7 +25,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-compatibility-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const link = await import(script);
 
 // Where a machine's engine reads its settings (XDG_CONFIG_HOME is `config` in its box's folder), and

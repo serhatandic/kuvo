@@ -23,7 +23,7 @@ import { NO_BUN, bunRunsAs, testBun } from "./bun-for-tests.js";
 
 const bun = testBun();
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
-const builtLink = path.join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const builtLink = path.join(checkout, "box/dist/kuvo-link.js");
 const builtAgents = path.join(checkout, "box/dist/kuvo-agents.js");
 
 function write(file, text, mode = 0o644) {
@@ -361,7 +361,7 @@ function signedRelease({ version = "0.10.0", url = `https://example.invalid/rele
   for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js"]) {
     write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
   }
-  write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(builtLink));
+  write(path.join(root, "box/dist/kuvo-link.js"), fs.readFileSync(builtLink));
   const integrity = "sha512-" + crypto.createHash("sha512").update("unused").digest("base64");
   const builds = { x86_64: { url: "https://example.invalid/engine-1.0.0.tgz", integrity }, aarch64: { url: "https://example.invalid/engine-1.0.0.tgz", integrity } };
   write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.0.0", linux: builds, darwin: builds }));

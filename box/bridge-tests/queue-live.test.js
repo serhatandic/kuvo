@@ -6,6 +6,7 @@
 //
 // Run with `OPENCODE_TEST_BINARY=<opencode> node --test box/bridge-tests/queue-live.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -34,7 +35,7 @@ test("Stop holds on the real engine: what arrives while stopped waits on the box
   const target = { port, password: "pw", pid: engine.pid };
   process.env.KUVO_HOME = `${root}/box`;
   fs.writeFileSync(`${root}/box/run/engine.json`, JSON.stringify(target));
-  const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  const link = await import(LINK_BUNDLE.href);
 
   const auth = { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" };
   const api = async (method, route, body) => {

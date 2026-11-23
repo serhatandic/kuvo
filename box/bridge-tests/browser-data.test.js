@@ -5,6 +5,7 @@
 // browser out of it, through Chrome, as `kuvo/integrations` then says.
 
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -13,7 +14,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { browserHost } from "./browser-host-stand-in.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const { home, chrome, event, client, answer } = await browserHost();
 
 /** A route of the machine's box, as a Mac asks it: its status, type and body. */

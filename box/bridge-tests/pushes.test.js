@@ -14,7 +14,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { script } from "./box-stand-ins.js";
+import { script, LINK_BUNDLE } from "./box-stand-ins.js";
 import { relayStandIn } from "./relay-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
@@ -23,7 +23,7 @@ const home = path.join(root, ".kuvo-code");
 removeAtEnd(root);
 // This test's own sendToPhones and its kept answers read this folder too.
 process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // Each change on the relay (a device on it or gone) wakes whoever waits for one.
 let poke = () => {};

@@ -112,8 +112,7 @@ nitpicks: shots cover looks, and a visual fix gets a look before and after.
 ## 11. Running
 
 Only what you changed and what uses it, never the full suite unless asked. Run them locally
-through `scripts/heavy.sh` (the scripts below take its slots); CI is paused, and sessions never run
-`scripts/ci-branch.sh`. Linux checks run on lokum (`scripts/lokum-box-check.sh`,
+through `scripts/heavy.sh` (the scripts below take its slots). Linux checks run on lokum (`scripts/lokum-box-check.sh`,
 `scripts/lokum-bridge-check.sh`), never hetzner; Windows checks with `scripts/windows-box-check.sh`
 and `scripts/windows-bridge-check.sh`.
 
@@ -124,8 +123,13 @@ scripts/test-box.sh bridge agents-renewal.test.js      # bridge
 cd gpui && ../scripts/cargo-locked.sh test -p kuvo --test send_while_working   # Rust
 ```
 
-Plus the compile checks for what you touched (`cargo-locked.sh check`, `bun run check` in `box/`,
-`scripts/check-built.sh` for built files). Never drive the Mac app's window from a test.
+The box and remote test scripts build their inputs with the Bun version in `box/.bun-version`.
+For the Rust vectors test, run `scripts/route-shapes.sh` first. For a test that needs an
+older bundle, set `BUILT_AT_CACHE` to the test's scratch folder and run
+`scripts/built-at.sh <rev>`. It prints the bundle directory.
+
+Run compile checks for what you touched (`cargo-locked.sh check` or `bun run check` in `box/`).
+Never drive the Mac app's window from a test.
 
 ## Anti-patterns
 

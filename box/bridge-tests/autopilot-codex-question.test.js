@@ -4,6 +4,7 @@
 // the answer; only new input for its turn ends that sleep. The live test beside this one
 // (autopilot-codex-live.test.js) runs the same with a real model.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -16,7 +17,7 @@ import { NO_BUN, testBun } from "./bun-for-tests.js";
 
 const bun = testBun();
 const agentsJS = fileURLToPath(new URL("../dist/kuvo-agents.js", import.meta.url));
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 
 // Its turn: each prompt says which question to ask. Answered, it says what it heard, and ends.
 const FAKE = String.raw`
@@ -66,7 +67,7 @@ test("on Autopilot, a Codex asleep for hours on its question goes on at once: ma
   removeAtEnd(home);
   for (const folder of ["tmp", "work", "agents", "run", "bin", "codex-home", "fake"]) fs.mkdirSync(path.join(home, folder), { recursive: true });
   process.env.KUVO_HOME = home;
-  const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+  const link = await import(LINK_BUNDLE.href);
 
   fs.writeFileSync(path.join(home, "fake", "app-server.js"), FAKE);
   fs.writeFileSync(path.join(home, "fake", "codex"), `#!/bin/sh\nexport BUN_BE_BUN=1\n[ "$1" = "--version" ] && { echo "codex-cli 0.166.0"; exit 0; }\nexec "${bun}" "${path.join(home, "fake", "app-server.js")}"\n`, { mode: 0o755 });

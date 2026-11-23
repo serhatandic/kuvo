@@ -1,15 +1,15 @@
 // What scripts/route-shapes.sh writes from box/src/shared, so nothing it holds is kept by
 // hand twice: each route's answers (protocol/vectors/routes/shapes/answers.json), the scenario that
-// holds each box's `kuvo/info` to its features (protocol/vectors/routes/features.json), and, without
-// --check, every route listed with its comment, for people (protocol/ROUTES.md, scripts/routes-md.ts;
+// holds each box's `kuvo/info` to its features (protocol/vectors/routes/features.json), and every
+// route listed with its comment, for people (protocol/ROUTES.md, scripts/routes-md.ts;
 // not kept in git). Run as
-// `bun scripts/route-shapes.ts <checkout> [--check]`.
+// `bun scripts/route-shapes.ts <checkout>`.
 
 import fs from "node:fs";
 import path from "node:path";
+import { routesMarkdown } from "./routes-md";
 
 const root = process.argv[2];
-const check = process.argv[3] === "--check";
 const { ERROR, PASSED_ON, ROUTES } = await import(path.join(root, "box/src/shared/routes/index.ts"));
 const { FEATURES } = await import(path.join(root, "box/src/shared/features.ts"));
 const { MAC_FEATURES, MACHINE_FEATURES, macFeatures } = await import(path.join(root, "box/src/shared/routes/mac.ts"));
@@ -54,28 +54,19 @@ const files: [string, () => string][] = [
   ["protocol/vectors/routes/shapes/answers.json", answers],
   ["protocol/vectors/routes/features.json", features],
 ];
-// protocol/ROUTES.md is for people, never kept in git (.gitignore), so it's only written, never
-// checked; writing it also checks that each route is an entry of its own in its file.
-if (!check) {
-  const { routesMarkdown } = await import("./routes-md");
-  const catalogue = await routesMarkdown(root);
-  files.push(["protocol/ROUTES.md", () => catalogue]);
-}
+const catalogue = await routesMarkdown(root);
+files.push(["protocol/ROUTES.md", () => catalogue]);
 
-let stale = 0;
 for (const [file, write] of files) {
   const where = path.join(root, file);
   const text = write();
-  if (check) {
-    let kept: string | null = null;
-    try { kept = fs.readFileSync(where, "utf8"); } catch {}
-    if (kept === text) continue;
-    console.error(`${file} isn't what box/src/shared writes: run ./scripts/route-shapes.sh and commit it.`);
-    stale++;
-    continue;
-  }
   fs.mkdirSync(path.dirname(where), { recursive: true });
-  fs.writeFileSync(where, text);
+  const temporary = `${where}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, text);
+    fs.renameSync(temporary, where);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
   console.log(`Wrote ${file}`);
 }
-process.exit(stale ? 1 : 0);

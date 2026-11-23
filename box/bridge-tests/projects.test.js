@@ -2,6 +2,7 @@
 // reads and changes; Remove Project archives every session of one, its worktrees' too, page after
 // page. Run with `node --test box/bridge-tests/*.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -14,7 +15,7 @@ import { runningAs } from "./running-as.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-projects-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-work-")));
 removeAtEnd(work);

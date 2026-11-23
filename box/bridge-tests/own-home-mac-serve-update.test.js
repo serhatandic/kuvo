@@ -6,6 +6,7 @@
 //
 // Run with `node --test box/bridge-tests/own-home-mac-serve-update.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -24,7 +25,7 @@ const write = (file, text, mode = 0o600) => {
   fs.chmodSync(file, mode);
 };
 const readJSON = file => JSON.parse(fs.readFileSync(file, "utf8"));
-const built = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const built = fileURLToPath(LINK_BUNDLE);
 
 // A Mac's box in a home of its own, on 0.10.0, its update to it on trial and up (the update saw its
 // engine and bridge answer), your phones paired: what the update had kept to put back, there.

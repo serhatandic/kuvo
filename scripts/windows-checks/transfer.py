@@ -36,9 +36,9 @@ def settings(root, kind, args):
     return {"kind": kind, "files": list(dict.fromkeys(files)), "pattern": pattern}
 
 
-def history(root, selected):
+def history(root, selected, cache):
     """Give tests the same pinned builds lokum stages for a checkout without .git."""
-    link = "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"
+    link = "kuvo-link.js"
     bridge = root / "box/bridge-tests"
     fixtures = [
         ("devices-two-boxes failure-bench-legacy", "failure-bench-legacy-ref.txt", "failure-bench-legacy.mjs", link),
@@ -56,13 +56,18 @@ def history(root, selected):
             ref = (bridge / ref).read_text().strip()
         if not re.fullmatch(r"[a-f0-9]{8,40}", ref):
             raise ValueError(f"Invalid revision for {name}")
-        yield f"box/bridge-tests/.{name}", git(root, "show", f"{ref}:{source}")
+        if source == link:
+            dist = subprocess.check_output(["sh", "scripts/built-at.sh", ref], cwd=root, text=True,
+                                           env={**os.environ, "BUILT_AT_CACHE": str(cache)}).strip()
+            data = (Path(dist) / source).read_bytes()
+        else:
+            data = git(root, "show", f"{ref}:{source}")
+        yield f"box/bridge-tests/.{name}", data
 
 
 def snapshot(output, root, runner, config, wsl):
     # Match the Linux runners' test inputs, including sibling sources and built resources.
-    scopes = ("box", "catalog", "protocol", "scripts", "swift", "mac/helper/Sources",
-              "docs/architecture/stored-formats.md")
+    scopes = ("box", "catalog", "protocol", "scripts", "mac/helper/Sources", "docs/architecture/stored-formats.md")
     tracked = {Path(os.fsdecode(name)) for name in git(root, "ls-files", "-z", "--", *scopes).split(b"\0") if name}
     with tarfile.open(fileobj=output, mode="w|gz", format=tarfile.PAX_FORMAT, dereference=not wsl) as tar:
         for name in sorted(tracked):
@@ -77,14 +82,20 @@ def snapshot(output, root, runner, config, wsl):
             if file.parent.resolve() != file.parent:
                 raise ValueError(f"Refusing linked parent of {name}")
             tar.add(file, arcname=name.as_posix(), recursive=False)
+        generated = ("box/dist/.built", "box/dist/kuvo-link.js", "box/dist/kuvo-agents.js",
+                     "box/dist/kuvo-browser.js", "protocol/vectors/routes/features.json",
+                     "protocol/vectors/routes/shapes/answers.json", "protocol/ROUTES.md")
+        for name in generated:
+            tar.add(root / name, arcname=name, recursive=False)
         platform_scripts = ("wsl.sh",) if wsl else ("native.ps1", "job.ps1")
         for name in ("run.mjs", "pins.json", *platform_scripts):
             tar.add(runner / name, arcname=f".windows-checks/{name}", recursive=False)
         if config["kind"] == "bridge":
-            for name, data in history(root, config["files"]):
-                entry = tarfile.TarInfo(name)
-                entry.size = len(data)
-                tar.addfile(entry, io.BytesIO(data))
+            with tempfile.TemporaryDirectory(prefix="kuvo-built-at-") as cache:
+                for name, data in history(root, config["files"], cache):
+                    entry = tarfile.TarInfo(name)
+                    entry.size = len(data)
+                    tar.addfile(entry, io.BytesIO(data))
         tar.addfile(tarfile.TarInfo(".windows-checks/ready"))
 
 
@@ -149,6 +160,7 @@ def main(kind, worktree, item, *args):
     wsl = bool(args and args[0] == "--wsl")
     root = Path(worktree).resolve(strict=True)
     config = settings(root, kind, list(args[1:] if wsl else args))
+    subprocess.run(["sh", "scripts/build-built.sh"], cwd=root, check=True)
     runner = Path(__file__).resolve().parent
     payload = base64.b64encode(json.dumps(config).encode()).decode()
     host = os.environ.get("KUVO_WIN_HOST") or "100.101.128.69"
@@ -167,6 +179,6 @@ def main(kind, worktree, item, *args):
 if __name__ == "__main__":
     try:
         sys.exit(main(*sys.argv[1:]))
-    except (TypeError, ValueError, OSError) as error:
+    except (TypeError, ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"{error}\nUsage: <check script> <worktree> <item> [--wsl] [test files…]", file=sys.stderr)
         sys.exit(64)

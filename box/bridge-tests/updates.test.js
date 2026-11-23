@@ -1,5 +1,6 @@
 // Signed release and packaging checks. Fleet activation is exercised in fleet-switch.test.js.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -13,8 +14,8 @@ import { removeAtEnd } from "./at-end.js";
 const boxHome = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-release-home-"));
 const home = path.join(boxHome, ".kuvo-code");
 process.env.KUVO_HOME = home;
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const link = await import(LINK_BUNDLE.href);
+const script = fileURLToPath(LINK_BUNDLE);
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-release-"));
 removeAtEnd(boxHome);
 removeAtEnd(scratch);
@@ -88,7 +89,7 @@ function sources() {
     write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
   }
   write(path.join(root, "box/src/keeper/kuvo-start"), fs.readFileSync(path.join(checkout, "box/src/keeper/kuvo-start")));
-  write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
+  write(path.join(root, "box/dist/kuvo-link.js"), fs.readFileSync(script));
   write(path.join(root, "box/dist/kuvo-agents.js"), "// kuvo-agents.js\n");
   write(path.join(root, "box/dist/kuvo-browser.js"), builtBrowser);
   const integrity = "sha512-" + crypto.createHash("sha512").update("fixture").digest("base64");

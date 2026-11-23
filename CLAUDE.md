@@ -1,6 +1,6 @@
 # Kuvo
 
-Kuvo runs coding agents, with any model, on all of a user's computers. Every computer runs a box (`box/`: the link, the coding agents' bridge, shared code) around the opencode engine, unmodified. The desktop app (`gpui/`, Rust on GPUI) is a thin client of every box. macOS and Linux today; Windows (WSL2 and native) is being added. The Swift Mac app and the phone app are gone: Swift remains only in Kuvo Helper (`mac/helper/`), and `swift/KuvoLink` only holds the built `kuvo-link.js`.
+Kuvo runs coding agents, with any model, on all of a user's computers. Every computer runs a box (`box/`: the link, the coding agents' bridge, shared code) around the opencode engine, unmodified. The desktop app (`gpui/`, Rust on GPUI) is a thin client of every box. macOS and Linux today; Windows (WSL2 and native) is being added. The Swift Mac app and the phone app are gone: Swift remains only in Kuvo Helper (`mac/helper/`).
 
 Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rules marked (strict) never bend; the index below has the details.
 
@@ -17,7 +17,7 @@ Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rul
 - **Tests (strict):** scenarios through real components; a bug fix starts with a test that fails on the old code; deterministic. Run only the tests for what you changed, no full suites. No AI reviews unless the user asks.
 - **Never kill by pattern (strict).** No `pkill`, `killall` or `pgrep … | kill`; kill only what you started, by PID.
 - **Footprint contained (strict).** Kuvo writes only in its own folders (`~/.kuvo-code` on a computer), gone when they're deleted; tests and demos use folders of their own.
-- **Built files are never hand-edited (strict):** `kuvo-link.js`, `kuvo-agents.js`, `kuvo-browser.js`, `BRIDGE_VERSION`, `KEEPER`, `answers.json`, `features.json`. A feature name is one line, in order, in `FEATURES`.
+- **Built files are never hand-edited (strict):** `kuvo-link.js`, `kuvo-agents.js`, `kuvo-browser.js`, `BRIDGE_VERSION`, `KEEPER`, `answers.json`, `features.json`. Generated bundles and vectors never go in git. Run `scripts/build-built.sh`. A feature name is one line, in order, in `FEATURES`.
 - **Never push, tag or open a PR (strict).** Commit tested work to your branch; the lead merges and pushes on the user's word. No GitHub polling.
 - **Commits:** small, plain messages; no Co-Authored-By or AI lines; no personal paths or secrets (the repo will be open source).
 - **The repo holds what an open-source reader needs.** Working notes, drafts and shots stay in `.claude/`, which is ignored: never force-add it.
@@ -43,4 +43,4 @@ Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rul
 - `docs/upstreams.md`: the engine and other upstreams; the lead checks them weekly.
 - `docs/docs-map.md`: which website page each change touches (parked).
 - `CONTRIBUTING.md`: setup, builds, Rust through `scripts/cargo-locked.sh`, route scenarios, what branches don't edit by hand, compatibility markers.
-- `protocol/PROTOCOL.md`: how boxes and clients talk. Routes are documented in their definition (`box/src/shared/routes`); `scripts/check-built.sh --build` writes `protocol/ROUTES.md` for a readable list. Add to PROTOCOL.md only a rule a client must know that the route can't say, in a few lines.
+- `protocol/PROTOCOL.md`: how boxes and clients talk. Routes are documented in their definition (`box/src/shared/routes`); `scripts/build-built.sh` writes `protocol/ROUTES.md` for a readable list. Add to PROTOCOL.md only a rule a client must know that the route can't say, in a few lines.

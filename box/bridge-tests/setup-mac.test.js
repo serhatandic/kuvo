@@ -9,6 +9,7 @@
 //
 // Run with `node --test box/bridge-tests/setup-mac.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -30,7 +31,7 @@ Object.assign(process.env, {
   KUVO_BOTS: path.join(support, "bots"),
   KUVO_WAKES: path.join(support, "wakes"),
 });
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 const run = path.join(home, "run");
 const queues = path.join(run, "work-queue");
 const numbers = path.join(queues, "numbers.json");
@@ -255,7 +256,7 @@ test("this Mac's static key made anew: setting a machine up again lets the old k
   write(numbers, { primary: "self", next: 12, leases: [], since: 1_000 });
   labTold({ primary: { key: self.pub, kind: "mac", since: 1_000 } });
   link.noteSetupNow(Date.now(), { soon: 0 });
-  const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  const script = fileURLToPath(LINK_BUNDLE);
   const machine = path.join(support, "machine");
   fs.mkdirSync(path.join(machine, "run"), { recursive: true });
   const env = { PATH: process.env.PATH, HOME: support, KUVO_HOME: machine, TMPDIR: support };

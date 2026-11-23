@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -19,7 +20,7 @@ import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { recoveryNeighborBuild, splitLaunchBuild } from "./failure-bench-legacy.js";
 import { benchRelease, durablePhase, put, recoveryEngine } from "./recovery-bench.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const link = await import(script);
 const TAKEOVER = 180_000;
 const submit = (box, primary, epoch) => box.route("POST", "kuvo/setup/handover", { primary: primary.key, epoch });
@@ -2307,7 +2308,7 @@ test("failure bench: a bot's offline name and instructions are applied only at i
     prepare: ([, , home]) => {
       const folder = path.join(home.home, "bots", id);
       fs.mkdirSync(path.join(home.home, "bin"), { recursive: true });
-      fs.copyFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/bot-words.json", import.meta.url), path.join(home.home, "bin", "bot-words.json"));
+      fs.copyFileSync(new URL("../src/shared/bot-words.json", import.meta.url), path.join(home.home, "bin", "bot-words.json"));
       put(path.join(folder, "bot.json"), JSON.stringify({ kuvo: 1, id, name: "Lab bot" }));
       put(path.join(folder, "session"), "ses_owned\n");
       put(path.join(folder, "job.json"), JSON.stringify({ line: "Report status", details: "Check the queue." }));

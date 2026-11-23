@@ -5,6 +5,7 @@
 // stand-in, and so is the system's word that a folder changed (below); kuvo-wake is the real one.
 // Each test has conversations of its own, gone when it ends, so each runs alone too.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -37,7 +38,7 @@ const changedOnDisk = file => {
     if (path.dirname(file) === folder || (recursive && file.startsWith(folder + path.sep))) listener("rename", path.relative(folder, file));
   }
 };
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 const script = fs.readFileSync(new URL("../src/keeper/kuvo-wake", import.meta.url), "utf8");
 fs.mkdirSync(path.join(support, "bin"), { recursive: true });

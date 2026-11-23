@@ -156,9 +156,8 @@ trap 'rm -rf "$work" "$NEW"' EXIT
 # (Nor an earlier build's zip of this version, to be carried in this one's place.)
 rm -rf "$NEW" "$OUT/Kuvo-$VERSION.zip"
 
-# The box's built files as its sources build them now (after a merge git may keep one side's):
-# what the release packs is what's in git.
-./scripts/check-built.sh
+# Generate the box's bundles and vectors before compiling the app.
+./scripts/build-built.sh
 
 # Snapshot the versioned executable while still holding the Rust slot, before another build
 # can replace it. Ask Cargo where it built, including when the caller sets a target directory.

@@ -18,6 +18,7 @@
 //
 // Run with `OPENCODE_TEST_BINARY=<opencode> node --test box/bridge-tests/compatibility-live.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -35,7 +36,7 @@ for (const folder of ["home", "tmp", "work", "box/run", "xdg/data", "xdg/state",
 // A machine's box: its engine's settings are in its folder (XDG_CONFIG_HOME, `config`).
 const box = `${root}/box`;
 process.env.KUVO_HOME = box;
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const link = await import(script);
 const work = `${root}/work`;
 

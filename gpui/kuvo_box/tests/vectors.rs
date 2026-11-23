@@ -11,7 +11,14 @@ use serde_json::Value;
 
 fn vectors(name: &str) -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../protocol/vectors").join(name);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound
+            && matches!(name, "routes/features.json" | "routes/shapes/answers.json")
+        {
+            panic!("Missing {}. Run scripts/route-shapes.sh from the repository root.", path.display());
+        }
+        panic!("{}: {error}", path.display());
+    });
     serde_json::from_str(&text).expect("the vectors are JSON")
 }
 

@@ -2,6 +2,7 @@
 // the agents bridge are stand-ins, but both versions' Box CLI entry points are the built files.
 // Run with `node --test box/bridge-tests/update-real-keeper.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -15,7 +16,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { layout0Build } from "./failure-bench-legacy.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
 const baseline = layout0Build();
 test("an app-owned box probes the saved baseline as a disposable machine", () => {
@@ -233,7 +234,7 @@ esac
   for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js"]) {
     write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
   }
-  write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(script));
+  write(path.join(root, "box/dist/kuvo-link.js"), fs.readFileSync(script));
   write(path.join(root, "box/dist/kuvo-agents.js"), bridgeStandIn);
   write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: "1.1.0", linux: builds, darwin: builds }));
   const out = path.join(scratch, "box-release");

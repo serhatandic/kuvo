@@ -1,4 +1,5 @@
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -12,7 +13,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { relayStandIn } from "./relay-stand-in.js";
 
-const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+const script = fileURLToPath(LINK_BUNDLE);
 const link = await import(script);
 const read = file => JSON.parse(fs.readFileSync(file, "utf8"));
 const keyOf = key => link.publicOf(key).toString("base64url");

@@ -5,6 +5,7 @@
 //
 // Run with `node --test box/bridge-tests/sign-in.test.js`.
 import "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
@@ -17,7 +18,7 @@ import { atEnd, removeAtEnd } from "./at-end.js";
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-sign-in-"));
 process.env.KUVO_HOME = home;
 removeAtEnd(home);
-const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const link = await import(LINK_BUNDLE.href);
 
 // A stand-in on a free port: `routes(url)` gives its `data` as their APIs do, `{status, message}`
 // for a refusal, or nothing (404). Every path asked, kept.
