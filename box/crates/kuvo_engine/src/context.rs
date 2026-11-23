@@ -1,6 +1,6 @@
 //! The occupancy of the last measured step and the model window cached for offline reads.
 
-use std::{collections::BTreeMap, fs, io, path::Path, time::Duration};
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 use http::HeaderMap;
 use serde::Deserialize;
@@ -144,7 +144,10 @@ impl Windows {
                     writes.borrow_and_update().clone();
                 if let Some(snapshot) = snapshot {
                     let file = file.clone();
-                    let _ = tokio::task::spawn_blocking(move || save(&file, &snapshot)).await;
+                    let _ = tokio::task::spawn_blocking(move || {
+                        crate::disk::write(&file, snapshot.as_ref())
+                    })
+                    .await;
                 }
             }
         });
@@ -176,13 +179,4 @@ impl Windows {
         }
         result.await.unwrap_or(live)
     }
-}
-
-fn save(path: &Path, windows: &BTreeMap<String, Value>) -> io::Result<()> {
-    let parent = path.parent().expect("context cache has a parent");
-    fs::create_dir_all(parent)?;
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer(&mut file, windows)?;
-    file.persist(path)?;
-    Ok(())
 }
