@@ -6,8 +6,8 @@
 // and a stand-in helper: never this computer's launchd, which a test's home leaves alone without them.
 //
 // Run with `node --test box/bridge-tests/own-box-helper.test.js`.
-import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { removeTestHomeAtExit } from "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";

@@ -3,8 +3,8 @@
 // machine runs it (`kuvo-link.js run`), waiting to pair. It prints one line, `{relay, host, key,
 // token, name}` (what a pairing link says), and stays until its standard input ends; then it stops
 // the box it started (by its pid) and removes its folder. Nothing real is reached.
-import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { removeTestHomeAtExit, stopTestProcesses } from "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";

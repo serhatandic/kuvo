@@ -14,8 +14,8 @@
 // of the Codex lane to use, such as gpt-6-luna) are set, Bun and Codex are there, and the lane lists
 // that model. Run with
 // `KUVO_TEST_CODEX_AUTH=~/.codex/auth.json KUVO_TEST_CODEX_MODEL=<id> node --test box/bridge-tests/autopilot-codex-live.test.js`.
-import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { allowRealAgents, REAL_PATH } from "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";

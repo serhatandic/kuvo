@@ -1,6 +1,6 @@
 // Run real test subprocesses and verify their boxes and keepers disappear when the runner ends.
-import { LINK_BUNDLE } from "./box-stand-ins.js";
 import { ownPath } from "./test-safety.js";
+import { LINK_BUNDLE } from "./box-stand-ins.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
