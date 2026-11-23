@@ -124,6 +124,55 @@ fn model_picker_accounts_open(workspace: &mut Workspace, window: &mut Window, cx
         });
     }
 }
+/// The one picker (#975), from a new conversation's composer on Codex's GPT-6-Luna at Medium, as
+/// T3's reference: on Codex, on Claude Code, on ★, a search across providers, a row highlighted
+/// with its ☆, and the permissions open.
+fn on_luna(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
+    let composer = workspace.landing().clone();
+    composer.update(cx, |composer, cx| composer.pick(kuvo_box::typed::ModelRef { provider_id: "codex-cli".into(), id: "gpt-6-luna".into(), variant: Some("medium".into()) }, cx));
+}
+fn model_chip_luna(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    on_luna(workspace, cx);
+}
+fn picker_on(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>, rail: &str) -> Option<gpui::Entity<kuvo::model_picker::ModelPicker>> {
+    on_luna(workspace, cx);
+    let picker = landing_model_picker(workspace, window, cx)?;
+    if !rail.is_empty() {
+        picker.update(cx, |picker, cx| picker.show_rail(rail, cx));
+    }
+    Some(picker)
+}
+fn model_picker_codex(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    picker_on(workspace, window, cx, "");
+}
+fn model_picker_claude_code(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    picker_on(workspace, window, cx, "claude");
+}
+fn model_picker_favourites(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    picker_on(workspace, window, cx, "starred");
+}
+fn model_picker_search_all(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = picker_on(workspace, window, cx, "") {
+        picker.update(cx, |picker, cx| picker.type_search("gpt 6", cx));
+    }
+}
+fn model_picker_row_hover(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = picker_on(workspace, window, cx, "") {
+        picker.update(cx, |picker, cx| picker.highlight(2, cx));
+    }
+}
+fn model_picker_permissions(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = picker_on(workspace, window, cx, "") {
+        picker.update(cx, |picker, cx| picker.open_permissions(cx));
+    }
+}
+/// The conversation's picker with its permissions open (what the mode menu was).
+fn mode_menu(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(picker) = model_picker(workspace, window, cx) {
+        picker.update(cx, |picker, cx| picker.open_permissions(cx));
+    }
+}
+
 fn model_picker_accounts_search(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     if let Some(picker) = landing_model_picker(workspace, window, cx) {
         picker.update(cx, |picker, cx| picker.type_search("opus 5.5", cx));
@@ -153,6 +202,16 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "model-picker-accounts-two", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts) },
     Screen { slug: "model-picker-accounts-ten-open", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_open) },
     Screen { slug: "model-picker-accounts-search", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_accounts_search) },
+    // The one picker, laid out as T3's (#975).
+    Screen { slug: "model-chip", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_chip_luna) },
+    Screen { slug: "model-picker-codex", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_codex) },
+    Screen { slug: "model-picker-claude-code", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_claude_code) },
+    Screen { slug: "model-picker-favourites", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_favourites) },
+    Screen { slug: "model-picker-search-all", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_search_all) },
+    Screen { slug: "model-picker-row-hover", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_row_hover) },
+    Screen { slug: "model-picker-permissions", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_permissions) },
+    Screen { slug: "market-add-agent-picker", width: 1280., height: 980., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "settings-a-models-picker", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(models) },
     Screen { slug: "model-picker-provider", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(model_picker_provider) },
     Screen { slug: "composer-edited-attachments", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(composer_edited) },
     Screen { slug: "composer-row", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Check the sign-up form once more"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -306,6 +365,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bot-look", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_look) },
     Screen { slug: "bot-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_delete) },
     Screen { slug: "bot-held", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_held) },
+    // A bot on another computer, its conversation open: the title names it.
+    Screen { slug: "bot-chat-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_chat_elsewhere) },
     Screen { slug: "bot-elsewhere", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_elsewhere) },
     Screen { slug: "bot-elsewhere-delete", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_elsewhere_delete) },
     Screen { slug: "bot-waiting", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_waiting) },
@@ -406,6 +467,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "settings-row-git", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_git) },
     // The rail's rings, each filled with what's left, and a ring's card open beside it.
     Screen { slug: "rail-ring-card", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
+    // The rings past the rail's room, open beside "+2", and one of their cards.
+    Screen { slug: "rail-more", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(rings_more) },
+    Screen { slug: "rail-more-card", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(rings_more_card) },
     // The box's cards (#952): on pace to run out, used up, Codex's resets and its confirm, an
     // agent's many accounts (20, and 4), one before its first reading, and one Google doesn't count.
     Screen { slug: "rail-card-claude-max", width: 1100., height: 900., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(ring_card) },
@@ -599,7 +663,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bars-narrow", width: 760., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // The mode menu and Full Access the first time; a new session's Local or Worktree.
     Screen { slug: "mode-chip-held", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "mode-menu", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "mode-menu", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(mode_menu) },
     Screen { slug: "mode-full-access", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(full_access_question) },
     Screen { slug: "landing-worktree", width: 1280., height: 820., session: None, typed: Some("Make the footer links work on mobile"), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
     Screen { slug: "landing-worktree-menu", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(landing_worktree) },
@@ -844,6 +908,11 @@ fn bot_chat(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
     workspace.open_bot_chat("bot_mira", "ses_mira", None, window, cx);
 }
 /// New Bot: ready-made bots are in the Marketplace.
+fn bot_chat_elsewhere(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_area(Area::Bots, window, cx);
+    workspace.open_bot_chat("bot_wren", "ses_wren", None, window, cx);
+}
+
 fn bot_new(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Bots, "new", window, cx);
 }
@@ -2321,7 +2390,8 @@ fn stage_work_item_hover(stand_in: &StandIn) {
         "labels": ["lbl_design"],
         "assignee": null,
     }), None);
-    let reply = "Added. It's now part of #840, the shared text-row fix for single-line truncation and wrapping options.";
+    // (In parentheses, as agents often write it: the chip stands in for them.)
+    let reply = "Added. It's now part of the shared text-row fix (#840), for single-line truncation and wrapping options.";
     let start = reply.find("#840").unwrap();
     stand_in.work_queue_mention_fixture(reply, json!([
         { "start": start, "end": start + 4, "number": 840 }
@@ -2435,6 +2505,17 @@ fn spot_of(workspace: &Workspace, needle: &str, end: bool, cx: &gpui::App) -> gp
 
 fn ring_card(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     workspace.rings().update(cx, |rings, cx| rings.show_card(0, cx));
+}
+
+fn rings_more(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| rings.show_more(cx));
+}
+
+fn rings_more_card(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.rings().update(cx, |rings, cx| {
+        rings.show_more(cx);
+        rings.show_card(4, cx);
+    });
 }
 
 fn ring_card_1(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
@@ -2783,10 +2864,16 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug.starts_with("model-picker") {
                 // A star, and more providers' models, as a box with several accounts has.
-                stand_in.set_starred(vec![("openai", "gpt-6")]);
+                stand_in.set_starred(vec![("openai", "gpt-6"), ("codex-cli", "gpt-6-luna"), ("anthropic", "claude-opus-5-5")]);
                 stand_in.more_models(24);
+                stand_in.offers_codex();
+            }
+            if screen.slug == "model-chip" || screen.slug == "market-add-agent-picker" || screen.slug == "settings-a-models-picker" {
+                stand_in.set_starred(vec![("openai", "gpt-6"), ("anthropic", "claude-opus-5-5")]);
+                stand_in.offers_codex();
             }
             match screen.slug {
+                "model-picker-claude-code" => stand_in.claude_accounts(&[("sam@example.com", Some("Max")), ("Work", Some("Team"))]),
                 "model-picker-accounts-one" => stand_in.claude_accounts(&[("sam@example.com", Some("Max"))]),
                 "model-picker-accounts-two" | "model-picker-accounts-search" => stand_in.claude_accounts(&[("sam@example.com", Some("Max")), ("Work", Some("Team"))]),
                 "model-picker-accounts-ten-open" => stand_in.claude_accounts(&[
@@ -3454,7 +3541,7 @@ fn main() -> anyhow::Result<()> {
                         workspace.library_sample(screen.slug, NOW, window, cx);
                     }
                     if screen.slug.starts_with("market-") {
-                        workspace.marketplace_sample(screen.slug, window, cx);
+                        workspace.marketplace_sample(screen.slug.trim_end_matches("-picker"), window, cx);
                     }
                     if let Some(panel) = screen.panel {
                         panel(workspace, window, cx);
@@ -3581,8 +3668,9 @@ fn main() -> anyhow::Result<()> {
             }
             // A composer's menu opened with a press on its chip, through the window.
             if let Some(at) = match screen.slug {
-                "mode-menu" => Some(gpui::point(px(526.), px(767.))),
                 "landing-worktree-menu" => Some(gpui::point(px(835.), px(412.))),
+                // Settings › Models: the model for new sessions, in the one picker (#975).
+                "settings-a-models-picker" => Some(gpui::point(px(1056.), px(196.))),
                 _ => None,
             } {
                 use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
@@ -3596,6 +3684,18 @@ fn main() -> anyhow::Result<()> {
                 cx.run_until_parked();
             }
             // Read up a little: the way back to the end shows over the composer.
+            // Add Agent's model, picked in the one picker (#975), once its options are read.
+            if screen.slug == "market-add-agent-picker" {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    let market = workspace.read(cx).marketplace().clone();
+                    market.update(cx, |market, cx| market.open_agent_model_picker(window, cx));
+                    window.refresh();
+                })?;
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
             if screen.slug == "floating-composer-group-scrolled" {
                 cx.update_window(any, |root, window, cx| {
                     let workspace = root.downcast::<Workspace>().expect("the workspace");

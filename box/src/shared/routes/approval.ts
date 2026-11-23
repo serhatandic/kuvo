@@ -16,8 +16,10 @@ export const UNAVAILABLE = object({ reason: REASON, why: string });
  * that's less), whether it plans (Plan mode, beside this), and each one it can be set to: one that
  * can't be picked says why (`unavailable`: unconfirmed Full Access or Auto on Windows), one that would ask first for now says why
  * (`held`: Auto without the sandbox). `parent`: a coding agent's subagent runs with the approval of
- * the conversation that started it, by its id: that one's, which is changed there, not here. */
-const OPTION = object({ approval: APPROVAL, "unavailable?": UNAVAILABLE, "held?": UNAVAILABLE });
+ * the conversation that started it, by its id: that one's, which is changed there, not here.
+ * Each says its name (`title`, "Full Access") and one line on what it does (`detail`), so every
+ * client words the modes alike (#975). */
+const OPTION = object({ approval: APPROVAL, "unavailable?": UNAVAILABLE, "held?": UNAVAILABLE, "title?": string, "detail?": string });
 
 export const SESSION_APPROVAL = object({
   approval: APPROVAL, effective: APPROVAL, stored: bool, "held?": UNAVAILABLE, plan: bool,

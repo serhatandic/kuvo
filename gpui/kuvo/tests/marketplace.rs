@@ -186,3 +186,19 @@ fn new_bot_points_to_the_marketplaces_agents(cx: &mut TestAppContext) {
     assert_eq!(title(&workspace, cx), (Some("Agents".into()), Some("Marketplace".into())));
     assert!(shown(cx, "market-item-coding-reviewer"));
 }
+
+#[gpui::test]
+fn the_picked_category_shows_its_whole_edge_and_shadow(cx: &mut TestAppContext) {
+    let (_, _, cx) = open(cx, Sample::InUse);
+    click(cx, "rail-marketplace");
+    click(cx, "market-section-skills");
+    let list = bounds(cx, "market-categories").expect("the categories");
+    let all = bounds(cx, "market-category-all").expect("All, picked");
+    // Its edge rings it by a point, and its shadow falls a few below: all inside the list that
+    // scrolls (and cuts what's past it).
+    assert!(all.left() - px(1.) >= list.left() && all.right() + px(1.) <= list.right(), "sides cut: {all:?} in {list:?}");
+    assert!(all.top() - px(1.) >= list.top(), "top cut: {all:?} in {list:?}");
+    // The rows still line up with the Skills row above.
+    let skills = bounds(cx, "market-section-skills").unwrap();
+    assert_eq!((all.left(), all.right()), (skills.left(), skills.right()));
+}

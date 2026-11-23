@@ -64,7 +64,7 @@ A layout change adds a tested, replayable folder step from n to n+1. Layout 1 pr
 the existing files so pre-marker builds can still use them during rollback. A future
 incompatible layout requires stopping older writers and a compatible rollback plan.
 Computers in an updating fleet continue to exchange messages using their wire versions. See the format inventory in
-`.claude/notes/848-U-versions-inventory.md`.
+`docs/architecture/stored-formats.md`.
 
 ## The relay
 
@@ -759,7 +759,7 @@ once both computers are connected. On the wire, `primary` means the main compute
 ### Saving setup-wide changes
 
 The lease-holding main commits setup membership, device grants, settings,
-personalities and labels. It signs and publishes a snapshot of the accepted
+personalities, labels and your starred models. It signs and publishes a snapshot of the accepted
 values. Members verify that snapshot and retain it for the next main. A member
 forwards setup-wide changes to the main. An unavailable or stale authority
 can keep an operation waiting or refuse it without applying an unverified
@@ -3044,7 +3044,7 @@ the same, and a new conversation, a new bot and a lead's session started from an
 start on a model by the same rule.
 
 - `GET kuvo/models/offered[?folder=<path>][&provider=<id>&model=<id>&variant=<effort>]` → `{"models":
-  [{providerID, id, name, side, efforts, aliases, retiring?, hidden?, free?}], "providers": [{id, name, label?}],
+  [{providerID, id, name, side, efforts, aliases, retiring?, hidden?, free?, speeds?}], "providers": [{id, name, label?, speed?}],
   "starred": [{providerID, id}], "known": {"engine", "agents"}, "listing"?: [<account id>],
   "starting"?: {providerID, id, variant?} | null}`. `405` for anything but `GET`; `503` with
   neither the engine nor the coding agents' bridge running.
@@ -3088,14 +3088,38 @@ start on a model by the same rule.
   as the box's usage reader last read it ("Max"; left out where it hasn't, or doesn't answer at
   once). A picker shows an agent with two or more accounts as one, with a switch between them by
   `name` and `plan`; a model picked under one runs on that account (its provider's).
-- `starred` (`models.starred`): your starred models, in the order you starred them, kept by the box
-  (`box/models.json`) so every client's picker shows the same stars. Those that don't run there now
-  are listed too: a client shows only those in `models`, matching one by its id or an alias. `GET
-  kuvo/models/starred` → `{"starred": [{providerID, id}]}`; `POST kuvo/models/starred` with
-  `{providerID, id, starred: true|false}` stars it (at the end, or where it was) or takes its star
-  away, and answers the same; `400` for anything else sent, `405` for another method. A box without
-  `models.starred` keeps none: a client shows no stars there. Moving from the earlier Mac app brings
-  its starred models along (its `favoriteModels` preference).
+- `speeds` and `speed` (`models.speed`): the speeds a model runs at besides its standard one,
+  `[{id, name, description?}]` as its agent lists them (left out for a model with none), and on
+  each provider the one you picked for it on this box (`speed`: a speed's id; left out for Standard,
+  or none picked). A picker shows a "Standard | Fast" switch only for a model with `speeds`, set to
+  its provider's `speed`. Only Codex has them today: its service tiers (`{"id": "priority", "name":
+  "Fast", "description": "1.5x speed"}`), per model, as Codex lists them. Claude Code, Grok, Cursor,
+  Antigravity and the engine's models list none: none of them has a speed a box can set on a turn.
+  `POST kuvo/models/speed` with `{providerID, speed}` (a speed's id, or `null` for Standard) picks
+  it for that provider (`codex-cli`, or an account you added, `codex-cli@<id>`) and answers
+  `{providerID, speed}`; `400` with a `message` for anything else sent, `405` for another method.
+  The pick is kept by this box (`box/models.json`, beside the starred models a box keeps itself),
+  for every model of that provider and every conversation on it, with no client there: each Codex
+  turn asks for that speed where its model lists it, and for the standard one (`serviceTier:
+  null`) where you picked Standard or its model doesn't list the speed; where none was ever picked,
+  nothing is asked, so your own Codex settings (its `/fast`) decide. Like an account, it's each
+  computer's own, not setup-wide. A box without `models.speed` lists no speeds: a client shows no
+  switch there.
+- `starred` (`models.starred`): your starred models (the picker's Favourites), in the order you
+  starred them. They're setup-wide: the setup's main computer keeps them (`setupStarredModels`,
+  "Saving setup-wide changes"), so a model starred on one computer shows starred on every computer's
+  picker, from every client. Those that don't run on a computer now are listed too: a client shows
+  only those in `models`, matching one by its id or an alias. `GET kuvo/models/starred` →
+  `{"starred": [{providerID, id}]}`; `POST kuvo/models/starred` with `{providerID, id, starred:
+  true|false}` stars it (at the end, or where it was) or takes its star away, and answers the list
+  now; `400` for anything else sent, `405` for another method. On a member, the box sends the change
+  on to the main computer and answers what it saved; while the main isn't answering, nothing is
+  saved and the answer is a `503` (a `409` where the main couldn't save it) with a `message` to
+  show, as for the time zone. Until the setup has a list, each computer's own stars (kept before in
+  its `box/models.json`) are offered to the main, which joins them, so nobody's stars are lost; a
+  computer in no setup, or one that doesn't save setup-wide values yet, keeps its own there. A box
+  without `models.starred` keeps none: a client shows no stars there. Moving from the earlier Mac
+  app brings its starred models along (its `favoriteModels` preference).
 - `known`: whether the engine's models, and the coding agents' with Custom Auto's lists, could be
   said. One that couldn't (not answering, an engine that hasn't loaded yet, or the bridge not
   running: starting, or started again) has none in `models`, rather than none at all. A client
@@ -8723,6 +8747,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `models.offered.free` | `free` on each model in `kuvo/models/offered` that needs no account ("The models offered", #733) |
 | `models.offered.sides` | `kuvo/models/offered` says each model's `side`, `efforts` and `aliases` ("The models offered") |
 | `models.readiness` | `kuvo/sessions/models` says `refusal`, `choose` and `action`, and the typed send decides a model's refusal itself ("A session's model") |
+| `models.speed` | `speeds` on each model and `speed` on each provider in `kuvo/models/offered`, and `POST kuvo/models/speed`: a provider's speed (Codex's Fast), which its turns run at ("The models offered") |
 | `moves` | `kuvo/moves`, `…/places`, `…/events`: Move to Computer, done by the boxes (bridge 0.9.108) |
 | `moves.agents` | a bot or chat whose conversations are on the coding agents' bridge moves too, with each agent's own conversation and memory (`api/kuvo/carry/…` on the bridge; "kuvo/moves") |
 | `moves.check` | between boxes, `check` before a move holds anything: whether the box it goes to can run it; a move's `note` says what it does differently there ("kuvo/moves") |
@@ -8895,10 +8920,34 @@ used the machine (`run/link.seen`).
 
 ### Windows box primitives (#699)
 
-This is the contract for the native Windows port. A WSL box uses POSIX paths, process records
-and Unix sockets. The box recognizes native Windows as `win32` and WSL as Linux with a
-WSL/Microsoft kernel release or `WSL_DISTRO_NAME`. This is independent of the box's role
-(`kind`). The WSL kernel signal works on stock kernels with Windows interop off.
+A WSL box uses Linux paths, process records and Unix sockets. A stock WSL 2 kernel
+identifies itself through the Linux release (`microsoft-standard` or `WSL2`), even with
+Windows interop off. A distro environment variable alone cannot identify the kernel. Native
+Windows is `win32`. The box's role (`kind`) is independent of both.
+
+- **WSL facts.** `kuvo/info`, `kuvo/computers` and peer computer announcements can include
+  `wsl: { version: 2, distro?, host? }`. The distro comes from the WSL launch, and the host
+  is the Windows computer's hostname. Each field is omitted if unavailable.
+- **Windows SSH.** Add probes the authenticated Windows SSH shell, selects a WSL 2 distro
+  (preferring Ubuntu), and runs Linux installation scripts in it. The bootstrap reads one
+  base64 script line from SSH stdin; remaining stdin bytes go to the script as-is. Later
+  setup and removal use the distro recorded at enrollment. In `kuvo/computers`, an
+  optional `sshDistro` applies to the advertised SSH destinations: call
+  `wsl.exe -d <distro> --cd ~ --exec /bin/sh .kuvo-code/bin/kuvo-start route-to` for
+  paired SSH (or `route` for the OS-account route). The distro is a single ASCII name
+  beginning with a letter or digit and containing only letters, digits, underscores, periods
+  and hyphens (at most 80 characters). Framing, Noise authority, peer mail and the line
+  are unchanged. WSL's private VM addresses aren't Windows SSH destinations.
+- **WSL lifetime.** A hidden interactive Windows task under the installing user's account
+  holds the Linux keeper in the foreground at sign-in. Initial startup waits for SSH
+  enrollment to release the account. Uninstall removes this installation's task
+  (`starts.windowsTask` in the uninstall check); an approved wipe erases Kuvo's Linux
+  folder. Release selection and rollback use the Linux filesystem and existing signed fleet
+  update protocol. A Windows system power request is held while work runs or a wake is due
+  soon, and released when idle.
+- **Windows drive projects.** Changes polls repositories on Windows mounts and suppresses
+  working-tree mode-bit differences on those mounts. Projects in the distro can use its
+  native filesystem watches.
 
 - **Paths.** On native Windows a box sends file and folder paths with forward slashes, including
   the drive letter or UNC share (`C:/Users/Ada/Project`, `//Server/Share/Project`). A client
@@ -11649,9 +11698,10 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   (Full Access too).
 - `GET kuvo/sessions/<id>/approval`: `{approval, effective, stored, held?, plan, options}`: what
   you picked, what it comes to here now (`held` `{reason, why}`, the last step down, when that's
-  less), whether it's in Plan mode, and each one (`options`: `{approval, held?, unavailable?}`):
-  `held` where it can be picked and asks first for now (Auto without the sandbox), `unavailable`
-  where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `windows` (Auto unavailable on Windows), `fullAccessOff`
+  less), whether it's in Plan mode, and each one (`options`: `{approval, title?, detail?, held?,
+  unavailable?}`): `title` its name and `detail` one line on what it does, as every client shows
+  them (#975; a box before has neither, and a client words them itself), `held` where it can be
+  picked and asks first for now (Auto without the sandbox), `unavailable` where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `windows` (Auto unavailable on Windows), `fullAccessOff`
   (and `bot` from a box before 0.9.188). Only a read: its rules come to what it shows within the box's round. 404 `{message}` for a
   conversation that isn't here, 503 with no engine or bridge. A coding agent's subagent (#950) asks
   in the conversation that started it, so it runs with that one's approval: it answers that one's,

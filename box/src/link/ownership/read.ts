@@ -35,7 +35,7 @@ import { DATA_ID, mayActivate, ownerOf, type DataReference, type Owner } from ".
 import { keepRecord, readRecord, recordKey, ownershipReady } from "./store";
 
 const MAX_READ = 512 * 1024;
-const primaryReads = ["setupNames", "setupTimeZone", "setupPersonalities", "setupUsageDisplay", "queueLabels"] as const;
+const primaryReads = ["setupNames", "setupTimeZone", "setupStarredModels", "setupPersonalities", "setupUsageDisplay", "queueLabels"] as const;
 type PrimaryRead = typeof primaryReads[number];
 const isPrimaryRead = (kind: DataKind): kind is PrimaryRead => (primaryReads as readonly DataKind[]).includes(kind);
 

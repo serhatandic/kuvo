@@ -317,6 +317,9 @@ import { readHandOver } from "./compat/helper-handover";
 import { readMachineJob } from "../shared/machine-job";
 import { fleetWith } from "./updates/fleet";
 import { keepFleetUpdates } from "./updates/keep";
+import { installedWslTask, keepWindowsAwake, startWslTask } from "./windows";
+import { commandsWorking } from "./run-command";
+import { nextWake } from "./areas/wakes";
 export { readReach } from "./peers/reach";
 export { peerPlaces } from "./engine/client";
 export { answerPersonalities, retellBots, takePersonalities, takePersonalitiesDocument } from "./personalities/take";
@@ -427,10 +430,12 @@ async function run(owner?: ClientOwner): Promise<void> {
   if (old === null) return;
   if (resident) keepEngineOnDemand();
   const stopServices = resident ? keepResidentServices() : undefined;
+  let stopWindowsAwake: (() => void) | undefined;
   let leaving = false;
   const cleanUp = async (reason: string) => {
     if (leaving) return;
     leaving = true;
+    stopWindowsAwake?.();
     report("link stopping", { reason });
     if (owner) {
       await owner.drain();
@@ -529,7 +534,14 @@ async function run(owner?: ClientOwner): Promise<void> {
   // Its engine and the coding agents here (their sessions, and group chats that live here),
   // through their bridge: each notice kept as told too, for clients to show (`kuvo/notices`).
   watchBox({ tell: notice => { keepTold(notice); return tell(notice); }, hold });
-  if (resident) sendWakes();
+  if (resident) {
+    sendWakes();
+    stopWindowsAwake = keepWindowsAwake(async () => {
+      const due = nextWake();
+      return commandsWorking() || (due !== null && Math.abs(due - Date.now() / 1000) <= 120)
+        || await agentsWorking() === true;
+    });
+  }
   // And what its agents send you on purpose (notify_user), whichever process answered them.
   watchSentByAgents(tell);
   // (So its clients know it tells them: a bridge from before didn't.)
@@ -808,6 +820,11 @@ async function box(command: string, [flag, internalPath]: string[], useSshPipe: 
   };
   const say = (value: unknown): void => console.log(JSON.stringify(value));
   switch (command) {
+    case "wsl-startup":
+      try { if (startWslTask(flag)) return; } catch (error) { console.error(String(error)); }
+      console.error("Kuvo Code couldn’t set up Windows sign-in startup. Sign in to Windows, check that WSL interop is enabled, then try again.");
+      process.exitCode = 1;
+      return;
     case "tool-command-worker":
       return (await import("./tool-command")).toolCommandWorker(flag, input);
     case "backups": {
@@ -1612,7 +1629,7 @@ async function setup(): Promise<void> {
   // new one once it's done.
   if (!isUpdating()) {
     if (running && restart) process.kill(running, "SIGTERM");
-    if (!running || restart) startBridge();
+    if ((!running || restart) && !installedWslTask()) startBridge();
   }
   console.log(JSON.stringify({
     address: addressOf(Buffer.from(link.secret!, "base64url")).toString("base64url"),

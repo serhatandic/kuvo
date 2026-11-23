@@ -153,6 +153,8 @@ const FIRST: usize = 6;
 
 pub struct MarketplaceView {
     client: BoxClient,
+    /// The agent sheet's model picker, open or not.
+    model_menu: kuvo_ui::menu::PopoverMenuHandle,
     visible: bool,
     section: Section,
     category: Option<String>,
@@ -197,6 +199,7 @@ impl MarketplaceView {
         .detach();
         Self {
             client,
+            model_menu: Default::default(),
             visible: false,
             section: Section::Apps,
             category: None,
@@ -703,6 +706,54 @@ impl MarketplaceView {
         );
     }
 
+    /// The one model picker (#975) for the agent's sheet: its computer's models, the one picked
+    /// marked; a pick is the agent's model.
+    fn agent_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<crate::model_picker::ModelPicker>> {
+        let Some(Sheet::Agent(sheet)) = &self.sheet else { return None };
+        let Reading::Ready(options) = &sheet.options else { return None };
+        let (offered, current, client) = (options.offered.clone(), sheet.model.clone(), self.client.clone());
+        let (view, kept) = (cx.entity().downgrade(), cx.entity().downgrade());
+        let catalog = Arc::new(crate::model_picker::Catalog::new(&offered, |_| true));
+        Some(cx.new(|cx| {
+            crate::model_picker::ModelPicker::new(
+                catalog,
+                offered.starred.clone(),
+                current,
+                Some(client),
+                Rc::new(move |picked, _, cx| {
+                    let Some(picked) = picked else { return };
+                    view.update(cx, |this, cx| {
+                        if let Some(Sheet::Agent(sheet)) = &mut this.sheet {
+                            sheet.model = Some(picked);
+                            cx.notify();
+                        }
+                    })
+                    .ok();
+                }),
+                window,
+                cx,
+            )
+            .on_starred(Rc::new(move |starred, cx| {
+                kept.update(cx, |this, _| {
+                    if let Some(Sheet::Agent(sheet)) = &mut this.sheet
+                        && let Reading::Ready(options) = &mut sheet.options
+                    {
+                        options.offered.starred = Some(starred);
+                    }
+                })
+                .ok();
+            }))
+        }))
+    }
+
+    /// Opens the agent's model picker, as a click on its model does (shots).
+    pub fn open_agent_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = self.agent_model_picker(window, cx) {
+            self.model_menu.open(picker, window, cx);
+            cx.notify();
+        }
+    }
+
     fn add_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Sheet::Agent(sheet)) = &self.sheet else { return };
         let (Reading::Ready(details), Some(computer), Some(model)) = (&sheet.details, &sheet.computer, &sheet.model) else { return };
@@ -961,7 +1012,9 @@ impl MarketplaceView {
             .when(!picks.is_empty(), |d| {
                 d.child(div().h(px(1.)).mx(space::S2).my(space::S2).bg(c.border))
                     .child(div().px(px(8.)).pb(space::S1).text_role(TextRole::Meta).text_color(c.text_faint).child("Categories"))
-                    .child(div().id("market-categories").flex_1().min_h_0().overflow_y_scroll().flex().flex_col().gap(px(2.)).children(picks))
+                    // (Room round the rows inside the scroll, so the picked one's edge and shadow aren't
+                    // cut by it; the rows stay lined up with those above.)
+                    .child(div().id("market-categories").debug_selector(|| "market-categories".into()).flex_1().min_h_0().overflow_y_scroll().mx(px(-4.)).px(px(4.)).mt(px(-2.)).pt(px(2.)).pb(px(4.)).flex().flex_col().gap(px(2.)).children(picks))
             })
             .into_any_element()
     }
@@ -1746,37 +1799,19 @@ impl MarketplaceView {
             Err(None) => body.push(self.waiting("Loading…", cx)),
             Ok(options) => {
                 let offered = options.offered.clone();
-                let suggested = offered.starting.clone().flatten();
-                let picked = model.as_ref().and_then(|model| offered.models.iter().find(|each| each.is(model))).map(|each| format!("{} · {}", offered.provider_name(&each.provider_id), each.name)).unwrap_or_default();
+                // The one model picker (#975): the agent's model, as anywhere a model's picked.
+                let shown = model.as_ref().and_then(|model| offered.models.iter().find(|each| each.is(model)));
+                let picked = shown.map(|each| each.name.clone()).unwrap_or_default();
+                let mark = shown.and_then(|each| {
+                    let (_, path) = kuvo_ui::icon::provider_mark(&each.provider_id)?;
+                    Some(kuvo_ui::icon::Mark::new(path).icon_size(IconSize::Nav).color(kuvo_ui::icon::provider_mark_color(&each.provider_id).unwrap_or(c.icon)).into_any_element())
+                });
+                let leading = mark.unwrap_or_else(|| Icon::new(IconName::Sparkle).size(IconSize::Nav).color(c.icon).into_any_element());
                 let view = cx.entity().downgrade();
-                let model_menu = PopoverMenu::new(
-                    "market-model-menu",
-                    picker("market-model", Some(Icon::new(IconName::Sparkle).size(IconSize::Nav).color(c.icon).into_any_element()), picked, None, cx),
-                    move |_, cx| {
-                        let (view, offered, suggested, current) = (view.clone(), offered.clone(), suggested.clone(), model.clone());
-                        cx.new(|cx| {
-                            let mut menu = Menu::new(cx).width(px(340.));
-                            for each in offered.models.iter().filter(|each| each.is_offered()) {
-                                let reference = each.reference();
-                                let mut entry = MenuEntry::new(format!("{} · {}", offered.provider_name(&each.provider_id), each.name)).checked(current.as_ref().is_some_and(|model| each.is(model)));
-                                if suggested.as_ref().is_some_and(|model| each.is(model)) {
-                                    entry = entry.detail("Suggested");
-                                }
-                                let view = view.clone();
-                                menu = menu.entry(entry.on_select(move |_, cx| {
-                                    view.update(cx, |this, cx| {
-                                        if let Some(Sheet::Agent(sheet)) = &mut this.sheet {
-                                            sheet.model = Some(reference.clone());
-                                            cx.notify();
-                                        }
-                                    })
-                                    .ok();
-                                }));
-                            }
-                            menu
-                        })
-                    },
-                )
+                let model_menu = PopoverMenu::view("market-model-menu", picker("market-model", Some(leading), picked, None, cx), move |window, cx| {
+                    view.update(cx, |this, cx| this.agent_model_picker(window, cx)).ok().flatten().expect("an agent's sheet with its models opens its picker")
+                })
+                .with_handle(self.model_menu.clone())
                 .fill();
                 body.push(div().flex().flex_col().gap(space::S1).child(self.label(labels.model.clone().unwrap_or_default(), cx)).child(model_menu).into_any_element());
                 // Needed apps: connected, or what's still to do.

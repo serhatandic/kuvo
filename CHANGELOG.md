@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - A conversation on another computer that's restarting, updating or off now shows its last messages, readable and scrollable, with one quiet line under it ("mini-local isn't answering · seen 5m", or "is updating"), instead of an empty page saying "It may be asleep or offline." or "Kuvo is restarting." You can still write: messages wait and go once it's back, and the conversation catches up by itself.
 - While a computer switches to a new Kuvo release, its bots and sessions keep their usual look, saying "Updating…", instead of turning grey. A computer that's quiet for under a minute is shown as live; "seen …" is only for one that's really off.
+- Add a Windows PC running Ubuntu on WSL 2 as one of your computers. Kuvo starts at Windows sign-in and shows edits to projects on Windows drives in Changes.
 
 - The Work Queue’s Deleted list includes items kept on your other computers.
 
@@ -17,6 +18,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Conversation links open sessions on the computer they run on, with their live replies, queue and asks.
 - Editing or deleting a bot that’s gone tells you the bot is no longer there.
 
+- **+2** under the usage rings, where the rail hasn't room for them all, shows the other rings beside it, each opening its card as the rail's do, instead of pointing to Insights.
+- In Marketplace, the picked category ("All") shows its whole edge, no longer cut at its sides.
+- A Work Queue item's chip written in parentheses, like "(#975)", no longer shows the parentheses around it.
+- The new-session background stays inside the main view instead of showing a strip of dots over the sidebar's edge.
+- With a bot on another of your computers open, the title bar names the bot instead of saying "Bots".
 - Weekly and monthly usage cards keep enough readings to say whether a limit will last until it resets, even when usage is read frequently or the box restarts.
 
 - The Sessions sidebar picks up your other computers' sessions when the box reconnects after starting or updating.
@@ -30,6 +36,12 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The update in the title bar only moves forward: each computer is grey while it gets ready (with how far, where Kuvo knows), blue once it's ready and while it switches, and green only once it's up to date. Its title says where the update is, a computer that's off says when it was last seen, and it stays for ten minutes after your computers finish, saying so.
 - A conversation's Activity shows its context bar from 0, and you can pick where conversations are summarized right under it: 200k, 400k, 600k or Never, the same setting as Settings › Conversations on that computer.
 - Signing in to a coding agent is one short sheet for every agent: where its sign-in ends on a code to paste back, the field is there at once, ready to paste into; where it finishes by itself, it just waits. Open the Page Again is there if the page didn't open, and × closes it.
+- One model picker everywhere: the composer, side chat, New Bot and a bot's settings, Marketplace › Add Agent and Settings › Models. Your favourites (★) and each provider sit down the left, the provider's models in the middle with "Search models…" across every provider, ⌘1…⌘9, ☆ to add one to your favourites and "Show more", and the model's reasoning levels on the right.
+- The composer has one chip for the model and its effort ("Opus 5.5 High"). Permissions moved into the picker, along its bottom: Ask First, Accept Edits, Auto or Full Access, each with a line on what it does. In a tight window the chip shortens instead of pushing Send out of the composer.
+- Codex models with a fast mode show Standard | Fast at the bottom of the picker. The choice is kept on that computer for that Codex account, as Codex's own `/fast` does.
+- Your favourite models are the same on every computer in your setup.
+- Marketplace › Add Agent picks its model in the same picker, instead of a long list.
+
 - Opening or closing live lists such as Bots no longer holds up other requests when filesystem watches are slow.
 - Runs on lists this computer's models at once after Kuvo restarts, as they last were, instead of waiting for them to be read again.
 - The Library shows your other computers' items at once, and keeps showing them while a computer is away or not answering, as they were when it was last seen.

@@ -490,7 +490,7 @@ impl BotsView {
                                 window,
                                 cx,
                             )
-                            .on_effort((!is_new).then(|| on_effort.clone()))
+                            .reasoning((!is_new).then(|| on_effort.clone()), true)
                             .refresh_when_opened(Some(offered), crate::model_picker::RefreshModels::Offered { folder: None, session: None, side: None }, window, cx)
                             .on_starred(Rc::new(move |starred, cx| {
                                 kept.update(cx, |this, _| this.keep_starred(starred)).ok();

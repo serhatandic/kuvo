@@ -11,7 +11,7 @@ import { isObject, parsed } from "../../shared/json";
 import { BOX } from "../home";
 import { bridgeTarget, engineGet, readEngineFile } from "../engine/client";
 import { rewriteOn } from "../engine/notes";
-import { allowFullAccess, allowOtherComputers, APPROVALS, approvalOf, approvalRules, approvalsSince, defaultApproval, effectiveApproval, fullAccessAllowed, heldOf, isApproval, madeBefore, otherComputersAllowed, rememberApproval, unavailable } from "../work/approval";
+import { allowFullAccess, allowOtherComputers, APPROVALS, APPROVAL_WORDS, approvalOf, approvalRules, approvalsSince, defaultApproval, effectiveApproval, fullAccessAllowed, heldOf, isApproval, madeBefore, otherComputersAllowed, rememberApproval, unavailable } from "../work/approval";
 import { resumeReviewedSession } from "../work/goals";
 import { heldMark, nothingCountsOnIt } from "../fence/state";
 import { sandboxOn } from "../work/sandbox";
@@ -68,7 +68,7 @@ function shown(at: Found): SessionApproval {
     plan: at.data.agent === "plan",
     options: APPROVALS.map(each => {
       const not = unavailable(each, where);
-      return { approval: each, ...(not ? (not.reason === "sandbox" ? { held: not } : { unavailable: not }) : {}) };
+      return { approval: each, ...APPROVAL_WORDS[each], ...(not ? (not.reason === "sandbox" ? { held: not } : { unavailable: not }) : {}) };
     }),
   };
 }
@@ -215,7 +215,7 @@ export function approvalHere(): ApprovalHere {
   // conversation's own `options` say them (#764: no client works out what can be had here).
   const options = (agents: boolean) => APPROVALS.map(each => {
     const not = unavailable(each, { agents });
-    return { approval: each, ...(not ? (not.reason === "sandbox" ? { held: not } : { unavailable: not }) : {}) };
+    return { approval: each, ...APPROVAL_WORDS[each], ...(not ? (not.reason === "sandbox" ? { held: not } : { unavailable: not }) : {}) };
   });
   return { fullAccess: fullAccessAllowed(), default: defaultApproval(), auto: { engine: auto(false), agents: auto(true) }, options: { engine: options(false), agents: options(true) }, otherComputers: otherComputersAllowed() };
 }

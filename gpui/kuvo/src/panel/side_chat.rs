@@ -146,6 +146,16 @@ impl SideChatView {
         let starred = self.offered.as_ref().and_then(|offered| offered.starred.clone());
         let this = cx.entity().downgrade();
         let (current, client, before, session) = (self.model(), self.client.clone(), self.offered.clone(), self.session.clone());
+        let picking = cx.entity().downgrade();
+        let on_effort: crate::model_picker::OnEffort = Rc::new(move |effort, _, cx| {
+            picking
+                .update(cx, |this, cx| {
+                    if let Some(model) = this.model() {
+                        this.pick(ModelRef { variant: effort, ..model }, cx);
+                    }
+                })
+                .ok();
+        });
         cx.new(|cx| {
             ModelPicker::new(
                 catalog,
@@ -161,6 +171,8 @@ impl SideChatView {
                 cx,
             )
             .refresh_when_opened(before, RefreshModels::Offered { folder: None, session: Some(session), side: None }, window, cx)
+            .reasoning(Some(on_effort), false)
+            .with_speed()
             .note(Some("A side question is answered on the model picked here. The conversation stays on its own.".into()))
         })
     }
@@ -367,15 +379,18 @@ impl SideChatView {
     }
 
     /// The conversation's own composer, as it draws it (its card, attachments, field, paperclip,
-    /// model and effort chips and Send), with what a side question takes; no mode, since it runs
+    /// model chip and Send), with what a side question takes; no permissions, since it runs
     /// nothing. Its bottom lines up with the conversation's.
     fn composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let written = !self.field.read(cx).text().trim().is_empty();
         let strip = crate::composer::attachment_strip(&self.attached, &self.client, self.field.focus_handle(cx), |this: &mut SideChatView, at, cx| this.detach(at, cx), cx);
         let held = self.client.gate().is_held();
-        let model = self.chip_label().map(|name| div().debug_selector(|| "side-chat-model".into()).child(crate::composer::model_chip(name, held, &self.model_menu, |this: &mut SideChatView, window, cx| this.model_picker(window, cx), cx)));
-        let efforts = self.efforts();
-        let effort = self.model().filter(|_| !efforts.is_empty()).map(|model| div().debug_selector(|| "side-chat-effort".into()).child(crate::composer::effort_chip(model, efforts, held, |this: &mut SideChatView, picked, cx| this.pick(picked, cx), cx)));
+        let model = self.chip_label().map(|name| {
+            let efforts = self.efforts();
+            let model = self.model();
+            let words = crate::model_picker::ChipWords { provider: model.as_ref().map(|model| model.provider_id.clone()), effort: model.and_then(|model| model.variant).filter(|_| !efforts.is_empty()).map(|effort| kuvo_box::models::effort_title(&effort)), name, holding: None };
+            div().debug_selector(|| "side-chat-model".into()).flex().min_w_0().child(crate::model_picker::model_chip(words, held, &self.model_menu, |this: &mut SideChatView, window, cx| this.model_picker(window, cx), cx))
+        });
         div()
             .flex_none()
             .px(space::S4)
@@ -390,7 +405,6 @@ impl SideChatView {
                         crate::composer::controls()
                             .child(div().debug_selector(|| "side-chat-attach".into()).child(crate::composer::attach_button().on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))))
                             .children(model)
-                            .children(effort)
                             .child(div().flex_1())
                             .child(
                             Button::icon_only("side-chat-send", IconName::ArrowUp, if written { "Ask" } else { "Type to ask" })

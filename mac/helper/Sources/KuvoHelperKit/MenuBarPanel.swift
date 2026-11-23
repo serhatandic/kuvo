@@ -32,7 +32,7 @@ public enum ServiceMark {
 /// Kuvo's mark in the menu bar: the app icon's artwork made one colour, with thin gaps where its
 /// shapes meet (the user's pick, 11-16), as a template, so macOS draws it as it draws its own icons
 /// (light or dark menu bar, selected or not). Its bytes are mac/helper/Assets/kuvo-mark.png's
-/// (made by .claude/notes/761-drafts/logo.swift; a test holds them to the file), carried in the
+/// (a test holds them to the file), carried in the
 /// program as the helper's bundle has no resources of its own.
 public enum MenuBarMark {
     /// The PNG, 54 px square: 18 points at 3x.

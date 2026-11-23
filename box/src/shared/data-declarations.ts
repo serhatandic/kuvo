@@ -1,5 +1,5 @@
 // Policy for durable and transient Box data (#848, rules 28–50 and 55).
-// Family names refer to "Stored formats" in .claude/notes/848-U-versions-inventory.md.
+// Family names refer to "Stored formats" in docs/architecture/stored-formats.md.
 // An inventory family can contain several kinds with different policies. The owner is the
 // authority for a record, regardless of where a replica, journal or imported copy lives.
 import { OWNER, YOURS } from "./work-queue-owner";
@@ -168,6 +168,9 @@ export const DATA_DECLARATIONS = {
   marketplaceInstallations: { shared: { publish: true }, owner: "primary", conflict: "owner order", backup: true, backupVia: "accepted setup", restore: "portable", families: ["Signed documents"] },
   setupPersonalities: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["bots/personalities.json"], families: ["Personalities", "Signed documents"] },
   setupTimeZone: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["home/time-zone.json"], families: ["Time zone"] },
+  // Your starred models (the picker's Favourites). Before the setup's value exists, each box's own
+  // `box/models.json` list (modelsAndReusableTools) is its copy to seed it from.
+  setupStarredModels: { backupVia: "accepted setup", shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", families: ["Computer settings and local tools"] },
   setupUsageDisplay: { shared: { seed: "member copies", publish: true, localSave: "usage" }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["agents/usage/settings.json"], families: ["Usage settings"] },
   localSettingsAndPermissions: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/box/settings.json", "home/box/settings-flows.json", "home/box/work.json", "home/box/auto.json", "home/box/approval.json", "home/box/commands.json", { pattern: "home/box/permissions.json", restore: "needs fresh approval" }, { pattern: "home/box/permissions-later.json", restore: "needs fresh approval" }], families: ["Computer settings and local tools", "Local fences and audit"] },
   modelsAndReusableTools: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/box/models.json", "home/box/model-names.json", "home/box/kuvo-models.json"], families: ["Computer settings and local tools", "Engine/plugin/MCP configuration"] },

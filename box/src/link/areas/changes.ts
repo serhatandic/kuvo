@@ -1,3 +1,4 @@
+import { isWsl2, windowsDrive } from "../../shared/wsl";
 // A project's changes on this box, as the Changes panel shows and works them (PROTOCOL.md,
 // "Changes"): what git says changed, staging, unstaging and discarding a file, a file as git keeps
 // it (a picture's old side), committing and pushing, bringing a branch's work back (Merge into…,
@@ -46,7 +47,8 @@ interface Ran {
  * a push, a merge), with your login shell's environment as it is now (`askedEnv`).
  */
 async function git(folder: string, given: string[], changing: boolean | "yours" = false, more: Record<string, string> = {}, program = "git", timeout = 600_000): Promise<Ran> {
-  const args = program !== "git" ? given : changing ? await askedArgsLater(given, folder) : await ownArgsLater(given, folder);
+  const command = program === "git" && windowsDrive(folder) ? ["-c", "core.filemode=false", ...given] : given;
+  const args = program !== "git" ? command : changing ? await askedArgsLater(command, folder) : await ownArgsLater(command, folder);
   if (!args) return { ok: false, out: Buffer.alloc(0), said: "This repository’s own settings name a program Kuvo Code won’t run for it, or lead git to another repository’s." };
   // Without what only the box's own process should have (Bun's own variables, which would start
   // a hook's `bun build --compile` tool as plain Bun; Kuvo Code's).
@@ -1092,16 +1094,15 @@ export async function* changesRoute(context: RouteContext): AsyncGenerator<Answe
     }
     // Followed: now, and again as it changes. git is asked again within a second of the repository's
     // index or HEAD changing (staged, committed, switched); for the folder's files (an agent's
-    // edits), on a Mac as the system says they change (its watch of a whole tree is cheap), and on
-    // Linux every 10 seconds (a watch there takes one of the system's watches for each folder, which
-    // an install's thousands would use up). When git can't say, what it said last stands.
+    // edits), use filesystem events on macOS and inside a WSL distro. Linux machines and Windows
+    // drives use the polling path. When git can't say, what it said last stands.
     const gitDir = (await text(directory, ["rev-parse", "--absolute-git-dir"]))?.trim();
     // When the last change this follower heard of happened, at the latest: a read shared with
     // another follower must have started after it.
     const clock = changeClock(() => (gitDir ? gitLook(gitDir) : ""));
     const look = clock.look;
     // Never outside a repository (a session in the home folder would watch all of it).
-    const watched = process.platform === "darwin" && !!gitDir;
+    const watched = !!gitDir && (process.platform === "darwin" || (isWsl2() && !windowsDrive(directory)));
     // Reads spaced by how long the last took (an install's or a build's changes come by the
     // thousand), and shared by every client following the same folder.
     let next = 0;

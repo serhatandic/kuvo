@@ -7,7 +7,7 @@
 //! facts Settings › Updates and the app's menu are drawn from. On macOS that's Sparkle, in the
 //! bundle's `Contents/Frameworks` (`sparkle.rs`); a build without a feed (a `cargo run`, a copy
 //! built without one) doesn't update itself and says so. Another system plugs in its own
-//! `Updater` and keeps the same page (`.claude/notes/759-desktop-app-updates.md`).
+//! `Updater` and keeps the same page.
 
 #[cfg(target_os = "macos")]
 pub mod sparkle;

@@ -17,7 +17,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::model_picker::{Catalog, ModelPicker};
+use crate::model_picker::{Catalog, ModelPicker, approval_icon};
 
 use kuvo_box::approval::{Approval, Here, Picked, Shown};
 use kuvo_box::client::DraftReceiptStatus;
@@ -2359,6 +2359,29 @@ impl Composer {
             _ => (None, None),
         };
         let (before, folder) = (self.models.offered.clone(), self.offered_in());
+        // Reasoning: the model's efforts, where it can be changed here.
+        let reasoning: Option<crate::model_picker::OnEffort> = (self.can_pick() && !self.needs_model()).then(|| {
+            let this = cx.entity().downgrade();
+            Rc::new(move |effort: Option<String>, _: &mut Window, cx: &mut App| {
+                this.update(cx, |this, cx| {
+                    if let Some(model) = this.model() {
+                        this.pick(ModelRef { variant: effort, ..model }, cx);
+                    }
+                })
+                .ok();
+            }) as crate::model_picker::OnEffort
+        });
+        // The permissions: the conversation's mode, as its box shows it (a subagent's is its
+        // conversation's, shown and not changed here).
+        let permissions = self.approval().map(|shown| {
+            let this = cx.entity().downgrade();
+            crate::model_picker::Permissions {
+                shown,
+                pick: Rc::new(move |approval, _, cx| {
+                    this.update(cx, |this, cx| this.pick_approval(approval, cx)).ok();
+                }),
+            }
+        });
         cx.new(|cx| {
             ModelPicker::new(
                 catalog,
@@ -2374,6 +2397,9 @@ impl Composer {
                 cx,
             )
             .refresh_when_opened(before, crate::model_picker::RefreshModels::Offered { folder, session, side }, window, cx)
+            .reasoning(reasoning, false)
+            .with_speed()
+            .permissions(permissions)
             .notice(notice)
             .note(note)
             .on_starred(Rc::new(move |starred: Vec<Starred>, cx| {
@@ -2424,75 +2450,33 @@ impl Composer {
             .into_any_element()
     }
 
+    /// "✲ Opus 5.5 High": the model's provider, name and effort, opening the picker, where its
+    /// permissions and speed are too (#975).
     fn model_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let name = self.chip_label()?;
         if self.model_fixed() {
             return Some(self.said_chip("model-chip", name, None, "This subagent’s agent picks its model.", cx));
         }
-        Some(model_chip(name, self.client.gate().is_held(), &self.model_menu, |this: &mut Composer, window, cx| this.model_picker(window, cx), cx))
+        Some(crate::model_picker::model_chip(self.chip_words(name), self.client.gate().is_held(), &self.model_menu, |this: &mut Composer, window, cx| this.model_picker(window, cx), cx))
     }
 
-    /// "Auto ⌄": how much the agent does on its own, and the menu of the four; a dot while it does
-    /// less than picked for now (Auto without the sandbox), as its box says.
+    /// What the chip says beside the model's name: its provider and effort, and why the
+    /// conversation asks first for now, where it does.
+    pub fn chip_words(&self, name: String) -> crate::model_picker::ChipWords {
+        let model = self.model().filter(|_| !self.needs_model());
+        let effort = model.as_ref().and_then(|model| model.variant.as_deref()).filter(|_| !self.efforts().is_empty()).map(effort_title);
+        let holding = self.approval().filter(|shown| shown.parent.is_none()).and_then(|shown| shown.holding().map(|why| SharedString::from(format!("{} asks first for now. {}", shown.title_of(&shown.approval), why.why))));
+        crate::model_picker::ChipWords { provider: model.map(|model| model.provider_id), name, effort, holding }
+    }
+
+    /// A subagent's mode, said beside its model: it works with its conversation's, changed there.
+    /// (Everyone else's is picked in the model picker's permissions, #975.)
     fn mode_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let shown = self.approval()?;
         if shown.parent.is_some() {
-            return Some(self.said_chip("mode-chip", shown.approval.title().to_owned(), Some(approval_icon(&shown.approval)), "A subagent works with the approval of the conversation that started it. Change it there.", cx));
+            return Some(self.said_chip("mode-chip", shown.title_of(&shown.approval).to_owned(), Some(approval_icon(&shown.approval)), "A subagent works with the approval of the conversation that started it. Change it there.", cx));
         }
-        let c = cx.theme().colors.clone();
-        let holding = shown.holding().cloned();
-        let tip: SharedString = match &holding {
-            Some(why) => format!("{} asks first for now. {}", shown.approval.title(), why.why).into(),
-            None => format!("{}: {}", shown.approval.title(), lowercased_first(shown.approval.detail())).into(),
-        };
-        let trigger = div()
-            .debug_selector(|| "mode-chip".into())
-            .relative()
-            .child(
-                Button::new("mode-chip", shown.approval.title().to_owned())
-                    .disabled(self.client.gate().is_held())
-                    .ghost()
-                    .size(ButtonSize::Small)
-                    .icon(approval_icon(&shown.approval))
-                    .tooltip(tip),
-            )
-            .children(holding.is_some().then(|| div().absolute().top(px(5.)).right(px(5.)).size(px(6.)).rounded_full().bg(c.warning)));
-        let this = cx.entity().downgrade();
-        Some(
-            PopoverMenu::new("mode-menu", trigger, move |_, cx| {
-                let (shown, this) = (shown.clone(), this.clone());
-                cx.new(|cx| {
-                    let mut menu = Menu::new(cx).width(px(280.));
-                    for approval in Approval::ALL {
-                        let choice = shown.choice(&approval);
-                        // Not to be had here, as its box says (Full Access unconfirmed still can: it asks first).
-                        let refused = choice.and_then(|choice| choice.unavailable.as_ref()).filter(|why| why.reason != "fullAccessOff");
-                        let held = if approval == shown.approval { shown.holding() } else { choice.and_then(|choice| choice.held.as_ref()) };
-                        let detail = match (refused, held) {
-                            (Some(why), _) => why.why.clone(),
-                            (None, Some(why)) => format!("Asks first for now. {}", why.why),
-                            (None, None) => approval.detail().to_owned(),
-                        };
-                        let this = this.clone();
-                        let picked = approval.clone();
-                        menu = menu.entry(
-                            MenuEntry::new(approval.title().to_owned())
-                                .icon(approval_icon(&approval))
-                                .detail(detail)
-                                .checked(approval == shown.approval)
-                                .disabled(refused.is_some())
-                                .on_select(move |_, cx| {
-                                    this.update(cx, |this, cx| this.pick_approval(picked.clone(), cx)).ok();
-                                }),
-                        );
-                    }
-                    menu
-                })
-            })
-            .above()
-            .centered()
-            .into_any_element(),
-        )
+        None
     }
 
     /// "Local ⌄" or "Worktree ⌄", for a new conversation in a project: whether it works in the
@@ -2563,15 +2547,6 @@ impl Composer {
                 .into_any_element(),
         )
     }
-
-    fn effort_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let model = self.model()?;
-        let efforts = self.efforts();
-        if efforts.is_empty() || self.needs_model() || !self.can_pick() || self.model_fixed() {
-            return None;
-        }
-        Some(effort_chip(model, efforts, self.client.gate().is_held(), |this: &mut Composer, picked, cx| this.pick(picked, cx), cx))
-    }
 }
 
 /// A project's folder on the computer it's on: another computer's project is keyed in the lists by
@@ -2580,47 +2555,9 @@ fn there(project: &str) -> &str {
     kuvo_box::sessions::project_elsewhere(project).map_or(project, |(_, directory)| directory)
 }
 
-/// The model chip: the model's name, opening `picker` (`ModelPicker`) above it.
-pub fn model_chip<V: 'static>(name: String, disabled: bool, handle: &PopoverMenuHandle, picker: impl Fn(&mut V, &mut Window, &mut Context<V>) -> Entity<ModelPicker> + 'static, cx: &mut Context<V>) -> AnyElement {
-    let trigger = div().debug_selector(|| "model-chip".into()).child(Button::new("model-chip", name.clone()).disabled(disabled).ghost().size(ButtonSize::Small).tooltip(name).tooltip_keys("⇧⌘M"));
-    let this = cx.entity().downgrade();
-    PopoverMenu::view("model-menu", trigger, move |window, cx| this.update(cx, |this, cx| picker(this, window, cx)).expect("its view opens its picker"))
-        .with_handle(handle.clone())
-        .above()
-        .centered()
-        .into_any_element()
-}
-
 /// The paperclip: the system's file picker, for files to attach.
 pub fn attach_button() -> Button {
     Button::icon_only("attach", IconName::Paperclip, "Attach Files").ghost().size(ButtonSize::Small)
-}
-
-/// "High ⌄": the effort picked beside a model, and the menu of the efforts that model offers
-/// (`pick` takes the model with the one picked).
-pub fn effort_chip<V: 'static>(model: ModelRef, efforts: Vec<String>, disabled: bool, pick: impl Fn(&mut V, ModelRef, &mut Context<V>) + Clone + 'static, cx: &mut Context<V>) -> AnyElement {
-    let label = model.variant.as_deref().map(effort_title).unwrap_or_else(|| "Default".into());
-    let this = cx.entity().downgrade();
-    // (Its own pick beside the model's, of only the efforts that model offers.)
-    let trigger = div().debug_selector(|| "effort-chip".into()).child(Button::new("effort-chip", label).disabled(disabled).ghost().size(ButtonSize::Small).tooltip("Effort: how hard it thinks before it answers"));
-    PopoverMenu::new("effort-menu", trigger, move |_, cx| {
-        let (efforts, model, this, pick) = (efforts.clone(), model.clone(), this.clone(), pick.clone());
-        cx.new(|cx| {
-            let mut menu = Menu::new(cx).width(px(180.)).header("Effort");
-            for effort in efforts {
-                let checked = model.variant.as_deref() == Some(effort.as_str());
-                let picked = ModelRef { variant: Some(effort.clone()), ..model.clone() };
-                let (this, pick) = (this.clone(), pick.clone());
-                menu = menu.entry(MenuEntry::new(effort_title(&effort)).checked(checked).on_select(move |_, cx| {
-                    this.update(cx, |this, cx| pick(this, picked.clone(), cx)).ok();
-                }));
-            }
-            menu
-        })
-    })
-    .above()
-    .centered()
-    .into_any_element()
 }
 
 /// What's attached, above a composer's field: pictures as thumbnails (clicking opens the Stage
@@ -2721,20 +2658,6 @@ pub fn attachment_strip<V: 'static>(attached: &[PathBuf], client: &BoxClient, re
 
 
 /// A mode's icon, as the Mac's menu shows it (a hand, a pencil, a shield, a bolt).
-fn approval_icon(approval: &Approval) -> IconName {
-    match approval {
-        Approval::AskFirst => IconName::Hand,
-        Approval::AcceptEdits => IconName::Pencil,
-        Approval::FullAccess => IconName::Bolt,
-        Approval::Auto | Approval::Other(_) => IconName::Shield,
-    }
-}
-
-fn lowercased_first(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map(|first| first.to_lowercase().collect::<String>() + chars.as_str()).unwrap_or_default()
-}
-
 /// What a read says of a conversation's model.
 enum Said {
     Is(Box<ModelState>),
@@ -2915,7 +2838,7 @@ pub fn field_room(field: impl IntoElement) -> gpui::Div {
 
 /// The row of its controls under the field, Send at the end.
 pub fn controls() -> gpui::Div {
-    div().flex().items_center().gap(space::S1).ml(-space::S2)
+    div().flex().items_center().gap(space::S1).ml(-space::S2).min_w_0()
 }
 
 impl Render for Composer {
@@ -2992,9 +2915,8 @@ impl Render for Composer {
                 controls()
                     .when(!group, |d| d.child(attach_button().on_click(cx.listener(|this, _, _, cx| this.pick_files(cx)))))
                     .when(group, |d| d.children(self.member_faces(cx)))
-                    .children(self.mode_chip(cx))
                     .children(self.model_chip(cx))
-                    .children(self.effort_chip(cx))
+                    .children(self.mode_chip(cx))
                     .children(self.runs_on_chip(cx))
                     .children(self.worktree_chip(cx))
                     .child(div().flex_1())

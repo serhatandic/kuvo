@@ -3,7 +3,7 @@
 // generation that fences off the older bridge. What it gives is the agent's pipes, line by line, as
 // a process of the bridge's own would give them (`Held`), for RPC (Codex, ACP) and Claude's SDK.
 //
-// Step 8 of .claude/notes/update-handover.md: built and tested, not yet what any agent is started
+// Built and tested, not yet what any agent is started
 // with (adopting a live turn in a new bridge is still to come). A holder no bridge attaches to
 // stops its agent after a while (program.js), so none is left running for good. A box's holders are in
 // `run/agents/hold` (0700): `<id>.sock`, `<id>.json` (its record, with the key), and the program,

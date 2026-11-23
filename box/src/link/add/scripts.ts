@@ -291,7 +291,7 @@ fi`;
  * once) then `started`, or exit 3 with its
  * engine's last words; 6 when its settings couldn't be made its own; 7 when it was removed
  * meanwhile. `notes`: who started it, as its keeper notes each start (`{…}`, JSON on one line). */
-export const start = (version: string, name: string, notes: string, credentialRecord?: string): string => `${K}; R="$K/run"
+export const start = (version: string, name: string, notes: string, credentialRecord?: string, wslDistro?: string): string => `${K}; R="$K/run"
 mkdir -p "$R" && chmod 700 "$R"
 ${credentialRecord ? rememberFresh(credentialRecord) : ""}
 ${engineOf(version)}
@@ -305,7 +305,7 @@ if [ ! -f "$R/launch.env" ]; then
   (umask 077; { env | grep -E '^(PATH|SHELL|LANG|LC_[A-Z_]+)='; printf '%s\\n' ${quote(`KUVO_MACHINE_NAME=${name}`)} 'OPENCODE_CLIENT=desktop'; } | grep -v '^$' >"$R/launch.env.new" && mv -f "$R/launch.env.new" "$R/launch.env")
 fi
 [ -s "$R/launch.notes" ] || (umask 077; printf '%s' ${quote(notes)} >"$R/launch.notes")
-${START_AT_BOOT}
+${wslDistro ? "" : START_AT_BOOT}
 F="$K/machine-id"
 if [ ! -s "$F" ]; then
   T="$F.$$"
@@ -315,11 +315,11 @@ if [ ! -s "$F" ]; then
 fi
 rm -f "$R/off"
 start_box() {
-  if [ "$(uname -s)" = Darwin ] && [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
+${wslDistro ? `  ${link(`box wsl-startup ${quote(wslDistro)}`)} </dev/null` : `  if [ "$(uname -s)" = Darwin ] && [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
     ${link("helper machine-start")} </dev/null
   else
     sh "$K/bin/kuvo-start" start </dev/null >/dev/null 2>&1
-  fi
+  fi`}
 }
 if start_box; then
   [ -f "$R/off" ] && exit 7

@@ -82,7 +82,7 @@ REMOTE
 printf -v command 'bash -c %q -- %q %q' "$remote" "$NAME" "${FULL:+1}"
 for file in "$@"; do printf -v quoted ' %q' "$file"; command+=$quoted; done
 # The declaration coverage test compares policy families with the checked-in inventory.
-inventory=.claude/notes/848-U-versions-inventory.md
+inventory=docs/architecture/stored-formats.md
 extra=()
 if [[ -f "$inventory" ]]; then extra+=("$inventory"); fi
 COPYFILE_DISABLE=1 tar --no-xattrs -czf - \

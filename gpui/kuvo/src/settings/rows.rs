@@ -31,7 +31,7 @@ const fn listed(id: &'static str, title: &'static str, icon: IconName, group: &'
 }
 
 /// Your settings: this app's own, on this device, kept (`crate::yours`) and drawn by the app.
-/// Adding one: `.claude/notes/yours-settings-pattern.md`.
+/// Adding one: `docs/your-settings-pages.md`.
 pub const YOURS: &[Listed] = &[
     listed("general", "General", IconName::Settings, "", "open files editor code text"),
     listed("appearance", "Appearance", IconName::Sun, "", "theme light dark system auto colours colors text size font bigger smaller larger zoom"),

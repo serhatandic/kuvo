@@ -92,8 +92,10 @@ const REQUIRED_KINDS = [
   "libraryIndex",
   "libraryThumbnails",
 
+  "marketplaceInstallations",
   "setupPersonalities",
   "setupTimeZone",
+  "setupStarredModels",
   "setupUsageDisplay",
   "localSettingsAndPermissions",
   "modelsAndReusableTools",
@@ -122,7 +124,7 @@ test("every required data kind has its own declaration", () => {
 });
 
 test("every stored format in the version inventory has a data declaration", () => {
-  const inventory = readFileSync(new URL("../../.claude/notes/848-U-versions-inventory.md", import.meta.url), "utf8");
+  const inventory = readFileSync(new URL("../../docs/architecture/stored-formats.md", import.meta.url), "utf8");
   const stored = inventory.split("## Stored formats\n")[1]?.split("\n## ")[0] ?? "";
   const families = Array.from(stored.matchAll(/^\| ([^|]+) \|/gm), row => row[1]!)
     .filter(name => name !== "Family" && !/^:?-+:?$/.test(name));
