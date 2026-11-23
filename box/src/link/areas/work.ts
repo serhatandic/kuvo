@@ -1,3 +1,4 @@
+import { PEER_REACH } from "../peers/reach";
 import { askingNow } from "../work/tree";
 // A bot's work, as every client shows it (PROTOCOL.md, "Work"): `GET kuvo/work?bot=<id>`, its
 // sessions and where each stands, the asks it answered for them, what it started today and the
@@ -31,7 +32,7 @@ import { call } from "../engine/client";
 import { readProjects } from "./projects";
 import { BOTS, HERE } from "../home";
 import { backgroundFollowers, readBackground, readSessionBackground, readStopped } from "../work/background";
-import { commandOf, followOutput, outputReader } from "../work/command-output";
+import { bridgeCommand, commandOf, followOutput, outputReader, rememberCommands } from "../work/command-output";
 import { subagentsOf } from "../work/subagents";
 import type { Target } from "../../shared/records";
 import { keptList, LIST_FILE, listFollowers, listNow } from "../lists/sessions";
@@ -189,7 +190,7 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
       return { changed };
     };
     return yield* followed(now, followersOf(workFollowers, listFollowers), signal ?? undefined,
-      { folders: [WORK_FOLDER, ACTIVITY_FOLDER, path.dirname(LIST_FILE)], recursive: false, coalesce: true, beforeWatch: true });
+      { folders: [WORK_FOLDER, ACTIVITY_FOLDER, path.dirname(LIST_FILE), path.dirname(PEER_REACH)], recursive: false, coalesce: true, beforeWatch: true });
   }
   // What still runs for each session besides its turn: a list now, and again as it changes.
   if (route === "kuvo/work/background" || route === "kuvo/work/background/events") {
@@ -206,6 +207,7 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
     const session = decodeURIComponent(match[1]);
     const now = () => {
       const { commands, subagents } = readSessionBackground(session);
+      rememberCommands(session, commands);
       const list = keptList();
       const listed = list?.sessions ?? {};
       const facts = listed[session]?.facts;
@@ -222,7 +224,7 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
     };
     if (!match[2]) return yield* json(200, now());
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(now, followersOf(backgroundFollowers, listFollowers), signal ?? undefined, { folders: [WORK_FOLDER, ACTIVITY_FOLDER, path.dirname(LIST_FILE)], recursive: false, coalesce: true, beforeWatch: true });
+    return yield* followed(now, followersOf(backgroundFollowers, listFollowers), signal ?? undefined, { folders: [WORK_FOLDER, ACTIVITY_FOLDER, path.dirname(LIST_FILE), path.dirname(PEER_REACH)], recursive: false, coalesce: true, beforeWatch: true });
   }
   // What bots just did to their sessions: a list now, and again with each mark.
   if (route === "kuvo/work/oversight" || route === "kuvo/work/oversight/events") {
@@ -261,7 +263,9 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
 export async function* commandOutputRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
-  const command = commandOf(decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
+  const session = decodeURIComponent(match[1]!);
+  const id = decodeURIComponent(match[2]!);
+  const command = commandOf(session, id) ?? await bridgeCommand(session, id, bridge(), signal ?? undefined);
   // (Where it runs found again each time: its engine started again on another port.)
   const places = () => {
     let engine: Target | null = null;

@@ -3449,7 +3449,7 @@ impl Transport for StandIn {
         let route = request.route();
         // A conversation's asks or queue, followed: as it is now, then a line as it changes.
         let parts: Vec<&str> = route.split('/').collect();
-        let output_session = (route == "kuvo/artifacts/events").then(|| query(&request.path, "session").map(decoded)).flatten();
+        let output_session = (route == "kuvo/setup/outputs/events").then(|| query(&request.path, "session").map(decoded)).flatten();
         let followed = match parts.as_slice() {
             ["kuvo", "sessions", session, "asks", "events"] => Some((*session, Followed::Asks)),
             ["kuvo", "sessions", session, "queue", "events"] => Some((*session, Followed::Queue)),

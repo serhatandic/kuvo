@@ -7,6 +7,7 @@ import type { LimitsSource } from "../../usage/limits"
 import { workOrder, type WorkOrder } from "../../shared/work-order"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
+import { open } from "node:fs/promises"
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
@@ -1324,7 +1325,10 @@ class ClaudeThread implements Thread {
         if (task && typeof message.output_file === "string") task.outputFile = message.output_file
         const command = task?.toolUseID ? this.commands.get(task.toolUseID) : undefined
         this.lastEnded = { type: task?.type ?? "", description: task?.description ?? String(message.summary ?? ""), command, status: String(message.status ?? "completed"), summary: message.summary }
-        if (task?.shell) endShell(task.shell, message.status === "completed" ? 0 : undefined)
+        if (task?.shell) {
+          const exit = /exit code (-?\d+)/i.exec(String(message.summary ?? ""))?.[1]
+          endShell(task.shell, exit !== undefined ? Number(exit) : message.status === "completed" ? 0 : undefined)
+        }
         if (this.liveTasks.delete(message.task_id)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
         // A subagent in the background done: its session's work ends. (One picked up again says
         // the call that did, SendMessage's: its own is the one that started it.)
@@ -1382,20 +1386,32 @@ class ClaudeThread implements Thread {
   /** The end of what a command printed: as Claude Code reads it, or from its file once it's gone. */
   private async taskOutput(taskID: string): Promise<{ output: string; total: number }> {
     const task = this.tasks.get(taskID)
+    if (task?.outputFile) {
+      try {
+        const file = await open(task.outputFile, "r")
+        try {
+          const { size } = await file.stat()
+          const bytes = Buffer.alloc(Math.min(size, 64_000))
+          const { bytesRead } = await file.read(bytes, 0, bytes.length, size - bytes.length)
+          if (bytesRead) {
+            task.last = { output: bytes.subarray(0, bytesRead).toString("utf8"), total: size - bytes.length + bytesRead }
+            return task.last
+          }
+        } finally {
+          await file.close()
+        }
+      } catch {}
+    }
     try {
       if (this.query?.getTaskOutput) {
         const read = await this.query.getTaskOutput(taskID)
         const last = { output: String(read?.output ?? ""), total: Number(read?.total_bytes ?? 0) }
-        if (task) task.last = last
-        return last
+        if (last.total > 0 || last.output.length) {
+          if (task) task.last = last
+          return last
+        }
       }
     } catch {}
-    if (task?.outputFile) {
-      try {
-        const bytes = readFileSync(task.outputFile)
-        return { output: bytes.subarray(Math.max(0, bytes.length - 64_000)).toString("utf8"), total: bytes.length }
-      } catch {}
-    }
     return task?.last ?? { output: "", total: 0 }
   }
 

@@ -13,6 +13,13 @@ use crate::paths::segment;
 use crate::transport::Request;
 use crate::follow::{Follow, Followed, follow_lines, follow_lines_filter_map};
 
+/// A member of this setup, as a merged list identifies it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SetupComputer {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NameSaveStatus {
@@ -790,6 +797,8 @@ pub struct ResetLabel {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSnapshot {
+    #[serde(default)]
+    pub pending_computers: Vec<SetupComputer>,
     #[serde(deserialize_with = "readable")]
     pub rows: Vec<Account>,
     /// The rings to draw, in order, as the box lays them out (`rail`); none from a box before cards.
@@ -1046,8 +1055,11 @@ pub struct HereAtWork {
 }
 
 /// How many things wait on you in each area, across the box, as it counts them (`kuvo/waiting`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct Waiting {
+    pub dock: Option<usize>,
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<SetupComputer>,
     #[serde(default)]
     pub sessions: usize,
     #[serde(default)]
@@ -1323,11 +1335,6 @@ impl BoxClient {
     /// Follows the setup's waiting counts as they change.
     pub fn follow_waiting(&self) -> Follow<Followed<Waiting>> {
         follow_lines(self, "kuvo/setup/waiting/counts/events".into())
-    }
-
-    /// This computer's contribution to the system notification badge.
-    pub fn follow_waiting_on_computer(&self) -> Follow<Followed<Waiting>> {
-        follow_lines(self, "kuvo/waiting/events".into())
     }
 }
 

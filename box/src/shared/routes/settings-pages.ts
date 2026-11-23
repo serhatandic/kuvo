@@ -4,6 +4,7 @@
 // client draws a row by its `kind` alone, so a new client draws every setting a box has.
 
 import { any, bool, type Infer, list, literal, map, number, object, oneOf, type RouteShape, string, words } from "../shape";
+import { PENDING_COMPUTERS } from "./list-computers";
 
 /** The kinds of row, each a control every client has. A box newer than a client may send one it
  * doesn't know: the client draws its title and line, and says to update to change it. */
@@ -136,6 +137,9 @@ const ROW_FIELDS = {
   /** A `custom` row's: what only an installed app draws, by name. */
   "name?": string,
   /** How a thing stands, beside its title (a server's "Connected"); never part of its revision. */
+  "computer?": object({ id: string, name: string }),
+  "away?": bool,
+  "lastSeen?": number,
   "badge?": SETTING_BADGE,
   /** One more line under it, set apart (the error a server failed with). */
   "notice?": object({ words: string, tone: words("quiet", "warning") }),
@@ -156,7 +160,7 @@ export const SETTING_GROUP = object({ id: string, "title?": string, "note?": str
 export const SETTING_NOTE = object({ words: string, tone: words("quiet", "warning") });
 
 /** A section's page. */
-export const SETTINGS_PAGE = object({ id: string, title: string, "line?": string, groups: list(SETTING_GROUP), "notes?": list(SETTING_NOTE), "configChanges?": list(string) });
+export const SETTINGS_PAGE = object({ ...PENDING_COMPUTERS, id: string, title: string, "line?": string, groups: list(SETTING_GROUP), "notes?": list(SETTING_NOTE), "configChanges?": list(string) });
 
 /** One of a box's sections, for a sidebar and search: its id, title, the heading it's under, its
  * icon (by name: `shield`, `globe`…, a set every client has), its line, and words it's found by. */

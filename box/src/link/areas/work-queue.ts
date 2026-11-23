@@ -1,3 +1,4 @@
+import { pendingComputers } from "../peers/pending";
 import { backlogDisk } from "../server/disk-worker";
 import { mayActivate } from "../ownership/resolve";
 import { submitterAuthority } from "../ownership/authority";
@@ -28,7 +29,7 @@ import { previewLabelRestore } from "../work-queue/label-preview";
 import { frozen } from "../moves/records";
 import { importItems, importWords } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
-import { changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
+import { QUEUES_FEATURE, changedThere, itemElsewhere, itemsElsewhere, tellQueuesAgain } from "../work-queue/across";
 import { carriedFiles, Refusal, refuseMoving, TooBig } from "../work-queue/ops";
 import { TOLD, type ToldItem } from "../work-queue/told";
 import { readLink } from "../state";
@@ -166,6 +167,7 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
       ...elsewhere.removed.filter(item => found(item) && kept(item)).map(remote),
     ].sort((a, b) => b.removed!.at - a.removed!.at),
     computers: elsewhere.computers,
+    pendingComputers: pendingComputers(QUEUES_FEATURE, key => elsewhere.computers.some(computer => computer.key === key)),
     ...(q ? { q } : {}),
     ...(Object.keys(filters).length ? { filters } : {}),
   };

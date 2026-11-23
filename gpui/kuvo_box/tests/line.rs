@@ -181,6 +181,23 @@ impl Transport for StandIn {
                 } })).into_bytes());
             }
         }
+        for (route, name) in &state.names {
+            let merged = route == "kuvo/setup/outputs/events?session=ses_root";
+            if merged || route == "kuvo/artifacts/events?session=ses_root" {
+                let artifacts = if merged { json!([{
+                    "id": "art_peer", "name": "report.md", "path": "/reports/report.md", "kind": "document",
+                    "type": "text/markdown", "latest": {"n": 1}, "computer": {"id": "mini", "name": "Mac mini"}
+                }]) } else { json!([]) };
+                let _ = live.send(format!("{}\n", json!({ "t": name, "d": { "artifacts": artifacts } })).into_bytes());
+            }
+        }
+        if let Some(name) = state.names.get("kuvo/setup/notices/events") {
+            let _ = live.send(format!("{}\n", json!({ "t": name, "d": {
+                "origins": [{"computer": {"id": "mini", "name": "Mac mini"}, "telling": true, "away": false}],
+                "notices": [{"id": "notice_1", "at": 15, "computer": {"id": "mini", "name": "Mac mini"},
+                    "notice": {"category": "finished"}}]
+            } })).into_bytes());
+        }
         let local_waiting = "kuvo/waiting/events";
         let setup_waiting = "kuvo/setup/waiting/counts/events";
         if let Some(name) = state.names.get(setup_waiting).or_else(|| state.names.get(local_waiting)) {
@@ -430,5 +447,37 @@ fn setup_waiting_counts_include_a_peers_ask_on_first_draw() {
     match follow.next_blocking().expect("the waiting count comes") {
         kuvo_box::follow::Followed::Now(waiting) => assert_eq!(waiting.sessions, 1),
         kuvo_box::follow::Followed::Failed(error) => panic!("{error}"),
+    }
+}
+
+#[test]
+fn activity_outputs_follow_the_setup_topic_and_keep_the_owner() {
+    let client = BoxClient::new(StandIn::default());
+    let follow = client.follow_session_outputs("ses_root");
+    match follow.next_blocking().expect("the outputs come") {
+        kuvo_box::follow::Followed::Now(outputs) => {
+            assert_eq!(outputs.artifacts.len(), 1);
+            assert_eq!(outputs.artifacts[0].computer.as_ref().unwrap().id, "mini");
+        }
+        kuvo_box::follow::Followed::Failed(error) => panic!("{error}"),
+    }
+}
+
+#[test]
+fn notifications_follow_one_setup_history_with_stable_origins() {
+    let box_ = StandIn::default();
+    let client = BoxClient::new(box_.clone());
+    client.line().set_timing(LineTiming { retry_after: Duration::ZERO, ..LineTiming::default() });
+    let follow = client.follow_setup_notices();
+    for _ in 0..2 {
+        match follow.next_blocking().expect("the notice history comes") {
+            kuvo_box::follow::Followed::Now(history) => {
+                assert_eq!(history.origins[0].computer.id, "mini");
+                assert_eq!(history.notices[0].computer.id, "mini");
+                assert_eq!(history.notices[0].told.id, "notice_1");
+            }
+            kuvo_box::follow::Followed::Failed(error) => panic!("{error}"),
+        }
+        box_.restart();
     }
 }

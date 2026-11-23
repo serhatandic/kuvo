@@ -263,6 +263,8 @@ pub struct ArchivedGroup {
 /// A line from the box: whole (`full`), or what changed since the line before.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Line {
+    #[serde(default, rename = "pendingComputers")]
+    pub pending_computers: Vec<crate::areas::SetupComputer>,
     pub at: String,
     #[serde(rename = "archivedGroups")]
     pub archived_groups: Vec<ArchivedGroup>,
@@ -323,6 +325,7 @@ pub struct Listing {
     /// client still holds as it goes.
     former: HashMap<String, Facts>,
     pending: Vec<String>,
+    pending_computers: Vec<crate::areas::SetupComputer>,
 }
 
 /// The computer and native folder from a remote project key in the merged list.
@@ -388,6 +391,10 @@ impl Listing {
         self.facts(id)?.on.as_ref()
     }
 
+    pub fn pending_computers(&self) -> &[crate::areas::SetupComputer] {
+        &self.pending_computers
+    }
+
     /// `line` taken in: a whole one in place of what was, else what changed. Whether anything did.
     pub fn take(&mut self, line: Line) -> bool {
         let was_read = self.at.is_some();
@@ -395,6 +402,8 @@ impl Listing {
         let archived_changed = self.archived_groups != line.archived_groups;
         let start_changed = self.start_project != line.start_project;
         let order_changed = self.project_order != line.project_order;
+        let coverage_changed = self.pending_computers != line.pending_computers;
+        self.pending_computers = line.pending_computers;
         self.project_order = line.project_order;
         self.start_project = line.start_project;
         self.archived_groups = line.archived_groups;
@@ -425,7 +434,7 @@ impl Listing {
         self.projects = line.projects;
         self.needs_you = line.needs_you;
         self.pending = line.pending.unwrap_or_default();
-        archived_changed || start_changed || order_changed || !was_read || before.0 != self.sessions || before.1 != self.projects || before.2 != self.pending || before.3 != self.needs_you
+        coverage_changed || archived_changed || start_changed || order_changed || !was_read || before.0 != self.sessions || before.1 != self.projects || before.2 != self.pending || before.3 != self.needs_you
     }
 
     /// The sidebar a client draws from it ([`sidebar`]).

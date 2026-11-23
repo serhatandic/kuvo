@@ -7,7 +7,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { routesMarkdown } from "./routes-md";
 
 const root = process.argv[2];
 const check = process.argv[3] === "--check";
@@ -58,6 +57,7 @@ const files: [string, () => string][] = [
 // protocol/ROUTES.md is for people, never kept in git (.gitignore), so it's only written, never
 // checked; writing it also checks that each route is an entry of its own in its file.
 if (!check) {
+  const { routesMarkdown } = await import("./routes-md");
   const catalogue = await routesMarkdown(root);
   files.push(["protocol/ROUTES.md", () => catalogue]);
 }

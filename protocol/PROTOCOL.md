@@ -170,6 +170,19 @@ Feature `line`. A client opens one stream to each box, and everything it follows
 - **Older box.** A `404` for `kuvo/line` means a box from before the line, which is updating. Retry
   as after a drop, keep what each topic last said, and never show the `404`.
 
+Setup-wide topics publish the kept peer copies in their first state. `pendingComputers`
+names reachable setup members whose first copy is still coming. An empty copy is complete.
+Away peers keep their last-seen rows and cannot act on this line.
+
+Notice IDs remain stable with their owner. Read the setup's `dock` count directly to avoid
+counting an ask twice across Sessions and Bots. Activity counts only current work and exposes
+last-seen sessions separately. Activity Output bytes and archived-session actions go to each row's
+owner. The archive owner rechecks its own confirmation revision before a write.
+
+A conversation's owner supplies its directory and tool readiness. Search asks reachable peers
+at query time and reports `awayComputers` separately from `unavailableComputers`. The matching
+snippets travel in memory and each owner keeps its own transcript index.
+
 ## Setup-wide lists
 
 Features `line.setup-lists`, `line.merged-sessions` and `line.merged-waiting`. The nearest box
@@ -569,6 +582,13 @@ Bots lead sessions; this is how the box keeps that work.
   check, so starts at the same moment count each other.
 - **Background work** is one fact, worked out on the box. `[Session finished]` waits while anything
   the session left is still running, but services that only listen don't hold it.
+  The process list and output read the same shell on its box. The bridge validates the session
+  when resolving a shell by ID after it leaves the active list. Claude Code supplies a live SDK
+  tail and a final output file. Codex reports liveness through its terminal list and output
+  through command events. The terminal list supplies neither an exit code nor past output.
+  Grok reports background tasks through ACP. Antigravity tracks background timers as subagent
+  work. Cursor reports subagents within a turn. The bridge's final `session.idle` clears the
+  session's turn from Activity. Any remaining background work counts separately.
 
 ## The coding agents' state
 

@@ -38,9 +38,9 @@ import { mcpSection } from "./settings-mcp";
 import { agentsSection } from "./settings-agents";
 import { ACTIONS, choiceIn, EFFECTS, engineDefault, isRule } from "./permission-rules";
 import { vaultSection } from "./settings-vault";
-import { SETTINGS_ACT, SETTINGS_CHECK, SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
+import { SETTING_GROUP, SETTINGS_ACT, SETTINGS_CHECK, SETTINGS_PAGE_ROUTES } from "../../shared/routes/settings-pages";
 import { budgetConfirmation, fileSize, fileSizeUnit } from "../../shared/artifact-budget";
-import { fitsShape } from "../../shared/shape";
+import { fitsShape, list } from "../../shared/shape";
 import type { SettingAction, SettingCan, SettingGroup, SettingItem, SettingRow, SettingsPage, SettingsSection } from "../../shared/routes/settings-pages";
 import { SEARCH_ENGINES } from "../../shared/routes/browser";
 import { approvalRoute } from "./approval";
@@ -62,6 +62,14 @@ import { MAC_LINK_FILE } from "../mac/link";
 import { letDevicesConnect } from "../mac/routes";
 import { freshBoxPermissions } from "../permissions";
 import type { BoxPermissions } from "../../shared/routes/box";
+import { bridgeTarget, readBridgeFile, readEngineFile } from "../engine/client";
+import { listComputer } from "../lists/computer";
+import { ownerWrite, sendOwnerWrite } from "../ownership/write";
+import { movedOf, peersOf } from "../peers/known";
+import { peerSnapshots } from "../peers/lists";
+import { pendingComputers } from "../peers/pending";
+import { readReach } from "../peers/reach";
+import type { LinkHost } from "../relay/host";
 import { macLink, readLink } from "../state";
 import { isUpdateMain } from "../updates/fleet";
 import { agentsWorking, updateRoute, updateStatus } from "../updates/update";
@@ -559,7 +567,7 @@ async function storageAct(context: RouteContext, at: SettingItem, action: Settin
 const sessionsAnswer = (context: RouteContext) => listRoute(context, context.route.match(LIST_ROUTE)!);
 const sessionAnswer = (context: RouteContext) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE)!);
 
-async function archivedPage(context: RouteContext): Promise<SettingsPage> {
+async function archivedHere(context: RouteContext): Promise<SettingsPage> {
   const read = await asked(context, sessionsAnswer, "GET", "kuvo/sessions/list");
   if (read.status !== 200) return unreadPage("archived", "Archived Sessions", read);
   if (read.value.pending?.length) return unreadPage("archived", "Archived Sessions", { status: 503, value: { message: "Some sessions can't be read right now. Try again in a moment." } });
@@ -592,7 +600,109 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
   ], ...(states.length ? {} : { notes: [{ words: "None yet. Archive a session from its menu to put it away.", tone: "quiet" as const }] }) };
 }
 
+export const ARCHIVE_FEATURE = "line.merged-archives";
+export const ARCHIVE_PEER_ACTION = /^kuvo\/peer-archive\/(ses[A-Za-z0-9_-]{1,95})\/(unarchive|delete|delete-all)$/;
+export const archiveCopies = peerSnapshots<{ groups: SettingsPage["groups"] }>(
+  "archiveCopy", "archives-v1.json", ARCHIVE_FEATURE, { groups: list(SETTING_GROUP) },
+);
+
+const archiveReaders = { readEngine: readEngineFile, bridge: bridgeTarget };
+export const shareArchived = (host: Pick<LinkHost, "send">, readers = archiveReaders) => archiveCopies.push(host, async () => {
+  const json: RouteContext["json"] = (status, value) =>
+    [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
+  const page = await archivedHere({
+    ...readers, readBridge: readBridgeFile, request: { method: "GET", path: "kuvo/settings/archived", headers: {} },
+    route: "kuvo/settings/archived", phone: undefined, signal: undefined, info: { name: "" },
+    phonesChanged() {}, hold: null, json, text: json,
+  });
+  return page.groups.length ? { groups: page.groups } : null;
+});
+
+type ArchiveFrom = { peer: string; session: string; revision: string };
+const archiveSource = (value: unknown): ArchiveFrom | undefined => {
+  if (!isObject(value) || typeof value.peer !== "string" || typeof value.session !== "string" || typeof value.revision !== "string") return;
+  return { peer: value.peer, session: value.session, revision: value.revision };
+};
+
+async function archivedPage(context: RouteContext): Promise<SettingsPage> {
+  const link = readLink();
+  const reach = readReach();
+  const moved = movedOf(link);
+  const [here, peers] = await Promise.all([
+    archivedHere(context),
+    Promise.all(peersOf(link).map(async peer => ({ peer, copy: await archiveCopies.read(peer.key) }))),
+  ]);
+  const local = listComputer(link);
+  const groups: SettingGroup[] = here.groups.map(group => ({
+    ...group, rows: group.rows.map(source => ({
+      ...source, computer: local,
+      ...(source.items ? { items: source.items.map(entry => ({ ...entry, computer: local })) } : {}),
+    })),
+  }));
+  for (const { peer, copy } of peers) {
+    if (!copy) continue;
+    const away = reach[peer.key] !== undefined || Date.now() - copy.seen > 180_000;
+    const computer = { id: peer.key, name: peer.name };
+    const stamp = { computer, away, ...(away ? { lastSeen: copy.seen } : {}) };
+    const peerRow = (source: SettingItem, id: string, session: string) =>
+      item({ ...source, id, ...stamp, value: { peer: peer.key, session, revision: source.revision }, actions: away ? [] : source.actions });
+    for (const group of copy.groups) {
+      const id = `${peer.key}:${group.id}`;
+      if (group.id === "archive-controls") {
+        const source = group.rows.find(row => row.id === "delete-all");
+        const states = source?.value as { id: string }[] | undefined;
+        if (away || !source || !Array.isArray(states) || !states.length || states.some(each => moved.has(each.id) && moved.get(each.id) !== peer.key)) continue;
+        groups.push({ id, title: peer.name, rows: [peerRow(source, `delete-all-${peer.key}`, states[0]!.id)] });
+        continue;
+      }
+      const rows = group.rows.flatMap(source => {
+        const items = (source.items ?? []).flatMap(entry => {
+          if (!entry.id.startsWith("session-")) return [];
+          const session = entry.id.slice(8);
+          if (moved.has(session) && moved.get(session) !== peer.key) return [];
+          return [peerRow(entry, `session-${peer.key}:${session}`, session)];
+        });
+        return items.length ? [row({ ...source, ...stamp, id: `${peer.key}:${source.id}`, items })] : [];
+      });
+      if (rows.length) groups.push({ ...group, id, rows });
+    }
+  }
+  const pending = pendingComputers(ARCHIVE_FEATURE, key => peers.some(({ peer, copy }) => peer.key === key && copy !== null), link);
+  return { ...here, groups, pendingComputers: pending, ...(groups.length > here.groups.length ? { notes: here.notes?.filter(note => note.tone !== "quiet") } : {}) };
+}
+
+/** The owner checks the exact menu and confirmation revision it published before changing anything. */
+export async function* archivedPeerAction(context: RouteContext, session: string, action: string): AsyncGenerator<AnswerPiece> {
+  const { request, json } = context;
+  const body = parsed(request.body);
+  if (!request.fromOwnerPeer || !isObject(body) || typeof body.was !== "string") return yield* json(403, {});
+  const page = await archivedHere(context);
+  const id = action === "delete-all" ? "delete-all" : `session-${session}`;
+  const at = rowsOf(page).find(row => row.id === id);
+  const chosen = at && actionsOf(at).find(each => each.id === action);
+  if (!at || !chosen || at.revision !== body.was) return yield* json(409, { message: CHANGED_SINCE });
+  const why = whyNot(chosen.can);
+  if (why) return yield* json(403, { message: why });
+  if (action === "delete-all" && (!Array.isArray(at.value) || at.value[0]?.id !== session)) return yield* json(409, { message: CHANGED_SINCE });
+  const veto = queuedRefusal(context.admitQueued?.() ?? null, json);
+  if (veto) return yield* veto;
+  const refused = await archivedAct(context, at, chosen);
+  return yield* (refused ? json(refused.status, { message: refused.message }) : json(200, {}));
+}
+
 async function archivedAct(context: RouteContext, at: SettingItem, action: SettingAction): Promise<Refused | null> {
+  const source = archiveSource(at.value);
+  if (source) {
+    const method = "POST";
+    const path = `kuvo/peer-archive/${source.session}/${action.id}`;
+    const body = { was: source.revision };
+    const write = ownerWrite(method, path, body);
+    const peer = peersOf(readLink()).find(peer => peer.key === source.peer);
+    if (!write || !peer || readReach()[peer.key] !== undefined) return { status: 409, message: CHANGED_SINCE };
+    return staleOrRefusal(await sendOwnerWrite(write, body, {
+      key: peer.key, name: peer.name, scope: "session computer", local: false, reachable: true,
+    }, context));
+  }
   if (at.id === "delete-all" && action.id === "delete-all") {
     for (const each of at.value as { id: string; was: unknown }[]) {
       const done = staleOrRefusal(await asked(context, sessionAnswer, "DELETE", `kuvo/sessions/${encodeURIComponent(each.id)}`, { was: each.was }));
@@ -932,7 +1042,11 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   if (events) {
     if (method !== "GET") return yield* json(405, { message: "Follow it with GET." });
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    const listen = (told: () => void) => { followers.add(told); return () => { followers.delete(told); }; };
+    const listen = (told: () => void) => {
+      followers.add(told);
+      if (id === "archived") archiveCopies.followers.add(told);
+      return () => { followers.delete(told); archiveCopies.followers.delete(told); };
+    };
     return yield* followedLive(() => section.read(context), listen, signal, { look: section.look });
   }
 

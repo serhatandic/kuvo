@@ -23,6 +23,9 @@ import { removalsOf } from "../setup/removal-record";
 import { usesAcceptedSaves } from "../setup/record";
 import { receiveAuthority } from "../setup/takeover";
 import { takeSessionFollow } from "./session-follow";
+import { archiveCopies } from "../areas/settings-pages";
+import { outputCopies } from "../areas/setup-outputs";
+import { noticeCopies } from "../areas/notices";
 import { libraryCopies } from "../areas/library";
 import { takeSetupLists, tellListsAgain } from "./lists";
 import { noteHeard, peerIsAway } from "./reach";
@@ -87,6 +90,9 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     tellQueuesAgain(sender.key);
     tellListsAgain(sender.key);
     libraryCopies.refresh(sender.key);
+    noticeCopies.refresh(sender.key);
+    outputCopies.refresh(sender.key);
+    archiveCopies.refresh(sender.key);
     tellMovingAgain();
   }
   if (isObject(payload.sessionFollow)) takeSessionFollow(sender, payload.sessionFollow, host);
@@ -132,7 +138,10 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     if (payload.delivered.ok === true) rowsWent(sender, payload.delivered.id);
   }
   const librarySaved = isObject(payload.libraryCopy) ? libraryCopies.take(sender, payload.libraryCopy).catch(() => {}) : undefined;
-  if (listsSaved || librarySaved) return Promise.all([listsSaved, librarySaved]).then(() => {});
+  const noticesSaved = isObject(payload.noticeCopy) ? noticeCopies.take(sender, payload.noticeCopy).catch(() => {}) : undefined;
+  const outputsSaved = isObject(payload.outputCopy) ? outputCopies.take(sender, payload.outputCopy).catch(() => {}) : undefined;
+  const archivesSaved = isObject(payload.archiveCopy) ? archiveCopies.take(sender, payload.archiveCopy).catch(() => {}) : undefined;
+  if (listsSaved || librarySaved || noticesSaved || outputsSaved || archivesSaved) return Promise.all([listsSaved, librarySaved, noticesSaved, outputsSaved, archivesSaved]).then(() => {});
   return undefined;
 }
 
@@ -187,6 +196,9 @@ export function receiveMail(
     queuesBack(sender.key);
     tellListsAgain(sender.key);
     libraryCopies.refresh(sender.key);
+    noticeCopies.refresh(sender.key);
+    outputCopies.refresh(sender.key);
+    archiveCopies.refresh(sender.key);
     heldBack(sender.key);
   }
   if (macsOf(link).includes(sender.key)) heardFromMac(sender.key, payload);

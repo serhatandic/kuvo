@@ -1,15 +1,23 @@
 // One real dispatcher, peer mailbox and box home per process. The parent supplies the engine's
 // HTTP endpoint and carries encrypted frames in place of the relay.
 
+import { ArtifactStore } from "../../../src/link/artifacts/store";
+import { artifactRoutes } from "../../../src/link/artifacts/routes";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RUN, BRIDGE_FILE } from "../../../src/link/home";
 import { sendOwnerMessages } from "../../../src/link/ownership/messages";
 import { machineLink, readLink } from "../../../src/link/state";
 import type { LinkHost } from "../../../src/link/relay/host";
+import { addressOf } from "../../../src/link/crypto/keys";
+import { connectionStarted, fenceBack } from "../../../src/link/relay/dropped";
 import { IKInitiator } from "../../../src/link/crypto/noise";
 import { pauseForUser } from "../../../src/link/engine/queue";
 import { noteAskEvent } from "../../../src/link/glance/asked";
+import { tellMoving } from "../../../src/link/moves/elsewhere";
+import { shareArchived } from "../../../src/link/areas/settings-pages";
+import { shareOutputs } from "../../../src/link/areas/setup-outputs";
+import { shareNotices } from "../../../src/link/areas/notices";
 import { shareLibrary } from "../../../src/link/areas/library";
 import { libraryService } from "../../../src/link/library/service";
 import { servicesFile, servicesRecordFormat } from "../../../src/shared/box-services";
@@ -17,13 +25,14 @@ import { shareSetupLists } from "../../../src/link/lists/setup";
 import { peerMail, receiveMail } from "../../../src/link/peers/mail";
 import { noteUnreachable } from "../../../src/link/peers/reach";
 import { readFrame, readRelay } from "../../../src/link/relay/frames";
+import { forwardsSoon, sendForwards } from "../../../src/link/work-queue/forward";
 import { pushQueues, takeWorkQueueMail } from "../../../src/link/work-queue/across";
 import { isObject } from "../../../src/shared/json";
 import { engineHandler } from "../../../src/link/server/router";
 import { answerSshRoute, sshLine } from "../../../src/link/server/ssh-route";
 import { bridgeRecordFormat, type EngineRecord } from "../../../src/shared/records";
 
-const { port, bridgePort, command, withLibrary } = await Bun.stdin.json();
+const { port, bridgePort, command, withLibrary, withOutputs } = await Bun.stdin.json();
 if (withLibrary) {
   const name = readLink()!.name!;
   const library = libraryService(join(RUN, "test-library"), {
@@ -34,6 +43,21 @@ if (withLibrary) {
   writeFileSync(file, "brief");
   library.store.hand({ path: file, bot: "bot_ada", how: "shown", at: new Date(Date.UTC(2026, 10, 20 + Number(name === "far"))) });
   const services = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: library.handle });
+  writeFileSync(servicesFile(RUN), JSON.stringify(servicesRecordFormat.write({ port: services.port, password: "a".repeat(48), pid: process.pid })));
+}
+if (withOutputs) {
+  const name = readLink()!.name!;
+  const folder = join(RUN, "test-outputs");
+  const store = new ArtifactStore(folder, { bots: join(RUN, "test-bots") });
+  if (name === "far") {
+    const file = join(RUN, "delegated.txt");
+    writeFileSync(file, "Work on the far computer");
+    await store.change(file, { by: { kind: "agent", session: "ses_far" }, turn: { session: "ses_far" }, where: { session: "ses_far" }, via: "write" });
+  }
+  const services = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    const url = new URL(request.url);
+    return artifactRoutes(store, request.method, url.pathname.split("/").filter(Boolean).slice(4), url.searchParams, async () => ({}), request.signal);
+  } });
   writeFileSync(servicesFile(RUN), JSON.stringify(servicesRecordFormat.write({ port: services.port, password: "a".repeat(48), pid: process.pid })));
 }
 const readers = {
@@ -65,8 +89,9 @@ async function run() {
         await pauseForUser(command.waiting);
       }
       const frames: string[] = [];
-      const host: Pick<LinkHost, "send"> = { send: frame => { frames.push(frame.toString("base64url")); } };
-      await Promise.all([shareSetupLists(host, readers), shareLibrary(host)]);
+      const host: Pick<LinkHost, "send"> = { send: frame => { frames.push(frame.toString("base64url")); return true; } };
+      tellMoving(host);
+      await Promise.all([shareSetupLists(host, readers), shareLibrary(host), shareNotices(host), shareOutputs(host), shareArchived(host, readers)]);
       return frames;
     }
     case "publish-queue": {
@@ -126,11 +151,18 @@ if (command.kind === "conversation") {
   if (bridgePort) writeFileSync(BRIDGE_FILE, JSON.stringify(bridgeRecordFormat.write({
     port: Number(bridgePort), password: "test", pid: process.pid,
   })));
+  const self = addressOf(Buffer.from(readLink()!.secret!, "base64url"));
+  connectionStarted(self);
   const host = {
     welcomed: true,
-    send(frame: Buffer) { process.send!({ frame: frame.toString("base64url") }); },
+    send(frame: Buffer) {
+      const relay = readRelay(frame);
+      if (relay?.kind === "deliver" && relay.address.equals(self)) fenceBack(relay.payload);
+      else process.send!({ frame: frame.toString("base64url") });
+    },
   } as LinkHost;
   machineLink.host = host;
+  forwardsSoon.send = () => sendForwards(host);
   let stop: AbortController | undefined;
   const waiting = new Map<string, string>();
   process.on("message", async (given: any) => {
@@ -146,7 +178,7 @@ if (command.kind === "conversation") {
         const frame = delivered?.kind === "deliver" && readFrame(delivered.payload);
         if (frame) receiveMail(frame.body, host, (sender, payload) => {
           const result = isObject(payload.workQueue)
-            ? takeWorkQueueMail(sender, payload.workQueue, host, () => ({ targets: [], bridge: true }))
+            ? takeWorkQueueMail(sender, payload.workQueue, host, () => ({ targets: [readers.readEngine()], bridge: Boolean(bridgePort) }))
             : peerMail(sender, payload, host);
           const work = payload.workQueue;
           const receipt = isObject(work) ? (work.ownerDraftReceipt ?? work.ownerMessageReceipt) as { operation: string } | undefined : undefined;

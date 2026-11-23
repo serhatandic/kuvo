@@ -66,8 +66,19 @@ export async function artifactRoutes(store: ArtifactStore | undefined, method: s
   if (!store) return message(503, "This computer's record of what its agents made isn't running. Try again in a moment.")
   const [first, second, third, fourth] = parts
   // Lists see committed records immediately. Followers get another line when queued writes land.
-  const committedRead = method === "GET" && (!first || first === "events" || (second === "versions" && third !== undefined && !fourth))
+  const committedRead = method === "GET" && (!first || first === "events" || first === "peer-copy" || (second === "versions" && third !== undefined && !fourth))
   if (!committedRead) await store.settled()
+
+  if (first === "peer-copy" && !second && method === "GET") {
+    const sessions = query.has("session") ? query.getAll("session") : undefined
+    const artifacts = Array.from(store.sessionOutputs(sessions), artifact => {
+      const { id, path, name, kind, type, where, gone, updated, pinned, latest } = artifact
+      const { n, hash, reason } = latest
+      return { id, path, name, kind, type, sessions: where.sessions, gone: seconds(gone), updated: seconds(updated),
+        pinned: Boolean(pinned), latest: { n, hash, reason } }
+    })
+    return json({ artifacts })
+  }
 
   if (!first) {
     if (method !== "GET") return message(405, "Read them with GET.")
