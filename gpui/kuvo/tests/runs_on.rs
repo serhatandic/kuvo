@@ -23,7 +23,8 @@ fn open(cx: &mut TestAppContext, stand_in: StandIn) -> (Entity<Workspace>, &mut 
     let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
     let workspace = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
-    cx.simulate_resize(size(px(1280.), px(1600.)));
+    // (No taller than it needs: the landing view's sky is drawn at every step.)
+    cx.simulate_resize(size(px(1100.), px(900.)));
     workspace.update_in(cx, |workspace, _, cx| {
         workspace.set_now(NOW, cx);
         workspace.read_at_once(cx);
