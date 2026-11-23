@@ -85,6 +85,41 @@ contains 222 declarations across the listed files, including adjacent work.
 | [Replica catch-up and mixed resident handover](../../box/bridge-tests/setup-handover.test.js#L4264-L4333) | 2 | Replica catch-up → B7. The mixed TypeScript resident case belongs to the historical rehearsal. |
 | [Unlink after handover to an older release](../../box/bridge-tests/setup-handover.test.js#L4334) | 1 | Handover → B3. Unlink and the historical binary combination remain separate. |
 
+### Bridge scenario details
+
+| Reference scenario | Rust scenario or open assertion |
+|---|---|
+| [Two boxes, agreed roster and cards](../../box/bridge-tests/setup-two-boxes.test.js#L216) | B2, R1. SSH enrollment and number allocation remain open. |
+| [Member restrictions and phone's list](../../box/bridge-tests/setup-two-boxes.test.js#L251) | B2 supplies accepted membership. Phone admission, adding and the phone's projection remain open. |
+| [Mac hands over to a machine](../../box/bridge-tests/setup-two-boxes.test.js#L290) | B3 checks handover. The Mac/device combination remains open. |
+| [Document vectors](../../box/bridge-tests/documents.test.js#L127) | W1. |
+| [A third computer forwards peers](../../box/bridge-tests/documents.test.js#L142) | Third-computer document forwarding remains open. |
+| [Forged, altered or replayed peers](../../box/bridge-tests/documents.test.js#L165) | W1 and B8 cover signature and checkpoint mutation. The peer-list replay sequence remains open. |
+| [Different terms and two mains at one epoch](../../box/bridge-tests/documents.test.js#L194) | B6 covers stale authority. Equal-epoch injection and two Mac rosters remain open. |
+| [A phone stays with its signed Mac](../../box/bridge-tests/documents.test.js#L241) | Legacy Mac associations and phone projection remain open. |
+| [Main removes a machine and it starts separately](../../box/bridge-tests/documents.test.js#L273) | 2.3 unlink. |
+| [A Mac enrolls again with a new signer](../../box/bridge-tests/documents.test.js#L285) | 2.3 re-enrollment. |
+| [Two Mac rosters remain until one releases a machine](../../box/bridge-tests/documents.test.js#L300) | Legacy overlapping authority and release remain open. |
+| [Older Mac coexists with a newer Mac's setup](../../box/bridge-tests/documents.test.js#L317) | Historical interop remains open. |
+| [Two setups meet and choose by numbering source](../../box/bridge-tests/documents.test.js#L327) | Historical authority selection remains open. |
+| [A setup that was set aside follows a main again](../../box/bridge-tests/documents.test.js#L339) | Legacy set-aside conversion remains open. |
+| [Automatic main, joining by Mac and losing its setup](../../box/bridge-tests/documents.test.js#L361) | B1 covers automatic main. The join and detach sequence belongs to 2.3. |
+| [Exchange with skewed clocks](../../box/bridge-tests/documents.test.js#L385) | Skew across signed document ordering remains open. |
+| [Removal wins over a later add](../../box/bridge-tests/documents.test.js#L432) | B5 covers personalities. R4 covers a removed desktop's return; the competing peer phone document remains open. |
+| [Lost counter learns newer versions](../../box/bridge-tests/documents.test.js#L472) | Counter recovery remains open. |
+| [One missed mail with both computers connected](../../box/bridge-tests/documents.test.js#L497) | B7 exercises catch-up after reconnect. The same-connection drop remains open. |
+| [Large document with an altered part](../../box/bridge-tests/documents.test.js#L516) | W1 and B8 cover corruption. A large library over the live relay remains open. |
+| [Independent edits converge in either order](../../box/bridge-tests/documents.test.js#L548) | B2 covers independent and conflicting preference changes. Reverse arrival and other records remain open. |
+| [Only signed `left` plus absence releases a machine](../../box/bridge-tests/documents.test.js#L570) | 2.3 accepted removal and unlink. |
+| [Recovery rejects an implausibly high counter](../../box/bridge-tests/documents.test.js#L585) | The counter cap remains open. |
+| [Desktop pairs through a member and is removed](../../box/bridge-tests/devices-two-boxes.test.js#L297) | R4 and R5 cover the signed writer and replica. The managed routes and session access are the 2.2 follow-up. |
+| [A relay refuses unsupported route versions](../../box/bridge-tests/devices-two-boxes.test.js#L416) | 1.4/2.2 paired transport. |
+| [Removal with the main's incoming-device switch off](../../box/bridge-tests/devices-two-boxes.test.js#L439) | R5 covers revocation. The switch and route combination remains open. |
+| [Reconnect returns membership and phones](../../box/bridge-tests/devices-two-boxes.test.js#L520) | B7 covers membership replica catch-up. Paired reconnect is the 2.2 follow-up. |
+| [Reconnect catches up through another member](../../box/bridge-tests/devices-two-boxes.test.js#L543) | Three-computer catch-up while the main is away remains open. |
+| [Uninstall refuses while a member is active](../../box/bridge-tests/devices-two-boxes.test.js#L701) | 2.3 uninstall. |
+| [Uninstall revokes its desktop before stopping](../../box/bridge-tests/devices-two-boxes.test.js#L739) | R4 covers durable signed revocation. Uninstall coordination belongs to 2.3. |
+
 ## Peer fixture changes
 
 | Peer test | Previous fixture | Current fixture | Reason |
@@ -136,8 +171,8 @@ contains 222 declarations across the listed files, including adjacent work.
   installer route is available. It confirms a member's save commits at the
   main, then survives the main's exit, lease expiry and member promotion.
 - On the same stopped setup home the differential runner matches the setup
-  view, personality list and direct unauthenticated personality-document
-  refusal. The clock choice list differs because the bundled Jiff database
+  view, personality list and a direct caller's personality-document refusal.
+  The clock choice list differs because the bundled Jiff database
   lists IANA aliases and TypeScript uses the Intl zone catalog. The row
   revision hashes the offered IDs, so it differs too. The file inventory also
   differs in companion files and startup bookkeeping, including the relay
