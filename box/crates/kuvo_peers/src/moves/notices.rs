@@ -1,12 +1,15 @@
 //! Snapshots of moves announced by authenticated setup peers.
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use kuvo_store::format::{self, ObjectFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    Journal, Role, Shown, journals,
+    Role, Shown, journals,
     listing::{WithWords, name_of, place_name, plain_name},
 };
 use crate::{
@@ -230,10 +233,11 @@ impl Announcer {
         &mut self,
         run: &Path,
         roster: &Roster,
+        waiting: &BTreeSet<String>,
         relay: &crate::relay::Sender,
         now: Millis,
     ) {
-        let Some(current) = announcement(run) else {
+        let Some(current) = announcement(run, waiting) else {
             return;
         };
         if self.sent.is_some_and(|(digest, at)| {
@@ -267,7 +271,7 @@ struct Announcement {
     active: bool,
 }
 
-fn announcement(run: &Path) -> Option<Announcement> {
+fn announcement(run: &Path, waiting: &BTreeSet<String>) -> Option<Announcement> {
     use sha2::{Digest, Sha256};
 
     let moves: Vec<_> = journals(run)
@@ -275,7 +279,7 @@ fn announcement(run: &Path) -> Option<Announcement> {
         .iter()
         .filter(|record| record.listed())
         .take(MOST_MOVES)
-        .filter_map(Journal::shown)
+        .filter_map(|record| record.shown_waiting(waiting))
         .map(|mut movement| {
             movement.sessions.truncate(MOST_SESSIONS);
             movement

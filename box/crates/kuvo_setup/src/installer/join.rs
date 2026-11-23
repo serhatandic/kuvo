@@ -255,7 +255,7 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
     // Opening for enrollment never starts a move. A fresh applicant can
     // initialize its layout here, after the code is validated.
     if staged {
-        open_staged_ssh_home(home)?;
+        open_staged_home(home)?;
     } else {
         layout::open(home)?;
     }
@@ -621,7 +621,7 @@ async fn cancel_join(
     )))
 }
 
-fn open_staged_ssh_home(home: &Home) -> Result<(), Error> {
+pub fn open_staged_home(home: &Home) -> Result<(), Error> {
     use std::fs;
 
     if layout::inspect(home)? != layout::Layout::Unmarked {
@@ -646,7 +646,7 @@ fn open_staged_ssh_home(home: &Home) -> Result<(), Error> {
                         file.is_ok_and(|file| {
                             matches!(
                                 file.file_name().to_str(),
-                                Some("kuvo-box" | "kuvo-box.exe" | "libunwind.dll")
+                                Some("kuvo-box" | "kuvo-box.exe" | "Kuvo.exe" | "libunwind.dll")
                             ) && file.file_type().is_ok_and(|kind| kind.is_file())
                         })
                     }) =>

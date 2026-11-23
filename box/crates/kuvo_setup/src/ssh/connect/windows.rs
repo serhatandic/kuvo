@@ -45,6 +45,12 @@ if ((Test-Path -LiteralPath (Join-Path $K 'run/setup-card.json')) -or
     }
 
     pub(super) async fn install_native(&self, job: &Job, path: PathBuf) -> Result<(), String> {
+        let starter = ["kuvo-starter.exe", "Kuvo.exe"]
+            .into_iter()
+            .map(|name| path.with_file_name(name))
+            .find(|path| path.is_file())
+            .ok_or("The Windows release is missing Kuvo's sign-in starter.")?;
+        self.copy_native(job, starter, "Kuvo.exe").await?;
         let unwind = path.with_file_name("libunwind.dll");
         if unwind.is_file() {
             self.copy_native(job, unwind, "libunwind.dll").await?;
@@ -76,8 +82,9 @@ if ((Test-Path -LiteralPath (Join-Path $K 'run/setup-card.json')) -or
     (Test-Path -LiteralPath (Join-Path $K 'run/link.json')) -or
     (Test-Path -LiteralPath (Join-Path $K 'bin/kuvo-link.js'))) { exit 78 }
 "#;
+        let acl = include_str!("windows-home.ps1");
         let prepare =
-            format!("{CHECK}\n[void][IO.Directory]::CreateDirectory((Join-Path $K 'bin'))");
+            format!("{CHECK}\n{acl}\n[void][IO.Directory]::CreateDirectory((Join-Path $K 'bin'))");
         let failed = || format!("Kuvo Code’s files couldn’t be put on {}.", self.name);
         if !self
             .powershell(job, &prepare, Vec::new(), 30)
@@ -106,7 +113,15 @@ $temp = Join-Path $bin '{stage}'
 $item = Get-Item -LiteralPath $temp -Force
 if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {{ exit 78 }}
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $temp).Hash.ToLowerInvariant() -ne '{digest}') {{ exit 1 }}
-[IO.File]::Move($temp, (Join-Path $bin '{name}'))
+$target = Join-Path $bin '{name}'
+if (Test-Path -LiteralPath $target) {{
+    $existing = Get-Item -LiteralPath $target -Force
+    if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant() -ne '{digest}') {{ exit 78 }}
+    [IO.File]::Delete($temp)
+}} else {{
+    [IO.File]::Move($temp, $target)
+}}
 "#
             );
             self.powershell(job, &publish, Vec::new(), 30)

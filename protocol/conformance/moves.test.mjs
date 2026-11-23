@@ -1,11 +1,14 @@
 // Both residents read the same move journals and outcomes through the client routes.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, openLine, readJSON, request, scratch, until, write } from "./adapter.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { boxBinary, isolatedEnv, openLine, readJSON, request, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
+import { sessionOf } from "./engine.mjs";
 
 test("a restarted computer shows the held copy and answers durable move receipts", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
@@ -109,51 +112,823 @@ test("an old departure still routes the conversation to its owner", { timeout: 4
 });
 
 const mixed = process.env.KUVO_CONFORMANCE_MOVE_PEER;
-test("a TypeScript source recovers a lost switch acknowledgement from a restarted destination", {
-  timeout: 45000, skip: !mixed && "Set KUVO_CONFORMANCE_MOVE_PEER to the Rust destination binary",
+
+async function testMail(t, binary) {
+  const root = scratch();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
+  // The bundled crypto is the same implementation a TypeScript peer uses.
+  // Its module initialization reads the home once, so give it a scratch home.
+  const isolated = { ...isolatedEnv(root), KUVO_HOME: path.join(root, "box") };
+  const before = Object.fromEntries(Object.keys(isolated).map(key => [key, process.env[key]]));
+  Object.assign(process.env, isolated);
+  try {
+    return await import(pathToFileURL(binary.file).href);
+  } finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function cutMoveMail(relay, opens, source, destination, main, member) {
+  const next = new Map();
+  const held = new Set(["check", "checked", "offer", "ready", "part", "got", "working", "arrive", "arrived", "switch", "switched"]);
+  const addresses = [main, member].map(peer => Buffer.from(peer.address, "base64url"));
+  const peers = [source, destination];
+  const keys = [main, member].map(peer => Buffer.from(peer.key, "base64url"));
+  const privateKeys = peers.map(peer => Buffer.from(readJSON(path.join(peer.home, "run/link.json")).key, "base64url"));
+  const remove = addresses.map((from, i) => relay.intercept(from, addresses[1 - i], packet => {
+    if (packet.payload[0] !== 5) return false;
+    try {
+      const opened = opens(packet.payload.subarray(5), privateKeys[1 - i], keys[i]);
+      const op = JSON.parse(opened.payload.toString()).move?.op;
+      if (!held.has(op)) return false;
+      if (!next.has(op)) next.set(op, packet);
+      return true;
+    } catch { return false; }
+  }));
+  const ready = () => until(() => addresses.every(address => relay.has(address)), "Both computers did not reconnect to the relay", 12000);
+  return {
+    async resume() {
+      for (const op of held) {
+        await until(() => next.has(op), "The live transfer did not reach " + op, op === "arrive" ? 70000 : 20000);
+        if (op === "switched") break;
+        if (op === "got") {
+          next.delete(op);
+          await until(() => next.has(op), "The source did not resend the unacknowledged part", 30000);
+        }
+        held.delete(op);
+        if (op === "arrive") next.delete("arrived");
+        relay.replay(next.get(op));
+      }
+    },
+    async recoverSwitch(waitForOwner) {
+      await ready();
+      next.delete("switched");
+      const reconnect = relay.disconnect(addresses[0]);
+      try {
+        await until(() => !relay.has(addresses[0]), "The source relay connection did not close");
+      } finally {
+        reconnect();
+      }
+      // The original acknowledgement stays lost. A new switch request from
+      // the reconnecting source must recover it from the durable receipt.
+      await ready();
+      await waitForOwner();
+      await until(() => next.has("switched"), "The restarted destination did not answer the retried switch");
+      held.delete("switched");
+      relay.replay(next.get("switched"));
+    },
+    close() { for (const cancel of remove) cancel(); },
+  };
+}
+
+test("a held move fences prompt, command, and queue writes after a restart", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("write-fence");
+  const id = "ses_heldWrite";
+  here.engine.sessions.push(sessionOf({ id, directory: path.join(here.home, "chats") }));
+  const pathToJournal = path.join(here.home, "run/moves/mov_writeFence.json");
+  const journal = { formatVersion: 1, id: "mov_writeFence", role: "to", stage: "copying", kind: "chat", thing: id,
+    from: "other", to: "local", peer: "other", sessions: [id], started: Date.now(), safeSwitch: true,
+    complete: true, setUpAt: Date.now() };
+  write(pathToJournal, JSON.stringify(journal));
+  const first = here.start();
+  await first.ready();
+  await first.stop();
+  const restarted = await here.start().ready();
+  const engine = "api/session/" + id;
+  const kuvo = "kuvo/sessions/" + id;
+  const moving = "This record is held while its owner changes.";
+  for (const [route, body] of [[engine + "/prompt", { text: "Held" }],
+    [engine + "/command", { command: "test" }], [kuvo + "/queue/resume", {}],
+    [kuvo + "/send", { id: "msg_refused", words: "Do not write this while held." }]]) {
+    const reply = await request(restarted, "POST", route, body);
+    assert.equal(reply.status, 409, reply.text);
+    assert.equal(reply.json.message, moving, route);
+  }
+  assert.ok(!here.engine.asked.some(call => call.method === "POST" && call.path.startsWith("/" + engine)));
+  fs.unlinkSync(pathToJournal);
+  const unheld = await request(restarted, "POST", engine + "/prompt", { id: "msg_afterFence", text: "Released" });
+  assert.equal(unheld.status, 200, unheld.text);
+  assert.equal(here.engine.messages.get(id)?.[0]?.id, "msg_afterFence");
+});
+
+const binary = boxBinary();
+const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+
+async function readyToMove(resident, session, peer) {
+  await until(async () => {
+    const reply = await request(resident, "GET", "kuvo/moves/places?kind=chat&id=" + session);
+    assert.equal(reply.status, 200, reply.text);
+    return reply.json.places.some(place => place.key === peer.key && place.ok);
+  }, () => `The move to ${peer.name} did not become available`, 15000, 100);
+}
+
+test("a resident keeps the saved draft pending while a recovered move holds its session", {
+  timeout: 45000, skip: binary.typescript && "The standalone draft outbox is the Rust session worker",
 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("held-draft");
+  const session = "ses_heldDraft";
+  const draft = { id: "msg_heldDraft", text: "Keep it until this session can take it.", message: {} };
+  here.engine.sessions.push(sessionOf({ id: session, directory: path.join(here.home, "chats") }));
+  const journal = path.join(here.home, "run/moves/mov_heldDraft.json");
+  write(journal, JSON.stringify({ formatVersion: 1, id: "mov_heldDraft", role: "to", stage: "copying", kind: "chat", thing: session,
+    from: "other", to: "local", peer: "other", sessions: [session], started: Date.now(), safeSwitch: true,
+    complete: true, setUpAt: Date.now() }));
+  const first = here.start();
+  const headers = { "x-kuvo-from": "app" };
+  const answer = await request(await first.ready(), "POST", `kuvo/sessions/${session}/delivery?computer=here`, draft, headers);
+  assert.equal(answer.status, 202, answer.text);
+  assert.equal(answer.json.status, "pending");
+  await first.stop();
+  const restarted = await here.start().ready();
+  const claim = path.join(here.home, "run/draft-receipts");
+  await until(() => fs.existsSync(claim) && fs.readdirSync(claim).some(name => name.endsWith(".json")), "The worker never tried the saved draft");
+  assert.ok(!here.engine.asked.some(call => call.method === "POST" && call.path === `/api/session/${session}/prompt`));
+  const receipt = `kuvo/data/messages/${answer.json.operation}`;
+  assert.equal((await request(restarted, "GET", receipt, undefined, headers)).json.status, "pending");
+  fs.unlinkSync(journal);
+  await until(async () => (await request(restarted, "GET", receipt, undefined, headers)).json?.status === "committed",
+    "The saved draft did not reach the released session", 12000);
+  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [draft.id]);
+});
+
+test("a destination rolls back the import that lost its engine reply during restart", { timeout: 105000 }, async t => {
   const { computer, relay } = await bench(t);
-  const source = await computer("source");
-  const destination = await computer("destination", boxBinary(mixed));
+  const source = await computer("aborted-source"), destination = await computer("aborted-destination");
   const { main, member } = seedPeerSetup(source.home, relay.url);
   seedPeerSetup(destination.home, relay.url, 2);
-  const old = Date.now() - 120000;
-  const id = "mov_lostReply", session = "ses_lostReply";
-  const bundle = { generation: 2, hash: "A".repeat(43) };
-  const journal = {
-    id, kind: "chat", thing: session, name: "A moved chat", from: main.key, to: member.key,
-    role: "from", stage: "switching", step: "switch", peer: member.key, sessions: [session],
-    wasPaused: false, tries: 0, started: old, sentAt: old, switchSince: old,
-    twoComputers: true, safeSwitch: true, verifyPayloads: true, ...bundle, formatVersion: 1,
-  };
-  const decision = {
-    as: "switched", at: old, peer: main.key, ...bundle, payloads: { sessions: [], queue: [] },
-    formatVersion: 1,
-  };
-  const sourceJournal = path.join(source.home, "run/moves", id + ".json");
-  const destinationReceipt = path.join(destination.home, "run/moves/decisions", id + ".json");
-  write(sourceJournal, JSON.stringify(journal));
-  write(destinationReceipt, JSON.stringify(decision));
-
-  const before = destination.start();
-  await before.ready();
-  await before.stop();
+  const root = "ses_lostImport";
+  const chats = path.join(source.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  source.engine.sessions.push(sessionOf({ id: root, directory: chats }));
+  let accepted = false;
+  destination.engine.holdImport = { id: root, accepted: () => { accepted = true; } };
+  const srcProcess = source.start(), destinationBefore = destination.start();
+  const [src] = await Promise.all([srcProcess.ready(), destinationBefore.ready()]);
+  await until(() => {
+    try { return readJSON(path.join(source.home, "run/peer-agents.json"))[member.key]?.features?.includes("moves.two-computers"); }
+    catch { return false; }
+  }, "The source did not hear from the destination", 15000);
+  await readyToMove(src, root, member);
+  const begun = await request(src, "POST", "kuvo/moves", { kind: "chat", id: root, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const move = begun.json.move.id;
+  await until(() => accepted, "The destination engine did not accept the import before interruption", 12000);
+  assert.ok(destination.engine.sessions.some(row => row.id === root));
+  await destinationBefore.stop();
   await destination.start().ready();
-  const sourceProcess = source.start();
-  const resident = await sourceProcess.ready();
-  const receipt = () => request(resident, "GET", "kuvo/moves/receipt?id=" + id);
-  const moved = await until(async () => {
-    const answer = await receipt();
-    assert.equal(answer.status, 200, answer.text);
-    return answer.json.state === "done" && answer.json;
-  }, () => "The source did not recover the switch acknowledgement\n" + sourceProcess.log(), 22000);
-  assert.equal(moved.message, "Moved to Lab.");
-  assert.equal(moved.move.stage, "finishing");
-  assert.equal(readJSON(destinationReceipt).as, "switched");
-  assert.deepEqual(readJSON(destinationReceipt), decision);
-  assert.ok(readJSON(path.join(source.home, "run/moves/moved.json")).some(entry => (
-    entry.session === session && entry.key === member.key
-  )));
+  await until(() => !destination.engine.sessions.some(row => row.id === root), "The interrupted copy is still in the destination engine", 15000);
+  const proof = readJSON(path.join(destination.home, "run/moves/decisions", move + ".json"));
+  assert.equal(proof.as, "dropped");
+  assert.equal(proof.peer, main.key);
+  await until(async () => (await request(src, "GET", "kuvo/moves/receipt?id=" + move)).json?.state === "failed",
+    "The source did not receive the failed move outcome after retrying arrival", 70000);
+  assert.ok(source.engine.sessions.some(row => row.id === root));
+});
+
+test("a restarted source drives a request saved before its first check", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("requested-source"), there = await computer("requested-target");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const id = "mov_recentRequest", session = "ses_recentRequest";
+  const directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  const destination = await there.start().ready();
+  assert.equal((await request(destination, "GET", "kuvo/moves")).status, 200);
+  save("run/moves/" + id + ".json", {
+    id, thing: session, name: "A saved request", kind: "chat", from: main.key,
+    to: member.key, peer: member.key, role: "from", stage: "holding", sessions: [session],
+    step: "check", started: Date.now(), wasPaused: false, tries: 0, twoComputers: true, formatVersion: 1,
+  });
+  const source = await here.start().ready();
+  const completed = await until(async () => {
+    const reply = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+    return ["done", "failed"].includes(reply.json?.state) && reply.json;
+  }, "The resident did not drive the saved request", 20000);
+  assert.equal(completed.state, "done", JSON.stringify(completed));
+  assert.ok(there.engine.sessions.some(record => record.id === session));
+  await until(() => !here.engine.sessions.some(record => record.id === session), "The retired source was not removed");
+});
+
+async function moveMail(t, relay, main) {
+  const from = Buffer.alloc(32, 2), to = Buffer.from(main.key, "base64url");
+  const address = Buffer.from(main.address, "base64url");
+  const sender = relay.device(Buffer.alloc(32, 52));
+  t.after(() => sender.leave());
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const receive = async () => {
+    const datagram = readFrame((await sender.next(15000)).subarray(17));
+    return datagram?.kind === Frame.mail && JSON.parse(openOneWay(datagram.body, from, to).payload);
+  };
+  let welcomed = false;
+  return async movement => {
+    if (!welcomed) {
+      await until(async () => (await receive())?.agents, "The destination did not announce itself to the peer", 15000);
+      welcomed = true;
+    }
+    const { message } = sealOneWay(Buffer.from(JSON.stringify({ formatVersion: 1, at: Date.now(), move: movement })), from, to);
+    sender.send(address, frame(Frame.mail, 0, message));
+    return until(async () => {
+      const answer = (await receive())?.move;
+      return answer?.id === movement.id && answer;
+    }, () => "The destination never answered " + movement.id);
+  };
+}
+
+test("a destination reports the same held copy and refuses an unknown arrival", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("arrival-query");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const id = "mov_recordedArrival", unknown = "mov_unknownArrival";
+  const session = "ses_recordedArrival", hash = "A".repeat(43);
+  save("run/moves/" + id + ".json", {
+    formatVersion: 1, id, thing: session, name: "Notes", kind: "chat", from: member.key,
+    to: main.key, peer: member.key, role: "to", stage: "copying", sessions: [session],
+    started: Date.now(), safeSwitch: true, twoComputers: true, complete: true, setUpAt: Date.now(),
+    generation: 1, hash, verifyPayloads: true, payloads: { sessions: [], queue: [] },
+  });
+  here.engine.sessions.push(sessionOf({ id: session, directory: path.join(here.home, "chats") }));
+  await here.start().ready();
+  assert.deepEqual(await ask({ op: "arrive", id, generation: 1, hash }),
+    { op: "arrived", id, generation: 1, hash, verifiedPayloads: true });
+  const refused = await ask({ op: "arrive", id: unknown, generation: 1, hash });
+  assert.equal(refused.op, "failed");
+  assert.equal(refused.generation, 1);
+  assert.equal(refused.hash, hash);
+});
+
+test("a destination refuses an oversized offer before creating a copy", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("oversized-offer");
+  const { main } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const resident = await here.start().ready();
+  const id = "mov_oversizedOffer", hash = "A".repeat(43);
+  const movement = { op: "offer", id, generation: 1, hash, kind: "chat", thing: "ses_bigVideos",
+    name: "“Videos”", size: 1_000_000_001, safeSwitch: true, twoComputers: true };
+  const refused = await ask(movement);
+  assert.deepEqual(refused, { op: "refused", id, generation: 1, hash,
+    message: "“Videos” is more than 1 GB, too big to move to another computer, so it stays where it is." });
+  const list = await request(resident, "GET", "kuvo/moves");
+  assert.equal(list.status, 200, list.text);
+  assert.deepEqual(list.json.moves, []);
+  assert.deepEqual(list.json.away, []);
+  assert.equal(fs.existsSync(path.join(here.home, "run/moves", id + ".json")), false);
+  assert.equal(here.engine.sessions.length, 0);
+});
+
+test("an older incoming copy without import proof stays held after a drop", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("unproven-import");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const id = "mov_UnprovenImport", session = "ses_UnprovenImport", hash = "A".repeat(43);
+  here.engine.sessions.push(sessionOf({ id: session, directory: path.join(here.home, "chats") }));
+  const file = "run/moves/" + id + ".json";
+  save(file, { id, thing: session, name: "Existing conversation", kind: "chat", from: member.key,
+    to: main.key, peer: member.key, role: "to", stage: "copying", sessions: [session],
+    started: Date.now(), safeSwitch: true, complete: true, wasPaused: false, generation: 1, hash });
+  const { sealOneWay, openOneWay, frame, readFrame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const secret = Buffer.alloc(32, 2), source = Buffer.from(main.key, "base64url");
+  const peer = relay.device(Buffer.alloc(32, 52));
+  t.after(() => peer.leave());
+  const resident = await here.start().ready();
+  const address = Buffer.from(main.address, "base64url");
+  await until(() => relay.has(address), "The receiving computer did not connect");
+  assert.equal((await request(resident, "GET", "kuvo/moves")).status, 200);
+  const envelope = Buffer.from(JSON.stringify({ move: { op: "drop", id, generation: 1, hash }, at: Date.now(), formatVersion: 1 }));
+  const { message } = sealOneWay(envelope, secret, source);
+  peer.send(address, frame(Frame.mail, 0, message));
+  await until(async () => {
+    const delivery = await peer.next();
+    const packet = readFrame(delivery.subarray(17));
+    return packet?.kind === Frame.mail &&
+      JSON.parse(openOneWay(packet.body, secret, source).payload).move?.op === "dropped";
+  }, "The original computer was not told it could stay active");
+  assert.equal(readJSON(path.join(here.home, file)).dropping, true);
+  assert.ok(here.engine.sessions.some(each => each.id === session));
+  assert.ok((await request(resident, "GET", "kuvo/moves")).json.away.includes(session));
+});
+
+for (const reverse of binary.typescript ? [false] : [false, true]) {
+  test(`a live chat, a held queue, and letters ${reverse ? "move back" : "move to the other computer"}`, { timeout: 240000 }, async t => {
+    const { computer, relay } = await bench(t);
+    const source = await computer("live-source");
+    const destination = await computer("live-destination");
+    const { main, member } = seedPeerSetup(source.home, relay.url, reverse ? 2 : 1);
+    seedPeerSetup(destination.home, relay.url, reverse ? 1 : 2);
+    const [from, to] = reverse ? [member, main] : [main, member];
+    const cuts = !binary.typescript && !reverse && fs.existsSync(wireFixture)
+      ? cutMoveMail(relay, (await testMail(t, boxBinary(wireFixture))).openOneWay, source, destination, from, to) : null;
+    if (cuts) t.after(() => cuts.close());
+    const job = "ses_liveChat", child = "ses_liveChild", waiting = "msg_pausedMessage";
+    const chats = path.join(source.home, "chats");
+    fs.mkdirSync(chats, { recursive: true });
+    source.engine.sessions.push(sessionOf({ id: job, title: "Live transfer", directory: chats }));
+    source.engine.sessions.push(sessionOf({ id: child, title: "Live child", directory: chats, parent: job }));
+    const siblings = Array.from({length: 100}, (_, index) => `ses_liveSibling${index}`);
+    for (const id of siblings) source.engine.sessions.push(sessionOf({ id, directory: chats, parent: job }));
+    const transcript = [{ id: "msg_originalMessage", type: "user", content: [{ type: "text", text: "Keep this conversation." }] }];
+    const queued = { id: waiting, text: "Wait for a resume after the move.", delivery: "queue" };
+    source.engine.messages.set(job, transcript);
+    write(path.join(source.home, "run/queues.json"), JSON.stringify({
+      [job]: { formatVersion: 1, paused: true, held: [], userPaused: true, waiting: [{ id: waiting, text: queued.text, at: 1 }] },
+    }));
+    write(path.join(source.home, `run/waiting/${waiting}.json`), JSON.stringify({ ...queued, formatVersion: 1 }));
+    const noteFile = path.join("run/work/notes", `${job}.ordinary.json`);
+    const notes = { version: 1, notes: { carried: {
+      versions: [{ revision: "R".repeat(43), deleted: false, fields: { text: "Keep this ordinary note." } }],
+      choices: [], receipts: [], additions: {},
+    } } };
+    write(path.join(source.home, noteFile), JSON.stringify(notes));
+    const setup = readJSON(path.join(source.home, "run/link.json")).setup.id;
+    const address = createHash("sha256").update(JSON.stringify(["typed-draft", setup, job, "msg_alreadyClaimed"])).digest("base64url");
+    const fenceFile = path.join("run/owned-data/mutations", address + ".json");
+    const fence = { formatVersion: 1, digest: "scoped:" + "C".repeat(43),
+      draftReplayFence: { setup, session: job, id: "msg_alreadyClaimed" } };
+    write(path.join(source.home, fenceFile), JSON.stringify(fence));
+    const srcProcess = source.start(), destProcess = destination.start();
+    const started = await Promise.all([srcProcess.ready(), destProcess.ready()]);
+    const src = started[0];
+    let dest = started[1];
+    await until(() => {
+      try {
+        return readJSON(path.join(source.home, "run/peer-agents.json"))[to.key]?.features?.includes("moves.two-computers");
+      } catch { return false; }
+    }, () => "The source did not hear the destination's move capability\n" + destProcess.log(), 15000);
+    await readyToMove(src, job, to);
+    const beginMove = () => request(src, "POST", "kuvo/moves", { kind: "chat", id: job, to: to.key, receipt: true });
+    const simultaneous = await Promise.all([beginMove(), beginMove()]);
+    assert.deepEqual(simultaneous.map(reply => reply.status).sort(), [202, 409],
+      simultaneous.map(reply => reply.text).join("\n"));
+    const begin = simultaneous.find(reply => reply.status === 202);
+    assert.match(simultaneous.find(reply => reply.status === 409).json.message, /moving to another computer/);
+    const id = begin.json.move.id;
+    if (cuts) {
+      await cuts.resume();
+      const proof = path.join(destination.home, "run/moves/decisions", id + ".json");
+      assert.equal(readJSON(proof).as, "switched");
+      const still = await request(src, "GET", "kuvo/moves/receipt?id=" + id);
+      assert.equal(still.json.state, "moving");
+      await destProcess.stop();
+      dest = await destination.start().ready();
+      const online = await request(dest, "GET", "kuvo/moves");
+      assert.equal(online.status, 200, online.text);
+      await cuts.recoverSwitch(async () => {
+        const waiting = await until(async () => {
+          const state = await request(src, "GET", "kuvo/moves/receipt?id=" + id);
+          assert.equal(state.json?.state, "moving", state.text);
+          return state.json.move.waiting && state.json.move;
+        }, "The source never reported waiting for the switch acknowledgement", 105000, 200);
+        assert.equal(waiting.progress, `Waiting for ${to.name}…`);
+      });
+    }
+    const completed = await until(async () => {
+      const answer = await request(src, "GET", "kuvo/moves/receipt?id=" + id);
+      assert.equal(answer.status, 200, answer.text);
+      assert.notEqual(answer.json.state, "failed", JSON.stringify(answer.json) + "\n" + srcProcess.log() + "\n" + destProcess.log());
+      return answer.json.state === "done" && answer.json;
+    }, () => "The transfer did not finish\n" + srcProcess.log() + "\n" + destProcess.log(), cuts ? 70000 : 22000);
+    assert.equal(completed.message, `Moved to ${to.name}.`);
+    const decision = readJSON(path.join(destination.home, "run/moves/decisions", id + ".json"));
+    assert.equal(decision.as, "switched");
+    assert.equal(decision.peer, from.key);
+    assert.equal(decision.generation, 1);
+    assert.match(decision.hash, /^[A-Za-z0-9_-]{43}$/);
+    assert.deepEqual(destination.engine.messages.get(job), transcript);
+    assert.equal(destination.engine.sessions.find(each => each.id === child)?.parentID, job);
+    assert.deepEqual(destination.engine.sessions.filter(each => siblings.includes(each.id)).map(each => each.id).sort(), siblings.sort());
+    await until(() => source.engine.sessions.length === 0, () => "The retired original was not removed\n" + srcProcess.log());
+    assert.deepEqual(readJSON(path.join(destination.home, `run/waiting/${waiting}.json`)), { ...queued, formatVersion: 1 });
+    assert.equal(readJSON(path.join(destination.home, "run/queues.json"))[job].userPaused, true);
+    assert.deepEqual(readJSON(path.join(destination.home, noteFile)), {
+      ...notes, move: `${id}:${decision.generation}:${decision.hash}`,
+    });
+    assert.deepEqual(readJSON(path.join(destination.home, fenceFile)), fence);
+    assert.ok(readJSON(path.join(source.home, "run/moves/moved.json")).some(row => row.session === job && row.key === to.key));
+    const resume = await request(dest, "POST", `kuvo/sessions/${job}/queue/resume`, {}).catch(error => { throw new Error("Resuming the moved chat's queue: " + destProcess.log(), { cause: error }); });
+    assert.equal(resume.status, 200, resume.text);
+    await until(() => destination.engine.messages.get(job).some(each => each.id === waiting), "The held message did not go after resume");
+
+    // Its former owner is recorded in the envelope. The source's move
+    // journal must resolve the new owner, and delivery uses the usual inbox.
+    const text = "The sender on its earlier computer reached this moved chat.";
+    write(path.join(source.home, "run/outbox/sending/liveLetter.json"), JSON.stringify({ to: job, text, at: Date.now(), peer: from.key, wait: false }));
+    await until(() => destination.engine.messages.get(job).some(each => each.text?.includes(text)), "The letter never reached the moved chat", 17000);
+    assert.equal(destination.engine.messages.get(job).filter(each => each.text?.includes(text)).length, 1);
+    if (!binary.typescript && !reverse) {
+      const left = path.join(source.home, "run/moves/left.json");
+      const backup = readJSON(left).find(each => each.id === id);
+      assert.ok(fs.existsSync(backup.trash));
+      await readyToMove(dest, job, from);
+      const returning = await request(dest, "POST", "kuvo/moves", { kind: "chat", id: job, to: from.key, receipt: true });
+      assert.equal(returning.status, 202, returning.text);
+      await until(async () => {
+        const result = await request(dest, "GET", "kuvo/moves/receipt?id=" + returning.json.move.id);
+        assert.notEqual(result.json?.state, "failed", result.text);
+        return result.json?.state === "done";
+      }, "The moved chat did not return to its first computer", 22000);
+      assert.ok(!fs.existsSync(backup.trash));
+      assert.ok(!fs.existsSync(left) || !readJSON(left).some(each => each.id === id));
+      assert.ok(source.engine.messages.get(job).some(each => each.text?.includes(text)));
+      assert.equal(source.engine.sessions.find(each => each.id === child)?.parentID, job);
+    }
+  });
+}
+
+test("move destinations show the other computer and wait for a running turn", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("places-source"), there = await computer("places-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const id = "ses_movePlaces", chats = path.join(here.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id, title: "Trip plans", directory: chats }));
+  const from = here.start(), to = there.start();
+  let [source] = await Promise.all([from.ready(), to.ready()]);
+  const places = session => request(source, "GET", "kuvo/moves/places?kind=chat&id=" + session);
+  const ready = await until(async () => {
+    const reply = await places(id);
+    assert.equal(reply.status, 200, reply.text);
+    return reply.json.places[0]?.ok && reply.json;
+  }, "The destination did not become available", 15000);
+  const intro = "Its conversation and wake-ups move with it.";
+  const end = `New messages and wake-ups wait during the move. Vault items, integrations and browser sign-ins stay on ${main.name}. The original goes to Kuvo Code’s trash folder on ${main.name}.`;
+  const destination = message => ({ places: [{ key: member.key, name: member.name, kind: "machine", ok: true,
+    confirm: { title: `Move “Trip plans” to ${member.name}?`, label: "Move", message } }] });
+  assert.deepEqual(ready, destination(intro + " " + end));
+  here.engine.running.add(id);
+  const busy = await places(id);
+  assert.deepEqual(busy.json, destination(intro + " A turn is running. The move waits up to a minute for it to finish. " + end));
+  const missing = await places("ses_doesNotExist");
+  assert.equal(missing.status, 404);
+  assert.deepEqual(missing.json, { message: "It isn’t on this computer any more." });
+
+  await Promise.all([from.stop(), to.stop()]);
+  const reach = JSON.stringify({ [member.key]: Date.now() });
+  write(path.join(here.home, "run/peer-reach.json"), reach);
+  write(path.join(here.home, "run/peer-reach-checked.json"), reach);
+  source = await here.start().ready();
+  const away = await places(id);
+  assert.equal(away.status, 200, away.text);
+  assert.deepEqual(away.json, { places: [{ key: member.key, name: member.name, kind: "machine", ok: false,
+    why: `${member.name} isn’t connected. Connect to it, then try again.`, note: "Can’t be reached" }] });
+});
+
+test("a waiting move reports an unanswered destination as unavailable", {
+  timeout: 110000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("unanswered-move-source"), there = await computer("unanswered-move-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_unansweredMove", chats = path.join(here.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory: chats }));
+  const pause = path.join(here.home, "wakes", session, "paused");
+  write(pause, "user-paused");
+  const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await readyToMove(source, session, member);
+  const { openOneWay } = await testMail(t, boxBinary(wireFixture));
+  let checked = false;
+  const remove = relay.intercept(Buffer.from(main.address, "base64url"), Buffer.from(member.address, "base64url"), packet => {
+    if (packet.payload[0] !== 5) return false;
+    try {
+      const mail = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), Buffer.from(main.key, "base64url"));
+      if (JSON.parse(mail.payload).move?.op !== "check") return false;
+      checked = true;
+      return true;
+    } catch { return false; }
+  });
+  t.after(remove);
+  const refused = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key }, {}, 80000);
+  assert.equal(checked, true);
+  assert.equal(refused.status, 503, refused.text);
+  assert.deepEqual(refused.json, { message: `${member.name} isn’t connected. Connect to it, then try again.` });
+  assert.equal(here.engine.sessions[0]?.id, session);
+  assert.equal(there.engine.sessions.length, 0);
+  assert.equal(fs.readFileSync(pause, "utf8"), "user-paused");
+});
+
+test("a destination missing the chat's sign-in refuses before its work is held", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("account-source"), there = await computer("account-target");
+  const { member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const id = "ses_accountMove", chats = path.join(here.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  here.engine.sessions.push({ ...sessionOf({ id, title: "Account chat", directory: chats }),
+    model: { providerID: "needs-sign-in", id: "model" } });
+  there.engine.providers.push({ id: "another-account" });
+  const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await until(() => {
+    try { return readJSON(path.join(here.home, "run/peer-agents.json"))[member.key]?.features?.includes("moves.check"); }
+    catch { return false; }
+  }, "The source did not hear the destination's move checks", 15000);
+  await readyToMove(source, id, member);
+  const move = () => request(source, "POST", "kuvo/moves", { kind: "chat", id, to: member.key, receipt: true });
+  const status = handle => request(source, "GET", "kuvo/moves/receipt?id=" + handle);
+  const begun = await move();
+  assert.equal(begun.status, 202, begun.text);
+  const first = begun.json.move.id;
+  const failed = await until(async () => {
+    const reply = await status(first);
+    assert.equal(reply.status, 200, reply.text);
+    assert.notEqual(reply.json.state, "done", "The chat moved without its sign-in");
+    return reply.json.state === "failed" && reply.json;
+  }, "The destination never refused the unsigned model", 12000);
+  const place = member.name;
+  assert.deepEqual(failed, { state: "failed",
+    message: `“Account chat”’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move “Account chat”.` });
+  assert.equal(here.engine.sessions.find(session => session.id === id)?.id, id);
+  assert.equal(there.engine.sessions.length, 0);
+  assert.ok(!fs.existsSync(path.join(here.home, "wakes", id, "paused")));
+
+  there.engine.providers.push({ id: "needs-sign-in" });
+  const retry = await move();
+  assert.equal(retry.status, 202, retry.text);
+  await until(async () => {
+    const reply = await status(retry.json.move.id);
+    assert.notEqual(reply.json?.state, "failed", reply.text);
+    return reply.json?.state === "done";
+  }, "The chat did not move once its provider was signed in", 20000);
+  assert.equal(there.engine.sessions.find(session => session.id === id)?.id, id);
+});
+
+test("a restart restores legacy wake-up holds without releasing another move", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("legacy-wake-holds");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const held = "ses_formerWakeHold", orphan = "ses_legacyOrphan", owned = "ses_namedWakeHold";
+  const paused = id => path.join(here.home, "wakes", id, "paused");
+  write(paused(held), "moving");
+  write(paused(orphan), "moving");
+  write(paused(owned), "moving:mov_otherMove");
+  const id = "mov_legacyWakeHold";
+  save("run/moves/" + id + ".json", {
+    formatVersion: 0, id, thing: held, name: "The previous chat", kind: "chat",
+    from: main.key, to: member.key, peer: member.key, role: "from", stage: "holding",
+    sessions: [held], step: "done", started: 1, failed: "It stayed here.",
+    folder: path.dirname(paused(held)), wasPaused: true, pausedAs: "user-paused",
+  });
+  const source = here.start();
+  await source.ready();
+  await until(() => {
+    try { return fs.readFileSync(paused(held), "utf8") === "user-paused" && !fs.existsSync(paused(orphan)); }
+    catch { return false; }
+  }, () => "The resident left old wake-ups held\n" + source.log(), 8000);
+  assert.equal(fs.readFileSync(paused(owned), "utf8"), "moving:mov_otherMove");
+});
+
+test("a chat's wake-up folder stays held until its new computer owns it", {
+  timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("wake-source"), there = await computer("wake-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_wakeMove";
+  const sourceWakes = path.join(path.dirname(here.home), "My wake-ups");
+  const folder = path.join(sourceWakes, session);
+  const target = path.join(there.home, "wakes", session);
+  const sourceChats = path.join(path.dirname(here.home), "My chats");
+  fs.mkdirSync(sourceChats, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory: sourceChats }));
+  const savedPause = "user-paused\n", wake = "Keep the existing wake-up.\n";
+  write(path.join(folder, "paused"), savedPause);
+  write(path.join(folder, "directory"), sourceChats);
+  write(path.join(folder, "wake.txt"), wake);
+  if (process.platform !== "win32") fs.symlinkSync("wake.txt", path.join(folder, "current"));
+  const { openOneWay } = await testMail(t, boxBinary(wireFixture));
+  const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
+  const remote = Buffer.from(main.key, "base64url");
+  let switchPacket;
+  const release = relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== 5) return false;
+    try {
+      const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), remote);
+      if (JSON.parse(payload).move?.op !== "switch") return false;
+      switchPacket = packet;
+      return true;
+    } catch { return false; }
+  });
+  t.after(release);
+  const srcProcess = here.start(binary, { KUVO_WAKES: sourceWakes, KUVO_CHATS: sourceChats });
+  const dstProcess = there.start();
+  const [source, destination] = await Promise.all([srcProcess.ready(), dstProcess.ready()]);
+  await until(() => {
+    try { return readJSON(path.join(here.home, "run/peer-agents.json"))[member.key]?.features?.includes("moves.two-computers"); }
+    catch { return false; }
+  }, "The source did not hear the destination's move capability", 15000);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const id = begun.json.move.id;
+  await until(() => switchPacket, "The held wake-up folder did not reach its destination", 15000);
+  assert.equal(fs.readFileSync(path.join(folder, "paused"), "utf8"), "moving:" + id);
+  assert.equal(fs.readFileSync(path.join(target, "paused"), "utf8"), "moving:" + id);
+  release();
+  relay.replay(switchPacket);
+  const left = await until(() => {
+    try { return readJSON(path.join(here.home, "run/moves/left.json")).find(row => row.id === id); }
+    catch { return false; }
+  }, () => "The source did not retire its previous wake-up folder\n" + srcProcess.log(), 15000);
+  assert.ok(!fs.existsSync(folder));
+  assert.equal(fs.readFileSync(path.join(left.trash, "wake.txt"), "utf8"), wake);
+  assert.equal(readJSON(path.join(left.trash, "conversation.json"))[0].info.id, session);
+  assert.equal(fs.readFileSync(path.join(target, "wake.txt"), "utf8"), wake);
+  assert.equal(fs.readFileSync(path.join(target, "directory"), "utf8"), path.join(there.home, "chats"));
+  assert.equal(fs.readFileSync(path.join(target, "paused"), "utf8"), savedPause);
+  if (process.platform !== "win32") assert.equal(fs.readlinkSync(path.join(target, "current")), "wake.txt");
+
+  if (binary.typescript) return;
+  fs.unlinkSync(path.join(target, "paused"));
+  await readyToMove(destination, session, main);
+  const back = await request(destination, "POST", "kuvo/moves", { kind: "chat", id: session, to: main.key, receipt: true })
+    .catch(error => { throw new Error("Starting the return move\n" + dstProcess.log(), { cause: error }); });
+  assert.equal(back.status, 202, back.text);
+  await until(async () => {
+    const reply = await request(destination, "GET", "kuvo/moves/receipt?id=" + back.json.move.id)
+      .catch(error => { throw new Error("Waiting for the return move\n" + dstProcess.log() + "\n" + srcProcess.log(), { cause: error }); });
+    assert.notEqual(reply.json?.state, "failed", reply.text);
+    return reply.json?.state === "done" && !fs.existsSync(target);
+  }, "The unpaused wake-up folder did not return", 20000);
+  assert.ok(!fs.existsSync(path.join(folder, "paused")));
+  assert.equal(fs.readFileSync(path.join(folder, "wake.txt"), "utf8"), wake);
+  assert.equal(fs.readFileSync(path.join(folder, "directory"), "utf8"), sourceChats);
+});
+
+test("a letter that waits hears the authenticated answer in its tool", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("waiting-letter-source"), there = await computer("waiting-letter-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const sender = "ses_waitingSender", recipient = "ses_waitingRecipient";
+  here.engine.sessions.push(sessionOf({ id: sender, title: "Trip plans", directory: path.join(here.home, "chats") }));
+  there.engine.sessions.push(sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") }));
+  await Promise.all([here.start().ready(), there.start().ready()]);
+  const listed = (computer, peer, session) => {
+    try { return readJSON(path.join(computer.home, "run/peer-agents.json"))[peer.key]?.list?.some(row => row.session === session); }
+    catch { return false; }
+  };
+  await until(() => listed(here, member, recipient) && listed(there, main, sender),
+    "The computers did not hear about the other conversations", 15000);
+  const letter = "ltr_waitForReservations";
+  const tool = path.join(here.home, "run/replies", letter);
+  const file = path.join(here.home, "run/outbox/sending", letter + ".json");
+  write(tool + ".alive", "");
+  write(file, JSON.stringify({ from: sender, to: recipient, text: "Is the train booked?", peer: member.key, wait: true, at: Date.now() }));
+  const conversation = await until(() => there.engine.messages.get(recipient), "The letter never reached the other computer", 14000);
+  assert.equal(conversation.length, 1);
+  assert.match(conversation[0].text, /They're waiting for your reply/);
+  conversation.push({ id: conversation[0].id.slice(0, -1) + "z0", type: "assistant",
+    content: [{ type: "text", text: "The train is booked." }] });
+  const answer = await until(() => {
+    const now = new Date();
+    fs.utimesSync(tool + ".alive", now, now);
+    try { return readJSON(tool + ".json"); } catch { return false; }
+  }, "The original tool never heard the answer", 15000, 1000);
+  assert.deepEqual(answer, { text: "The train is booked.", to: sender, from: recipient, name: "Reservations" });
+  assert.ok(!fs.existsSync(tool + ".wait"));
+  assert.ok(!fs.existsSync(file));
+  assert.equal(here.engine.messages.has(sender), false);
+});
+
+test("a refused letter becomes one queued note to the conversation that sent it", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("refused-letter-source"), there = await computer("refused-letter-target");
+  const { member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const sender = "ses_letterSender", recipient = "ses_letterRecipient";
+  here.engine.sessions.push(sessionOf({ id: sender, directory: path.join(here.home, "chats") }));
+  there.engine.sessions.push(sessionOf({ id: recipient, archived: true, directory: path.join(there.home, "chats") }));
+  const file = path.join(here.home, "run/outbox/sending/ltr_refusedByOwner.json");
+  const hereProcess = here.start(), targetProcess = there.start();
+  await Promise.all([hereProcess.ready(), targetProcess.ready()]);
+  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The destination did not connect");
+  write(file, JSON.stringify({ from: sender, to: recipient, text: "Hello", peer: member.key, wait: false, at: Date.now() }));
+  const prompts = () => here.engine.messages.get(sender) ?? [];
+  await until(() => prompts().length, "The sender never heard the reason its letter was refused", 14000);
+  const line = `Your message to that chat on ${member.name} wasn't delivered`;
+  assert.equal(prompts()[0].text, `[Not delivered] ${line}: ${member.name} said "That conversation doesn't take messages."`);
+  assert.deepEqual(prompts()[0].metadata.kuvo.note, { from: "Your other computers", line });
+  assert.equal(prompts()[0].delivery, "queue");
+  assert.ok(!fs.existsSync(file));
+  await hereProcess.stop();
+  await here.start().ready();
+  assert.equal(prompts().length, 1);
+  assert.equal(there.engine.messages.has(recipient), false);
+});
+
+test("a managed attachment moves with both its typed references and its receipt", { timeout: 90000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const source = await computer("attachment-source"), target = await computer("attachment-target");
+  const { member } = seedPeerSetup(source.home, relay.url);
+  seedPeerSetup(target.home, relay.url, 2);
+  const session = "ses_attachmentMove", child = "ses_attachmentChild", message = "msg_attachedFile";
+  const chats = path.join(source.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  source.engine.sessions.push(sessionOf({ id: session, directory: chats }));
+  source.engine.sessions.push(sessionOf({ id: child, directory: chats, parent: session }));
+  const original = path.join(source.home, "attachments", session, "proof space.txt");
+  const outside = path.join(source.home, "export only.txt");
+  const heading = "Open these attached files with your tools if you need them:";
+  const block = file => `Here is the file.\n<attached-files>\n${heading}\n${file}\n</attached-files>`;
+  const fileUrl = file => pathToFileURL(file).href + "?version=1#page";
+  const seedReference = file => {
+    source.engine.messages.set(session, [
+      { id: "msg_quotedAttachment", type: "assistant", content: [{ type: "text", text: block(file) }] },
+      { id: message, type: "user", content: [
+      { type: "text", text: block(file) },
+      { type: "file", mime: "text/plain", filename: "proof space.txt", url: fileUrl(file) },
+    ] }]);
+    source.engine.messages.set(child, [{ id: "msg_childAttachment", type: "user", content: [
+      { type: "file", mime: "text/plain", filename: "proof space.txt", url: fileUrl(file) },
+    ] }]);
+  };
+  write(outside, "This file stays with the source.");
+  seedReference(outside);
+  const sourceProcess = source.start(), targetProcess = target.start();
+  const [here] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  await until(() => {
+    try { return readJSON(path.join(source.home, "run/peer-agents.json"))[member.key]?.features?.includes("moves.two-computers"); }
+    catch { return false; }
+  }, "The source did not hear the destination's move capability", 15000);
+  await readyToMove(here, session, member);
+  const begin = async description => {
+    const reply = await request(here, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true }, {}, 25000)
+      .catch(error => { throw new Error(`Starting the ${description} move: ${sourceProcess.log()}`, { cause: error }); });
+    assert.equal(reply.status, 202, reply.text);
+    return reply.json.move.id;
+  };
+  const outcome = id => until(async () => {
+    const reply = await request(here, "GET", "kuvo/moves/receipt?id=" + id, undefined, {}, 25000);
+    if (reply.json?.state === "done" || reply.json?.state === "failed") return reply.json;
+  }, "The move never published an outcome " + id, 30000, 100);
+  const exportOnly = await outcome(await begin("export-only"));
+  assert.equal(exportOnly.state, "failed");
+  assert.match(exportOnly.message, /outside the managed roots/);
+  const bytes = "These are the managed bytes.\n";
+  write(original, bytes);
+  fs.unlinkSync(original);
+  seedReference(original);
+  const refused = await outcome(await begin("expired attachment"));
+  assert.equal(refused.state, "failed");
+  assert.match(refused.message, /attachment.*missing|attachment.*unreadable/i);
+  assert.ok(source.engine.sessions.some(each => each.id === session));
+  assert.equal(target.engine.sessions.length, 0);
+
+  write(original, bytes);
+  const waiting = "msg_attachmentWaiting";
+  write(path.join(source.home, "run/queues.json"), JSON.stringify({
+    [session]: { formatVersion: 1, paused: true, held: [], userPaused: true, waiting: [{ id: waiting, text: "Here is the file.", at: 1 }] },
+  }));
+  write(path.join(source.home, "run/waiting", waiting + ".json"), JSON.stringify({
+    formatVersion: 1, id: waiting, delivery: "queue", text: block(original),
+    metadata: { kuvo: { parts: { words: "Here is the file.", paths: [original] } } },
+    files: [{ name: "proof space.txt", uri: fileUrl(original) }],
+  }));
+  const move = await begin("available attachment");
+  const completed = await outcome(move);
+  assert.equal(completed.state, "done", JSON.stringify(completed));
+  const receipt = readJSON(path.join(target.home, "run/moves/decisions", move + ".json"));
+  const slot = createHash("sha256").update(original).digest("hex");
+  const relative = `${session}/move-${move}/${slot}/proof space.txt`;
+  const installed = path.join(target.home, "attachments", ...relative.split("/"));
+  assert.deepEqual(receipt.payloads.sessions, [{
+    from: original, relative, size: Buffer.byteLength(bytes), sha256: createHash("sha256").update(bytes).digest("base64url"),
+  }]);
+  await sourceProcess.stop();
+  fs.unlinkSync(original);
+  await targetProcess.stop();
+  const reopened = await target.start().ready();
+  const file = await request(reopened, "GET", `kuvo/file?withMode=1&uri=${encodeURIComponent(fileUrl(installed))}`);
+  assert.equal(file.status, 200, file.text);
+  assert.equal(file.text, bytes);
+  const copied = target.engine.messages.get(session).find(entry => entry.id === message);
+  assert.equal(copied.content[0].text, block(installed));
+  assert.equal(copied.content[1].url, fileUrl(installed));
+  assert.equal(target.engine.messages.get(session)[0].content[0].text, block(original));
+  assert.equal(target.engine.messages.get(child)[0].content[0].url, fileUrl(installed));
+  const saved = readJSON(path.join(target.home, "run/waiting", waiting + ".json"));
+  assert.equal(saved.text, block(installed));
+  assert.equal(saved.files[0].uri, "data:text/plain;base64," + Buffer.from(bytes).toString("base64"));
+  assert.deepEqual(saved.metadata.kuvo.parts.paths, [installed]);
+  assert.ok(target.engine.asked.some(call => call.method === "PUT"
+    && call.path.endsWith("/instructions/entries/kuvo.moved")
+    && call.json?.value.includes(`The attachment at ${original} is at ${installed} now.`)));
 });
 
 test("both residents create and clear the same peer reach files", {

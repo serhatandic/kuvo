@@ -48,6 +48,8 @@ impl Computer {
     fn new() -> Self {
         let scratch = tempfile::tempdir().unwrap();
         let home = scratch.path().join("state");
+        #[cfg(windows)]
+        kuvo_os::windows::private_home(&home, true).unwrap();
         Self::initialize(&home);
         fs::create_dir_all(home.join("run")).unwrap();
         fs::create_dir_all(home.join("box")).unwrap();

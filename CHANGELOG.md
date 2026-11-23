@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.
+
 - A computer goes back to its previous Rust release if the new one fails to start. Work written during the attempt stays.
 - Searching files for a web address with a “?” in it, or in a folder whose name has one, finds what you typed.
 - A computer can rejoin after unlinking even when its Usage settings were refreshed for the standalone setup.
@@ -42,7 +44,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The installer resumes an authorized wipe and offers reinstall after erasing the previous installation.
 
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
-- The Rust server reads saved move results and shows moves reported by your other computers.
+- The Rust server moves OpenCode chats with their wake-ups, waiting messages and attached files, and keeps letters going to the computer that owns the chat.
 
 - The Rust server keeps local OpenCode queues and can settle a retried send after a restart.
 - The Rust server retains local drafts and their receipts, reads OpenCode questions and permissions, and searches local conversations.

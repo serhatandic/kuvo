@@ -67,7 +67,7 @@ impl Release {
         files::write_secret(path, self.to_string().as_bytes())
     }
 
-    fn folder(&self, home: &Path) -> PathBuf {
+    pub(crate) fn folder(&self, home: &Path) -> PathBuf {
         home.join("versions")
             .join(format!("{}-{}", self.version, self.digest))
     }

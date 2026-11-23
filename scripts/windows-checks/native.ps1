@@ -78,9 +78,11 @@ $baselineEmpty = $false
 $powershell = Join-Path $system 'WindowsPowerShell\v1.0\powershell.exe'
 $credentials = Join-Path $repo 'box\bridge-tests\windows-test-credentials.ps1'
 try {
-    & $credentials -Action define
-    $baselineEmpty = [TestCredentials]::BeginRun()
-    if (!$baselineEmpty) { throw 'Windows Credential Manager already holds credentials. Use an empty disposable account.' }
+    # (Each its own process with Bypass: clearing the environment above drops this one's.)
+    & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $credentials -Action check
+    if ($LASTEXITCODE -eq 42) { throw 'Windows Credential Manager already holds credentials. Use an empty disposable account.' }
+    if ($LASTEXITCODE -ne 0) { throw "The Credential Manager check failed ($LASTEXITCODE)." }
+    $baselineEmpty = $true
 
     $bunVersion = (Get-Content (Join-Path $repo 'box/.bun-version') -Raw).Trim()
     $nodeVersion = $pins.node.version
@@ -96,7 +98,8 @@ try {
     try {
         if ($baselineEmpty) {
             try {
-                $removed = [TestCredentials]::EndRun()
+                $removed = & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $credentials -Action clear
+                if ($LASTEXITCODE -ne 0) { throw "exit $LASTEXITCODE" }
                 Write-Output "Credential Manager: removed $removed run entries."
             } catch {
                 Write-Output "Credential Manager cleanup failed: $_"

@@ -7,6 +7,7 @@ pub mod conversation;
 pub mod devices;
 pub mod directory;
 mod kept;
+mod letters;
 pub mod lists;
 pub mod moves;
 pub mod notices;

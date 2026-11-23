@@ -30,8 +30,8 @@ export async function bench(t) {
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       write(path.join(home, "run", "engine.json"), JSON.stringify(engine.record));
       write(path.join(home, "run", "link.json"), JSON.stringify({ phones: [], name }));
-      const start = (runWith = implementation) => {
-        const child = startBox({ binary: runWith, home, env, relay });
+      const start = (runWith = implementation, overrides = {}) => {
+        const child = startBox({ binary: runWith, home, env: { ...env, ...overrides }, relay });
         children.push(child);
         return child;
       };
