@@ -231,12 +231,12 @@ if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuv
         if found.contains(&"no-tools") {
             return Err("That Mac needs a working git first. Run xcode-select --install on it (with Xcode, accept its license), then try again.".into());
         }
-        if found.contains(&"older") {
+        candidate.existing = Existing::read(&found);
+        if candidate.existing.is_none() && found.contains(&"older") {
             return Err(format!(
                 "{name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again."
             ));
         }
-        candidate.existing = Existing::read(&found);
         candidate.target = Target { os, cpu };
         Ok(candidate)
     }

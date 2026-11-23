@@ -81,6 +81,10 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.equal(member.json.you.key, done.computer.key);
   assert.equal(member.json.you.role, "member");
 
+  const oldWork = process.platform === "darwin"
+    ? path.join(remote, "Library", "Application Support", "run.kuvo.code", "Chats", "legacy", "notes.md")
+    : undefined;
+  if (oldWork) write(oldWork, "separate earlier work");
   fs.appendFileSync(path.join(main.home, "ssh", "known_hosts"), `second ssh-ed25519 ${key}\n`);
   const alias = await ask("POST", "kuvo/computers/add", { destination: "second" }, headers);
   assert.equal(alias.status, 202, alias.text);
@@ -95,6 +99,7 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.deepEqual(remembered.computer, done.computer);
   assert.deepEqual(readJSON(path.join(main.home, "machines.json")), [{ destination: "lab", identity, otherAddresses: ["second"] }]);
   assert.equal((await ask("GET", "kuvo/setup")).json.computers.length, 2);
+  if (oldWork) assert.equal(fs.readFileSync(oldWork, "utf8"), "separate earlier work");
 
   const fake = path.join(path.dirname(remote), "ssh");
   const copied = path.join(path.dirname(remote), "copied");
