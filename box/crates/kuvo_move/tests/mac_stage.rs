@@ -912,6 +912,40 @@ fn a_write_during_copy_is_carried_by_the_same_move() {
 }
 
 #[test]
+fn a_cut_short_new_home_fences_startup_until_it_is_remade() {
+    let root = tempfile::tempdir().unwrap();
+    let app = staged_release(root.path());
+    fs::remove_dir_all(&app.source).unwrap();
+    put(&app.source.join("engine/2.2.6/opencode"), b"fresh engine");
+    let marker = app.destination.join("updates/rehome/new");
+    put(&marker, b"1\n");
+    put(&app.destination.join("bin/partial-program"), b"partial");
+    let home = Home::new(app.destination.clone()).unwrap();
+    let open = || {
+        kuvo_move::open(
+            &home,
+            kuvo_os::platform::Platform::Mac,
+            Some(root.path()),
+            |_| {},
+        )
+    };
+    assert!(matches!(open(), Err(kuvo_move::Error::Busy(path)) if path == marker));
+    assert!(!app.destination.join(layout::FILE).exists());
+    let answer = kuvo_move::mac::new_home(
+        &home,
+        Some(&app.source.join("box")),
+        None,
+        Path::new("/not-the-test-account"),
+        Some(&app.release),
+        false,
+    );
+    assert_eq!(answer.exit_code(), 0, "{:?}", serde_json::to_value(answer));
+    assert!(!marker.exists());
+    assert!(open().is_ok());
+    assert_eq!(layout::inspect(&home).unwrap(), layout::Layout::Current);
+}
+
+#[test]
 fn sqlite_reader_sidecars_do_not_restart_the_move() {
     let root = tempfile::tempdir().unwrap();
     let app = staged_release(root.path());

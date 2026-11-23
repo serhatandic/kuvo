@@ -18,7 +18,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-mod destination;
+pub(super) mod destination;
 mod git;
 mod keychain;
 mod legacy;
@@ -63,12 +63,12 @@ pub enum CutoverStep {
 
 #[derive(Serialize)]
 pub struct Outcome {
-    result: &'static str,
-    status: Value,
+    pub(super) result: &'static str,
+    pub(super) status: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    started: Option<bool>,
+    pub(super) started: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
+    pub(super) message: Option<String>,
 }
 
 impl Outcome {
@@ -1159,7 +1159,7 @@ fn note_failure(
     })
 }
 
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

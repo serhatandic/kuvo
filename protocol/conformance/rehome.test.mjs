@@ -64,6 +64,13 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
     };
     write(path.join(app.S, "opencode/cache/models.json"), "{}");
     judge("fresh", "new");
+    const making = path.join(app.K, "updates/rehome/new");
+    const kind = path.join(app.K, "box/kind");
+    write(making, "1\n");
+    write(kind, "mac\n");
+    judge("fresh", "new");
+    fs.rmSync(making);
+    fs.rmSync(kind);
     write(note, "old conversation");
     judge("app-07", "move");
     write(path.join(app.S, "box/run/keeper.json"), "{}");
@@ -101,6 +108,10 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
     judge("two", null);
     fs.rmSync(app.S, { recursive: true, force: true });
     judge("machine", null);
+    const off = path.join(app.K, "run/off");
+    write(off, "");
+    judge("fresh", "new");
+    fs.rmSync(off);
     write(path.join(app.K, "box/kind"), "mac\n");
     write(state, '{"state":"done","way":"move","owed":["keychain","passwords"]}');
     judge("ours", null);
@@ -119,6 +130,80 @@ test("a released Mac move refuses unsafe inputs and can be tried again", {
     assert.deepEqual(judge("ours", null).status.signIns, signInsLast);
     write(state, JSON.stringify({ state: "done", way: "move", owed: [], signInsLast }));
     assert.equal(judge("ours", null).status.signIns, null);
+  });
+
+  await t.test("empty bot and group folders from the earlier app remain available", () => {
+    reset();
+    for (const name of ["bots", "groups"]) {
+      const source = path.join(app.S, name);
+      fs.rmSync(source, { recursive: true, force: true });
+      fs.mkdirSync(source, { recursive: true, mode: 0o700 });
+    }
+    assert.equal(move(0).result, "done");
+    for (const name of ["bots", "groups"]) {
+      assert.deepEqual(fs.readdirSync(path.join(app.K, name)), []);
+      assert.deepEqual(fs.readdirSync(path.join(app.S, name)), []);
+    }
+  });
+
+  await t.test("new-home readiness distinguishes a collision from a cut-short install", () => {
+    reset();
+    const appBox = { ...app, K: path.join(app.S, "box") };
+    const check = () => command([".kuvo-code", "--new", "--check"], 0, appBox);
+    assert.match(check().why, /data is in its folder/);
+    fs.rmSync(app.S, { recursive: true, force: true });
+    assert.match(check().why, /engine isn't downloaded/);
+    write(path.join(app.S, "engine/2.2.6/opencode"), "downloaded");
+    assert.deepEqual(check(), { ready: true, made: false });
+    write(path.join(app.K, "box/kind"), "mac\n");
+    const making = path.join(app.K, "updates/rehome/new");
+    write(making, "1\n");
+    assert.deepEqual(check(), { ready: true, made: false });
+    assert.equal(fs.readFileSync(making, "utf8"), "1\n");
+    fs.rmSync(making);
+    assert.deepEqual(check(), { ready: false, made: true });
+    write(path.join(app.K, "box/kind"), "machine\n");
+    write(path.join(app.K, "bin/kuvo-start"), "keeper");
+    assert.match(check().why, /set up in this Mac's/);
+    const journal = path.join(app.K, "updates/rehome/journal.json");
+    write(journal, JSON.stringify({ v: 1, way: "move", step: "clone" }));
+    assert.match(check().why, /is moving/);
+    assert.match(fs.readFileSync(journal, "utf8"), /clone/);
+  });
+
+  await t.test("a cut-short new install can be made again and another attempt stays idle", () => {
+    reset();
+    fs.rmSync(app.S, { recursive: true, force: true });
+    const appBox = { ...app, K: path.join(app.S, "box") };
+    const install = exit => command([".kuvo-code", "--new", "--release", app.release, "--keeps-awake", "off"], exit, appBox);
+    const engine = "engine/2.2.6/opencode";
+    const broken = path.join(app.release, "bin/broken");
+    write(path.join(app.S, engine), "fresh engine");
+    fs.symlinkSync(path.join(app.home, "missing"), broken);
+    assert.equal(install(1).result, "failed");
+    assert.equal(fs.existsSync(path.join(app.K, "updates/rehome/new")), false);
+    assert.equal(fs.existsSync(path.join(app.K, "box/kind")), false);
+    fs.rmSync(broken);
+
+    write(path.join(app.K, "updates/rehome/new"), "1\n");
+    write(path.join(app.K, "bin/partial-program"), "previous program");
+    write(path.join(app.K, "engine.new/partial"), "discardable scratch");
+    write(path.join(app.K, "desktop/paired.json"), '{"kept":true}');
+    write(path.join(app.K, "trash/earlier-box-previous/receipt"), "kept earlier");
+    assert.equal(install(0).result, "done");
+    assert.equal(fs.existsSync(path.join(app.K, "updates/rehome/new")), false);
+    assert.equal(fs.readFileSync(path.join(app.K, "box/kind"), "utf8"), "mac\n");
+    assert.deepEqual(readJSON(path.join(app.K, "box/work.json")), { keepsAwake: false });
+    assert.equal(fs.readFileSync(path.join(app.K, engine), "utf8"), "fresh engine");
+    assert.equal(fs.readFileSync(path.join(app.S, engine), "utf8"), "fresh engine");
+    assert.deepEqual(readJSON(path.join(app.K, "desktop/paired.json")), { kept: true });
+    assert.equal(fs.readFileSync(path.join(app.K, "trash/earlier-box-previous/receipt"), "utf8"), "kept earlier");
+    const archive = fs.readdirSync(path.join(app.K, "trash")).find(name => name.startsWith("earlier-box-") && name !== "earlier-box-previous");
+    assert.ok(archive);
+    const kept = path.join(app.K, "trash", archive);
+    assert.equal(fs.readFileSync(path.join(kept, "bin/partial-program"), "utf8"), "previous program");
+    assert.equal(fs.existsSync(path.join(kept, "engine.new")), false);
+    assert.equal(install(0).result, "nothing");
   });
 
   await t.test("a torn journal blocks startup with the journal preserved", () => {

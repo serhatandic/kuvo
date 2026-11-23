@@ -118,23 +118,25 @@ impl HomeFacts {
         self.kind.as_deref().map(str::trim) == Some(kind)
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn identity(&self) -> bool {
+        self.identity
+    }
+
     pub(crate) fn mac_owned(&self, disk: &Disk) -> Result<bool, Error> {
-        if !self.is("mac") {
+        Ok(self.is("mac") && !self.making_cut_short(disk)?)
+    }
+
+    pub(crate) fn making_cut_short(&self, disk: &Disk) -> Result<bool, Error> {
+        if !attempt_at(&disk.path("updates/rehome/new")?)? || self.identity || self.is("machine") {
             return Ok(false);
-        }
-        if self.identity || !attempt_at(&disk.path("updates/rehome/new")?)? {
-            return Ok(true);
         }
         let recorded = ObjectFormat::additive("Rehome state")
             .read(&disk.path("updates/rehome/state.json")?)?;
         Ok(
-            metadata(&disk.path("updates/rehome/journal.json")?)?.is_some()
-                || recorded.is_some_and(|record| {
-                    record
-                        .fields
-                        .get("state")
-                        .is_some_and(|state| !state.is_null())
-                }),
+            metadata(&disk.path("updates/rehome/journal.json")?)?.is_none()
+                && recorded
+                    .is_none_or(|record| record.fields.get("state").is_none_or(Value::is_null)),
         )
     }
 

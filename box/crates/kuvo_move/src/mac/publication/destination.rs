@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Default, Deserialize, Serialize)]
-pub(super) struct Destination {
+pub(in crate::mac) struct Destination {
     had_trash: bool,
     entries: Vec<Entry>,
 }
@@ -22,6 +22,14 @@ const NEW: &str = "updates/rehome/new";
 
 impl Destination {
     pub(super) fn capture(disk: &Disk, stamp: u64) -> Result<Self, Error> {
+        Self::plan(disk, stamp, false)
+    }
+
+    pub(in crate::mac) fn fresh(disk: &Disk, stamp: u64) -> Result<Self, Error> {
+        Self::plan(disk, stamp, true)
+    }
+
+    fn plan(disk: &Disk, stamp: u64, fresh: bool) -> Result<Self, Error> {
         let trash = disk.path("trash")?;
         let mut plan = Self {
             had_trash: metadata(&trash)?.is_some(),
@@ -42,7 +50,7 @@ impl Destination {
             }
         }
         candidates.sort();
-        if metadata(&disk.path(NEW)?)?.is_some() {
+        if !fresh && metadata(&disk.path(NEW)?)?.is_some() {
             candidates.push(NEW.into());
         }
         let mut old_trash = entries(&trash)?;
@@ -50,6 +58,13 @@ impl Destination {
         candidates.extend(
             old_trash
                 .into_iter()
+                .filter(|entry| {
+                    !fresh
+                        || !entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("earlier-box-")
+                })
                 .map(|entry| Path::new("trash").join(entry.file_name())),
         );
         for relative in candidates {
@@ -82,7 +97,7 @@ impl Destination {
         Ok(())
     }
 
-    pub(super) fn take(
+    pub(in crate::mac) fn take(
         &self,
         disk: &Disk,
         time: u64,

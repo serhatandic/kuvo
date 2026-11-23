@@ -87,7 +87,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
 fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::{ffi::OsStr, path::Path};
 
-    let usage = "usage: kuvo-box rehome <root> --status | --resume | --settle | --back | --run --app <bundle> --release <folder> --engine <folder>";
+    let usage = "usage: kuvo-box rehome <root> --status | --resume | --settle | --back | --new [--check | --release <folder> [--keeps-awake on|off]] | --run --app <bundle> --release <folder> --engine <folder>";
     let invalid = || {
         eprintln!("{usage}");
         Ok(ExitCode::from(2))
@@ -102,9 +102,75 @@ fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::E
     let account = Account::current()?;
     let folder = account.home_folder(Platform::current(), &env::vars_os().collect())?;
     let target = folder.join(root);
+    if options == [OsStr::new("--new"), OsStr::new("--check")]
+        || options == [OsStr::new("--check"), OsStr::new("--new")]
+    {
+        #[cfg(target_os = "macos")]
+        {
+            let app = env::var_os("KUVO_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from);
+            let data = env::var_os("KUVO_ENGINE_DATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from);
+            let answer = kuvo_move::mac::new_readiness(
+                &Home::new(target)?,
+                app.as_deref(),
+                data.as_deref(),
+                &account.home,
+            );
+            println!("{}", serde_json::to_string(&answer)?);
+        }
+        #[cfg(not(target_os = "macos"))]
+        println!(
+            "{}",
+            serde_json::json!({"ready":false,"made":false,"why":"Kuvo on this machine is in its own home already: there's nothing to move."})
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
     if options == [OsStr::new("--status")] {
         println!("{}", kuvo_move::rehome_status(&Home::new(target)?));
         return Ok(ExitCode::SUCCESS);
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(words) = options.strip_prefix(&[std::ffi::OsString::from("--new")]) {
+        let mut words = words.iter();
+        let mut release = None;
+        let mut keeps_awake = None;
+        while let Some(word) = words.next() {
+            match word.to_str() {
+                Some("--release") if release.is_none() => {
+                    let Some(path) = words.next() else {
+                        return invalid();
+                    };
+                    release = Some(std::path::absolute(path)?);
+                }
+                Some("--keeps-awake") if keeps_awake.is_none() => {
+                    match words.next().and_then(|value| value.to_str()) {
+                        Some("on") => keeps_awake = Some(true),
+                        Some("off") => keeps_awake = Some(false),
+                        _ => return invalid(),
+                    }
+                }
+                _ => return invalid(),
+            }
+        }
+        let app = env::var_os("KUVO_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let data = env::var_os("KUVO_ENGINE_DATA")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let outcome = kuvo_move::mac::new_home(
+            &Home::new(target)?,
+            app.as_deref(),
+            data.as_deref(),
+            &account.home,
+            release.as_deref(),
+            keeps_awake == Some(false),
+        );
+        println!("{}", serde_json::to_string(&outcome)?);
+        return Ok(ExitCode::from(outcome.exit_code()));
     }
     #[cfg(target_os = "macos")]
     if options == [OsStr::new("--resume")] {

@@ -18,6 +18,7 @@ mod engine;
 mod history;
 mod letters;
 mod merge;
+mod new_install;
 mod notices;
 mod paths;
 mod preferences;
@@ -28,6 +29,8 @@ mod source;
 mod usage;
 mod work;
 
+pub(crate) use new_install::interrupted as unfinished_install;
+pub use new_install::{new_home, new_readiness};
 pub use publication::{
     CutoverStep, Outcome, Run, back, resume, settle, settle_started, unfinished,
 };

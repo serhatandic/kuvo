@@ -84,6 +84,10 @@ pub fn open(
     if let Some(journal) = mac::unfinished(home)? {
         return Err(Error::PreviousMove(journal));
     }
+    #[cfg(target_os = "macos")]
+    if let Some(marker) = mac::unfinished_install(home)? {
+        return Err(Error::Busy(marker));
+    }
     if layout::inspect(home)? == layout::Layout::Current {
         return Ok(());
     }
