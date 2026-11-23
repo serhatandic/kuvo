@@ -175,6 +175,7 @@ enum Command {
     Trust {
         grants: HashMap<[u8; 32], String>,
         peers: Vec<Host>,
+        reply: Option<Reply<()>>,
     },
 }
 
@@ -187,9 +188,16 @@ impl Command {
             Self::Start(_, _, reply) => {
                 let _ = reply.send(Err(Error::Offline));
             }
-            Self::Trust { grants, peers } => {
+            Self::Trust {
+                grants,
+                peers,
+                reply,
+            } => {
                 config.grants = grants;
                 config.peers = peers;
+                if let Some(reply) = reply {
+                    let _ = reply.send(Ok(()));
+                }
             }
         }
     }
@@ -239,16 +247,42 @@ impl Sender {
         peers: Vec<Host>,
     ) -> Result<(), Error> {
         self.0
-            .send(Command::Trust { grants, peers })
+            .send(Command::Trust {
+                grants,
+                peers,
+                reply: None,
+            })
             .await
             .map_err(|_| Error::Offline)
     }
+
+    /// Publish signed grants only after the relay owner has applied the same access decision.
+    pub async fn trust_applied(
+        &self,
+        grants: HashMap<[u8; 32], String>,
+        peers: Vec<Host>,
+    ) -> Result<(), Error> {
+        self.request(|reply| Command::Trust {
+            grants,
+            peers,
+            reply: Some(reply),
+        })
+        .await
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Endpoint {
+    pub address: Address,
+    pub url: String,
+    pub hello: BoxHello,
 }
 
 pub struct Relay {
     pub sender: Sender,
     pub events: mpsc::Receiver<Event>,
     handle: RelayHandle,
+    pub(crate) endpoint: Endpoint,
     task: JoinHandle<()>,
 }
 
@@ -268,6 +302,11 @@ impl Relay {
             sender: sender.clone(),
             events: observations.downgrade(),
         };
+        let endpoint = Endpoint {
+            address: address_of(&config.secret),
+            url: config.url.clone(),
+            hello: config.hello.clone(),
+        };
         let task = tokio::spawn(
             Owner {
                 config,
@@ -282,6 +321,7 @@ impl Relay {
             sender,
             events: event_rx,
             handle,
+            endpoint,
             task,
         }
     }
@@ -511,12 +551,19 @@ impl Owner {
                 let output = self.sessions.close(id);
                 let _ = reply.send(self.send_output(socket, id, output).await?);
             }
-            Command::Trust { grants, peers } => {
+            Command::Trust {
+                grants,
+                peers,
+                reply,
+            } => {
                 self.config.peers = peers;
                 self.config.grants = grants;
                 for id in self.sessions.revoke(&self.config.grants) {
                     let output = self.sessions.close(id);
                     self.send_output(socket, id, output).await?.ok();
+                }
+                if let Some(reply) = reply {
+                    let _ = reply.send(Ok(()));
                 }
             }
         }
