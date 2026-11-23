@@ -357,7 +357,7 @@ where
             }
         }
         if matches!(change, Change::Archive) {
-            hold_wakes(&engine, &id, value == true).await;
+            after_archive(&engine, &lease, &id, value == true).await;
         }
     }
     Ok(RouteReply::json::<200>(typed(
@@ -369,6 +369,13 @@ fn wakes(engine: &Engine, id: &str) -> Option<std::path::PathBuf> {
     id.strip_prefix("ses_")
         .filter(|suffix| !suffix.is_empty() && suffix.bytes().all(|c| c.is_ascii_alphanumeric()))?;
     Some(engine.home.join("wakes").join(id))
+}
+
+pub(crate) async fn after_archive(engine: &Engine, lease: &Lease, id: &str, archived: bool) {
+    hold_wakes(engine, id, archived).await;
+    if archived {
+        crate::asks::stop_waiting(engine, lease, id).await;
+    }
 }
 
 async fn hold_wakes(engine: &Engine, id: &str, archived: bool) {

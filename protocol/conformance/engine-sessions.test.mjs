@@ -116,29 +116,39 @@ test("a busy conversation can steer, edit and remove messages in its queue", { t
     [["msg_first", "first"], ["msg_changed", "edited words"]]);
 });
 
-test("repeating the same send after the resident loses its reply leaves one message", { timeout: 45000 }, async t => {
-  const { computer } = await bench(t);
-  const here = await computer("engine-retry");
-  const session = "ses_recovery";
-  here.engine.sessions.push(sessionOf({ id: session, title: "Restart", directory: here.home }));
-  const first = here.start();
-  const initial = await first.ready();
-  const path = "kuvo/sessions/" + session + "/send";
-  const message = { id: "msg_lostReply", words: "One copy" };
-  const accepted = new Promise(resolve => { here.engine.holdPrompt = { id: message.id, accepted: resolve }; });
-  const original = request(initial, "POST", path, message).catch(() => null);
-  await accepted;
-  first.child.kill("SIGKILL");
-  await first.exited;
-  await original;
+for (const stage of ["before acceptance", "in the inbox", "in the transcript"]) {
+  test(`the same desktop send recovers a reply lost ${stage} with one message`, { timeout: 45000 }, async t => {
+    const { computer } = await bench(t);
+    const here = await computer("engine-retry");
+    const session = "ses_recovery";
+    here.engine.sessions.push(sessionOf({ id: session, title: "Restart", directory: here.home }));
+    if (stage === "in the inbox") here.engine.running.add(session);
+    const first = here.start();
+    const initial = await first.ready();
+    const path = "kuvo/sessions/" + session + "/send";
+    const message = { id: "msg_lostReply", words: "One copy", delivery: "queue" };
+    const headers = { "x-kuvo-from": "app", "idempotency-key": message.id };
+    const beforeAcceptance = stage === "before acceptance";
+    const reached = new Promise(resolve => {
+      here.engine.holdPrompt = { id: message.id, beforeAcceptance, accepted: resolve };
+    });
+    const original = request(initial, "POST", path, message, headers).catch(() => null);
+    await reached;
+    first.child.kill("SIGKILL");
+    await first.exited;
+    assert.equal(await original, null);
 
-  const resumed = await here.start().ready();
-  const sent = await request(resumed, "POST", path, message);
-  assert.equal(sent.status, 200);
-  assert.deepEqual(sent.json, {});
-  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [message.id]);
-  assert.deepEqual((await request(resumed, "POST", path, message)).json, sent.json);
-});
+    const resumed = await here.start().ready();
+    const sent = await request(resumed, "POST", path, message, headers);
+    assert.equal(sent.status, 200, sent.text);
+    assert.deepEqual(sent.json, {});
+    assert.deepEqual((await request(resumed, "POST", path, message, headers)).json, sent.json);
+    const delivered = [...here.engine.messages.get(session) ?? [], ...here.engine.inboxes.get(session) ?? []];
+    assert.deepEqual(delivered.map(row => row.id), [message.id]);
+    const offers = here.engine.asked.filter(call => call.method === "POST" && call.path.endsWith("/prompt"));
+    assert.equal(offers.length, beforeAcceptance ? 2 : 1);
+  });
+}
 
 test("a new chat keeps its session marks and appears in the local session list", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
@@ -266,21 +276,51 @@ test("a send keeps what the user wrote and the parts that went with it", { timeo
   const id = "ses_sendParts";
   here.engine.sessions.push(sessionOf({ id, directory: here.home }));
   const record = await here.start().ready();
-  const supported = vectors.compose.filter(row => !row.kept);
-  const sessions = new Set(supported.map(row => row.excluding ?? id));
+  const sessions = new Set(vectors.compose.map(row => row.excluding ?? id));
   for (const session of sessions) {
     if (session !== id) here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
   }
-  for (const [index, row] of supported.entries()) {
+  for (const [index, row] of vectors.compose.entries()) {
     const session = row.excluding ?? id;
     const given = { ...row.fields, id: "msg_parts" + index };
+    const included = row.kept?.included ?? [];
+    const paths = row.kept?.paths ?? [];
+    const attachments = [...included, ...paths];
+    if (attachments.length) {
+      given.files = attachments.map(kept => {
+        const name = path.posix.basename(kept);
+        const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".zip": "application/zip" }[path.extname(name)];
+        return { name, uri: `data:${mime};base64,${Buffer.from("fixture " + name).toString("base64")}` };
+      });
+    }
     write(path.join(here.home, "run", "agents.json"), JSON.stringify({ machine: row.here ?? null, agents: vectors.agents }));
     const response = await request(record, "POST", "kuvo/sessions/" + session + "/send", given,
       row.phone ? {} : { "x-kuvo-from": "app" });
     assert.equal(response.status, 200, row.about);
     const stored = here.engine.messages.get(session).find(message => message.id === given.id);
-    assert.equal(stored.text, row.text, row.about);
-    assert.deepEqual(stored.metadata.kuvo.parts, row.parts, row.about);
+    const renamed = new Map();
+    if (attachments.length) {
+      const folder = path.join(here.home, "attachments", session);
+      assert.ok(fs.existsSync(folder), row.about);
+      for (const child of fs.readdirSync(folder)) {
+        const file = path.join(folder, child);
+        for (const name of fs.readdirSync(file)) {
+          const kept = attachments.find(which => path.posix.basename(which) === name);
+          if (kept) {
+            const storedFile = path.join(file, name);
+            assert.equal(fs.readFileSync(storedFile, "utf8"), "fixture " + name);
+            renamed.set(kept, storedFile);
+          }
+        }
+      }
+      assert.equal(renamed.size, attachments.length, row.about);
+      assert.deepEqual(stored.files.map(file => file.name), included.map(file => path.posix.basename(file)));
+    }
+    const move = text => [...renamed].reduce((next, [from, to]) => next.replaceAll(from, to), text);
+    assert.equal(stored.text, move(row.text), row.about);
+    const parts = structuredClone(row.parts);
+    if (parts.paths) parts.paths = parts.paths.map(move);
+    assert.deepEqual(stored.metadata.kuvo.parts, parts, row.about);
   }
 });
 

@@ -18,7 +18,7 @@ pub(crate) use notices::{Announcer, Notices};
 
 const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
 const DEPARTURE: ObjectFormat = ObjectFormat::additive("Moved conversation");
-const ROUTING_FOR: Millis = 2 * 24 * 3600_000;
+const ROUTING_FOR: Millis = 2 * 24 * 3_600_000;
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

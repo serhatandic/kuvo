@@ -10,6 +10,11 @@ const areas = new Map([
   ["compat", "./compat.test.mjs"],
   ["clock", "./clock.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],
+  ["engine-typed", "./engine-typed.test.mjs"],
+  ["engine-delivery", "./engine-delivery.test.mjs"],
+  ["engine-asks", "./engine-asks.test.mjs"],
+  ["engine-search", "./engine-search.test.mjs"],
+  ["engine-models", "./engine-models.test.mjs"],
   ["engine-live", "./engine-live.test.mjs"],
   ["engine-worktree", "./engine-worktree.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
@@ -18,5 +23,6 @@ const area = process.env.KUVO_CONFORMANCE_AREA;
 if (!area) {
   for (const file of areas.values()) await import(file);
 }
-if (!areas.has(area)) await import("./routes.test.mjs");
+if (area === "engine-golden") await import("./engine-golden.test.mjs");
+else if (!areas.has(area)) await import("./routes.test.mjs");
 else await import(areas.get(area));

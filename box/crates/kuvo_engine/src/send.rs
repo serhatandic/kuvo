@@ -152,12 +152,21 @@ struct Arrival {
 fn arrival(engine: &Engine, call: &RouteCall<()>, form: Form) -> Result<Arrival, Refusal> {
     let given = sessions::body(call)
         .map_err(|_| Refusal::new(StatusCode::BAD_REQUEST, "Send what was written (words)."))?;
+    arrive(engine, given, &call.request.caller, form)
+}
+
+fn arrive(
+    engine: &Engine,
+    given: Map<String, Value>,
+    caller: &Caller,
+    form: Form,
+) -> Result<Arrival, Refusal> {
     let id = match given.get("id") {
         Some(Value::String(id)) if valid_id(id) => id.clone(),
         None => new_id(engine)?,
         _ => return Err(Refusal::new(StatusCode::BAD_REQUEST, BAD_ID)),
     };
-    let phone = !match &call.request.caller {
+    let phone = !match caller {
         Caller::Paired { pairing, .. } => pairing.desktop,
         Caller::Local(
             Transport::Http {
@@ -174,6 +183,22 @@ fn arrival(engine: &Engine, call: &RouteCall<()>, form: Form) -> Result<Arrival,
         phone,
         form,
     })
+}
+
+pub(crate) async fn send_draft(
+    engine: &Engine,
+    list: &crate::LocalSessions,
+    session: &str,
+    given: Map<String, Value>,
+    caller: &Caller,
+) -> Result<Value, Refusal> {
+    deliver(
+        engine,
+        list,
+        session,
+        arrive(engine, given, caller, Form::Send)?,
+    )
+    .await
 }
 
 async fn compose(
@@ -194,6 +219,15 @@ async fn compose(
         .cloned()
         .unwrap_or_default();
     let legacy_queue = form == Form::Add;
+    let has_files = !files.is_empty();
+    let kept = if legacy_queue && given.get("kept") == Some(&Value::Bool(true)) {
+        crate::attachments::Attachments {
+            files,
+            ..Default::default()
+        }
+    } else {
+        crate::attachments::Attachments::keep(engine, session, files).await
+    };
     let naming = if given
         .get("words")
         .and_then(Value::as_str)
@@ -205,7 +239,8 @@ async fn compose(
     };
     let composed = parts::compose(
         &given,
-        !files.is_empty(),
+        has_files,
+        &kept,
         phone,
         legacy_queue,
         &naming,
@@ -271,7 +306,7 @@ async fn compose(
             id,
             text: composed.text,
             delivery,
-            files,
+            files: kept.files,
             metadata,
         },
         words: composed.words,

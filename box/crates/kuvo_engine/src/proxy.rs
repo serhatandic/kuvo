@@ -193,6 +193,28 @@ pub(crate) async fn http(
         }
         return down(&engine).await.reply();
     };
+    let archive = (request.method == Method::PATCH)
+        .then(|| path.strip_prefix("api/session/"))
+        .flatten()
+        .and_then(|id| percent_encoding::percent_decode_str(id).decode_utf8().ok())
+        .filter(|id| crate::sessions::valid_id(id))
+        .zip(
+            serde_json::from_slice::<Value>(&request.body)
+                .ok()
+                .and_then(|body| body["metadata"]["kuvo.archived"].as_bool()),
+        );
+    let mut archive_turn = None;
+    let mut flip = None;
+    if let Some((id, archived)) = &archive {
+        archive_turn = Some(engine.turn(id).await);
+        let before = engine
+            .call::<Value>(&lease, Method::GET, path, None)
+            .await
+            .ok();
+        if before.map(|state| state["metadata"]["kuvo.archived"] == true) != Some(*archived) {
+            flip = Some((id, *archived));
+        }
+    }
     let mut outgoing =
         engine
             .upstream
@@ -213,6 +235,12 @@ pub(crate) async fn http(
         return down(&engine).await.reply();
     };
     let status = response.status();
+    if status.is_success()
+        && let Some((id, archived)) = flip
+    {
+        crate::sessions::after_archive(&engine, &lease, id, archived).await;
+    }
+    drop(archive_turn);
     let headers: HeaderMap = RESPONSE_HEADERS
         .iter()
         .filter_map(|&name| {

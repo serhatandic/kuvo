@@ -48,12 +48,38 @@ pub struct Engine {
     pub(crate) upstream: Upstream,
     pub(crate) context_windows: crate::context::Windows,
     pub(crate) home: PathBuf,
+    pub(crate) account_home: PathBuf,
     pub(crate) queues: crate::queue::QueueStore,
     pub(crate) message_clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    turns: std::sync::Arc<[tokio::sync::Semaphore; 64]>,
+    turns: Turns,
+    pub(crate) draft_turns: Turns,
+    pub(crate) decision_writer: std::sync::Arc<tokio::sync::Semaphore>,
+
     version: String,
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<State>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Turns(std::sync::Arc<[tokio::sync::Semaphore; 64]>);
+
+impl Turns {
+    pub(crate) fn new() -> Self {
+        Self(std::sync::Arc::new(std::array::from_fn(|_| {
+            tokio::sync::Semaphore::new(1)
+        })))
+    }
+
+    pub(crate) async fn acquire(&self, session: &str) -> tokio::sync::SemaphorePermit<'_> {
+        // A stable stripe within this engine ensures writers of one session run in order.
+        let hash = session.bytes().fold(0usize, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(usize::from(byte))
+        });
+        self.0[hash % self.0.len()]
+            .acquire()
+            .await
+            .expect("the engine's turns stay open")
+    }
 }
 
 pub(crate) struct Lease {
@@ -90,6 +116,9 @@ enum Command {
 
 impl Engine {
     pub fn new(home: PathBuf, env: Environment, timing: Timing) -> io::Result<Self> {
+        let account_home = kuvo_os::platform::Account::current()
+            .and_then(|account| account.home_folder(kuvo_os::platform::Platform::current(), &env))
+            .unwrap_or_default();
         let upstream = Upstream::new().map_err(io::Error::other)?;
         let version = launch::pinned_version();
         let (commands, inbox) = mpsc::unbounded_channel();
@@ -119,11 +148,14 @@ impl Engine {
         );
         Ok(Self {
             upstream,
-            turns: std::sync::Arc::new(std::array::from_fn(|_| tokio::sync::Semaphore::new(1))),
+            turns: Turns::new(),
+            draft_turns: Turns::new(),
+            decision_writer: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
             context_windows: crate::context::Windows::open(&home),
             queues: crate::queue::QueueStore::open(&home),
             message_clock: Default::default(),
             home,
+            account_home,
             version,
             commands,
             state,
@@ -131,14 +163,7 @@ impl Engine {
     }
 
     pub(crate) async fn turn(&self, session: &str) -> tokio::sync::SemaphorePermit<'_> {
-        // A stable stripe within this engine ensures writers of one session run in order.
-        let hash = session.bytes().fold(0usize, |hash, byte| {
-            hash.wrapping_mul(31).wrapping_add(usize::from(byte))
-        });
-        self.turns[hash % self.turns.len()]
-            .acquire()
-            .await
-            .expect("the engine's turns stay open")
+        self.turns.acquire(session).await
     }
 
     pub(crate) fn states(&self) -> watch::Receiver<State> {
