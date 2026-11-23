@@ -819,6 +819,81 @@ async fn owner_forwarding_binds_the_peer_to_the_accepted_setup_and_operation() {
 }
 
 #[tokio::test]
+async fn owner_submission_recovery_is_advertised_when_attached() {
+    use kuvo_peers::{
+        directory::{Member, Roster},
+        setup_lists::ResidentPeers,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+
+    async fn features(test: &mut TestRelay) -> serde_json::Value {
+        loop {
+            let (kind, _, body) = test.frame().await;
+            if kind == Kind::Mail {
+                let mail = Envelope::open(&body, &PEER_KEY, &public(RUST_KEY)).unwrap();
+                if let Some(features) = mail
+                    .0
+                    .get("agents")
+                    .and_then(|agents| agents.get("features"))
+                {
+                    return features.clone();
+                }
+            }
+        }
+    }
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let home = tempfile::tempdir().unwrap();
+        let (relay, mut test) = TestRelay::connect().await;
+        let clock = Arc::new(AtomicI64::new(12));
+        let resident = ResidentPeers::start(
+            home.path(),
+            Roster {
+                here: Some(public(RUST_KEY)),
+                main: Some(public(RUST_KEY)),
+                name: "Owner".into(),
+                members: vec![Member {
+                    key: public(PEER_KEY),
+                    address: Some(PEER_ADDRESS),
+                    name: "Peer".into(),
+                    kind: ComputerKind::Machine,
+                }],
+            },
+            Some(relay),
+            None,
+            false,
+            {
+                let clock = clock.clone();
+                Arc::new(move || clock.load(Ordering::Relaxed))
+            },
+        )
+        .await
+        .unwrap();
+        let recovery = json!("typed.submission-recovery");
+        assert!(
+            !features(&mut test)
+                .await
+                .as_array()
+                .unwrap()
+                .contains(&recovery)
+        );
+        clock.store(13, Ordering::Relaxed);
+        resident.advertise_engine_submissions().await.unwrap();
+        while !features(&mut test)
+            .await
+            .as_array()
+            .unwrap()
+            .contains(&recovery)
+        {}
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn owner_forwarding_carries_the_full_draft_in_each_direction() {
     use kuvo_peers::{
         devices::Devices,
@@ -1033,7 +1108,18 @@ async fn owner_forwarding_carries_the_full_draft_in_each_direction() {
         let file = directory.path().join("frames.json");
         let captured = std::iter::from_fn(|| frames_seen.try_recv().ok()).collect::<Vec<_>>();
         kuvo_store::files::write_atomic(&file, &serde_json::to_vec(&captured).unwrap()).unwrap();
-        let result = std::process::Command::new("node")
+        let mut reference = std::process::Command::new("node");
+        reference.env_clear();
+        for name in ["PATH", "SYSTEMROOT", "WINDIR", "PATHEXT"] {
+            if let Some(value) = std::env::var_os(name) {
+                reference.env(name, value);
+            }
+        }
+        reference
+            .env("HOME", directory.path())
+            .env("USERPROFILE", directory.path())
+            .env("KUVO_HOME", directory.path().join("box"));
+        let result = reference
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/tests/owner_parts.mjs"
