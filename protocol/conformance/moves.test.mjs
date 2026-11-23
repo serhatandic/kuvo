@@ -575,6 +575,39 @@ test("a destination refuses an oversized offer before creating a copy", {
   assert.equal(here.engine.sessions.length, 0);
 });
 
+test("the source keeps a conversation whose wake-up folder is too large to move", {
+  timeout: 45000, skip: process.platform === "win32" && "The fixture uses a Unix sparse file",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("large-source"), there = await computer("large-target");
+  const { member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_largeWake", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, title: "Trip plans", directory }));
+  const wake = path.join(here.home, "wakes", session);
+  const recording = path.join(wake, "recording.mov");
+  write(recording, "");
+  fs.truncateSync(recording, 1_100_000_000);
+  const sourceProcess = here.start(), destinationProcess = there.start();
+  const [source] = await Promise.all([sourceProcess.ready(), destinationProcess.ready()]);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const id = begun.json.move.id;
+  await moveRetired(here, id, () => sourceProcess.log() + "\n" + destinationProcess.log());
+  const receipt = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.deepEqual(receipt.json, {
+    state: "failed",
+    message: "“Trip plans” is more than 1 GB, too big to move to another computer, so it stays where it is.",
+  });
+  assert.ok(here.engine.sessions.some(record => record.id === session));
+  assert.equal(there.engine.sessions.length, 0);
+  assert.equal(fs.statSync(recording).size, 1_100_000_000);
+  assert.equal(fs.existsSync(path.join(wake, "paused")), false);
+  assert.equal(fs.existsSync(path.join(there.home, "run/moves", id + ".json")), false);
+});
+
 test("a one-part move waits for the acknowledgement of part zero", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

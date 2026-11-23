@@ -793,7 +793,10 @@ impl Driver {
                 manifest.queues = (!queues.is_empty()).then_some(queues);
                 manifest.session_files = Some(payloads);
                 archive::write_chat(&path, &manifest, Some(&stage), wake.as_deref())
-                    .map_err(io::Error::other)
+                    .map_err(|error| match error {
+                        archive::Error::TooLarge => io::ErrorKind::FileTooLarge.into(),
+                        other => io::Error::other(other),
+                    })
             })();
             let cleaned = files::remove_tree_synced(&stage);
             packed?;
@@ -801,7 +804,14 @@ impl Driver {
             let (size, hash) = BundleSize::measure(&path)?;
             Ok::<_, io::Error>((manifest, path, size, hash))
         })
-        .await??;
+        .await?
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::FileTooLarge {
+                io::Error::new(error.kind(), too_large(row.display_name()))
+            } else {
+                error
+            }
+        })?;
         let identity = row.bundle.generation.map_or(1, |generation| generation + 1);
         let bytes = BundleSize::new(size, &hash)?;
         let now = Instant::now();
@@ -1293,10 +1303,7 @@ impl Driver {
         }
         let name = given["name"].as_str().unwrap_or("It");
         if size > MAX_BUNDLE_BYTES {
-            let message = format!(
-                "{name} is more than 1 GB, too big to move to another computer, so it stays where it is."
-            );
-            send(&self.relay, view, key, refused(&message)).await;
+            send(&self.relay, view, key, refused(&too_large(name))).await;
             return Ok(());
         }
         let engine = match self.engine.session_move().await {
@@ -2137,6 +2144,10 @@ pub(super) fn session_id(id: &str) -> bool {
 fn index(given: &Value) -> Option<u32> {
     let value = given["i"].as_f64()?;
     (value >= 0.0 && value <= f64::from(u32::MAX) && value.fract() == 0.0).then_some(value as u32)
+}
+
+fn too_large(name: &str) -> String {
+    format!("{name} is more than 1 GB, too big to move to another computer, so it stays where it is.")
 }
 
 fn waiting_on_peer(row: &Journal, now: Millis, sent: Option<Duration>, heard: Duration) -> bool {
