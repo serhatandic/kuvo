@@ -45,6 +45,33 @@ impl SetupHandle {
         });
 
         let setup = self.clone();
+        routes.register::<post_kuvo_setup_judge::Spec, _, _>(Access::Any, move |call| {
+            let setup = setup.clone();
+            async move {
+                let body =
+                    serde_json::from_slice::<Value>(&call.request.body).unwrap_or(Value::Null);
+                let probe = body["probe"]
+                    .as_str()
+                    .filter(|text| text.encode_utf16().count() <= 200_000)
+                    .ok_or_else(|| {
+                        Refusal::new(
+                            StatusCode::BAD_REQUEST,
+                            "Send what the probe printed, as probe.",
+                        )
+                    })?;
+                let verdict = crate::discovery::judge(probe, &setup.views.borrow().setup).map_err(
+                    |message| {
+                        Refusal::json(
+                            StatusCode::CONFLICT,
+                            json!({"code": "unsupportedFormatVersion", "message": message}),
+                        )
+                    },
+                )?;
+                typed::<post_kuvo_setup_judge::Spec, 200>(json!(verdict))
+            }
+        });
+
+        let setup = self.clone();
         routes.register::<post_kuvo_setup_attached::Spec, _, _>(Access::Local, move |call| {
             let setup = setup.clone();
             async move {

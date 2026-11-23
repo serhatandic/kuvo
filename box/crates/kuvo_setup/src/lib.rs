@@ -2,6 +2,7 @@
 
 mod actor;
 mod checkpoint;
+mod discovery;
 mod document;
 mod edits;
 pub mod installer;
