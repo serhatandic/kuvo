@@ -19,15 +19,18 @@ import { BRIDGE_FILE, CHATS, ENGINE_FILE, IS_MAC, K, MAC_APP_VERSION, MAC_ENGINE
 import { macsOf } from "../peers/known";
 import { macLink, readLink } from "../state";
 import type { AnswerPiece, RouteContext } from "../server/context";
-import { newerVersion } from "../updates/update";
+import { newerVersion, updateOnTrial, updateState } from "../updates/update";
 import { BRIDGE_VERSION } from "../version";
 import { rehomeHome } from "../rehome/route";
 import { rehomeStatus } from "../rehome/state";
 import { computerCompatibility, editFeatures } from "./compatibility";
 import { integrationCatalog } from "./integrations";
 
+// Older judges require their entire pre-update feature list in the transient SSH probe.
+const RETIRED_TRIAL_FEATURES = ["goals", "messages.commands", "queue.removed.keyword", "work.goals", "work.goals.apps", "work.goals.projects"];
+
 export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { readEngine, bridge, info } = context;
+  const { request, readEngine, bridge, info } = context;
   let engine: Partial<EngineRecord> = {};
   try { engine = readEngine(); } catch {}
   // When the engine running now came up, in seconds since 1970 (each start writes its record):
@@ -42,7 +45,11 @@ export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPi
   const box = IS_MAC ? macInfo(engine, started, chats, Boolean(bridge())) : machineInfo(engine, started, chats, Boolean(bridge()), info);
   // The pre-marker judge requires every feature it shipped. Its voucher route waits
   // while the legacy grants are still in use, then retires with the layout upgrade.
-  const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : box.features;
+  const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : [...box.features];
+  if (request.fromMac && !request.residentSsh && !request.served && updateOnTrial()) {
+    const prior = updateState().trial?.features;
+    if (Array.isArray(prior)) features.push(...RETIRED_TRIAL_FEATURES.filter(feature => prior.includes(feature)));
+  }
   const state = engineState();
   yield { body: Buffer.from(JSON.stringify({ ...box, ...(state ? { engineState: state } : {}), ...(typeof info.serverGeneration === "string" ? { serverGeneration: info.serverGeneration, serverBuild: info.serverBuild } : {}), features, compatibility: computerCompatibility(features) })) };
 }
