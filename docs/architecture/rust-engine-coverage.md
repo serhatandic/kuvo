@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 60 of
-411 declarations are covered, 115 are partial and 236 are gaps.
-Row 3.2 retains 229 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 68 of
+411 declarations are covered, 114 are partial and 229 are gaps.
+Row 3.2 retains 221 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -114,7 +114,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/session-lists.test.ts` (47) | — | 3–5, 10, 15–16, 20, 23–24, 46 | 1–2, 6–9, 11–14, 17–19, 21–22, 25–45, 47 | 3.2 · 1–17, 19–24, 26–29, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25–28, 30–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
 | `box/test/session-notes.test.ts` (8) | — | 6 | 1–5, 7–8 | 3.2 · 1–8 |
 | `box/test/session-notes-writers.test.ts` (7) | — | 1 | 2–7 | 3.2 · 1–7<br>7.3 · 6 |
-| `box/bridge-tests/queue.test.js` (56) | 15–21, 39 | 2, 9–10, 13–14, 22, 27, 29–33, 43, 54 | 1, 3–8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–14, 22–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
+| `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–53, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
 | `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
 | `box/test/typed.test.ts` (9) | 1, 3 | 2, 4, 6–9 | 5 | 3.2 · 2, 4, 6–9<br>4.1 · 5 |
@@ -289,7 +289,7 @@ publishes receipt changes through a watch channel.
 | macOS | 46 engine conformance cases against each binary, including the beta fixture and the real model. The Rust resident scenario also verifies the owner adapters and revoked delivery. |
 | WSL GNU | 43 deterministic Rust cases and the real model, with the Mac-built executable. |
 | Native Windows | 43 deterministic Rust cases with the Mac-built executable. The staged OpenCode pin reports version 2.2.6. |
-| Linux on Lokum | 35 deterministic Rust cases before the peer delivery and shared star additions, with a Mac-built static musl executable. The newer run shares the foreground test slot with the TypeScript suite. |
+| Linux on Lokum | 35 deterministic Rust cases before the peer delivery and shared star additions, with a Mac-built static musl executable. The lead will rerun merged areas in a separate batch. |
 
 The signed star test makes a change from a member, reads it from both
 computers, then merges older local copies after an unstar. It verifies the

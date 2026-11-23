@@ -83,6 +83,7 @@ pub(crate) fn watch(
         let mut states = engine.states();
         let mut asks = crate::asks::Book::new();
         let mut generation = None;
+        let mut queues = crate::queue::QueueEvents::default();
         let mut scan = None::<tokio::task::JoinHandle<()>>;
         loop {
             let Some(keep) = refresh.upgrade() else {
@@ -109,6 +110,7 @@ pub(crate) fn watch(
                 }
             } else if generation != Some(pin) {
                 asks.clear();
+                queues = crate::queue::QueueEvents::default();
                 ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
             }
             let new_generation = generation != Some(pin);
@@ -198,7 +200,7 @@ pub(crate) fn watch(
                                 .or_else(|| event.data["info"]["id"].as_str())
                                 .filter(|id| crate::sessions::valid_id(id))
                             {
-                                crate::queue::engine_event(
+                                queues.hear(
                                     &engine,
                                     session,
                                     &event.kind,

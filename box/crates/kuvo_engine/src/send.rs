@@ -408,6 +408,13 @@ async fn deliver(
                 .map_err(disk_failure)?;
         }
         if !delivered {
+            let inbox = if request.before.is_some() {
+                queue::inbox(engine, &lease, session)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             admitted = engine
                 .queues
                 .keep(
@@ -416,6 +423,7 @@ async fn deliver(
                     request.words.as_deref(),
                     request.from.clone(),
                     request.before.as_deref(),
+                    &inbox,
                 )
                 .await
                 .map_err(disk_failure)?;

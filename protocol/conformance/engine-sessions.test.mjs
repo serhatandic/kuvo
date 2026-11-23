@@ -170,6 +170,51 @@ test("a restart beside the same engine scans its queues and preserves an explici
   assert.deepEqual(readJSON(scanned), { formatVersion: 1, [here.engine.record.port]: here.engine.record.pid });
 });
 
+test("an external Stop holds the queue unless the conversation started again", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-external-stop");
+  const stopped = "ses_externalStop";
+  const restarted = "ses_externalRestart";
+  for (const session of [stopped, restarted]) {
+    here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+    here.engine.inboxes.set(session, [{ id: "msg_afterPause", type: "user", delivery: "queue", payload: { text: "Next." } }]);
+  }
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "The event watcher did not start.");
+  here.engine.emit({ type: "session.execution.interrupted", data: { sessionID: restarted, reason: "user" } });
+  here.engine.emit({ type: "session.execution.started", data: { sessionID: restarted } });
+  here.engine.emit({ type: "session.execution.interrupted", data: { sessionID: stopped, reason: "user" } });
+  const queue = session => request(record, "GET", `kuvo/sessions/${session}/queue`);
+  await until(async () => (await queue(stopped)).json?.paused, "The external Stop did not pause the conversation.");
+  assert.equal((await queue(restarted)).json.paused, false);
+});
+
+test("after a failure only your own message to steer opens the queue again", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-written-by-you");
+  const session = "ses_afterFailure";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.inboxes.set(session, [
+    { id: "msg_queue", type: "user", delivery: "queue", payload: { text: "Later." } },
+    { id: "msg_steer", type: "user", delivery: "steer", payload: { text: "Next." } },
+  ]);
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "The event watcher did not start.");
+  here.engine.emit({ type: "session.execution.failed", data: { sessionID: session } });
+  const queue = () => request(record, "GET", `kuvo/sessions/${session}/queue`);
+  await until(async () => (await queue()).json?.held.includes("msg_steer"), "The failed turn did not hold its steer.");
+  const written = (text, metadata) => here.engine.emit({
+    type: "session.inbox.enqueued",
+    data: { sessionID: session, item: { id: "msg_whatChanged", type: "user", delivery: "steer", payload: { text, metadata } } },
+  });
+  written("[Message from another session]");
+  written("An automatic note.", { kuvo: { note: { from: "Kuvo Code", line: "An automatic note." } } });
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await queue()).json.paused, true);
+  written("Try with the new model.");
+  await until(async () => (await queue()).json?.paused === false, "Your steer did not open the queue.");
+});
+
 // Deterministic provider errors for side-by-side TS and Rust comparison. The
 // live queue scenario uses OpenCode Go separately.
 test("a usage limit survives an inbox error and a manual Resume survives restart", { timeout: 45000 }, async t => {
@@ -529,6 +574,40 @@ test("a stopped queue replays its send and protects an undone message from an ol
   const queue = await request(resident, "GET", path + "/queue");
   assert.equal(queue.status, 200);
   assert.deepEqual(queue.json.waiting.map(row => [row.id, row.text]), [[message.id, message.words]]);
+});
+
+test("Undo restores a message between its engine neighbors when the queue is paused", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-undo-order");
+  const session = "ses_undoOrder";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.inboxes.set(session, ["msg_a", "msg_b", "msg_c"].map(id => ({
+    id, type: "user", delivery: "queue", payload: { text: id },
+  })));
+  const record = await here.start().ready();
+  const route = `kuvo/sessions/${session}/queue`;
+  assert.equal((await request(record, "POST", route + "/hold")).json.paused, true);
+  const { json: { removed } } = await request(record, "DELETE", route + "/msg_b?receipt=msg_undoMiddle");
+  assert.equal(removed.before, "msg_c");
+  const undo = await request(record, "POST", route + "/add", { ...removed, kept: true });
+  assert.equal(undo.json.waits, true, undo.text);
+  assert.deepEqual(undo.json.held, ["msg_a", "msg_b"]);
+  let items;
+  await until(async () => {
+    items = (await request(record, "GET", route + "?items=1")).json?.items;
+    return Array.isArray(items);
+  }, "The queue did not publish its items.");
+  assert.deepEqual(items.map(({ id, on }) => [id, on]), [
+    ["msg_a", "engine"], ["msg_b", "box"], ["msg_c", "engine"],
+  ]);
+  assert.equal((await request(record, "POST", route + "/resume")).status, 200);
+  assert.deepEqual(here.engine.inboxes.get(session).map(({ id, delivery }) => [id, delivery]), [
+    ["msg_a", "steer"], ["msg_c", "queue"],
+  ]);
+  here.engine.inboxes.get(session).shift();
+  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+  await until(() => here.engine.messages.get(session)?.some(row => row.id === "msg_b"), "The restored message did not go second.");
+  assert.equal(here.engine.inboxes.get(session)[0].delivery, "queue");
 });
 
 test("a message removed while on its way can be taken back when it arrives", { timeout: 45000 }, async t => {

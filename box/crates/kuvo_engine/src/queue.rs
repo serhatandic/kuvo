@@ -5,6 +5,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use http::{Method, StatusCode};
@@ -297,6 +298,7 @@ impl QueueStore {
         words: Option<&str>,
         from: Option<String>,
         before: Option<&str>,
+        inbox: &[Inbox],
     ) -> io::Result<bool> {
         let current = self.get(session).await?;
         let arriving = current.arriving(&prompt.id);
@@ -333,11 +335,8 @@ impl QueueStore {
         };
         self.put(session, |state| {
             state.waiting.retain(|row| row.id != prompt.id);
-            let at = before
-                .and_then(|before| state.waiting.iter().position(|row| row.id == before))
-                .unwrap_or(state.waiting.len());
-            state.waiting.insert(at, waiting);
             if arriving {
+                state.waiting.push(waiting);
                 state.arriving.remove(&prompt.id);
                 state.held.retain(|id| id != &prompt.id);
                 let at = state
@@ -348,6 +347,8 @@ impl QueueStore {
                 state.held.insert(at, prompt.id.clone());
                 state.came_held.push(prompt.id.clone());
                 state.paused = true;
+            } else {
+                state.restore_before(waiting, before, inbox);
             }
         })
         .await?;
@@ -471,6 +472,40 @@ impl Queue {
                 }
             })
             .collect()
+    }
+
+    fn restore_before(&mut self, item: Waiting, before: Option<&str>, inbox: &[Inbox]) {
+        self.held.retain(|id| *id != item.id);
+        let order = self.order(inbox);
+        let position = before.and_then(|anchor| {
+            order
+                .iter()
+                .position(|id| *id == anchor)
+                .map(|at| (at, anchor))
+        });
+        let Some((at, anchor)) = position else {
+            self.waiting.push(item);
+            return;
+        };
+        if let Some(at) = self.order.iter().position(|id| id == anchor) {
+            self.order.insert(at, item.id.clone());
+        } else if let Some(at) = self.held.iter().position(|id| id == anchor) {
+            self.held.insert(at, item.id.clone());
+        } else if inbox.iter().any(|row| row.id == anchor) {
+            // The inbox can only put a message at its front. Keep the prefix
+            // together on the resident so this message takes its original turn.
+            let prefix = order[..at]
+                .iter()
+                .filter(|id| !self.held.iter().any(|held| held == **id))
+                .map(|id| (*id).to_owned())
+                .collect::<Vec<_>>();
+            self.held.extend(prefix);
+            self.held.push(item.id.clone());
+        } else if let Some(at) = self.waiting.iter().position(|row| row.id == anchor) {
+            self.waiting.insert(at, item);
+            return;
+        }
+        self.waiting.push(item);
     }
 
     fn release(&mut self) {
@@ -1752,49 +1787,121 @@ async fn drain_waiting(engine: &Engine, lease: &Lease, session: &str) -> io::Res
     Ok(sent)
 }
 
-pub(crate) fn engine_event(
-    engine: &Engine,
-    session: &str,
-    kind: &str,
-    data: &Value,
-    stop: tokio_util::sync::CancellationToken,
-) {
-    if kind.starts_with("session.inbox.") {
-        engine.queues.notify();
+/// The event reader owns delayed external Stops. A new turn can cancel one
+/// before it alters the saved queue.
+#[derive(Default)]
+pub(crate) struct QueueEvents {
+    stops: BTreeMap<String, (tokio::time::Instant, tokio_util::sync::CancellationToken)>,
+}
+
+impl Drop for QueueEvents {
+    fn drop(&mut self) {
+        for (_, token) in self.stops.values() {
+            token.cancel();
+        }
     }
-    let engine = engine.clone();
-    let session = session.to_owned();
-    let at = disk::now();
-    let operation = match kind {
-        "session.execution.started" => QueueEvent::Started,
-        "session.execution.succeeded" | "session.idle" | "session.inbox.enqueued" => {
-            QueueEvent::Drain
+}
+
+impl QueueEvents {
+    pub(crate) fn hear(
+        &mut self,
+        engine: &Engine,
+        session: &str,
+        kind: &str,
+        data: &Value,
+        stop: tokio_util::sync::CancellationToken,
+    ) {
+        if kind.starts_with("session.inbox.") {
+            engine.queues.notify();
         }
-        "session.execution.interrupted" => match data["reason"].as_str() {
-            Some("superseded" | "inactivity" | "agent-exit") => QueueEvent::Drain,
-            Some("restart") => return,
-            _ => QueueEvent::Hold(None),
-        },
-        "session.execution.failed" => {
-            QueueEvent::Failed(engine.queues.limits.classify(&data["error"], at))
+        let now = tokio::time::Instant::now();
+        self.stops.retain(|_, (expires, _)| *expires > now);
+        if matches!(
+            kind,
+            "session.execution.started"
+                | "session.execution.succeeded"
+                | "session.execution.failed"
+                | "session.execution.interrupted"
+                | "session.deleted"
+        )
+            && let Some((_, pending)) = self.stops.remove(session)
+        {
+            pending.cancel();
         }
-        "session.inbox.delivered" | "session.inbox.cancelled" => QueueEvent::Prune,
-        "session.deleted" => QueueEvent::Discard,
-        _ => return,
-    };
-    tokio::spawn(async move {
-        // OpenCode can publish a completion before it removes the active record.
-        let update = async {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            react(&engine, &session, operation, at).await
+        let at = disk::now();
+        let operation = match kind {
+            "session.execution.started" => QueueEvent::Started,
+            "session.inbox.enqueued" if own_steer(&data["item"]) => QueueEvent::Reopen,
+            "session.idle" if self.stops.contains_key(session) => return,
+            "session.execution.succeeded" | "session.idle" | "session.inbox.enqueued" => {
+                QueueEvent::Drain
+            }
+            "session.execution.interrupted" => match data["reason"].as_str() {
+                Some("superseded" | "inactivity" | "agent-exit") => QueueEvent::Drain,
+                Some("restart") => return,
+                _ => QueueEvent::Hold(None),
+            },
+            "session.execution.failed" => {
+                QueueEvent::Failed(engine.queues.limits.classify(&data["error"], at))
+            }
+            "session.inbox.delivered" | "session.inbox.cancelled" => QueueEvent::Prune,
+            "session.deleted" => QueueEvent::Discard,
+            _ => return,
         };
-        tokio::select! {
-            () = stop.cancelled() => {}
-            result = update => if let Err(error) = result {
+        let delay = match &operation {
+            QueueEvent::Started | QueueEvent::Reopen => Duration::ZERO,
+            QueueEvent::Hold(_) => Duration::from_millis(1500),
+            _ => Duration::from_millis(100),
+        };
+        let deadline = now + delay;
+        let delay_scope = stop.child_token();
+        if matches!(operation, QueueEvent::Hold(_)) {
+            self.stops
+                .insert(session.to_owned(), (deadline, delay_scope.clone()));
+        }
+        let engine = engine.clone();
+        let session = session.to_owned();
+        tokio::spawn(async move {
+            if delay_scope
+                .run_until_cancelled(tokio::time::sleep_until(deadline))
+                .await
+                .is_none()
+            {
+                return;
+            }
+            if let Some(Err(error)) = stop
+                .run_until_cancelled(react(&engine, &session, operation, at))
+                .await
+            {
                 eprintln!("Updating the engine's queue: {error}");
             }
-        }
-    });
+        });
+    }
+}
+
+/// Older messages used these prefixes before automated notes carried their mark.
+fn own_steer(item: &Value) -> bool {
+    const AUTOMATED: &[&str] = &[
+        "[Message from ",
+        "[Wake-up]",
+        "[Work from ",
+        "[Session ",
+        "[Goal started]",
+        "[Goal changed]",
+        "[Goal's end]",
+        "[Goal resumed]",
+        "[Goal] Nothing of the goal is at work now.",
+        "[Not now]",
+        "[Limit reset]",
+        "[The user answered]",
+    ];
+    let text = item["payload"]["text"].as_str().unwrap_or_default();
+    item["type"] == "user"
+        && item["delivery"] == "steer"
+        && !item
+            .pointer("/payload/metadata/kuvo/note")
+            .is_some_and(Value::is_object)
+        && !AUTOMATED.iter().any(|prefix| text.starts_with(prefix))
 }
 
 pub(crate) fn watch_limits(
@@ -1928,6 +2035,7 @@ enum QueueEvent {
     Prune,
     Discard,
     Started,
+    Reopen,
 }
 
 async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -> io::Result<()> {
@@ -1941,6 +2049,19 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
             .put(session, |state| {
                 if state.resumed_limit_at.is_some_and(|resumed| resumed <= at) {
                     state.resumed_limit_at = None;
+                }
+            })
+            .await?;
+        return Ok(());
+    }
+    if matches!(operation, QueueEvent::Reopen) {
+        engine
+            .queues
+            .put(session, |state| {
+                if state.limit_stop.is_some() {
+                    state.release();
+                } else {
+                    state.paused = false;
                 }
             })
             .await?;
@@ -2005,7 +2126,9 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
         .filter(|row| row.is_message())
         .collect::<Vec<_>>();
     match operation {
-        QueueEvent::Discard | QueueEvent::Started => unreachable!("handled locally"),
+        QueueEvent::Discard | QueueEvent::Started | QueueEvent::Reopen => {
+            unreachable!("handled locally")
+        }
         QueueEvent::Prune => {
             engine
                 .queues
