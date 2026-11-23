@@ -277,10 +277,7 @@ impl QueueStore {
         before: Option<&str>,
     ) -> io::Result<bool> {
         let current = self.get(session).await?;
-        let arriving = current
-            .arriving
-            .get(&prompt.id)
-            .is_some_and(|expires| *expires > disk::now());
+        let arriving = current.arriving(&prompt.id);
         if !current.paused
             && !current
                 .limit_stop
@@ -366,6 +363,12 @@ impl Queue {
             || !self.arriving.is_empty()
             || !self.inbox_moved.is_empty()
             || !self.unknown.is_empty()
+    }
+
+    pub(crate) fn arriving(&self, id: &str) -> bool {
+        self.arriving
+            .get(id)
+            .is_some_and(|expires| *expires > disk::now())
     }
 
     pub(crate) fn contains(&self, id: &str) -> bool {
@@ -593,6 +596,47 @@ async fn snapshot(engine: &Engine, session: &str, items: bool) -> Result<Value, 
 
 fn queue_failed(error: api::Error) -> Refusal {
     Refusal::new(StatusCode::BAD_GATEWAY, error.to_string())
+}
+
+pub(crate) async fn hold_arrival(
+    engine: &Engine,
+    lease: &Lease,
+    session: &str,
+    id: &str,
+) -> io::Result<()> {
+    let rows = inbox(engine, lease, session)
+        .await
+        .map_err(io::Error::other)?;
+    let found = rows.iter().any(|row| row.id == id && row.is_message());
+    let mut held = Vec::new();
+    if found {
+        held.push(id.to_owned());
+        for row in rows
+            .iter()
+            .filter(|row| row.id != id && row.is_message() && row.delivery == Delivery::Steer)
+        {
+            if set_delivery(engine, lease, session, &row.id, Delivery::Queue)
+                .await
+                .is_ok()
+            {
+                held.push(row.id.clone());
+            }
+        }
+    }
+    engine
+        .queues
+        .put(session, |state| {
+            state.arriving.remove(id);
+            if found {
+                let mut old = std::mem::take(&mut state.held);
+                old.retain(|item| !held.contains(item));
+                state.held = held;
+                state.held.extend(old);
+                state.paused = true;
+            }
+        })
+        .await?;
+    Ok(())
 }
 
 async fn set_delivery(

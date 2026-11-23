@@ -40,3 +40,30 @@ test("a session started by a subagent is filed under the project of its linked w
   assert.equal(engine.messages.get(made.id).length, 1);
   assert.match(engine.messages.get(made.id)[0].text, /ses_lead/);
 });
+
+test("a new worktree is recorded under its project before the conversation is returned", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const { home, engine, start } = await computer("new-session-worktree");
+  const project = path.join(home, "project");
+  const env = isolatedEnv(path.dirname(home));
+  write(path.join(project, "file"), "Fixture\n");
+  git(env, project, "init", "-q");
+  git(env, project, "add", "file");
+  git(env, project, "commit", "-qm", "Fixture");
+  write(path.join(home, "box", "projects.json"), JSON.stringify({ version: 1, projects: [{ directory: project, name: "Fixture" }] }));
+  const record = await start().ready();
+
+  const response = await request(record, "POST", "kuvo/sessions", {
+    project: "Fixture", worktree: true, title: "New worktree", approval: "askFirst",
+  });
+  assert.equal(response.status, 200, response.text);
+  const { session, folder, worktree } = response.json;
+  assert.equal(worktree.project, project);
+  assert.equal(worktree.folder, folder);
+  assert.notEqual(folder, project);
+  assert.equal(fs.readFileSync(path.join(folder, "file"), "utf8"), "Fixture\n");
+  const made = engine.sessions.find(each => each.id === session);
+  assert.deepEqual(made.metadata.kuvo.filed, { folder, project });
+  const stored = JSON.parse(fs.readFileSync(path.join(home, "box/worktrees.json"), "utf8"));
+  assert.deepEqual(stored.worktrees.map(({ root, project }) => ({ root, project })), [{ root: worktree.root, project }]);
+});

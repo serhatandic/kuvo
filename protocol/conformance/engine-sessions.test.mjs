@@ -309,3 +309,23 @@ test("the line shows a reordered queue and Send Now interrupts the running step"
     line.close();
   }
 });
+
+test("a removal requested before a send reaches a busy engine holds that message", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-arrival-busy");
+  const id = "ses_busyArrival";
+  here.engine.sessions.push(sessionOf({ id, title: "Busy", directory: here.home }));
+  here.engine.running.add(id);
+  const record = await here.start().ready();
+  const route = "kuvo/sessions/" + id;
+  const remove = route + "/queue/msg_onTheWay?arriving=1";
+  assert.equal((await request(record, "DELETE", remove)).status, 409);
+  const send = await request(record, "POST", route + "/send", { id: "msg_onTheWay", words: "Change this" });
+  assert.equal(send.status, 200);
+  assert.deepEqual(here.engine.inboxes.get(id).map(row => [row.id, row.delivery]), [["msg_onTheWay", "queue"]]);
+  const removed = await request(record, "DELETE", remove);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.json.removed.words, "Change this");
+  assert.deepEqual(here.engine.inboxes.get(id), []);
+  assert.deepEqual(here.engine.interrupted, []);
+});

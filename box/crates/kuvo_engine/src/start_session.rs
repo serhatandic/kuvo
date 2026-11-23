@@ -83,9 +83,18 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
         async move {
             let given = sessions::body(&call)
                 .map_err(|_| bad("Send {task}, and title, folder, startedBy, wait."))?;
-            let started = create(&engine, &given).await?;
+            let mut started = create(&engine, &given).await?;
             list.refresh();
-            Ok(RouteReply::json::<200>(sessions::typed(started)?))
+            // The reference includes the complete worktree record. The route
+            // shape names only the fields desktop clients read.
+            let worktree = started
+                .as_object_mut()
+                .and_then(|started| started.remove("worktree"));
+            RouteReply::json_with::<200>(
+                sessions::typed(started)?,
+                worktree.map(|worktree| ("worktree", worktree)),
+            )
+            .map_err(|error| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
         }
     });
 }

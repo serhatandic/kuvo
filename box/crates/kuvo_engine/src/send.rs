@@ -11,7 +11,7 @@ use kuvo_server::{
     Access, Caller, LocalOrigin, Refusal, Registry, RouteCall, RouteReply, Transport,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::{
     Engine, api, disk,
@@ -142,13 +142,14 @@ pub(crate) async fn forget(engine: &Engine, session: &str, id: &str) -> Result<(
     }
 }
 
-async fn decode(
-    engine: &Engine,
-    list: &crate::LocalSessions,
-    call: &RouteCall<()>,
-    session: &str,
+struct Arrival {
+    id: String,
+    given: Map<String, Value>,
+    phone: bool,
     form: Form,
-) -> Result<Send, Refusal> {
+}
+
+fn arrival(engine: &Engine, call: &RouteCall<()>, form: Form) -> Result<Arrival, Refusal> {
     let given = sessions::body(call)
         .map_err(|_| Refusal::new(StatusCode::BAD_REQUEST, "Send what was written (words)."))?;
     let id = match given.get("id") {
@@ -156,11 +157,6 @@ async fn decode(
         None => new_id(engine)?,
         _ => return Err(Refusal::new(StatusCode::BAD_REQUEST, BAD_ID)),
     };
-    let files = given
-        .get("files")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
     let phone = !match &call.request.caller {
         Caller::Paired { pairing, .. } => pairing.desktop,
         Caller::Local(
@@ -172,6 +168,31 @@ async fn decode(
         ) => false,
         Caller::Local(_) => true,
     };
+    Ok(Arrival {
+        id,
+        given,
+        phone,
+        form,
+    })
+}
+
+async fn compose(
+    engine: &Engine,
+    list: &crate::LocalSessions,
+    session: &str,
+    arrival: Arrival,
+) -> Result<Send, Refusal> {
+    let Arrival {
+        id,
+        given,
+        phone,
+        form,
+    } = arrival;
+    let files = given
+        .get("files")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let legacy_queue = form == Form::Add;
     let naming = if given
         .get("words")
@@ -286,10 +307,15 @@ pub(crate) async fn post(
     }
 }
 
-async fn deliver(engine: &Engine, session: &str, given: Send) -> Result<Value, Refusal> {
+async fn deliver(
+    engine: &Engine,
+    list: &crate::LocalSessions,
+    session: &str,
+    arrival: Arrival,
+) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
-    let path = receipt_path(engine, session, &given.prompt.id);
-    let saved = read(engine, session, &given.prompt.id).await?;
+    let path = receipt_path(engine, session, &arrival.id);
+    let saved = read(engine, session, &arrival.id).await?;
     if let Some(receipt) = &saved
         && let Some(answer) = &receipt.answer
     {
@@ -301,11 +327,14 @@ async fn deliver(engine: &Engine, session: &str, given: Send) -> Result<Value, R
         return Ok(answer.value.clone());
     }
     let interrupted = saved.is_some();
-    let mut receipt = saved.unwrap_or(Receipt {
-        format_version: 1,
-        request: given,
-        answer: None,
-    });
+    let mut receipt = match saved {
+        Some(receipt) => receipt,
+        None => Receipt {
+            format_version: 1,
+            request: compose(engine, list, session, arrival).await?,
+            answer: None,
+        },
+    };
     let request = &receipt.request;
     let id = &request.prompt.id;
     if request.undo {
@@ -314,6 +343,7 @@ async fn deliver(engine: &Engine, session: &str, given: Send) -> Result<Value, R
             .map_err(disk_failure)?;
     }
     let queue = engine.queues.get(session).await.map_err(disk_failure)?;
+    let arriving = queue.arriving(id);
     let mut admitted = queue.contains(id);
     let mut delivered = false;
     let mut answer = json!({});
@@ -355,13 +385,22 @@ async fn deliver(engine: &Engine, session: &str, given: Send) -> Result<Value, R
                 .await
                 .map_err(disk_failure)?;
             if !admitted {
-                answer = post(engine, &lease, session, &request.prompt).await?;
+                let mut prompt = request.prompt.clone();
+                if arriving {
+                    prompt.delivery = Delivery::Queue;
+                }
+                answer = post(engine, &lease, session, &prompt).await?;
                 delivered = true;
                 engine.queues.notify();
-                if request.immediate {
+                if request.immediate && !arriving {
                     let _ = queue::advance(engine, &lease, session, id, true).await;
                 }
             }
+        }
+        if delivered && arriving {
+            queue::hold_arrival(engine, &lease, session, id)
+                .await
+                .map_err(|_| engine_busy())?;
         }
     }
 
@@ -398,9 +437,9 @@ async fn apply(
     form: Form,
 ) -> Result<Value, Refusal> {
     let session = sessions::id(&call)?;
-    let given = decode(&engine, &list, &call, &session, form).await?;
+    let arrival = arrival(&engine, &call, form)?;
     // The handoff owns its claim even after the caller disconnects.
-    tokio::spawn(async move { deliver(&engine, &session, given).await })
+    tokio::spawn(async move { deliver(&engine, &list, &session, arrival).await })
         .await
         .map_err(|_| engine_busy())?
 }
