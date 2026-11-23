@@ -18,11 +18,14 @@ one small program on each computer.
 own `Cargo.lock` and the same toolchain file as `gpui/`. The TypeScript stays in `box/src` until
 it's removed, so the folder never moves. It isn't a member of the `gpui` workspace. That workspace
 pins Zed's GPUI, and joining it would make every box build resolve and compile GPUI. Two small
-crates are shared by path. `gpui/kuvo_box` depends on `../box/crates/kuvo_protocol` and
-`kuvo_wire`. Both are sans-IO: no runtime, and only serde, serde_json and the crypto crates
+crates will be shared by path. `gpui/kuvo_box` will depend on `box/crates/kuvo_protocol` and
+`box/crates/kuvo_wire`. Both are sans-IO: no runtime, and only serde, serde_json and the crypto crates
 `kuvo_box` already uses. That keeps them resolvable under either lockfile. A change to them also
 runs `kuvo_box`'s tests. Box crates get their own `scripts/heavy.sh` lane (`rust-box`) so parallel
-box sessions don't queue behind desktop builds.
+box sessions don't queue behind desktop builds. Run `scripts/cargo-box.sh` from the repository
+root. The workspace uses edition 2024, Cargo resolver 3, and the same Rust pin as GPUI. Rust's
+`unsafe_op_in_unsafe_fn` and Clippy's `undocumented_unsafe_blocks` are denied. Release builds
+keep speed optimization (level 3), use thin LTO and strip symbols for size.
 
 **Crates** (one per area, so parallel sessions edit different crates):
 
@@ -70,7 +73,39 @@ agents' own CLIs; Kuvo Helper on a Mac. The relay service (`relay/`) isn't part 
 
 **Budget:** the resident at most 40 MiB PSS idle, a holder at most 3 MiB, and the whole box
 without the engine at most 50 MiB. The binary is at most 20 MB stripped. Both are checked with
-`scripts/small-computer-check.sh`.
+`scripts/small-computer-check.sh`. Phase 0.4's info-only resident measured 1.38 MiB physical
+footprint on macOS, 1.16 MiB PSS on Linux, and 0.58 MiB private working set on native Windows.
+
+### Phase 0.4 measurements
+
+The stripped release binary ran in a fresh home (`KUVO_HOME`), answered an authenticated
+`GET /kuvo/info` over `127.0.0.1`, and idled for two seconds before sampling. It only advertises
+`info`, so the desktop compatibility gate holds it. The existing desktop process check learns
+the Rust command when the local server lands in phase 1.4.
+
+| Computer | Idle memory | Source |
+|---|---:|---|
+| Apple silicon Mac | 1,408 KiB | Physical footprint, `vmmap -summary` |
+| lokum, Linux x86-64 | 1,184 KiB | PSS, `/proc/<pid>/smaps_rollup`, using a static musl binary built on the Mac |
+| Native Windows x64 | 592 KiB | Private working set from `Win32_PerfFormattedData_PerfProc_Process`. Total working set was 5,212 KiB. |
+
+The Windows release executable was cross-compiled on the Mac with portable LLVM MinGW
+(`x86_64-pc-windows-gnullvm`, with static libunwind) and run natively on Windows build 26300.9974.
+The Win32 probes ran over OpenSSH in a scratch folder:
+
+- **Named pipe.** A protected DACL with one ACE for the account SID and `PIPE_REJECT_REMOTE_CLIENTS`.
+  Two independent SSH connections with different logon SIDs both read the reply as the same user.
+  [Named pipe access rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
+- **Job Object.** The owner held the only job handle with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+  Terminating that owner stopped its live child within the five-second observation window.
+  [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+- **File replacement.** Flushing the writable temp file with `FlushFileBuffers` passed. Flushing
+  the read-only handle and calling `MoveFileExW` with replace and write-through both returned
+  Windows error 5 (`ERROR_ACCESS_DENIED`). On the same volume, `FileRenameInfoEx` with replace
+  and POSIX flags succeeded while the original reader held `FILE_SHARE_DELETE`. The existing
+  handle read the old contents and a new open read the replacement. Use this for the plain
+  selector file. Power-loss recovery is still part of the keeper checks.
+  [Windows replacement semantics](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)
 
 ## 2. Agents without a JavaScript runtime
 
@@ -128,13 +163,14 @@ stopped mid-step, is refused (section 4). Every per-file version check in
 the Rust box writes nothing the last TypeScript release can't read. Change rules continue as today
 afterward: new paths or per-file versions.
 
-**Features.** The Rust box advertises exactly the `FEATURES` of the TypeScript version it
-replaces, so the update gate needs no change. `kuvo/info`'s `bridge` and `pieces` name the
+**Features.** At switch-over, the Rust box advertises exactly the `FEATURES` of the TypeScript
+version it replaces, so the update gate needs no change. `kuvo/info`'s `bridge` and `pieces` name the
 resident's own version.
 
 ## 4. Switch-over
 
-- **Release.** The signed `box/1` manifest gains, additively, one pack per target (`aarch64` and
+- **Release.** 0.8 ships the Rust box on macOS, Linux, WSL2 and native Windows. The signed
+  `box/1` manifest gains, additively, one pack per target (`aarch64` and
   `x86_64` macOS, `x86_64` and `aarch64` Linux built with musl, `x86_64` Windows) and a `launch`
   field. The last TypeScript release learns both before any Rust release is offered. Its
   `kuvo-start` launches `bin/kuvo-box serve` and no separate bridge when `launch` says so. Engine
@@ -147,16 +183,20 @@ resident's own version.
 - **Live work survives both ways.** The Rust resident adopts TypeScript holders, and the
   TypeScript bridge adopts Rust holders. The running engine is adopted through `run/engine.json`.
 - **Rollback.** `bin` goes back to the TypeScript release, still installed beside it. That release
-  reads everything the Rust box wrote.
+  reads everything the Rust box wrote. Remove the TypeScript box four weeks after the last
+  computer switches.
 - **Mixed setups** meet only through mail v1, signed documents, the lease and Noise sessions. All
   of these are vector-held and tested pairwise in session 9.1.
 - **Staging gate.** The Rust release stages only on a computer whose folder is at the frozen
-  layout and that no Mac from before 0.8 has visited in 30 days. Any other computer says why it
-  can't stage and stays on the TypeScript box. The fleet update already allows that.
-- **0.7.2 → 0.8.** The last TypeScript 0.8.x stays in the feed as the **stepping stone**.
+  layout and that no Mac still on a pre-0.8 release has visited in 30 days. A computer that a
+  pre-0.8 Mac still visits says why it can't stage and stays on the TypeScript box until that Mac
+  updates. The fleet update already allows that.
+- **0.5–0.7 → 0.8.** The **stepping stone**, the last TypeScript build, stays in the feed for the
+  data move.
   `kuvo-install` picks it when it finds 0.5–0.7 data (a Mac's app folder, or a machine without a
-  bridge). The stone runs the move into `~/.kuvo-code`, then the ordinary fleet update brings the
-  Rust box. So the Rust box carries no rehome and no "For released Macs" compatibility.
+  bridge). The stepping stone moves the data into `~/.kuvo-code`, then the ordinary fleet update
+  brings the Rust box automatically. Rehome and the pre-0.8 compatibility routes stay in
+  TypeScript.
 - **Auto and the sandbox.** On a Mac it's `sandbox-exec` with the same generated profile. On Linux,
   Landlock is applied by `kuvo-box fence-exec`. That exec starts single-threaded, so it calls
   `unshare` itself and drops the `bun:ffi` script and the util-linux dependency. Windows, native
@@ -205,7 +245,7 @@ parallel.
 | 0.1 | Box-under-test adapter; route scenarios through a binary; the TypeScript box passes | conformance | — | 6 | A |
 | 0.2 | Peer conformance through binaries: mail-kind vectors, `hold/1`, golden home, digests | conformance | 0.1 | 6 | A |
 | 0.3 | **Spike:** Claude Code's control protocol from Rust against the SDK (every feature in section 2); `cursor-agent` stream output; `agy` without the `.par` | — | — | 4 | B |
-| 0.4 | Workspace, all crates empty and registered, `serve` answering `kuvo/info`; idle PSS on Mac and Linux; named pipe, Job Object and durability probe on Windows | bin, os | — | 5 | D |
+| 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
 | 1.1 | `kuvo_protocol`: codegen from shapes, checker held to `cases.json`, `FEATURES`; desktop takes the features and gate from it | protocol | 0.4 | 5 | B |
 | 1.2 | `kuvo_store`: paths, versioned files, durability, locks, layout gate; reads the golden home | store | 0.4, 0.2 | 6 | C |
 | 1.3 | `kuvo_os`: processes, start identity, groups and Job Objects, IPC, watching, platform facts | os | 0.4 | 6 | D |
@@ -236,7 +276,7 @@ parallel.
 | 7.1 | `kuvo-box keep`: supervision, selector, rollback; `kuvo-start` launching by manifest | keeper | 1.3 | 5 ×2 | D |
 | 7.2 | Fleet update with per-target packs, staging gate, stepping stone in `kuvo-install`, uninstall, footprint | keeper | 7.1, 2.1 | 5 ×2 | A |
 | 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths | os, keeper | 7.1 | 5 ×2 | D |
-| 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
+| 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
 | 9.1 | Mixed fleet: TypeScript and Rust pairs for lease, moves, numbers, update and rollback, holders in both directions | conformance | all | 6 | A |
 | 9.2 | Budget check and a 24-hour soak with turns | — | 9.1 | 4 | B |
 | 9.3 | Rehearsal on four computers (Mac, Linux, WSL2, native Windows), including a 0.7.2 Mac through the stone; rollback drill | — | 9.2 | 6 ×2 | A |
@@ -250,18 +290,16 @@ conformance test, so the Rust lane for that area takes it in. Windows sessions 4
 [windows.md](windows.md) are replaced by 0.4, 1.3, 7.1 and 8.1–8.2. The native box is the Rust
 box.
 
-## 7. Decisions for the user
+## 7. Release decisions
 
-1. **0.8 and native Windows.** Ship 0.8 with the TypeScript box and WSL2, which is done. Native
-   Windows comes with the Rust box, and native work on the TypeScript box stops. *Recommended.*
-2. **Drop 0.7 Mac compatibility in the Rust box.** Computers that a 0.7 Mac still visits stay on the
-   TypeScript box until it's gone, and the stepping stone carries 0.7.2 upgrades. *Recommended*:
-   the alternative ports about 8,000 lines of rehome and compatibility code that expire three
-   months after 0.8.
-3. **Light freeze on the TypeScript box during the rewrite.** Allow fixes and small features, each
-   with a scenario. Larger new areas wait, or start in Rust. *Recommended*: otherwise the port
-   chases a moving box.
-4. **Signing the Windows binary.** A code-signing certificate or signing service, for SmartScreen
-   and Defender. This joins D4 in [windows.md](windows.md). *Recommended* before session 8.2.
-5. **The rollback window.** Keep the TypeScript box installed beside the Rust box, and its source
-   in the repo, for four weeks after the last computer switches. *Recommended.*
+1. **0.8.** Ship with the Rust box, including native Windows and WSL2.
+2. **Data and older Macs.** Keep the 0.5–0.7 data move in the TypeScript stepping stone in the
+   feed. The installer selects it automatically, then the ordinary update brings the Rust box.
+   The staging gate keeps computers that pre-0.8 Macs still visit on TypeScript until those Macs
+   update.
+3. **Light freeze on the TypeScript box.** Keep taking fixes and small features with scenarios.
+   Start larger areas in Rust or wait.
+4. **Windows signing.** 8.2 builds are unsigned. Buy the code-signing certificate or service just
+   before release and wire it into the release pipeline then.
+5. **Rollback.** Keep the TypeScript box installed beside the Rust box and keep its source for
+   four weeks after the last computer switches, then remove it.

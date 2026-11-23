@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kuvo_protocol",
+    "crates/kuvo_wire",
+    "crates/kuvo_os",
+    "crates/kuvo_store",
+    "crates/kuvo_server",
+    "crates/kuvo_setup",
+    "crates/kuvo_peers",
+    "crates/kuvo_engine",
+    "crates/kuvo_agents",
+    "crates/kuvo_work",
+    "crates/kuvo_services",
+    "crates/kuvo_keeper",
+    "crates/kuvo-box",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license-file = "../LICENSE"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"

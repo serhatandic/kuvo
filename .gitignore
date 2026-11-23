@@ -24,3 +24,5 @@ box/src/**/.unresolved-*.ts
 
 # Built from box/src/shared/routes by scripts/check-built.sh --build (scripts/routes-md.ts), never kept.
 /protocol/ROUTES.md
+
+/box/target/

@@ -69,14 +69,16 @@ Read [the testing guide](docs/testing.md) and run focused checks for the area yo
   per checkout: with a shared target, Cargo can reuse another checkout's executable, which keeps
   that checkout's `CARGO_MANIFEST_DIR`, so shots write to and tests read fixtures from the wrong
   place.
+- Rust box: `scripts/cargo-box.sh` runs Cargo in `box/` with its pinned toolchain and its own
+  build slot. Use `scripts/cargo-box.sh build --release --locked` for a release build.
 - Box and bridge: `scripts/test-box.sh [box|bridge|all] [filter]`. Use
   `scripts/heavy.sh box scripts/test-linux.sh <ssh-host> <test file>` for a Linux
   bridge check. The scripts keep test data in scratch directories.
 - Kuvo Helper: `scripts/heavy.sh mac-build swift test --package-path mac/helper`.
 - Generated files: `BUN="$HOME/.bun/bin/bun" scripts/check-built.sh`.
 
-The build scheduler gives Rust one lane and gives `mac-build` and `box` two
-slots each. `scripts/heavy.sh status` shows their holders and queues.
+The build scheduler gives desktop Rust (`rust`) and box Rust (`rust-box`) one slot
+each, and gives `mac-build` and `box` two slots each. `scripts/heavy.sh status` shows their holders and queues.
 Set `KUVO_HEAVY_WAIT=0` to exit 75 if a job would wait, or
 `KUVO_HEAVY_PRIORITY=high` to move ahead of waiting normal-priority jobs.
 `KUVO_HEAVY_LIMIT` sets the command's time limit (`90m`, `600s`, `2h` or
