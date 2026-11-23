@@ -1,6 +1,11 @@
-use std::{fs, io, path::Path, sync::Arc};
+use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
-use kuvo_protocol::{gate::compatibility, routes::get_kuvo_info as info};
+use kuvo_engine::{Engine, State, Timing};
+use kuvo_protocol::{
+    gate::compatibility,
+    json::{Null, Nullable},
+    routes::{get_kuvo_info as info, types::GetKuvoInfoStatus200MacEngineState3 as EngineState},
+};
 use kuvo_server::{Access, LineTiming, Refusal, Registry, Resident, RouteReply, ssh::NoPairings};
 use serde_json::json;
 
@@ -12,18 +17,29 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     };
     let generation = resident.record().generation;
     let port = resident.record().port;
+    let engine = Engine::new(
+        home.to_owned(),
+        std::env::vars_os().collect(),
+        Timing::default(),
+    )?;
     let info = info(home)?;
     let mut routes = Registry::new();
+    engine.register(&mut routes);
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
-        let answer = RouteReply::json_with::<200>(
-            info.clone(),
-            [
-                ("serverGeneration", json!(generation)),
-                ("serverBuild", json!(VERSION)),
-            ],
-        )
-        .map_err(|error| Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string()));
-        std::future::ready(answer)
+        let engine = engine.clone();
+        let info = info.clone();
+        async move {
+            RouteReply::json_with::<200>(
+                engine_info(info, engine.state().await),
+                [
+                    ("serverGeneration", json!(generation)),
+                    ("serverBuild", json!(VERSION)),
+                ],
+            )
+            .map_err(|error| {
+                Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })
+        }
     });
     let dispatcher = routes.build(LineTiming::default());
     println!("{}", json!({"url": format!("http://127.0.0.1:{port}")}));
@@ -43,7 +59,10 @@ fn info(home: &Path) -> Result<info::Status200, Box<dyn std::error::Error>> {
         Err(error) => return Err(error.into()),
     };
     // Advertise the implemented routes while the desktop remains behind its update gate.
-    let features = ["info", "line"];
+    let mut features = vec!["info", "line", "engine.restart"];
+    if !is_mac {
+        features.push("engine.start");
+    }
     let mut answer = json!({
         "kind": if is_mac { "mac" } else { "machine" },
         "name": name.to_string_lossy(),
@@ -67,8 +86,39 @@ fn info(home: &Path) -> Result<info::Status200, Box<dyn std::error::Error>> {
         answer["pieces"] = json!({
             "link": resident,
             "agents": {"running": null, "current": VERSION, "behind": false, "renewal": null, "waits": null},
-            "engine": {"running": null, "current": null, "behind": false},
+            "engine": {"running": null, "current": kuvo_engine::pinned_version(), "behind": false},
         });
     }
     Ok(serde_json::from_value(answer)?)
+}
+
+fn engine_info(mut info: info::Status200, state: State) -> info::Status200 {
+    let (state, version, started) = match state {
+        State::Idle => (EngineState::Idle, None, None),
+        State::Starting => (EngineState::Starting, None, None),
+        State::Running { version, started } => (EngineState::Running, version, started),
+        State::Stopped => (EngineState::Stopped, None, None),
+    };
+    let started = started
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .and_then(|time| serde_json::Number::from_f64(time.as_secs_f64()))
+        .map_or(Nullable::Null(Null), Nullable::Value);
+    match &mut info {
+        info::Status200::Mac(mac) => {
+            mac.engine_state = Some(state);
+            mac.engine = version.unwrap_or_default();
+            mac.started = started;
+        }
+        info::Status200::Machine(machine) => {
+            machine.engine_state = Some(state);
+            machine.running = state == EngineState::Running;
+            machine.stopped = state == EngineState::Stopped;
+            machine.started = started;
+            machine.engine = version.map_or(Nullable::Null(Null), Nullable::Value);
+            if let Some(pieces) = &mut machine.pieces {
+                pieces.engine.running = machine.engine.clone();
+            }
+        }
+    }
+    info
 }
