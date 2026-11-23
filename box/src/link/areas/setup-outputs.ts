@@ -13,6 +13,7 @@ import { readReach } from "../peers/reach";
 import type { LinkHost } from "../relay/host";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { readLink } from "../state";
+import { copyStanding } from "../peers/lists";
 
 const outputCopy = object(OUTPUT_COPY);
 type OutputCopy = Infer<typeof outputCopy>;
@@ -85,10 +86,11 @@ async function setupOutputs(context: RouteContext, root: string, before: Order |
   for (const row of here?.artifacts ?? []) add(row, localComputer, false);
   for (const { peer, copy } of peers) {
     if (!copy) continue;
-    const away = reach[peer.key] !== undefined || now - copy.seen > 180_000;
+    // (Away by the one rule, `standingOf`.)
+    const { away, lastSeen } = copyStanding(peer.key, copy.seen, reach, undefined, now);
     const computer = { id: peer.key, name: peer.name };
     for (const row of copy.artifacts) {
-      if (row.sessions.some(session => sessions.has(session))) add(row, computer, away, copy.seen);
+      if (row.sessions.some(session => sessions.has(session))) add(row, computer, away, lastSeen);
     }
   }
   const sorted = rows.filter(row => !before || compare(order(row), before) > 0).sort((a, b) => compare(order(a), order(b)));

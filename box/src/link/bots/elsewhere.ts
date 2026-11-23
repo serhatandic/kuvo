@@ -9,6 +9,7 @@ import { LOOKS } from "../../shared/routes/bots";
 import { computerName } from "../peers/computer-name";
 import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
+import { standingOf } from "../peers/lists";
 import { peerIsAway, readReach } from "../peers/reach";
 import { readLink } from "../state";
 import { whatDeleteTakes } from "./deletes";
@@ -35,7 +36,7 @@ export type ListedElsewhere = BotElsewhere & { session: string; name: string; ki
  * other) is the one's that told this box last, as a held edit goes (`keeperOf`); one that lives
  * here is this box's own, whatever another still says. By computer, as this box knows them, then as
  * each listed its own. */
-export function botsElsewhere(link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents()): ListedElsewhere[] {
+export function botsElsewhere(link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents(), now = Date.now()): ListedElsewhere[] {
   const heard = (peer: Peer): number => told[peer.key]?.heard ?? told[peer.key]?.at ?? 0;
   const peers = peersOf(link).filter(peer => told[peer.key]);
   // (One its computer gave no name isn't listed by it: nothing to show it by.)
@@ -53,9 +54,12 @@ export function botsElsewhere(link: LinkState | null = readLink(), told: Record<
   const reach = readReach();
   for (const peer of peers) {
     const computer = shownName(peer);
-    // Its computer not answering: said so, with when it was last heard from.
+    // Its computer not answering: said so, with when it was last heard from; only switching to a
+    // new release, or quiet under a minute, it isn't away (`standingOf`).
     const seen = told[peer.key]?.heard ?? told[peer.key]?.at;
-    const off = peerIsAway(peer.key, told[peer.key]?.heard, reach) ? { away: true as const, ...(seen !== undefined ? { lastSeen: seen } : {}) } : {};
+    const standing = standingOf(peer.key, peerIsAway(peer.key, told[peer.key]?.heard, reach), seen, reach, told, now);
+    const off = standing.away ? { away: true as const, ...(standing.lastSeen !== undefined ? { lastSeen: standing.lastSeen } : {}) }
+      : standing.updating ? { updating: true as const } : {};
     // Where its deleted bots' folders go, as it said; one that hasn't (from before it did) is said both ways.
     const trash = told[peer.key]?.trash;
     for (const agent of bots(peer)) {

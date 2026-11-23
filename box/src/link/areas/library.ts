@@ -27,7 +27,8 @@ import { IS_MAC, RUN } from "../home";
 import { ownComputerName } from "../computer-name";
 import { computerName } from "../peers/computer-name";
 import { KEY, ownKey, peersOf, removedBoxes, type Peer } from "../peers/known";
-import { awaySince } from "../peers/reach";
+import { standingOf } from "../peers/lists";
+import { awaySince, readReach } from "../peers/reach";
 import { offRelay } from "../letters/leave";
 import { readLink, type LinkState } from "../state";
 import { forwardAct, MEMORY_READ_FEATURE, takesForwarded, type Act, type Acted, type Forwarded } from "../work-queue/forward";
@@ -324,6 +325,7 @@ export async function* mergedLibraryRoute(context: RouteContext): AsyncGenerator
   yield* followedLive(async () => {
     const link = readLink();
     const agents = readPeerAgents();
+    const reach = readReach();
     const [here, remote] = await Promise.all([
       ownPart(query, signal, link),
       Promise.all(peersOf(link).map(async (peer): Promise<Asked | undefined> => {
@@ -331,8 +333,12 @@ export async function* mergedLibraryRoute(context: RouteContext): AsyncGenerator
         const copy = await libraryCopies.read(peer.key);
         const legacy = copy ? undefined : keptPart(peer.key, query);
         const kept = copy ?? legacy;
-        const aged = copy && Date.now() - copy.seen > 180_000;
-        const away = awaySince(peer.key) !== null || (kept && offRelay()) || aged;
+        const now = Date.now();
+        const aged = copy && now - copy.seen > 180_000;
+        // (Away as its rows say it, `standingOf`: not under a minute, nor while it only restarts
+        // into a new release; its part as last read meanwhile.)
+        const quiet = awaySince(peer.key, reach) !== null || Boolean(kept && offRelay()) || Boolean(aged);
+        const away = standingOf(peer.key, quiet, kept?.seen, reach, agents, now).away;
         if (!kept) {
           const features = agents[peer.key]?.features;
           if (away) return { computer, state: "away", message: `${computer.name} isn’t answering now, so its part of the Library isn’t shown.` };

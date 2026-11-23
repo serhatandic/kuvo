@@ -805,7 +805,10 @@ impl Workspace {
         // (Its own computer's box: another computer's conversation is read there.)
         let client = view.read(cx).client().clone();
         {
-            let update = match crate::conversation::read_now(&client, session) {
+            // (Through this computer's box, as its follow reads it: another computer's last copy
+            // while that computer's away.)
+            let nearest = view.read(cx).nearest().clone();
+            let update = match crate::conversation::read_now(&nearest, session) {
                 Ok(conversation) => kuvo_box::ConversationUpdate::Conversation(conversation),
                 Err(kuvo_box::Error::Refused(refusal)) if refusal.status == 404 => kuvo_box::ConversationUpdate::Gone(refusal),
                 Err(error) => kuvo_box::ConversationUpdate::Failed(error),

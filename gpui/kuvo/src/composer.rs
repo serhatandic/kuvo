@@ -237,6 +237,9 @@ pub struct Composer {
     client: BoxClient,
     delivery_box: Option<kuvo_box::queue::DeliveryBox>,
     delivery_line: Option<String>,
+    /// Its conversation's computer not answering (its last copy shown), said while no line about
+    /// its messages is.
+    away_line: Option<String>,
     /// The window's box, where another computer's is reached from: a new conversation's composer
     /// turns to the box of the computer picked in Runs on (`client`), and back.
     home: BoxClient,
@@ -407,7 +410,7 @@ impl Composer {
                     this.list_at = 0;
                     this.read_mentions(cx);
                     // (Its computer not answering is said until it does, whatever's written.)
-                    if this.note.is_some() && !this.unanswered && this.delivery_line.is_none() && this.text(cx) != this.noted {
+                    if this.note.is_some() && !this.unanswered && this.quiet_line().is_none() && this.text(cx) != this.noted {
                         this.note = None;
                     }
                     cx.notify();
@@ -424,6 +427,7 @@ impl Composer {
             client,
             delivery_box: None,
             delivery_line: None,
+            away_line: None,
             runs_on: Vec::new(),
             runs_on_now: 0.0,
             on: None,
@@ -1197,7 +1201,7 @@ impl Composer {
             return;
         }
         self.sending = !session;
-        if !self.unanswered && self.delivery_line.is_none() {
+        if !self.unanswered && self.quiet_line().is_none() {
             self.note = None;
         }
         self.list_dismissed = None;
@@ -1324,11 +1328,28 @@ impl Composer {
     pub(crate) fn take_delivery_line(&mut self, line: Option<String>, cx: &mut Context<Self>) {
         if self.delivery_line != line {
             self.delivery_line = line;
-            if !self.unanswered && self.note.as_ref().is_none_or(|note| !note.warning) {
-                self.note = self.delivery_line.as_ref().map(|text| Note { text: text.clone().into(), warning: false });
-            }
-            cx.notify();
+            self.quiet_line_changed(cx);
         }
+    }
+
+    /// Its conversation's computer isn't answering (`None`: it is), in the conversation's words.
+    pub(crate) fn take_away_line(&mut self, line: Option<String>, cx: &mut Context<Self>) {
+        if self.away_line != line {
+            self.away_line = line;
+            self.quiet_line_changed(cx);
+        }
+    }
+
+    /// The one quiet line under it: what's said of its messages waiting, else of its computer away.
+    fn quiet_line(&self) -> Option<Note> {
+        self.delivery_line.as_ref().or(self.away_line.as_ref()).map(|text| Note { text: text.clone().into(), warning: false })
+    }
+
+    fn quiet_line_changed(&mut self, cx: &mut Context<Self>) {
+        if !self.unanswered && self.note.as_ref().is_none_or(|note| !note.warning) {
+            self.note = self.quiet_line();
+        }
+        cx.notify();
     }
 
     /// The next message to go, where none is on its way.
@@ -1483,7 +1504,7 @@ impl Composer {
     fn answered(&mut self, cx: &mut Context<Self>) {
         self.again_in = RETRY_FIRST;
         if std::mem::take(&mut self.unanswered) {
-            self.note = self.delivery_line.as_ref().map(|text| Note { text: text.clone().into(), warning: false });
+            self.note = self.quiet_line();
         }
         let mut changed = false;
         for outgoing in &mut self.outgoing {
@@ -1782,7 +1803,7 @@ impl Composer {
         self.item_keys.clear();
         self.item_key = 0;
         self.attached.clear();
-        if !self.unanswered && self.delivery_line.is_none() {
+        if !self.unanswered && self.quiet_line().is_none() {
             self.note = None;
         }
         cx.notify();

@@ -190,9 +190,10 @@ merges what every computer in the setup last told it. A client follows the merge
 one box's line (`kuvo/setup/…/events`). Each topic sends a whole snapshot.
 
 - Every row has `computer: {id, name}`; key rows by computer and row id. The answering box's rows
-  have `here: true`. Another computer's have `away`, and while it's away `lastSeen` (ms), and
-  `updating: true` if it said less than ten minutes ago it was switching releases (show "updating",
-  not "last seen").
+  have `here: true`. Another computer's have `away`, and while it's away `lastSeen` (ms). One rule
+  says it, the box's (`standingOf`): a computer quiet under a minute isn't away, nor one that said
+  less than ten minutes ago it was switching releases, which has `away: false` and `updating: true`
+  instead (show its rows as they are, saying "Updating…"). Runs on still offers neither.
 - Rows carry `actions` (`open`, `manage`, `review`, `pause`, `resume`, `messages`); away rows have
   none. A client sends each action to the row's own box, which checks it.
 - A remote project's key is `<computer-id>:<directory>`. `kuvo/sessions/page` pages it from the
@@ -207,6 +208,11 @@ one box's line (`kuvo/setup/…/events`). Each topic sends a whole snapshot.
   only when the conversation is unknown, and `503` while its own list can't say yet. To read the
   conversation through the nearest box, use `kuvo/peer-session/<computer>/<session>/<resource>`, as
   a GET or a line topic. Actions go to the owner's own routes.
+- **Its last copy** (`line.kept-conversation`). The nearest box keeps the newest `messages` page it
+  carried of each such conversation (64 for each computer, 2 MiB each, inline attachments cut).
+  While that computer isn't answering, the same read answers `200` at once with that copy and
+  `away: {computer, lastSeen?, updating?}`. Show it, readable, with one quiet line, keep the
+  composer, and read again until the page comes without `away`.
 - **Composer delivery** (`typed.delivery`). A client posts a draft, with its own id, to its nearest
   box (`…/delivery?computer=<id>`), which records it before it answers `202` and delivers each
   conversation's oldest draft first, with no client connected, retrying while the owner can't

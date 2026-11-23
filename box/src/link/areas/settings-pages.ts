@@ -79,6 +79,7 @@ import { hasZoneRules, readZoneSetting, setZone, zoneChoice, ZONE_FILE, zoneFile
 import { ownClock } from "../../shared/zone";
 import type { SaveReply } from "../../shared/routes/setup-save";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import { copyStanding } from "../peers/lists";
 
 export const SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+)(?:\/(check))?)?)?$/;
 
@@ -641,9 +642,10 @@ async function archivedPage(context: RouteContext): Promise<SettingsPage> {
   }));
   for (const { peer, copy } of peers) {
     if (!copy) continue;
-    const away = reach[peer.key] !== undefined || Date.now() - copy.seen > 180_000;
+    // (Away by the one rule, `standingOf`.)
+    const { away, lastSeen } = copyStanding(peer.key, copy.seen, reach);
     const computer = { id: peer.key, name: peer.name };
-    const stamp = { computer, away, ...(away ? { lastSeen: copy.seen } : {}) };
+    const stamp = { computer, away, ...(away ? { lastSeen } : {}) };
     const peerRow = (source: SettingItem, id: string, session: string) =>
       item({ ...source, id, ...stamp, value: { peer: peer.key, session, revision: source.revision }, actions: away ? [] : source.actions });
     for (const group of copy.groups) {

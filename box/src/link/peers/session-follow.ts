@@ -13,6 +13,10 @@ import { liveLink, readLink } from "../state";
 import type { LinkState } from "../state";
 import { CONVERSATION_FEATURE, OWN_CONVERSATION } from "../lists/conversation";
 import { takesForwarded } from "../work-queue/forward";
+import { keepConversation, keptConversation } from "./kept-conversations";
+import { peerStanding } from "./lists";
+import { askReachAgain, tryingSince } from "./reach-again";
+import { awaySince, unreachableFollowers } from "./reach";
 
 const ID = /^[a-f0-9-]{36}$/;
 const LEASE = 35_000;
@@ -20,6 +24,8 @@ const RENEW = 10_000;
 const MAX_STREAMS = 128;
 const CHUNK = 32_000;
 const MAX_BUFFER = 4 * 1024 * 1024;
+/** A newest page carried larger than this isn't kept. */
+const MOST_KEPT_PAGE = 16 * 1024 * 1024;
 
 type Host = Pick<LinkHost, "send" | "welcomed" | "unsent">;
 type Client = Extract<Submitter, { kind: "computer" | "paired" }>;
@@ -56,6 +62,17 @@ const serving = new Map<string, { keep(): void; stop(): void }>();
 
 const unavailable = { message: "The conversation’s computer isn’t answering." };
 
+/** The newest page kept of `session`, said as its computer's last copy while it's away. */
+async function* lastCopy(context: RouteContext, peer: Peer, session: string): AsyncGenerator<AnswerPiece> {
+  const kept = await keptConversation(peer.key, session);
+  // (When it was last seen only once it's away, a minute on: switching to a new release, it's updating.)
+  const { away, lastSeen, updating } = await peerStanding(peer.key);
+  const seen = away ? Math.max(kept?.at ?? 0, lastSeen ?? 0) : 0;
+  yield* context.json(200, { data: kept?.data ?? [], away: {
+    computer: { id: peer.key, name: peer.name }, ...(seen ? { lastSeen: seen } : {}), ...(updating ? { updating } : {}),
+  } });
+}
+
 export async function* peerConversation(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, json, phone, signal } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
@@ -72,7 +89,14 @@ export async function* peerConversation(context: RouteContext, match: RegExpMatc
   if (!link || !peer) return yield* json(404, { message: "There’s no such computer in this setup." });
   if (!takesForwarded(peer.key, CONVERSATION_FEATURE))
     return yield* json(503, { message: "Update Kuvo Code on that computer to follow it from here." });
+  // The newest page is kept as it's carried, and answered from there while its computer is away.
+  const newest = resource === "messages" && !new URLSearchParams(query.slice(1)).has("cursor");
   const host = liveLink();
+  if (newest && (!host?.welcomed || awaySince(peer.key) !== null)) {
+    // (Asked again meanwhile, so the next read finds it as soon as it answers.)
+    if (host?.welcomed && tryingSince(peer.key) === null) askReachAgain(peer.key);
+    return yield* lastCopy(context, peer, id!);
+  }
   if (!host?.welcomed || receiving.size >= MAX_STREAMS) return yield* json(503, unavailable);
 
   const subscription = randomUUID();
@@ -83,23 +107,38 @@ export async function* peerConversation(context: RouteContext, match: RegExpMatc
   let received = false;
   let bytes = 0;
   let heard = Date.now();
+  // The newest page as it's carried, to keep once it's whole.
+  let copy = null as Buffer[] | null;
+  let copied = 0;
+  let whole = false;
   const finish = () => { ended = true; wake?.(); };
   receiving.set(subscription, { peer: peer.key, accept(part) {
     if (ended || part.sequence !== sequence++) return finish();
     heard = Date.now();
     if (!received && typeof part.status === "number" && typeof part.type === "string") {
+      // (Its engine not answering yet, as just after it starts: the same as the computer away.)
+      if (newest && part.status >= 500) return finish();
       received = true;
+      if (newest && part.status === 200) copy = [];
       queue.push({ head: { status: part.status, headers: { "content-type": part.type } } });
     }
     if (typeof part.body === "string") {
       const body = Buffer.from(part.body, "base64");
       bytes += body.length;
       if (bytes > MAX_BUFFER) return finish();
+      if (copy && (copied += body.length) <= MOST_KEPT_PAGE) copy.push(body);
+      else copy = null;
       queue.push({ body });
     }
-    if (part.end === true) finish();
+    if (part.end === true) {
+      whole = true;
+      finish();
+    }
     wake?.();
   } });
+  // The relay found nothing there: what's kept is answered now, not when the lease runs out.
+  const away = (key: string) => { if (key === peer.key && !received) finish(); };
+  unreachableFollowers.add(away);
   const stillAllowed = () => {
     const current = readLink();
     return liveLink() === host && host.welcomed && current?.key === link.key &&
@@ -122,9 +161,12 @@ export async function* peerConversation(context: RouteContext, match: RegExpMatc
         wake = undefined;
       }
     }
-    if (!received && !signal?.aborted) yield* json(503, unavailable);
+    // (Kept before the answer ends, so the next read finds it.)
+    if (whole && copy) await keepConversation(peer.key, id!, Buffer.concat(copy)).catch(() => {});
+    if (!received && !signal?.aborted) yield* newest ? lastCopy(context, peer, id!) : json(503, unavailable);
   } finally {
     receiving.delete(subscription);
+    unreachableFollowers.delete(away);
     clearInterval(keep);
     signal?.removeEventListener("abort", finish);
     if (host.welcomed) tell(host, peer, link, subscription, { stop: true });

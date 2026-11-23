@@ -110,6 +110,8 @@ pub struct ConversationView {
     revisions: Vec<u64>,
     list: ChatListState,
     problem: Option<Problem>,
+    /// Its computer isn't answering: what's shown is the last copy this computer's box kept.
+    away: Option<kuvo_box::messages::Away>,
     /// The box's Try Again under way (its coding agents started again).
     taking_action: bool,
     earlier_failed: Option<String>,
@@ -153,6 +155,8 @@ pub struct ConversationView {
     /// has been used, so only the last one's timer takes the check away.
     copied: Option<(String, u64)>,
     client: BoxClient,
+    /// This computer's box, which it's read through (another computer's included).
+    nearest: BoxClient,
     live: bool,
     _queue_follow: Option<Follow<Followed<Queue>>>,
     tasks: Vec<Task<()>>,
@@ -224,6 +228,7 @@ impl ConversationView {
             revisions: Vec::new(),
             list: ChatListState::new(0, cx),
             problem: None,
+            away: None,
             taking_action: false,
             earlier_failed: None,
             asked_earlier: Rc::default(),
@@ -252,6 +257,7 @@ impl ConversationView {
             transcript: cx.focus_handle(),
             copied: None,
             client: client.clone(),
+            nearest: nearest.clone(),
             live,
             _queue_follow: None,
             tasks: Vec::new(),
@@ -273,6 +279,8 @@ impl ConversationView {
         // Its Activity pinned or unpinned: drawn again, with the card or without.
         cx.subscribe(&view.bars, |_, _, _: &crate::work_bars::PinChanged, cx| cx.notify()).detach();
         if live {
+            // (Another computer's through this computer's box, which keeps its last copy for while
+            // that computer's away.)
             let follow = Rc::new(nearest.follow_conversation(&session, Timing::default()));
             let updates = follow.updates().clone();
             view.follow = Some(follow);
@@ -329,6 +337,30 @@ impl ConversationView {
 
     pub fn session(&self) -> &str {
         &self.session
+    }
+
+    /// This computer's box, which it's read through.
+    pub fn nearest(&self) -> &BoxClient {
+        &self.nearest
+    }
+
+    /// Its computer not answering, as its box says it: what's shown is its last copy.
+    pub fn away(&self) -> Option<&kuvo_box::messages::Away> {
+        self.away.as_ref()
+    }
+
+    /// The quiet line while its computer isn't answering: it's updating, or since when it was seen.
+    fn away_line(&self) -> Option<String> {
+        let away = self.away.as_ref()?;
+        let name = &away.computer.name;
+        Some(if away.updating {
+            format!("{name} is updating")
+        } else {
+            match away.last_seen {
+                Some(seen) => format!("{name} isn’t answering · seen {}", crate::time::ago(seen, self.now())),
+                None => format!("{name} isn’t answering"),
+            }
+        })
     }
 
     pub fn set_now(&mut self, now: f64) {
@@ -1065,6 +1097,9 @@ impl ConversationView {
         match update {
             ConversationUpdate::Conversation(conversation) => {
                 self.problem = None;
+                self.away = conversation.away.clone();
+                let line = self.away_line();
+                self.composer.update(cx, |composer, cx| composer.take_away_line(line, cx));
                 // A page that couldn't be read is said until Try Again, or until there's another
                 // way back (another page came), so a run streaming meanwhile doesn't ask again.
                 if self.earlier != conversation.earlier {
@@ -2006,35 +2041,24 @@ impl ConversationView {
 /// handed to [`ConversationView::take`] as a follow would hand it.
 #[cfg(feature = "stand-in")]
 pub fn read_now(client: &BoxClient, session: &str) -> kuvo_box::Result<kuvo_box::Conversation> {
-    use kuvo_box::Conversation;
-    let location = client.where_is(session)?;
-    let runtime = client.conversation_runtime(session, &location)?;
-    let place = runtime.place;
-    let page = client.conversation_page(session, &location, place, 100)?;
-    let running = Some(runtime.running);
-    let earlier = page.earlier(100);
-    let mut conversation = Conversation::new(session, place);
-    conversation.catch_up(page.data, earlier, &[], running);
-    Ok(conversation)
+    kuvo_box::follow::read_at_once(client, session)
 }
 
 impl Render for ConversationView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.chat_references.refresh(self.entries.iter().rev().flat_map(Entry::reference_text), &self.session, &self.client, self.live, self.list.clone(), cx);
         self.keep_focus(window, cx);
-        let theme = cx.theme().clone();
-        let c = &theme.colors;
         let view = cx.entity();
         let body: AnyElement = if !self.read {
             match &self.problem {
                 Some(Problem::Gone(why)) => centred(SharedString::from(why.clone()), false, cx),
-                // (With what the box offers to do about it, under its words.)
-                Some(Problem::Failed(why, _)) => {
-                    let button = self.action_button(cx);
-                    div().size_full().flex().flex_col().items_center().justify_center().gap(space::S3).px(space::S6).text_ui(TypeSize::Small).text_color(c.text_muted).child(div().max_w(px(COLUMN)).text_center().child(why.clone())).children(button).into_any_element()
-                }
-                None => centred("Loading the conversation…".into(), true, cx),
+                // (Not read yet, as its computer or this one restarts: it's read again, and why it
+                // couldn't be is said over the composer, never in the page's place.)
+                Some(Problem::Failed(..)) | None => centred("Loading the conversation…".into(), true, cx),
             }
+        } else if self.entries.is_empty() && let Some(away) = &self.away {
+            // (Its computer away, and no copy of it kept here yet.)
+            centred(format!("Its messages show here once {} answers.", away.computer.name).into(), false, cx)
         } else if self.entries.is_empty() {
             let asking = self.asks.read(cx).is_asking() && !self.asks.read(cx).leaves_composer();
             centred(if asking { "Nothing here yet.".into() } else { "Nothing here yet. Write below to start.".into() }, false, cx)
@@ -2170,7 +2194,7 @@ impl Render for ConversationView {
         };
         // A problem while it's shown: said above the composer; it's tried again meanwhile.
         let banner = match (&self.problem, self.read) {
-            (Some(Problem::Failed(why, _)), true) => Some((why.clone(), Tone::Warning)),
+            (Some(Problem::Failed(why, _)), _) => Some((why.clone(), Tone::Warning)),
             (Some(Problem::Gone(why)), true) => Some((why.clone(), Tone::Error)),
             _ => None,
         };

@@ -73,7 +73,8 @@ fn another_computers_sessions_show_under_its_project_and_open_through_that_compu
     cx.run_until_parked();
     // Its conversation was read on devbox, and nothing of it asked of this computer's box.
     assert!(!devbox.seen_at("GET", "api/session/ses_releases/message").is_empty(), "read where it runs: {:?} / here: {:?}", devbox.seen().iter().map(|s| s.path.clone()).collect::<Vec<_>>(), stand_in.seen()[before..].iter().map(|s| s.path.clone()).collect::<Vec<_>>());
-    assert!(stand_in.seen()[before..].iter().all(|seen| !seen.path.contains("ses_releases")), "this computer's box isn't asked of another's session");
+    // (Through this computer's box, as its follow reads it: the box carries it from devbox.)
+    assert!(stand_in.seen()[before..].iter().filter(|seen| seen.path.contains("ses_releases")).all(|seen| seen.path.starts_with("kuvo/sessions/ses_releases/location") || seen.path.starts_with("kuvo/peer-session/key_devbox/ses_releases/")), "this computer's box only carries another's session");
 }
 
 #[gpui::test]
@@ -85,12 +86,59 @@ fn a_computer_switching_to_a_new_release_keeps_its_rows_saying_updating(cx: &mut
     // Its rows stay, as its last copy has them, saying so: never a "can't reach" in their place.
     assert_eq!(under(&workspace, BILLING, cx), ["ses_releases", "ses_invoices"]);
     assert!(bounds(cx, "session-said-ses_releases-Updating…").is_some(), "says it's updating");
-    // Nothing it can't do now is offered: the row doesn't open.
-    let devbox = stand_in.peer_box("key_devbox").unwrap();
-    let before = devbox.seen().len();
+    // Switching isn't away (the user, 11-23): the row opens as it always does.
     click(cx, "session-project-ses_releases");
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), None);
-    assert_eq!(devbox.seen().len(), before, "an away computer isn't asked");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_releases".into()));
+}
+
+/// The open conversation, read again as a new view reads it (gone to the landing and back).
+fn read_again(workspace: &Entity<Workspace>, session: &str, cx: &mut VisualTestContext) -> Entity<kuvo::conversation::ConversationView> {
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.new_session(None, window, cx);
+        workspace.open_read_at_once(session, window, cx);
+    });
+    cx.run_until_parked();
+    workspace.read_with(cx, |workspace, _| workspace.conversation().cloned()).expect("it's open")
+}
+
+/// A conversation on a computer that's restarting, updating or off shows its last transcript,
+/// readable, with one quiet line, never a page-wide "It may be asleep or offline." (the user,
+/// 11-23); its composer still takes messages; once it answers, the transcript is its own again.
+#[gpui::test]
+fn an_away_computers_conversation_shows_its_last_messages_and_a_quiet_line(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.share_setup_lists();
+    stand_in.enable_delivery();
+    let devbox = stand_in.peer_box("key_devbox").unwrap();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = read_again(&workspace, "ses_releases", cx);
+    // (Its messages' rows: the way back to earlier ones waits until it answers, and whether it's
+    // at work isn't known meanwhile.)
+    let rows = |view: &kuvo::conversation::ConversationView| view.entries().iter().filter(|entry| !matches!(entry, kuvo::entries::Entry::Earlier | kuvo::entries::Entry::Working { .. })).map(|entry| entry.key().to_owned()).collect::<Vec<_>>();
+    let messages = view.read_with(cx, |view, _| rows(view));
+    assert!(!messages.is_empty(), "read while devbox answers");
+    assert!(view.read_with(cx, |view, _| view.away().is_none()));
+
+    // devbox restarts and stays off: its last copy, kept by this computer's box, with the line.
+    devbox.set_down(true);
+    stand_in.setup_away("key_devbox", NOW - 5.0 * MINUTE, false);
+    let view = read_again(&workspace, "ses_releases", cx);
+    view.read_with(cx, |view, cx| {
+        assert_eq!(view.problem(), None, "no page-wide note");
+        assert_eq!(rows(view), messages, "its last transcript, whole");
+        let note = view.composer().read(cx).note().map(|note| note.text.to_string());
+        assert_eq!(note.as_deref(), Some("devbox isn’t answering · seen 5m"));
+    });
+    assert!(bounds(cx, "composer-card").is_some(), "the composer is there to write in");
+
+    // Back: its own transcript, and the line goes.
+    devbox.set_down(false);
+    let view = read_again(&workspace, "ses_releases", cx);
+    view.read_with(cx, |view, cx| {
+        assert!(view.away().is_none());
+        assert_eq!(rows(view), messages);
+        assert_eq!(view.composer().read(cx).note().map(|note| note.text.to_string()), None);
+    });
 }
 
 #[gpui::test]

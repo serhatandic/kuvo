@@ -471,8 +471,12 @@ impl AreaView {
     }
 
     /// While its computer is away, as the box says it with the row: when it was last heard from
-    /// ("seen 2h"), drawn on its name.
+    /// ("seen 2h"), drawn on its name; "Updating…" while it only switches to a new release (its row
+    /// as it is, not away).
     fn away_words(&self, listed: &Elsewhere) -> Option<String> {
+        if listed.updating && !listed.away {
+            return Some("Updating…".into());
+        }
         listed.away.then(|| listed.last_seen.map(|seen| format!("seen {}", crate::time::ago(seen, self.now()))).unwrap_or_default())
     }
 

@@ -239,7 +239,8 @@ async function merged(topic: Topic, context: RouteContext) {
       // (One that's away stays listed, said to be away since it was last seen: never picked.)
       computers: [{ computer, here: true, ...here }, ...peers.map(({ saved, origin }) => ({
         computer: origin.computer, ...saved.catalog,
-        ...(origin.away ? { away: true, lastSeen: origin.lastSeen, ...(origin.updating ? { updating: true } : {}) } : {}),
+        // (Nor one switching to a new release, said to be updating.)
+        ...(origin.away || origin.updating ? { away: true, ...(origin.lastSeen !== undefined ? { lastSeen: origin.lastSeen } : {}), ...(origin.updating ? { updating: true } : {}) } : {}),
       }))],
     };
   }

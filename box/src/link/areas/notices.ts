@@ -14,6 +14,7 @@ import type { LinkHost } from "../relay/host";
 import { followed, followedLive } from "../follow";
 import { TOLD_FOLDER, tellingNow, toldFollowers, toldLately, noticeIsRecent } from "../notices/told";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import { copyStanding } from "../peers/lists";
 
 const lately = () => ({ telling: tellingNow(), ...toldLately() });
 
@@ -44,9 +45,10 @@ export async function* setupNoticesRoute(context: RouteContext): AsyncGenerator<
     const peers = await Promise.all(peersOf(link).map(async peer => {
       const saved = await noticeCopies.read(peer.key);
       if (!saved) return [];
-      const away = reach[peer.key] !== undefined || now - saved.seen > 180_000;
+      // (Away by the one rule, `standingOf`.)
+      const { away, lastSeen } = copyStanding(peer.key, saved.seen, reach, undefined, now);
       return [{
-        computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen: saved.seen } : {}),
+        computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen } : {}),
         telling: !away && saved.telling, notices: saved.notices.filter(notice => noticeIsRecent(notice, now)),
       }];
     }));

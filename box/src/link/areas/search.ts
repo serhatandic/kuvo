@@ -28,6 +28,8 @@ import { forwardAct, MEMORY_READ_FEATURE, takesForwarded, type Act, type Acted }
 import { isBoxWritten } from "../../shared/queues";
 import type { Target } from "../../shared/records";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import { standingOf } from "../peers/lists";
+import { readPeerAgents } from "../peers/directory";
 
 /** How many it finds at most, unless asked for fewer. */
 const MOST = 50;
@@ -83,6 +85,8 @@ type SearchComputer = { id: string; name: string };
 async function searchSetup(context: RouteContext, words: string, limit: number): Promise<Acted> {
   const link = readLink();
   const reach = readReach();
+  const told = readPeerAgents();
+  const now = Date.now();
   const disconnected = offRelay();
   const moved = movedOf(link);
   const awayComputers: SearchComputer[] = [];
@@ -91,7 +95,10 @@ async function searchSetup(context: RouteContext, words: string, limit: number):
     searchHere(context, words, limit),
     Promise.all(peersOf(link).map(async peer => {
       const computer = { id: peer.key, name: peer.name };
-      if (disconnected || reach[peer.key] !== undefined || !peer.address) return { computer, state: "away" as const };
+      if (!peer.address) return { computer, state: "away" as const };
+      // (Away by the one rule, `standingOf`; not answering only a moment, or updating, it's unavailable.)
+      if (disconnected || reach[peer.key] !== undefined)
+        return { computer, state: standingOf(peer.key, true, told[peer.key]?.heard, reach, told, now).away ? "away" as const : "unavailable" as const };
       if (!takesForwarded(peer.key, FEATURE) || !takesForwarded(peer.key, MEMORY_READ_FEATURE))
         return { computer, state: "unavailable" as const };
       const reply = await forwardAct(peer, "Conversation search", {
