@@ -3,8 +3,11 @@
 //! The updater stages complete packs before requesting a selection. The keeper
 //! only switches executable code and records the trial. It never restores a data snapshot.
 
+pub mod manifest;
+pub mod prepare_command;
 mod readiness;
 mod release;
+pub mod staging;
 mod worker;
 
 pub use readiness::resident_info;
