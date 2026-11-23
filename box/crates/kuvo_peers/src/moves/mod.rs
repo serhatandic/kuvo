@@ -1,9 +1,16 @@
 //! Stored move state shared with the TypeScript resident.
 
+pub mod archive;
+mod driver;
+mod forward_evidence;
+mod handoff;
+mod left;
 mod listing;
 pub mod manifest;
 mod notices;
 pub mod receipt;
+mod session_notes;
+pub mod transfer;
 
 use std::{collections::BTreeSet, io, path::Path};
 
@@ -13,7 +20,9 @@ use serde_json::Value;
 
 use crate::{directory::Ownership, lists::matching_paths, reach::Millis};
 
-pub(crate) use listing::register;
+pub(crate) use driver::Handle;
+pub(crate) use driver::start;
+pub(crate) use listing::{register, register_start};
 pub(crate) use notices::{Announcer, Notices};
 
 const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
@@ -42,7 +51,7 @@ impl Stage {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Chat,
@@ -62,14 +71,14 @@ struct Shown {
     stage: Stage,
     sessions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    sent: Option<f64>,
+    sent: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    size: Option<f64>,
+    size: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     waiting: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Journal {
     // Older kept ownership fixtures can lack presentation fields.
     #[serde(default)]
@@ -79,26 +88,84 @@ struct Journal {
     role: Role,
     stage: Stage,
     sessions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     step: Option<String>,
     started: Millis,
+    #[serde(skip_serializing_if = "Option::is_none")]
     failed: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     dropping: bool,
-    #[serde(rename = "cleanupPending")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    complete: bool,
+    #[serde(rename = "cleanupPending", skip_serializing_if = "Option::is_none")]
     cleanup_pending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<Kind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<String>,
-    sent: Option<f64>,
-    size: Option<f64>,
-    activation: Option<serde::de::IgnoredAny>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sent: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activation: Option<Activation>,
+    #[serde(rename = "setUpSince", skip_serializing_if = "Option::is_none")]
+    set_up_since: Option<Millis>,
+    #[serde(rename = "setUpAt", skip_serializing_if = "Option::is_none")]
+    set_up_at: Option<Millis>,
+    #[serde(
+        rename = "verifyPayloads",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    verify_payloads: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payloads: Option<receipt::Payloads>,
     #[serde(flatten)]
     bundle: receipt::Bundle,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct Activation {
+    at: Millis,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last: Option<String>,
 }
 
 impl Journal {
+    fn read(run: &Path, id: &str) -> io::Result<Option<Self>> {
+        if move_id(id).is_none() {
+            return Ok(None);
+        }
+        let Some(stored) = JOURNAL
+            .read(&journal_file(run, id))
+            .map_err(io::Error::other)?
+        else {
+            return Ok(None);
+        };
+        let record: Self = serde_json::from_value(stored.fields.into())?;
+        Ok((record.id == id).then_some(record))
+    }
+
+    fn save(&self, run: &Path) -> io::Result<()> {
+        let path = journal_file(run, &self.id);
+        JOURNAL.read(&path).map_err(io::Error::other)?;
+        let fields = serde_json::to_value(self)?;
+        let Value::Object(fields) = fields else {
+            unreachable!("move journal serializes to an object");
+        };
+        let data = serde_json::to_vec(&JOURNAL.encode(fields))?;
+        files::write_atomic_through(&path, &data, run)
+    }
+
     fn live(&self) -> bool {
         self.failed.as_deref().is_none_or(str::is_empty)
     }
@@ -131,6 +198,10 @@ impl Journal {
     }
 }
 
+fn journal_file(run: &Path, id: &str) -> std::path::PathBuf {
+    run.join("moves").join(format!("{id}.json"))
+}
+
 fn journal_rows(run: &Path) -> impl Iterator<Item = Result<Journal, kuvo_store::format::Error>> {
     matching_paths(&run.join("moves"), "mov_", Some(".json")).filter_map(|(_, path)| match JOURNAL
         .read(&path)
@@ -154,9 +225,9 @@ struct Departure {
     session: String,
     key: String,
     at: Millis,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     arrived: Option<bool>,
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     queue: Option<String>,
 }
 

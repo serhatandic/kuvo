@@ -647,6 +647,11 @@ impl Receipts {
         Ok(Delivery::Submit { prompt })
     }
 
+    pub(crate) fn seen(&self, id: &Id, now: u64) -> Result<bool, Error> {
+        let seen = self.read(now)?;
+        Ok(seen.contains_key(id.as_str()) || seen.contains_key(&format!("note:{}", id.as_str())))
+    }
+
     pub fn accepted(&mut self, id: &Id, note: bool, now: u64) -> Result<(), Error> {
         let mut seen = self.read(now)?;
         let key = if note {

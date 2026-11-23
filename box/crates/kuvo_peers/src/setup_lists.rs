@@ -65,6 +65,7 @@ pub struct View {
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
     work_calls: bool,
+    transfers: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
 }
@@ -102,6 +103,15 @@ impl View {
         let mut features = crate::routes::FEATURES.to_vec();
         if self.work_calls {
             features.push(crate::calls::FEATURE);
+        }
+        if self.transfers {
+            features.extend([
+                "moves",
+                "moves.check",
+                "moves.two-computers",
+                "data.session-notes",
+                "data.forward-evidence",
+            ]);
         }
         if self
             .local_lists
@@ -248,6 +258,7 @@ enum Change {
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
+    TransferWorker,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
 }
 
@@ -256,6 +267,8 @@ pub struct ResidentPeers {
     changes: mpsc::Sender<Change>,
     relay: Option<relay::RelayHandle>,
     work_task: Option<JoinHandle<()>>,
+    transfers: Option<(crate::moves::Handle, JoinHandle<()>)>,
+    letters: Option<JoinHandle<()>>,
     task: JoinHandle<()>,
 }
 
@@ -263,6 +276,12 @@ impl Drop for ResidentPeers {
     fn drop(&mut self) {
         if let Some(work) = &self.work_task {
             work.abort();
+        }
+        if let Some((_, transfers)) = &self.transfers {
+            transfers.abort();
+        }
+        if let Some(letters) = &self.letters {
+            letters.abort();
         }
         self.task.abort();
     }
@@ -297,6 +316,8 @@ impl ResidentPeers {
             changes,
             relay: handle,
             work_task: None,
+            transfers: None,
+            letters: None,
             task,
         })
     }
@@ -335,6 +356,45 @@ impl ResidentPeers {
         self.reader.clone()
     }
 
+    /// Attach the session engine to the resident's move worker. The worker
+    /// keeps its transfer state after the initiating request disconnects.
+    pub async fn attach_moves(
+        &mut self,
+        engine: kuvo_engine::Engine,
+        ownership: crate::ownership::Handle,
+    ) -> io::Result<()> {
+        let Some(relay) = self.relay_handle() else {
+            return Ok(());
+        };
+        self.changes
+            .send(Change::TransferWorker)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))?;
+        self.transfers = Some(crate::moves::start(
+            self.reader(),
+            relay.clone(),
+            engine.clone(),
+            ownership.clone(),
+        )?);
+        self.letters = Some(crate::letters::start(
+            self.reader(),
+            relay,
+            engine,
+            ownership,
+        )?);
+        Ok(())
+    }
+
+    pub fn register_moves(
+        &self,
+        registry: &mut kuvo_server::Registry,
+        engine: kuvo_engine::Engine,
+    ) {
+        if let Some((moves, _)) = &self.transfers {
+            crate::moves::register_start(registry, &self.reader, moves.clone(), engine);
+        }
+    }
+
     pub async fn dispatch_with(&self, dispatcher: kuvo_server::Dispatcher) {
         let _ = self.changes.send(Change::Dispatch(dispatcher)).await;
     }
@@ -359,6 +419,7 @@ struct Resident {
     list_parts: BTreeMap<ComputerKey, Parts>,
     notice_parts: BTreeMap<ComputerKey, Parts>,
     activity_parts: BTreeMap<ComputerKey, activity::Receiving>,
+    move_parts: crate::moves::transfer::Receiving,
 }
 
 impl Resident {
@@ -389,6 +450,7 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             relay_connected: false,
             work_calls: false,
+            transfers: false,
             endpoint,
             system: system_name(),
         };
@@ -398,6 +460,7 @@ impl Resident {
             list_parts: BTreeMap::new(),
             notice_parts: BTreeMap::new(),
             activity_parts: BTreeMap::new(),
+            move_parts: crate::moves::transfer::Receiving::default(),
         }
     }
 
@@ -430,6 +493,12 @@ impl Resident {
                     Some(Change::Dispatch(dispatcher)) => dispatch = Some(dispatcher),
                     Some(Change::WorkCalls) => {
                         self.view.work_calls = true;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::All);
+                        }
+                    },
+                    Some(Change::TransferWorker) => {
+                        self.view.transfers = true;
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
@@ -627,11 +696,16 @@ impl Resident {
                     )?;
                 }
                 let ask = payload.get("ask").and_then(Value::as_str) == Some("agents");
-                let reply = if let (Some(movement), Some(host)) = (payload.get("move"), peer.host())
+                let reply = if !self.view.transfers
+                    && let (Some(movement), Some(host)) = (payload.get("move"), peer.host())
                 {
-                    crate::moves::receipt::replay(&self.run, &id, movement, now)
-                        .map_err(io::Error::other)?
-                        .map(|reply| (host, reply))
+                    let reply = if movement["op"].as_str() == Some("part") {
+                        self.move_parts.take(&self.run, &id, movement, now)?
+                    } else {
+                        crate::moves::receipt::replay(&self.run, &id, movement, now)
+                            .map_err(io::Error::other)?
+                    };
+                    reply.map(|reply| (host, reply))
                 } else {
                     None
                 };

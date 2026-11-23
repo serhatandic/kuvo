@@ -1,7 +1,10 @@
-use std::{collections::BTreeSet, path::Path};
+use std::{collections::BTreeSet, io, path::Path, time::Duration};
 
 use http::StatusCode;
-use kuvo_protocol::routes::{get_kuvo_moves, get_kuvo_moves_events, get_kuvo_moves_receipt};
+use kuvo_protocol::routes::{
+    get_kuvo_moves, get_kuvo_moves_events, get_kuvo_moves_places, get_kuvo_moves_receipt,
+    post_kuvo_moves,
+};
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use kuvo_store::format::{self, ObjectFormat};
 use serde::{Deserialize, Serialize};
@@ -16,7 +19,7 @@ use crate::{
 };
 
 const OUTCOME: ObjectFormat = ObjectFormat::additive("Move outcome");
-const CLEANUP: &str =
+pub(super) const CLEANUP: &str =
     "The original is retired. Kuvo will try again to clean up its files on the source computer.";
 
 #[derive(Serialize)]
@@ -211,6 +214,121 @@ fn format_refusal(error: format::Error) -> Refusal {
 fn route_shape<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Refusal> {
     serde_json::from_value(value)
         .map_err(|error| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+}
+
+pub(super) fn save_outcome(
+    run: &Path,
+    row: &Journal,
+    note: Option<&str>,
+    failure: Option<(u16, &str)>,
+) -> io::Result<()> {
+    let value = if let Some((status, message)) = failure {
+        json!({"ok":false, "status":status, "message":message})
+    } else {
+        let mut value = json!({"ok":true,"move":row.shown()});
+        if let Some(note) = note {
+            value["note"] = note.into();
+        }
+        value
+    };
+    let Value::Object(fields) = value else {
+        unreachable!()
+    };
+    let file = run.join("moves").join(format!("{}.outcome.json", row.id));
+    if OUTCOME
+        .read(&file)
+        .map_err(io::Error::other)?
+        .is_some_and(|before| before.fields == fields)
+    {
+        return Ok(());
+    }
+    kuvo_store::files::write_atomic_through(
+        &file,
+        &serde_json::to_vec(&OUTCOME.encode(fields))?,
+        run,
+    )
+}
+
+pub(crate) fn register_start(
+    registry: &mut Registry,
+    peers: &Reader,
+    driver: super::Handle,
+    engine: kuvo_engine::Engine,
+) {
+    let look = peers.clone();
+    registry.register::<get_kuvo_moves_places::Spec, _, _>(Access::Any, move |call| {
+        let look = look.clone();
+        let engine = engine.clone();
+        async move {
+            let id = query(&call.request.path, "id").filter(|id| !id.is_empty());
+            let kind = query(&call.request.path, "kind").and_then(|kind| serde_json::from_value::<super::Kind>(kind.into()).ok());
+            let (Some(id), Some(kind)) = (id, kind) else {
+                return Err(Refusal::new(StatusCode::BAD_REQUEST, "Say what: ?kind=bot|chat|group&id=…"));
+            };
+            if kind != super::Kind::Chat {
+                return Err(Refusal::new(StatusCode::NOT_FOUND, "It isn’t on this computer any more."));
+            }
+            let session = super::driver::chat(&engine, &look.run, &id).await?;
+            let what = super::driver::chat_name(&session);
+            let view = look.view();
+            let source = plain_name(&view.roster.name);
+            let moving = journals(&look.run).map_err(format_refusal)?.iter().any(|row| row.live() && row.thing == id);
+            let trash = if cfg!(target_os = "macos") { "the Trash" } else { "Kuvo Code’s trash folder" };
+            let places: Vec<_> = view.roster.members.iter().filter(|peer| Some(peer.key) != view.roster.here).map(|peer| {
+                let key = kuvo_wire::keys::encode(&peer.key);
+                let entry = view.announced.get(&key);
+                let features = entry.and_then(|entry| entry.features.as_ref());
+                let name = plain_name(&peer.name);
+                let why = if moving { Some(("It’s moving already.".into(), "Moving")) }
+                    else if features.is_some_and(|features| !features.iter().any(|name| name == "moves")) {
+                        Some((format!("Update Kuvo on {name} before trying the move again."), "Needs an update"))
+                    } else if view.reach.peer_is_away(&key, entry.and_then(|entry| entry.heard), look.now()) {
+                        Some((format!("{name} isn’t connected."), "Can’t be reached"))
+                    } else { None };
+                if let Some((why, note)) = why {
+                    json!({"key":key,"name":name,"kind":peer.kind,"ok":false,"why":why,"note":note})
+                } else {
+                    json!({"key":key,"name":name,"kind":peer.kind,"ok":true,"confirm": {
+                        "title":format!("Move {what} to {name}?"), "label":"Move",
+                        "message":format!("Its conversation and wake-ups move with it. New messages and wake-ups wait during the move. Vault items, integrations and browser sign-ins stay on {source}. The original goes to {trash} on {source}."),
+                    }})
+                }
+            }).collect();
+            Ok(RouteReply::json::<200>(route_shape(json!({"places":places}))?))
+        }
+    });
+    let peers = peers.clone();
+    registry.register::<post_kuvo_moves::Spec, _, _>(Access::Any, move |call| {
+        let peers = peers.clone();
+        let driver = driver.clone();
+        async move {
+            let request: super::driver::Request = serde_json::from_slice(&call.request.body).map_err(|_| Refusal::new(
+                StatusCode::BAD_REQUEST,
+                r#"Say what moves where: {"kind": "bot" | "chat" | "group", "id": …, "to": <its computer's key>}."#,
+            ))?;
+            let immediate = request.receipt;
+            let row = driver.begin(request).await?;
+            if immediate {
+                let move_view = show(&row, &peers.view().roster).ok_or_else(result_unavailable)?;
+                return Ok(RouteReply::json::<202>(route_shape(json!({"move":move_view}))?));
+            }
+            loop {
+                let answer = report(&peers.view(), &peers.run, &row.id)?;
+                if answer["state"] == "done" {
+                    // The waiting route historically returns the move itself, with no derived progress fields.
+                    let mut movement = answer["move"].clone();
+                    if let Value::Object(fields) = &mut movement { fields.remove("place"); fields.remove("progress"); }
+                    let mut reply = json!({"move":movement});
+                    if let Some(note) = answer.get("note") { reply["note"] = note.clone(); }
+                    return Ok(RouteReply::json::<200>(route_shape(reply)?));
+                }
+                if answer["state"] == "failed" {
+                    return Err(Refusal::new(StatusCode::CONFLICT, answer["message"].as_str().unwrap_or("It couldn’t go there.")));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    });
 }
 
 pub(crate) fn register(registry: &mut Registry, peers: &Reader) {
