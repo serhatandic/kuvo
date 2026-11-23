@@ -359,6 +359,9 @@ test("session readiness distinguishes sign-in, project credentials, and a model 
     return reply.json.sessions;
   };
   const start = await read();
+  for (const state of Object.values(start)) {
+    assert.doesNotMatch(JSON.stringify({ refusal: state.refusal, action: state.action }), /Settings|›| on your | on Studio/);
+  }
   assert.equal(start.ses_key.missing, "key");
   assert.equal(start.ses_key.plan.agent, "Codex");
   assert.deepEqual(start.ses_signIn, {
@@ -495,6 +498,37 @@ test("the picker settles a folder that finishes before its deferred GitLab refre
   await until(() => here.engine.closed.includes(folder), "the refresh to close the folder after the last step finished");
   await until(() => !fs.existsSync(path.join(here.home, "run/models-due.json")), "the deferred refresh to clear");
   assert.deepEqual(here.engine.closed, [folder]);
+});
+
+test("overlapping picker refreshes share the release of a quiet folder and keep the busy one", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-model-overlapping-picker");
+  const quiet = path.join(here.home, "quiet");
+  const busy = path.join(here.home, "busy");
+  const id = "ses_busyPicker";
+  here.engine.sessions.push(sessionOf({ id, directory: busy }));
+  here.engine.running.add(id);
+  here.engine.open.add(quiet).add(busy);
+  here.engine.providers.push({ id: "gitlab" });
+  here.engine.integrations.push({ id: "gitlab", connections: [{}] });
+  here.engine.models.push({ providerID: "gitlab", id: "stale", name: "Stale" });
+  here.engine.locationClosed = folder => {
+    if (folder === quiet) here.engine.models.splice(0, 1, { providerID: "gitlab", id: "updated", name: "Updated" });
+  };
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow engine work");
+  const open = async () => {
+    const answer = await request(record, "GET", "kuvo/models/offered?refresh=1");
+    assert.equal(answer.status, 200, answer.text);
+    assert.deepEqual(answer.json.models.map(model => model.id), ["updated"]);
+  };
+  await Promise.all([open(), open()]);
+  await open();
+  assert.deepEqual(here.engine.closed, [quiet]);
+  here.engine.running.delete(id);
+  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: id } });
+  await until(() => here.engine.closed.length > 1, "the deferred folder to close after the session becomes idle");
+  assert.deepEqual(here.engine.closed, [quiet, busy]);
 });
 
 test("an engine-wide refresh checks new work and locations reopened while it closes them", { timeout: 45000 }, async t => {

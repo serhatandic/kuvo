@@ -125,7 +125,7 @@ export async function standInEngine(root, env) {
           const held = engine.holdSessionPatch;
           engine.holdSessionPatch = null;
           held.accepted();
-          void held.release.then(apply);
+          void held.release.then(() => held.status ? send({ message: "The write failed." }, held.status) : apply());
           return;
         }
         return apply();

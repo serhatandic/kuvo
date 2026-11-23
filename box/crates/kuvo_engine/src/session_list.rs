@@ -718,7 +718,7 @@ async fn load(home: &Path) -> Option<Snapshot> {
             .iter()
             .map(|(id, row)| (id.clone(), row.facts.clone()))
             .collect();
-        saved.archived = archived_groups(&facts, &saved.projects);
+        saved.archived = archived_groups(&facts, &saved.projects, &read_projects(home).await);
     }
     Some(saved)
 }
@@ -738,6 +738,14 @@ struct Project {
     removed: bool,
 }
 
+async fn read_projects(home: &Path) -> Vec<Project> {
+    tokio::fs::read(home.join("box/projects.json"))
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ProjectFile>(&bytes).ok())
+        .map_or_else(Vec::new, |file| file.projects)
+}
+
 async fn measure(
     engine: &Engine,
     lease: &Lease,
@@ -747,14 +755,10 @@ async fn measure(
     let (rows, active, projects) = tokio::join!(
         all_sessions(engine, lease),
         engine.call::<Value>(lease, Method::GET, "api/session/active", None),
-        tokio::fs::read(engine.home.join("box/projects.json"))
+        read_projects(&engine.home)
     );
     let rows = rows?;
     let active = active?;
-    let projects = projects
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<ProjectFile>(&bytes).ok())
-        .map_or_else(Vec::new, |file| file.projects);
     let mut sessions = Sessions::new();
     for session in rows {
         let running = active
@@ -908,7 +912,7 @@ async fn measure(
         }
         listed.insert(directory.to_owned(), project);
     }
-    let archived = archived_groups(&sessions, &listed);
+    let archived = archived_groups(&sessions, &listed, &projects);
     Ok((sessions, listed, archived, needs_you))
 }
 
@@ -1073,7 +1077,7 @@ fn project_page<'a>(
     (rows.iter().take(shown).map(|(id, _)| *id).collect(), more)
 }
 
-fn archived_groups(sessions: &Sessions, projects: &Projects) -> Vec<Value> {
+fn archived_groups(sessions: &Sessions, projects: &Projects, saved: &[Project]) -> Vec<Value> {
     let mut rows = sessions
         .iter()
         .filter(|(_, facts)| {
@@ -1103,6 +1107,11 @@ fn archived_groups(sessions: &Sessions, projects: &Projects) -> Vec<Value> {
                 projects
                     .get(directory)
                     .and_then(|project| project["name"].as_str())
+                    .or_else(|| {
+                        saved.iter()
+                            .find(|project| project.directory == directory)
+                            .and_then(|project| project.name.as_deref())
+                    })
                     .or_else(|| {
                         Path::new(directory)
                             .file_name()

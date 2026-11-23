@@ -208,6 +208,42 @@ test("rename and archive keep session notes, and a subagent goes with its conver
   await until(() => !fs.existsSync(waiting), "The deleted session's waiting payload was retained.");
 });
 
+test("concurrent session note writes keep earlier notes and a failed writer releases its turn", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("session-note-turns");
+  const id = "ses_notes";
+  const other = "ses_otherNotes";
+  const initial = { pinned: "another owner’s note", kuvo: { approval: "auto", startedBy: "ses_first" } };
+  const note = { ...sessionOf({ id, directory: here.home }), metadata: initial };
+  here.engine.sessions.push(note, sessionOf({ id: other, directory: here.home }));
+  const resident = await here.start().ready();
+  const edit = (id, field, value) => request(resident, "POST",
+    `kuvo/sessions/${id}/${field === "pinned" ? "pin" : "archive"}`, { [field]: value });
+  const first = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(release.resolve);
+  here.engine.holdSessionPatch = { id, accepted: first.resolve, release: release.promise, status: 500 };
+  const fails = edit(id, "pinned", true);
+  fails.catch(() => {});
+  await first.promise;
+  const succeeds = edit(id, "archived", true);
+  succeeds.catch(() => {});
+  assert.equal((await edit(other, "pinned", true)).status, 200);
+  assert.deepEqual(note.metadata, initial);
+  release.resolve();
+  assert.equal((await fails).status, 502);
+  assert.equal((await succeeds).status, 200);
+  assert.deepEqual(note.metadata, { ...initial, "kuvo.archived": true });
+  const next = await edit(id, "pinned", true);
+  assert.equal(next.status, 200, next.text);
+  assert.deepEqual(note.metadata, { ...initial, "kuvo.archived": true, "kuvo.pinned": true });
+  const writes = () => here.engine.asked.filter(row => row.method === "PATCH" && row.path.endsWith("/" + id)).length;
+  assert.equal(writes(), 3);
+  assert.equal((await edit(id, "pinned", true)).status, 200);
+  assert.equal((await edit("ses_absent", "pinned", true)).status, 404);
+  assert.equal(writes(), 3);
+});
+
 test("Delete with an earlier revision refuses a session that vanishes during the request", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-delete-revision");
@@ -1042,6 +1078,32 @@ test("a new chat keeps its session marks and appears in the local session list",
     if (local && published) return;
   }
   assert.fail("the new chat did not reach both lists on the line");
+});
+
+test("archived groups keep Chats and the names of removed projects", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("archive-titles");
+  const project = path.join(here.home, "project-folder");
+  const chats = path.join(here.home, "chats");
+  write(path.join(here.home, "box/projects.json"), JSON.stringify({
+    projects: [{ directory: project, folders: [], name: "The original name", removed: true }],
+  }));
+  for (const [id, directory, notes] of [
+    ["ses_oldProject", project, {}], ["ses_oldChat", chats, {}],
+    ["ses_oldSeat", chats, { seat: "grp_example" }], ["ses_oldRun", project, { engineFor: "ses_oldProject" }],
+  ]) {
+    here.engine.sessions.push({ ...sessionOf({ id, directory }), metadata: { "kuvo.archived": true, kuvo: notes } });
+  }
+  const resident = await here.start().ready();
+  const listing = await until(async () => {
+    const response = await request(resident, "GET", "kuvo/sessions/list");
+    return response.json?.archivedGroups?.length && response.json;
+  }, "the list to publish the archived groups");
+  assert.deepEqual(listing.archivedGroups, [
+    { title: "Chats", kind: "chat", directory: chats, sessions: ["ses_oldChat"] },
+    { title: "The original name", kind: "project", directory: project, sessions: ["ses_oldProject"] },
+  ]);
+  assert.equal(listing.projects[project], undefined);
 });
 
 test("a bot's session only shows sustained reasoning and clears it after the tool starts", { timeout: 45000 }, async t => {
