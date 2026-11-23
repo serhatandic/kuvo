@@ -111,6 +111,35 @@ test("an old departure still routes the conversation to its owner", { timeout: 4
   assert.equal(listing.json.moved, undefined, "The old departure is no longer advertised");
 });
 
+test("a newer move announcement leads to the next computer until it expires", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("previous-owner");
+  const { member, spare, save } = seedPeerSetup(here.home, relay.url, 1, 3);
+  const now = Date.now();
+  const recent = "ses_recentHop", expired = "ses_expiredHop", local = "ses_localHop";
+  save("run/moves/moved.json", [recent, expired].map(session => ({
+    session, key: member.key, at: now - 60 * 60_000, formatVersion: 0,
+  })));
+  save("run/peer-agents.json", { [member.key]: { at: now, kind: member.kind, list: [], moved: [
+    { session: recent, key: spare.key, at: now },
+    { session: expired, key: spare.key, at: now - 3 * 86400000 },
+    { session: local, key: spare.key, at: now },
+  ] } });
+  here.engine.sessions.push(sessionOf({ id: local, directory: path.join(here.home, "chats") }));
+  const resident = await here.start().ready();
+  const locate = id => request(resident, "GET", "kuvo/sessions/" + id + "/location");
+  const own = await until(async () => {
+    const result = await locate(local);
+    return result.json?.place && result;
+  }, "The resident did not list its own conversation");
+  assert.equal(own.json.place, "engine", own.text);
+  for (const [id, peer] of [[recent, spare], [expired, member]]) {
+    const result = await locate(id);
+    assert.equal(result.status, 200, result.text);
+    assert.equal(result.json.on?.id, peer.key, result.text);
+  }
+});
+
 const mixed = process.env.KUVO_CONFORMANCE_MOVE_PEER;
 
 async function testMail(t, binary) {
