@@ -871,25 +871,26 @@ impl Owner {
             self.rosters
                 .send_replace(peer_roster(&self.link, self.identity.as_ref()).map(Arc::new));
         }
-        self.refresh();
-        if let Err(error) = self.write_card() {
-            eprintln!("setup card: {error}");
-        }
         if let (Some(network), Some(own), Ok(roster)) =
             (&self.network, &self.identity, self.roster())
         {
-            let grants = self
-                .views
-                .borrow()
-                .access
-                .grants
-                .iter()
-                .map(|(key, grant)| (*key, grant.id.clone()))
-                .collect();
+            let grants = if self.link.devices_disabled {
+                HashMap::new()
+            } else {
+                self.link
+                    .grants(&roster, &own.public)
+                    .into_iter()
+                    .map(|(key, grant)| (key, grant.id))
+                    .collect()
+            };
             let _ = network
                 .sender
-                .trust(grants, roster.hosts(&own.public).collect())
+                .trust_applied(grants, roster.hosts(&own.public).collect())
                 .await;
+        }
+        self.refresh();
+        if let Err(error) = self.write_card() {
+            eprintln!("setup card: {error}");
         }
         Ok(())
     }

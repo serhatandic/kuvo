@@ -1469,21 +1469,32 @@ mod work {
             let url = relay_url(&listener);
             let _relay = run_relay(listener);
             let a = tempfile::tempdir().unwrap();
-            let b = tempfile::tempdir().unwrap();
             let (engine_a, _) = engine(a.path());
-            let (engine_b, _) = engine(b.path());
             let now = Arc::new(AtomicI64::new(NOW));
+            // The observing computer sends no startup advertisements of its own. The
+            // announcement carrying the attached work feature ends the initial exchange.
+            let mut observer = Relay::start(Config {
+                url: url.clone(), key: [5; 32], secret: [2; 32], grants: HashMap::new(),
+                peers: vec![member(1).host().unwrap()],
+                hello: BoxHello { v: 1, name: "Observer".into(), app: "test".into(),
+                    kind: ComputerKind::Machine, engine: None },
+            });
+            while !matches!(observer.events.recv().await, Some(Event::Connected(_))) {}
             let (a_box, _) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
-            let (b_box, _) = start_work(&url, 2, b.path(), &[1], now.clone(), engine_b).await;
-            ready(&a_box, 2, a.path()).await;
-            ready(&b_box, 1, b.path()).await;
-
-            let b_relay = b_box.relay_handle().unwrap();
-            let mut events = b_relay.subscribe().unwrap();
+            let b_relay = observer.handle();
+            let events = &mut observer.events;
+            loop {
+                if let Some(Event::Mail { envelope, .. }) = events.recv().await
+                    && envelope.0.get("agents").and_then(|entry| entry["features"].as_array())
+                        .is_some_and(|features| features.iter().any(|feature| feature == "work.elsewhere")) {
+                    assert_eq!(envelope.0.get("ask"), Some(&json!("agents")));
+                    break;
+                }
+            }
             now.store(NOW + 60_001, Ordering::Relaxed);
             loop {
-                if let kuvo_peers::relay::RelayEvent::Mail { envelope, key: sender, .. } = &*events.recv().await.unwrap()
-                    && *sender == key(1)
+                if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
+                    && sender == key(1)
                     && envelope.0.get("at").and_then(Value::as_i64) == Some(NOW + 60_001) {
                     assert!(!envelope.0.contains_key("agents"), "an unchanged announcement waits ten minutes");
                     if envelope.0.contains_key("activity") { break; }
@@ -1492,8 +1503,8 @@ mod work {
 
             now.store(NOW + 601_000, Ordering::Relaxed);
             loop {
-                if let kuvo_peers::relay::RelayEvent::Mail { envelope, key: sender, .. } = &*events.recv().await.unwrap()
-                    && *sender == key(1)
+                if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
+                    && sender == key(1)
                     && let Some(agents) = envelope.0.get("agents")
                     && agents["at"] == NOW + 601_000 {
                     assert_eq!(agents["list"], json!([]));
@@ -1509,8 +1520,8 @@ mod work {
                 ..Default::default()
             }).await;
             loop {
-                if let kuvo_peers::relay::RelayEvent::Mail { envelope, key: sender, .. } = &*events.recv().await.unwrap()
-                    && *sender == key(1)
+                if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
+                    && sender == key(1)
                     && let Some(agents) = envelope.0.get("agents")
                     && agents["list"][0]["session"] == LEAD {
                     assert_eq!(agents["list"], json!([{"session":LEAD,"name":"Business","kind":"session"}]));
@@ -1522,8 +1533,8 @@ mod work {
             let value = json!({"ask":"agents", "at":NOW + 601_000});
             b_relay.sender.mail(member(1).host().unwrap(), kuvo_wire::mail::Envelope(value.as_object().unwrap().clone())).await.unwrap();
             loop {
-                if let kuvo_peers::relay::RelayEvent::Mail { envelope, key: sender, .. } = &*events.recv().await.unwrap()
-                    && *sender == key(1)
+                if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
+                    && sender == key(1)
                     && let Some(agents) = envelope.0.get("agents") {
                     assert_eq!(agents["list"][0]["session"], LEAD);
                     assert!(!envelope.0.contains_key("ask"), "the reply does not ask again");
@@ -1839,8 +1850,12 @@ mod work {
                 )
                 .await;
             let mut changes = a_box.reader();
-            let away_file = a.path().join("run/peer-reach.json");
-            while !away_file.is_file() {
+            let known_away = |home: &Path| {
+                fs::read(home.join("run/peer-reach.json")).ok()
+                    .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+                    .is_some_and(|record| record[encode(&key(2))] == NOW)
+            };
+            while !known_away(a.path()) {
                 changes.changed().await.unwrap();
             }
             now.store(NOW + 65_000, Ordering::Relaxed);

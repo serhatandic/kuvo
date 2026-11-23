@@ -85,8 +85,12 @@ holding phone notifications remains with the notice producers.
 
 ## Shared checks
 
-The conformance suite's three attention scenarios pass on both binaries. Its membership-and-rename
-scenario passes on TypeScript and stops at `GET kuvo/setup` on Rust, which needs the setup route
-registration. The differential runner agrees on the kept conversation location, waiting count,
-known device roster, and refusal to pair from an untrusted local origin. Its home comparison still
-reports startup files from other TypeScript areas that the Rust resident has yet to initialize.
+The conformance suite's three attention scenarios pass on both binaries. Its two-computer
+scenario passes on TypeScript. Rust reads the setup and claims its lease, then stops at the
+installer-code route from phase 2.3. The differential runner agrees on all four replies from
+a signed seed (kept conversation location, dock count, device roster, and unauthorized pairing).
+Its complete home inventory still reports startup-file differences in unfinished areas.
+
+The TypeScript reference passes all 17 reach-elsewhere rules and seven device scenarios. In
+the three live reach-elsewhere scenarios, one passes, one lists the negative-control session,
+and one times out while the machine link is down.
