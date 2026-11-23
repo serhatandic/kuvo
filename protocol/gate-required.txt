@@ -70,6 +70,7 @@ sandbox.needsYou
 sandbox.opens
 sandbox.report
 sandbox.words
+search.setup
 sessions.actions
 sessions.archived-groups
 sessions.asks
@@ -80,11 +81,8 @@ sessions.mentions
 sessions.models
 sessions.needsYou
 sessions.start.empty
-search.setup
 settings
-search.setup
 settings.flows
-search.setup
 settings.vault
 setup.ready
 setup.welcomed
