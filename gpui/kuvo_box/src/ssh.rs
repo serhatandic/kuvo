@@ -17,7 +17,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 
 use crate::error::{Error, Refusal, Result};
-use crate::link::{Identity, keys, noise::Initiator};
+use crate::link::{Identity, keys};
 use crate::transport::{check_route_version, Closer, Request, Response, Stream, Transport, ROUTE_VERSION_HEADER};
 
 /// One machine, by what `ssh` connects to (`me@devbox`, a `Host` in `~/.ssh/config`).
@@ -203,9 +203,11 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
 
     fn start_paired(&self, key: &str, device: &Identity, input: &[u8], running: &mut Running, source: &mut BufReader<ChildStdout>) -> Result<()> {
         let Some(public) = keys::decode_exact(key) else { return Err(Error::BadAnswer("Invalid computer key.".into())) };
-        let mut handshake = Initiator::new(device.private(), public, b"kuvo-ssh v1");
+        let mut handshake = device.initiate(public, b"kuvo-ssh v1");
         let hello = serde_json::json!({"v": 1, "client": "desktop", "app": self.app});
-        let hello = keys::encode(&handshake.write_message_1(hello.to_string().as_bytes()));
+        let hello = handshake.write_message_1(hello.to_string().as_bytes())
+            .map_err(|_| Error::BadAnswer("Invalid computer key.".into()))?;
+        let hello = keys::encode(&hello);
         running.write_line(serde_json::json!({"computer": key, "hello": hello}))?;
         let mut line = String::new();
         source.take(16_384).read_line(&mut line).map_err(|error| running.unreachable(error))?;

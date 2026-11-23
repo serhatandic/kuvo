@@ -34,6 +34,15 @@ their owning phases. Model-folder refresh tests use the same engine activity
 endpoints, but refresh itself is part of 3.2. The sandbox worktree test
 belongs to 6.1.
 
+## Conformance
+
+The TypeScript and Rust residents both pass the authenticated discovery and
+event-line restart scenarios. Two mixed routing cases pass against TypeScript
+and stop at deferred behavior on Rust. The prompt reaches OpenCode, and the
+phone message decoration waits for 7.3. The update scenario starts by asking
+for `kuvo/update`, which follows in 7.2. The Rust resident test separately
+covers the engine Start route and the update fence.
+
 ## Differences in implementation
 
 A Tokio task owns the engine, shares one cold start among requests, and runs
@@ -45,8 +54,8 @@ Launch uses the installed OpenCode binary directly. It writes the compatible
 discovery record atomically and adds the process start identity. If the
 resident is interrupted, the next resident verifies the executable and
 identity and checks authenticated HTTP readiness before giving out the
-address. Legacy records can be forwarded to, but the resident only stops
-an engine whose executable it can identify as its own. Unix uses the process
+address. A usable legacy record can still supply the upstream address. The resident
+only stops an engine whose executable it can identify as its own. Unix uses the process
 seam for process groups and adoption. Windows associates the worker with a
 recoverable Job Object.
 
