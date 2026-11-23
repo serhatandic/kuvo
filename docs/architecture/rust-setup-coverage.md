@@ -66,7 +66,8 @@ The W cases are in [wire vectors](../../box/crates/kuvo_wire/tests/vectors.rs). 
 Counts below are test declarations. Looped cases and nested subtests are included
 under their parent declarations. A partial mapping names the Rust behavior
 covered and the remaining integration or assertion. The reference inventory
-contains 222 declarations across the listed files, including adjacent work.
+contains 222 declarations across 17 files, including adjacent work. Each remaining
+scenario has a receiving phase. The current setup cases add B14–B28, D1–D2 and C1.
 
 | Reference | Count | Rust coverage or gap | Owner phase |
 |---|---:|---|---|
@@ -206,6 +207,8 @@ unmarked historical homes and exercise that boundary.
   the current layout-23 golden-home scenario. Rust passes the personality
   validation case. The other scenarios first stop at the installer-code, bot
   templates and project-list routes, respectively.
+- Both boxes pass the clock and the peer scenarios for discovery through the
+  relay and for an away computer retaining its session owner.
 - TypeScript opens both tagged machine homes. After the shared layout gate
   landed, Rust refuses both unmarked homes at startup with the requirement to
   move to layout 23. Tagged migration and released peer interop are assigned
@@ -228,6 +231,11 @@ unmarked historical homes and exercise that boundary.
   bun -e 'console.log([...new Set([...Intl.supportedValuesOf("timeZone"), "UTC"])].sort().join("\n"))' > box/crates/kuvo_setup/data/time-zones.txt
   ```
 
+The focused Mac, native Windows and WSL runs each passed 52 checks. Clippy
+passed with warnings denied on all three targets. The previous capped lokum run
+passed 42 checks. Lokum's SSH listener stopped responding before the final
+binary could be tested there.
+
 ## Startup file audit
 
 The comparison uses stopped copies of a signed TypeScript home. The search
@@ -235,9 +243,10 @@ covered the desktop, released and current link sources, scripts, and the Rust
 resident. Reproduce the reader search with
 `git grep -n -E 'link[.](seen|version)|SEEN_FILE|VERSION_FILE|PROCESS_RECORD|setup-card[.]json|socket[.]key|keyNow|sharedOutcomes' -- gpui scripts box/src box/crates`
 and `git grep -n -F 'run/link.seen' v0.7.2 -- '*.swift'`.
-Two runs reported 53 and 55 startup leaf differences as background services wrote
-their files. The paths in the table also serve as search terms. Some writers split
-paths into components, including `RUN`, `BOX`, `BOTS` and `WORK_FOLDER`.
+The final comparison reported 56 startup leaf differences. The activity marker,
+configured relay and accepted outcome map matched. The paths in the table also
+serve as search terms. Some writers split paths into components, including `RUN`,
+`BOX`, `BOTS` and `WORK_FOLDER`.
 
 | Differing paths or fields | Readers and result | Owner phase |
 |---|---|---|
@@ -246,7 +255,7 @@ paths into components, including `RUN`, `BOX`, `BOTS` and `WORK_FOLDER`.
 | `run/link.json` relay, `keyNow`, `own` and `sharedOutcomes` | `setup/lead.ts`, `main.ts`, `documents/work.ts` and `setup/shared.ts` read these fields. Both preserve an existing relay. The differential run preserved that field. The startup fallback accepts ws/wss and strips a terminal slash. Rust carries the current static key and keeps the prior eight, publishes signed counters on connection, and serializes an empty outcome map as `{}`. Installed link identity changes and caller ordering remain covered by the respective integration phases. | 2.3 rotation and installer. 9.3 mixed startup order. |
 | `run/setup-card.json` | `add/scripts.ts` prints it and `setup/judge.ts` reads it. Rust writes the versioned card at startup. The TS bench can finish before its periodic write. Active queue item and live usage inputs depend on their owner. | 2.3 discovery. 5.2 queue and card input. |
 | `run/socket.key`, `run/route/ssh`, `run/ssh-for`, `run/vault.sock` | `server/ssh-pipe.ts` and the Rust server use the same local secret encoding and addressed socket. Independently created secrets vary. Rust closes its socket on shutdown. Vault and SSH session directory state are read by `vault/ssh.ts` and `vault/holder.ts`. | 1.4 local transport. 6.2 vault and session directory. |
-| `run/lists/sessions.json`, `run/notices/teller`, `run/outbox/sending`, `run/moves` | Reader in `notices/told.ts` checks the live writer PID; peer list and move code read the session and move records. A move preserves durable records. Empty runtime directories have no desktop, installer or updater reader in the search. | 2.2 lists and notices. 2.4 moves. 1.5 letter interoperability. |
+| `run/lists/sessions.json`, `run/notices/teller`, `run/outbox/sending`, `run/moves` | Reader in `notices/told.ts` checks the live writer PID. Peer list and move code read the session and move records. The session-list writers and their cursors can advance at different times. The record's writer identity and bot projection belong to the engine and work consumers. A move preserves durable records. Empty runtime directories have no desktop, installer or updater reader in the search. | 2.2 lists and notices. 2.4 moves. 3.2 engine lists. 5.1 bot projection. 1.5 letter interoperability. |
 | `agents/limits.json`, `agents/usage/*`, `run/usage-attribution.json`, `run/agents.json` | Agents and limits/Insights read these records, including `agents/box-services.ts` for attribution. The move excludes live attribution. | 4.1 roster. 5.4 usage. |
 | `run/glance/asks.json`, `run/bots-seen`, `run/work/background.json`, `run/work/told.json` | `glance/asked.ts`, `bots/seen.ts`, `at-work.ts` and `work/wakes.ts` read them. | 3.2 asks. 5.1 bots and work. |
 | `run/github-sign-in`, `run/queues-scanned.json`, `run/work-queue/forward` | `services.ts`, `engine/queue.ts` and `work-queue/forward.ts` own them. Empty scratch directories have no desktop or installer reader. | 5.2 queue and GitHub. |
