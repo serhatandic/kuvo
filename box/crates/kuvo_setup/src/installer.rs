@@ -1,5 +1,6 @@
 //! The installer code and the link records shared with the TypeScript box.
 
+pub(crate) mod credentials;
 mod join;
 pub(crate) mod released;
 

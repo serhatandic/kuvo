@@ -17,6 +17,7 @@ the races that span removal, backup, moves, and an authority change.
 | C7 | [A seed keeps existing sign-ins and keys and takes portable credentials once](../../protocol/conformance/adding.test.mjs) | The local seed refuses future formats, preserves existing credentials, skips renewing tokens and chooses integration settings from the installed catalog. |
 | C8 | [Local discovery chooses the existing machine](../../protocol/conformance/setup-judge.test.mjs) | The startup command chooses an existing member, ignores a stopped installation marked off, and waits for an unfinished move. |
 | C9 | [SSH Add trusts the selected host and starts an enrolled resident](../../protocol/conformance/ssh-adding.test.mjs) | The TypeScript fake host waits for an explicit trust answer, verifies the installed executable and publishes the joined resident. The main saves the enrolled identity and address and removes the address from its suggestions. |
+| C10 | [Installer enrollment copies only the selected sign-ins and keys](../../protocol/conformance/adding.test.mjs) | Checklist IDs omit secrets and rotating sign-ins. The issuer seals the selected seed at rest. A multipart seed resumes after a failed engine write, preserves the selected key contents and is deleted after an acknowledgment. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -39,22 +40,25 @@ the races that span removal, backup, moves, and an authority change.
   cases and the seed, enrollment and install-offer families here. The
   [peers map](rust-peers-coverage.md) sends the incoming-device switch, removal
   and uninstall cases here. The setup map also assigns the cross-phase cases
-  below. C7 covers receiving a local seed. Credential selection and delivery
-  over SSH and installer codes, the member’s incoming-device switch, wiping,
-  and release packaging stay open.
+  below. C7 covers receiving a local seed. C10 covers selecting and delivering
+  machine-held credentials by installer code. Mac Helper-held keys, SSH
+  credential delivery, the member’s incoming-device switch, wiping, and
+  release packaging stay open.
 
 ## Verification
 
-On macOS, TypeScript passes C1–C3, C5–C8 and U1–U3. Rust passes C1–C9 and
+On macOS, TypeScript passes C1–C3, C5–C8, C10 and U1–U3. Rust passes C1–C10 and
 U1–U3, including a Rust-to-Rust re-enrollment in U2. The Rust workspace compile
-check passes. The Mac-built static x86-64 musl binary passes all twelve
-scenarios in WSL 2 and in a single lokum container capped at one CPU and 1 GB.
-The native Windows binary passes C1–C8 and U1–U3. The original TypeScript
+check passes. The Mac-built static x86-64 musl binary passes C1–C9 and U1–U3
+in WSL 2 and in a single lokum container capped at one CPU and 1 GB.
+The native Windows binary passes C1–C8, C10 and U1–U3. The original TypeScript
 fake SSH host scenario passes as a reference check. The Windows PC’s WSL 2
 account also joined a Rust setup and acknowledged a plain unlink over a
-private relay with both homes isolated. The real SSH exercise used a staged
-Rust executable. Engine and keeper installation and cross-platform release
-selection still need the release path in 7.1.
+private relay with both homes isolated. Native Windows copied the executable,
+joined, and wrote readiness. Its SSH-launched resident exited after the SSH
+command ended, so it could not receive unlink. The real SSH exercises used
+staged Rust executables. Engine and keeper installation and cross-platform
+release selection still need the release path in 7.1.
 
 | Earlier mixed-only check | Status |
 | --- | --- |
@@ -75,8 +79,9 @@ inventories still differed. The refusal, issuance, and unlink replay runs had
 files and compatibility projections. The issuance run also differed in the
 invitation hash entries and the TypeScript `run/link.needed` marker.
 The discovery differential agrees on both replies and has 60 differing leaves.
-The missing-release SSH differential has 58 differing leaves. All of these
-leaves are at paths in the inventory table.
+The missing-release SSH differential agrees on both replies and has 60 differing
+leaves. The credential checklist and two selection refusals agree with 62 home
+differences. The differing paths all have verdicts in the inventory table.
 
 Re-enrollment after a TypeScript member's unlink originally failed against
 either main. The released baseline hashed the inode and change time for
@@ -139,7 +144,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. Two have coverage, 24 have partial coverage, and 168 are open. Of the open cases, 137 list 2.3 as an owner.
+This map lists 194 reference cases, including expanded parameterized cases. Two have coverage, 25 have partial coverage, and 167 are open. Of the open cases, 136 list 2.3 as an owner.
 
 ### computers-add
 
@@ -236,7 +241,7 @@ This map lists 194 reference cases, including expanded parameterized cases. Two 
 | [a prepared merge can resume with a new code before destination acceptance](../../box/bridge-tests/installer-enrollment.test.js#L415) | Open | 2.3 |
 | [a sleeping computer follows both accepted mergers when it returns](../../box/bridge-tests/installer-enrollment.test.js#L452) | Open | 2.3 |
 | [a merge reserves Work Queue numbers through the relay lease](../../box/bridge-tests/installer-enrollment.test.js#L494) | Open | 2.3, 5.2 |
-| [installer retries a saved join after a lost answer and rejects code reuse by a different computer](../../box/bridge-tests/installer-enrollment.test.js#L538) | C2 covers interrupted plain enrollment, single-use binding and identity replay. Selected sign-ins, seed replay and credential receipts are open. | 2.3 |
+| [installer retries a saved join after a lost answer and rejects code reuse by a different computer](../../box/bridge-tests/installer-enrollment.test.js#L538) | C2 covers interrupted plain enrollment, single-use binding and identity replay. C10 covers selected credentials, engine failure, seed replay and completion. The remaining disconnect and consent races in the reference are open. | 2.3 |
 | [a computer enrolled by installer code receives a verified backup over Relay](../../box/bridge-tests/installer-enrollment.test.js#L919) | Open | 2.3, 2.5 |
 | [plain installer code re-enrolls an explicitly released computer with fresh keys](../../box/bridge-tests/installer-enrollment.test.js#L965) | U2 and U3 cover plain unlink, retained databases and key rotation on machine re-enrollment. Mac Helper and relocated data cases remain open. | 2.3 |
 | [probe, SSH and installer code protect independent work and grants](../../box/bridge-tests/installer-enrollment.test.js#L1067) | Installer admission checks pairing and work. U2 checks both unchanged and changed retained SQLite work. SSH admission and full queue inventory remain open. | 2.3, 2.6 |
@@ -279,8 +284,8 @@ This map lists 194 reference cases, including expanded parameterized cases. Two 
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [a sign-in that renews itself is never one to give; a key and GitHub Copilot's are](../../box/test/add-seed.test.ts#L14) | C7 covers receiving the rotating and reusable sign-in types. Sender selection stays open. | 2.3 |
-| [of a box's sign-ins, a new computer gets each account's one in use that stays the same, never an integration's own](../../box/test/add-seed.test.ts#L22) | Open | 2.3 |
+| [a sign-in that renews itself is never one to give; a key and GitHub Copilot's are](../../box/test/add-seed.test.ts#L14) | C7 covers receiving the rotating and reusable sign-in types. C10 verifies that selection excludes a rotating sign-in. Sender selection of a reusable GitHub token stays open. | 2.3 |
+| [of a box's sign-ins, a new computer gets each account's one in use that stays the same, never an integration's own](../../box/test/add-seed.test.ts#L22) | C10 exercises issuer-side active, inactive and MCP sign-ins. The equivalent SSH delivery remains open. | 2.3 |
 | [settings go without what names this computer alone, with keys' files named as the other keeps them](../../box/test/add-seed.test.ts#L34) | Open | 2.3 |
 | [the computer added takes them once: its own sign-in for an account stays, one that renews itself is refused, and it says how many, never what](../../box/test/add-seed.test.ts#L42) | C7 covers the deployed seed command end to end. | — |
 | [no selection copies no sign-ins or keys and settings do not carry inline secrets](../../box/test/add-seed.test.ts#L80) | Open | 2.3 |

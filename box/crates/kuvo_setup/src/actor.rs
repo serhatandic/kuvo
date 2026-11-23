@@ -122,7 +122,7 @@ pub(crate) struct Request {
 
 pub(crate) enum Command {
     Welcome(bool),
-    InstallerCode(Option<Value>, edits::Submitter),
+    InstallerCode(Option<crate::seed::source::Prepared>, edits::Submitter),
     InstallerCancellation(installer::Cancellation),
     SshAdmission(edits::Submitter),
     SshAddress {

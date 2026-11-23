@@ -12,7 +12,7 @@ use kuvo_wire::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Applicant, CLAIM_LIFETIME, Cancellation, Code, hash};
+use super::{Applicant, CLAIM_LIFETIME, Cancellation, Code, credentials, hash};
 use crate::{
     Error,
     actor::{LINK, new_setup, project_membership, remember_link_key, validate_disk, write_link},
@@ -55,6 +55,10 @@ struct LocalClaim {
     portable_activation: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     cancel_pending: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    credentials_pending: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    credentials_ack_pending: bool,
     #[serde(default, flatten)]
     extra: serde_json::Map<String, Value>,
 }
@@ -149,6 +153,12 @@ struct Reply {
     portable_activation: bool,
     #[serde(default)]
     copy_credentials: bool,
+    #[serde(default)]
+    credential_complete: bool,
+    credential_until: Option<u64>,
+    credential_problem: Option<String>,
+    seed: Option<Value>,
+    seed_part: Option<Part>,
     message: Option<String>,
     docs: Option<Docs>,
 }
@@ -163,12 +173,19 @@ struct Docs {
 enum Exchange {
     Enroll,
     Activate { portable: bool },
+    AcknowledgeCredentials,
 }
 
 struct Accepted {
     doc: Document,
     activation: bool,
     portable: bool,
+    credentials: Option<CredentialCopy>,
+}
+
+struct CredentialCopy {
+    seed: Result<Value, String>,
+    until: Option<u64>,
 }
 
 pub async fn join(home: &Home, name: String, input: &str) -> Result<Joined, Error> {
@@ -292,21 +309,17 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             .get_or_insert_with(|| crate::preferences::truncate(&name, 100));
         link.extra.entry("phones").or_insert_with(|| json!([]));
     }
-    if already_joined && let Some(claim) = &claim {
-        if ["credentialsPending", "credentialsAckPending"]
-            .iter()
-            .any(|field| claim.extra.get(*field) == Some(&Value::Bool(true)))
-        {
-            return Err(refused(
-                "Update this computer’s installer to copy the sign-ins and keys selected for this code.",
-            ));
-        }
-        if !claim.activation_pending {
-            return Ok(Joined {
-                setup: code.setup,
-                primary: code.primary,
-            });
-        }
+    if already_joined
+        && claim.as_ref().is_some_and(|claim| {
+            !claim.activation_pending
+                && !claim.credentials_pending
+                && !claim.credentials_ack_pending
+        })
+    {
+        return Ok(Joined {
+            setup: code.setup,
+            primary: code.primary,
+        });
     }
     let identity = Identity::read(&link)?;
     if !already_joined {
@@ -340,11 +353,12 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         activation_ack: false,
         activation_ack_capable: true,
         recovery_commitment: None,
-        credential_receipt: false,
+        credential_receipt: true,
         cancel: false,
         merging: false,
         credential_ack: false,
     };
+    let mut copy = None;
     if !already_joined {
         let accepted = exchange(
             &mut relay,
@@ -371,6 +385,8 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
                         activation_pending: false,
                         portable_activation: false,
                         cancel_pending: false,
+                        credentials_pending: false,
+                        credentials_ack_pending: false,
                         extra: Default::default(),
                     });
                 }
@@ -390,6 +406,11 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         saved.adopted = true;
         saved.activation_pending = accepted.activation;
         saved.portable_activation = accepted.portable && accepted.activation;
+        saved.credentials_pending = accepted.credentials.is_some();
+        if let Some(until) = accepted.credentials.as_ref().and_then(|copy| copy.until) {
+            saved.until = until;
+        }
+        copy = accepted.credentials;
         saved.recovery = None;
         for field in [
             "pairing",
@@ -403,6 +424,22 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             link.extra.shift_remove(field);
         }
         saved_link.keep_claim(&mut link, saved)?;
+    }
+    if already_joined
+        && claim
+            .as_ref()
+            .is_some_and(|claim| claim.credentials_pending)
+    {
+        copy = exchange(&mut relay, &primary, &mut given, Exchange::Enroll, |_| {
+            Ok(None)
+        })
+        .await?
+        .and_then(|accepted| accepted.credentials);
+        if copy.is_none() {
+            return Err(refused(
+                "This computer joined. The selected sign-ins and keys are no longer available.",
+            ));
+        }
     }
     if let Some(claim) = &mut claim
         && claim.activation_pending
@@ -420,6 +457,40 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
     {
         claim.activation_pending = false;
         claim.portable_activation = false;
+        saved_link.keep_claim(&mut link, claim)?;
+    }
+    if let Some(choice) = copy {
+        let seed = choice
+            .seed
+            .map_err(|problem| Error::Installer(format!("This computer joined. {problem}")))?;
+        let _copy_lock = crate::seed::lock(&files).map_err(|_| refused(
+            "This computer joined. Run the installer again with the same code to complete the selected sign-ins and keys."
+        ))?;
+        let expected = saved_link.previous.as_ref().ok_or(Error::Conflict)?;
+        if !crate::seed::apply_installer(&files, &seed, expected).await {
+            return Err(refused(
+                "This computer joined. Run the installer again with the same code to complete the selected sign-ins and keys.",
+            ));
+        }
+        let claim = claim.as_mut().ok_or(Error::Conflict)?;
+        claim.credentials_pending = false;
+        claim.credentials_ack_pending = true;
+        saved_link.keep_claim(&mut link, claim)?;
+    }
+    if let Some(claim) = &mut claim
+        && !claim.activation_pending
+        && claim.credentials_ack_pending
+        && exchange(
+            &mut relay,
+            &primary,
+            &mut given,
+            Exchange::AcknowledgeCredentials,
+            |_| Ok(None),
+        )
+        .await
+        .is_ok()
+    {
+        claim.credentials_ack_pending = false;
         saved_link.keep_claim(&mut link, claim)?;
     }
     Ok(Joined {
@@ -699,14 +770,23 @@ async fn exchange(
 ) -> Result<Option<Accepted>, Error> {
     given.nonce = encode(&random::<24>()?);
     given.activation_ack = matches!(mode, Exchange::Activate { .. });
+    given.credential_ack = matches!(mode, Exchange::AcknowledgeCredentials);
     given.confirmed = false;
     // Only one socket exists for this temporary relay address, including the activation round.
     // Subscribing after connect is safe: the timer retries sends until the socket is ready.
     let mut observations = relay.handle().subscribe().ok_or_else(|| refused(OFFLINE))?;
-    let max = Duration::from_secs(if given.activation_ack { 5 } else { 60 });
+    let max = Duration::from_secs(if given.activation_ack || given.credential_ack {
+        5
+    } else {
+        60
+    });
     let mut resend = tokio::time::interval(Duration::from_millis(1800));
     resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut parts = Parts::default();
+    let mut seed_parts = credentials::Parts::default();
+    let mut seed = None;
+    let mut membership = None;
+
     let deadline = tokio::time::sleep(max);
     tokio::pin!(deadline);
     loop {
@@ -737,6 +817,10 @@ async fn exchange(
                     }
                     continue;
                 }
+                if matches!(mode, Exchange::AcknowledgeCredentials) {
+                    if reply.credential_complete { return Ok(None); }
+                    continue;
+                }
                 if let Some(message) = reply.message {
                     return Err(Error::Installer(message));
                 }
@@ -746,18 +830,30 @@ async fn exchange(
                     resend.reset_immediately();
                     continue;
                 }
-                if given.confirmed && let Some(docs) = reply.docs {
+                if !given.confirmed { continue; }
+                if let Some(docs) = reply.docs {
                     let doc = if let Some(part) = docs.part {
                         parts.receive(*key, part).ok().flatten().filter(|doc| doc.kind == Kind::Peers)
                     } else {
                         docs.give.into_iter().filter_map(|env| documents::verify(env).ok()).find(|doc| doc.kind == Kind::Peers)
                     };
                     if let Some(doc) = doc {
-                        if reply.copy_credentials {
-                            return Err(refused("Update this computer’s installer to copy the sign-ins and keys selected for this code."));
+                        let accepted = Accepted { doc, activation: reply.activation_receipt, portable: reply.portable_activation, credentials: None };
+                        if !reply.copy_credentials {
+                            return Ok(Some(accepted));
                         }
-                        return Ok(Some(Accepted { doc, activation: reply.activation_receipt, portable: reply.portable_activation }));
+                        membership = Some((accepted, reply.credential_until));
                     }
+                }
+                if let Some(seed_value) = reply.seed.or_else(|| reply.seed_part.and_then(|part| seed_parts.receive(part))) {
+                    seed = Some(Ok(seed_value));
+                } else if let Some(problem) = reply.credential_problem {
+                    seed = Some(Err(problem));
+                }
+                if membership.is_some() && seed.is_some() {
+                    let (mut accepted, until) = membership.take().expect("received membership");
+                    accepted.credentials = Some(CredentialCopy { seed: seed.take().expect("received seed"), until });
+                    return Ok(Some(accepted));
                 }
             }
         }

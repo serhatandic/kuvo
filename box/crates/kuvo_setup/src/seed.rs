@@ -14,6 +14,8 @@ use serde_json::{Map, Value};
 
 use crate::{lease, model::Link, preferences, storage::Files};
 
+pub(crate) mod source;
+
 const MARK: &str = "run/seeded.json";
 const SETTINGS: &str = "box/opencode.json";
 const INVALID: &str =
@@ -70,11 +72,7 @@ impl Credential {
             || !id
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-            || (id != "github-copilot"
-                && value
-                    .get("refresh")
-                    .and_then(Value::as_str)
-                    .is_some_and(|refresh| !refresh.is_empty()))
+            || renews_itself(id, &row["value"])
         {
             return None;
         }
@@ -85,6 +83,13 @@ impl Credential {
             activate: true,
         })
     }
+}
+
+fn renews_itself(id: &str, value: &Value) -> bool {
+    id != "github-copilot"
+        && value["refresh"]
+            .as_str()
+            .is_some_and(|refresh| !refresh.is_empty())
 }
 
 #[derive(Deserialize)]
@@ -111,9 +116,9 @@ pub async fn take(home: &Home, input: &[u8]) -> Answer {
             ),
         );
     }
-    let Some(credentials) = given["credentials"].as_array() else {
+    if !given["credentials"].is_array() {
         return Answer::refuse(400, INVALID);
-    };
+    }
     let files = Files::new(home.root().to_owned());
     let workspace = || -> Result<_, crate::Error> {
         layout::open(home)?;
@@ -136,21 +141,42 @@ pub async fn take(home: &Home, input: &[u8]) -> Answer {
     let Ok(_guard) = workspace() else {
         return Answer::refuse(503, "This computer could not prepare to copy credentials.");
     };
+    take_selected(&files, &given, true).await
+}
+
+pub(crate) async fn apply_installer(files: &Files, given: &Value, expected: &Value) -> bool {
+    if !given["keys"].is_object()
+        || given
+            .get("formatVersion")
+            .is_some_and(|value| !matches!(value.as_f64(), Some(0.0 | 1.0)))
+        || !files
+            .read::<Value>(crate::actor::LINK)
+            .is_ok_and(|actual| actual.as_ref() == Some(expected))
+    {
+        return false;
+    }
+    take_selected(files, given, false).await.status == 200
+}
+
+async fn take_selected(files: &Files, given: &Value, once: bool) -> Answer {
+    let Some(credentials) = given["credentials"].as_array() else {
+        return Answer::refuse(400, INVALID);
+    };
     let keys = if let Some(keys) = given["keys"].as_object() {
-        let Ok(count) = take_keys(&files, keys) else {
+        let Ok(count) = take_keys(files, keys) else {
             return Answer::refuse(503, KEYS_FAILED);
         };
-        if take_integrations(&files, keys, &given["integrations"]).is_err() {
+        if take_integrations(files, keys, &given["integrations"]).is_err() {
             return Answer::refuse(503, INTEGRATIONS_FAILED);
         }
         Some(count)
     } else {
         None
     };
-    if credentials.is_empty() || files.path(MARK).exists() {
+    if credentials.is_empty() || once && files.path(MARK).exists() {
         return Answer::copied(0, keys);
     }
-    let Some((client, engine, mut existing)) = existing_accounts(&files).await else {
+    let Some((client, engine, mut existing)) = existing_accounts(files).await else {
         return Answer::refuse(503, "Its engine isn't answering yet.");
     };
     let mut taken = 0;
@@ -162,7 +188,7 @@ pub async fn take(home: &Home, input: &[u8]) -> Answer {
         if existing.contains(&entry.integration_id) {
             continue;
         }
-        let answer = engine_request(&client, &engine, Method::POST)
+        let answer = request(&client, &engine, Method::POST, "api/credential")
             .json(&entry)
             .send()
             .await;
@@ -180,26 +206,18 @@ pub async fn take(home: &Home, input: &[u8]) -> Answer {
         existing.insert(entry.integration_id);
         taken += 1;
     }
-    let _ = files.write(
-        MARK,
-        &serde_json::json!({"at": lease::wall(), "taken": taken}),
-    );
+    if once {
+        let _ = files.write(
+            MARK,
+            &serde_json::json!({"at": lease::wall(), "taken": taken}),
+        );
+    }
     Answer::copied(taken, keys)
 }
 
 async fn existing_accounts(files: &Files) -> Option<(Client, Engine, HashSet<String>)> {
-    let engine = files
-        .read::<Engine>("run/engine.json")
-        .ok()
-        .flatten()
-        .filter(|engine| engine.port != 0 && !engine.password.is_empty())?;
-    let client = Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(15))
-        .build()
-        .ok()?;
-    let reply = engine_request(&client, &engine, Method::GET)
+    let (client, engine) = open_engine(files)?;
+    let reply = request(&client, &engine, Method::GET, "api/credential")
         .send()
         .await
         .ok()?
@@ -216,12 +234,29 @@ async fn existing_accounts(files: &Files) -> Option<(Client, Engine, HashSet<Str
     Some((client, engine, ids))
 }
 
-fn engine_request(client: &Client, engine: &Engine, method: Method) -> reqwest::RequestBuilder {
+fn open_engine(files: &Files) -> Option<(Client, Engine)> {
+    let engine = files
+        .read::<Engine>("run/engine.json")
+        .ok()
+        .flatten()
+        .filter(|engine| engine.port != 0 && !engine.password.is_empty())?;
+    let client = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15))
+        .build()
+        .ok()?;
+    Some((client, engine))
+}
+
+fn request(
+    client: &Client,
+    engine: &Engine,
+    method: Method,
+    route: &str,
+) -> reqwest::RequestBuilder {
     client
-        .request(
-            method,
-            format!("http://127.0.0.1:{}/api/credential", engine.port),
-        )
+        .request(method, format!("http://127.0.0.1:{}/{route}", engine.port))
         .basic_auth("opencode", Some(&engine.password))
         .header(ROUTE_VERSION_HEADER, ROUTE_VERSION)
 }
@@ -257,12 +292,16 @@ fn portable_key(name: &str) -> bool {
     })
 }
 
-fn take_keys(files: &Files, keys: &Map<String, Value>) -> io::Result<usize> {
-    if std::env::var("KUVO_KEYS_ON_HOST").as_deref() == Ok("1")
+fn host_keys(files: &Files) -> bool {
+    std::env::var("KUVO_KEYS_ON_HOST").as_deref() == Ok("1")
         || ["KUVO_KEYS", "KUVO_HOST_URL"]
             .iter()
             .any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty()))
-    {
+        || files.path("run/host.json").exists()
+}
+
+fn take_keys(files: &Files, keys: &Map<String, Value>) -> io::Result<usize> {
+    if host_keys(files) {
         return Err(io::Error::other("copy requires the host key store"));
     }
     let _guard = settings_lock(files)?;

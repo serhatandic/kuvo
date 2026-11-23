@@ -18,10 +18,12 @@ use crate::{
     actor::{Command, Request, Response, Unlink, View},
     edits::{Edit, Submitter, Target},
     preferences::PersonalityChange,
+    seed::source::{Inventory, Prepared, Selection},
+    storage::Files,
 };
 
 impl SetupHandle {
-    pub fn register(&self, routes: &mut Registry) {
+    pub fn register(&self, routes: &mut Registry, home: &std::path::Path) {
         let setup = self.clone();
         routes.register::<get_kuvo_setup::Spec, _, _>(Access::Any, move |_| {
             let answer = typed::<get_kuvo_setup::Spec, 200>(setup.views.borrow().setup.clone());
@@ -151,16 +153,52 @@ impl SetupHandle {
                 )
             }
         });
+        let files = Files::new(home.to_owned());
+        let checklist_files = files.clone();
+        routes.register::<get_kuvo_computers_add_credentials::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |_| {
+                let files = checklist_files.clone();
+                async move {
+                    let inventory = Inventory::read(&files).await;
+                    typed::<get_kuvo_computers_add_credentials::Spec, 200>(inventory.checklist())
+                }
+            },
+        );
         let setup = self.clone();
         routes.register::<post_kuvo_computers_add_code::Spec, _, _>(
             Access::DesktopOrPaired,
             move |call| {
                 let setup = setup.clone();
+                let files = files.clone();
                 async move {
                     let by = submitter(&call.request.caller)?;
                     let credentials = serde_json::from_slice::<Value>(&call.request.body)
                         .ok()
                         .and_then(|mut given| given.as_object_mut()?.shift_remove("credentials"));
+                    let selection = Selection::read(credentials).ok_or_else(|| {
+                        Refusal::new(
+                            StatusCode::BAD_REQUEST,
+                            "Choose sign-ins and keys by their checklist IDs.",
+                        )
+                    })?;
+                    let credentials = if selection.empty() {
+                        None
+                    } else {
+                        let inventory = Inventory::read(&files).await;
+                        let seed = inventory.capture(&files, &selection).map_err(
+                            |(status, message)| {
+                                Refusal::new(
+                                    StatusCode::from_u16(status).expect("selection status"),
+                                    message,
+                                )
+                            },
+                        )?;
+                        Some(Prepared {
+                            digest: selection.digest(),
+                            seed,
+                        })
+                    };
                     let answer = setup
                         .request(Command::InstallerCode(credentials, by))
                         .await?;

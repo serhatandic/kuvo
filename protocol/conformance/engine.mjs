@@ -142,6 +142,7 @@ export async function standInEngine(root, env) {
       if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
       if (route === "GET /api/credential") return send({ data: engine.credentials });
       if (route === "POST /api/credential") {
+        if (engine.blockCredentialImport) return send({ message: "The credential store is not ready." }, 503);
         engine.credentials.push(given);
         return send({ data: given });
       }

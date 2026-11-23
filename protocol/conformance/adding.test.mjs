@@ -268,3 +268,59 @@ test("a seed keeps existing sign-ins and keys and takes portable credentials jus
   assert.equal(remote.engine.credentials.length, 2);
   assert.equal(fs.readFileSync(key, "utf8"), keys.KUVO_KEY_GITHUB_TOKEN);
 });
+
+test("installer enrollment copies only the sign-ins and keys selected for that code", { timeout: 90000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const main = await computer("Studio");
+  const remote = await computer("Desk");
+  const keyName = "KUVO_KEY_NOTION_TOKEN";
+  const unselected = "KUVO_KEY_UNSELECTED_TOKEN";
+  const selectedKey = "selected-test-key".repeat(2600);
+  write(path.join(main.home, "box", "keys", keyName), selectedKey);
+  write(path.join(main.home, "box", "keys", unselected), "unselected-test-key");
+  main.engine.integrations.push({ id: "anthropic" }, { id: "notion", metadata: { source: "mcp" } });
+  main.engine.credentials.push(
+    { id: "selected", integrationID: "anthropic", label: "Work", value: { type: "api", key: "selected-test-credential" }, active: true },
+    { id: "inactive", integrationID: "anthropic", label: "Old", value: { type: "api", key: "inactive-test-token" }, active: false },
+    { id: "notion", integrationID: "notion", label: "Integration", value: { type: "api", key: "unsent-test-token" }, active: true },
+    { id: "refreshing", integrationID: "anthropic", label: "Refreshes", value: { refresh: "unsent-refresh-token" }, active: true },
+  );
+  const ask = main.connect(await main.start().ready());
+  const setup = (await ask("GET", "kuvo/setup")).json.setup;
+  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
+  const headers = { "x-kuvo-from": "mac" };
+  const checklist = await ask("GET", "kuvo/computers/add/credentials", undefined, headers);
+  assert.equal(checklist.status, 200, checklist.text);
+  assert.deepEqual(checklist.json.unavailable, []);
+  assert.equal(checklist.json.renewing, 1);
+  assert.ok(!checklist.json.items.some(item => item.label === "Refreshes"));
+  const chosen = checklist.json.items.filter(item => item.label === keyName || item.label === "Work").map(item => item.id);
+  assert.equal(chosen.length, 2);
+  assert.doesNotMatch(checklist.text, /selected-test-key|selected-test-credential/);
+  const issued = await ask("POST", "kuvo/computers/add/code", { credentials: chosen }, headers);
+  assert.equal(issued.status, 201, issued.text);
+  const mainLink = () => readJSON(path.join(main.home, "run", "link.json"));
+  const invite = () => Object.values(mainLink().installerInvites)[0];
+  assert.equal(typeof invite().credentialSeed, "string");
+  assert.doesNotMatch(JSON.stringify(mainLink()), /selected-test-key|selected-test-credential/);
+  remote.engine.blockCredentialImport = true;
+  const interrupted = await remote.join(issued.json.code);
+  assert.equal(interrupted.code, 1, interrupted.log);
+  assert.match(interrupted.log, /same code/);
+  assert.equal(readJSON(path.join(remote.home, "run", "link.json")).installerClaim.credentialsPending, true);
+  assert.equal(typeof invite().credentialSeed, "string");
+  remote.engine.blockCredentialImport = false;
+  const joined = await remote.join(issued.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const keys = path.join(remote.home, "box", "keys");
+  assert.deepEqual(fs.readdirSync(keys), [keyName]);
+  const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+  assert.equal(digest(fs.readFileSync(path.join(keys, keyName))), digest(selectedKey));
+  assert.deepEqual(remote.engine.credentials, [
+    { integrationID: "anthropic", label: "Work", value: { type: "api", key: "selected-test-credential" }, activate: true },
+  ]);
+  await until(() => invite().credentialsCompleted && invite().credentialSeed === undefined,
+    "The main computer did not acknowledge credential completion.");
+  assert.equal((await remote.join(issued.json.code)).code, 0);
+  assert.equal(remote.engine.credentials.length, 1);
+});

@@ -245,28 +245,9 @@ impl Owner {
 
     pub(super) async fn issue_installer_code(
         &mut self,
-        credentials: Option<Value>,
+        credentials: Option<crate::seed::source::Prepared>,
         submitter: Submitter,
     ) -> Result<Response, Error> {
-        if let Some(given) = credentials {
-            let Some(ids) = given.as_array().filter(|ids| {
-                ids.len() <= 300
-                    && ids
-                        .iter()
-                        .all(|id| id.as_str().is_some_and(|id| safe_token(id, 43, 43)))
-            }) else {
-                return Ok(refused(
-                    400,
-                    "Choose sign-ins and keys by their checklist IDs.",
-                ));
-            };
-            if !ids.is_empty() {
-                return Ok(refused(
-                    503,
-                    "Some selected sign-ins or keys are no longer available. Open the checklist again.",
-                ));
-            }
-        }
         let Some(setup) = self
             .link
             .setup()
@@ -319,15 +300,22 @@ impl Owner {
                 "There are too many installers waiting to join. Use an existing code or wait for it to expire.",
             ));
         }
+        let id = hash(&code.token);
+        let mut fields = serde_json::Map::new();
+        if let Some(chosen) = credentials {
+            let sealed = installer::credentials::seal(&chosen.seed, &own.key, &id)?;
+            fields.insert("credentialSeed".into(), json!(sealed));
+            fields.insert("credentialSelectionDigest".into(), json!(chosen.digest));
+        }
         next.installer_invites.insert(
-            hash(&code.token),
+            id,
             Invitation {
                 setup: position.id,
                 epoch: position.epoch,
                 expires,
                 actor,
                 claim: None,
-                extra: Default::default(),
+                extra: fields,
             },
         );
         self.commit(next).await?;
@@ -369,7 +357,7 @@ impl Owner {
             || given.name.encode_utf16().count() > 100
             || given.cancel
             || given.merging
-            || given.credential_ack
+            || (given.credential_ack && given.activation_ack)
         {
             return Ok(());
         }
@@ -426,7 +414,14 @@ impl Owner {
                 json!({"message": "This installer code is no longer available. Get a new code from your setup."}),
             )
         } else if invite.extra.contains_key("credentialSeed")
-            || invite.extra.contains_key("credentialSelectionDigest")
+            && !given.credential_receipt
+            && !given.activation_ack
+        {
+            Some(
+                json!({"message": "Update this computer’s installer to copy the sign-ins and keys selected for this code.", "retrySameSetup": true}),
+            )
+        } else if (invite.extra.contains_key("credentialSelectionDigest")
+            && !invite.extra.contains_key("credentialSeed"))
             || invite
                 .extra
                 .get("credentials")
@@ -449,6 +444,13 @@ impl Owner {
         if given.activation_ack {
             if claimed && enrolled {
                 self.activate_installer(&to, &given.nonce, &id, &peer)
+                    .await?;
+            }
+            return Ok(());
+        }
+        if given.credential_ack {
+            if claimed && enrolled {
+                self.ack_installer_credentials(&to, &given.nonce, &id)
                     .await?;
             }
             return Ok(());
@@ -635,6 +637,32 @@ impl Owner {
         self.publish(false).await
     }
 
+    async fn ack_installer_credentials(
+        &mut self,
+        to: &Host,
+        nonce: &str,
+        id: &str,
+    ) -> Result<(), Error> {
+        let mut next = self.link.clone();
+        let invite = next.installer_invites.get_mut(id).ok_or(Error::Conflict)?;
+        if invite.extra.get("credentialsCompleted") != Some(&Value::Bool(true)) {
+            if !invite.extra.contains_key("credentialSeed")
+                || invite.extra.get("activated") != Some(&Value::Bool(true))
+            {
+                return Ok(());
+            }
+            invite.extra.shift_remove("credentialSeed");
+            invite.extra.shift_remove("credentialSelectionDigest");
+            invite
+                .extra
+                .insert("credentialsCompleted".into(), json!(true));
+            self.commit(next).await?;
+        }
+        self.installer_reply(to, nonce, json!({"credentialComplete": true}))
+            .await;
+        Ok(())
+    }
+
     async fn installer_membership(
         &mut self,
         to: &Host,
@@ -649,7 +677,14 @@ impl Owner {
         let Some((_, envelope)) = exports.into_iter().find(|(kind, _)| *kind == Kind::Peers) else {
             return Ok(());
         };
-        let mut answer = json!({"copyCredentials": false});
+        let invite = self.link.installer_invites.get(id).ok_or(Error::Conflict)?;
+        let seed = invite.extra.get("credentialSeed").and_then(Value::as_str);
+        let mut answer = json!({"copyCredentials": seed.is_some()});
+        if seed.is_some()
+            && let Some(claim) = &invite.claim
+        {
+            answer["credentialUntil"] = json!(claim.until);
+        }
         if given.activation_ack_capable {
             answer["activationReceipt"] = json!(true);
         }
@@ -676,7 +711,41 @@ impl Owner {
                 self.installer_reply(to, &given.nonce, answer.clone()).await;
             }
         }
+        if let Some(seed) = seed {
+            self.send_installer_credentials(to, &given.nonce, id, seed)
+                .await?;
+        }
         self.publish(false).await
+    }
+
+    async fn send_installer_credentials(
+        &self,
+        to: &Host,
+        nonce: &str,
+        id: &str,
+        seed: &str,
+    ) -> Result<(), Error> {
+        use installer::credentials::{COPY_FAILED, open, split};
+        match open(seed, &self.own()?.key, id) {
+            Some(payload) if payload.len() < 34_000 => {
+                let body = match serde_json::from_slice::<Value>(&payload) {
+                    Ok(seed) => json!({"seed": seed}),
+                    Err(_) => json!({"credentialProblem": COPY_FAILED}),
+                };
+                self.installer_reply(to, nonce, body).await;
+            }
+            Some(payload) => {
+                for part in split(&payload)? {
+                    self.installer_reply(to, nonce, json!({"seedPart": part}))
+                        .await;
+                }
+            }
+            None => {
+                self.installer_reply(to, nonce, json!({"credentialProblem": COPY_FAILED}))
+                    .await
+            }
+        }
+        Ok(())
     }
 
     async fn installer_reply(&self, to: &Host, nonce: &str, mut answer: Value) {

@@ -99,7 +99,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let sessions = engine.register_with_merged_pages(&mut routes, move |project, shown, step| {
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
-    setup.handle().register(&mut routes);
+    setup.handle().register(&mut routes, home);
     setup.handle().register_ssh(&mut routes, home);
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
