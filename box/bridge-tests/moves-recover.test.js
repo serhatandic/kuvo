@@ -20,7 +20,7 @@ import { test as nodeTest } from "node:test";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 // What's under way, as `kuvo/moves` says it (not what moved away lately, `moved`, which stays two days).
-const underWay = ({ moved: _moved, ...rest } = {}) => rest;
+const underWay = ({ moves, away }) => ({ moves, away });
 
 // Each fails, rather than hangs, when what it waits for never comes.
 let running = null;
@@ -280,7 +280,7 @@ test("a copy let go of while this box's engine is down: the other computer hears
     assert.ok(engine.refused > refused, "it tried");
     assert.ok(engine.sessions.has("ses_down1"));
     // Not shown as moving here (lab goes on with it), and not this box's: nothing reaches it.
-    assert.deepEqual((await ask("GET", "kuvo/moves")).json, { moves: [], away: ["ses_down1"] });
+    assert.deepEqual((await ask("GET", "kuvo/moves")).json, { moves: [], away: ["ses_down1"], pendingComputers: [{ id: lab.key, name: "lab" }] });
     assert.equal(fs.readFileSync(path.join(wakes, "ses_down1", "paused"), "utf8"), `moving:${id}`, "its wake-ups held");
     // Switched to now (lab's word crossed): never.
     await say({ op: "switch", safeSwitch: true, id });
@@ -350,7 +350,7 @@ test("asked again whether a copy arrived, this box says as it is: arrived, or fa
   const id = "mov_askin1";
   const hash = await comesHere(id, { kind: "chat", thing: "ses_askin1", name: "“Notes”", wasPaused: false, exports: [{ info: { id: "ses_askin1", title: "Notes" }, messages: [] }] });
   await say({ op: "arrive", id, hash });
-  assert.deepEqual(told.findLast(move => move.id === id), { op: "arrived", id, generation: 1, hash });
+  assert.deepEqual(told.findLast(move => move.id === id), { op: "arrived", id, generation: 1, hash, verifiedPayloads: true });
   await say({ op: "arrive", id: "mov_askin2", hash: "x" });
   assert.equal(told.findLast(move => move.id === "mov_askin2")?.op, "failed");
   await say({ op: "drop", id });
