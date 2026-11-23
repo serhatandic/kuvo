@@ -504,15 +504,17 @@ async function checkedCredentials(request = ask) {
 // line then. (Gone from the list: `null` is what `wanted` gets.)
 const until = async (id, wanted) => {
   const stop = new AbortController();
+  const deadline = AbortSignal.any([stop.signal, AbortSignal.timeout(90_000)]);
   let held = "";
+  let last = null;
   try {
-    for await (const piece of handle({ method: "GET", path: "kuvo/computers/add/events", headers: {}, fromApp: true }, undefined, stop.signal)) {
+    for await (const piece of handle({ method: "GET", path: "kuvo/computers/add/events", headers: {}, fromApp: true }, undefined, deadline)) {
       if (!piece.body) continue;
       held += piece.body.toString();
       const lines = held.split("\n");
       held = lines.pop();
       for (const line of lines) {
-        const found = JSON.parse(line).tries.find(each => each.id === id) ?? null;
+        const found = last = JSON.parse(line).tries.find(each => each.id === id) ?? null;
         if (wanted(found)) return found;
         // (Never waited on for good: one that failed, or asks what the test didn't mean to answer.)
         if (found?.state === "failed" || found?.state === "asking") throw new Error(`The try stands at ${found.state}: ${JSON.stringify(found.failure ?? found.question)}`);
@@ -521,7 +523,7 @@ const until = async (id, wanted) => {
   } finally {
     stop.abort();
   }
-  throw new Error("The box stopped telling of its tries.");
+  throw new Error(`The try did not reach the expected state: ${JSON.stringify(last)}`);
 };
 // (Until it's over; one that asks something instead is handed back as it is, for the test to
 // fail on rather than wait for an answer no one gives.)
