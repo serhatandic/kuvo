@@ -14,7 +14,7 @@ pub fn routes(answers: Answers) -> Result<String, String> {
     let mut table = String::new();
     let mut module_names = HashSet::new();
 
-    for route in answers.routes {
+    for (index, route) in answers.routes.into_iter().enumerate() {
         let Some((method, path)) = route.route.split_once(' ') else {
             return Err(format!("route {:?} has no method and path", route.route));
         };
@@ -33,20 +33,35 @@ pub fn routes(answers: Answers) -> Result<String, String> {
             route.feature
         )
         .unwrap();
+        writeln!(modules, "pub struct Spec;").unwrap();
         for (status, shape) in route.answers {
             let id = generator.intern(&shape, &format!("{}Status{status}", pascal(&route.route)));
             let ty = &generator.shapes[id].ty;
             writeln!(modules, "pub type Status{status} = {ty};").unwrap();
             writeln!(table, "({status}, &SHAPE_{id}),").unwrap();
+            if matches!(shape, Shape::Primitive(Primitive::Bytes)) {
+                writeln!(modules, "impl crate::ByteStatus<{status}> for Spec {{}}").unwrap();
+            } else {
+                writeln!(
+                    modules,
+                    "impl crate::JsonStatus<{status}> for Spec {{ type Body = Status{status}; }}"
+                )
+                .unwrap();
+            }
         }
-        match &route.body {
+        let request = match &route.body {
             Some(shape) => {
                 let id = generator.intern(shape, &format!("{}Request", pascal(&route.route)));
                 writeln!(modules, "pub type Request = {};", generator.shapes[id].ty).unwrap();
                 writeln!(table, "], body: Some(&SHAPE_{id}) }},").unwrap();
+                "Request"
             }
-            None => table.push_str("], body: None },\n"),
-        }
+            None => {
+                table.push_str("], body: None },\n");
+                "()"
+            }
+        };
+        writeln!(modules, "impl crate::RouteSpec for Spec {{ type Body = {request}; const ROUTE: &'static crate::Route = &super::ROUTES[{index}]; }}").unwrap();
         modules.push_str("}\n");
     }
 

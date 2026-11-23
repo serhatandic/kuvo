@@ -333,7 +333,7 @@ parallel.
 | 1.1 | **Done.** `kuvo_protocol` generates Rust route types and the checker from the TypeScript export, passes the shared shape cases, and supplies the desktop features and update gate. | protocol | 0.4 | 5 | B |
 | 1.2 | `kuvo_store`: paths, versioned files, durability, locks, layout gate; reads the golden home | store | 0.4, 0.2 | 6 | C |
 | 1.3 | **Done.** `kuvo_os` provides platform paths and login environments, owned process groups and jobs with start identities, private local IPC, shared watches with polling, and Seatbelt and Landlock launchers. | os | 0.4 | 6 | D |
-| 1.4 | Server: dispatcher, local HTTP, refusals, the line with replay, SSH `route` and `route-to` | server | 1.1, 1.3 | 6 ×2 | B |
+| 1.4 | **Done.** `kuvo_server` provides typed dispatch, resident HTTP and discovery, the replaying line and SSH IPC. Addressed SSH authenticates through the pairing provider that setup supplies in 2.1. | server | 1.1, 1.3 | 6 ×2 | B |
 | 1.5 | `kuvo_wire` (shared with the desktop), relay client, paired sessions, mail v1, outbox | wire, peers | 1.1 | 5 ×2 | A |
 | 2.1 | Lease and takeover, membership, signed documents, shared saves, time zone, personalities | setup | 1.4, 1.5 | 5 ×2 | A |
 | 2.2 | Reach, merged lists, `ownerOf`, notices, devices and pairing | peers | 1.5 | 6 | C |
