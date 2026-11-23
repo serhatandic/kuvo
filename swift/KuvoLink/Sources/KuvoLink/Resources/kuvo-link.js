@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 dcbd634ef7b8
+// Kuvo folder layout 23 18d41be6ff8d
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1750,7 +1750,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "dcbd634ef7b8";
+var BRIDGE_VERSION = "18d41be6ff8d";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -125045,6 +125045,14 @@ function lookback(minutes) {
     return HOUR3;
   return Math.min(24 * HOUR3, Math.max(30 * MINUTE3, minutes * MINUTE3 / 5));
 }
+function startedOver(previousReset, last, window2) {
+  const { resetsAt, read, minutes, used } = window2;
+  if (resetsAt === undefined || previousReset === undefined || resetsAt <= previousReset + RESET_JITTER)
+    return false;
+  if (read >= previousReset)
+    return true;
+  return minutes !== undefined && resetsAt - minutes * MINUTE3 >= last.at - RESET_JITTER && used < last.used - 0.02;
+}
 
 class Pace {
   trails = new Map;
@@ -125055,20 +125063,23 @@ class Pace {
       return;
     let trail = this.trails.get(key);
     const last = trail?.samples.at(-1);
-    const newPeriod = !trail || window2.resetsAt !== undefined && trail.resetsAt !== undefined && Math.abs(window2.resetsAt - trail.resetsAt) > NEW_PERIOD || last !== undefined && window2.used < last.used - 0.02;
-    if (newPeriod) {
-      trail = { ...window2.resetsAt !== undefined ? { resetsAt: window2.resetsAt } : {}, samples: [] };
+    if (last && window2.read <= last.at)
+      return;
+    if (!trail || last && startedOver(trail.resetsAt, last, window2)) {
+      trail = { samples: [] };
       this.trails.set(key, trail);
     }
     if (window2.resetsAt !== undefined)
       trail.resetsAt = window2.resetsAt;
     const samples = trail.samples;
-    if (samples.some((sample) => sample.at === window2.read))
-      return;
+    const stretch = lookback(window2.minutes);
+    const bucket = (at) => Math.floor(at / (stretch / BUCKETS_PER_LOOKBACK));
+    const beforePrevious = samples.at(-2);
+    if (beforePrevious && bucket(beforePrevious.at) === bucket(window2.read))
+      samples.pop();
     samples.push({ at: window2.read, used: window2.used });
-    samples.sort((a, b) => a.at - b.at);
-    const since = window2.read - 2 * lookback(window2.minutes);
-    while (samples.length > MOST9 || samples.length > 1 && samples[0].at < since)
+    const since = window2.read - 2 * stretch;
+    while (samples[0].at < since)
       samples.shift();
   }
   predict(key, window2, now) {
@@ -125082,7 +125093,7 @@ class Pace {
     if (!trail)
       return;
     const latest = trail.samples.at(-1);
-    if (!latest)
+    if (!latest || latest.at !== window2.read)
       return;
     const recent = trail.samples.filter((sample) => sample.at >= latest.at - lookback(window2.minutes));
     const first = recent[0];
@@ -125105,15 +125116,15 @@ class Pace {
     for (const [key, trail] of Object.entries(saved)) {
       if (!trail || !Array.isArray(trail.samples))
         continue;
-      const samples = trail.samples.filter((sample) => typeof sample?.at === "number" && typeof sample?.used === "number").slice(-MOST9);
+      const samples = trail.samples.filter((sample) => Number.isFinite(sample?.at) && Number.isFinite(sample?.used)).slice(-120);
       this.trails.set(key, { ...typeof trail.resetsAt === "number" ? { resetsAt: trail.resetsAt } : {}, samples });
     }
   }
 }
-var MINUTE3 = 60000, HOUR3, FEWEST_READINGS = 3, shortestStretch = (minutes) => Math.max(15 * MINUTE3, lookback(minutes) / 4), USED_UP = 0.995, NEW_PERIOD, MOST9 = 120;
+var MINUTE3 = 60000, HOUR3, FEWEST_READINGS = 3, shortestStretch = (minutes) => Math.max(15 * MINUTE3, lookback(minutes) / 4), USED_UP = 0.995, RESET_JITTER, BUCKETS_PER_LOOKBACK = 24;
 var init_pace = __esm(() => {
   HOUR3 = 60 * MINUTE3;
-  NEW_PERIOD = 5 * MINUTE3;
+  RESET_JITTER = 5 * MINUTE3;
 });
 
 // box/src/usage/limits.ts
@@ -125754,8 +125765,8 @@ class Limits {
     this.awaitTurn(rows);
     const notices = this.notices();
     const now = JSON.stringify([list, rows, notices]);
-    if (own && (!heard || this.now() - this.lastHeardSave >= 30000)) {
-      if (heard)
+    if (!own || !heard || this.now() - this.lastHeardSave >= 30000) {
+      if (own && heard)
         this.lastHeardSave = this.now();
       this.save();
     }
@@ -132939,7 +132950,7 @@ class KeptSummaries {
   keep(key, data) {
     this.kept.delete(key);
     this.kept.set(key, { at: this.now(), data });
-    while (this.kept.size > MOST10)
+    while (this.kept.size > MOST9)
       this.kept.delete(this.kept.keys().next().value);
     if (!this.file)
       return;
@@ -132950,7 +132961,7 @@ class KeptSummaries {
     } catch {}
   }
 }
-var MOST10 = 24, FRESH2 = 30000, keptKey = (params) => [...params.entries()].sort(([a, x], [b, y]) => a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0).map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`).join("&");
+var MOST9 = 24, FRESH2 = 30000, keptKey = (params) => [...params.entries()].sort(([a, x], [b, y]) => a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0).map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`).join("&");
 var init_insights_kept = () => {};
 
 // box/src/link/server/history-worker-entry.ts

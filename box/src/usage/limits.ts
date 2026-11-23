@@ -1082,8 +1082,8 @@ export class Limits {
     this.awaitTurn(rows)
     const notices = this.notices()
     const now = JSON.stringify([list, rows, notices])
-    if (own && (!heard || this.now() - this.lastHeardSave >= 30_000)) {
-      if (heard) this.lastHeardSave = this.now()
+    if (!own || !heard || this.now() - this.lastHeardSave >= 30_000) {
+      if (own && heard) this.lastHeardSave = this.now()
       this.save()
     }
     if (own) this.peers?.tell(!heard)
