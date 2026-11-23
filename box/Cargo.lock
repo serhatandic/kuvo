@@ -789,15 +789,19 @@ name = "kuvo-box"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "futures-util",
  "hostname",
  "http",
  "kuvo_engine",
+ "kuvo_peers",
  "kuvo_protocol",
  "kuvo_server",
+ "kuvo_wire",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -860,8 +864,13 @@ dependencies = [
 name = "kuvo_peers"
 version = "0.1.0"
 dependencies = [
+ "form_urlencoded",
  "futures-util",
  "getrandom 0.3.4",
+ "http",
+ "http-body-util",
+ "kuvo_protocol",
+ "kuvo_server",
  "kuvo_wire",
  "rustls",
  "serde",
@@ -871,6 +880,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "tokio-util",
  "webpki-roots 1.0.12",
 ]
 

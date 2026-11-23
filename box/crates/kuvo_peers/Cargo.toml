@@ -10,7 +10,12 @@ workspace = true
 
 [dependencies]
 futures-util = { version = "0.3", features = ["sink"] }
+form_urlencoded = "1"
 getrandom = "0.3"
+http = "1"
+http-body-util = "0.1"
+kuvo_protocol = { path = "../kuvo_protocol" }
+kuvo_server = { path = "../kuvo_server" }
 kuvo_wire = { path = "../kuvo_wire" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1", features = ["derive"] }
@@ -20,6 +25,7 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 webpki-roots = "1"
 
 [dev-dependencies]

@@ -393,7 +393,7 @@ parallel.
 | # | Session | Crate | After | Hours | Lane |
 |---|---|---|---|---:|---|
 | 0.1 | **Done.** Binary conformance for the routes, resident and two computers, with side-by-side response and home comparison. | conformance | — | 6 | A |
-| 0.2 | Conformance through binaries: older Macs' vectors, `hold/1` with a TypeScript holder, the four golden homes, digests | conformance | 0.1 | 6 | A |
+| 0.2 | **Done.** Tagged Mac and machine fixtures, every stored family in the current-beta home, legacy SSH and mail, `hold/1` transcripts, and document digests. [Fixture coverage](../../protocol/conformance/compat/README.md) | conformance | 0.1 | 6 | A |
 | 0.3 | **Spike:** Claude Code's control protocol from Rust against the SDK (every feature in section 2); `cursor-agent` stream output; `agy` without the `.par` | — | — | 4 | B |
 | 0.4 | Workspace and info-only `serve`. Idle memory was 1.38 MiB on Mac, 1.16 MiB on Linux and 0.58 MiB on Windows. The Windows SID pipe, Job Object and open-file replacement probes passed. [Measurements](#phase-04-measurements) | bin, os | — | 5 | D |
 | 1.1 | **Done.** `kuvo_protocol` generates Rust route types and the checker from the TypeScript export, passes the shared shape cases, and supplies the desktop features and update gate. | protocol | 0.4 | 5 | B |
@@ -402,7 +402,7 @@ parallel.
 | 1.4 | **Done.** `kuvo_server` provides typed dispatch, resident HTTP and discovery, the replaying line and SSH IPC. Addressed SSH authenticates through the pairing provider that setup supplies in 2.1. | server | 1.1, 1.3 | 6 ×2 | B |
 | 1.5 | **Done.** The desktop shares `kuvo_wire`. `kuvo_peers` owns relay connections, paired sessions, mail v1, and durable letter state. [Coverage and follow-ups](rust-wire-coverage.md) | wire, peers | 1.1 | 5 ×2 | A |
 | 2.1 | Lease and takeover, membership, signed documents, shared saves, time zone, personalities | setup | 1.4, 1.5 | 5 ×2 | A |
-| 2.2 | Reach, merged lists, `ownerOf`, notices, devices and pairing | peers | 1.5 | 6 | C |
+| 2.2 | Peer reach, merged lists, record lookup, notice history and standalone device grants implemented. Managed device writes and engine integration remain. [Coverage](rust-peers-coverage.md) | peers | 1.5 | 6 | C |
 | 2.3 | Adding (SSH, installer code, seed), unlink and wipe, removal, re-enrollment | setup | 2.1 | 5 ×2 | A |
 | 2.4 | Moves, handoffs, receipts (manifest v0–v3), letters on `ownerOf` | peers | 2.2 | 5 ×2 | C |
 | 2.5 | Backups and restore (disk, SSH, relay store) | setup | 2.1 | 6 | A |

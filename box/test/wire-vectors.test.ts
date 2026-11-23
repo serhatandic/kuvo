@@ -85,7 +85,14 @@ test("peer mail, signed documents and canonical digests match shared wire vector
     const envelope = signDoc(seed.toString("base64url"), kind, n, body)
     return { kind, n, body, envelope, digest: readDoc(envelope)!.h }
   })
+  // A document's short exchange hash covers the signed bytes. Canonical
+  // digests cover the value and must stay stable across key insertion order.
   const digests = [
+    ...documents.map(({ envelope }) => JSON.parse(Buffer.from(envelope.d, "base64url").toString())),
+    { same: { z: "é", a: "e\u0301", "00": 0, "0": 0, "1": 1, "4294967294": 2, "4294967295": 3 } },
+    { same: { "4294967295": 3, "1": 1, "0": 0, "4294967294": 2, "00": 0, a: "e\u0301", z: "é" } },
+    [Number.MIN_VALUE, Number.MAX_VALUE, -1e-7, -1e21, -9007199254740991],
+    { empty: {}, list: [], controls: "\b\f\r\t\u0000\u2028\u2029", escapes: "\\/" },
     { z: { b: 1e-7, a: -0 }, a: [1e-6, 1e20, 1e21, 1.5, 9007199254740992] },
     { "\uE000": "BMP", "\u{10000}": "astral", "10": "ten", "2": "two", a: "quote\n\"\\é" },
     [null, true, false, { nested: [{ z: 1, a: 2 }] }],
@@ -93,6 +100,7 @@ test("peer mail, signed documents and canonical digests match shared wire vector
     const canonical = sortedJSON(value)
     return { value, canonical, sha256: createHash("sha256").update(canonical).digest("base64url") }
   })
+  expect(digests[documents.length].sha256).toBe(digests[documents.length + 1].sha256)
   const output = {
     from: from.toString("hex"), to: to.toString("hex"), ephemeral: ephemeral.toString("hex"),
     fromPublic: publicOf(from).toString("hex"), toPublic: publicOf(to).toString("hex"),
