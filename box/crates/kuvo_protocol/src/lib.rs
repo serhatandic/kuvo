@@ -19,3 +19,17 @@ pub mod routes {
 
 #[cfg(test)]
 mod tests;
+
+/// Generated identity and request body for a method and path.
+pub trait RouteSpec: Send + Sync + 'static {
+    type Body: serde::de::DeserializeOwned + Send;
+    const ROUTE: &'static Route;
+}
+
+/// A declared status whose response body is JSON.
+pub trait JsonStatus<const STATUS: u16>: RouteSpec {
+    type Body: serde::Serialize;
+}
+
+/// A declared status whose response body is an opaque byte sequence.
+pub trait ByteStatus<const STATUS: u16>: RouteSpec {}

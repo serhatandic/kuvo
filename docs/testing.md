@@ -131,6 +131,26 @@ older bundle, set `BUILT_AT_CACHE` to the test's scratch folder and run
 Run compile checks for what you touched (`cargo-locked.sh check` or `bun run check` in `box/`).
 Never drive the Mac app's window from a test.
 
+### Box conformance
+
+Build the TypeScript inputs with `scripts/build-built.sh` and the Rust binary with
+`scripts/cargo-box.sh build -p kuvo-box`. Use Node 24. For a TypeScript bundle the adapter runs
+Bun. Set `KUVO_CONFORMANCE_BUN` to the engine or Bun executable if needed.
+
+```sh
+KUVO_BOX_BIN=box/dist/kuvo-link.js node --test protocol/conformance
+for bin in box/dist/kuvo-link.js box/target/debug/kuvo-box; do KUVO_BOX_BIN="$bin" KUVO_CONFORMANCE_AREA=bots node --test protocol/conformance; done
+KUVO_BOX_BIN_A=box/dist/kuvo-link.js KUVO_BOX_BIN_B=box/target/debug/kuvo-box node protocol/conformance/differential seed-home requests.json
+```
+
+Run the tagged-home and holder cases with `KUVO_CONFORMANCE_AREA=compat` and `KUVO_CONFORMANCE_AREA=holder`; see [fixture generation and reproduction](../protocol/conformance/compat/README.md).
+
+For the differential runner, use an offline scratch home with synthetic data and no process
+records. A sequence is a JSON array such as `[{"method":"GET","path":"kuvo/info"}]`. Use
+`{{home}}` in a body or query to refer to each run's copy. The runner returns 0 for a match,
+1 for a difference and 2 for an input or launch error. See the
+[conversion list](architecture/rust-box.md#3-the-contract-the-rust-box-meets).
+
 ## Anti-patterns
 
 - **Snapshot everything**: a giant snapshot gets re-recorded on every change and asserts nothing in

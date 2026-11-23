@@ -14,6 +14,12 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Removing Kuvo reports when other computers have yet to receive the desktop’s revocation.
 - A Mac’s backup keeps the computer identity needed to restore it onto a replacement.
 - The coding agents stay reachable during a bridge restart, and Try Again waits for the bridge to come back.
+- The Rust box keeps shared preferences and their saved decisions when another computer becomes the main computer.
+- The Rust box can show your other computers’ saved sessions and notices as soon as it starts, with their last-seen time when they’re away.
+- The Rust server starts OpenCode when work needs it, keeps it running through a server restart, and parks it when idle.
+
+- The Rust server keeps live updates through a brief disconnect and queues SSH calls while Kuvo starts.
+
 - A conversation on another computer that's restarting, updating or off now shows its last messages, readable and scrollable, with one quiet line under it ("mini-local isn't answering · seen 5m", or "is updating"), instead of an empty page saying "It may be asleep or offline." or "Kuvo is restarting." You can still write: messages wait and go once it's back, and the conversation catches up by itself.
 - While a computer switches to a new Kuvo release, its bots and sessions keep their usual look, saying "Updating…", instead of turning grey. A computer that's quiet for under a minute is shown as live; "seen …" is only for one that's really off.
 - Local builds and tests generate the box bundles and route vectors from the checkout.

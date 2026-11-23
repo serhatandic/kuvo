@@ -1,0 +1,7 @@
+// Node's directory entry for `node --test protocol/conformance`.
+const area = process.env.KUVO_CONFORMANCE_AREA;
+if (!area || area === "resident") await import("./resident.test.mjs");
+if (!area || area === "two-boxes") await import("./two-boxes.test.mjs");
+if (!area || area === "holder") await import("./holder.test.mjs");
+if (!area || area === "compat") await import("./compat.test.mjs");
+if (!["resident", "two-boxes", "holder", "compat"].includes(area)) await import("./routes.test.mjs");

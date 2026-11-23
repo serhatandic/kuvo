@@ -10,9 +10,14 @@ use std::{
 pub(super) struct Owner {
     child: Child,
     status: Option<ExitStatus>,
+    leave_running: bool,
 }
 
 impl Owner {
+    pub(super) fn leave_running_on_drop(&mut self) {
+        self.leave_running = true;
+    }
+
     pub(super) fn status(&self) -> Option<ExitStatus> {
         self.status
     }
@@ -96,13 +101,13 @@ impl Owner {
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        if self.status.is_none() {
+        if !self.leave_running && self.status.is_none() {
             let _ = self.finish();
         }
     }
 }
 
-pub(super) fn spawn(spec: &Spawn) -> io::Result<ChildGroup> {
+pub(super) fn spawn(spec: &Spawn, _recovery_name: Option<&str>) -> io::Result<ChildGroup> {
     if !matches!(spec.executable, Executable::Native(_)) {
         return Err(invalid_path(spec.executable.path()));
     }
@@ -111,16 +116,17 @@ pub(super) fn spawn(spec: &Spawn) -> io::Result<ChildGroup> {
     if let Some(cwd) = &spec.cwd {
         command.current_dir(cwd);
     }
-    let (stdin, child_stdin) = match spec.stdin {
+    let (stdin, child_stdin) = match &spec.stdin {
         Stdio::Pipe => {
             let (read, write) = io::pipe()?;
             (Some(write), read.into())
         }
         Stdio::Null => (None, ChildStdio::null()),
         Stdio::Inherit => (None, ChildStdio::inherit()),
+        Stdio::File(file) => (None, file.try_clone()?.into()),
     };
-    let (stdout, child_stdout) = output(spec.stdout)?;
-    let (stderr, child_stderr) = output(spec.stderr)?;
+    let (stdout, child_stdout) = output(&spec.stdout)?;
+    let (stderr, child_stderr) = output(&spec.stderr)?;
     command
         .stdin(child_stdin)
         .stdout(child_stdout)
@@ -132,6 +138,7 @@ pub(super) fn spawn(spec: &Spawn) -> io::Result<ChildGroup> {
     let owner = Owner {
         child: command.spawn()?,
         status: None,
+        leave_running: false,
     };
     let pid = owner.child.id();
     // The process may have already exited; its unreaped record still holds the start stamp.
@@ -150,7 +157,7 @@ pub(super) fn spawn(spec: &Spawn) -> io::Result<ChildGroup> {
     })
 }
 
-fn output(mode: Stdio) -> io::Result<(Option<PipeReader>, ChildStdio)> {
+fn output(mode: &Stdio) -> io::Result<(Option<PipeReader>, ChildStdio)> {
     Ok(match mode {
         Stdio::Pipe => {
             let (read, write) = io::pipe()?;
@@ -158,6 +165,7 @@ fn output(mode: Stdio) -> io::Result<(Option<PipeReader>, ChildStdio)> {
         }
         Stdio::Null => (None, ChildStdio::null()),
         Stdio::Inherit => (None, ChildStdio::inherit()),
+        Stdio::File(file) => (None, file.try_clone()?.into()),
     })
 }
 
@@ -308,4 +316,104 @@ fn start_record(pid: u32) -> io::Result<Option<(String, bool)>> {
         format!("{}:{:06}", record.pbi_start_tvsec, record.pbi_start_tvusec),
         record.pbi_status != libc::SZOMB,
     )))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn executable(pid: u32) -> io::Result<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn executable(pid: u32) -> io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let pid = i32::try_from(pid).map_err(io::Error::other)?;
+    let mut path = [0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: the output buffer is writable for the advertised length.
+    let read = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+    if read <= 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let end = path
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(read as usize);
+    Ok(PathBuf::from(OsStr::from_bytes(&path[..end])))
+}
+
+pub(super) struct Adopted {
+    identity: ProcessIdentity,
+    #[cfg(target_os = "linux")]
+    pidfd: Option<std::os::fd::OwnedFd>,
+}
+
+impl Adopted {
+    pub(super) fn open(
+        identity: ProcessIdentity,
+        _recovery_name: Option<&str>,
+    ) -> io::Result<Option<Self>> {
+        #[cfg(target_os = "linux")]
+        let pidfd = match rustix::process::pidfd_open(
+            Pid::from_raw(identity.pid as i32).expect("validated PID"),
+            rustix::process::PidfdFlags::empty(),
+        ) {
+            Ok(fd) => Some(fd),
+            Err(rustix::io::Errno::NOSYS) => None,
+            Err(rustix::io::Errno::SRCH) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        Ok((identity.state() == ProcessState::Live).then_some(Self {
+            identity,
+            #[cfg(target_os = "linux")]
+            pidfd,
+        }))
+    }
+
+    pub(super) fn identity(&self) -> &ProcessIdentity {
+        &self.identity
+    }
+
+    fn signal(&self, signal: Signal) -> io::Result<()> {
+        match self.identity.state() {
+            ProcessState::Stale => return Ok(()),
+            ProcessState::Unknown => return Err(io::Error::other("engine identity unavailable")),
+            ProcessState::Live => {}
+        }
+        let pid = Pid::from_raw(self.identity.pid as i32).expect("validated PID");
+        #[cfg(target_os = "linux")]
+        let result = match &self.pidfd {
+            Some(fd) => rustix::process::pidfd_send_signal(fd, signal),
+            None => rustix::process::kill_process(pid, signal),
+        };
+        #[cfg(target_os = "macos")]
+        let result = rustix::process::kill_process(pid, signal);
+        match result {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn wait(&self, duration: Duration) -> bool {
+        let until = Instant::now() + duration;
+        loop {
+            if self.identity.state() == ProcessState::Stale {
+                return true;
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            thread::sleep(left.min(Duration::from_millis(25)));
+        }
+    }
+
+    pub(super) fn stop(&mut self, grace: Duration) -> io::Result<()> {
+        self.signal(Signal::TERM)?;
+        if !self.wait(grace) {
+            self.signal(Signal::KILL)?;
+            if !self.wait(Duration::from_secs(5)) {
+                return Err(io::Error::other("the adopted worker did not exit"));
+            }
+        }
+        Ok(())
+    }
 }
