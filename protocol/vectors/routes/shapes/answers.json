@@ -54,6 +54,9 @@
               },
               {
                "literal": "fullAccessOff"
+              },
+              {
+               "literal": "windows"
               }
              ]
             },
@@ -73,6 +76,9 @@
               },
               {
                "literal": "fullAccessOff"
+              },
+              {
+               "literal": "windows"
               }
              ]
             },
@@ -113,6 +119,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -128,6 +137,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -165,6 +177,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -180,6 +195,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -232,6 +250,9 @@
               },
               {
                "literal": "fullAccessOff"
+              },
+              {
+               "literal": "windows"
               }
              ]
             },
@@ -251,6 +272,9 @@
               },
               {
                "literal": "fullAccessOff"
+              },
+              {
+               "literal": "windows"
               }
              ]
             },
@@ -291,6 +315,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -306,6 +333,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -343,6 +373,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -358,6 +391,9 @@
                },
                {
                 "literal": "fullAccessOff"
+               },
+               {
+                "literal": "windows"
                }
               ]
              },
@@ -427,6 +463,9 @@
           },
           {
            "literal": "fullAccessOff"
+          },
+          {
+           "literal": "windows"
           }
          ]
         },
@@ -462,6 +501,9 @@
              },
              {
               "literal": "fullAccessOff"
+             },
+             {
+              "literal": "windows"
              }
             ]
            },
@@ -477,6 +519,9 @@
              },
              {
               "literal": "fullAccessOff"
+             },
+             {
+              "literal": "windows"
              }
             ]
            },
@@ -549,6 +594,9 @@
           },
           {
            "literal": "fullAccessOff"
+          },
+          {
+           "literal": "windows"
           }
          ]
         },
@@ -584,6 +632,9 @@
              },
              {
               "literal": "fullAccessOff"
+             },
+             {
+              "literal": "windows"
              }
             ]
            },
@@ -599,6 +650,9 @@
              },
              {
               "literal": "fullAccessOff"
+             },
+             {
+              "literal": "windows"
              }
             ]
            },
@@ -631,6 +685,9 @@
         },
         {
          "literal": "fullAccessOff"
+        },
+        {
+         "literal": "windows"
         }
        ]
       }
@@ -22912,6 +22969,9 @@
       "reason?": {
        "oneOf": [
         {
+         "literal": "windows"
+        },
+        {
          "literal": "kernel"
         },
         {
@@ -23027,6 +23087,9 @@
       "reason?": {
        "oneOf": [
         {
+         "literal": "windows"
+        },
+        {
          "literal": "kernel"
         },
         {
@@ -23141,6 +23204,9 @@
       "restart?": "bool",
       "reason?": {
        "oneOf": [
+        {
+         "literal": "windows"
+        },
         {
          "literal": "kernel"
         },
