@@ -1,124 +1,42 @@
-# Kuvo Code
+# Kuvo
 
-A native macOS harness for coding agents that works with any model. It runs the opencode engine (`@opencode/cli`), unmodified, as a private server, and is the interface around it: sessions, reviewing changes, a side panel with files, terminals and a browser the agent can use, and a usage tracker in the menu bar.
+Kuvo runs coding agents, with any model, on all of a user's computers. Every computer runs a box (`box/`: the link, the coding agents' bridge, shared code) around the opencode engine, unmodified. The desktop app (`gpui/`, Rust on GPUI) is a thin client of every box. macOS and Linux today; Windows (WSL2 and native) is being added. The Swift Mac app and the phone app are gone: Swift remains only in Kuvo Helper (`mac/helper/`), and `swift/KuvoLink` only holds the built `kuvo-link.js`.
 
-Strict rules are marked (strict): never bend them. Contributor docs are in `CONTRIBUTING.md`; longer notes for sessions are in `docs/`. `AGENTS.md` and `GEMINI.md` are links to this file, so Claude Code, Codex and Gemini sessions all read the same rules.
+Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rules marked (strict) never bend; the index below has the details.
 
-Kuvo Code 1.0 is the desktop app in `gpui/`. The box keeps its compatibility paths for installed 0.7.x clients.
+## Rules
 
-## The architecture: equal boxes, and clients (strict)
+- **A box decides, a client draws (strict).** All logic that isn't drawing goes in `box/`: never in a client, never only for this Mac. Logic already in a client: don't extend it; move it or list it. If something can't be on the box, ask first.
+- **Equal computers, one setup (strict).** Each box works with no client and talks to the others peer to peer through the relay; none is a hub. Lists merge across computers, rows name their computer, "Runs on" picks where work starts.
+- **Plain words.** Users read computer names, never "box".
+- **Updates:** one version per computer, prepared everywhere then switched together; never locked, nothing manual; mixed versions keep working together.
+- **UI drafts first (strict).** Before any new screen, control or visible change, draft two or three options (light and dark) with a recommendation; the user picks. Match the app's existing look and every state.
+- **GPT models (Codex sessions) never change UI** (views, layout, visible text, styling): that goes to Claude sessions.
+- **Tests (strict):** scenarios through real components; a bug fix starts with a test that fails on the old code; deterministic. Run only the tests for what you changed, no full suites. No AI reviews unless the user asks.
+- **Never kill by pattern (strict).** No `pkill`, `killall` or `pgrep … | kill`; kill only what you started, by PID.
+- **Footprint contained (strict).** Kuvo writes only in its own folders (`~/.kuvo-code` on a computer), gone when they're deleted; tests and demos use folders of their own.
+- **Built files are never hand-edited (strict):** `kuvo-link.js`, `kuvo-agents.js`, `kuvo-browser.js`, `BRIDGE_VERSION`, `KEEPER`, `answers.json`, `features.json`. A feature name is one line, in order, in `FEATURES`.
+- **Never push, tag or open a PR (strict).** Commit tested work to your branch; the lead merges and pushes on the user's word. No GitHub polling.
+- **Commits:** small, plain messages; no Co-Authored-By or AI lines; no personal paths or secrets (the repo will be open source).
+- **Changelog:** a line under Unreleased in `CHANGELOG.md` for anything people would notice.
+- **Brand:** ask the user before icons, logos, colors or taglines.
+- **The website is parked:** no `../kuvo-web` changes or docs branches until the user says go.
+- **No outside contributions:** issues only, never PRs.
 
-Start with [How Kuvo works](docs/architecture/how-kuvo-works.md). Every setup has
-one main computer for setup-wide saves. Each box owns and runs its own work.
+## Index
 
-Kuvo Code is a small distributed system. Build every feature for that system, never for the Mac alone.
-
-- **Every computer is an equal box, the Mac included**: the engine with its sessions, bots, coding agents, group chats, wake-ups and the agent's browser. Each box keeps its own settings and keys, and works with no client connected.
-- **Boxes talk peer to peer**, end to end encrypted through the relay (`protocol/PROTOCOL.md`, "Peers"). No box needs another to do its own work.
-- **Clients connect to boxes.** The desktop app is a client of every box, including this Mac's.
-- **So every feature lives on the box**: `box/` (the link in `src/link`, the coding agents' bridge in `src/agents`, shared code in `src/shared`). `scripts/build-box.sh` builds the link into `kuvo-link.js`; never edit that built file. Never build a feature only into the Mac app, only for this Mac's box, or only through the Mac's SSH connection. Where a box can't do something yet, say so plainly in the UI and your report; never quietly make the Mac a hub.
-- **Box code runs on macOS and Linux** (`IS_MAC` means the box beside the app, not the system). Prefer code that's the same on both; where they differ (file watching, processes, paths, the keeper, the shell, Keychain versus files), handle both in one place and test each. Check a box change on a Linux machine (a test folder of your own on devbox) before calling it done.
-- **Never bump or hand-edit what's worked out, so parallel branches merge cleanly** (CONTRIBUTING.md, "What branches don't edit by hand"): `BRIDGE_VERSION` is a hash `build-box.sh` writes; a new feature name is one line, in order, in `FEATURES` (`src/shared/features.ts`); `answers.json`, `routes/features.json`, `kuvo-link.js`, `kuvo-agents.js` and `kuvo-browser.js` (with its `KEEPER` hash) are written by `route-shapes.sh`, `build-box.sh`, `build-agents.sh` and `build-browser.sh`.
-
-### Logic goes in the box, never in a client (strict)
-
-All new code that isn't drawing goes in `box/`, with no exceptions unless the user agrees. (In November 2026 a review found 32 to 45 hours of logic to move out of the Mac app, and features that failed whenever the app was closed.) Keep clients thin enough that adding a machine, or a Windows or Linux client, is almost trivial; between two working designs, pick the one a new client would rewrite less of.
-
-- **A box decides, a client draws**: a client reads the box's state, changes it through a route, and draws the result. Sessions, agents, accounts, models, settings, files, git, processes, the network and what's allowed belong in the box, on Macs and Linux alike (say plainly, with the reason, what can't apply on Linux).
-- **The box states facts** for clients to present. Document those facts in `protocol/PROTOCOL.md` so another client can use them.
-- **Only this stays in a client:** drawing and layout, animation, window and selection state, the side panel's browser, and what only an installed app can do (updating itself, login items, Mac notifications). The keeper starts and watches the box, and takes on no features.
-- **Never add** a route only the app answers (`toApp` in `box/src/link/mac/relay.ts`), a copy of box logic in a client (or in `kuvo-browser.js` and the keeper side by side), or client logic "for now", "until the box can", or because the app is quicker to change.
-- **Logic already in a client:** don't extend it. Move it to the box if that's small; otherwise make the smallest fix and list it in your report as left to move.
-- **If something truly can't be on the box,** say why before building it, and the user decides. Plans and briefs name where each new piece of logic lives.
-
-## UI and UX come first (strict)
-
-What people see and touch matters most. Never trade its quality away or let the machinery crowd it out.
-
-- Design the UI with as much care as the internals, in the same task; no sketch to polish later.
-- **Drafts first, always:** before building any new screen, control or visible change, draft two or three options (light and dark) with your recommendation, and let the user pick, even when one seems obvious. Meanwhile build only what doesn't depend on the choice. A bug fix that restores an existing design needs none.
-- **Look at how the best do it** (Codex, Claude Code, Cursor, GitHub, Linear, Apple's apps) and bring what you borrow and where we differ, and why. Where they've settled a behavior (what a mode does, what asks and what's refused, how a common control works), match it, showing ours, theirs and what we'll do side by side; doing it differently is the user's call, never a default.
-- Match how the app already draws the same kind of thing (`gpui/kuvo_ui` and the related views in `gpui/kuvo`): materials, spacing, wording, states, motion.
-- Work through every state: empty, loading, failed, long text, many items, a narrow window, light and dark, larger text, VoiceOver. See it yourself in a demo copy where you can; if you couldn't, say so (it doesn't hold up a merge).
-- When the machinery makes the right UI hard, change the machinery.
-- **The right panel is only for common tools** (browser, terminals, files, Changes). A feature's own view goes in a popover or sheet on the conversation, or a page in Settings.
-
-## Tests: what users rely on (strict)
-
-With no AI reviews, tests are the only automated guard. **Read `docs/testing.md` before writing a test**: what to test, how to prove a test bites, and what to avoid.
-
-- **Test scenarios, not the code's insides**: assert what the app shows, keeps or does, so a refactor that breaks it for users fails.
-- **Use the real components.** Stub only what's outside or unpredictable (the engine's HTTP API, SSH, the network). Never test that a stub returns what it was given.
-- **A bug fix starts with a test that fails on the old code** for the right reason. Fix the cause, never loosen a test.
-- **Go the way the real thing goes**: send events through the window as AppKit routes them, not straight to our handler.
-- **Reproduce a user's bug the way they saw it** where you can (demo copy, their logger or steps). A fix to a nearby test isn't a fix to their bug. Until the user confirms it in their own copy, report it as merged and not yet seen, not as fixed.
-- **Deterministic:** no sleeps, timeouts, retries or device clocks. Fix a flaky test, never retry it. Each test runs alone, in folders of its own.
-- **Skip low-value tests** (trivial getters, wiring, edge cases no one hits). A visual nitpick gets a look before and after, not a UI test.
-- **Run tests locally through `scripts/heavy.sh`** (CONTRIBUTING.md, Tests). Use `scripts/cargo-locked.sh` for Rust and `scripts/test-box.sh [box|bridge|all] [filter]` for the box and bridge. Run your area and what uses it. No full suite unless the user asks. CI is paused. Sessions never push and never run `scripts/ci-branch.sh`.
-- Never drive the Mac app's window from tests: it takes over the user's keyboard and mouse.
-- From `gpui/`, use `../scripts/cargo-locked.sh` for Rust builds, tests, checks, Clippy and shots.
-  It takes the single Rust slot across worktrees. Keep targets per checkout (see
-  `.claude/notes/rust-lane.md`).
-
-## Never kill by pattern (strict)
-
-On 2026-11-07 one `pkill` took down two other sessions, the box's link, Kuvo Code's SSH connections and the user's browser tabs.
-
-- Never `pkill`, `killall`, `pgrep … | xargs kill` or `kill $(pgrep …)`, directly or through a script, tool or subagent, however narrow the pattern.
-- Kill only what you started, by its PID (`$!`, a pid file) or a process group you created, never the one you were started in. `scripts/heavy.sh` stops what its job started. Leave anything else running and report it.
-- On macOS every option goes before the pattern, in `pgrep` too.
-
-## Keep the footprint contained (strict)
-
-Kuvo Code never spreads files across the user's Mac or machines: everything is packaged, kept in its own folders, organized inside them, and gone when they're deleted.
-
-- **On the Mac**, the active box lives in `~/.kuvo-code`. The app uses its own Application Support, Caches, Logs, WebKit and HTTPStorages folders, preferences and Keychain items. The old `~/Library/Application Support/run.kuvo.code` box paths are retained for 0.7 import and compatibility. Keep temporary files in the app's temporary folder. **On a machine**, only `~/.kuvo-code`: no system packages, `sudo`, dotfiles, `/tmp` leftovers, crontabs or services, beyond the listed exceptions. Tests and demo copies use folders of their own and clean up.
-- Anything new keeps `uninstall.md` and `privacy.md` (kuvo-web) complete. After a change, list what's new in the machine's home folder and `/tmp`.
-- The exceptions (SSH sockets, the `@reboot` line and login agent, the coding agents' own installers) and the details: `docs/footprint.md`.
-
-## Docs must match the code (strict)
-
-A change that affects what users see, run or rely on isn't done until the docs in `../kuvo-web` match it, however small.
-
-- Update them in the same task. Before reporting, check the pages mapped for the files you touched (`docs/docs-map.md`) and say which you updated, or that none needed it.
-- Document only what you confirmed in the code; where they disagree, the code wins: fix the docs and say so.
-- If `../kuvo-web` isn't there, stop and tell the user.
-- Commit kuvo-web separately, saying what changed for users; it goes to its local main when the work does. Pushing it deploys kuvo.run: only when the user says so.
-- Set `updated:` to today on every page you change. Keep docs short: what people do and see, no internals, exact limits or tables the app already labels.
-- If a UI change makes a screenshot visibly wrong, tell the user it needs recapturing (`docs/docs-map.md`, Screenshots).
-
-## The changelog
-
-If people would notice a change, add a line to `CHANGELOG.md` under Unreleased, in plain words about what they'll see. Releases and betas come only from tags, through the pipeline, on the user's word: `docs/releases.md`.
-
-## Brand decisions
-
-Ask the user before anything brand-related: icons, logos and marks, favicons, brand or accent colors, taglines and headlines. Render options and let them pick; never apply one "for now".
-
-## Upstreams
-
-The engine, integrations' servers, copied code and packages are kept up to date: the lead (Kuvo Foreman) checks them every week. Sessions don't check them at their start; update one only when your task needs it, as `docs/upstreams.md` says. Each update is its own commit.
-
-## How sessions work
-
-- **Report to the lead** (Kuvo Foreman) or the user. Never wait on a question box: it holds the whole session.
-- **When the user isn't around:** keep a list of every decision that needs them (design, brand, wording, kuvo-web pushes, anything needing a prompt or the user at the Mac), with what you recommend and why. Build what doesn't depend on the answers, so their choices come last. Never build the "recommended side" of a waiting decision when it costs the user anything (an ask, a refusal, an extra step, a limit, a change to what they already use): build around it and say it isn't built. Hand the whole list over at once, with paths to the mocks.
-- **Subagents: two at a time** per session, workers and their own subagents counted. Start another only when one finishes.
-- **No AI reviews unless the user asks for one** (since 2026-11-21). Sessions build; the tests are the guard and the user tests by hand. Don't start `reviewer` subagents or review passes on your own. Check your own client changes against "Logic goes in the box" before committing: logic in the wrong place is a bug that blocks the merge.
-- **Small fixes land fast**, with the check that proves them (for a bug, the test that fails on the old code) and no ceremony beyond that; the strict rules still hold. Bigger work keeps the same care to the end: read before changing, test, look at the UI, check the docs and changelog. If you're skimming, guessing, or about to report what you haven't checked, stop and do it properly; if the context is too full, say so and suggest a fresh session. Never lower the bar.
-- **Fresh session at each phase:** write a handover note (done, open, decisions) and ask the lead or the user for a fresh session.
-- **Check against the user's goal, not only the spec** (for agents: working on their own while the user is away). Anything that gets in its way goes to the top of your report.
-
-## Go easy on GitHub (strict)
-
-On 2026-10-28 GitHub's abuse checks hid the user's account, likely from many sessions' automated traffic.
-
-- **Sessions never push** (the user: "don't push unless I ask"). Commit finished, tested work to your branch, merged with main locally, and tell the lead it's ready. Only the lead pushes, when the user asks, once per repo, and checks CI once after.
-- **No polling** `gh run`, `gh api`, `gh pr` or `git fetch`. **No GitHub writes** beyond the task (issues, labels, releases, tags, settings). **One account**: never another account or token.
-
-## Commits
-
-- Small, logical commits with plain messages. Never `Co-Authored-By` or any AI attribution.
-- This repo will be open source: check for personal paths, secrets and machine data before committing.
-- **Carry work to main in checkpoints:** a finished piece that passes its area's tests (what uses it included) on its final tip is merged into local main, not left on a branch; the user takes merged work in batches with `scripts/try-desktop-update.sh`. Main needn't be release ready.
-- **Delete a branch once it's merged**, and its worktree (`git branch -d`); on origin only with a push the user asked for. Never delete an unmerged branch or one someone is still on.
+- `docs/architecture/how-kuvo-works.md`: how the boxes work (main computer, updates, ownership, agents, how clients connect) and where new code goes. Read first.
+- `docs/architecture/message-delivery.md`: sending without waiting on a box.
+- `docs/architecture/one-client-process.md`: one client process per computer.
+- `docs/architecture/small-computer.md`: the resource budget; what starts on demand.
+- `docs/architecture/agent-accounts.md`: coding-agent sign-ins and accounts.
+- `docs/architecture/windows.md`: the Windows plan (WSL2 and native).
+- `docs/working-here.md`: how sessions work (reporting, the user away, subagents, handovers), designing UI, GitHub.
+- `docs/testing.md`: read before writing a test; how to run them, Linux (lokum) and Windows checks.
+- `.claude/notes/rust-lane.md`: Rust builds through `scripts/cargo-locked.sh`.
+- `docs/footprint.md`: what Kuvo may leave on a computer, and the exceptions.
+- `docs/releases.md`: releases only from tags, through the pipeline, on the user's word.
+- `docs/upstreams.md`: the engine and other upstreams; the lead checks them weekly.
+- `docs/docs-map.md`: which website page each change touches (parked).
+- `CONTRIBUTING.md`: setup, builds, route scenarios, what branches don't edit by hand, compatibility markers.
+- `protocol/PROTOCOL.md`: how boxes and clients talk; document what a box tells clients here.
