@@ -20,7 +20,7 @@ use kuvo_wire::{
     keys::encode,
 };
 
-use super::{Authority, Error, Manifest, RestorePoint, Result, Source, Standalone};
+use super::{Authority, Error, Manifest, ReceiptOwner, RestorePoint, Result, Source, Standalone};
 
 pub(super) struct Boundary {
     files: Files,
@@ -251,6 +251,64 @@ impl Authority for Boundary {
         Ok(super::inventory::references(name, &self.roots)
             .iter()
             .all(|(scope, id)| self.can_recover(*scope, id)))
+    }
+
+    fn receipt_here(
+        &self,
+        setup: &str,
+        owner: &ReceiptOwner,
+        archive: Option<&Manifest>,
+    ) -> Result<bool> {
+        use kuvo_peers::directory::RecordScope::{Group, Session};
+        let has_provenance = archive
+            .and_then(|manifest| {
+                manifest
+                    .paired
+                    .then_some(manifest.origin.as_deref())
+                    .flatten()
+            })
+            .is_none_or(|origin| self.replacement_is_here(origin));
+        let in_setup = self.local.setup.as_deref() == Some(setup);
+        let may_use = |scope, id: &Option<String>| {
+            id.as_deref().is_none_or(|id| self.can_recover(scope, id)) && has_provenance
+        };
+        Ok(match owner {
+            ReceiptOwner::Issuer(issuer) => in_setup && self.replacement_is_here(issuer),
+            ReceiptOwner::ReplayFence(session) => {
+                in_setup
+                    && if archive.is_some() {
+                        self.can_recover(Session, session) && has_provenance
+                    } else {
+                        self.fences
+                            .owner(session)
+                            .is_none_or(|owner| self.replacement_is_here(owner))
+                    }
+            }
+            ReceiptOwner::Session(id) => may_use(Session, id),
+            ReceiptOwner::Group(id) => may_use(Group, id),
+            ReceiptOwner::Queue { item, queue } => {
+                let available = item.as_deref().is_none_or(|item| self.permits_id(item));
+                available
+                    && match queue.as_deref() {
+                        Some("usr_you") => true,
+                        Some(queue) if queue.starts_with("ses_") => {
+                            self.can_recover(Session, queue) && has_provenance
+                        }
+                        Some(queue) if queue.starts_with("grp_") => {
+                            self.can_recover(Group, queue) && has_provenance
+                        }
+                        _ => false,
+                    }
+            }
+            ReceiptOwner::Primary => self
+                .link
+                .as_ref()
+                .and_then(|link| link.setup.as_ref())
+                .is_none_or(|current| {
+                    self.local.origin.as_deref() == Some(current.position.primary.as_str())
+                }),
+            ReceiptOwner::Client => false,
+        })
     }
 
     fn insight_origins(

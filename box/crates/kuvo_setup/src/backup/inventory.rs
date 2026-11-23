@@ -476,6 +476,15 @@ pub(super) fn capture(
         if !authority.capture_entry(&name, &path)? {
             continue;
         }
+        use super::receipts::{Journal, ReceiptOwner};
+        match Journal::capture(&name, &path)? {
+            Journal::Origin => continue,
+            Journal::Addressed {
+                setup,
+                owner: Some(owner @ (ReceiptOwner::Issuer(_) | ReceiptOwner::ReplayFence(_))),
+            } if !authority.receipt_here(&setup, &owner, None)? => continue,
+            _ => (),
+        }
         let temp = scratch.join(format!("snapshot-{}", entries.len()));
         let contents = if name == "home/box/approval.json" {
             Contents::Bytes(serde_json::to_vec(&portable_approval(
@@ -520,6 +529,57 @@ pub(super) fn capture(
         entries.push(Entry { name, contents });
     }
     Ok(entries)
+}
+
+pub(super) fn bind_attachments(
+    roots: &Roots,
+    authority: &impl Authority,
+    selected: &BTreeMap<String, String>,
+    entries: &mut [Entry],
+) -> Result<()> {
+    let mut unchecked = BTreeMap::new();
+    for (name, digest) in selected {
+        let Some((root, relative)) = name.split_once('/') else {
+            return Err(Error::Message("Invalid backup entry name."));
+        };
+        let file = roots
+            .get(root)
+            .filter(|_| super::archive::valid_name(name))
+            .ok_or(Error::Message("Invalid backup entry name."))?
+            .join(relative);
+        if authority.capture_entry(name, &file)? {
+            unchecked.insert(name.as_str(), digest);
+        }
+    }
+    for entry in entries {
+        let Contents::File { digest, .. } = &mut entry.contents else {
+            continue;
+        };
+        let Some(expected) = unchecked.remove(entry.name.as_str()) else {
+            if storage(&entry.name)
+                .is_some_and(|(data, _)| matches!(data.kind, "sessionFiles" | "queueFiles"))
+            {
+                return Err(Error::Detail(format!(
+                    "Attachment added during export: {}.",
+                    entry.name
+                )));
+            }
+            continue;
+        };
+        if digest.as_ref().is_some_and(|kept| kept != expected) {
+            return Err(Error::Detail(format!(
+                "Work Queue attachment digest differs from its record: {}.",
+                entry.name
+            )));
+        }
+        *digest = Some(expected.clone());
+    }
+    if let Some((name, _)) = unchecked.first_key_value() {
+        return Err(Error::Detail(format!(
+            "Attachment omitted during export: {name}."
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn layout(home: &Home) -> Result<u32> {

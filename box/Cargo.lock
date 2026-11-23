@@ -1023,6 +1023,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror",
+ "unicode-normalization",
  "url",
 ]
 
@@ -1130,6 +1131,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "unicode-normalization",

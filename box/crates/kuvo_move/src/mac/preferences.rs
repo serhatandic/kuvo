@@ -24,10 +24,37 @@ pub(super) fn preference_path(source: &Path) -> Result<std::path::PathBuf, Error
 }
 
 /// Project app-owned preferences into the same files the box opens at startup.
-pub(super) fn take(source: &Path, stage: &Disk, account: &Path, home: &Path) -> Result<(), Error> {
+pub(super) fn take(
+    source: &Path,
+    stage: &Disk,
+    account: &Path,
+    home: &Path,
+) -> Result<Vec<String>, Error> {
+    let given = read(source)?;
+    projects(source, stage, &given)?;
+    worktrees(stage, &given)?;
+    machines(stage, &given)?;
+    let mut dropped = Vec::new();
+    engine_settings(stage, &given, account, home, &mut dropped)?;
+    box_preferences(stage, &given)?;
+    mac_link(stage, &given, home)?;
+    personalities(source, stage)?;
+    dropped.extend(super::work::take(source, stage, &given)?);
+    match super::letters::upgrade(source, stage)? {
+        0 => {}
+        1 => dropped.push("A message one of your agents sent to an agent on a machine that was away wasn't delivered, and isn't brought along.".into()),
+        count => dropped.push(format!("{count} messages one of your agents sent to an agent on a machine that was away weren't delivered, and aren't brought along.")),
+    }
+    super::usage::take(stage, &given)?;
+    super::notices::append(source, &given, &mut dropped)?;
+    Ok(dropped)
+}
+
+pub(super) fn read(source: &Path) -> Result<Fields, Error> {
     let path = preference_path(source)?;
-    let given = files::read(&path)?
-        .map(|bytes| {
+    let given = files::read(&path)
+        .map_err(|error| Error::AppPreferences(error.into()))?
+        .map(|bytes| -> Result<Fields, Error> {
             let pref =
                 plist::Value::from_reader(Cursor::new(bytes)).map_err(std::io::Error::other)?;
             as_json(pref)?
@@ -35,15 +62,10 @@ pub(super) fn take(source: &Path, stage: &Disk, account: &Path, home: &Path) -> 
                 .cloned()
                 .ok_or_else(|| invalid("The app's property list must hold a dictionary."))
         })
-        .transpose()?
+        .transpose()
+        .map_err(|error| Error::AppPreferences(error.into()))?
         .unwrap_or_default();
-    projects(source, stage, &given)?;
-    worktrees(stage, &given)?;
-    machines(stage, &given)?;
-    engine_settings(stage, &given, account, home)?;
-    box_preferences(stage, &given)?;
-    mac_link(stage, &given, home)?;
-    personalities(source, stage)
+    Ok(given)
 }
 
 fn mac_link(stage: &Disk, prefs: &Fields, home: &Path) -> Result<(), Error> {
@@ -360,7 +382,13 @@ fn machines(stage: &Disk, prefs: &Fields) -> Result<(), Error> {
     Ok(())
 }
 
-fn engine_settings(stage: &Disk, prefs: &Fields, account: &Path, home: &Path) -> Result<(), Error> {
+fn engine_settings(
+    stage: &Disk,
+    prefs: &Fields,
+    account: &Path,
+    home: &Path,
+    dropped: &mut Vec<String>,
+) -> Result<(), Error> {
     let settings = stage.path("config/opencode/opencode.json")?;
     let before = files::read(&settings)?.unwrap_or_default();
     let Some(fields) = (if before.iter().all(u8::is_ascii_whitespace) {
@@ -368,7 +396,17 @@ fn engine_settings(stage: &Disk, prefs: &Fields, account: &Path, home: &Path) ->
     } else {
         serde_json::from_slice::<Fields>(&before).ok()
     }) else {
-        // An uneditable engine file stays as the user kept it.
+        if prefs.get("git.branchPrefix").is_some_and(Value::is_string)
+            || ["git.commitInstructions", "git.pullRequestInstructions"]
+                .iter()
+                .filter_map(|key| prefs.get(*key).and_then(Value::as_str))
+                .any(|value| !value.trim().is_empty())
+        {
+            dropped.push("Your Git settings (the branch prefix, and what commits and pull requests are told) weren't brought along, because the engine's settings file couldn't be read. Set them again in Settings › Git.".into());
+        }
+        if String::from_utf8_lossy(&before).contains("KUVO_KEY_") {
+            dropped.push("Your integrations' keys are safe, but the engine's settings file couldn't be read to point at them: add each integration's key again in Settings › Integrations.".into());
+        }
         return Ok(());
     };
     let shown = home

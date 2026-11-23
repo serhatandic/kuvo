@@ -5,6 +5,7 @@ use kuvo_store::{files, sqlite};
 use rusqlite::Connection;
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::mpsc,
@@ -46,7 +47,70 @@ pub(super) fn databases(data: &Path) -> Result<Vec<PathBuf>, Error> {
             databases.push(entry.path());
         }
     }
+    databases.sort();
     Ok(databases)
+}
+
+/// Probe the historical schema without letting SQLite open the app's live
+/// database or create sidecars beside it.
+pub(super) fn admit_schema(source: &Path, work: &Path) -> Result<(), Error> {
+    let databases = databases(&source.join("opencode/data"))?;
+    if databases.is_empty() {
+        return Ok(());
+    }
+    let scratch = tempfile::Builder::new()
+        .prefix("plan-database-")
+        .tempdir_in(work)?;
+    for original in databases {
+        let name = original.file_name().expect("database entry has a name");
+        let clone = scratch.path().join(name);
+        let read_mark = || -> Result<Option<String>, Error> {
+            files::clone_mac_entry(&original, &clone, false)?;
+            for suffix in ["-wal", "-shm"] {
+                let with_suffix = |path: &Path| {
+                    let mut sidecar = OsString::from(path);
+                    sidecar.push(suffix);
+                    PathBuf::from(sidecar)
+                };
+                let from = with_suffix(&original);
+                if metadata(&from)?.is_some() {
+                    files::clone_mac_entry(&from, &with_suffix(&clone), false)?;
+                }
+            }
+            let db = sqlite::open_index(&clone, Duration::from_secs(3))?;
+            let has_migration: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'migration')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !has_migration {
+                let has_tables: bool = db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                return Ok(has_tables.then(|| "unknown".into()));
+            }
+            match schema(&db)? {
+                Some((n, last)) if (n, last.as_str()) != OLD && (n, last.as_str()) != PINNED => {
+                    let last = if last.is_empty() { "null" } else { &last };
+                    Ok(Some(format!("{n} {last}")))
+                }
+                _ => Ok(None),
+            }
+        };
+        let mark = read_mark().map_err(|error| {
+            invalid(&format!(
+                "Your sessions couldn't be read ({error}). Try again."
+            ))
+        })?;
+        if let Some(mark) = mark {
+            return Err(invalid(&format!(
+                "Your sessions were last used by a version of Kuvo Code that this one doesn't know how to bring along ({mark}). Nothing was changed. Update Kuvo if a newer version is out, then try again."
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn migrate(engine: &Path, data: &Path, scratch: &Path) -> Result<u64, Error> {

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::receipts::{Journal as Evidence, ReceiptOwner};
 use super::{
     Error, Manifest, PointId, RestorePoint, Result, Source, archive, artifacts,
     attachments::{Addresses, Format},
@@ -40,6 +41,14 @@ pub trait Authority {
     }
     fn restore_entry(&self, _manifest: &Manifest, _name: &str, _file: &Path) -> Result<bool> {
         Ok(true)
+    }
+    fn receipt_here(
+        &self,
+        _setup: &str,
+        _owner: &ReceiptOwner,
+        _archive: Option<&Manifest>,
+    ) -> Result<bool> {
+        Ok(false)
     }
     fn insight_origins(&self, _manifest: &Manifest) -> Result<Option<InsightOrigins>> {
         Ok(None)
@@ -71,6 +80,14 @@ impl<A: Authority + ?Sized> Authority for &A {
     }
     fn restore_entry(&self, manifest: &Manifest, name: &str, file: &Path) -> Result<bool> {
         (**self).restore_entry(manifest, name, file)
+    }
+    fn receipt_here(
+        &self,
+        setup: &str,
+        owner: &ReceiptOwner,
+        archive: Option<&Manifest>,
+    ) -> Result<bool> {
+        (**self).receipt_here(setup, owner, archive)
     }
     fn recover_queue(&self, manifest: &Manifest, queue: &str, id: &str) -> Result<bool> {
         (**self).recover_queue(manifest, queue, id)
@@ -129,6 +146,25 @@ impl Authority for Standalone {
             ));
         }
         Ok(())
+    }
+
+    fn receipt_here(
+        &self,
+        setup: &str,
+        owner: &ReceiptOwner,
+        _: Option<&Manifest>,
+    ) -> Result<bool> {
+        Ok(match owner {
+            ReceiptOwner::Issuer(issuer) => {
+                self.setup.as_deref() == Some(setup) && self.origin.as_deref() == Some(issuer)
+            }
+            ReceiptOwner::ReplayFence(_) => self.setup.as_deref() == Some(setup),
+            ReceiptOwner::Client => false,
+            ReceiptOwner::Queue { queue, .. } => queue.as_deref().is_some_and(|queue| {
+                queue == "usr_you" || queue.starts_with("ses_") || queue.starts_with("grp_")
+            }),
+            _ => true,
+        })
     }
 }
 
@@ -453,6 +489,7 @@ pub(super) fn restore(
     let mut pauses = BTreeSet::new();
     let mut attachments = BTreeMap::new();
     let mut ownership = Vec::new();
+    let mut receipts = Vec::new();
     let engine_fences = authority.fenced_sessions(manifest)?;
     let attachment_roots = entries
         .get("meta/attachment-roots.json")
@@ -527,6 +564,31 @@ pub(super) fn restore(
             continue;
         }
         let file = entries[&name].clone();
+        match Evidence::restore(&name, &file)? {
+            Evidence::Origin => continue,
+            Evidence::Addressed { setup, owner } => {
+                let permitted = if manifest.setup.as_deref() != Some(setup.as_str()) {
+                    false
+                } else if let Some(owner) = owner {
+                    let allowed = authority.receipt_here(&setup, &owner, Some(manifest))?;
+                    receipts.push((setup, owner, allowed));
+                    allowed
+                } else {
+                    true
+                };
+                if !permitted {
+                    result.held.push(name.clone());
+                    placements.push(Placement {
+                        to: output(&recovery, &name)?,
+                        entry: name,
+                        from: file,
+                        engine: false,
+                    });
+                    continue;
+                }
+            }
+            Evidence::Opaque => (),
+        }
         let (root, rest) = name.split_once('/').expect("validated entry");
         let (kind, policy, snapshot) = storage(&name).map_or(
             ("", Restore::NeedsFreshApproval, Snapshot::Bytes),
@@ -853,6 +915,13 @@ pub(super) fn restore(
     authority.authorize_restore(manifest)?;
     for (name, file, allowed) in ownership {
         if authority.restore_entry(manifest, &name, &file)? != allowed {
+            return Err(Error::Message(
+                "Ownership changed during restore. Verify the replacement again.",
+            ));
+        }
+    }
+    for (setup, owner, allowed) in receipts {
+        if authority.receipt_here(&setup, &owner, Some(manifest))? != allowed {
             return Err(Error::Message(
                 "Ownership changed during restore. Verify the replacement again.",
             ));

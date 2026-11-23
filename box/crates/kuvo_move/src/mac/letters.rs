@@ -33,16 +33,11 @@ pub(super) fn upgrade(source: &Path, staging: &Disk) -> Result<usize, Error> {
     .map_err(std::io::Error::other)?;
     let waiting = read_list(&source.join("agent-messages.json"))?;
     let mailed = read_list(&source.join("agent-letters.json"))?;
-    let seen = json_at::<Value>(&source.join("agent-letters-seen.json"))?
-        .map(|value| LEGACY.decode(value).map(|record| record.fields))
-        .transpose()?;
+    let seen = read_object(&source.join("agent-letters-seen.json"))?;
     if waiting.is_empty() && mailed.is_empty() && seen.is_none() {
         return Ok(0);
     }
-    let hosts = json_at::<Value>(&source.join("phone-link.json"))?
-        .map(|value| LEGACY.decode(value).map(|record| record.fields))
-        .transpose()?
-        .unwrap_or_default();
+    let hosts = read_object(&source.join("phone-link.json"))?.unwrap_or_default();
     let machines = hosts.get("machines").and_then(Value::as_object);
     let mut dropped = 0;
     for (entries, pending) in [(mailed, false), (waiting, true)] {
@@ -108,7 +103,7 @@ pub(super) fn upgrade(source: &Path, staging: &Disk) -> Result<usize, Error> {
 
     if let Some(seen) = seen {
         let file = staging.path("run/letters-seen.json")?;
-        let existing: Map<String, Value> = json_at(&file)?.unwrap_or_default();
+        let existing: Map<String, Value> = json_at(&file).ok().flatten().unwrap_or_default();
         let mut marks = Map::new();
         for (id, at) in existing.into_iter().chain(seen) {
             if letter_id(&id)
@@ -136,12 +131,23 @@ fn letter_id(id: &str) -> bool {
 }
 
 fn read_list(file: &Path) -> Result<Vec<Value>, Error> {
-    match json_at::<Value>(file)? {
+    match json_at::<Value>(file).ok().flatten() {
         Some(value @ Value::Array(_)) => Ok(read_additive_list("Legacy Mac import list", value)?),
         Some(value @ Value::Object(_)) => {
             let _ = LEGACY.decode(value)?;
             Ok(Vec::new())
         }
         _ => Ok(Vec::new()),
+    }
+}
+
+fn read_object(file: &Path) -> Result<Option<Map<String, Value>>, Error> {
+    match json_at::<Value>(file).ok().flatten() {
+        Some(value @ Value::Object(_)) => Ok(Some(LEGACY.decode(value)?.fields)),
+        Some(value @ Value::Array(_)) => {
+            let _ = read_additive_list("Legacy Mac import list", value)?;
+            Ok(None)
+        }
+        _ => Ok(None),
     }
 }

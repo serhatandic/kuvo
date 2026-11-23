@@ -126,6 +126,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &mut routes,
         kuvo_services::files::Places {
             home: account.clone(),
+            box_home: home.to_owned(),
             platform: kuvo_os::platform::Platform::current(),
         },
     );
@@ -148,6 +149,7 @@ pub async fn run(home: &Path) -> Result<(), Box<dyn std::error::Error>> {
         account,
         setup.handle(),
         backup_mail,
+        None, // Row 6.2 supplies the resident vault holder.
     );
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
