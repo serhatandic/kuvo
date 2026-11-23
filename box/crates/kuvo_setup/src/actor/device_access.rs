@@ -1,7 +1,9 @@
 //! Managed device mutations use the signed membership writer on the current main.
 //! Peer routes can call this adapter after authenticating their caller.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
+
+use kuvo_peers::devices::{self, DeviceChange, DeviceFuture, DeviceRoster, ManagedDevices};
 
 use hmac::{Hmac, Mac};
 use kuvo_server::{Caller, LocalOrigin, Transport};
@@ -40,6 +42,101 @@ pub struct ManagedDeviceGrant {
 pub struct ManagedDeviceSave {
     pub pairing: Option<String>,
     pub receipt: Option<Receipt>,
+}
+
+impl ManagedDevices for SetupHandle {
+    fn device_roster(&self) -> Arc<DeviceRoster> {
+        self.views.borrow().access.devices.clone()
+    }
+
+    fn permits_pairing(&self) -> bool {
+        self.views.borrow().access.permits_pairing
+    }
+
+    fn change<'a>(&'a self, caller: &'a Caller, change: DeviceChange) -> DeviceFuture<'a> {
+        Box::pin(async move {
+            let removing = matches!(change, DeviceChange::Revoke(_));
+            let main = {
+                let view = self.views.borrow();
+                if !removing && view.access.disabled {
+                    return Err(devices::Error::Disabled);
+                }
+                (view.setup["you"]["role"] == "member")
+                    .then(|| view.setup["primary"]["name"].as_str().map(str::to_owned))
+                    .flatten()
+            };
+            let change = match change {
+                DeviceChange::PairDesktop { key, name } => {
+                    ManagedDeviceChange::PairDesktop { key, name }
+                }
+                DeviceChange::Revoke(grants) => ManagedDeviceChange::Revoke {
+                    grants: grants
+                        .into_iter()
+                        .map(|grant| ManagedDeviceGrant {
+                            key: grant.key,
+                            pairing: grant.pairing,
+                        })
+                        .collect(),
+                },
+            };
+            self.change_devices(caller, None, change)
+                .await
+                .map(|saved| saved.pairing)
+                .map_err(|error| match error {
+                    Error::DeviceRemoved => devices::Error::Removed,
+                    Error::Capacity => devices::Error::Full,
+                    Error::Fenced if !removing && main.is_some() => devices::Error::WaitingForMain(
+                        format!("{} isn't answering. This app reaches your other computers once it does.", main.expect("member's main")),
+                    ),
+                    Error::Invalid(_) if removing => devices::Error::InvalidRemoval,
+                    Error::Invalid(_) => devices::Error::InvalidDevice,
+                    other => devices::Error::Authority(other.to_string()),
+                })
+        })
+    }
+}
+
+/// Project the accepted membership for the existing device route. Added dates come from the
+/// local compatibility copy when a signed grant has no date of its own.
+pub(super) fn device_roster(
+    link: &crate::model::Link,
+    roster: &crate::model::Membership,
+    own: &str,
+) -> DeviceRoster {
+    let allowed = link.grants(roster, own);
+    let devices = roster
+        .devices()
+        .filter_map(|raw| {
+            let mut device = serde_json::from_value::<devices::Device>(raw.clone()).ok()?;
+            let key = decode_exact::<32>(&device.key)?;
+            if allowed.get(&key)?.id != device.pairing {
+                return None;
+            }
+            if device.added.is_none() {
+                device.added = link
+                    .extra
+                    .get("phones")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .find(|old| matches_grant(old, &device.key, &device.pairing))
+                    .and_then(|old| old.get("added"))
+                    .and_then(Value::as_number)
+                    .cloned();
+            }
+            Some(device)
+        })
+        .collect();
+    let removed = roster
+        .extra
+        .get("devices")
+        .and_then(|value| value.get("removed"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|raw| serde_json::from_value::<devices::Revocation>(raw.clone()).ok())
+        .collect();
+    DeviceRoster { devices, removed }
 }
 
 impl SetupHandle {
@@ -289,11 +386,8 @@ impl Owner {
             return Err(Error::Conflict);
         }
         let Some(receipt) = saved.receipt else {
-            return if pending.pair {
-                Ok(())
-            } else {
-                Err(Error::Conflict)
-            };
+            // The authenticated main confirms a repeated pair or a removal with no matching grant.
+            return Ok(());
         };
         let doc = documents::verify(receipt.proof)?;
         if receipt.status != "committed"
@@ -403,23 +497,27 @@ impl Owner {
                 Some(pairing)
             }
             ManagedDeviceChange::Revoke { grants } => {
+                if grants.iter().any(|grant| is_computer(&grant.key)) {
+                    return Err(Error::Invalid("devices to revoke"));
+                }
+                let before = phones.len();
                 for grant in grants {
-                    if is_computer(&grant.key)
-                        || !phones
+                    let length = phones.len();
+                    phones.retain(|entry| !matches_grant(entry, &grant.key, &grant.pairing));
+                    if phones.len() < length
+                        && !removed
                             .iter()
                             .any(|entry| matches_grant(entry, &grant.key, &grant.pairing))
                     {
-                        return Err(Error::Invalid("devices to revoke"));
-                    }
-                }
-                for grant in grants {
-                    phones.retain(|entry| !matches_grant(entry, &grant.key, &grant.pairing));
-                    if !removed
-                        .iter()
-                        .any(|entry| matches_grant(entry, &grant.key, &grant.pairing))
-                    {
                         removed.push(json!(grant));
                     }
+                }
+                if before == phones.len() {
+                    // A stale or repeated removal has no effect on a newer generation.
+                    return Ok(ManagedDeviceSave {
+                        pairing: None,
+                        receipt: None,
+                    });
                 }
                 None
             }

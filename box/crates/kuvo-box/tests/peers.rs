@@ -51,6 +51,12 @@ fn signing_key(byte: u8) -> String {
 }
 
 fn fixture(home: &Path, url: &str, key: u8, other: Option<u8>) {
+    let mut members: Vec<_> = other.into_iter().flat_map(|other| [key, other]).collect();
+    members.sort_unstable();
+    fixture_roster(home, url, key, &members);
+}
+
+fn fixture_roster(home: &Path, url: &str, key: u8, members: &[u8]) {
     let computer = |key: u8| {
         json!({
             "key": encode(&public(key)), "address": encode(&address_of(&[key + 50; 32])),
@@ -64,12 +70,11 @@ fn fixture(home: &Path, url: &str, key: u8, other: Option<u8>) {
     if !url.is_empty() {
         link["relay"] = url.into();
     }
-    if let Some(other) = other {
-        let main = key.min(other);
+    if let Some(&main) = members.first() {
         let id = format!("set_{}", encode(&[main; 16]));
         let position = json!({"id": id, "epoch": 1, "primary": encode(&public(main))});
         let shared = json!({"membershipAndAccess": {"sequence": 1, "value": {
-            "boxes": [computer(main), computer(key.max(other))], "left": [], "moved": [],
+            "boxes": members.iter().copied().map(computer).collect::<Vec<_>>(), "left": [], "moved": [],
             "devices": {"phones": [], "removed": []}, "removalRevisions": {},
         }}});
         let manifest = json!({"id": id, "shared": shared, "archives": []});
@@ -245,9 +250,12 @@ fn relay_url(listener: &TcpListener) -> String {
 }
 
 fn run_relay(listener: TcpListener) -> JoinSet<io::Result<()>> {
+    run_relay_with(listener, Destinations::default())
+}
+
+fn run_relay_with(listener: TcpListener, peers: Destinations) -> JoinSet<io::Result<()>> {
     let mut task = JoinSet::new();
     task.spawn(async move {
-        let peers = Destinations::default();
         let mut connections = JoinSet::new();
         loop {
             tokio::select! {
@@ -307,6 +315,23 @@ async fn leased_relay(socket: TcpStream, peers: Destinations) -> io::Result<()> 
         .await
 }
 
+fn run_leased(listener: TcpListener, destinations: Destinations) -> JoinSet<io::Result<()>> {
+    let mut relay_task = JoinSet::new();
+    relay_task.spawn(async move {
+        let mut connections = JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (socket, _) = accepted?;
+                    connections.spawn(leased_relay(socket, destinations.clone()));
+                }
+                _ = connections.join_next(), if !connections.is_empty() => {}
+            }
+        }
+    });
+    relay_task
+}
+
 #[tokio::test]
 async fn a_member_forwards_device_pairing_and_revocation_to_the_main() {
     time::timeout(Duration::from_secs(25), async {
@@ -316,25 +341,7 @@ async fn a_member_forwards_device_pairing_and_revocation_to_the_main() {
         let listener = relay_socket().await;
         let url = relay_url(&listener);
         let destinations = Destinations::default();
-        let mut relay_task = JoinSet::new();
-        relay_task.spawn({
-            let destinations = destinations.clone();
-            async move {
-                let mut connections = JoinSet::new();
-                loop {
-                    tokio::select! {
-                        accepted = listener.accept() => {
-                            let (socket, _) = match accepted {
-                                Ok(connection) => connection,
-                                Err(error) => return Err::<(), _>(error),
-                            };
-                            connections.spawn(leased_relay(socket, destinations.clone()));
-                        }
-                        _ = connections.join_next(), if !connections.is_empty() => {}
-                    }
-                }
-            }
-        });
+        let _relay_task = run_leased(listener, destinations.clone());
         let mut residents = Vec::new();
         for (home, own, other) in [(&a, 1, 2), (&b, 2, 1)] {
             fixture(home, &url, own, Some(other));
@@ -421,6 +428,290 @@ async fn a_member_forwards_device_pairing_and_revocation_to_the_main() {
     .expect("the leased main commits and replicates signed device changes from a member");
 }
 
+fn host(key: u8) -> Host {
+    Host {
+        key: public(key),
+        address: address_of(&[key + 50; 32]),
+    }
+}
+
+async fn wait_for_roster(record: &Value, keys: &[String]) {
+    loop {
+        let (status, value) = request(record, "GET", "kuvo/phones", None, true).await;
+        assert_eq!(status, 200);
+        let phones = value["phones"].as_array().unwrap();
+        if phones.len() == keys.len()
+            && keys
+                .iter()
+                .all(|key| phones.iter().any(|row| row["key"] == *key))
+        {
+            return;
+        }
+        time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn connecting_client(url: &str, key: u8, peers: Vec<Host>) -> Relay {
+    let mut relay = Relay::start(Config {
+        url: url.into(),
+        grants: HashMap::new(),
+        key: [key; 32],
+        secret: [key + 50; 32],
+        peers,
+        hello: BoxHello {
+            v: 1,
+            name: "Client".into(),
+            app: "test".into(),
+            kind: ComputerKind::Machine,
+            engine: None,
+        },
+    });
+    while !matches!(relay.events.recv().await, Some(Event::Connected(_))) {}
+    relay
+}
+
+async fn open_desktop(relay: &mut Relay, target: Host, pairing: String) -> Option<session::Id> {
+    let id = relay
+        .sender
+        .start(
+            target,
+            ClientHello {
+                v: 1,
+                name: "Managed desktop".into(),
+                app: "test".into(),
+                client: "desktop".into(),
+                pair: Some(pairing),
+            },
+        )
+        .await
+        .unwrap();
+    loop {
+        match relay.events.recv().await {
+            Some(Event::Session(session::Event::Opened(got, _))) if got == id => return Some(id),
+            Some(Event::Session(session::Event::Ended(got))) if got == id => return None,
+            Some(_) => {}
+            None => panic!("relay ended before the pairing result"),
+        }
+    }
+}
+
+async fn wait_closed(relay: &mut Relay, id: session::Id) {
+    loop {
+        match relay.events.recv().await {
+            Some(Event::Session(session::Event::Ended(got))) if got == id => return,
+            Some(_) => {}
+            None => panic!("relay ended before the revoked device closed"),
+        }
+    }
+}
+
+async fn verify_phone_sync(url: &str, key: &str) {
+    let mut client = connecting_client(url, 3, vec![host(1)]).await;
+    let origin = signing_key(1);
+    let id = encode(&[88; 16]);
+    let request = json!({"phoneSync":{"id":id,"origin":origin},"at":system_clock()});
+    client
+        .sender
+        .mail(
+            host(1),
+            kuvo_wire::mail::Envelope(request.as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    let (mut phones, mut peers) = (None, None);
+    loop {
+        let event = client
+            .events
+            .recv()
+            .await
+            .expect("signed device sync reply");
+        let Event::Mail {
+            key: sender,
+            envelope,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        if sender != public(1) {
+            continue;
+        }
+        for export in envelope
+            .0
+            .get("docs")
+            .and_then(|docs| docs["give"].as_array())
+            .into_iter()
+            .flatten()
+        {
+            let doc = documents::verify(serde_json::from_value(export.clone()).unwrap()).unwrap();
+            assert_eq!(encode(&doc.origin), origin);
+            match doc.kind {
+                Kind::Phones => phones = Some(doc),
+                Kind::Peers => peers = Some(doc),
+                _ => {}
+            }
+        }
+        if let Some(sync) = envelope.0.get("phoneSync") {
+            let phones = phones.expect("phone sync includes the signed grant list");
+            let peers = peers.expect("phone sync includes the signed peer roster");
+            assert_eq!(
+                *sync,
+                json!({"id":id,"ack":true,
+                    "list":format!("{}:{}", phones.n, phones.digest()),
+                    "peers":format!("{}:{}", peers.n, peers.digest()),
+                })
+            );
+            assert!(
+                phones.body["phones"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["key"] == key)
+            );
+            assert_eq!(peers.body["boxes"].as_array().unwrap().len(), 3);
+            return;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_reconnecting_computer_gets_signed_device_removal_from_a_member_while_main_is_away() {
+    time::timeout(Duration::from_secs(35), async {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("main");
+        let b = temp.path().join("member");
+        let c = temp.path().join("returning");
+        let listener = relay_socket().await;
+        let url = relay_url(&listener);
+        let destinations = Destinations::default();
+        let _relay = run_leased(listener, destinations.clone());
+        for (home, key) in [(&a, 1), (&b, 2), (&c, 3)] {
+            fixture_roster(home, &url, key, &[1, 2, 3]);
+        }
+        let (mut primary, main) = start(&a).await;
+        let (_member, member) = start(&b).await;
+        let (mut returning, old) = start(&c).await;
+        while !a.join("run/setup-relay-lease.json").is_file()
+            || destinations.lock().await.len() != 3
+        {
+            time::sleep(Duration::from_millis(20)).await;
+        }
+        let grant_key = encode(&public(4));
+        let admin_key = encode(&public(5));
+        let pair = |key: &str, name: &str| json!({"key":key,"name":name,"kind":"desktop"});
+        let (status, denied) = request(
+            &member,
+            "POST",
+            "kuvo/devices/pair",
+            Some(pair(&grant_key, "Member's app")),
+            false,
+        )
+        .await;
+        assert_eq!(status, 403, "{denied}");
+        let (status, grant) = request(
+            &member,
+            "POST",
+            "kuvo/devices/pair",
+            Some(pair(&grant_key, "Member's app")),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200, "{grant}");
+        let pairing = grant["pairing"].as_str().unwrap().to_owned();
+        let (status, admin) = request(
+            &main,
+            "POST",
+            "kuvo/devices/pair",
+            Some(pair(&admin_key, "Other desktop")),
+            true,
+        )
+        .await;
+        assert_eq!(status, 200, "{admin}");
+        let keys = [grant_key.clone(), admin_key.clone()];
+        for record in [&main, &member, &old] {
+            wait_for_roster(record, &keys).await;
+        }
+
+        let mut client = connecting_client(&url, 4, vec![]).await;
+        let main_session = open_desktop(&mut client, host(1), pairing.clone())
+            .await
+            .expect("member's pairing opens the main");
+        // This authenticated desktop revokes the other grant over its own paired route.
+        let admin_host = host(2);
+        let mut member_client = connecting_client(&url, 5, vec![]).await;
+        let admin_session = open_desktop(
+            &mut member_client,
+            admin_host,
+            admin["pairing"].as_str().unwrap().into(),
+        )
+        .await
+        .expect("admin device opens the member");
+        let (status, phones) = wire_request(
+            &mut client,
+            main_session,
+            json!({"t":"req","id":300,"p":"kuvo/phones","h":{"x-kuvo-route-version":"1"},"end":true}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(
+            phones["phones"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["key"] == grant_key && row["you"] == true)
+        );
+
+        let (status, _) = request(&member, "POST", "kuvo/phones/remove",
+            Some(json!({"phones":[{"key":grant_key,"pairing":"former"}]})), true).await;
+        assert_eq!(status, 200);
+        wait_for_roster(&member, &keys).await;
+
+        let old_endpoint = destinations.lock().await[&host(3).address].clone();
+        returning.kill().await.unwrap();
+        old_endpoint.closed().await;
+        verify_phone_sync(&url, &grant_key).await;
+        let (status, removed) = wire_request(
+            &mut member_client,
+            admin_session,
+            json!({"t":"req","id":301,"m":"POST","p":"kuvo/phones/remove","h":{"x-kuvo-route-version":"1"},"end":true}),
+            Some(json!({"phones":[{"key":grant_key,"pairing":pairing}]})),
+        )
+        .await;
+        assert_eq!(status, 200, "{removed}");
+        wait_closed(&mut client, main_session).await;
+        wait_for_roster(&member, std::slice::from_ref(&admin_key)).await;
+        assert!(
+            open_desktop(&mut client, host(2), pairing.clone())
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            read(&c, "run/link.json")["shared"]["membershipAndAccess"]["sequence"],
+            3
+        );
+        let primary_endpoint = destinations.lock().await[&host(1).address].clone();
+        primary.kill().await.unwrap();
+        primary_endpoint.closed().await;
+
+        let (_reconnected, new) = start(&c).await;
+        wait_for_roster(&new, std::slice::from_ref(&admin_key)).await;
+        let accepted = read(&c, "run/link.json");
+        let signed =
+            documents::verify(serde_json::from_value(accepted["setupReplica"].clone()).unwrap())
+                .unwrap();
+        assert_eq!(encode(&signed.origin), signing_key(1));
+        assert_eq!(accepted["shared"]["membershipAndAccess"]["sequence"], 4);
+        assert!(open_desktop(&mut client, host(3), pairing).await.is_none());
+        let (status, refused) = request(&new, "POST", "kuvo/devices/pair", Some(pair(&grant_key, "Member's app")), true).await;
+        assert_eq!(status, 409);
+        assert_eq!(refused["reason"], "removed");
+
+    })
+    .await
+    .expect("the returning member gets the signed revocation without its main");
+}
+
 #[tokio::test]
 async fn another_computers_session_is_in_the_first_state_after_restart_and_stays_visible_away() {
     time::timeout(Duration::from_secs(25), async {
@@ -478,7 +769,116 @@ async fn another_computers_session_is_in_the_first_state_after_restart_and_stays
         assert_eq!(location["on"], first["sessions"][SESSION]["on"]);
         let (_, counts) = request(&record, "GET", "kuvo/setup/waiting/counts", None, false).await;
         assert_eq!(counts["dock"], 1);
+
+        let (status, computers) = request(&record, "GET", "kuvo/computers", None, false).await;
+        assert_eq!(status, 200);
+        assert_eq!(computers["computers"][1]["reach"], "away");
+        assert_eq!(computers["computers"][1]["working"], 0);
+        let (_returned, _) = start(&b).await;
+        loop {
+            let state = next_line(&mut states).await;
+            if state["sessions"][SESSION]["on"]["away"] == false {
+                assert_eq!(state["sessions"][SESSION]["on"], json!({
+                    "id":key,"name":"Computer 2","away":false,"actions":["open","manage"],
+                }));
+                break;
+            }
+        }
+        let (status, computers) = request(&record, "GET", "kuvo/computers", None, false).await;
+        assert_eq!(status, 200);
+        let peers = computers["computers"].as_array().unwrap();
+        assert_eq!(peers[0]["reach"], "connected");
+        assert_eq!(peers[0]["working"], 0);
+        assert_eq!(peers[1]["address"], encode(&address_of(&[52; 32])));
+        assert_eq!(peers[1]["relay"], url);
+        assert_eq!(peers[1]["reach"], "connected");
+        assert_eq!(peers[1]["working"], 1);
+        assert_eq!(peers[1]["atWork"], json!([{"id":SESSION,"title":"Peer's session"}]));
     }).await.expect("two boxes share the session and reopen its kept snapshot");
+}
+
+#[tokio::test]
+async fn an_away_worktree_pages_under_its_own_computers_project() {
+    time::timeout(Duration::from_secs(12), async {
+        let home = tempfile::tempdir().unwrap();
+        let listener = relay_socket().await;
+        fixture(home.path(), &relay_url(&listener), 1, Some(2));
+        let key = encode(&public(2));
+        let project = format!("{key}:/scratch/source");
+        let old = kuvo_peers::setup_lists::system_clock() - 190_000;
+        let ids: Vec<_> = (0..18).map(|i| format!("ses_worktree{i}")).collect();
+        let row = |id: &str, i: usize, archived: bool| {
+            json!({
+                "id": id, "actions": ["open","manage"], "facts": {
+                    "kind":"project","directory":"/scratch/worktree","project":"/scratch/source",
+                    "title":id,"created":10, "updated":100-i, "archived":archived,
+                }
+            })
+        };
+        let sessions: Vec<_> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| row(id, i, false))
+            .chain([row("ses_old", 19, true)])
+            .collect();
+        write(
+            home.path(),
+            &format!("run/peers/{key}/lists-v1.json"),
+            json!({
+                "at":old, "seen":old, "sessions":sessions, "projects":[],
+                "catalog":kuvo_peers::lists::Catalog::default(),"queues":[],"waiting":[]
+            }),
+        );
+        let (_resident, record) = start(home.path()).await;
+        let (status, mut watch) = request_start(
+            &record,
+            "GET",
+            "kuvo/setup/sessions/list/events",
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let first = next_line(&mut watch).await;
+        assert_eq!(first["sessions"][&ids[0]]["directory"], "/scratch/worktree");
+        assert_eq!(first["sessions"][&ids[0]]["project"], project);
+        assert_eq!(first["sessions"][&ids[0]]["on"]["away"], true);
+        assert_eq!(first["projects"][&project]["shown"], json!(ids[..6]));
+        assert_eq!(first["projects"][&project]["total"], 18);
+        assert_eq!(first["projects"][&project]["more"]["count"], 10);
+        assert!(
+            first["projects"]
+                .get(format!("{key}:/scratch/worktree"))
+                .is_none()
+        );
+        assert_eq!(first["archivedGroups"][0]["sessions"], json!(["ses_old"]));
+        let page = |cursor: String| {
+            format!("kuvo/sessions/page?project={key}%3A%2Fscratch%2Fsource&cursor={cursor}")
+        };
+        let cursor = first["projects"][&project]["more"]["cursor"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (status, next) = request(&record, "GET", &page(cursor), None, false).await;
+        assert_eq!(status, 200);
+        assert_eq!(next["sessions"], json!(ids[..16]));
+        assert_eq!(next["more"]["count"], 2);
+        let (status, last) = request(
+            &record,
+            "GET",
+            &page(next["more"]["cursor"].as_str().unwrap().into()),
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            last,
+            json!({"project":project,"sessions":ids,"total":18,"more":null})
+        );
+    })
+    .await
+    .expect("the kept project and both pages");
 }
 
 async fn wire_request(
@@ -796,4 +1196,938 @@ async fn a_restarting_release_keeps_its_session_actions_and_cannot_be_chosen_for
             "data":messages,"away":{"computer":{"id":key,"name":"Computer 6"},"updating":true},
         })));
     }).await.expect("the kept catalog and conversation page are usable while the peer updates");
+}
+
+mod work {
+    use super::*;
+    use kuvo_peers::{
+        calls::{
+            Admission, Answer, Lead, MailedCall, Permission, RemoteWork, Request, Resource, Rule,
+            Tool, WorkFuture,
+        },
+        directory::{ComputerKey, Member, Roster},
+        remote_work::{Outcome, WorkHandle},
+        setup_lists::{Reader, ResidentPeers},
+        work_rows,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI64, Ordering},
+    };
+
+    const NOW: i64 = 1_800_000_000_000;
+    const LEAD: &str = "ses_business";
+    const BILLING: &str = "ses_billing";
+    const OTHER: &str = "ses_other";
+    const MISSING: &str = "ses_missing";
+    const STOPPED: &str = "Stopped Billing";
+    const LIST: &str = r#"{"rows":[{"session":"ses_billing","state":"idle"}]}"#;
+
+    // A stand-in for the external session engine. Effects and queued messages use the same
+    // durable operation identity across resident restarts.
+    struct Engine {
+        effects: std::path::PathBuf,
+        notes: mpsc::UnboundedSender<(String, String)>,
+        ask_first: AtomicBool,
+        deny_push: AtomicBool,
+        ask_push: AtomicBool,
+    }
+
+    impl RemoteWork for Engine {
+        fn inspect<'a>(
+            &'a self,
+            _: ComputerKey,
+            call: &'a MailedCall,
+        ) -> WorkFuture<'a, Admission> {
+            Box::pin(async move {
+                if call.request.session() == Some(MISSING) {
+                    return Ok(Admission::Reject(format!(
+                        "There's no session {MISSING} on this computer."
+                    )));
+                }
+                if call.from != LEAD || call.request.session().is_some_and(|id| id != BILLING) {
+                    return Ok(Admission::Refused(Answer::refused(
+                        "Only sessions started by this lead",
+                    )));
+                }
+                if call.request.tool == Tool::AnswerAsk {
+                    let command = call
+                        .request
+                        .args
+                        .get("ask")
+                        .and_then(Value::as_str)
+                        .unwrap_or("git status");
+                    let local_effect = if self.deny_push.load(Ordering::Relaxed) {
+                        Some("deny")
+                    } else if self.ask_push.load(Ordering::Relaxed) {
+                        Some("ask")
+                    } else {
+                        None
+                    };
+                    let local_rules = local_effect
+                        .into_iter()
+                        .map(|effect| Rule {
+                            action: "shell".into(),
+                            resource: "git push*".into(),
+                            effect: effect.into(),
+                        })
+                        .collect();
+                    return Ok(Admission::Permission(Permission {
+                        title: "Billing".into(),
+                        sandboxed: false,
+                        ask_first: self.ask_first.load(Ordering::Relaxed),
+                        checks: vec![Resource {
+                            action: "shell".into(),
+                            value: command.into(),
+                        }],
+                        local_rules,
+                    }));
+                }
+                Ok(Admission::Ready)
+            })
+        }
+
+        fn apply<'a>(&'a self, _: ComputerKey, call: &'a MailedCall) -> WorkFuture<'a, Answer> {
+            Box::pin(async move {
+                if call.request.tool == Tool::ListSessions
+                    && call.request.args.get("wide").and_then(Value::as_bool) == Some(true)
+                {
+                    let row = json!({
+                        "session":BILLING, "title":"職場".repeat(50),
+                        "lastReply": "引用 \" 😀".repeat(250), "state":"finished",
+                    });
+                    return Ok(Answer::rows(vec![row; 90]));
+                }
+                let text = match call.request.tool {
+                    Tool::ListSessions => LIST,
+                    Tool::StopSession => STOPPED,
+                    Tool::CompactSession => "Summarizing Billing",
+                    Tool::AnswerAsk if call.request.args["decision"] == "allow" => "Allowed",
+                    Tool::AnswerAsk => "Denied",
+                    _ => unreachable!(),
+                };
+                use std::io::Write;
+                let path = self.effects.join(call.id.as_str());
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)?
+                    .write_all(text.as_bytes())?;
+                Ok(Answer {
+                    text: text.into(),
+                    refused: false,
+                })
+            })
+        }
+
+        fn deliver<'a>(
+            &'a self,
+            id: &'a kuvo_peers::outbox::Id,
+            lead: &'a str,
+            answer: &'a Answer,
+        ) -> WorkFuture<'a, ()> {
+            Box::pin(async move {
+                use std::io::Write;
+                let path = self.effects.join(id.as_str());
+                match fs::OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(path)
+                {
+                    Ok(mut file) => {
+                        file.write_all(answer.text.as_bytes())?;
+                        self.notes.send((lead.into(), answer.text.clone())).ok();
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error),
+                }
+                Ok(())
+            })
+        }
+    }
+
+    fn engine(home: &Path) -> (Arc<Engine>, mpsc::UnboundedReceiver<(String, String)>) {
+        let (notes, mailbox) = mpsc::unbounded_channel();
+        let effects = home.join("effects");
+        fs::create_dir_all(&effects).unwrap();
+        (
+            Arc::new(Engine {
+                effects,
+                notes,
+                ask_first: false.into(),
+                deny_push: false.into(),
+                ask_push: false.into(),
+            }),
+            mailbox,
+        )
+    }
+
+    fn key(id: u8) -> ComputerKey {
+        public(id + 3)
+    }
+
+    fn member(id: u8) -> Member {
+        Member {
+            key: key(id),
+            address: Some(address_of(&[id; 32])),
+            name: format!("Computer {id}"),
+            kind: if id == 1 {
+                ComputerKind::Mac
+            } else {
+                ComputerKind::Machine
+            },
+        }
+    }
+
+    async fn start_work(
+        url: &str,
+        id: u8,
+        home: &Path,
+        peers: &[u8],
+        now: Arc<AtomicI64>,
+        engine: Arc<Engine>,
+    ) -> (ResidentPeers, WorkHandle) {
+        let members: Vec<_> = peers.iter().copied().map(member).collect();
+        let relay = Relay::start(Config {
+            key: [id + 3; 32],
+            secret: [id; 32],
+            url: url.into(),
+            grants: HashMap::new(),
+            peers: members.iter().filter_map(Member::host).collect(),
+            hello: BoxHello {
+                v: 1,
+                name: member(id).name,
+                app: "1".into(),
+                kind: member(id).kind,
+                engine: None,
+            },
+        });
+        let mut resident = ResidentPeers::start(
+            home,
+            Roster {
+                here: Some(key(id)),
+                main: Some(key(1)),
+                name: member(id).name,
+                members,
+            },
+            Some(relay),
+            None,
+            false,
+            Arc::new(move || now.load(Ordering::Relaxed)),
+        )
+        .await
+        .unwrap();
+        let handle = resident.attach_work(engine).await.unwrap();
+        (resident, handle)
+    }
+
+    fn request(tool: Tool, args: Value) -> Request {
+        Request {
+            tool,
+            args: args.as_object().unwrap().clone(),
+            lead: Lead {
+                name: "Business".into(),
+                free: true,
+                bot: None,
+                start: None,
+                rules: vec![],
+            },
+        }
+    }
+
+    async fn answer(handle: &WorkHandle, req: Request) -> Answer {
+        match handle
+            .call(key(2), LEAD.into(), req, false, false)
+            .await
+            .unwrap()
+        {
+            Outcome::Answer(answer) => answer,
+            other => panic!("expected a work answer, got {other:?}"),
+        }
+    }
+
+    async fn ready(resident: &ResidentPeers, other: u8, home: &Path) {
+        let mut reader = resident.reader();
+        loop {
+            let path = home.join("run/peer-agents.json");
+            if reader.view().relay_connected
+                && path.is_file()
+                && read(home, "run/peer-agents.json")[encode(&key(other))]["features"]
+                    .as_array()
+                    .is_some_and(|features| features.iter().any(|name| name == "work.elsewhere"))
+            {
+                return;
+            }
+            reader.changed().await.unwrap();
+        }
+    }
+
+    async fn away(mut reader: Reader, key: ComputerKey, expected: bool) {
+        while reader.view().standing(key, reader.now()).away() != expected {
+            reader.changed().await.unwrap();
+        }
+    }
+
+    async fn work_observer(url: &str, id: u8, peer: u8) -> Relay {
+        let mut observer = Relay::start(Config {
+            url: url.into(),
+            key: [id + 3; 32],
+            secret: [id; 32],
+            grants: HashMap::new(),
+            peers: vec![member(peer).host().unwrap()],
+            hello: BoxHello {
+                v: 1,
+                name: "Observer".into(),
+                app: "test".into(),
+                kind: ComputerKind::Machine,
+                engine: None,
+            },
+        });
+        while !matches!(observer.events.recv().await, Some(Event::Connected(_))) {}
+        observer
+    }
+
+    async fn send_work_mail(observer: &Relay, to: u8, fields: Value) {
+        observer
+            .sender
+            .mail(
+                member(to).host().unwrap(),
+                kuvo_wire::mail::Envelope(fields.as_object().unwrap().clone()),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn next_rows(observer: &mut Relay) -> Value {
+        loop {
+            match observer.events.recv().await {
+                Some(Event::Mail { envelope, .. }) => {
+                    if let Some(rows) = envelope.0.get("rows") {
+                        return rows.clone();
+                    }
+                }
+                Some(_) => {}
+                None => panic!("the work rows relay stopped"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn work_rows_go_only_to_the_leads_computer_retry_until_acknowledged_and_wait_while_away()
+    {
+        time::timeout(Duration::from_secs(27), async {
+            let listener = relay_socket().await;
+            let url = relay_url(&listener);
+            let peers = Destinations::default();
+            let _relay = run_relay_with(listener, peers.clone());
+            let b = tempfile::tempdir().unwrap();
+            let other_lead = "ses_anotherlead";
+            let a_key = encode(&key(1));
+            let c_key = encode(&key(3));
+            write(
+                b.path(),
+                "run/work/homes.json",
+                json!({
+                    (LEAD): {"key":a_key,"at":NOW}, (other_lead):{"key":c_key,"at":NOW},
+                }),
+            );
+            let (engine_b, _) = engine(b.path());
+            let now = Arc::new(AtomicI64::new(NOW));
+            let mut a = work_observer(&url, 1, 2).await;
+            let mut c = work_observer(&url, 3, 2).await;
+            let (b_box, work) = start_work(&url, 2, b.path(), &[3, 1], now.clone(), engine_b).await;
+            let mut reader = b_box.reader();
+            while !reader.view().relay_connected {
+                reader.changed().await.unwrap();
+            }
+            let announce =
+                |at| json!({"at":at,"agents":{"at":at,"list":[],"features":["work.elsewhere"]}});
+            send_work_mail(&a, 2, announce(NOW)).await;
+            send_work_mail(&c, 2, announce(NOW)).await;
+            ready(&b_box, 1, b.path()).await;
+            ready(&b_box, 3, b.path()).await;
+            let snapshot = |title, both| {
+                let row = |session| json!([{"session":session,"title":title,"state":"idle"}]);
+                let mut leads = json!({(LEAD):row(BILLING)});
+                if both {
+                    leads[other_lead] = row(OTHER);
+                }
+                serde_json::from_value(leads).unwrap()
+            };
+            work.publish(snapshot("First copy", false)).await.unwrap();
+            let first = next_rows(&mut a).await;
+            assert_eq!(first["leads"][LEAD][0]["title"], "First copy");
+            assert_eq!(
+                read(b.path(), "run/work/pushed.json")
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>(),
+                [&a_key]
+            );
+
+            let ack = json!({"delivered":{"id":first["id"],"ok":true},"at":NOW});
+            send_work_mail(&c, 2, ack.clone()).await;
+            now.store(NOW + 61_000, Ordering::Relaxed);
+            let repeated = next_rows(&mut a).await;
+            assert_eq!(repeated["id"], first["id"]);
+            assert_eq!(repeated["at"], NOW + 61_000);
+            send_work_mail(&a, 2, ack).await;
+            while read(b.path(), "run/work/pushed.json")[&a_key]["done"] != true {
+                reader.changed().await.unwrap();
+            }
+
+            let destination = peers.lock().await[&member(1).address.unwrap()].clone();
+            drop(a);
+            destination.closed().await;
+            let b_relay = b_box.relay_handle().unwrap();
+            b_relay
+                .sender
+                .mail(
+                    member(1).host().unwrap(),
+                    kuvo_wire::mail::Envelope(Default::default()),
+                )
+                .await
+                .unwrap();
+            let is_away = |home: &Path| {
+                fs::read(home.join("run/peer-reach.json"))
+                    .ok()
+                    .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+                    .is_some_and(|copy| copy[&a_key] == NOW + 61_000)
+            };
+            while !is_away(b.path()) {
+                reader.changed().await.unwrap();
+            }
+
+            now.store(NOW + 80_000, Ordering::Relaxed);
+            work.publish(snapshot("Fresh copy", true)).await.unwrap();
+            let theirs = next_rows(&mut c).await;
+            assert_eq!(theirs["leads"][other_lead][0]["title"], "Fresh copy");
+            assert_eq!(theirs["leads"][LEAD], Value::Null);
+            let pushed = read(b.path(), "run/work/pushed.json");
+            assert_eq!(pushed[&a_key]["id"], first["id"]);
+            assert_eq!(pushed[&a_key]["done"], true);
+
+            let mut a = work_observer(&url, 1, 2).await;
+            send_work_mail(&a, 2, announce(NOW + 80_000)).await;
+            let returned = next_rows(&mut a).await;
+            assert_eq!(returned["leads"][LEAD][0]["title"], "Fresh copy");
+            assert_ne!(returned["id"], first["id"]);
+        })
+        .await
+        .expect("rows go only to the owner and retry until its receipt");
+    }
+
+    #[tokio::test]
+    async fn peers_announce_changes_answer_refreshes_and_repeat_after_ten_minutes() {
+        time::timeout(Duration::from_secs(18), async {
+            let listener = relay_socket().await;
+            let url = relay_url(&listener);
+            let _relay = run_relay(listener);
+            let a = tempfile::tempdir().unwrap();
+            let (engine_a, _) = engine(a.path());
+            let now = Arc::new(AtomicI64::new(NOW));
+            // The observing computer sends no startup advertisements of its own. The
+            // announcement carrying the attached work feature ends the initial exchange.
+            let mut observer = work_observer(&url, 2, 1).await;
+            let (a_box, _) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
+            let b_relay = observer.handle();
+            let events = &mut observer.events;
+            loop {
+                if let Some(Event::Mail { envelope, .. }) = events.recv().await
+                    && envelope.0.get("agents").and_then(|entry| entry["features"].as_array())
+                        .is_some_and(|features| features.iter().any(|feature| feature == "work.elsewhere")) {
+                    assert_eq!(envelope.0.get("ask"), Some(&json!("agents")));
+                    break;
+                }
+            }
+            now.store(NOW + 60_001, Ordering::Relaxed);
+            loop {
+                if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
+                    && sender == key(1)
+                    && envelope.0.get("at").and_then(Value::as_i64) == Some(NOW + 60_001) {
+                    assert!(!envelope.0.contains_key("agents"), "an unchanged announcement waits ten minutes");
+                    if envelope.0.contains_key("activity") { break; }
+                }
+            }
+
+            now.store(NOW + 601_000, Ordering::Relaxed);
+            loop {
+                if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
+                    && sender == key(1)
+                    && let Some(agents) = envelope.0.get("agents")
+                    && agents["at"] == NOW + 601_000 {
+                    assert_eq!(agents["list"], json!([]));
+                    break;
+                }
+            }
+
+            a_box.local(kuvo_peers::lists::Local {
+                list: Some(serde_json::from_value(json!({"epoch":"work","seq":1,"projects":{},"sessions":{
+                    (LEAD): { "facts": { "kind":"chat","directory":"/scratch","title":"Business", "created":10, "updated":20 },
+                        "place":"engine" }
+                }})).unwrap()),
+                ..Default::default()
+            }).await;
+            loop {
+                if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
+                    && sender == key(1)
+                    && let Some(agents) = envelope.0.get("agents")
+                    && agents["list"][0]["session"] == LEAD {
+                    assert_eq!(agents["list"], json!([{"session":LEAD,"name":"Business","kind":"session"}]));
+                    assert_eq!(envelope.0.get("at"), Some(&json!(NOW + 601_000)));
+                    break;
+                }
+            }
+
+            let value = json!({"ask":"agents", "at":NOW + 601_000});
+            b_relay.sender.mail(member(1).host().unwrap(), kuvo_wire::mail::Envelope(value.as_object().unwrap().clone())).await.unwrap();
+            loop {
+                if let Some(Event::Mail { envelope, key: sender, .. }) = events.recv().await
+                    && sender == key(1)
+                    && let Some(agents) = envelope.0.get("agents") {
+                    assert_eq!(agents["list"][0]["session"], LEAD);
+                    assert!(!envelope.0.contains_key("ask"), "the reply does not ask again");
+                    break;
+                }
+            }
+        }).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_lead_can_list_summarize_and_stop_work_elsewhere_and_only_answer_within_its_rules() {
+        time::timeout(Duration::from_secs(18), async {
+            let listener = relay_socket().await;
+            let url = relay_url(&listener);
+            let _relay = run_relay(listener);
+            let a = tempfile::tempdir().unwrap();
+            let b = tempfile::tempdir().unwrap();
+            let (engine_a, _) = engine(a.path());
+            let (engine_b, _) = engine(b.path());
+            let now = Arc::new(AtomicI64::new(NOW));
+            let (a_box, a_work) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
+            let (_b_box, _) = start_work(&url, 2, b.path(), &[1], now, engine_b.clone()).await;
+            ready(&a_box, 2, a.path()).await;
+
+            let list = answer(&a_work, request(Tool::ListSessions, json!({}))).await;
+            assert_eq!((list.text.as_str(), list.refused), (LIST, false));
+            assert_eq!(
+                answer(
+                    &a_work,
+                    request(Tool::CompactSession, json!({"session":BILLING}))
+                )
+                .await
+                .text,
+                "Summarizing Billing"
+            );
+            let foreign = answer(
+                &a_work,
+                request(Tool::StopSession, json!({"session":OTHER})),
+            )
+            .await;
+            assert!(foreign.refused);
+            assert_eq!(foreign.text, "Only sessions started by this lead");
+            assert_eq!(
+                answer(
+                    &a_work,
+                    request(Tool::StopSession, json!({"session":BILLING}))
+                )
+                .await
+                .text,
+                STOPPED
+            );
+
+            let allow = || {
+                request(
+                    Tool::AnswerAsk,
+                    json!({"session":BILLING,"ask":"git push origin main","decision":"allow"}),
+                )
+            };
+            engine_b.deny_push.store(true, Ordering::Relaxed);
+            let blocked_here = answer(&a_work, allow()).await;
+            assert!(blocked_here.refused && blocked_here.text.starts_with("You can't allow that"));
+            engine_b.deny_push.store(false, Ordering::Relaxed);
+            engine_b.ask_push.store(true, Ordering::Relaxed);
+            let blocked_by_local_ask = answer(&a_work, allow()).await;
+            assert!(
+                blocked_by_local_ask.refused
+                    && blocked_by_local_ask
+                        .text
+                        .starts_with("You can't allow that")
+            );
+            engine_b.ask_push.store(false, Ordering::Relaxed);
+
+            let rule = |effect: &str| Rule {
+                action: "shell".into(),
+                resource: "*".into(),
+                effect: effect.into(),
+            };
+            let mut lead_asks = allow();
+            lead_asks.lead.rules = vec![rule("allow"), rule("ask")];
+            let blocked_at_home = answer(&a_work, lead_asks).await;
+            assert!(
+                blocked_at_home.refused && blocked_at_home.text.starts_with("You can't allow that")
+            );
+
+            let mut sandboxed = allow();
+            sandboxed.lead.free = false;
+            let blocked_sandbox = answer(&a_work, sandboxed).await;
+            assert!(blocked_sandbox.refused);
+            let mut oversized = allow();
+            oversized.lead.rules = vec![rule("allow"); 301];
+            assert!(answer(&a_work, oversized).await.refused);
+
+            engine_b.ask_first.store(true, Ordering::Relaxed);
+            let ask_first = answer(&a_work, allow()).await;
+            assert!(ask_first.refused && ask_first.text.contains("Ask First"));
+            assert_eq!(
+                answer(
+                    &a_work,
+                    request(
+                        Tool::AnswerAsk,
+                        json!({"session":BILLING,"ask":"git push origin main","decision":"deny"})
+                    )
+                )
+                .await
+                .text,
+                "Denied"
+            );
+            engine_b.ask_first.store(false, Ordering::Relaxed);
+            assert_eq!(answer(&a_work, allow()).await.text, "Allowed");
+            assert_eq!(fs::read_dir(&engine_b.effects).unwrap().count(), 5);
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn send_wire_call(resident: &ResidentPeers, given: Value) -> (Value, Value) {
+        let handle = resident.relay_handle().unwrap();
+        let mut events = handle.subscribe().unwrap();
+        let id = given["id"].clone();
+        let suffix = id.as_str().unwrap().strip_prefix("cal_").unwrap();
+        assert!(
+            (16..=40).contains(&suffix.len()),
+            "invalid call fixture {id}"
+        );
+        let answer = format!("{}-a", id.as_str().unwrap());
+        let envelope =
+            kuvo_wire::mail::Envelope(json!({"call":given,"at":NOW}).as_object().unwrap().clone());
+        handle
+            .sender
+            .mail(member(2).host().unwrap(), envelope)
+            .await
+            .unwrap();
+        let (mut receipt, mut letter) = (None, None);
+        loop {
+            if let kuvo_peers::relay::RelayEvent::Mail {
+                envelope,
+                key: sender,
+                ..
+            } = &*events.recv().await.unwrap()
+                && *sender == key(2)
+            {
+                if let Some(got) = envelope.0.get("delivered").filter(|got| got["id"] == id) {
+                    if got["ok"] == false {
+                        return (got.clone(), Value::Null);
+                    }
+                    receipt = Some(got.clone());
+                }
+                if let Some(got) = envelope.0.get("letter").filter(|got| got["id"] == answer) {
+                    letter = Some(got.clone());
+                }
+            }
+            if let (Some(receipt), Some(letter)) = (&receipt, &letter) {
+                return (receipt.clone(), letter.clone());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_resent_call_keeps_its_answer_after_restart_and_an_expired_allow_has_no_effect() {
+        time::timeout(Duration::from_secs(12), async {
+            let listener = relay_socket().await;
+            let url = relay_url(&listener);
+            let peers = Destinations::default();
+            let _relay = run_relay_with(listener, peers.clone());
+            let a = tempfile::tempdir().unwrap();
+            let b = tempfile::tempdir().unwrap();
+            let (engine_a, _) = engine(a.path());
+            let (engine_b, _) = engine(b.path());
+            write(b.path(), "run/work/homes.json", json!({"ses_wronghome":{"key":encode(&key(3)), "at":NOW}}));
+            let now = Arc::new(AtomicI64::new(NOW));
+            let (a_box, _) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
+            let (b_box, _) = start_work(&url, 2, b.path(), &[1, 3], now.clone(), engine_b.clone()).await;
+            ready(&a_box, 2, a.path()).await;
+            let given = |id: &str, tool: &str, args: Value, made: i64| json!({
+                "id":id,"tool":tool,"from":LEAD,"as":{"name":"Business","rules":[],"free":true},
+                "args":args, "made":made, "at":NOW
+            });
+            let id = "cal_abcdefgh01234567";
+            let call = given(id, "stop_session", json!({"session":BILLING}), NOW);
+            let (receipt, answer) = send_wire_call(&a_box, call.clone()).await;
+            assert_eq!(receipt, json!({"id":id,"ok":true}));
+            assert_eq!(answer["note"], json!({
+                "from":"Computer 2","words":STOPPED,"line":STOPPED,"delivery":"queue","about":[BILLING],
+            }));
+            let old = peers.lock().await[&member(2).address.unwrap()].clone();
+            drop(b_box);
+            old.closed().await;
+            let (b_box, _) = start_work(&url, 2, b.path(), &[1, 3], now, engine_b.clone()).await;
+            ready(&b_box, 1, b.path()).await;
+            assert_eq!(send_wire_call(&a_box, call).await, (receipt, answer));
+            assert_eq!(fs::read_to_string(engine_b.effects.join(id)).unwrap(), STOPPED);
+
+            let (receipt, letter) = send_wire_call(&a_box, given("cal_deadline01234567", "answer_ask",
+                json!({"session":BILLING,"ask":"git status","decision":"allow","reason":"Check current work"}),
+                NOW - 86_400_001)).await;
+            assert_eq!(receipt["ok"], true);
+            assert_eq!(letter["refused"], true);
+            assert!(letter["note"]["words"].as_str().unwrap().contains("away for over a day"));
+            assert_eq!(fs::read_dir(&engine_b.effects).unwrap().count(), 1);
+
+            let (_, list) = send_wire_call(&a_box, given("cal_wide000001234567", "list_sessions", json!({"wide":true}), NOW)).await;
+            assert_eq!(list["read"], json!({}));
+            let text = list["text"].as_str().unwrap();
+            assert!(text.len() <= 22_000);
+            let answer: Value = serde_json::from_str(text).expect("complete list JSON");
+            let rows = answer["rows"].as_array().unwrap();
+            assert!(!rows.is_empty() && rows.len() < 90);
+            assert!(rows.iter().all(|row| row["title"] == "職場".repeat(50)));
+
+            for sequence in 0..25 {
+                let id = format!("cal_throughout_{sequence:08}");
+                let (receipt, list) = send_wire_call(&a_box, given(&id, "list_sessions", json!({}), NOW)).await;
+                assert_eq!(receipt, json!({"id":id, "ok":true}));
+                assert_eq!(list["text"], LIST);
+            }
+            let (refused, letter) = send_wire_call(&a_box, given("cal_badtools01234567", "prompt_session", json!({}), NOW)).await;
+            assert_eq!(refused, json!({
+                "id":"cal_badtools01234567","ok":false,
+                "why":"That isn't something another computer can do here.",
+            }));
+            assert!(letter.is_null());
+
+            let mut local = kuvo_peers::lists::Local::default();
+            local.ownership.held.insert((kuvo_peers::directory::RecordScope::Session, "ses_ownlead".into()));
+            let mut reader = b_box.reader();
+            b_box.local(local).await;
+            while reader.view().local.ownership.held.is_empty() { reader.changed().await.unwrap(); }
+            let stop = |id| given(id, "stop_session", json!({"session":BILLING}), NOW);
+            let mut own = stop("cal_local00001234567");
+            own["from"] = "ses_ownlead".into();
+            assert_eq!(send_wire_call(&a_box, own).await.0, json!({
+                "id":"cal_local00001234567","ok":false,
+                "why":"That conversation is on this computer: another can't speak for it.",
+            }));
+            let mut claimed = stop("cal_claim00123456789");
+            claimed["from"] = "ses_wronghome".into();
+            let (receipt, _) = send_wire_call(&a_box, claimed).await;
+            assert_eq!((receipt["ok"].clone(), receipt["retry"].clone()), (json!(false), json!(true)));
+            let mut old = stop("cal_stale00123456789");
+            old["at"] = (NOW - 172_800_000).into();
+            let (receipt, _) = send_wire_call(&a_box, old).await;
+            assert_eq!((receipt["ok"].clone(), receipt["retry"].clone()), (json!(false), json!(true)));
+            assert_eq!(fs::read_dir(&engine_b.effects).unwrap().count(), 26);
+
+        }).await.unwrap();
+    }
+
+    #[test]
+    fn an_away_peer_gets_its_oldest_call_at_each_retry_until_it_returns() {
+        use kuvo_peers::calls::{Calls, Home, Outgoing, PeerState};
+        let run = tempfile::tempdir().unwrap();
+        let mut outbox = Calls::open(run.path());
+        let enqueue = |outbox: &mut Calls, session, at| {
+            outbox
+                .enqueue(
+                    key(2),
+                    LEAD.into(),
+                    request(Tool::StopSession, json!({"session":session})),
+                    false,
+                    false,
+                    at,
+                )
+                .unwrap()
+        };
+        let first = enqueue(&mut outbox, BILLING, NOW);
+        let second = enqueue(&mut outbox, OTHER, NOW + 1);
+        let send = |outbox: &mut Calls, now, state| {
+            outbox.round(now, true, |_| state, |_| Home::Local).unwrap()
+        };
+        let id = |mail: &Outgoing| match mail {
+            Outgoing::Mail { envelope, .. } => {
+                envelope.0["call"]["id"].as_str().unwrap().to_owned()
+            }
+            Outgoing::Failed(_) => panic!("retry unexpectedly failed"),
+        };
+        let one = send(&mut outbox, NOW + 1, PeerState::Away);
+        assert_eq!(one.len(), 1);
+        assert_eq!(id(&one[0]), first.as_str());
+        assert!(send(&mut outbox, NOW + 2000, PeerState::Away).is_empty());
+        assert_eq!(
+            id(&send(&mut outbox, NOW + 60_001, PeerState::Away)[0]),
+            first.as_str()
+        );
+        outbox.heard(key(2), NOW + 60_002);
+        let back = send(&mut outbox, NOW + 60_002, PeerState::Online);
+        assert_eq!(
+            back.iter().map(id).collect::<Vec<_>>(),
+            [first.as_str(), second.as_str()]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_away_computer_keeps_its_last_work_rows_and_the_stop_reaches_it_on_return() {
+        time::timeout(Duration::from_secs(30), async {
+            let listener = relay_socket().await;
+            let url = relay_url(&listener);
+            let peers = Destinations::default();
+            let _relay = run_relay_with(listener, peers.clone());
+            let a = tempfile::tempdir().unwrap();
+            let b = tempfile::tempdir().unwrap();
+            let (engine_a, mut mailbox) = engine(a.path());
+            let (engine_b, _) = engine(b.path());
+            let now = Arc::new(AtomicI64::new(NOW));
+            let (a_box, a_work) = start_work(&url, 1, a.path(), &[2], now.clone(), engine_a).await;
+            let (b_box, b_work) =
+                start_work(&url, 2, b.path(), &[1], now.clone(), engine_b.clone()).await;
+            ready(&a_box, 2, a.path()).await;
+            ready(&b_box, 1, b.path()).await;
+            assert_eq!(
+                answer(&a_work, request(Tool::ListSessions, json!({})))
+                    .await
+                    .text,
+                LIST
+            );
+            let snapshot = serde_json::from_value(
+                json!({(LEAD):[{"session":BILLING,"state":"idle","title":"Billing"}]}),
+            )
+            .unwrap();
+            b_work.publish(snapshot).await.unwrap();
+
+            let mut reader = a_box.reader();
+            loop {
+                let rows = work_rows::for_lead(&reader, LEAD).await.unwrap();
+                if let [told] = rows.as_slice() {
+                    assert_eq!(told.rows[0].session, BILLING);
+                    assert_eq!(told.at, NOW);
+                    break;
+                }
+                reader.changed().await.unwrap();
+            }
+
+            let destination = peers.lock().await[&member(2).address.unwrap()].clone();
+            drop(b_box);
+            destination.closed().await;
+            let a_relay = a_box.relay_handle().unwrap();
+            // Force a reach probe rather than waiting for the announcement refresh.
+            let _ = a_relay
+                .sender
+                .mail(
+                    member(2).host().unwrap(),
+                    kuvo_wire::mail::Envelope(Default::default()),
+                )
+                .await;
+            let mut changes = a_box.reader();
+            let known_away = |home: &Path| {
+                fs::read(home.join("run/peer-reach.json")).ok()
+                    .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+                    .is_some_and(|record| record[encode(&key(2))] == NOW)
+            };
+            while !known_away(a.path()) {
+                changes.changed().await.unwrap();
+            }
+            now.store(NOW + 65_000, Ordering::Relaxed);
+            away(a_box.reader(), key(2), true).await;
+            let rows = work_rows::for_lead(&reader, LEAD).await.unwrap();
+            assert_eq!(rows[0].standing.last_seen(), Some(NOW));
+            let stopped = a_work
+                .call(
+                    key(2),
+                    LEAD.into(),
+                    request(Tool::StopSession, json!({"session":BILLING})),
+                    true,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                stopped,
+                Outcome::Away {
+                    kept: true,
+                    sent: false
+                }
+            ));
+            assert!(mailbox.try_recv().is_err());
+            let offer = fs::read_dir(a.path().join("run/outbox/sending"))
+                .unwrap()
+                .map(|entry| {
+                    read(
+                        a.path(),
+                        entry
+                            .unwrap()
+                            .path()
+                            .strip_prefix(a.path())
+                            .unwrap()
+                            .to_str()
+                            .unwrap(),
+                    )
+                })
+                .find(|entry| entry["call"]["tool"] == "stop_session")
+                .unwrap();
+            assert_eq!(offer["from"], LEAD);
+            let quiet = a_work.call(key(2), LEAD.into(), request(Tool::StopSession, json!({"session":MISSING})),
+                true, true).await.unwrap();
+            assert!(matches!(quiet, Outcome::Away { kept: true, sent: false }));
+            let doomed = a_work.call(key(2), LEAD.into(), request(Tool::StopSession, json!({"session":MISSING})),
+                true, false).await.unwrap();
+            assert!(matches!(doomed, Outcome::Away { kept: true, sent: false }));
+
+
+            now.store(NOW + 80_000, Ordering::Relaxed);
+            let (returned, fresh_work) =
+                start_work(&url, 2, b.path(), &[1], now, engine_b.clone()).await;
+            away(a_box.reader(), key(2), false).await;
+            let mut results = vec![mailbox.recv().await.unwrap(), mailbox.recv().await.unwrap()];
+            results.sort();
+            assert_eq!(results, [
+                (LEAD.into(), format!("[Not done] Your stop_session for {MISSING} on Computer 2: There's no session {MISSING} on this computer.")),
+                (LEAD.into(), "[On Computer 2] Stopped Billing".into()),
+            ]);
+            write(a.path(), "run/outbox/sending/cal_ticket0000000000.json", json!({
+                "call": request(Tool::AnswerAsk, json!({"session":BILLING,"decision":"allow"})),
+                "peer":encode(&key(2)), "from":LEAD, "to":"", "at":NOW - 86_400_000,
+            }));
+            let (lead, words) = mailbox.recv().await.unwrap();
+            assert_eq!(lead, LEAD);
+            assert_eq!(words, format!("[Not done] Your answer_ask for {BILLING} on Computer 2 wasn't done: that computer wasn't back in time. An allow waits a day at most, as what it was for may have changed. Look at what it asks with list_sessions once it's back."));
+            assert_eq!(fs::read_dir(&engine_b.effects).unwrap().count(), 2);
+            assert!(mailbox.try_recv().is_err());
+
+            // The returned engine's full empty snapshot must clear the old list.
+            fresh_work.publish(Default::default()).await.unwrap();
+            while !work_rows::for_lead(&reader, LEAD).await.unwrap().is_empty() {
+                reader.changed().await.unwrap();
+            }
+            let origins = read(a.path(), "run/work/homes.json");
+            assert_eq!(origins[BILLING]["key"], encode(&key(2)));
+            assert_eq!(origins[BILLING]["at"], NOW);
+            let relay = returned.relay_handle().unwrap();
+            let mut events = relay.subscribe().unwrap();
+            let stale_id = "rws_replayed";
+            let stale = json!({"at":NOW, "rows":{"id":stale_id,"at":NOW, "leads":{(LEAD):[{"session":BILLING,"title":"Old copy","state":"idle"}]}}});
+            relay.sender.mail(member(1).host().unwrap(), kuvo_wire::mail::Envelope(stale.as_object().unwrap().clone())).await.unwrap();
+            loop {
+                if let kuvo_peers::relay::RelayEvent::Mail { envelope, .. } = &*events.recv().await.unwrap()
+                    && let Some(receipt) = envelope.0.get("delivered")
+                    && receipt["id"] == stale_id {
+                    assert_eq!(receipt["ok"], true);
+                    break;
+                }
+            }
+            assert!(work_rows::for_lead(&reader, LEAD).await.unwrap().is_empty());
+        })
+        .await
+        .unwrap();
+    }
 }
