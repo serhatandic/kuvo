@@ -20,7 +20,7 @@ export async function bench(t) {
   });
   return {
     relay, leases,
-    async computer(name) {
+    async computer(name, implementation = binary) {
       const folder = path.join(root, name);
       const home = path.join(folder, "box");
       const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off" };
@@ -31,23 +31,23 @@ export async function bench(t) {
       write(path.join(home, "run", "engine.json"), JSON.stringify(engine.record));
       write(path.join(home, "run", "link.json"), JSON.stringify({ phones: [], name }));
       const start = () => {
-        const child = startBox({ binary, home, env, relay });
+        const child = startBox({ binary: implementation, home, env, relay });
         children.push(child);
         return child;
       };
-      const join = async code => {
+      const join = async (code, { afterStart } = {}) => {
         // The TS installer starts its old link if nothing is running. Own that
         // process explicitly, then stop it before starting the resident.
         let legacy;
-        if (binary.typescript) {
+        if (implementation.typescript) {
           // A link waiting for its first pairing stays alive through enrollment.
           // The incoming setup replaces this pending token.
-          const initialize = boxCommand(binary, home, env, relay, ["setup-local"]);
+          const initialize = boxCommand(implementation, home, env, relay, ["setup-local"]);
           children.push(initialize);
           assert.equal((await initialize.exited).code, 0, initialize.log());
           const link = path.join(home, "run", "link.json");
           write(link, JSON.stringify({ ...readJSON(link), pairing: { token: "fixture", expires: Date.now() + 120000 } }));
-          legacy = boxCommand(binary, home, env, relay, ["run"]);
+          legacy = boxCommand(implementation, home, env, relay, ["run"]);
           children.push(legacy);
         }
         try {
@@ -56,10 +56,11 @@ export async function bench(t) {
             await until(() => fs.existsSync(pid) && Number(fs.readFileSync(pid, "utf8")) === legacy.child.pid,
               () => `Installer's link did not start\n${legacy.log()}`);
           }
-          const args = binary.typescript ? ["join"] : ["install", "--join"];
-          const child = boxCommand(binary, home, env, relay, args);
+          const args = implementation.typescript ? ["join"] : ["install", "--join"];
+          const child = boxCommand(implementation, home, env, relay, args);
           children.push(child);
           child.child.stdin.end(code + "\n");
+          await afterStart?.(child);
           return { ...await child.exited, log: child.log() };
         } finally {
           await legacy?.stop();

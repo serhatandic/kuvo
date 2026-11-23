@@ -19,8 +19,10 @@ fn main() -> ExitCode {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    let join = (word(0), word(1), args.len()) == (Some("install"), Some("--join"), 2);
     let command = match (word(0), word(1), args.len()) {
         (Some("serve"), _, 1) => None,
+        _ if join => None,
         (Some("route"), _, 1) => Some(ssh::Command::Route {
             internal: false,
             internal_path: None,
@@ -32,7 +34,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         (Some("route-to"), _, 1) => Some(ssh::Command::RouteTo),
         _ => {
             return Err(
-                "usage: kuvo-box serve | route [--internal [path]] | route-to (set KUVO_HOME)"
+                "usage: kuvo-box serve | install --join | route [--internal [path]] | route-to (set KUVO_HOME)"
                     .into(),
             );
         }
@@ -42,15 +44,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|path| path.is_absolute())
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     let home = Home::new(home)?;
-    let platform = Platform::current();
-    let account_home = Account::current()?.home_folder(platform, &env::vars_os().collect())?;
-    kuvo_move::open(&home, platform, Some(&account_home), |_| {})?;
+    if !join {
+        let platform = Platform::current();
+        let account_home = Account::current()?.home_folder(platform, &env::vars_os().collect())?;
+        kuvo_move::open(&home, platform, Some(&account_home), |_| {})?;
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
-        if let Some(command) = command {
+        if join {
+            use std::io::{BufRead as _, Read as _};
+            let mut code = String::new();
+            io::stdin().lock().take(4098).read_line(&mut code)?;
+            let name = hostname::get()?.to_string_lossy().into_owned();
+            let joined = kuvo_setup::installer::join(&home, name, &code).await?;
+            println!("{}", serde_json::to_string(&joined)?);
+            Ok(())
+        } else if let Some(command) = command {
             tokio::select! {
                 result = ssh::pipe(home.root(), command, tokio::io::stdin(), tokio::io::stdout()) => result?,
                 () = shutdown() => {},

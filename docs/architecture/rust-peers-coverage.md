@@ -99,9 +99,9 @@ All 15 Rust peer scenarios pass on macOS, native Windows and the static Linux mu
 running under WSL. The macOS workspace compile check also passes. Lokum's SSH connection
 became unavailable before the container check completed.
 
-The TypeScript enrollment scenario passes. Rust’s conformance fixture starts with an unmarked
-home, which the layout gate rejects. With a current marker it claims the lease and returns 404 at
-`POST kuvo/computers/add/code`, owned by 2.3. The enrollment scenario still gates the Done marker.
+Both binaries pass the installer enrollment and rename scenario through a local relay.
+The test starts with a current layout marker. The installer and removal details are in
+the [2.3 coverage map](rust-adding-coverage.md).
 
 ### Side-by-side home inventory
 

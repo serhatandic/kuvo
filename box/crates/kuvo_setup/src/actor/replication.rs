@@ -252,6 +252,16 @@ impl Owner {
 
     pub(super) async fn receive(&mut self, event: &relay::RelayEvent) -> Result<(), Error> {
         match event {
+            relay::RelayEvent::Installer { from, key, payload } => {
+                self.receive_installer(*from, *key, payload).await?;
+            }
+            relay::RelayEvent::Removal {
+                hinted_key,
+                envelope,
+                ..
+            } => {
+                self.receive_unlink(*hinted_key, envelope).await?;
+            }
             relay::RelayEvent::Connected(_) => {
                 self.next = Instant::now();
                 self.publish(true).await?;
