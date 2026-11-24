@@ -113,6 +113,11 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     for directory in [home.root(), updates.as_path(), &install] {
         regular(directory, true)?;
     }
+    let scratch = profile != account.home.canonicalize()?;
+    let key = scratch
+        .then(|| std::env::var("KUVO_TEST_RELEASE_KEY").ok())
+        .flatten();
+    let key = key.as_deref().unwrap_or(UPDATE_KEY);
     let marker = install.join(JOURNAL);
     let judgement = install::judge(&home, None, Platform::Linux, None)?;
     let pending = Attempt::read(&marker)?.is_some() && judgement.verdict != Verdict::Waits;
@@ -122,6 +127,7 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         judgement.verdict
     };
     if verb == "status" {
+        staging::check_install_media(source, key)?;
         let suggested = if pending {
             Some(install::Verb::New)
         } else {
@@ -159,12 +165,8 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     if !pending && let Some(code) = running_refusal(&home)? {
         return Ok(code);
     }
-    let scratch = profile != account.home.canonicalize()?;
-    let key = scratch
-        .then(|| std::env::var("KUVO_TEST_RELEASE_KEY").ok())
-        .flatten();
     let envelope = staging::read_release(&source.join("boxes.json"), staging::MAX_ENVELOPE)?;
-    let signed = SignedRelease::verify(&envelope, &[key.as_deref().unwrap_or(UPDATE_KEY)])?;
+    let signed = SignedRelease::verify(&envelope, &[key])?;
     if !signed.launches_rust() {
         return Err(io::Error::other("The selected release does not start Rust.").into());
     }

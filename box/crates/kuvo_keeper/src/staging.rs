@@ -59,6 +59,34 @@ pub fn read_release(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Verify the signed media carried by the installer before reporting its status.
+pub fn check_install_media(source: &Path, key: &str) -> io::Result<()> {
+    let checked: io::Result<bool> = (|| {
+        let envelope = read_release(&source.join("boxes.json"), MAX_ENVELOPE)?;
+        let signed = SignedRelease::verify(&envelope, &[key])?;
+        if !signed.launches_rust() {
+            return Ok(false);
+        }
+        let pack = signed.pack_for(crate::manifest::local_target()?)?;
+        let archive = File::open(source.join(pack.filename()?))?;
+        let metadata = archive.metadata()?;
+        if !metadata.is_file() || metadata.len() > MAX_PACK {
+            return Ok(false);
+        }
+        let mut digest = Sha256::new();
+        let size = io::copy(&mut archive.take(MAX_PACK + 1), &mut digest)?;
+        Ok(size <= MAX_PACK && pack.sha256 == format!("{:x}", digest.finalize()))
+    })();
+    if matches!(checked, Ok(true)) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "This copy of Kuvo is damaged. Download it again, then try again.",
+        ))
+    }
+}
+
 /// Probe the new programs in a private folder and leave the selected release in place.
 pub fn prepare(
     home: &Home,

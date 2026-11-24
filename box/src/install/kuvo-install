@@ -128,7 +128,7 @@ fi
 # per-target pack before passing its prepared files to the released-app move.
 if [ "$SYSTEM" = darwin ] && [ -x "$D/kuvo-install-bin" ]; then
     case "$VERB" in
-        status) KUVO_HOME="$HOME/$ROOT" exec "$D/kuvo-install-bin" install --status --root "$ROOT" --app "$APP" ;;
+        status) KUVO_HOME="$HOME/$ROOT" exec "$D/kuvo-install-bin" install --status --root "$ROOT" --app "$APP" --media "$D" ;;
         move) exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" ;;
         new) exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" --start ;;
     esac
