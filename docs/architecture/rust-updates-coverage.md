@@ -37,7 +37,8 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U21 | An untrusted signature in the retained release does not prevent a check against the signed feed. The previous resident stayed on the installed version and made no feed request. The fixed resident checked in 2.2 seconds. |
 | U22 | The stopped Mac uninstall reports its Helper login job, refuses a job for another folder and a failed launchctl removal, then unregisters and removes its own job on retry. It retains work and other login jobs in the scratch account. A second uninstall succeeds with no login job left. |
 | U23 | A stopped Unix home with an installed keeper removes only Kuvo's tagged reboot entry. An unreadable crontab leaves the original table and the installation intact. The retry keeps the other jobs and saved work and writes nothing to the scratch account's temporary folder. The Mac run with a disposable crontab took 2.5 seconds. |
-| U24 | The signed installer admits the stopped released-machine homes by their saved machine identity. It rejects the wrong identity and waits if a recorded old process is still alive. The v0.7.2 and beta.1 fixtures moved, kept their keys and saved work, and answered through the selected Rust keeper in 24.6 and 25.3 seconds on Mac and 4.6 and 4.6 seconds on Linux musl under WSL2. The initiating main computer's SSH path remains open. |
+| U24 | The signed installer admits the stopped released-machine homes by their saved machine identity. It rejects the wrong identity and waits if a recorded old process is still alive. The v0.7.2 and beta.1 fixtures moved, kept their keys and saved work, and answered through the selected Rust keeper in 17.2 and 21.1 seconds on Mac and 4.7 and 4.7 seconds on Linux musl under WSL2. |
+| U25 | A Rust main tries the saved SSH address while its v0.7.2 machine is offline. When the address answers, it checks the saved machine identity, sends the retained signed target pack, and starts `kuvo-install`. If the first keeper launch fails after selection, the next round resumes it. The Rust keeper answers and the SSH reservation and installer staging clear. The old key, secret and work remain in place. |
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -203,6 +204,21 @@ the released machine homes in 17.2 and 21.1 seconds. The pinned-engine
 test also verified the TypeScript exit-status rule against the actual
 version output observed from the SHA-512-pinned Linux download.
 
+The static Linux branch with the saved-machine transport passed 14 checks
+under WSL2 in 125.5 seconds. In U25 the returning v0.7.2 computer answered
+in 8.6 seconds and installer and reservation cleanup took 61 milliseconds
+more. The scenario uses a scratch SSH stand-in that runs each guarded command
+in the returning computer's account. U8 confirmed the main and member in
+9.4 and 12.5 seconds after the download resumed and caught up the offline
+computer in 14.4 seconds. In U9 a replacement main took over in 8.2 seconds
+from startup, confirmed 7.9 seconds after resuming the download, and brought
+the old main back in 20.0 seconds.
+After merging the standalone SSH guard from main, the same static WSL2
+test returned the computer in 11.9 seconds, including a failed first keeper
+start and the automatic retry. Reservation and staging cleanup took another
+45 milliseconds. With the first launch refused and the retry missing, the
+old build never started the selected Rust keeper.
+
 ## TypeScript reference cases
 
 `Covered` means the exposed behaviour is checked. `Partial` records which
@@ -287,7 +303,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, engine swap holds, rollback, expiry, and downgrade fence | Open as release tests. | 3.2, 7.2 |
 | [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Partial. U10 checks the saved TypeScript home, and U13 checks the one-time refusal to roll back. Interrupted handoff and wipe generation in this workflow remain open. | 7.2, 9.1 |
 | Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Partial. U8 uses the shell keeper and U9 uses the native keeper. A stand-in turn stays alive. Before-rejoin work admission and native holder adoption remain open. | 4.1, 7.2 |
-| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10 checks the bridge beta taking Rust directly. U18–U19 check the exact deployed beta.48's refusal and automatic two-step catch-up. U11 moves released Mac app homes with a stand-in engine and launchctl. U24 moves the stopped released machine homes through signed media. Automatic discovery and installer delivery over SSH, shipping the bridge beta, and a real Helper job remain open. | 2.3, 7.2, 9.1, 9.3 |
+| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10 checks the bridge beta taking Rust directly. U18–U19 check the exact deployed beta.48's refusal and automatic two-step catch-up. U11 moves released Mac app homes with a stand-in engine and launchctl. U24 moves the stopped released machine homes through signed media. U25 checks automatic delivery to a returning v0.7.2 home with a guarded SSH stand-in. A released machine whose old keeper is still running, real SSH delivery, shipping the bridge beta, and a real Helper job remain open. | 2.3, 7.2, 9.1, 9.3 |
 | Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers stopped standalone scratch installations on Mac, native Windows, and Linux musl under WSL. U22 verifies stopped Helper-owned uninstall. U23 exercises reboot entry cleanup on Mac and Linux under WSL2 with a disposable crontab. Live shared uninstall and installer flows after wipe remain open. | 2.3, 7.2 |
 | [Setup](rust-setup-coverage.md) add and fleet authority, [Windows](rust-windows-coverage.md) case 18 | Partial. U9 checks a new main's lease and U4 checks an automatic Windows selection. Shared Windows activation, on-return admission, and cleanup of a busy previous release remain open. | 2.3, 7.2, 8.1 |
 

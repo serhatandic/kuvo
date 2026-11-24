@@ -888,7 +888,7 @@ Buffer.from = function (value, encoding, ...args) {
   }
 }
 
-async function checkReleasedMachine(t, { root, tag, fixture, environment, install, installedRelease }) {
+function seedReleasedMachine(root, tag, fixture) {
   const account = path.join(root, `${tag}-released-machine`);
   const machineTools = path.join(account, "tools");
   const home = path.join(account, ".kuvo-code");
@@ -905,6 +905,11 @@ async function checkReleasedMachine(t, { root, tag, fixture, environment, instal
   const legacyBin = path.join(home, "bin/kuvo-start");
   write(legacyBin, "#!/bin/sh\nexit 77\n", { mode: 0o700 });
   if (tag !== "v0.7.2") write(path.join(home, "bin/box-version"), tag.slice(1) + "\n");
+  return { account, machineTools, home, identity, link, before, legacyBin };
+}
+
+async function checkReleasedMachine(t, { root, tag, fixture, environment, install, installedRelease }) {
+  const { account, machineTools, home, identity, link, before, legacyBin } = seedReleasedMachine(root, tag, fixture);
   const updateMachine = value => install("released-machine", account, machineTools, ["--identity", value]);
   const wrong = updateMachine("bb".repeat(16));
   assert.equal(wrong.status, 1, wrong.stdout + wrong.stderr);
@@ -952,22 +957,13 @@ async function checkReleasedMachine(t, { root, tag, fixture, environment, instal
   }
 }
 
-test("signed Linux media moves the two released machines after they return", { timeout: 240000 }, async t => {
-  const binary = boxBinary();
-  const cache = process.env.KUVO_CONFORMANCE_RELEASED_MACHINES;
-  if (binary.typescript || process.platform !== "linux" || !cache) {
-    return t.skip("Supply the released machine fixtures for the Linux installer.");
-  }
-  const root = fs.realpathSync(scratch());
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const environment = isolatedEnv(root);
-  const key = keypair();
+async function linuxInstallMedia(t, binary, root, key, beforeStart = "") {
   const media = path.join(root, "media");
   const tree = path.join(media, "files");
   const version = "0.8.0";
   const pin = "2.2.6";
   const starter = fs.readFileSync(new URL("../../box/src/keeper/kuvo-start", import.meta.url), "utf8")
-    .replaceAll("@ENGINE@", pin);
+    .replaceAll("@ENGINE@", pin).replace("#!/bin/sh\n", `#!/bin/sh\n${beforeStart}`);
   const payload = {
     "bin/box-version": Buffer.from(version + "\n"),
     "bin/kuvo-start": Buffer.from(starter),
@@ -984,10 +980,24 @@ test("signed Linux media moves the two released machines after they return", { t
   const pack = { url: "https://example.invalid/move.tar.gz", sha256: digest(bytes) };
   const feed = await engineFeed(t, media, `#!/bin/sh\n[ "$1" = --version ] && echo ${pin}\n`);
   const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
-  write(path.join(media, "boxes.json"), encode(envelope({ kuvo: "box/1", version, engine: pin, launch: "rust",
+  write(path.join(media, "boxes.json"), encode(envelope({ kuvo: "box/1", version, engine: pin, launch: "rust", spreads: true,
     pack, packs: { [target]: pack }, linux: { [arch]: feed.build } }, key)));
   fs.copyFileSync(new URL("../../box/src/install/kuvo-install", import.meta.url), path.join(media, "kuvo-install"));
   fs.copyFileSync(binary.file, path.join(media, "kuvo-install-bin"));
+  return { media, tree, version, pack, bytes };
+}
+
+test("signed Linux media moves the two released machines after they return", { timeout: 240000 }, async t => {
+  const binary = boxBinary();
+  const cache = process.env.KUVO_CONFORMANCE_RELEASED_MACHINES;
+  if (binary.typescript || process.platform !== "linux" || !cache) {
+    return t.skip("Supply the released machine fixtures for the Linux installer.");
+  }
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const environment = isolatedEnv(root);
+  const key = keypair();
+  const { media, version, pack } = await linuxInstallMedia(t, binary, root, key);
   const install = (verb, account, _tools, extra) => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb, ...extra], {
     cwd: account,
     env: { ...environment, HOME: account, TMPDIR: path.join(account, "tmp"), KUVO_TEST_RELEASE_KEY: key.key },
@@ -1000,6 +1010,87 @@ test("signed Linux media moves the two released machines after they return", { t
   };
   for (const tag of ["v0.7.2", "v0.8.0-beta.1"]) {
     await checkReleasedMachine(t, { root, tag, fixture: path.join(cache, tag), environment, install, installedRelease });
+  }
+});
+
+test("the main sends signed installer media to a returning 0.7.2 machine", { timeout: 150000 }, async t => {
+  const binary = boxBinary();
+  const cache = process.env.KUVO_CONFORMANCE_RELEASED_MACHINES;
+  if (binary.typescript || process.platform !== "linux" || !cache) {
+    return t.skip("Supply the released machine fixture for the Linux SSH installer.");
+  }
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const environment = isolatedEnv(root);
+  const key = keypair();
+  const { media, tree, version, pack, bytes } = await linuxInstallMedia(t, binary, root, key, `
+if [ "\${1:-}" = box ] && [ ! -f "$HOME/.kuvo-code/run/keeper-start-refused" ]; then
+  touch "$HOME/.kuvo-code/run/keeper-start-refused"
+  exit 1
+fi
+`);
+  const returned = seedReleasedMachine(root, "v0.7.2", path.join(cache, "v0.7.2"));
+  const home = path.join(environment.HOME, ".kuvo-code");
+  const selected = `versions/${version}-${pack.sha256.slice(0, 12)}`;
+  fs.cpSync(tree, path.join(home, selected), { recursive: true });
+  fs.copyFileSync(path.join(media, "boxes.json"), path.join(home, selected, "boxes.json"));
+  write(path.join(home, selected, "pack"), bytes);
+  fs.symlinkSync(selected + "/bin", path.join(home, "bin"));
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "machines.json"), encode([{ destination: "released-lab", identity: returned.identity }]));
+  const online = path.join(root, "online");
+  const reached = path.join(root, "reached");
+  const fake = path.join(environment.HOME, "ssh-fixture");
+  write(fake, `#!/bin/sh
+printf 'ssh\\n' >> "$KC_REACHED"
+[ -f "$KC_ONLINE" ] || exit 255
+for command do :; done
+export HOME="$KC_REMOTE_HOME"
+exec /bin/sh -c "$command"
+`, { mode: 0o700 });
+  const releaseFeed = createServer((request, response) => {
+    if (request.url !== "/boxes.json") return response.writeHead(404).end();
+    response.end(fs.readFileSync(path.join(media, "boxes.json")));
+  });
+  releaseFeed.listen(0, "127.0.0.1");
+  await once(releaseFeed, "listening");
+  const env = { ...environment, KUVO_TEST_SSH: fake, KC_ONLINE: online,
+    KC_REACHED: reached, KC_REMOTE_HOME: returned.account, KUVO_TEST_RELEASE_KEY: key.key,
+    KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${releaseFeed.address().port}/boxes.json` };
+  const main = startBox({ binary, home, env, relay: { url: "ws://127.0.0.1:1" } });
+  try {
+    assert.equal((await request(await main.ready(), "GET", "kuvo/info")).status, 200);
+    await until(() => fs.existsSync(reached), () => `the main should try the saved SSH address\n${main.log()}`, 15000);
+    assert.equal(fs.existsSync(path.join(returned.home, "folder-version.json")), false);
+    const started = performance.now();
+    write(online, "");
+    const ready = await until(() => {
+      try { return readJSON(path.join(returned.home, "run/serve.json")); } catch { return undefined; }
+    }, () => `the returning machine should answer from the Rust keeper\n${main.log()}`, 90000);
+    assert.equal((await request(ready, "GET", "kuvo/info")).status, 200);
+    assert.equal(fs.readlinkSync(path.join(returned.home, "bin")), selected + "/bin");
+    assert.equal(fs.existsSync(path.join(returned.home, "run/keeper-start-refused")), true);
+    assert.equal(readJSON(returned.link).key, returned.before.key);
+    assert.equal(readJSON(returned.link).secret, returned.before.secret);
+    assert.equal(fs.readFileSync(path.join(returned.home, "workspace/notes"), "utf8"), "work kept on the released machine");
+    const answered = performance.now();
+    const reservation = path.join(returned.account, ".kuvo-code-adding");
+    const installer = path.join(returned.home, "updates/install");
+    await until(() => !fs.lstatSync(reservation, { throwIfNoEntry: false }) && !fs.existsSync(installer),
+      () => `the SSH reservation and installer staging should clear\n${main.log()}`);
+    t.diagnostic(`the returning 0.7.2 machine answered in ${Math.round(answered - started)} ms`);
+    t.diagnostic(`its SSH reservation and staging cleared in ${Math.round(performance.now() - answered)} ms more`);
+  } finally {
+    releaseFeed.close();
+    releaseFeed.closeAllConnections();
+    await main.stop();
+    if (fs.lstatSync(path.join(returned.home, "bin")).isSymbolicLink()) {
+      const stopped = spawnSync("/bin/sh", [returned.legacyBin, "off"], {
+        cwd: returned.home, env: { ...environment, HOME: returned.account, TMPDIR: path.join(returned.account, "tmp") },
+        encoding: "utf8", timeout: 15000,
+      });
+      assert.equal(stopped.status, 0, stopped.stderr);
+    }
   }
 });
 

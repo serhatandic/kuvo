@@ -1,6 +1,7 @@
 //! Connect the keeper's update preparation to live setup and peer facts.
 
 mod mail;
+mod released_machines;
 
 use std::{
     io,
@@ -104,6 +105,7 @@ pub fn start(
         checking: None,
         bridge_fetch: None,
         next_bridge: Instant::now(),
+        released_machines: released_machines::Checks::new(scratch),
         last_sent: None,
         attempted: None,
         pending: None,
@@ -222,6 +224,7 @@ struct Fleet {
     checking: Option<FeedCheck>,
     bridge_fetch: Option<JoinHandle<io::Result<()>>>,
     next_bridge: Instant,
+    released_machines: released_machines::Checks,
     last_sent: Option<(UpdateFacts, Option<BridgeUpdate>)>,
     attempted: Option<PreparedRelease>,
     pending: Option<JoinHandle<io::Result<()>>>,
@@ -440,6 +443,18 @@ impl Fleet {
         let running = running_manifest
             .as_ref()
             .and_then(|body| Candidate::verify(body.clone(), &self.key).ok());
+        let held_for_released = running
+            .as_ref()
+            .filter(|_| (local_main || standalone) && candidate.is_none());
+        self.released_machines
+            .tick(
+                &self.home,
+                held_for_released,
+                &self.fetcher,
+                &self.setup,
+                standalone,
+            )
+            .await;
         let installed_sha256 = running
             .as_ref()
             .and_then(|running| running.local().ok())
