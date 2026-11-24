@@ -13,7 +13,8 @@ import type { Agent, PermissionAsk, RunInput, RunResult, Thread, TurnHooks } fro
 import { failure } from "./agent"
 import type { Limit } from "./auto"
 import { newID } from "./ids"
-import { holdsBack, matches, ruled } from "./rules"
+import { blocksInFiles, blocksOf } from "./blocks"
+import { matches, ruled } from "./rules"
 import type { Turn } from "./turn"
 import type { Decision, FormField, Model, ModelRef, Session, StructuredError, TokenUsage, ToolOutput, PermissionRule } from "./wire"
 
@@ -175,13 +176,15 @@ export class EngineLink {
     return pending
   }
 
-  /** The engine's settings files for a folder (yours, the project's), each as written; undefined when never read. */
-  private async settingsFiles(directory: string, fresh = false): Promise<any[] | undefined> {
+  /** The engine's settings files for a folder (yours, the project's), each as written; undefined when
+   * never read, and with `current` when the engine didn't answer just now (not as last known). */
+  private async settingsFiles(directory: string, fresh = false, current = false): Promise<any[] | undefined> {
     const generation = this.generation
     // Live permission replies cannot share a cached or already pending settings read.
     const answer = fresh ? await this.request("GET", "/api/config", undefined, 4_000, directory).catch(() => undefined)
       : await this.read("/api/config", directory)
     if (answer === undefined) return undefined
+    if (current && !fresh && (!this.url || this.reads.get(`/api/config\n${directory}`)?.failed)) return undefined
     if (fresh && (generation !== this.generation || !(answer?.data ?? answer) || typeof (answer?.data ?? answer) !== "object")) return undefined
     return Array.isArray(answer) ? answer : Array.isArray(answer?.data) ? answer.data : [{ info: answer?.data ?? answer }]
   }
@@ -230,22 +233,22 @@ export class EngineLink {
   }
 
   /**
+   * The files the engine reads its settings from for a folder (`settingsLayers`), to read its Blocks
+   * from when it can't be asked: it's parked while only coding agents work (its record gone, and this
+   * still pointing where it was), or starting again. Set where the box's folders are known (main.ts).
+   */
+  settingsLayers?: (directory: string) => string[]
+
+  /**
    * Settings › Permissions' Blocks for tools and commands (the engine's `policies`, "shell:git push
-   * *"), as rules: what nothing allows. Undefined when they aren't known (the engine never answered).
+   * *"), as rules: what nothing allows. As the engine says now, or, when it can't, as its settings
+   * files say now (`settingsLayers`), not as it said before it stopped. Undefined when they aren't
+   * known (neither answers). `fresh`: read now, for a live answer, not kept from a moment ago.
    */
   async policies(directory: string, fresh = false): Promise<PermissionRule[] | undefined> {
-    const files = await this.settingsFiles(directory, fresh)
-    if (!files) return undefined
-    const policies = files.flatMap((source) => (Array.isArray(source?.info?.policies) ? source.info.policies : []))
-    const rules: PermissionRule[] = []
-    for (const policy of policies as { action?: string; resource?: string; effect?: string }[]) {
-      if (policy?.action !== "tool.use" || typeof policy.resource !== "string") continue
-      if (typeof policy.effect !== "string") continue
-      const at = policy.resource.indexOf(":")
-      // (One of a kind a newer engine has that this bridge doesn't know: nothing allows it either.)
-      rules.push({ action: at < 0 ? policy.resource : policy.resource.slice(0, at), resource: at < 0 ? "*" : policy.resource.slice(at + 1) || "*", effect: holdsBack(policy.effect) ? "deny" : policy.effect })
-    }
-    return rules
+    const files = await this.settingsFiles(directory, fresh, Boolean(this.settingsLayers))
+    if (files) return blocksOf(files.flatMap((source) => (Array.isArray(source?.info?.policies) ? source.info.policies : [])))
+    return this.settingsLayers ? blocksInFiles(this.settingsLayers(directory)) : undefined
   }
 
   /** The model for sessions' titles (Settings › Agents), when you picked one. */
