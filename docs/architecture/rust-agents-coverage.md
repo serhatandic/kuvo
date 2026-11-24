@@ -130,6 +130,13 @@ recovered adapter to the shared sink and saves the replayed text and
 final outcome. The holder and child PIDs are unchanged. The controller
 contract and roster factory signature are unchanged.
 
+The compatibility permission and form routes now use the resident's
+ask book. The macOS fixture sees a running coding-agent session in the
+shared session list, changes Blocks while that turn is asking, and
+verifies that an attempted approval cannot release the action. It then
+rejects the ask and checks that a delayed reply cannot answer it again.
+Unified ask cards and delivery routes remain open.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.

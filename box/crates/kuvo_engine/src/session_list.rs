@@ -145,6 +145,7 @@ impl LocalSessions {
         let (updates, snapshot) = watch::channel(None);
         let stop = CancellationToken::new();
         let (changed, revisions) = watch::channel(0);
+        let agent_revision = changed.clone();
         let (ask_updates, mut ask_changes) = watch::channel(Arc::new(crate::asks::Book::default()));
         let (thinking, mut thought) = watch::channel(Arc::new(BTreeSet::new()));
         let (models_changed, models) = crate::model_refresh::watch(engine.clone());
@@ -160,6 +161,10 @@ impl LocalSessions {
         );
         let known_asks = ask_changes.clone();
         let mut external = engine.external_asks.as_ref().map(|source| source.waiting());
+        let mut agent_runs = engine
+            .agent_sessions
+            .as_ref()
+            .and_then(|source| source.running_changes());
         let list = tokio::spawn(async move {
             let kept = load(&engine.home).await;
             let existed = kept.is_some();
@@ -173,6 +178,9 @@ impl LocalSessions {
             if existed {
                 let mut cached = last.clone();
                 cached.pending = vec!["engine".to_owned()];
+                if engine.agent_sessions.is_some() {
+                    cached.pending.push("bridge".to_owned());
+                }
                 updates.send_replace(Some(Arc::new(cached)));
             }
             let mut first = true;
@@ -188,7 +196,21 @@ impl LocalSessions {
                 )
                 .await
                 .ok();
-            let mut inventory: Option<(u64, Vec<Observed>, EngineFacts)> = None;
+            let mut agent_edits = if engine.agent_sessions.is_some() {
+                files
+                    .subscribe(
+                        engine.home.join("agents/sessions"),
+                        Options {
+                            create: true,
+                            recursive: true,
+                        },
+                    )
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            let mut inventory: Option<(u64, Inventory, EngineFacts)> = None;
             let mut reads = JoinSet::new();
             let mut read_again = true;
             let period = Duration::from_secs(60);
@@ -203,13 +225,12 @@ impl LocalSessions {
                         .as_ref()
                         .map(|(_, _, facts)| Arc::clone(&facts.databases));
                     reads.spawn(async move {
-                        let lease = reader.acquire(Demand::Passive).await?;
                         let (rows, mut facts) = tokio::join!(
-                            read_inventory(&reader, &lease),
+                            Inventory::read(&reader),
                             engine_facts::read(&reader.home, previous)
                         );
-                        let rows = rows.ok()?;
-                        facts.add_linked(&rows).await;
+                        let rows = rows?;
+                        facts.add_linked(&rows.rows).await;
                         Some((at, rows, facts))
                     });
                 }
@@ -250,6 +271,29 @@ impl LocalSessions {
                             continue;
                         }
                     },
+                    changed = agent_changes(&mut agent_edits) => {
+                        if changed {
+                            agent_revision.send_modify(|revision| *revision += 1);
+                            read_again = true;
+                        } else {
+                            agent_edits = None;
+                        }
+                        continue;
+                    },
+                    changed = async {
+                        match &mut agent_runs {
+                            Some(changes) => changes.changed().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        if changed.is_ok() {
+                            agent_revision.send_modify(|revision| *revision += 1);
+                            read_again = true;
+                        } else {
+                            agent_runs = None;
+                        }
+                        continue;
+                    },
                     _ = check.tick() => {
                         read_again = true;
                         continue;
@@ -260,7 +304,7 @@ impl LocalSessions {
                         inventory = Some((at, rows, facts));
                     },
                 }
-                let Some((began, rows, facts)) = &inventory else {
+                let Some((began, inventory, facts)) = &inventory else {
                     // Mark an ask heard even while there is no complete engine inventory.
                     ask_changes.borrow_and_update();
                     continue;
@@ -277,7 +321,8 @@ impl LocalSessions {
                     continue;
                 };
                 let (mut sessions, projects, archived, needs_you) = measure(
-                    rows,
+                    &inventory.rows,
+                    inventory.retained(&last),
                     &engine.home,
                     &projects,
                     &worktrees.filed,
@@ -295,7 +340,7 @@ impl LocalSessions {
                         facts.thinking(thinking.contains(id));
                     }
                     let write_first = std::mem::take(&mut first);
-                    (last.commit(sessions, projects, archived, needs_you) || write_first)
+                    (last.commit(sessions, projects, archived, needs_you, inventory) || write_first)
                         .then(|| publish(&updates, &last))
                 };
                 if let Some(saved) = published {
@@ -571,14 +616,16 @@ impl Snapshot {
         projects: Projects,
         archived: Vec<Value>,
         needs_you: Vec<Value>,
+        inventory: &Inventory,
     ) -> bool {
+        let pending = inventory.pending();
         let mut changed = self.seq == 0
             || self.needs_you.as_ref() != Some(&needs_you)
-            || !self.pending.is_empty()
+            || self.pending != pending
             || self.projects != projects
             || self.archived != archived;
         let next = self.seq + 1;
-        self.pending.clear();
+        self.pending = pending;
         self.needs_you = Some(needs_you);
         let removed = self
             .sessions
@@ -598,7 +645,12 @@ impl Snapshot {
             changed = true;
         }
         for (id, facts) in fresh {
-            if self.sessions.get(&id).is_some_and(|row| row.facts == facts) {
+            let place = inventory.place(&id, self.sessions.get(&id));
+            if self
+                .sessions
+                .get(&id)
+                .is_some_and(|row| row.facts == facts && row.place.as_deref() == Some(place))
+            {
                 continue;
             }
             self.gone.remove(&id);
@@ -607,7 +659,7 @@ impl Snapshot {
                 Listed {
                     facts,
                     seq: next,
-                    place: Some("engine".into()),
+                    place: Some(place.into()),
                 },
             );
             changed = true;
@@ -830,6 +882,96 @@ pub(crate) struct Observed {
     pub(crate) running: bool,
 }
 
+struct Inventory {
+    rows: Vec<Observed>,
+    agent_ids: BTreeSet<String>,
+    engine_known: bool,
+    bridge_known: Option<bool>,
+}
+
+impl Inventory {
+    async fn read(engine: &Engine) -> Option<Self> {
+        let engine_rows = async {
+            let lease = engine.acquire(Demand::Passive).await?;
+            read_inventory(engine, &lease).await.ok()
+        };
+        let bridge_rows = async {
+            let source = engine.agent_sessions.as_ref()?;
+            let rows = source.inventory().await.ok()?;
+            Some(
+                rows.into_iter()
+                    .filter_map(|row| {
+                        let session = serde_json::from_value(Value::Object(row.header)).ok()?;
+                        Some(Observed {
+                            session,
+                            running: row.running,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let (engine_rows, bridge_rows) = tokio::join!(engine_rows, bridge_rows);
+        if engine_rows.is_none() && bridge_rows.is_none() {
+            return None;
+        }
+        let agent_ids = bridge_rows
+            .iter()
+            .flatten()
+            .map(|row| row.session.id.clone())
+            .collect();
+        let engine_known = engine_rows.is_some();
+        let bridge_known = engine
+            .agent_sessions
+            .as_ref()
+            .map(|_| bridge_rows.is_some());
+        let rows = engine_rows
+            .into_iter()
+            .flatten()
+            .chain(bridge_rows.into_iter().flatten())
+            .collect();
+        Some(Self {
+            rows,
+            agent_ids,
+            engine_known,
+            bridge_known,
+        })
+    }
+
+    fn pending(&self) -> Vec<String> {
+        let mut sources = Vec::new();
+        if !self.engine_known {
+            sources.push("engine".to_owned());
+        }
+        if self.bridge_known == Some(false) {
+            sources.push("bridge".to_owned());
+        }
+        sources
+    }
+
+    fn retained(&self, previous: &Snapshot) -> Sessions {
+        previous
+            .sessions
+            .iter()
+            .filter(|(_, row)| match row.place.as_deref() {
+                Some("bridge") => self.bridge_known == Some(false),
+                _ => !self.engine_known,
+            })
+            .map(|(id, row)| (id.clone(), row.facts.clone()))
+            .collect()
+    }
+
+    fn place(&self, id: &str, previous: Option<&Listed>) -> &'static str {
+        if self.agent_ids.contains(id)
+            || (self.bridge_known == Some(false)
+                && previous.is_some_and(|row| row.place.as_deref() == Some("bridge")))
+        {
+            "bridge"
+        } else {
+            "engine"
+        }
+    }
+}
+
 pub(crate) async fn read_inventory(
     engine: &Engine,
     lease: &Lease,
@@ -867,6 +1009,27 @@ async fn project_changes(edits: &mut Option<Subscription>) -> bool {
                 if paths.iter().any(|path| {
                     path == Path::new("projects.json")
                         || path == Path::new(crate::worktree_notes::FILE)
+                }) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+async fn agent_changes(edits: &mut Option<Subscription>) -> bool {
+    let Some(edits) = edits else {
+        return std::future::pending().await;
+    };
+    while let Some(notice) = edits.recv().await {
+        match notice {
+            Notice::Rescan => return true,
+            Notice::Changed { paths }
+                if paths.iter().any(|path| {
+                    path.file_name().is_some_and(|name| name == "session.json")
+                        || path.components().count() == 1
                 }) =>
             {
                 return true;
@@ -924,6 +1087,7 @@ impl<'a> Filing<'a> {
 
 fn measure(
     rows: &[Observed],
+    mut sessions: Sessions,
     home: &Path,
     projects: &[Project],
     worktrees: &BTreeMap<String, String>,
@@ -931,15 +1095,12 @@ fn measure(
     asks: &crate::asks::Book,
 ) -> (Sessions, Projects, Vec<Value>, Vec<Value>) {
     let filing = Filing::new(projects, worktrees, engine_facts);
-    let mut sessions = rows
-        .iter()
-        .map(|row| {
-            (
-                row.session.id.clone(),
-                facts(&row.session, home, &filing, row.running),
-            )
-        })
-        .collect::<Sessions>();
+    sessions.extend(rows.iter().map(|row| {
+        (
+            row.session.id.clone(),
+            facts(&row.session, home, &filing, row.running),
+        )
+    }));
 
     let mut busy_ancestors = BTreeSet::new();
     for facts in sessions

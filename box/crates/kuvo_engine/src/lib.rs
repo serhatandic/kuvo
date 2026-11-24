@@ -1,6 +1,7 @@
 //! The resident's on-demand OpenCode and its API passthrough.
 
 mod agent_models;
+mod agent_sessions;
 mod api;
 mod asks;
 mod attachment_retention;
@@ -59,6 +60,7 @@ pub const FEATURES: &[&str] = &[
 pub use agent_models::{
     AgentCatalog, AgentModel, AgentModelSource, AutoModel, CatalogRead, ModelAccount,
 };
+pub use agent_sessions::{AgentSessionRead, AgentSessionRow, AgentSessionSource};
 pub use attachment_retention::{AttachmentConversation, AttachmentRead, AttachmentSource};
 pub use external_asks::{
     AskResult, ExternalAsk, ExternalAskKind, ExternalAsks, ExternalCard, ExternalDecision,

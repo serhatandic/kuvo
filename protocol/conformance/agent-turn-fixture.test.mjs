@@ -53,3 +53,56 @@ test("the resident writes and interrupts a turn through its registered stand-in 
       assert.deepEqual(stopped.map(row => row.type), ["user", "assistant", "idle", "user", "assistant", "idle"]);
     });
   });
+
+test("a new Block keeps an outgoing approval from releasing a pending action",
+  { timeout: 30000 }, t => {
+    if (boxBinary().typescript) {
+      t.skip("The stand-in implements the Rust adapter contract.");
+      return;
+    }
+    const id = "ses_fixture_approval";
+    const route = `kuvo/agents/api/session/${id}`;
+    const headers = { "x-kuvo-from": "app" };
+    return withAgentFixture(t, home => {
+      write(path.join(home, "agents", "sessions", id, "session.json"), JSON.stringify({
+        id, title: "Fixture approval", projectID: "fixture", agent: "build", location: { directory: home },
+        model: { providerID: "codex-cli", id: "stand-in" },
+        time: { created: 1, updated: 1 },
+        permissions: [{ action: "edit", resource: "*", effect: "ask" }],
+      }));
+    }, async (listener, home) => {
+      const call = (method, tail, body) => request(listener, method, route + tail, body, headers);
+      const input = await call("POST", "/prompt", { id: "msg_fixture_permission", text: "wait for approval" });
+      assert.equal(input.status, 200, input.text);
+      const ask = await until(async () => {
+        const answer = await call("GET", "/permission");
+        assert.equal(answer.status, 200, answer.text);
+        return answer.json.data[0];
+      }, "The stand-in did not reach its permission ask.");
+      assert.equal(ask.action, "edit");
+      assert.deepEqual(ask.resources, ["fixture.txt"]);
+      const active = await until(async () => {
+        const answer = await request(listener, "GET", "kuvo/sessions/list", undefined, headers);
+        const session = answer.json?.sessions?.[id];
+        return session?.running && session;
+      }, "The current agent turn did not reach the shared session list.");
+      assert.equal(active.title, "Fixture approval");
+      write(path.join(home, "box", "opencode.json"), JSON.stringify({
+        policies: [{ action: "tool.use", resource: "edit:fixture.txt", effect: "deny" }],
+      }));
+      const reply = `/permission/${ask.id}/reply`;
+      const denied = await call("POST", reply, { decision: "once" });
+      assert.equal(denied.status, 403, denied.text);
+      assert.equal((await call("GET", "/permission")).json.data[0].id, ask.id);
+      const rejected = await call("POST", reply, { decision: "reject" });
+      assert.equal(rejected.status, 200, rejected.text);
+      const saved = await until(async () => {
+        const answer = await call("GET", "/message?order=asc");
+        const rows = answer.json.data;
+        return rows.at(-1)?.type === "idle" && rows;
+      }, "The turn did not settle after refusal.");
+      assert.equal(saved[1].content[0].text, "Fixture received wait for approval; refused");
+      assert.deepEqual((await call("GET", "/permission")).json.data, []);
+      assert.equal((await call("POST", reply, { decision: "once" })).status, 404);
+    });
+  });

@@ -249,7 +249,7 @@ fn read_prompt(body: &Value) -> Result<Prompt, Refusal> {
     })
 }
 
-fn session_id(raw: Option<&str>) -> Result<String, Refusal> {
+pub(super) fn session_id(raw: Option<&str>) -> Result<String, Refusal> {
     let raw = raw.unwrap_or_default();
     percent_encoding::percent_decode_str(raw)
         .decode_utf8()

@@ -3,8 +3,8 @@
 use kuvo_agents::{
     runtime::AdapterCall,
     session::{
-        ActiveTurn, Delivery, EventEnvelope, Outcome, Prompt, Steer, TextKind, Thread, TurnEvent,
-        TurnInput, TurnKind, TurnResult, TurnSink,
+        ActiveTurn, Decision, Delivery, EventEnvelope, Outcome, PermissionAsk, Prompt, Steer,
+        TextKind, Thread, TurnEvent, TurnInput, TurnKind, TurnResult, TurnSink,
     },
 };
 use std::sync::Arc;
@@ -29,12 +29,13 @@ impl Thread for FixtureThread {
             let (control, mut incoming) = mpsc::channel(4);
             tokio::spawn(async move {
                 let result: std::io::Result<()> = async {
-                    let (text, wait) = match input.kind {
+                    let (text, wait, approval) = match input.kind {
                         TurnKind::Prompt(prompt) => {
                             let wait = prompt.text == "wait for interrupt";
-                            (format!("Fixture received {}", prompt.text), wait)
+                            let approval = prompt.text == "wait for approval";
+                            (format!("Fixture received {}", prompt.text), wait, approval)
                         }
-                        _ => ("Fixture resumed".into(), false),
+                        _ => ("Fixture resumed".into(), false, false),
                     };
                     event(
                         &sink,
@@ -55,6 +56,35 @@ impl Thread for FixtureThread {
                         },
                     )
                     .await?;
+                    if approval {
+                        let decision = sink
+                            .permission(PermissionAsk {
+                                id: "fixture-edit".into(),
+                                tool_call_id: None,
+                                action: "edit".into(),
+                                resources: vec!["fixture.txt".into()],
+                                save: Vec::new(),
+                                message: None,
+                                metadata: Default::default(),
+                                sandboxed: None,
+                                already_weighed: false,
+                                unclassified: false,
+                            })
+                            .await?;
+                        event(
+                            &sink,
+                            TurnEvent::TextDelta {
+                                kind: TextKind::Text,
+                                block: None,
+                                delta: if decision == Decision::Reject {
+                                    "; refused".into()
+                                } else {
+                                    "; approved".into()
+                                },
+                            },
+                        )
+                        .await?;
+                    }
                     if wait {
                         while let Some(control) = incoming.recv().await {
                             match control {

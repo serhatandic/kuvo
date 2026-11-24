@@ -1,13 +1,51 @@
 //! Read saved agent conversations through the resident.
 
 use http::StatusCode;
-use kuvo_agents::session_store::{MessageOrder, SessionStore};
+use kuvo_agents::{
+    session_runs::SessionRuns,
+    session_store::{MessageOrder, SessionStore},
+};
+use kuvo_engine::{AgentSessionRead, AgentSessionRow, AgentSessionSource};
 use kuvo_protocol::routes::{
     get_kuvo_agents_api_session_id_message as transcript,
     types::GetKuvoAgentsApiSessionIdMessageStatus200Cursor as Cursor,
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use percent_encoding::percent_decode_str;
+use std::{collections::BTreeSet, sync::Arc};
+use tokio::sync::watch;
+
+pub(crate) struct Inventory {
+    pub store: SessionStore,
+    pub running: Option<SessionRuns>,
+}
+
+impl AgentSessionSource for Inventory {
+    fn inventory(&self) -> AgentSessionRead<'_> {
+        Box::pin(async move {
+            let active = self.running.as_ref().map(SessionRuns::running);
+            Ok(self
+                .store
+                .headers()
+                .await?
+                .into_iter()
+                .map(|saved| {
+                    let running = active
+                        .as_ref()
+                        .is_some_and(|active| active.contains(saved.id()));
+                    AgentSessionRow {
+                        header: saved.into_fields(),
+                        running,
+                    }
+                })
+                .collect())
+        })
+    }
+
+    fn running_changes(&self) -> Option<watch::Receiver<Arc<BTreeSet<String>>>> {
+        self.running.as_ref().map(SessionRuns::changes)
+    }
+}
 
 pub(crate) fn register(sessions: SessionStore, routes: &mut Registry) {
     routes.register::<transcript::Spec, _, _>(Access::Any, move |call| {

@@ -164,13 +164,23 @@ pub async fn run(
             location,
         );
         agents::turns::restore(&runs, &sessions, home, accounts.adopted_turns()).await;
+        agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
+        let inventory = agents::sessions::Inventory {
+            store: sessions.clone(),
+            running: Some(runs.clone()),
+        };
         agents::turns::register(runs, sessions, home.to_owned(), &mut routes);
-        engine.with_agent_model_source(Arc::new(agents::Models {
-            runtime,
-            agents: accounts,
-        }))
-    } else {
         engine
+            .with_agent_model_source(Arc::new(agents::Models {
+                runtime,
+                agents: accounts,
+            }))
+            .with_agent_sessions(Arc::new(inventory))
+    } else {
+        engine.with_agent_sessions(Arc::new(agents::sessions::Inventory {
+            store: sessions,
+            running: None,
+        }))
     };
     if kind == ComputerKind::Machine {
         let setup = setup.handle();

@@ -2,13 +2,13 @@
 
 use crate::{
     accounts::Provider,
-    live_asks::LiveAsks,
+    live_asks::{Ask, AskKey, LiveAsks, Reply as AskReply},
     permissions::{
-        ConfigLocation, Policy,
+        Allowance, ConfigLocation, Policy, covers, remember,
         turn::{Settings, TurnRules},
     },
     resident::ResidentAgents,
-    session::{Prompt, Steer, TurnInput},
+    session::{Decision, Prompt, Steer, TurnInput},
     session_store::SessionStore,
     turn_projection::{Projection, user},
     turn_runtime::RunningTurn,
@@ -31,7 +31,7 @@ enum Command {
     Start(Box<Start>),
     Find {
         session: String,
-        reply: Reply<Option<RunningTurn>>,
+        reply: Reply<Option<Live>>,
     },
 }
 
@@ -40,6 +40,13 @@ struct Start {
     input: TurnInput,
     policy: Policy,
     reply: Reply<RunningTurn>,
+}
+
+#[derive(Clone)]
+struct Live {
+    turn: RunningTurn,
+    id: String,
+    rules: Arc<TurnRules>,
 }
 
 #[derive(Clone)]
@@ -80,6 +87,77 @@ impl SessionRuns {
         &self.asks
     }
 
+    pub async fn reply_permission(
+        &self,
+        key: AskKey,
+        answer: Decision,
+        cancelled: impl Fn() -> bool,
+    ) -> io::Result<()> {
+        if cancelled() {
+            return Err(ErrorKind::Interrupted.into());
+        }
+        if answer == Decision::Reject {
+            return self.asks.reply(key, AskReply::Permission(answer)).await;
+        }
+        let ask = {
+            let pending = self.asks.pending();
+            let current = pending.borrow();
+            match current.get(&key) {
+                Some(Ask::Permission(ask)) => ask.clone(),
+                _ => return Err(ErrorKind::NotFound.into()),
+            }
+        };
+        let live = self
+            .find(key.session.clone())
+            .await?
+            .filter(|live| live.id == key.turn)
+            .ok_or(ErrorKind::NotFound)?;
+        live.rules.verify_reply(&ask).await?;
+        if cancelled() {
+            return Err(ErrorKind::Interrupted.into());
+        }
+        self.asks
+            .reply(key.clone(), AskReply::Permission(answer))
+            .await?;
+        if answer != Decision::Always {
+            return Ok(());
+        }
+        let saved = remember(&ask);
+        live.rules.remembered.send_if_modified(|allowed| {
+            if allowed.contains(&saved) {
+                return false;
+            }
+            allowed.push(saved.clone());
+            true
+        });
+        let others = {
+            let watched = self.asks.pending();
+            let pending = watched.borrow();
+            pending
+                .iter()
+                .filter_map(|(other, ask)| match ask {
+                    Ask::Permission(ask)
+                        if other.session == key.session
+                            && other.turn == key.turn
+                            && covers(&saved, ask) =>
+                    {
+                        Some((other.clone(), ask.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for (other, ask) in others {
+            if live.rules.verify_reply(&ask).await.is_ok() {
+                let _ = self
+                    .asks
+                    .reply(other, AskReply::Permission(Decision::Once))
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
     pub fn running(&self) -> Arc<BTreeSet<String>> {
         self.running.borrow().clone()
     }
@@ -96,12 +174,14 @@ impl SessionRuns {
         input: TurnInput,
         policy: Policy,
     ) -> io::Result<RunningTurn> {
-        self.call(|reply| Command::Start(Box::new(Start {
-            session,
-            input,
-            policy,
-            reply,
-        })))
+        self.call(|reply| {
+            Command::Start(Box::new(Start {
+                session,
+                input,
+                policy,
+                reply,
+            }))
+        })
         .await
     }
 
@@ -109,7 +189,7 @@ impl SessionRuns {
         let Some(run) = self.find(session).await? else {
             return Ok(false);
         };
-        run.interrupt().await?;
+        run.turn.interrupt().await?;
         Ok(true)
     }
 
@@ -117,7 +197,7 @@ impl SessionRuns {
         let Some(run) = self.find(session.clone()).await? else {
             return Ok(Steer::Declined);
         };
-        let reply = run.steer(prompt.clone()).await?;
+        let reply = run.turn.steer(prompt.clone()).await?;
         if reply == Steer::Accepted
             && !self
                 .store
@@ -132,7 +212,7 @@ impl SessionRuns {
         Ok(reply)
     }
 
-    async fn find(&self, session: String) -> io::Result<Option<RunningTurn>> {
+    async fn find(&self, session: String) -> io::Result<Option<Live>> {
         self.call(|reply| Command::Find { session, reply }).await
     }
 
@@ -161,6 +241,7 @@ impl Service {
         let mut starting = BTreeSet::new();
         let mut preparations = JoinSet::new();
         let mut by_session = JoinSet::new();
+        let mut approvals = BTreeMap::<String, watch::Sender<Vec<Allowance>>>::new();
         loop {
             tokio::select! {
                 next = commands.recv() => {
@@ -173,9 +254,11 @@ impl Service {
                                 )));
                                 continue;
                             }
+                            let remembered = approvals.entry(session.clone())
+                                .or_insert_with(|| watch::channel(Vec::new()).0).clone();
                             let service = self.clone();
                             preparations.spawn(async move {
-                                let outcome = service.begin(&session, input, policy).await;
+                                let outcome = service.begin(&session, input, policy, remembered).await;
                                 (session, outcome, reply)
                             });
                         }
@@ -191,10 +274,10 @@ impl Service {
                         if let Ok(turn) = &outcome {
                             sessions.insert(session.clone(), turn.clone());
                             self.publish(&sessions);
-                            let turn = turn.clone();
+                            let turn = turn.turn.clone();
                             by_session.spawn(async move { (session, turn.finished().await) });
                         }
-                        let _ = reply.send(outcome);
+                            let _ = reply.send(outcome.map(|live| live.turn));
                     }
                 }
                 completed = by_session.join_next(), if !by_session.is_empty() => {
@@ -210,7 +293,7 @@ impl Service {
         }
     }
 
-    fn publish(&self, runs: &BTreeMap<String, RunningTurn>) {
+    fn publish(&self, runs: &BTreeMap<String, Live>) {
         self.identities
             .send_replace(Arc::new(runs.keys().cloned().collect()));
     }
@@ -220,7 +303,8 @@ impl Service {
         session: &str,
         input: TurnInput,
         mut policy: Policy,
-    ) -> io::Result<RunningTurn> {
+        remembered: watch::Sender<Vec<Allowance>>,
+    ) -> io::Result<Live> {
         let provider = Provider::parse(&input.model.provider).ok_or_else(|| {
             io::Error::new(ErrorKind::InvalidInput, "Choose a coding-agent model.")
         })?;
@@ -242,14 +326,23 @@ impl Service {
             current: policy,
             plan: input.plan,
             thread: thread.clone(),
+            remembered,
+            store: self.store.clone(),
+            session: session.into(),
         });
         let agent = if input.plan { "plan" } else { "build" };
         let writer =
             Projection::start(self.store.clone(), session.into(), agent.into(), &input).await?;
         let asks = self.asks.for_turn(session.into(), input.id.clone());
         let (sink, writes) =
-            ResidentSink::channel(session.into(), self.store.clone(), asks, policy);
-        Ok(RunningTurn::launch(thread, input, sink, writes, writer))
+            ResidentSink::channel(session.into(), self.store.clone(), asks, policy.clone());
+        let id = input.id.clone();
+        let turn = RunningTurn::launch(thread, input, sink, writes, writer);
+        Ok(Live {
+            turn,
+            id,
+            rules: policy,
+        })
     }
 }
 
