@@ -4,6 +4,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    sync::LazyLock,
     time::Duration,
 };
 
@@ -19,6 +20,26 @@ use crate::{
 
 const STAGE_WAIT: i64 = 300_000;
 const MAX_BRIDGE_ENVELOPE: usize = 8192;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Timing {
+    peer_transfer_ms: u64,
+    keeper_trial_ms: u64,
+}
+
+static TIMING: LazyLock<Timing> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../../src/shared/fleet-timing.json"))
+        .expect("valid fleet timing")
+});
+
+pub fn peer_transfer_limit() -> Duration {
+    Duration::from_millis(TIMING.peer_transfer_ms)
+}
+
+pub(crate) fn keeper_trial_limit() -> Duration {
+    Duration::from_millis(TIMING.keeper_trial_ms)
+}
 
 #[derive(Clone)]
 pub struct Candidate {

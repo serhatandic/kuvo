@@ -144,6 +144,14 @@ confirmed 22.9 seconds after its download resumed. The returning computer
 confirmed in 90.1 seconds via the new main. The check includes lease and
 stage records in its failure output.
 
+A native Linux run capped at one CPU reached the returning computer's
+120-second fixture deadline during the relay transfer. A trace counted 936
+of 1,005 full-size relay frames at that point. The remaining frames arrived
+by 140 seconds, and the keeper selected and confirmed the release after
+160.7 seconds. The same Linux musl binary returned in 18.1 seconds under
+WSL2. The fixture now budgets both the box's peer-transfer limit and its
+keeper trial limit.
+
 The following macOS run passed 22 checks and skipped the TypeScript-only
 prepare check. First preparation took 27.8 seconds in the shell-keeper
 scenario. Its main and member confirmed 39.1 and 44.0 seconds after the

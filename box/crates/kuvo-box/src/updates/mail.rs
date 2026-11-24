@@ -25,7 +25,6 @@ use super::Check;
 
 const WINDOW: usize = 16;
 const QUIET: Duration = Duration::from_secs(60);
-const MOST: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 pub(super) struct Mail {
@@ -123,7 +122,12 @@ impl Mail {
                 .flatten()
         });
         for peer in peers {
-            if let Ok(Ok(pack)) = timeout(MOST, self.pull_from(&mut events, &peer, release)).await {
+            if let Ok(Ok(pack)) = timeout(
+                kuvo_keeper::fleet::peer_transfer_limit(),
+                self.pull_from(&mut events, &peer, release),
+            )
+            .await
+            {
                 return Ok(pack);
             }
         }
