@@ -229,6 +229,11 @@ impl Bots {
         else {
             return;
         };
+        // (Its approval kept first, for one from before there were approvals.)
+        self.inner
+            .conversations
+            .settle_session(engine, &here.session)
+            .await;
         let kit = self.kit();
         self.settle_folder(&here, kit.as_ref());
         let Some(kit) = kit else {

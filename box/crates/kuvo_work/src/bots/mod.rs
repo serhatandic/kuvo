@@ -7,11 +7,11 @@ pub mod kit;
 pub mod list;
 mod make;
 pub mod now;
-mod reach;
+pub(crate) mod reach;
 mod routes;
 mod seen;
 pub mod setup;
-mod tell;
+pub(crate) mod tell;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -51,6 +51,7 @@ struct Inner {
     engine: Engine,
     setup: Arc<dyn Setup>,
     approvals: Approvals,
+    conversations: crate::approval::ApprovalService,
     requests: make::SharedRequests,
     telling: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     wakes: Wakes,
@@ -96,9 +97,15 @@ impl Bots {
         Self {
             inner: Arc::new(Inner {
                 is_mac,
-                engine,
+                engine: engine.clone(),
                 setup,
                 approvals: Approvals::new(&home, is_mac),
+                conversations: crate::approval::ApprovalService::new(
+                    Approvals::new(&home, is_mac),
+                    engine.clone(),
+                    home.join("bots"),
+                    sessions.clone(),
+                ),
                 requests: Arc::default(),
                 telling: Mutex::default(),
                 bots: home.join("bots"),

@@ -60,6 +60,19 @@ impl BotEngine {
         Ok(value)
     }
 
+    /// One of the engine's routes, its answer whole (a page of sessions with its `cursor`).
+    pub async fn call_whole(
+        &self,
+        method: Method,
+        path: &str,
+        wait: Duration,
+    ) -> Result<Value, Unreachable> {
+        Ok(self
+            .engine
+            .call_raw(&self.lease, method, path, None, wait)
+            .await?)
+    }
+
     /// Whether the engine has the conversation.
     pub async fn has_session(&self, session: &str) -> bool {
         sessions::valid_id(session)

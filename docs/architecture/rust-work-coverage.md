@@ -7,8 +7,10 @@ split into parts, each mergeable once it has its proof:
   (`kuvo/bots` and its events). This document's first part.
 - **5.1b** — the rest of this box's own bot routes: templates, make, edit, delete, arrived,
   retell, seen, the gone key routes, and each bot told what it is as the engine starts.
-- **5.1c** — work (activity, background, oversight, asks, settings, the work watcher that tells a
-  conversation of its sessions), approval and Auto's decisions, attention, notices.
+- **5.1c** — approval (5.1c-1, done), then work (activity, background, oversight, asks, settings,
+  the agents' work tools, the work watcher that tells a conversation of its sessions) and notices
+  with their holds while you're at a client. Auto's reviewer (`kuvo/sessions/:id/decisions`,
+  `work/reviewer.ts`, `work/reviewing.ts`) is 6.1's, with the sandbox it acts in.
 - **5.1d** — edits held for bots on your other computers, the bots elsewhere in `kuvo/bots`, and
   bots' old keys of their own taken away (with what a bot is told while one isn't connected).
 
@@ -181,3 +183,52 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **Not ported:** the older Mac kit carried into the box's facts (COMPAT 0.7 bot-kit), settling a
   new bot's approval again after it's made (5.1c), and what a bot is told while a key it had isn't
   connected (5.1d). Seen leaves the session list to take the engine's `session.viewed`.
+
+## 5.1c-1 — approval
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::approval::ApprovalService` | `areas/approval.ts` without the reviewer: `approvalHere`, `shown`, `changeFor`, `write`, `toSettle`, `settle`, `remake`, `setApproval`, `reapplyApprovals`, `adoptConversation`, `adoptPending`, `keepApprovals`, `approvalRoute` |
+| `kuvo_work::approval::Approvals` | `work/approval.ts`: `approvalOf` (whole), `madeBefore`, `rememberApproval`, `allowFullAccess`, `otherComputersAllowed`, `allowOtherComputers`, `APPROVAL_WORDS` |
+| `kuvo_work::bots` (`change`, `freshen`) | `adoptBots`: a bot's conversation from before there were approvals, adopted in its own turn |
+
+### Proof
+
+- New route scenarios `box/test/fixtures/routes/approval.json` (`KUVO_CONFORMANCE_AREA=approval`):
+  this computer's switch, default and the other computers' switch; a conversation's approval read
+  and set, Full Access refused until confirmed, the rules sent to the engine. Both boxes pass on
+  macOS; the Rust box on native Windows and Linux (WSL, static musl). Auto's own fields are left
+  out of the scenarios: it's held here and not offered on Windows. `bots` stays 40/40 on all three
+  (Windows three times).
+- Side by side, 15 requests (switches, every refusal, a conversation set and read again, Full
+  Access confirmed and taken back): every answer matches; `box/approval.json` differs only by
+  `since`, when each box first kept approvals.
+- Size: about 27,000 characters of Rust for about 25,000 of TypeScript (the reviewer's routes
+  left out): 1.08×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [approval](../../box/bridge-tests/approval.test.js) | 108, 132, 199, 265, 274, 313, 341, 369 a conversation read and set, Accept Edits, Full Access only once confirmed, a new conversation's default, what's never Full Access | `approval` scenarios; `Approvals::of`, `rules`; `approval::tests` |
+| | 150, 172, 185, 212, 227, 248, 385, 402 Auto with the sandbox, `.env`, Settings changes reaching conversations in Auto | Auto is held as Ask First until the sandbox (6.1); the rules made for Auto are `approval::tests`, `rules` |
+| | 419, 444, 470 Auto's reviewer | 6.1 |
+| [approval-round-memory](../../box/test/approval-round-memory.test.ts), [approval-settings-round](../../box/test/approval-settings-round.test.ts) | the Full Access launcher markers; Settings changed while the box was down | 6.1 (the launcher's markers); `keep` makes them again as the engine starts |
+| [approval-words](../../box/test/approval-words.test.ts) | each mode's name and line | `options` in the `approval` scenarios |
+| [windows-approval](../../box/test/windows-approval.test.ts) | Auto as coming soon, Ask First by default on Windows | `Approvals::unavailable` (`windows`, "Coming soon on Windows.") and `default_approval`; the scenarios leave Auto out so they pass on Windows too |
+| [attention](../../box/bridge-tests/attention.test.js), [attention-mac](../../box/bridge-tests/attention-mac.test.js) | the lease (`kuvo/attention`) | Peers (the `attention` area passes on both boxes) |
+| | holding your phones' notices while a client's in use, answered or seen | 5.1c, with notices: open |
+
+### Deliberate differences from TypeScript
+
+- **The round looks when something changes** (the engine starts, the Full Access switch or
+  Settings › Permissions change, the session list changes) rather than every two seconds, and only
+  while the engine runs: a lease each round would keep it from stopping when idle.
+- **A bot's conversation from before there were approvals** is adopted by the bots, in the bot's
+  turn (as it's told what it is as the engine starts, and before Edit Bot changes it), not by the
+  round, so what Edit Bot says to it is the last it hears. A bot's work kept with no approval is
+  left as its rules say.
+- **Not ported here:** the sandbox's Full Access markers and Auto's places (6.1), and the coding
+  agents' subagents' approval (their bridge, 4.x).
