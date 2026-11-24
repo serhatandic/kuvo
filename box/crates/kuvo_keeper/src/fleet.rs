@@ -134,10 +134,9 @@ impl Candidate {
         files::write_secret(&folder.join("boxes.json"), self.envelope.as_bytes())
     }
 
-    pub fn kept(home: &Home, key: &str) -> io::Result<Option<Self>> {
-        files::text_of(&home.updates().join("release/boxes.json"))
-            .map(|bytes| Self::verify(bytes, key))
-            .transpose()
+    pub fn kept(home: &Home, key: &str) -> Option<Self> {
+        let envelope = files::text_of(&home.updates().join("release/boxes.json"))?;
+        Self::verify(envelope, key).ok()
     }
 
     pub fn keep(&self, home: &Home) -> io::Result<()> {
@@ -302,7 +301,7 @@ impl HeldPack {
         };
         let (_, running) = installed(home)?;
         let kept =
-            Candidate::kept(home, key)?.and_then(|candidate| candidate.local().ok()?.target().ok());
+            Candidate::kept(home, key).and_then(|candidate| candidate.local().ok()?.target().ok());
         let bridge = (home.updates().join("bridge"), None);
         let root = home.root().canonicalize()?;
         for (folder, target) in [exact, running, kept]

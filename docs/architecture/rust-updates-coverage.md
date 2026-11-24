@@ -34,6 +34,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U18 | The deployed beta.48 reaches the Rust main and takes its signed pack via relay. Its fixed JavaScript link probe refuses the Rust-only pack and beta.48 remains selected. |
 | U19 | The deployed beta.48 returns after two computers confirm Rust. The Rust main offers the separately signed TypeScript bridge beta and serves both packs over authenticated relay mail while their URLs return 404. The returning computer confirms the bridge with its keeper, engine stand-in and agents process, then confirms Rust with a private copy of its old home. |
 | U20 | A member's manual check makes its main check the signed feed. If the main is away, the member keeps the request across its own restart and asks the main when it reconnects. The macOS scenario took 5.6 seconds, including enrollment. |
+| U21 | An untrusted signature in the retained release does not prevent a check against the signed feed. The previous resident stayed on the installed version and made no feed request. The fixed resident checked in 2.2 seconds. |
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -160,6 +161,12 @@ for beta.1. Their Helper restarts took 1.1 and 1.0 seconds. A focused rerun
 of U8 checked an active engine turn across confirmation. Preparation took
 48.1 seconds, the main and member confirmed in 23.7 and 25.9 seconds after
 the held download resumed, and the returning computer took 33.2 seconds.
+The `GET kuvo/update`, borrowed-home `POST kuvo/update` and machine Stop
+responses matched side by side. The inventory comparison still found 84
+other paths with differences. The refreshed native Windows updates-only run
+passed all seven checks in scratch. It prepared its first computer in 16.1
+seconds, changed main in 18.2 seconds from boot, confirmed 17.8 seconds after
+resuming the download, and brought back the offline computer in 44.1 seconds.
 
 ## TypeScript reference cases
 
@@ -175,7 +182,7 @@ or desktop updater, and 20 are open. The inherited and live-proof table has
 | Source and case | Status | Remaining owner |
 | --- | --- | --- |
 | [updates](../../box/bridge-tests/updates.test.js), version order | Partial. U3 covers numeric ordering and refuses a different digest at the installed version. U4 covers beta-to-final ordering. An already-ahead fleet member remains open. | 7.2 |
-| Same, pinned signatures and signed bytes | Covered by U1. | — |
+| Same, pinned signatures and signed bytes | Covered by U1 and U21. | — |
 | Same, stale Mac launcher marks | Open. | 7.2 |
 | Same, partial rollback reported once | Partial. 7.1 writes the refusal record and U6 reads it. The interrupted in-place restore and its one-time settlement need the predecessor fixture. | 7.2 |
 | Same, signed release with Helper kept for peers | Partial. U4 covers signing and selecting a target. U9–U10 pull the signed pack from a peer. Assembling published target packs with a validated Helper remains open. | 7.2, 6.2, 9.3 |
@@ -245,7 +252,7 @@ or desktop updater, and 20 are open. The inherited and live-proof table has
 | Same, engine swap holds, rollback, expiry, and downgrade fence | Open as release tests. | 3.2, 7.2 |
 | [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Partial. U10 checks the saved TypeScript home, and U13 checks the one-time refusal to roll back. Interrupted handoff and wipe generation in this workflow remain open. | 7.2, 9.1 |
 | Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Partial. U8 uses the shell keeper and U9 uses the native keeper. A stand-in turn stays alive. Before-rejoin work admission and native holder adoption remain open. | 4.1, 7.2 |
-| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10 checks the bridge beta taking Rust directly. U18–U19 check the exact deployed beta's refusal and automatic two-step catch-up. U11 moves released Mac app homes with a stand-in engine and launchctl. Shipping the bridge beta, a released Linux machine upgrade, and a real Helper job remain open. | 7.2, 9.1, 9.3 |
+| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10 checks the bridge beta taking Rust directly. U18–U19 check the exact deployed beta's refusal and automatic two-step catch-up. U11 moves released Mac app homes with a stand-in engine and launchctl. Earlier unpublished betas still need a returning-peer rehearsal. Shipping the bridge beta, a released Linux machine upgrade, and a real Helper job remain open. | 7.2, 9.1, 9.3 |
 | Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers stopped standalone scratch installations on Mac, native Windows, and Linux musl under WSL. The live shared, Helper-owned and installer flows remain open. | 2.3, 7.2 |
 | [Setup](rust-setup-coverage.md) add and fleet authority, [Windows](rust-windows-coverage.md) case 18 | Partial. U9 checks a new main's lease and U4 checks an automatic Windows selection. Shared Windows activation, on-return admission, and cleanup of a busy previous release remain open. | 2.3, 7.2, 8.1 |
 

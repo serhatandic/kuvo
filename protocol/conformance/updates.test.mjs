@@ -224,6 +224,32 @@ test("a member asks its main to check the release feed now or when it returns", 
   }
 });
 
+test("a discarded release signature does not stop the next signed feed check", async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform === "win32") return t.skip("This uses a Rust resident in a disposable Unix account.");
+  const { computer } = await bench(t);
+  const here = await computer("Standalone");
+  const key = keypair();
+  const signed = (version, signer) => envelope({
+    kuvo: "box/1", version, engine: "2.2.6", spreads: true,
+    pack: { url: "https://example.invalid/current.tar.gz", sha256: digest("current") },
+  }, signer);
+  write(path.join(here.home, "bin/box-version"), "0.8.0\n");
+  write(path.join(here.home, "updates/release/boxes.json"), encode(signed("0.9.0", keypair())));
+  const feed = createServer((_req, res) => res.end(encode(signed("0.8.0", key))));
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const child = here.start(binary, {
+    KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key,
+  });
+  const resident = await child.ready();
+  const update = () => request(resident, "GET", "kuvo/update");
+  await until(async () => (await update()).json?.latest === "0.8.0", () => `the valid feed should still be checked\n${child.log()}`);
+  assert.equal((await update()).json.version, "0.8.0");
+  assert.equal(fs.existsSync(path.join(here.home, "run/fleet-ready.json")), false);
+});
+
 test("a machine refuses the Mac Helper's Stop request", async t => {
   const { computer } = await bench(t);
   const here = await computer("stop-machine", undefined, folder => {

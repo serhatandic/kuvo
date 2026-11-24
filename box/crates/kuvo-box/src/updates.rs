@@ -276,7 +276,7 @@ impl Fleet {
                     |name| format!("{name} (your main computer)"),
                 );
                 let (installed, _) = fleet::installed(&self.home)?;
-                match Candidate::kept(&self.home, &self.key)?
+                match Candidate::kept(&self.home, &self.key)
                     .filter(|held| held.newer_than(installed.as_deref()))
                 {
                     Some(held) => {
@@ -357,7 +357,7 @@ impl Fleet {
             eprintln!("Asking the main to check Kuvo's release: {error}");
         }
         let mut candidate =
-            Candidate::kept(&self.home, &self.key)?.filter(|next| next.newer_than(Some(&version)));
+            Candidate::kept(&self.home, &self.key).filter(|next| next.newer_than(Some(&version)));
         let mut committed = false;
         if standalone || local_main {
             for peer in &view.roster.members {
