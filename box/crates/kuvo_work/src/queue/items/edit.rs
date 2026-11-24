@@ -305,6 +305,32 @@ impl Writer {
             change_or_remove(&mut row, "assignee", target);
         }
 
+        // Giving personal work to a local bot places it in that bot's queue.
+        let destination = (item.owner == "usr_you"
+            && who["user"] == true
+            && fields.get("assignee").is_some()
+            && row["assignee"]["kind"] == "bot")
+            .then(|| row["assignee"]["id"].as_str())
+            .flatten()
+            .and_then(|id| people.bot_session(id))
+            .unwrap_or(&item.owner);
+        if destination != item.owner {
+            self.admit(destination)?;
+            if all
+                .iter()
+                .filter(|item| {
+                    item.owner == destination
+                        && item.removed.is_none()
+                        && !status::closed(&item.status)
+                })
+                .count()
+                >= 2000
+            {
+                return Err(bad("That queue has 2000 open items already."));
+            }
+            self.document(&mut documents, destination, now)?;
+        }
+
         // Allocate an order between neighbors, renumbering a dense status first.
         let same_status = |other: &&Item| {
             other.id != item.id && other.removed.is_none() && other.status == new_status
@@ -432,6 +458,15 @@ impl Writer {
             append_event(&mut row, moved);
         }
         row["updated"] = stamp;
+        if destination != item.owner {
+            let now = now.max((item.updated.at + 1.0) as i64);
+            row["owner"] = destination.into();
+            row["updated"] = json!({"at":now,"by":who});
+            hand::note_hand(&mut row, &item.owner, destination, who, now);
+            if !status::closed(new_status) {
+                self.link_session(all, &mut documents, &mut row, destination, who, now)?;
+            }
+        }
         let removed = take_files(
             &mut row,
             fields.get("remove").filter(|_| who["user"] != true),
@@ -445,7 +480,7 @@ impl Writer {
         )?;
         revise(&mut row, &mut documents)?;
         super::super::attachments::remove(&self.store, &item.id, &removed).map_err(internal)?;
-        let parsed = Item::read(&item.owner, &row).expect("changed queue item");
+        let parsed = Item::read(destination, &row).expect("changed queue item");
         let before = Index::read(item);
         if parsed.body != item.body || parsed.notes != item.notes || before.is_none() {
             let index = Index::rebuild(&self.refs.mentions, &parsed, all, before.as_ref());
@@ -454,18 +489,30 @@ impl Writer {
                 .expect("queue item")
                 .remove("mentionLinks");
         }
-        let parsed = Item::read(&item.owner, &row).expect("changed queue item");
+        let parsed = Item::read(destination, &row).expect("changed queue item");
         let mut answer = view::mutation(&parsed, people);
         if fields.get("removeInlineImages").is_some() {
             answer["inlineImagesApplied"] = true.into();
         }
-        let document = self.document(&mut documents, &item.owner, now)?;
-        *document
-            .items
-            .iter_mut()
-            .find(|saved| saved["id"] == item.id)
-            .expect("changed queue item") = row;
+        let source = self.document(&mut documents, &item.owner, now)?;
         let mut published = Some(published);
+        if destination == item.owner {
+            *source
+                .items
+                .iter_mut()
+                .find(|saved| saved["id"] == item.id)
+                .expect("changed queue item") = row;
+        } else {
+            source.items.retain(|saved| saved["id"] != item.id);
+            let target = self.document(&mut documents, destination, now)?;
+            target.items.retain(|saved| saved["id"] != item.id);
+            target.items.push(row);
+            // Publish the new keeper first. If the source write fails, the
+            // newer copy wins the store's ordinary duplicate reconciliation.
+            let target = documents.remove(destination).expect("edited queue");
+            target.save(&self.store).map_err(storage_refusal)?;
+            published.take().expect("published attachments").commit();
+        }
         for document in documents.into_values() {
             let edited = document.owner == item.owner;
             document.save(&self.store).map_err(storage_refusal)?;

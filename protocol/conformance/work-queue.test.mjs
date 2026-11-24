@@ -7,6 +7,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { boxBinary, boxCommand, isolatedEnv, localRelay, openLine, privateHome, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { recordRelayLease } from "../../box/bridge-tests/relay-lease-stand-in.js";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
 
@@ -2037,4 +2038,476 @@ test("a queue attachment changed while a conversation moves stays at its origina
   const targetFence = path.join(lab.home, "run", "owned-data", "edit-deletions", fenceFile);
   await until(() => !existsSync(targetFile) && !existsSync(targetFence) && !lab.engine.sessions.some(row => row.id === session),
     () => "The destination did not roll back the staged copy.\n" + targetProcess.log(), 30000);
+});
+
+test("a member spends its last granted number offline and edits an unnumbered item", { timeout: 120000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  let sourceProcess = studio.start();
+  let main = studio.connect(await sourceProcess.ready());
+  const setup = await main("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its lease.");
+  const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  const joined = await lab.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  let resident = lab.start();
+  let member = lab.connect(await resident.ready());
+  const app = { "x-kuvo-from": "app" };
+  const route = "kuvo/work-queue/items";
+  const add = async (operation, title) => {
+    const answer = await member("POST", route, { operation, title }, app);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.item.id;
+  };
+  const numberOf = id => until(async () => (await member("GET", route + "/" + id)).json?.item?.number,
+    "The pending item did not receive a number.", 25000);
+  const first = await add("lease-start", "Initial granted item");
+  const firstNumber = await numberOf(first);
+  const mainLedger = path.join(studio.home, "run", "work-queue", "numbers.json");
+  const memberSetup = await member("GET", "kuvo/setup");
+  const block = Object.values(JSON.parse(readFileSync(mainLedger, "utf8")).given)
+    .find(block => block.by === memberSetup.json.you.key && block.from <= firstNumber && firstNumber < block.to);
+  assert.ok(block, "The main did not persist the member's granted range.");
+  await sourceProcess.stop();
+  await resident.stop();
+  const file = path.join(lab.home, "run", "work-queue", "numbers.json");
+  const ledger = JSON.parse(readFileSync(file, "utf8"));
+  // A previously spent block with one number left: keep the real main's grant.
+  ledger.leases = [[block.to, block.to]];
+  ledger.used = [[block.from, block.to - 1]];
+  delete ledger.asking;
+  write(file, JSON.stringify(ledger));
+  resident = lab.start();
+  member = lab.connect(await resident.ready());
+  const last = await add("lease-last", "Final granted item");
+  assert.equal(await numberOf(last), block.to);
+  const waiting = await add("lease-waiting", "Works before numbering");
+  const changed = await member("PATCH", route + "/" + waiting, { title: "Edited while offline" }, app);
+  assert.equal(changed.status, 200, changed.text);
+  const pending = await member("GET", route + "/" + waiting);
+  assert.equal(pending.status, 200, pending.text);
+  assert.equal(pending.json.item.title, "Edited while offline");
+  assert.equal(pending.json.item.number, undefined);
+  assert.equal(pending.json.item.numberPending, true);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).leases, []);
+  sourceProcess = studio.start();
+  main = studio.connect(await sourceProcess.ready());
+  assert.equal((await main("GET", "kuvo/setup")).status, 200);
+  const newNumber = await numberOf(waiting);
+  assert.ok(newNumber > block.to, "The new grant must follow the spent block.");
+  assert.equal((await member("GET", route + "/" + waiting)).json.item.title, "Edited while offline");
+});
+
+test("a restarted main allocates above the inherited number counter", { timeout: 50000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const { main, member } = seedPeerSetup(studio.home, relay.url, 1, 2, undefined, {
+    queueNumberAllocation: { sequence: 1, value: { next: 2001 } },
+  });
+  const run = path.join(studio.home, "run");
+  const link = JSON.parse(readFileSync(path.join(run, "link.json"), "utf8"));
+  const setup = link.setup;
+  const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign }, 4000);
+  recordRelayLease(run, setup, { high: 4000, floor: 0, relay: lease });
+  const file = path.join(run, "work-queue", "numbers.json");
+  write(file, JSON.stringify({ formatVersion: 1, next: 12 }));
+  const ask = studio.connect(await studio.start().ready());
+  const answer = await ask("POST", "kuvo/work-queue/items", { operation: "inherited-number", title: "New numbered item" }, { "x-kuvo-from": "app" });
+  assert.equal(answer.status, 200, answer.text);
+  const id = answer.json.item.id;
+  const number = await until(async () => (await ask("GET", "kuvo/work-queue/items/" + id)).json?.item?.number,
+    "The inherited ledger did not allocate.", 20000);
+  assert.equal(number, 2001);
+  assert.ok(JSON.parse(readFileSync(file, "utf8")).next > number);
+});
+
+test("the new main allocates above the old main's relay high mark", { timeout: 120000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const { member } = seedPeerSetup(studio.home, relay.url, 1, 2);
+  seedPeerSetup(lab.home, relay.url, 2, 2);
+  const mainProcess = studio.start();
+  const memberProcess = lab.start();
+  const [mainRecord, memberRecord] = await Promise.all([mainProcess.ready(), memberProcess.ready()]);
+  const main = studio.connect(mainRecord);
+  const remote = lab.connect(memberRecord);
+  const setup = await main("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  const lease = await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its number lease.");
+  const initialTerm = lease.term;
+  const before = await main("POST", "kuvo/work-queue/items", { operation: "before-number-takeover", title: "Work on the old main" }, { "x-kuvo-from": "app" });
+  assert.equal(before.status, 200, before.text);
+  await until(async () => (await main("GET", "kuvo/work-queue/items/" + before.json.item.id)).json?.item?.number,
+    "The old main did not spend its lease.", 20000);
+  const previousHigh = leases.leaseFor(setup.json.setup).high;
+  assert.ok(previousHigh > 0);
+  await mainProcess.stop();
+  leases.advance(125000);
+  await until(async () => {
+    const answer = await remote("GET", "kuvo/setup");
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.you.role === "primary" && leases.leaseFor(setup.json.setup)?.holder === member.key;
+  }, () => "The member did not take the relay lease.\n" + memberProcess.log(), 75000);
+  assert.equal(leases.leaseFor(setup.json.setup).term, initialTerm + 1);
+  const app = { "x-kuvo-from": "app" };
+  const made = await remote("POST", "kuvo/work-queue/items", { operation: "after-number-takeover", title: "Numbered after takeover" }, app);
+  assert.equal(made.status, 200, made.text);
+  const number = await until(async () => (await remote("GET", "kuvo/work-queue/items/" + made.json.item.id)).json?.item?.number,
+    "The new main did not allocate.", 30000);
+  assert.ok(number > previousHigh, "The old main may have already spent its whole allocation.");
+  assert.ok(number <= leases.leaseFor(setup.json.setup).high);
+});
+
+test("the main returns the original number grant after its reply was lost", { timeout: 65000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const standby = await computer("Spare");
+  const { main, member, spare } = seedPeerSetup(studio.home, relay.url, 1, 3);
+  seedPeerSetup(lab.home, relay.url, 2, 3);
+  seedPeerSetup(standby.home, relay.url, 3, 3);
+  const run = path.join(studio.home, "run");
+  const setup = JSON.parse(readFileSync(path.join(run, "link.json"), "utf8")).setup;
+  const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign, [spare.key]: spare.sign }, 500);
+  recordRelayLease(run, setup, { high: 500, floor: 0, relay: lease });
+  const grantID = "wqn_keptgrant";
+  const grant = { from: 10, to: 11, granted: [], by: member.key, at: Date.now() - 1000 };
+  const mainFile = path.join(run, "work-queue", "numbers.json");
+  const memberFile = path.join(lab.home, "run", "work-queue", "numbers.json");
+  // The main persisted the decision, but the member restarted before accepting its old reply.
+  write(mainFile, JSON.stringify({ formatVersion: 1, next: 12, given: { [grantID]: grant } }));
+  write(memberFile, JSON.stringify({ formatVersion: 1, asking: { id: grantID, count: 20, since: Date.now(), claims: [[20, 20]] }, leases: [] }));
+  const [source, target] = await Promise.all([studio.start().ready(), lab.start().ready()]);
+  const ask = studio.connect(source);
+  const far = lab.connect(target);
+  await until(() => {
+    const received = JSON.parse(readFileSync(memberFile, "utf8"));
+    return !received.asking && received.leases?.some(([from, to]) => from === 10 && to === 11);
+  }, "The member did not receive the original grant.", 35000);
+  const kept = JSON.parse(readFileSync(mainFile, "utf8"));
+  assert.deepEqual(kept.given[grantID], grant);
+  assert.equal(kept.next, 12);
+  const made = await far("POST", "kuvo/work-queue/items", { operation: "spend-original-grant", title: "Use the saved block" }, { "x-kuvo-from": "app" });
+  assert.equal(made.status, 200, made.text);
+  assert.equal((await far("GET", "kuvo/work-queue/items/" + made.json.item.id)).json.item.number, 10);
+  assert.equal((await ask("GET", "kuvo/setup")).status, 200);
+  const spareFile = path.join(standby.home, "run", "work-queue", "numbers.json");
+  write(spareFile, JSON.stringify({ formatVersion: 1, asking: { id: grantID, count: 2, since: Date.now() }, leases: [] }));
+  const spareProcess = standby.start();
+  await spareProcess.ready();
+  await until(() => JSON.parse(readFileSync(spareFile, "utf8")).asking?.sent,
+    "The third computer did not send its request.", 20000);
+  await spareProcess.stop();
+  const refused = JSON.parse(readFileSync(spareFile, "utf8"));
+  assert.equal(refused.asking.id, grantID);
+  assert.deepEqual(refused.leases, []);
+  const after = JSON.parse(readFileSync(mainFile, "utf8"));
+  assert.deepEqual(after.given[grantID], grant);
+  assert.ok(after.next >= 12);
+  assert.ok(Object.entries(after.given).every(([id, other]) => id === grantID || other.from > grant.to));
+});
+
+test("a grant cannot cross the relay's high mark even with a retained lease", { timeout: 100000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url, 1, 2);
+  seedPeerSetup(lab.home, relay.url, 2, 2);
+  const run = path.join(studio.home, "run");
+  const setup = JSON.parse(readFileSync(path.join(run, "link.json"), "utf8")).setup;
+  const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign }, 100);
+  recordRelayLease(run, setup, { high: 100, floor: 0, relay: lease });
+  const mainFile = path.join(run, "work-queue", "numbers.json");
+  const memberFile = path.join(lab.home, "run", "work-queue", "numbers.json");
+  const wide = "wqn_tooWideBlock", narrow = "wqn_oneNumber";
+  const ask = id => ({ id, count: id === wide ? 2 : 1, since: Date.now() });
+  await studio.start().ready();
+  await until(() => leases.calls.some(call => call.computer === main.key && call.action === "renew"),
+    "The main had not observed its lease.", 20000);
+  const back = leases.disconnect(main.key);
+  t.after(back);
+  const high = leases.leaseFor(setup.id).high;
+  write(mainFile, JSON.stringify({ formatVersion: 1, next: high }));
+  write(memberFile, JSON.stringify({ formatVersion: 1, asking: ask(wide), leases: [] }));
+  let memberProcess = lab.start();
+  await memberProcess.ready();
+  await until(() => JSON.parse(readFileSync(memberFile, "utf8")).asking?.sent,
+    "The member did not ask for its original block.", 20000);
+  await memberProcess.stop();
+  const pending = JSON.parse(readFileSync(memberFile, "utf8"));
+  assert.equal(pending.asking.id, wide);
+  assert.deepEqual(pending.leases, []);
+  write(memberFile, JSON.stringify({ ...pending, asking: ask(narrow) }));
+  memberProcess = lab.start();
+  const far = lab.connect(await memberProcess.ready());
+  await until(() => JSON.parse(readFileSync(memberFile, "utf8")).leases?.some(([from, to]) => from === high && to === high),
+    () => "The member did not receive the last valid number.\n" + memberProcess.log(), 25000);
+  const ledger = JSON.parse(readFileSync(mainFile, "utf8"));
+  assert.equal(ledger.next, high + 1);
+  assert.equal(ledger.given[wide], undefined);
+  assert.equal(ledger.given[narrow].from, high);
+  assert.equal(ledger.given[narrow].to, high);
+  const made = await far("POST", "kuvo/work-queue/items", { operation: "last-high-number", title: "Last number in the lease" }, { "x-kuvo-from": "app" });
+  assert.equal(made.status, 200, made.text);
+  assert.equal((await far("GET", "kuvo/work-queue/items/" + made.json.item.id)).json.item.number, high);
+});
+
+test("a main without its relay lease can spend an already granted number but cannot grant a new range", { timeout: 100000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url, 1, 2);
+  seedPeerSetup(lab.home, relay.url, 2, 2);
+  const run = path.join(studio.home, "run");
+  const setup = JSON.parse(readFileSync(path.join(run, "link.json"), "utf8")).setup;
+  leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign }, 100);
+  const back = leases.disconnect(main.key);
+  t.after(back);
+  const mainFile = path.join(run, "work-queue", "numbers.json");
+  const memberFile = path.join(lab.home, "run", "work-queue", "numbers.json");
+  const grantID = "wqn_missingLease";
+  write(mainFile, JSON.stringify({ formatVersion: 1, next: 10, leases: [[9, 9]] }));
+  write(memberFile, JSON.stringify({ formatVersion: 1, asking: { id: grantID, count: 2, since: Date.now() }, leases: [] }));
+  const [source, target] = await Promise.all([studio.start().ready(), lab.start().ready()]);
+  const ask = studio.connect(source);
+  const far = lab.connect(target);
+  await until(() => JSON.parse(readFileSync(memberFile, "utf8")).asking?.sent,
+    "The member did not ask while the main's lease was missing.", 20000);
+  const app = { "x-kuvo-from": "app" };
+  const route = "kuvo/work-queue/items";
+  const last = await ask("POST", route, { operation: "one-old-number", title: "One number saved" }, app);
+  assert.equal(last.status, 200, last.text);
+  assert.equal((await ask("GET", route + "/" + last.json.item.id)).json.item.number, 9);
+  const waiting = await ask("POST", route, { operation: "needs-lease", title: "Waiting for the lease" }, app);
+  assert.equal(waiting.status, 200, waiting.text);
+  const pending = await ask("GET", route + "/" + waiting.json.item.id);
+  assert.equal(pending.json.item.numberPending, true);
+  assert.equal(pending.json.item.number, undefined);
+  const ledger = JSON.parse(readFileSync(mainFile, "utf8"));
+  assert.equal(ledger.next, 10);
+  assert.equal(ledger.given?.[grantID], undefined);
+  assert.equal(JSON.parse(readFileSync(memberFile, "utf8")).asking.id, grantID);
+  back();
+  await until(() => JSON.parse(readFileSync(mainFile, "utf8")).given?.[grantID],
+    "The main did not grant the range after recovering its lease.", 60000);
+  const block = JSON.parse(readFileSync(mainFile, "utf8")).given[grantID];
+  assert.equal(block.to - block.from, 1);
+  assert.ok(block.from >= 10);
+  await until(() => !JSON.parse(readFileSync(memberFile, "utf8")).asking,
+    "The recovered grant did not reach the member.", 25000);
+  const made = await far("POST", route, { operation: "spend-after-recovery", title: "New number after recovery" }, app);
+  assert.equal(made.status, 200, made.text);
+  assert.equal((await far("GET", route + "/" + made.json.item.id)).json.item.number, block.from);
+});
+
+test("client status edits validate fields atomically and keep the untouched fields", { timeout: 45000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const lab = await computer("Lab");
+  const ask = lab.connect(await lab.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
+  const app = { "x-kuvo-from": "app" };
+  const route = "kuvo/work-queue/items";
+  const ok = async (method, route, body) => {
+    const answer = await ask(method, route, body, app);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  const labels = "kuvo/work-queue/labels";
+  await ok("POST", labels, { add: "Tests" });
+  await ok("POST", labels, { add: "Bug" });
+  const add = async (operation, fields) => (await ok("POST", route, { operation, ...fields })).item;
+  const first = await add("status-first", { title: "  The first,\n plainly  ", body: "Kept description." });
+  const address = route + "/" + first.id;
+  assert.deepEqual([first.title, first.status, first.priority, first.owner, first.labels, first.assignee, first.due],
+    ["The first, plainly", "todo", "normal", "usr_you", [], undefined, undefined]);
+  const number = id => until(async () => (await ok("GET", route + "/" + id)).item.number, "No number assigned.", 25000);
+  await number(first.id);
+  const second = await add("status-second", { title: "Second" });
+  const third = await add("status-third", { title: "Third" });
+  const secondNumber = await number(second.id);
+  const thirdNumber = await number(third.id);
+  let current = (await ok("PATCH", address, { title: "Changed", priority: "High", labels: ["tests", "lbl_bug"], due: "2020-01-01", assignee: { kind: "agent", id: "codex-cli" } })).item;
+  assert.deepEqual([current.status, current.priority, current.labels, current.due, current.assignee, current.overdue],
+    ["todo", "high", ["lbl_tests", "lbl_bug"], "2020-01-01", { kind: "agent", id: "codex-cli", name: "Codex" }, true]);
+  assert.equal((await ok("GET", address)).item.body, "Kept description.");
+  current = (await ok("PATCH", address, { status: "Canceled" })).item;
+  assert.equal(current.status, "canceled");
+  assert.equal(typeof current.doneAt, "number");
+  assert.equal(current.overdue, undefined);
+  current = (await ok("PATCH", address, { status: "Needs you", due: null, assignee: null, labels: [], priority: "normal" })).item;
+  assert.deepEqual([current.status, current.doneAt, current.due, current.assignee, current.labels, current.priority],
+    ["needs-you", undefined, undefined, undefined, [], "normal"]);
+  assert.equal((await ok("PATCH", address, { status: "done" })).item.status, "done");
+  assert.deepEqual((await ok("GET", address)).item.events.map(({ kind, from, to }) => [kind, from, to]),
+    [["moved", "todo", "canceled"], ["moved", "canceled", "needs-you"], ["done", undefined, undefined]]);
+  const view = () => ok("GET", "kuvo/work-queue?owner=all&glance=1&counts=1");
+  await ok("PATCH", route + "/" + third.id, { before: secondNumber });
+  assert.deepEqual((await view()).items.filter(row => row.status === "todo").map(row => row.number), [thirdNumber, secondNumber]);
+  await ok("PATCH", route + "/" + second.id, { top: true });
+  assert.deepEqual((await view()).items.filter(row => row.status === "todo").map(row => row.number), [secondNumber, thirdNumber]);
+  for (const field of [{ status: "soon" }, { priority: "max" }, { labels: ["Nope"] }, { due: "2026-02-30" }, { assignee: { kind: "bot", id: "bot_unknown" } }]) {
+    const edited = await ask("PATCH", route + "/" + second.id, { title: "Must not change", ...field }, app);
+    assert.equal(edited.status, 400, edited.text);
+    const created = await ask("POST", route, { operation: "invalid-" + Object.keys(field)[0], title: "Must not create", ...field }, app);
+    assert.equal(created.status, 400, created.text);
+  }
+  assert.equal((await ok("GET", route + "/" + second.id)).item.title, "Second");
+  assert.equal((await view()).items.length, 3);
+  assert.equal((await ask("POST", route, { title: "Unverified" })).status, 403);
+  assert.equal((await ask("PATCH", address, { title: "Unverified" })).status, 403);
+});
+
+test("search and filters use precisely the matching live and deleted work", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const lab = await computer("Lab");
+  const run = path.join(lab.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const owners = ["ses_FilterLead", "ses_FilterChild"];
+  for (const id of owners) lab.engine.sessions.push({ id, title: id, location: { directory: lab.home }, time: { created: 1, updated: 2 } });
+  const row = (number, owner, title, extra = {}) => ({
+    id: "wqi_filter" + String(number).padStart(14, "0"), number, owner, title,
+    body: "", status: "todo", priority: "normal", order: number, labels: [], notes: [],
+    files: [], links: [], sessions: [], created: stamp, updated: stamp, ...extra,
+  });
+  const rows = [
+    row(1, owners[0], "Invoices are late", { body: "The cron job stalls.", labels: ["lbl_billing"], priority: "high" }),
+    row(2, owners[0], "Dark mode icons", { labels: ["lbl_design"], status: "backlog" }),
+    row(3, owners[1], "Sign-in loops", { notes: [{ id: "note-cron", text: "Traced it to the cron scheduler.", ...stamp }], status: "done", doneAt: stamp.at }),
+    row(4, owners[0], "Old cron notes", { deleted: stamp }),
+    row(5, "usr_you", "My invoices", { labels: ["lbl_billing"] }),
+    { ...row(6, owners[1], "An issue"), number: undefined, source: { kind: "github-issue", ref: "gh:example/demo#12", url: "https://github.com/example/demo/issues/12", host: "github.com", id: "I_1" } },
+  ];
+  write(path.join(run, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(run, "labels.json"), JSON.stringify({ formatVersion: 1, labels: [{ id: "lbl_billing", name: "Billing", color: "sky" }, { id: "lbl_design", name: "Design", color: "pink" }] }));
+  // A real deletion uses the route rather than assuming its persisted representation.
+  delete rows[3].deleted;
+  for (const owner of [...owners, "usr_you"]) write(path.join(run, "queues", owner + ".json"), JSON.stringify({ formatVersion: 1, owner, items: rows.filter(row => row.owner === owner) }));
+  const ask = lab.connect(await lab.start().ready());
+  const deleted = await ask("DELETE", "kuvo/work-queue/items/" + rows[3].id, undefined, { "x-kuvo-from": "app" });
+  assert.equal(deleted.status, 200, deleted.text);
+  const view = async (more = "", owner = "all") => {
+    const answer = await ask("GET", "kuvo/work-queue?owner=" + owner + "&glance=1&counts=1" + more);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  const all = await view();
+  assert.deepEqual([all.counts.open, all.counts.removed, all.counts.statuses.todo, all.counts.statuses.backlog, all.counts.statuses.done, all.counts.priorities.high, all.counts.labels.lbl_billing], [4, 1, 3, 1, 1, 1, 2]);
+  const found = await view("&q=CRON");
+  assert.equal(found.q, "CRON");
+  assert.deepEqual(found.items.map(row => row.number), [1, 3]);
+  assert.deepEqual(found.removed.map(row => row.number), [4]);
+  assert.deepEqual([found.counts.open, found.counts.removed, found.counts.statuses.todo, found.counts.statuses.done], [1, 1, 1, 1]);
+  const nums = async (more, owner) => (await view(more, owner)).items.map(row => row.number).sort();
+  assert.deepEqual(await nums("&q=cron%20stalls"), [1]);
+  assert.deepEqual(await nums("&q=%232"), [2]);
+  assert.deepEqual(await nums("&q=billing"), [1, 5]);
+  assert.deepEqual(await nums("&q=cron", owners[1]), [3]);
+  assert.deepEqual(await nums("&labels=lbl_billing,lbl_design"), [1, 2, 5]);
+  assert.deepEqual(await nums("&labels=lbl_billing&owners=usr_you"), [5]);
+  assert.deepEqual(await nums("&owners=" + owners[1] + ",usr_you&sources=none"), [3, 5]);
+  assert.equal((await view("&sources=github-issue")).items[0].title, "An issue");
+  assert.deepEqual((await view("&computers=other-computer")).items, []);
+  const narrowed = await view("&labels=lbl_billing,lbl_design&q=invoices");
+  assert.deepEqual(narrowed.filters, { labels: ["lbl_billing", "lbl_design"] });
+  assert.deepEqual([narrowed.counts.open, narrowed.counts.statuses.todo, narrowed.counts.labels.lbl_billing, narrowed.counts.labels.lbl_design], [2, 2, 2, 0]);
+});
+
+test("assigning personal work to a bot moves it to the bot's queue only once", { timeout: 45000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const lab = await computer("Lab");
+  const botId = "bot_scout00001";
+  const bot = path.join(lab.home, "bots", botId);
+  const look = { color: "sky", shape: "round", face: "calm" };
+  write(path.join(bot, "bot.json"), JSON.stringify({ kuvo: 1, id: botId, name: "Scout", job: "", look, created: "2026-10-01T09:00:00Z", updated: "2026-10-01T09:00:00Z" }));
+  const botSession = "ses_BotScout";
+  const lead = "ses_BotLead";
+  write(path.join(bot, "session"), botSession);
+  mkdirSync(path.join(bot, "workspace"), { recursive: true });
+  lab.engine.sessions.push(
+    { id: botSession, title: "Scout", location: { directory: path.join(bot, "workspace") }, time: { created: 1, updated: 2 } },
+    { id: lead, title: "Lead", location: { directory: lab.home }, time: { created: 1, updated: 2 } },
+  );
+  const ask = lab.connect(await lab.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
+  const app = { "x-kuvo-from": "app" };
+  const items = "kuvo/work-queue/items";
+  const assigned = { kind: "bot", id: botId };
+  const ok = async (method, route, body) => {
+    const answer = await ask(method, route, body, app);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  const mine = (await ok("POST", items, { operation: "bot-mine", title: "Look into the logs" })).item;
+  const numbered = await until(async () => (await ok("GET", items + "/" + mine.id)).item.number, "No number assigned.", 25000);
+  assert.equal(mine.owner, "usr_you");
+  const given = (await ok("PATCH", items + "/" + mine.id, { assignee: assigned })).item;
+  assert.deepEqual([given.owner, given.number, given.handedBy, given.assignee], [botSession, numbered, "usr_you", { ...assigned, name: "Scout", look }]);
+  const placed = (await ok("POST", items, { operation: "bot-place", title: "Directly for Scout", assignee: assigned })).item;
+  assert.equal(placed.owner, botSession);
+  const other = (await ok("POST", items, { operation: "bot-other", title: "Lead's work", owner: lead })).item;
+  assert.equal((await ok("PATCH", items + "/" + other.id, { assignee: assigned })).item.owner, lead);
+  const view = await ok("GET", "kuvo/work-queue?owner=all&glance=1");
+  assert.equal(view.items.filter(item => item.id === mine.id).length, 1);
+  assert.deepEqual(view.assignees.find(row => row.id === botId), { ...assigned, name: "Scout", look });
+  assert.deepEqual(view.new, { status: "todo", priority: "normal" });
+  const botView = await ok("GET", "kuvo/work-queue?owner=" + botSession);
+  assert.deepEqual(botView.items.map(row => row.id).sort(), [mine.id, placed.id].sort());
+  // Revision-aware edits use the same local handoff and preserve their receipt.
+  const offlineId = "wqi_BotOfflineEdit123456";
+  const made = await ask("POST", items, {
+    id: offlineId, owner: "usr_you", baseRevision: null, fields: { title: "Assigned from a saved edit" },
+  }, { ...app, "x-kuvo-operation": "bot-offline-create" });
+  assert.equal(made.status, 200, made.text);
+  assert.equal(made.json.status, "committed");
+  const edit = { owner: "usr_you", operation: "bot-offline-assign", baseRevision: made.json.revision, fields: { assignee: assigned } };
+  const result = await ok("PATCH", items + "/" + offlineId, edit);
+  assert.equal(result.status, "committed");
+  assert.equal((await ok("GET", items + "/" + offlineId)).item.owner, botSession);
+  assert.deepEqual(await ok("PATCH", items + "/" + offlineId, edit), result);
+});
+
+test("removing a label clears live and deleted items and reserves its old identifier", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const lab = await computer("Lab");
+  const ask = lab.connect(await lab.start().ready());
+  const app = { "x-kuvo-from": "app" };
+  const labels = "kuvo/work-queue/labels", items = "kuvo/work-queue/items";
+  const ok = async (method, route, body) => {
+    const answer = await ask(method, route, body, app);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  const bug = (await ok("POST", labels, { add: "Bug" })).label;
+  const docs = (await ok("POST", labels, { add: "Docs" })).label;
+  assert.notEqual(bug.color, docs.color);
+  for (const body of [{ add: "bug" }, { add: " " }, { add: "Ops", color: "beige" }, { change: "missing", name: "New" }, { change: "Docs", name: "Bug" }, { change: "Docs" }, { remove: "missing" }, {}]) {
+    const refused = await ask("POST", labels, body, app);
+    assert.equal(refused.status, 400, refused.text);
+  }
+  const live = (await ok("POST", items, { operation: "label-live", title: "Live", labels: ["Bug", "Docs"] })).item;
+  const gone = (await ok("POST", items, { operation: "label-dead", title: "Gone", labels: ["Bug"] })).item;
+  await ok("DELETE", items + "/" + gone.id);
+  const changed = (await ok("POST", labels, { change: bug.id, name: "Defect", color: "pink" })).label;
+  assert.deepEqual(changed, { id: bug.id, name: "Defect", color: "pink" });
+  let view = await ok("GET", "kuvo/work-queue?owner=all&glance=1&counts=1");
+  assert.deepEqual(view.items[0].labels, [bug.id, docs.id]);
+  assert.deepEqual(view.counts.labels, { [bug.id]: 1, [docs.id]: 1 });
+  await ok("POST", labels, { remove: "Defect" });
+  view = await ok("GET", "kuvo/work-queue?owner=all&glance=1&counts=1");
+  assert.deepEqual(view.items[0].labels, [docs.id]);
+  assert.deepEqual((await ok("POST", items + "/" + gone.id + "/restore", {})).item.labels, []);
+  const many = [];
+  for (let index = 0; index < 11; index++) many.push((await ok("POST", labels, { add: "Kind " + index })).label.id);
+  const refused = await ask("PATCH", items + "/" + live.id, { labels: many }, app);
+  assert.equal(refused.status, 400, refused.text);
+  assert.equal(refused.json.message, "An item carries 10 labels at most.");
+  assert.deepEqual((await ok("GET", items + "/" + live.id)).item.labels, [docs.id]);
+  assert.equal((await ok("POST", labels, { add: "Bug" })).label.id, "lbl_bug-2");
+  assert.equal((await ask("POST", labels, { add: "Unverified" })).status, 403);
 });
