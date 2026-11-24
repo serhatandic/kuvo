@@ -422,6 +422,7 @@ test("a source resumes the original only after the destination proves it dropped
     const { message } = sealOneWay(payload, Buffer.alloc(32, secret), key(receiver));
     relay.replay({ from: a, to: b, payload: frame(Frame.mail, 0, message) });
   };
+  send(to, from, 2, main, { op: "failed", id, generation, hash, message: "The destination ran out of disk space." });
   send(to, from, 2, main, { op: "dropped", id, generation: generation + 1, hash, neverSwitched: true });
   send(from, to, 1, member, { op: "drop", id, generation, hash });
   await until(() => dropProof, "The destination did not prove its copy was dropped");
@@ -940,14 +941,16 @@ test("incoming bundles keep independent conversations and import a repeated part
     ["mov_badCycle", "ses_badCycle", [{ id: "ses_badCycle", parentID: "ses_cycleChild" },
       { id: "ses_cycleChild", parentID: "ses_badCycle" }]],
   ];
-  async function offer(id, thing, tree) {
+  async function offer(id, thing, tree, wake = false) {
     const name = "Notes";
     write(path.join(records, "move.json"), JSON.stringify({
-      formatVersion: 1, kind: "chat", thing, name,
+      formatVersion: 1, kind: "chat", thing, name, ...(wake ? { folder: thing } : {}),
       exports: tree.map(({ id, parentID }) => ({ info: sessionOf({ id, directory, parent: parentID }), messages: [] })),
     }));
+    if (wake) write(path.join(records, thing, "wakes.json"), "[]");
     const archive = path.join(records, id + ".tgz");
-    const packed = spawnSync("tar", ["-czf", archive, "-C", records, "move.json"], { encoding: "utf8", timeout: 5000 });
+    const packed = spawnSync("tar", ["-czf", archive, "-C", records, "move.json", ...(wake ? [thing] : [])],
+      { encoding: "utf8", timeout: 5000 });
     assert.equal(packed.status, 0, packed.stderr);
     const bundle = fs.readFileSync(archive);
     assert.ok(bundle.length < 30000);
@@ -966,15 +969,18 @@ test("incoming bundles keep independent conversations and import a repeated part
   for (const fault of ["lookup", "conflict", "lostReply"]) {
     const root = "ses_root" + fault, child = "ses_child" + fault;
     const other = sessionOf({ id: child, title: "An independent conversation", directory });
-    const { identity, part } = await offer("mov_import" + fault, root, [{ id: root }, { id: child, parentID: root }]);
+    const folder = path.join(here.home, "wakes", root);
+    let placed = false;
+    const { identity, part } = await offer("mov_import" + fault, root, [{ id: root }, { id: child, parentID: root }], true);
+    here.engine.beforeImport = id => {
+      if (id !== root) return;
+      placed = fs.existsSync(path.join(folder, "wakes.json"));
+      if (fault === "conflict") here.engine.sessions.push(other);
+    };
     if (fault === "lookup") {
       here.engine.sessions.push(other);
       here.engine.refuseLookup = child;
-    } else if (fault === "conflict") {
-      here.engine.beforeImport = id => {
-        if (id === root) here.engine.sessions.push(other);
-      };
-    } else {
+    } else if (fault === "lostReply") {
       here.engine.loseImportReply = child;
     }
     const before = here.engine.asked.length;
@@ -984,6 +990,8 @@ test("incoming bundles keep independent conversations and import a repeated part
     await until(() => !fs.existsSync(path.join(here.home, "run/moves", identity.id + ".json")),
       "The destination did not clean up after " + fault);
     assert.deepEqual(here.engine.sessions, fault === "lostReply" ? [original] : [original, other]);
+    assert.equal(placed, fault !== "lookup");
+    assert.ok(!fs.existsSync(folder));
     const imports = here.engine.asked.slice(before).filter(call => call.path === "/api/experimental/session/import");
     assert.deepEqual(imports.map(call => call.json.info.id), fault === "lookup" ? [] : [root, child]);
     here.engine.sessions = [original];
@@ -2656,6 +2664,57 @@ test("a letter survives a failed lookup and a restart after engine acceptance", 
   assert.equal(conversation.length, 1);
   const prompts = there.engine.asked.filter(call => call.method === "POST" && call.path === "/api/session/" + recipient + "/prompt");
   assert.deepEqual([...new Set(prompts.map(call => call.json.id))], [conversation[0].id]);
+});
+
+test("temporary refusals leave a peer's letter allowance intact", {
+  timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("letter-budget");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const held = "ses_budgetHeld", recipient = "ses_budgetRecipient", unavailable = "ses_budgetUnavailable";
+  for (const id of [held, recipient]) {
+    here.engine.sessions.push(sessionOf({ id, title: "Reservations", directory: path.join(here.home, "chats") }));
+  }
+  const move = "mov_budgetHold";
+  save("run/moves/" + move + ".json", {
+    id: move, thing: held, name: "Held conversation", kind: "chat", from: member.key, to: main.key,
+    role: "to", stage: "copying", peer: member.key, sessions: [held], started: Date.now(),
+    complete: true, setUpAt: Date.now(), safeSwitch: true, twoComputers: true,
+  });
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const secret = Buffer.alloc(32, 2), key = Buffer.from(main.key, "base64url"), address = Buffer.from(main.address, "base64url");
+  const wire = relay.device(Buffer.alloc(32, 52));
+  t.after(() => wire.leave());
+  const resident = await here.start().ready();
+  await until(async () => (await request(resident, "GET", "api/session/" + recipient)).status === 200,
+    "The letter target's engine did not become ready");
+  await until(() => relay.has(address), "The target did not connect");
+  const send = async (id, to) => {
+    const now = Date.now();
+    const bytes = Buffer.from(JSON.stringify({ at: now, letter: { id, to, at: now, text: "A message from a peer." } }));
+    wire.send(address, frame(Frame.mail, 0, sealOneWay(bytes, secret, key).message));
+    return until(async () => {
+      const datagram = readFrame((await wire.next(12000)).subarray(17));
+      if (datagram?.kind !== Frame.mail) return false;
+      const receipt = JSON.parse(openOneWay(datagram.body, secret, key).payload).delivered;
+      return receipt?.id === id && receipt;
+    }, "The recipient did not answer " + id, 12000);
+  };
+  here.engine.refuseLookup = unavailable;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    for (const [id, to] of [["ltr_budgetHeld", held], ["ltr_budgetEngine", unavailable]]) {
+      const receipt = await send(id, to);
+      assert.deepEqual([receipt.ok, receipt.retry], [false, true], JSON.stringify(receipt));
+    }
+  }
+  here.engine.refuseLookup = null;
+  for (let index = 0; index < 20; index++) assert.equal((await send("ltr_budgetRun" + index, recipient)).ok, true);
+  const limited = await send("ltr_budgetExhausted", recipient);
+  assert.deepEqual([limited.ok, limited.retry], [false, true]);
+  assert.match(limited.why, /sent a lot of messages/);
+  assert.equal(here.engine.messages.get(recipient).length, 20);
+  assert.ok(!here.engine.messages.has(held));
 });
 
 test("a refused letter becomes one queued note to the conversation that sent it", {
