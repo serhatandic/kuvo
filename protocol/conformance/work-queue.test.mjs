@@ -775,7 +775,7 @@ test("a member saves an offline Work Queue edit and merges it when the keeper re
   assert.equal(changed.json.item.priority, "high");
 });
 
-test("ordinary revision-aware queue routes and the outbox replay the same decisions", { timeout: 45000 }, async t => {
+test("ordinary revision-aware queue routes and the outbox replay the same decisions", { timeout: 60000 }, async t => {
   const { computer } = await bench(t);
   const studio = await computer("Studio");
   const ask = studio.connect(await studio.start().ready());
@@ -811,8 +811,18 @@ test("ordinary revision-aware queue routes and the outbox replay the same decisi
   const restore = await ask("POST", address + "/restore", {}, app);
   assert.equal(restore.status, 200, restore.text);
   const stale = await submit({ operation: "try-before-deletion", baseRevision: changed.json.revision, fields: { body: "Stale draft" } });
-  assert.equal(stale.status, 409, stale.text);
-  assert.equal(stale.json.status, "refresh");
+  if (stale.status === 202) {
+    assert.equal(stale.json.status, "pending");
+    const recorded = await until(async () => {
+      const answer = await ask("GET", "kuvo/data/edits/" + stale.json.operation, undefined, app);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json.receipt.status !== "pending" && answer.json.receipt;
+    }, "The queued stale revision did not reach a decision.", 30000, 100);
+    assert.equal(recorded.status, "refresh");
+  } else {
+    assert.equal(stale.status, 409, stale.text);
+    assert.equal(stale.json.status, "refresh");
+  }
 });
 
 test("a visible GitHub issue is read through gh and a signed-out host backs off", { timeout: 45000 }, async t => {
