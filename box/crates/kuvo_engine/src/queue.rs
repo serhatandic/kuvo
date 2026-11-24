@@ -961,26 +961,38 @@ pub(crate) async fn hold_on(
     Ok(queue.shown(&engine.home))
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Advance {
+    Steer,
+    Now,
+    AfterTurn,
+}
+
 pub(crate) async fn advance(
     engine: &Engine,
     lease: &Lease,
     session: &str,
     id: &str,
-    immediately: bool,
+    how: Advance,
 ) -> Result<bool, Refusal> {
     let current = engine.queues.get(session).await.map_err(save_failed)?;
     let running = is_running(engine, lease, session)
         .await
         .map_err(queue_failed)?;
+    if how == Advance::AfterTurn && running {
+        return Ok(true);
+    }
     if current.contains(id) {
         if !handoff::send(engine, lease, session, id, true).await? {
             return Ok(false);
         }
-        engine
-            .queues
-            .put(session, Queue::release)
-            .await
-            .map_err(save_failed)?;
+        if how != Advance::AfterTurn {
+            engine
+                .queues
+                .put(session, Queue::release)
+                .await
+                .map_err(save_failed)?;
+        }
         if running {
             interrupt(engine, lease, session, true)
                 .await
@@ -999,7 +1011,7 @@ pub(crate) async fn advance(
     let Some(item) = inbox.iter().find(|item| item.id == id && item.is_message()) else {
         return Ok(false);
     };
-    let now = immediately || !running;
+    let now = how == Advance::Now || !running;
     if item.delivery == Delivery::Queue
         && let Err(error) = set_delivery(engine, lease, session, id, Delivery::Steer).await
     {
@@ -1014,8 +1026,7 @@ pub(crate) async fn advance(
             queue.held.retain(|held| held != id);
             queue.order.retain(|ordered| ordered != id);
             queue.came_held.retain(|held| held != id);
-            queue.arriving.clear();
-            if now {
+            if now && how != Advance::AfterTurn {
                 queue.release();
             }
         })
@@ -1074,12 +1085,8 @@ async fn resume_on(engine: &Engine, lease: &Lease, session: &str) -> Result<Valu
         .map_err(queue_failed)?
     {
         let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
-        if let Some(id) = saved.order(&inbox).first()
-            && !is_running(engine, lease, session)
-                .await
-                .map_err(queue_failed)?
-        {
-            advance(engine, lease, session, id, true).await?;
+        if let Some(id) = saved.order(&inbox).first() {
+            advance(engine, lease, session, id, Advance::AfterTurn).await?;
         }
     }
     Ok(engine
@@ -1497,12 +1504,12 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
     let local = engine.clone();
     routes.register::<now::Spec, _, _>(Access::Any, move |call| {
         let engine = local.clone();
-        async move { advance_reply(&engine, call, true).await }
+        async move { advance_reply(&engine, call, Advance::Now).await }
     });
     let local = engine.clone();
     routes.register::<steer::Spec, _, _>(Access::Any, move |call| {
         let engine = local.clone();
-        async move { advance_reply(&engine, call, false).await }
+        async move { advance_reply(&engine, call, Advance::Steer).await }
     });
     let local = engine.clone();
     routes.register::<reorder::Spec, _, _>(Access::Any, move |call| {
@@ -1548,7 +1555,7 @@ where
 async fn advance_reply<R>(
     engine: &Engine,
     call: RouteCall<()>,
-    immediately: bool,
+    how: Advance,
 ) -> Result<RouteReply<R>, Refusal>
 where
     R: kuvo_protocol::JsonStatus<200>,
@@ -1561,7 +1568,7 @@ where
         let _turn = engine.turn(&session).await;
         let _admitted = crate::session_move::admit(&engine, &session, None).await?;
         let lease = command_target(&engine, &session).await?;
-        if !advance(&engine, &lease, &session, &id, immediately).await? {
+        if !advance(&engine, &lease, &session, &id, how).await? {
             return Err(not_waiting());
         }
         Ok::<_, Refusal>(
@@ -1573,7 +1580,7 @@ where
                 .shown(&engine.home),
         )
     };
-    let shown = if immediately {
+    let shown = if how == Advance::Now {
         // The caller's deadline cannot cancel a native POST whose acceptance
         // is still being checked. The task owns its turn through settlement.
         let sending = tokio::spawn(work);
@@ -2719,13 +2726,7 @@ async fn drain(
     let Some(id) = order.first() else {
         return Ok(true);
     };
-    if is_running(engine, lease, session)
-        .await
-        .map_err(io::Error::other)?
-    {
-        return Ok(true);
-    }
-    advance(engine, lease, session, id, true)
+    advance(engine, lease, session, id, Advance::AfterTurn)
         .await
         .map_err(|_| io::Error::other("The next waiting message could not be sent."))
 }

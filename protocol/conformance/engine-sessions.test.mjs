@@ -1212,6 +1212,10 @@ test("a paused queue stays paused when its last engine message is taken back", {
   assert.equal(saved.status, 200, saved.text);
   assert.equal(saved.json.waits, true);
   assert.deepEqual(saved.json.waiting.map(row => row.id), [late.id]);
+  const repeated = await request(record, "POST", route + "/add", late);
+  assert.equal(repeated.status, 200, repeated.text);
+  assert.equal(repeated.json.waits, true);
+  assert.deepEqual(repeated.json.waiting.map(row => row.id), [late.id]);
   assert.deepEqual(here.engine.messages.get(session) ?? [], []);
 });
 
@@ -1275,6 +1279,49 @@ test("the composer saves a queued prompt while stopped and Send Now interrupts f
   const left = await request(record, "GET", base + "/queue");
   assert.equal(left.json.paused, false);
   assert.deepEqual(left.json.waiting.map(row => row.id), ["msg_waits"]);
+});
+
+test("a restart resumes the first saved draft and failure holds the next", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("waiting-after-restart");
+  const session = "ses_restartWaiting";
+  const one = "msg_first";
+  const two = "msg_second";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const child = here.start();
+  let record = await child.ready();
+  const base = `kuvo/sessions/${session}`;
+  const route = base + "/queue";
+  assert.deepEqual((await request(record, "POST", base + "/stop")).json, { paused: true, held: [] });
+  for (const id of [one, two]) {
+    assert.equal((await request(record, "POST", route + "/add", { id, text: id })).json.waits, true);
+  }
+  await child.stop();
+  const index = path.join(here.home, "run", "queues.json");
+  const saved = readJSON(index);
+  saved[session].paused = false;
+  delete saved[session].userPaused;
+  write(index, JSON.stringify(saved));
+  const arrived = Promise.withResolvers();
+  const reply = Promise.withResolvers();
+  t.after(reply.resolve);
+  here.engine.holdPrompt = { id: one, accepted: arrived.resolve, release: reply.promise };
+  record = await here.start().ready();
+  await arrived.promise;
+  await until(() => here.engine.subscribers() > 0, "the restarted resident to follow the engine");
+  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [one]);
+  here.engine.emit({ type: "session.execution.started", data: { sessionID: session } });
+  here.engine.emit({ type: "session.execution.failed", data: { sessionID: session, error: { message: "The run failed." } } });
+  await new Promise(resolve => setTimeout(resolve, 200));
+  reply.resolve();
+  const held = await until(async () => {
+    const result = await request(record, "GET", route);
+    return result.json?.paused && result.json.waiting?.length === 1 && result.json;
+  }, "the failed turn to pause the saved queue");
+  assert.deepEqual(held.waiting.map(row => row.id), [two]);
+  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [one]);
+  assert.equal((await request(record, "POST", route + "/resume")).status, 200);
+  assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [one, two]);
 });
 
 // Deterministic provider errors for side-by-side TS and Rust comparison. The

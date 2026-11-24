@@ -464,7 +464,7 @@ async fn deliver(
                         .map_err(disk_failure)?
                         .arriving(id)
                 {
-                    let _ = queue::advance(engine, &lease, session, id, true).await;
+                    let _ = queue::advance(engine, &lease, session, id, queue::Advance::Now).await;
                 }
             }
         }
