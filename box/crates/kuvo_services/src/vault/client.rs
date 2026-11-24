@@ -46,6 +46,15 @@ impl Clients {
     }
 
     pub fn client(&mut self, vault: &mut Vault, request: &DispatchRequest) -> Option<String> {
+        self.check_client(vault, request, true)
+    }
+
+    pub fn check_client(
+        &mut self,
+        vault: &mut Vault,
+        request: &DispatchRequest,
+        consume: bool,
+    ) -> Option<String> {
         if matches!(
             request.caller,
             Caller::Local(Transport::Http {
@@ -67,7 +76,7 @@ impl Clients {
         {
             let hash = hex::encode(Sha256::digest(&request.body));
             let rest = format!("\0{}\0{}\0{hash}", request.method, request.path);
-            if let Some(mac) = self.proved(proof, "kuvo-vault-request", &rest) {
+            if let Some(mac) = self.proved(proof, "kuvo-vault-request", &rest, consume) {
                 return Some(format!("mac:{mac}"));
             }
         }
@@ -82,11 +91,11 @@ impl Clients {
     pub fn key_request(&mut self, given: serde_json::Map<String, serde_json::Value>) -> bool {
         serde_json::from_value(serde_json::Value::Object(given))
             .ok()
-            .and_then(|proof| self.proved(proof, "kuvo-vault-key", ""))
+            .and_then(|proof| self.proved(proof, "kuvo-vault-key", "", true))
             .is_some()
     }
 
-    fn proved(&mut self, proof: Proof, tag: &str, rest: &str) -> Option<String> {
+    fn proved(&mut self, proof: Proof, tag: &str, rest: &str, consume: bool) -> Option<String> {
         if !(16..=64).contains(&proof.nonce.len())
             || !proof
                 .nonce
@@ -118,7 +127,9 @@ impl Clients {
         let signature = Signature::from_slice(&URL_SAFE_NO_PAD.decode(proof.proof).ok()?).ok()?;
         let message = format!("{tag}\0{}\0{at}\0{}{rest}", link.id, proof.nonce);
         key.verify_strict(message.as_bytes(), &signature).ok()?;
-        self.nonces.insert(proof.nonce, now + PROOF_FOR * 2);
+        if consume {
+            self.nonces.insert(proof.nonce, now + PROOF_FOR * 2);
+        }
         Some(proof.mac)
     }
 }
