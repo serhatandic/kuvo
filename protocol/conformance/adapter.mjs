@@ -14,17 +14,16 @@ export function scratch() {
   return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "kc-"));
 }
 
-export function prepareScratchHome(home) {
-  if (process.platform !== "win32") return;
+/** A box's home made private before anything's written in it: on Windows the Rust box takes only a
+ * folder no other account can read (its own user, nothing inherited), as it makes one itself. */
+export function privateHome(home) {
   fs.mkdirSync(home, { recursive: true });
-  const powershell = path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", [
-    "$ErrorActionPreference = 'Stop'",
-    "$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
-    "$acl = New-Object Security.AccessControl.DirectorySecurity",
-    '$acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;${sid})")',
-    "Set-Acl -LiteralPath $env:KUVO_TEST_HOME_PATH -AclObject $acl",
-  ].join("; ")], { env: { ...process.env, KUVO_TEST_HOME_PATH: home } });
+  if (process.platform !== "win32") return;
+  const icacls = path.join(process.env.SystemRoot, "System32", "icacls.exe");
+  const user = os.userInfo().username;
+  // (Owned by the user itself: an administrator's new folders can be the Administrators group's.)
+  execFileSync(icacls, [home, "/setowner", user], { stdio: "ignore" });
+  execFileSync(icacls, [home, "/inheritance:r", "/grant:r", `${user}:(OI)(CI)F`], { stdio: "ignore" });
 }
 
 export function write(file, data, options) {
