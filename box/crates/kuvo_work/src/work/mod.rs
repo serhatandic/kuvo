@@ -9,6 +9,7 @@ pub mod projects;
 pub mod records;
 pub mod settings;
 pub mod unanswering;
+pub mod watch;
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
@@ -59,6 +60,9 @@ pub struct Work {
     sessions: LocalSessions,
     peers: Reader,
     setup: std::sync::Arc<dyn crate::bots::setup::Setup>,
+    /// Starters with lines added from outside the watcher, for it to send.
+    wakes: tokio::sync::mpsc::UnboundedSender<String>,
+    added: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
 }
 
 impl Work {
@@ -70,7 +74,10 @@ impl Work {
         setup: std::sync::Arc<dyn crate::bots::setup::Setup>,
         bots: crate::bots::Bots,
     ) -> Self {
+        let (wakes, added) = tokio::sync::mpsc::unbounded_channel();
         Self {
+            wakes,
+            added: std::sync::Arc::new(std::sync::Mutex::new(Some(added))),
             settings,
             records: Records::new(&home.join("run")),
             unanswering: Unanswerings::new(&home.join("run")),
@@ -83,10 +90,20 @@ impl Work {
         }
     }
 
-    /// Follows the engine's events for what they change here: which models can't answer.
+    /// Follows the engine's events for what they change here: which models can't answer, and what
+    /// each conversation hears of the sessions it started (the work watcher).
     pub fn watch(&self) -> tokio::task::JoinHandle<()> {
+        struct Stops(Option<tokio::task::JoinHandle<()>>);
+        impl Drop for Stops {
+            fn drop(&mut self) {
+                self.0.take().inspect(tokio::task::JoinHandle::abort);
+            }
+        }
+        let added = self.added.lock().expect("added").take();
+        let watcher = added.map(|added| watch::Watcher::new(self.clone()).start(added));
         let (work, mut events) = (self.clone(), self.list.engine().events());
         tokio::spawn(async move {
+            let _watcher = Stops(watcher);
             loop {
                 let event = match events.recv().await {
                     Ok(event) => event,

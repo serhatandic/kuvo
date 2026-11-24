@@ -47,6 +47,18 @@ pub enum Delivered {
     Held,
 }
 
+/// A message the box writes itself: its id, its text and mark, who it's shown from and in what
+/// words while it waits on the box, and whether it's read at the conversation's next step (`steer`)
+/// rather than after its turn.
+pub struct BoxMessage<'a> {
+    pub id: String,
+    pub text: String,
+    pub metadata: Option<Value>,
+    pub from: &'a str,
+    pub words: &'a str,
+    pub steer: bool,
+}
+
 /// The engine, held up for a round of wake-ups.
 pub struct WakeEngine {
     engine: Engine,
@@ -180,21 +192,39 @@ impl WakeEngine {
         let metadata = summary
             .filter(|summary| !summary.is_empty())
             .map(|summary| json!({ "kuvo": { "wake": { "summary": summary } } }));
-        let text = format!("{WAKE_MARKER}{note}");
-        self.tell(session, text, metadata, WAKE_FROM, note).await
+        let (id, text) = (self.message_id()?, format!("{WAKE_MARKER}{note}"));
+        let message = BoxMessage {
+            id,
+            text,
+            metadata,
+            from: WAKE_FROM,
+            words: note,
+            steer: false,
+        };
+        self.tell(session, message).await
+    }
+
+    /// A new message's id, in the engine's order.
+    pub fn message_id(&self) -> Result<String, Unreachable> {
+        crate::send::new_id(&self.engine).map_err(|_| Unreachable("No ID".into()))
     }
 
     /// Sends the box's own message to a conversation, waiting on the box (shown from `from`, in
-    /// `words`) while you stopped it; never while it moves to or from another computer.
+    /// `words`) while you stopped it; never while it moves to or from another computer. One sent
+    /// again under the same id is taken once.
     pub async fn tell(
         &self,
         session: &str,
-        text: String,
-        metadata: Option<Value>,
-        from: &str,
-        words: &str,
+        message: BoxMessage<'_>,
     ) -> Result<Delivered, Unreachable> {
-        let id = crate::send::new_id(&self.engine).map_err(|_| Unreachable("No ID".into()))?;
+        let BoxMessage {
+            id,
+            text,
+            metadata,
+            from,
+            words,
+            steer,
+        } = message;
         let _turn = self.engine.turn(session).await;
         let _admitted = crate::session_move::admit(&self.engine, session, None)
             .await
@@ -202,7 +232,11 @@ impl WakeEngine {
         let prompt = Prompt {
             id,
             text,
-            delivery: Delivery::Queue,
+            delivery: if steer {
+                Delivery::Steer
+            } else {
+                Delivery::Queue
+            },
             files: Vec::new(),
             metadata,
         };

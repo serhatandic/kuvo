@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use kuvo_engine::BoxMessage;
 use kuvo_store::locks::{OnBusy, StaleLock};
 use serde_json::{Map, Value, json};
 
@@ -229,8 +230,19 @@ impl Work {
         let line = format!("You answered: {text}");
         let note = json!({ "kuvo": { "note": { "from": "Your answer", "line": line } } });
         let said = format!("[The user answered] {text}");
-        let told = engine.tell(session, said, Some(note), "Your answer", text);
-        if told.await.is_ok() {
+        let Ok(message_id) = engine.message_id() else {
+            return;
+        };
+        let (from, metadata, steer) = ("Your answer", Some(note), false);
+        let message = BoxMessage {
+            id: message_id,
+            text: said,
+            metadata,
+            from,
+            words: text,
+            steer,
+        };
+        if engine.tell(session, message).await.is_ok() {
             let _ = self.change_asks(|asks| {
                 let kept = asks.iter_mut().filter(|each| each["id"] == id);
                 kept.for_each(|kept| kept["toldLate"] = json!(true));
