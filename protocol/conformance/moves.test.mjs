@@ -356,14 +356,20 @@ test("a source resumes the original only after the destination proves it dropped
   const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
   const { sealOneWay, openOneWay, Frame, frame } = await testMail(t, boxBinary(wireFixture));
   const key = peer => Buffer.from(peer.key, "base64url");
-  let switching, dropProof;
+  let firstPart, switching, dropProof, holdPart = true;
   t.after(relay.intercept(from, to, packet => {
     if (packet.payload[0] !== Frame.mail) return false;
     const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), key(main));
     const move = JSON.parse(payload).move;
-    if (move?.op !== "switch") return false;
-    switching = move;
-    return true;
+    if (move?.op === "part" && holdPart) {
+      firstPart ??= packet;
+      return true;
+    }
+    if (move?.op === "switch") {
+      switching = move;
+      return true;
+    }
+    return false;
   }));
   const releaseProof = relay.intercept(to, from, packet => {
     if (packet.payload[0] !== Frame.mail) return false;
@@ -376,8 +382,28 @@ test("a source resumes the original only after the destination proves it dropped
   const sourceProcess = here.start(), destinationProcess = there.start();
   const [source] = await Promise.all([sourceProcess.ready(), destinationProcess.ready()]);
   await readyToMove(source, session, member);
+  const conversation = "kuvo/sessions/" + session;
+  const stopped = await request(source, "POST", conversation + "/stop");
+  assert.equal(stopped.json?.paused, true, stopped.text);
+  const queue = conversation + "/queue", waiting = ["msg_firstHeld", "msg_secondHeld"];
+  for (const [index, id] of waiting.entries()) {
+    const added = await request(source, "POST", queue + "/add", { id, text: "Waiting prompt " + index });
+    assert.equal(added.json?.waits, true, added.text);
+  }
   const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   assert.equal(begun.status, 202, begun.text);
+  await until(() => firstPart, "The source did not prepare its copy");
+  const edits = await Promise.all([
+    request(source, "DELETE", queue + "/" + waiting[0]),
+    request(source, "POST", queue + "/add", { id: "msg_insertHeld", text: "Undo removal", before: waiting[0] }),
+    request(source, "POST", queue + "/resume", {}),
+  ]);
+  for (const edit of edits) {
+    assert.equal(edit.status, 409, edit.text);
+    assert.match(edit.json.message, /owner changes|moving to another computer/);
+  }
+  holdPart = false;
+  relay.replay(firstPart);
   const { id, generation, hash } = await until(() => switching, "The source did not attempt to switch");
   const send = (a, b, secret, receiver, move) => {
     const payload = Buffer.from(JSON.stringify({ at: Date.now(), move }));
@@ -399,6 +425,13 @@ test("a source resumes the original only after the destination proves it dropped
   assert.equal(fs.readFileSync(pause, "utf8"), "user-paused");
   assert.ok(here.engine.sessions.some(row => row.id === session));
   await until(() => !there.engine.sessions.some(row => row.id === session), "The destination did not remove the dropped copy");
+  const restored = await request(source, "GET", queue);
+  assert.equal(restored.json?.paused, true, restored.text);
+  assert.deepEqual(restored.json.waiting.map(item => item.id), waiting);
+  for (const id of waiting) assert.ok(fs.existsSync(path.join(here.home, "run/waiting", id + ".json")));
+  const removed = await request(source, "DELETE", queue + "/" + waiting[0]);
+  assert.equal(removed.status, 200, removed.text);
+  assert.deepEqual((await request(source, "GET", queue)).json.waiting.map(item => item.id), [waiting[1]]);
 });
 
 test("a destination rolls back the import that lost its engine reply during restart", { timeout: 105000 }, async t => {
@@ -729,6 +762,33 @@ test("incoming bundles keep independent conversations and import a repeated part
     const failed = await ask({ ...identity, op: "arrive" }, "failed");
     assert.equal(failed.op, "failed", JSON.stringify(failed));
     assert.deepEqual(here.engine.sessions, [original]);
+  }
+  for (const fault of ["lookup", "conflict", "lostReply"]) {
+    const root = "ses_root" + fault, child = "ses_child" + fault;
+    const other = sessionOf({ id: child, title: "An independent conversation", directory });
+    const { identity, part } = await offer("mov_import" + fault, root, [{ id: root }, { id: child, parentID: root }]);
+    if (fault === "lookup") {
+      here.engine.sessions.push(other);
+      here.engine.refuseLookup = child;
+    } else if (fault === "conflict") {
+      here.engine.beforeImport = id => {
+        if (id === root) here.engine.sessions.push(other);
+      };
+    } else {
+      here.engine.loseImportReply = child;
+    }
+    const before = here.engine.asked.length;
+    assert.equal((await ask(part, "got")).op, "got");
+    const failed = await ask({ ...identity, op: "arrive" }, "failed");
+    assert.equal(failed.op, "failed", fault);
+    await until(() => !fs.existsSync(path.join(here.home, "run/moves", identity.id + ".json")),
+      "The destination did not clean up after " + fault);
+    assert.deepEqual(here.engine.sessions, fault === "lostReply" ? [original] : [original, other]);
+    const imports = here.engine.asked.slice(before).filter(call => call.path === "/api/experimental/session/import");
+    assert.deepEqual(imports.map(call => call.json.info.id), fault === "lookup" ? [] : [root, child]);
+    here.engine.sessions = [original];
+    here.engine.refuseLookup = null;
+    here.engine.beforeImport = null;
   }
   const moved = "ses_duplicatePart";
   const { identity, part } = await offer("mov_duplicatePart", moved, [{ id: moved }]);

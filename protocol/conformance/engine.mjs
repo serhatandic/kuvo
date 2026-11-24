@@ -72,11 +72,17 @@ export async function standInEngine(root, env) {
       }
       if (route === "POST /api/experimental/session/import") {
         const id = given.info?.id;
+        engine.beforeImport?.(id);
         if (!id || engine.sessions.some(each => each.id === id)) return send({ message: "Session already exists." }, 409);
         const info = { ...given.info, location: given.location };
         engine.sessions.push(info);
         engine.messages.set(id, given.messages);
         publish({ type: "session.created", data: { sessionID: id, info } });
+        if (engine.loseImportReply === id) {
+          engine.loseImportReply = null;
+          response.destroy();
+          return;
+        }
         if (engine.holdImport?.id === id) {
           const held = engine.holdImport;
           engine.holdImport = null;
