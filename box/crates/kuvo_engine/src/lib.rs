@@ -17,6 +17,7 @@ mod model_preferences;
 mod model_refresh;
 mod models;
 mod naming;
+mod notes;
 mod ownership;
 mod parts;
 mod proxy;

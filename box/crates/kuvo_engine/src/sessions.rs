@@ -178,7 +178,11 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
         async move {
             let id = id(&call)?;
             let given = body(&call).unwrap_or_default();
-            let _turn = engine.turn(&id).await;
+            let _turn = call
+                .cancel
+                .run_until_cancelled(engine.note_turn(&id))
+                .await
+                .ok_or_else(|| cancelled("deleted"))?;
             let lease = api::start(&engine).await?;
             let path = path(&id);
             match engine
@@ -236,6 +240,13 @@ fn confirmation(session: &Session) -> Value {
 
 fn stale() -> Refusal {
     Refusal::new(StatusCode::CONFLICT, "It changed since you read it.")
+}
+
+fn cancelled(action: &str) -> Refusal {
+    Refusal::new(
+        StatusCode::BAD_GATEWAY,
+        format!("It couldn't be {action}: The operation was aborted."),
+    )
 }
 
 fn check_was(given: &Map<String, Value>, session: &Session, delete: bool) -> Result<(), Refusal> {
@@ -302,10 +313,23 @@ where
             )
         })?;
 
-    let _turn = engine.turn(&id).await;
-    let lease = api::start(&engine).await?;
     let path = path(&id);
-    let mut info = read(&engine, &lease, &path).await?;
+    let action = if matches!(change, Change::Rename) {
+        "renamed"
+    } else {
+        "changed"
+    };
+    let prepare = async {
+        let turn = engine.note_turn(&id).await;
+        let lease = api::start(&engine).await?;
+        let info = read(&engine, &lease, &path).await?;
+        Ok::<_, Refusal>((turn, lease, info))
+    };
+    let (_turn, lease, mut info) = call
+        .cancel
+        .run_until_cancelled(prepare)
+        .await
+        .ok_or_else(|| cancelled(action))??;
     let mut session: Session = typed(info.clone())?;
     session.check_independent()?;
 
@@ -349,11 +373,6 @@ where
             .call::<Value>(&lease, Method::PATCH, &path, Some(&patch))
             .await
             .map_err(|error| {
-                let action = if matches!(change, Change::Rename) {
-                    "renamed"
-                } else {
-                    "changed"
-                };
                 Refusal::new(
                     StatusCode::BAD_GATEWAY,
                     format!("It couldn't be {action}: {error}"),

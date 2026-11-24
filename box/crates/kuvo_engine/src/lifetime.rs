@@ -109,6 +109,7 @@ enum Command {
 
 impl Engine {
     pub fn new(home: PathBuf, env: Environment, timing: Timing) -> io::Result<Self> {
+        crate::notes::clear_stale(&home);
         let account_home = kuvo_os::platform::Account::current()
             .and_then(|account| account.home_folder(kuvo_os::platform::Platform::current(), &env))
             .unwrap_or_default();

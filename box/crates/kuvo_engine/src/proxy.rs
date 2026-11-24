@@ -253,7 +253,7 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
     let mut session_turn = None;
     let mut flip = None;
     if let Some(id) = &changing {
-        session_turn = cancel.run_until_cancelled(engine.turn(id)).await;
+        session_turn = cancel.run_until_cancelled(engine.note_turn(id)).await;
         if session_turn.is_none() {
             return down(&engine).await.reply();
         }

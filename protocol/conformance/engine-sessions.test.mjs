@@ -1,5 +1,6 @@
 // Session and message behavior through the selected resident and its engine API.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -306,6 +307,54 @@ test("concurrent session note writes keep earlier notes and a failed writer rele
   assert.equal((await edit(id, "pinned", false)).status, 200);
   assert.equal((await edit("ses_absent", "pinned", true)).status, 404);
   assert.equal(writes(), 5);
+});
+
+test("session note writers share older lock paths and remove only stale locks", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("compatible-session-note-locks");
+  const session = "ses_noteLock";
+  const other = "ses_otherNoteLock";
+  const notes = path.join(here.home, "run", "notes");
+  const lock = id => path.join(notes, createHash("sha256").update(id).digest("hex").slice(0, 32) + ".lock");
+  const live = lock(session);
+  const stale = lock("ses_staleLock");
+  const old = path.join(here.home, "run", "work", ".notes.lock");
+  for (const file of [live, stale]) fs.mkdirSync(file, { recursive: true });
+  const then = new Date(Date.now() - 90000);
+  fs.utimesSync(stale, then, then);
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }),
+    sessionOf({ id: other, directory: here.home }));
+  const record = await here.start().ready();
+  await until(() => !fs.existsSync(stale), "the startup check to clear abandoned session locks", 4000);
+  assert.equal(fs.existsSync(live), true);
+  const rename = (id, title) => request(record, "POST", `kuvo/sessions/${id}/rename`, { title });
+  const touches = () => here.engine.asked.filter(row => row.path === "/api/session/" + session).length;
+  const before = touches();
+  const first = rename(session, "After the other writer");
+  first.catch(() => {});
+  try {
+    assert.equal((await rename(other, "Independent writer")).status, 200);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    // TypeScript's route can look up the session before entering the current writer's turn.
+    assert.equal(here.engine.asked.some(row => row.method === "PATCH" && row.path.endsWith("/" + session)), false);
+    assert.ok(touches() <= before + 1);
+  } finally {
+    fs.rmdirSync(live);
+  }
+  assert.equal((await first).status, 200);
+  fs.mkdirSync(old, { recursive: true });
+  const second = rename(session, "After the older writer");
+  second.catch(() => {});
+  try {
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(here.engine.sessions.find(row => row.id === session).title, "After the other writer");
+    assert.equal(fs.existsSync(old), true);
+  } finally {
+    fs.rmdirSync(old);
+  }
+  assert.equal((await second).status, 200);
+  assert.equal(here.engine.sessions.find(row => row.id === session).title, "After the older writer");
+  assert.equal(fs.existsSync(live), false);
 });
 
 test("Delete with an earlier revision refuses a session that vanishes during the request", { timeout: 45000 }, async t => {

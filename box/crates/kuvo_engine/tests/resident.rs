@@ -59,6 +59,7 @@ fn main() {
             interrupted_inbox_transfer().await;
             attachment_retention().await;
             local_background_activity().await;
+            cancelled_session_writers().await;
             transcript_reads_older_pages().await;
             coding_agent_models().await;
             external_asks().await;
@@ -696,6 +697,108 @@ async fn local_background_activity() {
     server.stop().await;
 }
 
+async fn cancelled_session_writers() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    let record = work.join("session-writers.json");
+    fs::write(
+        &record,
+        br#"{"id":"ses_writers","title":"Before","metadata":{"kept":true}}"#,
+    )
+    .unwrap();
+    let started = work.join("session-writer-started");
+    let opened = work.join("session-writer-opened");
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    let edit = |action, body: Value, cancel| {
+        let request = DispatchRequest {
+            method: Method::POST,
+            path: format!("kuvo/sessions/ses_writers/{action}"),
+            headers: Default::default(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+            caller: Caller::Local(Transport::Http {
+                origin: kuvo_server::LocalOrigin::App,
+                internal: false,
+            }),
+        };
+        let dispatcher = server.dispatcher.clone();
+        tokio::spawn(async move { dispatcher.dispatch(request, cancel).await.status })
+    };
+    let abandon = async |cancel: CancellationToken, write: JoinHandle<StatusCode>| {
+        cancel.cancel();
+        assert_eq!(
+            time::timeout(Duration::from_secs(2), write)
+                .await
+                .unwrap()
+                .unwrap(),
+            StatusCode::BAD_GATEWAY,
+        );
+    };
+
+    let first = edit("rename", json!({"title":"After"}), CancellationToken::new());
+    until(
+        || started.exists(),
+        "the first note writer to start its read",
+    )
+    .await;
+    let cancel = CancellationToken::new();
+    let waiting = edit("archive", json!({"archived":true}), cancel.clone());
+    tokio::task::yield_now().await;
+    abandon(cancel, waiting).await;
+    fs::write(&opened, []).unwrap();
+    assert_eq!(first.await.unwrap(), StatusCode::OK);
+    assert_eq!(
+        edit("pin", json!({"pinned":true}), CancellationToken::new())
+            .await
+            .unwrap(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&record).unwrap()).unwrap(),
+        json!({
+            "id":"ses_writers","title":"After","metadata":{"kept":true,"kuvo.pinned":true},
+        })
+    );
+
+    fs::remove_file(&started).unwrap();
+    fs::remove_file(&opened).unwrap();
+    let cancel = CancellationToken::new();
+    let reading = edit(
+        "rename",
+        json!({"title":"Do not write this"}),
+        cancel.clone(),
+    );
+    until(
+        || started.exists(),
+        "the next note writer to start a held read",
+    )
+    .await;
+    abandon(cancel, reading).await;
+    let next = edit("pin", json!({"pinned":false}), CancellationToken::new());
+    assert_eq!(
+        time::timeout(Duration::from_secs(2), next)
+            .await
+            .unwrap()
+            .unwrap(),
+        StatusCode::OK
+    );
+    fs::write(&opened, []).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&record).unwrap()).unwrap(),
+        json!({
+            "id":"ses_writers","title":"After","metadata":{"kept":true,"kuvo.pinned":false},
+        })
+    );
+    server.stop().await;
+}
+
 async fn transcript_reads_older_pages() {
     use kuvo_engine::{TranscriptError, TranscriptScope};
 
@@ -1312,6 +1415,26 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             return response;
         }
         match req.uri().path() {
+            "/api/session/ses_writers" => {
+                let file = "session-writers.json";
+                let mut saved: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+                if req.method() == Method::PATCH {
+                    let patch: serde_json::Map<String, Value> = serde_json::from_slice(
+                        &req.into_body().collect().await.unwrap().to_bytes(),
+                    )
+                    .unwrap();
+                    saved.as_object_mut().unwrap().extend(patch);
+                    fs::write(file, serde_json::to_vec(&saved).unwrap()).unwrap();
+                } else if !Path::new("session-writer-started").exists() {
+                    fs::write("session-writer-started", []).unwrap();
+                    until(
+                        || Path::new("session-writer-opened").exists(),
+                        "the test to release the held note read",
+                    )
+                    .await;
+                }
+                answer = Reply::json(StatusCode::OK, json!({ "data": saved }));
+            }
             "/api/session/ses_transcript" => {
                 let row: Value =
                     serde_json::from_slice(&fs::read("transcript-session.json").unwrap()).unwrap();
