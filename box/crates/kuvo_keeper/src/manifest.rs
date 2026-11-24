@@ -59,10 +59,18 @@ struct Manifest {
     version: String,
     engine: String,
     spreads: Option<Value>,
+    released: Option<Value>,
     launch: Option<Value>,
+    bridge: Option<String>,
     pack: Pack,
     #[serde(default)]
     packs: BTreeMap<String, Pack>,
+    #[serde(flatten)]
+    engines: EngineCatalogue,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct EngineCatalogue {
     darwin: Option<Value>,
     linux: Option<Value>,
     windows: Option<Value>,
@@ -81,6 +89,10 @@ pub struct ReleaseRef {
 }
 
 impl ReleaseRef {
+    pub fn matches_bytes(&self, bytes: &[u8]) -> bool {
+        self.sha256 == sha256(bytes)
+    }
+
     pub fn target(&self) -> io::Result<Release> {
         if !is_sha256(&self.sha256) {
             return Err(invalid());
@@ -159,8 +171,20 @@ impl SignedRelease {
         self.manifest.spreads == Some(Value::Bool(true))
     }
 
+    pub fn launches_rust(&self) -> bool {
+        self.manifest.launch.as_ref().and_then(Value::as_str) == Some("rust")
+    }
+
+    pub(crate) fn bridge(&self) -> Option<&str> {
+        self.manifest.bridge.as_deref()
+    }
+
+    pub(crate) fn released(&self) -> Option<jiff::Timestamp> {
+        self.manifest.released.as_ref()?.as_str()?.parse().ok()
+    }
+
     pub fn pack_for(&self, target: &str) -> io::Result<&Pack> {
-        if self.manifest.launch.as_ref().and_then(Value::as_str) == Some("rust") {
+        if self.launches_rust() {
             self.manifest.packs.get(target).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
@@ -180,11 +204,17 @@ impl SignedRelease {
     }
 
     pub(crate) fn engine_build(&self, target: &str) -> Option<EngineBuild> {
+        self.manifest.engines.build_for(target)
+    }
+}
+
+impl EngineCatalogue {
+    pub(crate) fn build_for(&self, target: &str) -> Option<EngineBuild> {
         let (arch, system) = target.split_once('-')?;
         let catalogue = match system {
-            "apple-darwin" => self.manifest.darwin.as_ref(),
-            "unknown-linux-musl" => self.manifest.linux.as_ref(),
-            "pc-windows-gnullvm" => self.manifest.windows.as_ref(),
+            "apple-darwin" => self.darwin.as_ref(),
+            "unknown-linux-musl" => self.linux.as_ref(),
+            "pc-windows-gnullvm" => self.windows.as_ref(),
             _ => None,
         }?;
         serde_json::from_value(catalogue.get(arch)?.clone()).ok()

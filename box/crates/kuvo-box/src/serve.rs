@@ -43,6 +43,13 @@ pub async fn run(
         Err(error) if error.kind() == io::ErrorKind::NotFound => ComputerKind::Machine,
         Err(error) => return Err(error.into()),
     };
+    #[cfg(target_os = "macos")]
+    let helper_watch =
+        if kind == ComputerKind::Mac && helper_ended.is_some() && !vault_launch.helper_renews() {
+            kuvo_keeper::mac_helper::watch_handover(kuvo_store::home::Home::new(home.to_owned())?)
+        } else {
+            None
+        };
     let name = hostname::get()?.to_string_lossy().into_owned();
     let relay = std::env::var("KUVO_TEST_RELAY").ok().or_else(|| {
         let account = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
@@ -190,6 +197,23 @@ pub async fn run(
             })
         }
     });
+    crate::updates::register_helper_stop(
+        &mut routes,
+        kuvo_store::home::Home::new(home.to_owned())?,
+        kind == ComputerKind::Mac,
+    );
+    let updates = crate::updates::start(
+        kuvo_store::home::Home::new(home.to_owned())?,
+        &account,
+        peers.clone(),
+        setup.handle(),
+    );
+    crate::updates::register_check(
+        &mut routes,
+        kuvo_store::home::Home::new(home.to_owned())?,
+        account.clone(),
+        updates.as_ref(),
+    );
     vault.register(&mut routes);
     #[cfg(target_os = "macos")]
     if kind == ComputerKind::Mac {
@@ -265,6 +289,14 @@ pub async fn run(
             }
         })
         .await;
+    if let Some(updates) = updates {
+        updates.stop().await;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(watch) = helper_watch {
+        watch.abort();
+        let _ = watch.await;
+    }
     session_source.abort();
     owner_requests.abort();
     if let Some(memory_reads) = memory_reads {

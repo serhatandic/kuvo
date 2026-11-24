@@ -8,6 +8,18 @@ use serde_json::{Value, json};
 use crate::{Release, SELECTOR, prepare_command::version_order};
 
 const BLOCKED: &str = "Only a machine's own Kuvo Code folder updates itself.";
+const STATE: ObjectFormat = ObjectFormat::additive("Box update state");
+
+pub fn note_check(home: &Home, latest: &str, checked: i64) -> io::Result<()> {
+    let path = home.run().join("update.json");
+    let mut fields = STATE
+        .read(&path)
+        .map_err(io::Error::other)?
+        .map_or_else(Default::default, |state| state.fields);
+    fields.insert("latest".into(), latest.into());
+    fields.insert("checked".into(), checked.into());
+    files::write_secret(&path, &serde_json::to_vec(&STATE.encode(fields))?)
+}
 
 pub fn read(home: &Home, profile: &Path) -> io::Result<Value> {
     let blocked = (home.root() != profile.join(".kuvo-code")).then_some(BLOCKED);
@@ -19,7 +31,7 @@ pub fn read(home: &Home, profile: &Path) -> io::Result<Value> {
             .map(|value| value.trim().to_owned())
             .filter(|value| version_order(value).is_some())
     };
-    let state = ObjectFormat::additive("Box update state")
+    let state = STATE
         .read(&run.join("update.json"))
         .map_err(io::Error::other)?
         .map_or_else(Default::default, |state| state.fields);
