@@ -134,8 +134,12 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
     let media = staging::prepare_install(&home, &signed, source)?;
     if restart {
-        let result = kuvo_move::mac::new_home_from_media(&home, &app.join("box"), &system, &media);
+        let (result, set_aside) =
+            kuvo_move::mac::new_home_from_media(&home, &app.join("box"), &system, &media);
         let mut value = serde_json::to_value(&result)?;
+        if let Some(path) = set_aside {
+            value["setAside"] = serde_json::to_value(path)?;
+        }
         let code = result.exit_code();
         let after = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
         value["verdict"] = serde_json::to_value(after.verdict)?;
