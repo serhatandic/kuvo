@@ -218,7 +218,11 @@ test("the current beta's coding-agent conversation, its waiting message and acco
       const agent = JSON.parse(readFileSync(path.join(folder, "agent.json"), "utf8"));
       assert.equal(agent.threads["codex-cli"].state.codexThread, "thr_golden");
       assert.deepEqual(agent.inbox.map(input => input.id), ["msg_goldeninbox"]);
-      const header = JSON.parse(readFileSync(path.join(folder, "session.json"), "utf8"));
+      // (The header follows the end's row.)
+      const header = await until(() => {
+        const saved = JSON.parse(readFileSync(path.join(folder, "session.json"), "utf8"));
+        return saved.outcome && saved;
+      }, "The golden conversation's header did not say how its turn ended.");
       assert.equal(header.outcome, "interrupted");
       if (trace) {
         // (Generated per run: the account's ID and the scratch folder. The

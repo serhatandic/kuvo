@@ -364,8 +364,17 @@ async fn a_take_up_that_fails_keeps_what_was_shown_closes_its_tool_and_lets_the_
         rows.last().unwrap()["error"]["message"],
         "Claude Code isn't installed any more."
     );
-    let header = case.store.read("ses_held").await.unwrap().unwrap();
-    assert_eq!(header.outcome(), Some("failed"));
+    // (The header follows the end's row.)
+    let mut outcome = None;
+    for _ in 0..500 {
+        let header = case.store.read("ses_held").await.unwrap().unwrap();
+        outcome = header.outcome().map(str::to_owned);
+        if outcome.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(outcome.as_deref(), Some("failed"));
     until("the agent let go", || {
         case.script.lock().unwrap().let_go == ["ses_held"]
     })
