@@ -271,3 +271,34 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   say holds as nothing at work.
 - **Followed lists** (`kuvo/work/events`, oversight and asks events) look again as the session list
   changes and every two seconds, rather than watching files.
+
+## 5.1c-3 — a bot's work from the session list
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_engine` session list, `work` beside each row (`session_list::work::listed_work`) | `work/listed-work.ts` (`listedWork`), `answersOn`, `depthOf`, `isHiddenRun` |
+| `kuvo_work::work::bot` (`Work::bot_work`) | `areas/work.ts` `botWorkSummary` and `kuvo/work`'s route; `workRow`, `finishedState`, `readAsks`, `readStopped`, `botLimits`, `startOfDay` |
+| `ApprovalService::keep` pacing | `keepApprovals`' two-second interval |
+
+### Proof
+
+- `work` scenarios add a bot's work for a new bot and the refusals (no bot named, none here): both
+  boxes on macOS; the Rust box on native Windows and Linux (WSL, static musl).
+- The session list's `work` field is additive: `engine-sessions` passes 81/81 against both boxes
+  on macOS and against the Rust box on Linux; on Windows three runs of four passed, one failed
+  "session list cursors carry changes and tombstones" with the other session listed as changed
+  (not seen in twelve macOS runs of that case alone).
+- `session_list::work::tests` (2): a bot's work keeps what it ran on, how it went and its asks
+  answered; a subagent keeps where it ran; your own conversation and a hidden run keep none.
+- Side by side, 16 requests (with `kuvo/work?bot=` and `kuvo/sessions`): every answer matches.
+- Size: about 12,400 characters of Rust for about 10,500 of TypeScript: 1.18×.
+- The approval round runs at most every two seconds, the first two seconds after the engine starts,
+  as TypeScript's interval does: run the moment the engine was up, it took writes and list reads
+  that `engine-sessions` holds for its own cases.
+
+### Deliberate differences from TypeScript
+
+- **A phone's `kuvo/work?bot=`** is answered from the session list, as every other client's is;
+  TypeScript asked the engine again for a phone's (each session's ask and last reply).

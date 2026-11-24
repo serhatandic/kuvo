@@ -154,6 +154,64 @@
      }
     }
    ]
+  },
+  {
+   "name": "a bot's work: none yet for a new bot, and a bot that isn't named or isn't here",
+   "steps": [
+    {
+     "given": {
+      "bot": {
+       "id": "bot_ada",
+       "name": "Ada",
+       "session": "ses_ada"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work?bot=bot_ada",
+     "expect": {
+      "status": 200,
+      "json": {
+       "bot": "bot_ada",
+       "sessions": [],
+       "answered": [],
+       "today": {
+        "started": 0,
+        "answered": 0,
+        "working": 0,
+        "tokens": 0,
+        "cost": "<absent>"
+       },
+       "limits": null,
+       "asks": [],
+       "projects": [],
+       "activity": {
+        "working": 0,
+        "asking": 0,
+        "sessions": []
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work",
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Name the bot: kuvo/work?bot=<id>."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work?bot=bot_nobody",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "There's no such bot here."
+      }
+     }
+    }
+   ]
   }
  ]
 }
