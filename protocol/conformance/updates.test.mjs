@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 
-import { boxBinary, isolatedEnv, launch, readJSON, request, scratch, typescriptRuntime, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, launch, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import "./update-helper.mjs";
 
@@ -141,6 +141,87 @@ test("the update status reports the installed release and a keeper's failed tria
     },
     updating: null, blocked: "Only a machine's own Kuvo Code folder updates itself.",
   });
+  const refused = await request(ready, "POST", "kuvo/update", { now: true });
+  assert.equal(refused.status, 409, refused.text);
+  assert.deepEqual(refused.json, { message: answer.json.blocked });
+});
+
+test("a member asks its main to check the release feed now or when it returns", async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform === "win32") return t.skip("This uses the Rust resident in a disposable Unix account.");
+  const { computer, relay, leases } = await bench(t);
+  const [main, member] = await Promise.all([computer("Main"), computer("Member")]);
+  const old = main.start();
+  let mainKey, mainAddress;
+  try {
+    const ready = await old.ready();
+    const setup = await request(ready, "GET", "kuvo/setup");
+    mainKey = setup.json.you.key;
+    const identity = readJSON(path.join(main.home, "run/link.json"));
+    mainAddress = relayAddress(Buffer.from(identity.secret, "base64url"));
+    await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
+    const invite = await request(ready, "POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+    assert.equal(invite.status, 201, invite.text);
+    assert.equal((await member.join(invite.json.code)).code, 0);
+  } finally {
+    await old.stop();
+  }
+
+  const key = keypair();
+  let checked = 0;
+  const feed = createServer((_req, res) => {
+    checked += 1;
+    res.end(encode(envelope({ kuvo: "box/1", version: "0.8.0", engine: "2.2.6", spreads: true,
+      pack: { url: "https://example.invalid/current.tar.gz", sha256: digest("current") } }, key)));
+  });
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const start = peer => {
+    const home = path.join(peer.env.HOME, ".kuvo-code");
+    if (!fs.existsSync(home)) {
+      fs.renameSync(peer.home, home);
+      write(path.join(home, "bin/box-version"), "0.8.0\n");
+    }
+    return startBox({ binary, home, relay, env: { ...peer.env,
+      KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key,
+    } });
+  };
+  const primary = start(main);
+  let other;
+  try {
+    other = start(member);
+    const [first, second] = await Promise.all([primary.ready(), other.ready()]);
+    await until(async () => (await request(first, "GET", "kuvo/update")).json.latest === "0.8.0", "the first check must finish");
+    assert.equal(checked, 1);
+    const asked = await request(second, "POST", "kuvo/update", { now: true });
+    assert.equal(asked.status, 202, asked.text);
+    assert.match(asked.json.message, /is checking for updates\.$/);
+    await until(() => checked === 2, "the main must check upon the member's authenticated request");
+
+    const reconnect = relay.disconnect(mainAddress);
+    const run = path.join(member.env.HOME, ".kuvo-code/run");
+    const carrier = path.join(run, "fleet-check.json");
+    try {
+      const reach = path.join(run, "peer-reach.json");
+      await until(() => fs.existsSync(reach) && readJSON(reach)[mainKey], "the member must detect that its main is away");
+      const pending = await request(second, "POST", "kuvo/update", { now: true });
+      assert.equal(pending.status, 202, pending.text);
+      assert.match(pending.json.message, /checks for updates when .+ is back\.$/);
+      assert.equal(typeof readJSON(carrier).at, "number");
+      assert.equal(checked, 2);
+      await other.stop();
+      other = start(member);
+      await other.ready();
+      assert.equal(typeof readJSON(carrier).at, "number");
+    } finally {
+      reconnect();
+    }
+    await until(() => checked === 3 && !fs.existsSync(carrier), "the kept request must reach the main after it reconnects");
+  } finally {
+    await other?.stop();
+    await primary.stop();
+  }
 });
 
 test("a machine refuses the Mac Helper's Stop request", async t => {

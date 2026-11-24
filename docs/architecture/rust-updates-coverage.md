@@ -19,7 +19,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U3 | The same command declines an older release, a same-version pack with a different digest, and a release without `spreads: true`. Numeric minor and beta versions compare in release order. |
 | U4 | The release signer emits one signed descriptor per target. The Rust updater validates the local pack and engine, probes its programs, and can retry preparation while the old resident keeps serving. An explicit native-keeper selection starts and confirms the prepared release. |
 | U5 | The shell keeper answers an SSH request using Rust after the previous stager's bin-only move. It restores `box.json` on disk. |
-| U6 | `GET kuvo/update` reports the installed version, running engine, latest known version, and the keeper's failed trial. |
+| U6 | `GET kuvo/update` reports the installed version, running engine, latest known version, and the keeper's failed trial. `POST` refuses to update a borrowed home. |
 | U7 | The prepared-pack scenario stops its keeper and uninstalls the standalone computer. It retains the home, clears the desktop identity, and leaves the scratch account and its temporary directory unchanged. |
 | U8 | Two Rust computers prepare while a third is offline. Holding the second download leaves both on the old selection. A recorded stand-in turn answers across the switch. The returning computer retries a transient download error, then switches and serves. |
 | U9 | The old main goes down while its member's pack download is held. Advancing the relay and computer test clocks expires the lease. The new main completes the release even while its manifest request hangs. A returning computer pulls the retained pack from the new main. |
@@ -33,6 +33,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U17 | The authenticated local Mac resident starts `kuvo-start pause` as a separate process with the scratch account as `HOME`. A machine returns the same refusal on both boxes and creates no pause marker. |
 | U18 | The deployed beta.48 reaches the Rust main and takes its signed pack via relay. Its fixed JavaScript link probe refuses the Rust-only pack and beta.48 remains selected. |
 | U19 | The deployed beta.48 returns after two computers confirm Rust. The Rust main offers the separately signed TypeScript bridge beta and serves both packs over authenticated relay mail while their URLs return 404. The returning computer confirms the bridge with its keeper, engine stand-in and agents process, then confirms Rust with a private copy of its old home. |
+| U20 | A member's manual check makes its main check the signed feed. If the main is away, the member keeps the request across its own restart and asks the main when it reconnects. The macOS scenario took 5.6 seconds, including enrollment. |
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -156,9 +157,9 @@ seconds. The deployed-beta and Mac fixtures ran on macOS.
 underlying Rust path is proven and what the update or installer still owes.
 Bridge-specific checks only for unpublished TypeScript betas and desktop app
 update prompts follow the switch-over scope in [the design](rust-box.md#4-switch-over).
-The reference table groups related TypeScript cases into 58 rows. Two rows
-are covered, 31 have partial proof, three are specific to the TypeScript bridge
-or desktop updater, and 22 are open. The inherited and live-proof table has
+The reference table groups related TypeScript cases into 58 rows. Three rows
+are covered, 32 have partial proof, three are specific to the TypeScript bridge
+or desktop updater, and 20 are open. The inherited and live-proof table has
 11 rows, nine with partial proof and two open.
 
 | Source and case | Status | Remaining owner |
@@ -171,7 +172,7 @@ or desktop updater, and 22 are open. The inherited and live-proof table has
 | Same, full packaged contents | Partial. U4 checks the shipped executable and manifest in isolation. Complete per-target artifacts remain open. | 7.2 |
 | [update-follows-peers](../../box/bridge-tests/update-follows-peers.test.js), installed version and app version | Partial. U8 and U10 follow the main's signed installed version. Installer and app offers remain open. | 7.2 |
 | Same, desktop looks for its own update | TypeScript reference and desktop updater. | — |
-| Same, six-hour check | Partial. The resident schedules checks every six hours. The elapsed-round and manual check cases remain open. | 7.2 |
+| Same, six-hour check | Partial. The resident schedules checks every six hours. U20 covers manual checks forwarded by a member. The elapsed-round cases remain open. | 7.2 |
 | [update-stops-nothing](../../box/bridge-tests/update-stops-nothing.test.js), compatible standby | TypeScript bridge-specific. Rust holder compatibility still needs fleet proof. | 4.1, 7.2 |
 | Same, held turn survives a switch | Partial. 7.1 checked a shell selection and a surviving holder. U8 uses a stand-in with a recorded PID during automatic activation. Native holder adoption remains open. | 4.1, 7.2 |
 | Same, holder keeps running across engine change | Open. | 3.2, 4.1, 7.2 |
@@ -188,11 +189,11 @@ or desktop updater, and 22 are open. The inherited and live-proof table has
 | [fleet-switch](../../box/bridge-tests/fleet-switch.test.js), T1 prepare, commit, and offline catch-up | Partial. U8–U10 pass through the relay stand-in and keeper. U9 falls back to authenticated release mail when the feed returns 404. Before-rejoin work admission and the fleet status routes remain open. | 7.2 |
 | Same, T3 retry and five-minute limit | Partial. The keeper stores a five-minute barrier from first preparation. U8 retries a transient download and U9 pulls a retained pack from its new main. The elapsed deadline, mixed-target fallback and manual retry remain open. | 7.2 |
 | Same, ahead member offers its version | Partial. The main accepts signed newer offers from reachable members. The ahead member scenario remains open. | 7.2 |
-| Same, Update Now chooses the immediate candidate | Open. | 7.2 |
+| Same, Update Now chooses the immediate candidate | Partial. An explicit check bypasses the automatic release age rule. U20 verifies that an authenticated member request starts the check. A newly published release still needs a full switch scenario. | 7.2 |
 | Same, progress summary remains while switching and after settlement | Open. | 7.2 |
 | Same, row progress and retry | Open. | 7.2 |
 | Same, pull progress never moves back | Open. | 7.2 |
-| Same, member asks main to check | Open. | 7.2 |
+| Same, member asks main to check | Covered by U20. | — |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |
 | Same, Helper starts the new code after the resident exits | Partial. 7.1 dispatches Helper `serve` to a Rust pack. Live Helper update remains open. | 6.2, 7.2, 9.3 |
 | [update-switch](../../box/test/update-switch.test.ts), broken route probe and beta.35 switch | Partial. U4 probes the Rust binary with the engine pin, and U10 checks a live beta-to-Rust switch. The failed route probe remains open. | 7.2 |

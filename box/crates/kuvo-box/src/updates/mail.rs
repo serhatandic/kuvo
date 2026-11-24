@@ -15,7 +15,13 @@ use kuvo_peers::{
 use kuvo_store::home::Home;
 use kuvo_wire::{keys::Host, mail::Envelope};
 use serde_json::{Value, json};
-use tokio::{sync::broadcast, task::JoinHandle, time::timeout};
+use tokio::{
+    sync::{broadcast, mpsc},
+    task::JoinHandle,
+    time::timeout,
+};
+
+use super::Check;
 
 const WINDOW: usize = 16;
 const QUIET: Duration = Duration::from_secs(60);
@@ -33,7 +39,7 @@ impl Mail {
         Self { relay, reader, key }
     }
 
-    pub(super) fn serve(&self, home: Home) -> Option<JoinHandle<()>> {
+    pub(super) fn serve(&self, home: Home, checks: mpsc::Sender<Check>) -> Option<JoinHandle<()>> {
         let mut events = self.relay.subscribe()?;
         let mail = self.clone();
         Some(tokio::spawn(async move {
@@ -60,6 +66,10 @@ impl Mail {
                     continue;
                 }
                 if let Some(value) = envelope.0.get("release") {
+                    if value["check"] == true {
+                        let _ = checks.try_send(Check::Peer);
+                        continue;
+                    }
                     match answer(value, &home, &mail.key, &mut held) {
                         Ok(Some(value)) => {
                             let _ = mail.send(&peer, value).await;
@@ -70,6 +80,10 @@ impl Mail {
                 }
             }
         }))
+    }
+
+    pub(super) async fn request_check(&self, peer: &Host) -> io::Result<()> {
+        self.send(peer, json!({"check":true})).await
     }
 
     pub(super) async fn pull(&self, release: &ReleaseRef) -> io::Result<Vec<u8>> {

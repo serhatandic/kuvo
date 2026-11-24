@@ -169,6 +169,12 @@ pub async fn run(
         peers.clone(),
         setup.handle(),
     );
+    crate::updates::register_check(
+        &mut routes,
+        kuvo_store::home::Home::new(home.to_owned())?,
+        account.clone(),
+        updates.as_ref(),
+    );
     let vault = kuvo_services::vault::Resident::new(
         home,
         kind == ComputerKind::Mac,
@@ -253,8 +259,7 @@ pub async fn run(
         })
         .await;
     if let Some(updates) = updates {
-        updates.abort();
-        let _ = updates.await;
+        updates.stop().await;
     }
     #[cfg(target_os = "macos")]
     if let Some(watch) = helper_watch {
