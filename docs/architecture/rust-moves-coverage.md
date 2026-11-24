@@ -138,8 +138,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Eighty-one have full scenario coverage, 18 have partial proof,
-and 113 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Eighty-two have full scenario coverage, 18 have partial proof,
+and 112 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -166,6 +166,7 @@ separately where they appear.
 | [moves-races](../../box/bridge-tests/moves-races.test.js) | 24 | Partial, live activation and replay after a lost switch reply, mismatched proof, durable drop and a managed setup's legacy switch fence are exercised. Automatic retry across the complete set of peer interruptions remains 2.4. |
 | | 1 | Covered by a setup failure arriving as the source switches, followed by the authenticated drop receipt that releases the original. |
 | | 2 | Partial, a missing payload prevents the first offer and a corrupt payload prevents switching. A typed unreadable-queue failure from 3.2 is needed for the same refusal in 2.4. |
+| | 3 | Covered by delaying an admitted queue write, refusing the next write once the source holds the conversation, and checking the new owner's queue before and after resuming it. |
 | | 4 | Covered by an idle child's pending inbox blocking the offer and a failed inbox read preserving the source. |
 | | 5 | Covered by the source ignoring a drop for another generation and releasing its original after the destination’s matching drop receipt. |
 | | 6 | Covered by a duplicate bundle part before activation and a delayed repeat afterward. There is one import and the same durable switch receipt. |
@@ -204,7 +205,7 @@ separately where they appear.
 | | 48 | Covered by move choices that count a chat’s delegated work and unanswered questions, including a second level of work. |
 | | 53–54 | Native account fallback is owned by 4.6. Bot key handling is owned by 5.1 with native carry in 4.6. |
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
-| | 3, 7, 35 | Open, 2.4 transfer and retry. OpenCode import and queue effects depend on 3.2. |
+| | 7, 35 | Open, 2.4 transfer and retry. OpenCode import effects depend on 3.2. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |

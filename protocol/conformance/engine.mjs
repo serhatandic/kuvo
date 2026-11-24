@@ -25,6 +25,13 @@ export async function standInEngine(root, env) {
       try { given = body ? JSON.parse(body) : {}; } catch {}
       engine.asked.push({ method: request.method, path: url.pathname, json: given });
       const send = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+      const queueRead = (session, kind, data) => {
+        const hold = engine.holdQueueRead;
+        if (hold?.session !== session || hold.kind !== kind) return send({ data });
+        engine.holdQueueRead = null;
+        hold.entered();
+        hold.finish.then(() => send({ data }));
+      };
       const route = `${request.method} ${url.pathname}`;
       if (route === "GET /api/event") {
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -96,7 +103,7 @@ export async function standInEngine(root, env) {
         const id = decodeURIComponent(one[1]);
         if (engine.refuseLookup === id) return send({ message: "The conversation is temporarily unavailable." }, 503);
         const found = engine.sessions.find(each => each.id === id);
-        return found ? send({ data: found }) : send({ message: "No such session." }, 404);
+        return found ? queueRead(id, "session", found) : send({ message: "No such session." }, 404);
       }
       // What's changed, kept, as the engine keeps it (each field given in place of its own).
       if (one && request.method === "PATCH") {
@@ -167,7 +174,7 @@ export async function standInEngine(root, env) {
         const inbox = engine.inboxes.get(session) ?? [];
         if (!waiting[2] && request.method === "GET") {
           if (engine.refuseInbox === session) return send({ message: "The inbox is unavailable." }, 503);
-          return send({ data: inbox });
+          return queueRead(session, "inbox", inbox);
         }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));
         if (index < 0) return send({}, 404);

@@ -2901,10 +2901,12 @@ test("an answer left by a tool reaches the new owner once", {
   assert.ok(!fs.existsSync(reply + ".gaveup"));
 });
 
-test("a paused queue moves with its messages in order and resumes the first one", { timeout: 55000 }, async t => {
+test("a paused queue moves with its messages in order and resumes the first one", {
+  timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("paused-queue-source"), there = await computer("paused-queue-destination");
-  const { member } = seedPeerSetup(here.home, relay.url);
+  const { main, member } = seedPeerSetup(here.home, relay.url);
   seedPeerSetup(there.home, relay.url, 2);
   const session = "ses_pausedQueueMove", directory = path.join(here.home, "chats");
   fs.mkdirSync(directory, { recursive: true });
@@ -2917,17 +2919,51 @@ test("a paused queue moves with its messages in order and resumes the first one"
   await readyToMove(a, session, member);
   const stopped = await request(a, "POST", "kuvo/sessions/" + session + "/stop");
   assert.equal(stopped.json?.paused, true, stopped.text);
-  const added = [
-    { id: first, text: "[Letter] " + heading, from: "Ada", words: heading, kept: true },
-    { id: second, text: next, files: [{ name: "notes.txt", uri: "data:text/plain;base64,RG9jcyBmaXJzdC4=" }] },
-  ];
-  for (const item of added) {
-    const response = await request(a, "POST", queue + "/add", item);
-    assert.equal(response.json?.waits, true, response.text);
-  }
+  const added = await request(a, "POST", queue + "/add",
+    { id: first, text: "[Letter] " + heading, from: "Ada", words: heading, kept: true });
+  assert.equal(added.json?.waits, true, added.text);
+  let released = false, offeredEarly = false, fenced = false;
+  const delayed = [];
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
+  t.after(relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const move = JSON.parse(openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2),
+      Buffer.from(main.key, "base64url")).payload).move;
+    if (move?.op !== "offer") return false;
+    if (!released) offeredEarly = true;
+    if (fenced) return false;
+    delayed.push(packet);
+    return true;
+  }));
+  const entered = Promise.withResolvers(), resumeWrite = Promise.withResolvers();
+  t.after(() => resumeWrite.resolve());
+  // Both reads happen after prompt admission, in the respective queue writers.
+  const kind = boxBinary().typescript ? "inbox" : "session";
+  here.engine.holdQueueRead = { session, kind, entered: entered.resolve, finish: resumeWrite.promise };
+  const pending = request(a, "POST", queue + "/add", {
+    id: second, text: next, before: "msg_notPresent",
+    files: [{ name: "notes.txt", uri: "data:text/plain;base64,RG9jcyBmaXJzdC4=" }],
+  });
+  await entered.promise;
   const move = await request(a, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   assert.equal(move.status, 202, move.text);
+  const journal = path.join(here.home, "run/moves", move.json.move.id + ".json");
+  await until(() => {
+    const row = readJSON(journal);
+    return row.stage === "holding" && row.step !== "check";
+  }, "The source did not hold the conversation");
+  const late = request(a, "POST", queue + "/add", { id: "msg_queueTooLate", text: "Keep this on the source." });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  released = true;
+  resumeWrite.resolve();
+  const [kept, rejected] = await Promise.all([pending, late]);
+  assert.equal(kept.json?.waits, true, kept.text);
+  assert.equal(rejected.status, 409, rejected.text);
+  fenced = true;
+  for (const packet of delayed) relay.replay(packet);
   await moveRetired(here, move.json.move.id, () => source.log() + "\n" + destination.log());
+  assert.equal(offeredEarly, false);
   const old = await request(a, "GET", queue);
   assert.deepEqual(old.json, { paused: false, held: [] });
   for (const id of [first, second]) assert.ok(!fs.existsSync(path.join(here.home, "run/waiting", id + ".json")));
