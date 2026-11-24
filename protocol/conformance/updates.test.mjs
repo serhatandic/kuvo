@@ -570,6 +570,49 @@ test("an invalid signed pack stays blocked without offering retry", { timeout: 3
   assert.equal((await request(after, "GET", "kuvo/update")).json.version, installed);
 });
 
+test("a keeper refusal blocks only its signed target", { timeout: 30000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { computer } = await bench(t);
+  const here = await computer("Standalone", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const { version, hash, updateEnv, downloaded } = await fixtureReleaseFeed(t);
+  const installed = "0.8.0-beta.1";
+  const refusal = path.join(here.home, "run/update-cannot");
+  const time = 1740000000;
+  const reason = `${version} didn't start here`;
+  write(path.join(here.home, "bin/box-version"), installed + "\n");
+  write(refusal, `${time} ${version} ${hash.slice(0, 12)}\n`);
+  const first = here.start(binary, updateEnv);
+  const resident = await first.ready();
+  const blocked = await until(async () => {
+    const answer = await request(resident, "GET", "kuvo/computers");
+    const row = answer.json?.computers?.find(computer => computer.here)?.fleetUpdate;
+    return row?.state === "cannot" && row;
+  }, "the keeper's refusal must appear on the computer row");
+  assert.deepEqual(blocked, {
+    current: installed, target: version, targetSha256: hash, state: "cannot",
+    reason, fixable: false, canRetry: false,
+    line: { words: `beta.1 · ${reason} · Updates with the next release`, tone: "blocked" },
+  });
+  assert.deepEqual((await request(resident, "GET", "kuvo/update")).json.last,
+    { at: time * 1000, result: "failed", to: version, message: reason });
+  assert.equal((await request(resident, "POST", "kuvo/update/retry", { target: version, targetSha256: hash })).status, 409);
+  assert.equal(downloaded(), 0);
+  await first.stop();
+
+  write(refusal, `${time} ${version} ${digest("another signed pack").slice(0, 12)}\n`);
+  const second = await here.start(binary, updateEnv).ready();
+  await until(() => downloaded() === 1, "a refusal for another pack must leave this download available");
+  const row = await until(async () => {
+    const answer = await request(second, "GET", "kuvo/computers");
+    return answer.json?.computers?.find(computer => computer.here)?.fleetUpdate?.canRetry;
+  }, "the actual download failure must offer retry");
+  assert.equal(row, true);
+});
+
 test("the computers list keeps the update visible from trial to settlement", { timeout: 45000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
