@@ -1617,6 +1617,7 @@ dependencies = [
  "kuvo_peers",
  "kuvo_protocol",
  "kuvo_server",
+ "kuvo_services",
  "kuvo_setup",
  "kuvo_store",
  "kuvo_wire",

@@ -177,6 +177,23 @@ impl WakeEngine {
         note: &str,
         summary: Option<&str>,
     ) -> Result<Delivered, Unreachable> {
+        let metadata = summary
+            .filter(|summary| !summary.is_empty())
+            .map(|summary| json!({ "kuvo": { "wake": { "summary": summary } } }));
+        let text = format!("{WAKE_MARKER}{note}");
+        self.tell(session, text, metadata, WAKE_FROM, note).await
+    }
+
+    /// Sends the box's own message to a conversation, waiting on the box (shown from `from`, in
+    /// `words`) while you stopped it; never while it moves to or from another computer.
+    pub async fn tell(
+        &self,
+        session: &str,
+        text: String,
+        metadata: Option<Value>,
+        from: &str,
+        words: &str,
+    ) -> Result<Delivered, Unreachable> {
         let id = crate::send::new_id(&self.engine).map_err(|_| Unreachable("No ID".into()))?;
         let _turn = self.engine.turn(session).await;
         let _admitted = crate::session_move::admit(&self.engine, session, None)
@@ -184,34 +201,34 @@ impl WakeEngine {
             .map_err(|_| Unreachable("The conversation is moving.".into()))?;
         let prompt = Prompt {
             id,
-            text: format!("{WAKE_MARKER}{note}"),
+            text,
             delivery: Delivery::Queue,
             files: Vec::new(),
-            metadata: summary
-                .filter(|summary| !summary.is_empty())
-                .map(|summary| json!({ "kuvo": { "wake": { "summary": summary } } })),
+            metadata,
         };
-        if self
-            .engine
-            .queues
+        let queues = &self.engine.queues;
+        let held = queues
             .keep(
                 session,
                 &prompt,
-                Some(note),
-                Some(WAKE_FROM.to_owned()),
+                Some(words),
+                Some(from.to_owned()),
                 None,
                 &[],
             )
             .await
-            .map_err(|error| Unreachable(error.to_string()))?
-        {
-            self.engine.queues.notify();
-            return Ok(Delivered::Held);
+            .map_err(|error| Unreachable(error.to_string()))?;
+        if !held {
+            let target = crate::queue::Target::Engine(&self.lease);
+            crate::send::post(&self.engine, target, session, &prompt)
+                .await
+                .map_err(|_| Unreachable("The message couldn’t be sent.".into()))?;
         }
-        crate::send::post(&self.engine, crate::queue::Target::Engine(&self.lease), session, &prompt)
-            .await
-            .map_err(|_| Unreachable("The wake-up couldn’t be sent.".into()))?;
-        self.engine.queues.notify();
-        Ok(Delivered::Sent)
+        queues.notify();
+        Ok(if held {
+            Delivered::Held
+        } else {
+            Delivered::Sent
+        })
     }
 }

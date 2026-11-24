@@ -344,6 +344,7 @@ pub async fn run(
         sessions.clone(),
         peers.reader(),
         Arc::new(super::bot_setup::BotSetup(setup.handle())),
+        bots.clone(),
     )
     .register(&mut routes);
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
