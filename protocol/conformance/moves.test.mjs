@@ -2517,6 +2517,13 @@ test("a transcript read returns to its tool without prompting the conversation",
     ] }],
   ])]]);
   there.engine.refuseMessagePage = { session: recipient, cursor: "page/2" };
+  const listEntered = Promise.withResolvers(), releaseList = Promise.withResolvers();
+  t.after(() => releaseList.resolve());
+  // An archived transcript has an authenticated waiter even while Rust's own
+  // directory cannot publish. The TypeScript reference reads the same pages.
+  if (!binary.typescript) {
+    there.engine.holdWholeList = { entered: listEntered.resolve, finish: releaseList.promise };
+  }
   const sourceProcess = here.start(), targetProcess = there.start();
   const [source, target] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
   await Promise.all([[source, sender], [target, recipient]].map(([resident, session]) =>
@@ -2524,6 +2531,7 @@ test("a transcript read returns to its tool without prompting the conversation",
       "The conversation's engine did not become ready")));
   await until(() => [main, member].every(peer => relay.has(Buffer.from(peer.address, "base64url"))),
     "The computers did not join the relay");
+  if (!binary.typescript) await listEntered.promise;
   async function read(id, to, read) {
     const tool = path.join(here.home, "run/replies", id);
     write(tool + ".alive", "");

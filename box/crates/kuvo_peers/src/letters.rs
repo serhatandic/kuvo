@@ -271,6 +271,11 @@ impl Letters {
     }
 
     async fn introduced(&mut self, peer: &ComputerKey, pending: &Pending) -> bool {
+        // A transcript reply belongs to an authenticated request. Its reader
+        // already knows the conversation, including one that is archived.
+        if pending.letter.answers.is_some() && pending.letter.read.is_some() {
+            return true;
+        }
         let Some(sender) = pending
             .letter
             .from

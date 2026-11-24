@@ -61,7 +61,7 @@ export async function standInEngine(root, env) {
         const rows = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
         const descendants = parent && parent !== "null" && Number(url.searchParams.get("limit")) > 0;
         const page = engine.paged || descendants ? paged(rows, 100) : { data: rows };
-        if (engine.holdWholeList && (parent === null || parent === "null")) {
+        if (engine.holdWholeList && url.searchParams.get("limit") !== "1" && (parent === null || parent === "null")) {
           const gate = engine.holdWholeList;
           gate.entered();
           void gate.finish.then(() => send(page));
