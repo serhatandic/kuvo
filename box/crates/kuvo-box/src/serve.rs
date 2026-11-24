@@ -56,7 +56,7 @@ pub async fn run(
     let authenticated_helper = prepared.has_mac_identity();
     let bootstrap = Devices::load(home, name, kind).await?;
     let accepted_roster = prepared.peer_roster();
-    let managed = accepted_roster.is_some();
+    let managed = accepted_roster.is_some() || prepared.is_set_aside();
     let roster = accepted_roster.unwrap_or(bootstrap.roster);
     let relay = prepared
         .relay_config()?
@@ -168,7 +168,10 @@ pub async fn run(
         backup_mail,
         Some(vault.clone()),
     );
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
+    let removal = setup.handle();
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), move || {
+        removal.pending_wipes()
+    });
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();

@@ -88,6 +88,13 @@ fn boundary(home: &Path) -> io::Result<Option<PathBuf>> {
     Ok((account == actual).then_some(actual.join(".kuvo-code")))
 }
 
+pub(crate) fn supports_headless(home: &Path) -> io::Result<bool> {
+    let Some(root) = boundary(home)? else {
+        return Ok(false);
+    };
+    Ok(fs::symlink_metadata(root)?.is_dir())
+}
+
 pub(crate) fn check(home: &Path) -> io::Result<()> {
     let Some(root) = boundary(home)? else {
         return Err(io::Error::other(UNSUPPORTED));

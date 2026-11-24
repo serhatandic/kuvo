@@ -75,6 +75,12 @@ impl SetupHandle {
         self.views.borrow().ownership.clone()
     }
 
+    pub fn pending_wipes(
+        &self,
+    ) -> Vec<kuvo_protocol::routes::types::GetKuvoComputersStatus200WipePendingItem> {
+        self.views.borrow().pending_wipes.clone()
+    }
+
     pub async fn phone_activity(&self) {
         activity::record(&self.activity, activity::Activity::Seen).await;
     }
@@ -98,6 +104,7 @@ struct PairedAccess {
     public: Option<String>,
     disabled: bool,
     permits_pairing: bool,
+    aside_main: Option<String>,
     devices: Arc<kuvo_peers::devices::DeviceRoster>,
     grants: HashMap<[u8; 32], Grant>,
 }
@@ -128,6 +135,7 @@ pub(crate) struct View {
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
     local_wipe: bool,
+    pending_wipes: Vec<kuvo_protocol::routes::types::GetKuvoComputersStatus200WipePendingItem>,
 }
 
 pub(crate) struct Request {
@@ -278,6 +286,10 @@ pub struct PreparedSetup {
 impl PreparedSetup {
     pub fn has_mac_identity(&self) -> bool {
         self.kind == ComputerKind::Mac && self.identity.is_some()
+    }
+
+    pub fn is_set_aside(&self) -> bool {
+        self.link.setup.as_ref().is_some_and(|setup| setup.aside)
     }
 
     /// The legacy machine link marker uses the resident build identifier and has no newline.
@@ -790,6 +802,7 @@ fn make_view(
                 public: Some(own.public.clone()),
                 disabled,
                 permits_pairing: !disabled && link.relay.is_some(),
+                aside_main: None,
                 devices: Arc::new(device_access::device_roster(link, &roster, &own.public)),
                 grants: if link.devices_disabled {
                     HashMap::new()
@@ -803,6 +816,19 @@ fn make_view(
             public: None,
             disabled: true,
             permits_pairing: false,
+            aside_main: link
+                .setup
+                .as_ref()
+                .filter(|setup| setup.aside && setup.role == Role::Member && !link.devices_disabled)
+                .map(|setup| {
+                    let saved = link
+                        .extra
+                        .get("macNames")
+                        .and_then(|names| names.get(setup.position.primary.as_str()))
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.is_empty());
+                    preferences::truncate(saved.unwrap_or("your main computer"), 100)
+                }),
             devices: Arc::default(),
             grants: HashMap::new(),
         },
@@ -844,6 +870,7 @@ fn make_view(
         access,
         ownership,
         local_wipe: crate::wipe::LocalWipe::from(link).is_some(),
+        pending_wipes: removal::pending_wipes(link),
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
             Err(Error::PersonalityVersion(version)) => Err(version),
@@ -964,6 +991,7 @@ impl Owner {
                     && old.personalities == view.personalities
                     && old.clock == view.clock
                     && old.access == view.access
+                    && old.pending_wipes == view.pending_wipes
                 {
                     return false;
                 }

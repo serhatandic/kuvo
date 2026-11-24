@@ -40,6 +40,11 @@ the races that span removal, backup, moves, and an authority change.
 | U10 | [The installer waits for an authorized wipe before offering reinstall](../../protocol/conformance/removal.test.mjs) | Both installers wait for a pending wipe, a competing owner or a mismatched directory identity. They finish an authorized detach, preserve a replacement and continue to offer reinstall. U7 verifies successful Rust enrollment consumes the offer. |
 | U11 | [Uninstall reports the desktop identity failure first and can be retried](../../protocol/conformance/removal.test.mjs) | When identity and sign-in cleanup both fail on a stopped Unix machine, the command reports the identity error. After permissions are repaired, retry removes the identity and preserves work. |
 | U12 | [A member misses two handovers and sees the former primary unlinked](../../box/crates/kuvo_setup/tests/live.test.mjs) | The offline member accepts the latest epoch and both receipt pages. The current primary commits the former primary’s unlink in that epoch. The former primary keeps a new standalone setup and both remaining computers receive its acknowledgment. |
+| U13 | [The computers list shows signed pending wipes and omits resolved removals](../../protocol/conformance/removal.test.mjs) | Both residents project the signed removal details into the computers list. The removed key stays out of the computers list and a lost disk does not appear among pending wipes. |
+| U14 | [An offline wipe stays pending across a restart until a lost disk is recorded](../../protocol/conformance/removal.test.mjs) | An observing member receives the signed pending wipe while the target is offline. The main restarts, replays the lost-disk decision, and keeps the revocation. The observing member removes the pending row after receiving the resolution. |
+| U15 | [An unsupported wipe can be cancelled after the source holds its work for review](../../protocol/conformance/removal.test.mjs) | The source refuses the signed wipe and holds its work for review. After accepting a signed cancel instruction, it starts a standalone setup, acknowledges the decision, and preserves its saved session. |
+| U16 | [A member set aside by its main computer cannot pair a desktop](../../protocol/conformance/removal.test.mjs) | Both residents refuse the device with the same explanation. The device receives no grant and no request is queued for the main. |
+| U17 | [A detached app member wipe retries Keychain cleanup before deleting work](../../box/crates/kuvo_setup/tests/wipe_app.rs) | On macOS, the member hook runs after recording detach. A failed call preserves the old data, a replacement is left alone, and retry finishes the member receipt without writing a reinstall offer. The installer and live member preparation are tracked below. |
 
 ## Stored and inherited cases
 
@@ -120,6 +125,8 @@ submission also agreed when a stopped home had saved links but no machine list.
 That run had 60 differing leaves, all already in the inventory table.
 After merging `12a4054f9`, the same SSH run agreed on both replies and had
 54 differing leaves. Every one already has a verdict in the inventory table.
+After the pending-wipe projection, the same SSH run again agreed on both replies
+and had 52 differing leaves, all already listed in the inventory table.
 
 Re-enrollment after a TypeScript member's unlink originally failed against
 either main. The released baseline hashed the inode and change time for
@@ -190,7 +197,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 24 have coverage and 170 still have open or partial work. Of those, 127 list 2.3 as an owner (100 open, 27 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 28 have coverage and 166 still have open or partial work. Of those, 123 list 2.3 as an owner (94 open, 29 partial).
 
 ### computers-add
 
@@ -357,7 +364,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 24 h
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
 | [a saved wipe approval is tied to the old installation and only the erasing phase removes it](../../box/test/install-offer.test.ts#L8) | U8 verifies the identity of a detached directory and preserves a replacement. Resume through the installer and app-owned approval and stopping remain open. | 2.3, 6.2 |
-| [an app member wipe resumes after detach and yields only a member receipt](../../box/test/install-offer.test.ts#L47) | Open | 2.3 |
+| [an app member wipe resumes after detach and yields only a member receipt](../../box/test/install-offer.test.ts#L47) | U17 verifies durable detach, Keychain failure and retry with only a member receipt. A live managed member wipe through the app and installer remains open. | 2.3 |
 
 ### install-verdict
 
@@ -419,7 +426,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 24 h
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [a member its main computer set aside adds no device and vouches for none](../../box/bridge-tests/devices.test.js#L258) | Open | 2.3 |
+| [a member its main computer set aside adds no device and vouches for none](../../box/bridge-tests/devices.test.js#L258) | U16 verifies the exact refusal, empty device roster, and absence of a forwarded request. | — |
 
 ### devices-two-boxes
 
@@ -456,9 +463,9 @@ This map lists 194 reference cases, including expanded parameterized cases. 24 h
 | [revoked Relay-only headless member accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a shutdown write accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a lost export accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
-| [unsupported erase layout stays pending and can cancel without losing work](../../box/bridge-tests/setup-handover-removal.test.js#L279) | Open | 2.3 |
-| [a missing computer stays wipe-pending across primary restart](../../box/bridge-tests/setup-handover-removal.test.js#L296) | Open | 2.3 |
-| [a lost disk closes a pending wipe and preserves the key revocations](../../box/bridge-tests/setup-handover-removal.test.js#L309) | Open | 2.3 |
+| [unsupported erase layout stays pending and can cancel without losing work](../../box/bridge-tests/setup-handover-removal.test.js#L279) | U15 verifies the signed review and cancellation, standing alone after cancellation, and preservation of saved work. | — |
+| [a missing computer stays wipe-pending across primary restart](../../box/bridge-tests/setup-handover-removal.test.js#L296) | U13 and U14 verify both lists, the observing member, and the pending row after a main restart while the target remains offline. | — |
+| [a lost disk closes a pending wipe and preserves the key revocations](../../box/bridge-tests/setup-handover-removal.test.js#L309) | U14 verifies replay, preservation of the revoked key and signing key, and removal of the pending row. | — |
 | [unlinking the only computer wipes its local setup](../../box/bridge-tests/setup-handover-removal.test.js#L327) | U7 verifies the signed receipt and directory retirement on a sole Unix resident without a keeper or configured backup. U10 verifies the reinstall gate. The full three-computer prelude, action list, keeper, and native Windows remain open. | 2.3, 7.1, 8.1 |
 | [a sole primary can supersede and cancel a prepared removal](../../box/bridge-tests/setup-handover-removal.test.js#L366) | Open | 2.3 |
 | [a pending wipe follows the setup through handover](../../box/bridge-tests/setup-handover-removal.test.js#L395) | Open | 2.3 |

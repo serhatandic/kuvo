@@ -41,7 +41,16 @@ const ENGINE_NOT_READY: &str = "The engine isn’t running.";
 const CONVERSATION_NOT_READY: &str = "The conversation’s engine isn’t answering.";
 const CONVERSATION_GONE: &str = "That conversation isn’t there any more.";
 
-pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
+pub fn register(
+    registry: &mut Registry,
+    peers: Reader,
+    devices: Devices,
+    pending_wipes: impl Fn() -> Vec<GetKuvoComputersStatus200WipePendingItem>
+    + Clone
+    + Send
+    + Sync
+    + 'static,
+) {
     crate::moves::register(registry, &peers);
     follow::<get_kuvo_setup_sessions_events::Spec>(
         registry,
@@ -91,14 +100,17 @@ pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
         |view, now| Some(view.notices(now)),
         None,
     );
+    let pending = pending_wipes.clone();
     follow::<get_kuvo_computers_events::Spec>(
         registry,
         &peers,
-        |view, now| Some(computers(view, now)),
+        move |view, now| Some(computers(view, now, pending())),
         None,
     );
     read::<get_kuvo_notices::Spec>(registry, &peers, |view, now| Some(view.notices(now)));
-    read::<get_kuvo_computers::Spec>(registry, &peers, |view, now| Some(computers(view, now)));
+    read::<get_kuvo_computers::Spec>(registry, &peers, move |view, now| {
+        Some(computers(view, now, pending_wipes()))
+    });
     read::<get_kuvo_setup_waiting_counts::Spec>(registry, &peers, View::waiting_counts);
 
     let state = peers.clone();
@@ -210,7 +222,7 @@ pub(crate) fn query(path: &str, key: &str) -> Option<String> {
 fn read<R>(
     registry: &mut Registry,
     peers: &Reader,
-    snapshot: fn(&View, Millis) -> Option<<R as JsonStatus<200>>::Body>,
+    snapshot: impl Fn(&View, Millis) -> Option<<R as JsonStatus<200>>::Body> + Send + Sync + 'static,
 ) where
     R: JsonStatus<200> + kuvo_protocol::RouteSpec<Body = ()> + 'static,
 {
@@ -445,7 +457,11 @@ fn tools(
     }
 }
 
-fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
+fn computers(
+    view: &View,
+    now: Millis,
+    pending_wipes: Vec<GetKuvoComputersStatus200WipePendingItem>,
+) -> get_kuvo_computers::Status200 {
     use GetKuvoComputersStatus200ComputersItemReach4 as Reach;
     use GetKuvoComputersStatus200ComputersItemVia3 as Via;
     let here = view.roster.local();
@@ -537,7 +553,7 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
     get_kuvo_computers::Status200 {
         computers: rows,
         fleet_update: None,
-        wipe_pending: None,
+        wipe_pending: (!pending_wipes.is_empty()).then_some(pending_wipes),
     }
 }
 

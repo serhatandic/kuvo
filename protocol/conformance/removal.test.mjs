@@ -7,10 +7,152 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { boxBinary, boxCommand, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { seedPeerSetup } from "./peer-fixture.mjs";
 
 const fromMac = { "x-kuvo-from": "mac" };
 const applicant = process.env.KUVO_CONFORMANCE_JOIN_BIN
   ? boxBinary(process.env.KUVO_CONFORMANCE_JOIN_BIN) : boxBinary();
+
+test("the computers list shows signed pending wipes and omits resolved removals", { timeout: 30000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const main = await computer("Studio");
+  const operation = Buffer.alloc(16, 90).toString("base64url");
+  const error = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.";
+  const initial = seedPeerSetup(main.home, relay.url, 1, 3, roster => {
+    const [here, pending, lost] = roster.boxes;
+    roster.boxes = [here];
+    roster.left = [pending.key, lost.key];
+    roster.removals = {
+      [pending.key]: { peer: pending, operation, wipe: true, error, unresolved: ["ses_retained"] },
+      [lost.key]: { peer: lost, operation: Buffer.alloc(16, 91).toString("base64url"), wipe: true, resolution: "lost" },
+    };
+  });
+  const current = main.connect(await main.start().ready());
+  const listed = await current("GET", "kuvo/computers");
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(listed.json.wipePending, [{
+    key: initial.member.key, name: initial.member.name, operation, error,
+    nextAction: "cancel-wipe", unresolved: ["ses_retained"],
+  }]);
+  assert.deepEqual(listed.json.computers.map(peer => peer.key), [initial.main.key]);
+});
+
+test("an offline wipe stays pending across a restart until a lost disk is recorded", { timeout: 100000 }, async t => {
+  const fromApp = { "x-kuvo-from": "app" };
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const workshop = await computer("Workshop");
+  const running = studio.start();
+  const primary = studio.connect(await running.ready());
+  const setup = (await primary("GET", "kuvo/setup")).json.setup;
+  await until(() => leases.leaseFor(setup), "Studio did not obtain the relay lease.");
+  for (const member of [lab, workshop]) {
+    const offer = await primary("POST", "kuvo/computers/add/code", {}, fromApp);
+    assert.equal(offer.status, 201, offer.text);
+    const joined = await member.join(offer.json.code);
+    assert.equal(joined.code, 0, joined.log);
+  }
+  const copy = workshop.connect(await workshop.start().ready());
+  const state = () => readJSON(path.join(studio.home, "run", "link.json"));
+  const roster = () => state().shared.membershipAndAccess.value;
+  const source = roster().boxes.find(peer => peer.name === "Lab");
+  const key = source.key;
+  await until(async () => (await copy("GET", "kuvo/setup")).json.computers.some(peer => peer.key === key),
+    "Workshop did not see Lab as a member before removal.");
+  const work = path.join(lab.home, "agents", "sessions", "ses_retained", "messages.json");
+  write(work, "Lab remains offline");
+  const operation = Buffer.alloc(16, 77).toString("base64url");
+  const route = `kuvo/computers/${key}/unlink-and-wipe`;
+  const queued = await primary("POST", route, { operation }, fromApp);
+  assert.equal(queued.status, 200, queued.text);
+  assert.deepEqual(queued.json.removal, { operation, state: "wipe-pending", accessRemoved: true });
+  const row = { key, name: "Lab", operation };
+  const pending = async from => (await from("GET", "kuvo/computers")).json.wipePending;
+  await until(async () => (await pending(copy))?.some(each => each.operation === operation), "Workshop did not see the signed pending wipe.");
+  assert.deepEqual(await pending(copy), [row]);
+  await running.stop();
+  const next = studio.connect(await studio.start().ready());
+  assert.deepEqual(await pending(next), [row]);
+  assert.equal(roster().boxes.some(peer => peer.key === key), false);
+  await until(async () => !(await next("GET", "kuvo/setup")).json.leadershipWarning?.includes("resume when it reconnects"), "The primary did not regain the write lease.");
+  const lost = await next("POST", route, { operation, resolve: "lost" }, fromApp);
+  assert.equal(lost.status, 200, lost.text);
+  assert.deepEqual(lost.json.removal, { operation, state: "lost", accessRemoved: true });
+  assert.deepEqual((await next("POST", route, { operation }, fromApp)).json, lost.json);
+  assert.equal(await pending(next), undefined);
+  await until(async () => (await pending(copy)) === undefined, "Workshop did not receive the resolution.");
+  assert.deepEqual(roster().left, [key]);
+  assert.equal(roster().removals[key].peer.sign, source.sign);
+  assert.equal(fs.readFileSync(work, "utf8"), "Lab remains offline");
+});
+
+test("an unsupported wipe can be cancelled after the source holds its work for review", { timeout: 80000 }, async t => {
+  const fromApp = { "x-kuvo-from": "app" };
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const ask = studio.connect(await studio.start().ready());
+  const setup = (await ask("GET", "kuvo/setup")).json.setup;
+  await until(() => leases.leaseFor(setup), "Studio did not obtain the relay lease.");
+  const offer = await ask("POST", "kuvo/computers/add/code", {}, fromApp);
+  assert.equal(offer.status, 201, offer.text);
+  const joined = await lab.join(offer.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const read = box => readJSON(path.join(box.home, "run", "link.json"));
+  const session = path.join(lab.home, "agents/sessions/ses_retained/messages.json");
+  write(session, "saved work");
+  const there = lab.connect(await lab.start().ready());
+  const key = (await there("GET", "kuvo/setup")).json.you.key;
+  const route = `kuvo/computers/${key}/unlink-and-wipe`;
+  const operation = Buffer.alloc(16, 43).toString("base64url");
+  const take = body => ask("POST", route, { operation, ...body }, fromApp);
+  const begun = await take({});
+  assert.equal(begun.status, 200, begun.text);
+  assert.equal(begun.json.removal.state, "wipe-pending");
+  const error = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.";
+  const roster = () => read(studio).shared.membershipAndAccess.value;
+  await until(() => roster().removals[key]?.error === error, "The main did not record the source review.");
+  assert.equal(read(lab).removalSource.operation, operation);
+  assert.equal(read(lab).removalSource.review, "unsupported-layout");
+  assert.equal(fs.readFileSync(session, "utf8"), "saved work");
+  const held = await take({});
+  assert.deepEqual(held.json.removal, { operation, state: "review", accessRemoved: true, nextAction: "cancel-wipe" });
+  assert.equal(held.json.message, error);
+  const cancelled = await take({ resolve: "cancel" });
+  assert.equal(cancelled.status, 200, cancelled.text);
+  assert.deepEqual(cancelled.json.removal, { operation, state: "cancelled", accessRemoved: true });
+  await until(async () => {
+    const view = (await there("GET", "kuvo/setup")).json;
+    return view.setup !== setup && view.you.role === "primary" && roster().removals[key]?.delivered;
+  }, "The source did not keep its standalone setup after cancellation.");
+  assert.equal(fs.readFileSync(session, "utf8"), "saved work");
+  assert.equal((await ask("GET", "kuvo/computers")).json.wipePending, undefined);
+  assert.equal(roster().boxes.some(peer => peer.key === key), false);
+});
+
+test("a member set aside by its main computer cannot pair a desktop", { timeout: 20000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const lab = await computer("Lab");
+  seedPeerSetup(lab.home, relay.url, 2);
+  const link = path.join(lab.home, "run", "link.json");
+  const before = readJSON(link);
+  before.setup.aside = true;
+  before.macNames = { [before.setup.primary]: "Studio" };
+  write(link, JSON.stringify(before));
+  const ask = lab.connect(await lab.start().ready());
+  const pair = await ask("POST", "kuvo/devices/pair", {
+    key: Buffer.alloc(32, 91).toString("base64url"), name: "Laptop", kind: "desktop",
+  }, { "x-kuvo-from": "app" });
+  assert.equal(pair.status, 409, pair.text);
+  assert.deepEqual(pair.json, {
+    message: "Studio doesn't list this computer in its setup now. Re-add this computer from Studio to pair this app.",
+  });
+  assert.deepEqual(readJSON(link).phones, []);
+  assert.deepEqual((await ask("GET", "kuvo/phones")).json.phones, []);
+  const forwards = path.join(lab.home, "run", "work-queue", "forward");
+  assert.deepEqual(fs.existsSync(forwards) ? fs.readdirSync(forwards) : [], []);
+});
 
 test("uninstalling a stopped machine clears its desktop identity and sign-ins but retains work", async t => {
   const root = fs.realpathSync(scratch());
