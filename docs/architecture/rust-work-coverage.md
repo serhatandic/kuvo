@@ -365,3 +365,43 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **The session list** lists a made project at once; TypeScript's saved list caught up later (side
   by side, at shutdown its `run/lists/sessions.json` didn't have them yet).
 
+## 5.1c-5 — models that can't answer now
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::work::unanswering` (`Unanswerings`: `note_failed`, `note_answered`, `failed_on`, `answered_on`, `follow`, `list`; `hold_of`, `hold_words`, `error_of`, `scope_of`, `reset_of`, `is_free`) | `work/unanswering.ts` |
+| `GET kuvo/work/unanswering`, `Work::watch` (follows the engine's events) | `areas/work.ts` `workAsksRoute`'s first branch; `followUnanswering` in `workWatcher` |
+| `kuvo_engine::Engine::events` (`EngineEvent`), additive: the feed sends each event it reads, only while someone listens | the work watcher's own engine connection |
+| `kuvo_engine::{limit_reached, resets_in, reset_time}` (the queue's limit words, now shared) | `shared/limits.ts` `isLimit`, `resetsIn`, `resetTime` |
+
+### Proof
+
+- `work` scenario (1 new, 9 in all): none held on a new box; holds kept (one over by now left
+  out; an account's paid ones naming the models they cover, out of the engine's; one model's); a
+  new key for one account offers its models again while the bare `credential.updated` says nothing;
+  a paid model's session answering clears its account. 9/9 against both boxes on macOS; against
+  the Rust box on native Windows and Linux (WSL, static musl).
+- `work::unanswering::tests` (3): funds hold an account's paid models for half an hour and a free
+  one alone, and which answer clears which; only a limit holds a model back (not "Overloaded"), a
+  rate limit for three minutes, a named reset as named; a hold kept under another name marks the
+  model it stands for (`model-aliases.test.ts`).
+- The limit line's refactor: `engine-sessions`' four limit cases and `engine-delivery` pass against
+  the Rust box.
+- Side by side, seeded holds (paid, free, one model's, one over, one malformed) and three requests:
+  every answer and the file match.
+- Size: about 16,800 characters of Rust for about 14,000 of TypeScript, without indentation: 1.20×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bots-dead-models](../../box/bridge-tests/bots-dead-models.test.js) | 191 a client's model picker reads the same | `work` scenario |
+| | 199, 214 which answer or account change clears which hold | `work` scenario, `work::unanswering::tests` |
+| | 222 a model that's only busy isn't held back | `work::unanswering::tests` |
+| | 245 free usage holds an account's free ones, until a free one answers | `work::unanswering::tests`; through a failed session: the work watcher, next |
+| | 163, 231 a failure tells its bot why, and holds the account | the work watcher (`failed_on`, `hold_words`), next in 5.1c |
+| | list_models and start_session leaving out or warning of held models (163, 264) | the work tools, 5.1e (`hold_of`) |
+| [model-aliases](../../box/test/model-aliases.test.ts) | a hold kept on `claude-code/default` marks the model it stands for | `work::unanswering::tests` |
+
