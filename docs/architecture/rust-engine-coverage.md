@@ -7,7 +7,7 @@ They use the real resident, dispatcher, process launcher, discovery file and
 WebSocket bridge. The real-engine smoke exercises the same entry points with
 OpenCode 2.2.6 on macOS, Linux, WSL2 and native Windows.
 
-## TypeScript reference scenarios
+## TypeScript reference scenarios at the 3.1 checkpoint
 
 | Source | Cases | Rust coverage |
 | --- | ---: | --- |
@@ -26,15 +26,14 @@ OpenCode 2.2.6 on macOS, Linux, WSL2 and native Windows.
 | Same file, engine restart using a Mac’s settings and info naming its last launcher | 2 | The installed pin and own settings path replace the old start command. Mac-supplied launch settings and attribution follow in 6.1/7.3. |
 | Same file, paired terminal | 1 | Paired caller and path admission are shared with the local transport. Noise request IDs, socket frames and cancellation still need the paired resident transport. |
 
-This maps 35 reference scenarios. The local PTY tests and engine unavailable
-case have direct counterparts. The lifecycle, raw API, timestamp and control
-cases have coverage at the Rust boundary, with the route-specific gaps
-above. Session/context, tools, handover and the old swap cases still need
-their owning phases. Model-folder refresh tests use the same engine activity
-endpoints, but refresh itself is part of 3.2. The sandbox worktree test
-belongs to 6.1.
+This checkpoint mapped 35 reference scenarios. The local PTY tests and engine
+unavailable case had direct counterparts. The lifecycle, raw API, timestamp
+and control cases had coverage at the Rust boundary. The [scenario map
+below](#typescript-scenario-map) records the current owners for session and
+context reads, tools, handover, release recovery, and model refresh. The
+sandbox worktree test belongs to 6.1.
 
-## Conformance
+## Conformance at the 3.1 checkpoint
 
 The TypeScript and Rust residents both pass the authenticated discovery and
 event-line restart scenarios. Two mixed routing cases pass against TypeScript
@@ -74,9 +73,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 236 of
-411 declarations are covered, 68 are partial and 107 are gaps.
-One gap is a retired phone scenario. Row 3.2 retains 12 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 237 of
+411 declarations are covered, 76 are partial and 98 are gaps.
+One gap is a retired phone scenario. Row 3.2 owns zero remaining cases.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -89,9 +88,9 @@ owners on the same case each own the part described by their phase.
   and both kinds of attachment notes. Validation and error recovery are separate.
 - Context and inbox transfer use the resident scenarios above. Send recovery covers
   both sides of engine acceptance, including the live inbox and completed transcript.
-- Queue coverage is through the five session queue scenarios and the pinned engine
-  smoke. Partial cases still need their missing refusal, restart, lifecycle, or
-  concurrency assertion.
+- The queue scenarios and the pinned engine cover refusals, restart and recovery,
+  lifecycle, and concurrent writes. The table assigns the remaining specialist
+  cases to their feature owners.
 - Session actions and notes share the rename, archive, and deletion conformance case.
   The new-session case checks the local and published list. Worktree cases use Git
   for the linked folder and a newly created worktree.
@@ -111,21 +110,21 @@ owners on the same case each own the part described by their phase.
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
 | `box/test/session-actions.test.ts` (26) | 1, 4, 6–9, 14–16, 20, 24–25 | 3, 5, 10, 23, 26 | 2, 11–13, 17–19, 21–22 | 4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–23, 26 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
-| `box/test/session-lists.test.ts` (47) | 1, 3–13, 15–17, 19–22, 24, 26–28, 47 | 14, 23, 29, 46 | 2, 18, 25, 30–45 | 3.2 · 2, 46<br>4.1 · 14<br>5.1 · 18, 23, 25, 29–45<br>6.3 · 46<br>2.4 · 45 |
+| `box/test/session-lists.test.ts` (47) | 1, 3–13, 15–17, 19–22, 24, 26–28, 46–47 | 2, 14, 23, 29 | 18, 25, 30–45 | 4.1 · 14<br>5.1 · 2, 18, 23, 25, 29–45<br>2.4 · 45 |
 | `box/test/session-notes.test.ts` (8) | 1–8 | — | — | — |
 | `box/test/session-notes-writers.test.ts` (7) | 3–5, 7 | 1–2, 6 | — | 7.3 · 6<br>5.1 · 1<br>5.3 · 1–2<br>6.1 · 1 |
 | `box/bridge-tests/queue.test.js` (56) | 1–2, 4–34, 36–39, 43, 51–56 | 3 | 35, 40–42, 44–50 | 4.1 · 44–50<br>4.6 · 40–42<br>dropped: phone app retired · 35<br>5.1 · 3 |
 | `box/bridge-tests/queue-live.test.js` (1) | 1 | — | — | — |
-| `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–5 | 2 | 3.2 · 2<br>5.1 · 2<br>6.3 · 3–5<br>4.1 · 1 |
+| `box/bridge-tests/start-session.test.js` (5) | — | 1–5 | — | 5.1 · 2<br>6.3 · 3–5<br>4.1 · 1 |
 | `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
 | `box/test/draft-orphan.test.ts` (5) | 1–4 | 5 | — | 2.4 · 5 |
 | `box/test/conversation.test.ts` (3) | 1–3 | — | — | — |
 | `box/test/conversation-activity.test.ts` (2) | — | 1 | 2 | 4.1 · 2<br>5.1 · 1–2 |
 | `box/test/message-words.test.ts` (11) | 1–6 | 7–9 | 10–11 | 5.1 · 8–10<br>5.2 · 7<br>5.3 · 11<br>6.1 · 7<br>6.4 · 7 |
 | `box/test/session-news-kinds.test.ts` (5) | — | — | 1–5 | 5.1 · 1–5 |
-| `box/test/projects-worktrees.test.ts` (6) | — | 1–4 | 5–6 | 3.2 · 3–4<br>6.3 · 1–6 |
+| `box/test/projects-worktrees.test.ts` (6) | — | 1–4 | 5–6 | 6.3 · 1–6 |
 | `box/test/start-cancelled-worktree.test.ts` (2) | 1–2 | — | — | — |
-| `box/bridge-tests/worktrees.test.js` (32) | 8 | 1, 9, 13–14, 17–18 | 2–7, 10–12, 15–16, 19–32 | 3.2 · 24–30<br>4.1 · 12, 30<br>6.3 · 1–7, 9–32<br>7.3 · 15–16 |
+| `box/bridge-tests/worktrees.test.js` (32) | 8 | 1, 9, 13–14, 17–18, 24–30 | 2–7, 10–12, 15–16, 19–23, 31–32 | 4.1 · 12, 30<br>6.3 · 1–7, 9–32<br>7.3 · 15–16 |
 | `box/bridge-tests/worktrees-where.test.js` (12) | — | — | 1–12 | 6.3 · 1–11<br>5.5 · 12 |
 
 ### Additional 3.2b reference cases
@@ -217,13 +216,13 @@ requests responsive. Phase 2.4 owns the timed probe of the shared journal's
 on-disk claim lock.
 
 The box attaches the ownership handle before registering the engine routes,
-starts an authenticated request receiver after it has the local session view,
-and announces submission recovery to its peers. Drafts and addressed prompts
-are durable before the first reply. The owner applies the ordinary typed or
-prompt adapter under the same message identity on every retry. The peer
-transport supports inline payloads up to 5 MiB for an addressed draft and
-128 KiB for a scoped submission. Phase 2.4 owns the shared move journal,
-move admission fences and receipt handoff. Phase 5.3 owns the group
+subscribes to authenticated requests after it has the local session view,
+and announces submission recovery once that subscription is ready. Drafts
+and addressed prompts are durable before the first reply. The owner applies
+the ordinary typed or prompt adapter under the same message identity on
+every retry. The peer transport supports inline payloads up to 5 MiB for
+an addressed draft and 128 KiB for a scoped submission. Phase 2.4 owns the
+shared move journal, move admission fences and receipt handoff. Phase 5.3 owns the group
 transcript used by addressed group messages.
 
 The engine's event reader owns the local ask cache. Its session list and
@@ -314,6 +313,10 @@ the event. At most one complete inventory is in flight, and changes received
 during it schedule a fresh read. On-disk project and worktree changes refile
 the latest complete inventory while OpenCode is busy. Old lists without
 Needs you derive it from their saved facts.
+The list follows Git's linked worktree to its main folder. It also reads
+OpenCode's record of removed worktrees and the last message time. A Tokio
+blocking task reuses the read-only SQLite facts until a database or its
+write-ahead log changes. A rename keeps the same last-message time.
 The CLI route uses the resident's saved cursor without rewriting its inventory.
 The line publishes the same changed rows and tombstones as a cursor read.
 Worktree creation sanitizes the computer's configured branch prefix, and
@@ -323,6 +326,15 @@ Session Delete and Delete All read the live and restorable records, check
 which independent conversations use each tree, and tell the client what
 goes with their sessions. Delete checks the same confirmation inside its
 note turn. Phase 6.3 owns naming, removal, restore and project discovery.
+Its `Engine::worktree_inventory` input exposes all local OpenCode
+conversations with directories, archive and activity state. It refuses an
+incomplete inventory. The resident test checks active and archived rows,
+excludes subagents and hidden runs, and fails the inventory on a missing
+source or malformed run list. Phase 4.1 supplies the coding-agent rows.
+Session start records a requested completion notice before promising it
+to the new conversation. A refused note write keeps the ordinary reply
+instructions. Phase 5.1 delivers the notice and uses `Engine::stop_for_starter`
+to stop a delegated turn without pausing a queue that only holds a summary.
 On execution success, a completed standalone summary preserves the read
 marker if the preceding turn was read. In-turn summaries and later replies
 preserve their unread state. A saved wake-up shows the same summary from
@@ -378,16 +390,23 @@ publishes receipt changes through a watch channel.
 
 | Platform | Phase 3.2c checks |
 | --- | --- |
-| macOS | TypeScript passed 128 deterministic cases and the recorded beta home. Rust passed 127 deterministic cases and the recorded beta home before the new Delete and Delete All worktree scenario was added. Both passed the OpenCode Go live scenario. The Rust resident test also verifies the owner adapters, revoked delivery and bounded transcript reads. |
+| macOS | Both boxes passed 134 deterministic scenarios, the recorded beta home and the OpenCode Go scenario. Rust also passed the resident test and workspace compile check. TypeScript passed its type check. |
 | WSL GNU | 75 deterministic Rust cases after merging the move fences, plus the earlier OpenCode Go live scenario, with Mac-built executables. The held-inventory, old waiting-list, and concurrent-delete scenarios also passed. |
-| Native Windows | 119 deterministic Rust cases at the post-enrollment checkpoint, including two-resident setup search, signed stars, scoped and multipart addressed delivery, vault asks, the native project key, attachment paths and the delete race. An early project watch scenario failed there and passed on macOS after the inventory change. The staged OpenCode pin reports version 2.2.6. |
-| Linux musl | 82 deterministic Rust cases with the Mac-built static executable under WSL. An earlier 35 cases passed on Lokum. |
+| Native Windows | 134 deterministic Rust scenarios, two vault scenarios, and the staged engine pages and saved queue with OpenCode 2.2.6. Includes two residents for setup search, signed stars and multipart delivery. |
+| Linux musl | 134 deterministic Rust scenarios and the staged engine pages and saved queue with the Mac-built static executable under WSL. An earlier 35 cases passed on Lokum. |
+
+After moving the owner subscription ahead of its capability announcement,
+the 16 typed send, delivery and search scenarios passed again on macOS.
 
 The additional OpenCode Go run passed on both macOS boxes and the GNU
 Rust build under WSL. It checks Stop during a live turn, an inbox draft and
 a resident draft waiting together, then one exact transcript entry for
 each draft with a completed turn between them. The scratch provider entry
 was deleted from both hosts after the runs.
+The native Windows and static Linux recorded-home runs used the
+TypeScript-generated queue files and recorded OpenCode SQL with each
+platform's paths. The TypeScript full-home generator stopped at directory
+sync on Windows.
 
 The signed star test makes a change from a member, reads it from both
 computers, then merges older local copies after an unstar. It verifies the

@@ -4,9 +4,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, openLine, readJSON, request, until, write } from "./adapter.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { boxBinary, isolatedEnv, openLine, readJSON, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
-import { sessionOf } from "./engine.mjs";
+import { git, sessionOf } from "./engine.mjs";
 
 const vectors = JSON.parse(fs.readFileSync(new URL("../vectors/message-parts.json", import.meta.url)));
 
@@ -1987,6 +1988,41 @@ test("the session list starts in the most recent project and orders ties by name
   assert.equal(list.json.startProject, catalog[1].directory);
 });
 
+test("the recorded sidebar order follows the resident's session and project facts", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const fixture = readJSON(new URL("../vectors/session-lists.json", import.meta.url)).cases.find(row => row.expect.sidebar);
+  const here = await computer("sidebar-session-vector");
+  const origin = "/home/me/.kuvo-code";
+  const rebase = folder => {
+    if (folder.startsWith(origin + "/")) return path.join(here.home, folder.slice(origin.length + 1));
+    if (folder.startsWith("/home/me/")) return path.join(here.home, "workspace", folder.slice("/home/me/".length));
+    return folder;
+  };
+  const rebased = value => JSON.parse(JSON.stringify(value, (_key, field) => typeof field === "string" ? rebase(field) : field));
+  // The bot roster supplies the one explicit bot assignment outside the bot folder.
+  const native = fixture.sessions.filter(session => !fixture.box.botSessions.includes(session.id));
+  here.engine.sessions.push(...rebased(native));
+  for (const id of fixture.box.running) here.engine.running.add(id);
+  write(path.join(here.home, "box", "projects.json"), JSON.stringify({ projects: rebased(fixture.box.projects) }));
+  write(path.join(here.home, "box", "worktrees.json"), JSON.stringify({
+    handedOver: Object.fromEntries(Object.entries(fixture.box.filed).map(([folder, project]) => [rebase(folder), rebase(project)])),
+  }));
+  const record = await here.start().ready();
+  const reply = await request(record, "GET", "kuvo/sessions/list");
+  assert.equal(reply.status, 200, reply.text);
+  const rows = Object.entries(reply.json.sessions).filter(([, facts]) => !facts.archived && ["project", "chat"].includes(facts.kind));
+  const newest = predicate => rows.filter(([, facts]) => predicate(facts))
+    .sort(([, a], [, b]) => b.updated - a.updated).map(([id]) => id);
+  const visible = {
+    pinned: newest(facts => facts.pinned),
+    chats: newest(facts => facts.kind === "chat"),
+    projects: reply.json.projectOrder.map(directory => ({
+      directory, sessions: newest(facts => facts.kind === "project" && facts.project === directory),
+    })),
+  };
+  assert.deepEqual(visible, rebased(fixture.expect.sidebar));
+});
+
 test("a session list saved before Needs you is read while OpenCode catches up", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-list-older-asks");
@@ -2289,6 +2325,64 @@ test("a project file change refiles the saved inventory without another engine r
   }, "the old Mac worktree record to refile its session", 8000);
   assert.deepEqual(handedOver.projects[formerProject].shown, [session]);
   assert.equal(calls(), readBefore);
+});
+
+test("linked and removed worktrees keep their project and last message time", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-worktree-history");
+  const project = path.join(here.home, "repository");
+  const linked = path.join(here.home, "linked-tree");
+  const removed = path.join(here.home, "removed-tree");
+  const nested = path.join(linked, "nested");
+  const env = isolatedEnv(path.dirname(here.home));
+  write(path.join(project, "nested", "note.txt"), "Tracked.");
+  git(env, project, "init", "-q");
+  git(env, project, "add", "nested/note.txt");
+  git(env, project, "commit", "-qm", "Fixture");
+  git(env, project, "worktree", "add", "--quiet", "--detach", linked);
+  write(path.join(here.home, "box", "projects.json"),
+    JSON.stringify({ projects: [{ directory: project, name: "Repository" }, { directory: linked }] }));
+  const database = path.join(here.home, "data", "opencode", "opencode-lists.db");
+  fs.mkdirSync(path.dirname(database), { recursive: true });
+  const db = new DatabaseSync(database);
+  db.exec(`PRAGMA journal_mode=WAL;
+    CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT, vcs TEXT);
+    CREATE TABLE worktree (project_id TEXT, directory TEXT);
+    CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time_created INTEGER);
+    CREATE TABLE session_message (session_id TEXT, seq INTEGER, time_created INTEGER);
+    INSERT INTO session_v2 VALUES ('ses_removedTree', 1);
+    INSERT INTO session_message VALUES ('ses_removedTree', 1, 300);`);
+  db.prepare("INSERT INTO project VALUES ('project', ?, 'git')").run(project);
+  db.prepare("INSERT INTO worktree VALUES ('project', ?)").run(removed);
+  db.close();
+  const bytes = fs.readFileSync(database);
+  here.engine.sessions.push(
+    sessionOf({ id: "ses_linkedTree", directory: linked, updated: 500 }),
+    sessionOf({ id: "ses_nestedTree", directory: nested, updated: 400 }),
+    sessionOf({ id: "ses_removedTree", directory: removed, updated: 900 }),
+  );
+  const record = await here.start().ready();
+  const list = async () => (await request(record, "GET", "kuvo/sessions/list")).json;
+  const initial = await list();
+  assert.equal(initial.sessions.ses_linkedTree.project, project);
+  assert.equal(initial.sessions.ses_nestedTree.project, project);
+  assert.equal(initial.sessions.ses_removedTree.project, project);
+  assert.equal(initial.sessions.ses_removedTree.updated, 300);
+  assert.deepEqual(initial.projects[project].shown, ["ses_linkedTree", "ses_nestedTree", "ses_removedTree"]);
+  assert.equal(initial.projects[linked], undefined);
+
+  await until(() => here.engine.subscribers() > 0, "the resident to follow title changes");
+  const row = here.engine.sessions[2];
+  row.title = "Renamed";
+  row.time.updated = 1000;
+  here.engine.emit({ type: "session.renamed", data: { sessionID: row.id, info: row } });
+  const visible = await until(async () => {
+    const each = (await list())?.sessions?.ses_removedTree;
+    return each?.title === "Renamed" && each;
+  }, "the renamed session");
+  assert.equal(visible.updated, 300);
+  assert.equal(visible.project, project);
+  assert.deepEqual(fs.readFileSync(database), bytes);
 });
 
 test("a project page grows in steps and keeps its running conversations first", { timeout: 45000 }, async t => {

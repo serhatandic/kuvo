@@ -1,6 +1,9 @@
 //! A local session list that can be followed by the line and read by the peers crate.
 
 mod activity;
+mod engine_facts;
+
+use engine_facts::EngineFacts;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -185,7 +188,7 @@ impl LocalSessions {
                 )
                 .await
                 .ok();
-            let mut inventory = None;
+            let mut inventory: Option<(u64, Vec<Observed>, EngineFacts)> = None;
             let mut reads = JoinSet::new();
             let mut read_again = true;
             let period = Duration::from_secs(60);
@@ -196,12 +199,18 @@ impl LocalSessions {
                     read_again = false;
                     let at = *revisions.borrow();
                     let reader = engine.clone();
+                    let previous = inventory
+                        .as_ref()
+                        .map(|(_, _, facts)| Arc::clone(&facts.databases));
                     reads.spawn(async move {
                         let lease = reader.acquire(Demand::Passive).await?;
-                        read_inventory(&reader, &lease)
-                            .await
-                            .ok()
-                            .map(|rows| (at, rows))
+                        let (rows, mut facts) = tokio::join!(
+                            read_inventory(&reader, &lease),
+                            engine_facts::read(&reader.home, previous)
+                        );
+                        let rows = rows.ok()?;
+                        facts.add_linked(&rows).await;
+                        Some((at, rows, facts))
                     });
                 }
                 tokio::select! {
@@ -246,12 +255,12 @@ impl LocalSessions {
                         continue;
                     },
                     finished = reads.join_next(), if !reads.is_empty() => {
-                        let Some(Ok(Some((at, rows)))) = finished else { continue; };
+                        let Some(Ok(Some((at, rows, facts)))) = finished else { continue; };
                         if at != *revisions.borrow() { continue; }
-                        inventory = Some((at, rows));
+                        inventory = Some((at, rows, facts));
                     },
                 }
-                let Some((began, rows)) = &inventory else {
+                let Some((began, rows, facts)) = &inventory else {
                     // Mark an ask heard even while there is no complete engine inventory.
                     ask_changes.borrow_and_update();
                     continue;
@@ -267,8 +276,14 @@ impl LocalSessions {
                 let Ok(worktrees) = worktrees else {
                     continue;
                 };
-                let (mut sessions, projects, archived, needs_you) =
-                    measure(rows, &engine.home, &projects, &worktrees.filed, &book);
+                let (mut sessions, projects, archived, needs_you) = measure(
+                    rows,
+                    &engine.home,
+                    &projects,
+                    &worktrees.filed,
+                    facts,
+                    &book,
+                );
                 let published = {
                     let revision = revisions.borrow();
                     if *revision != *began {
@@ -824,6 +839,9 @@ pub(crate) async fn read_inventory(
         engine.call::<Value>(lease, Method::GET, "api/session/active", None)
     );
     let active = active?;
+    if (!active.is_object() && !active.is_array()) || active.get("data").is_some() {
+        return Err(io::Error::other("The engine did not supply a complete run list.").into());
+    }
     Ok(rows?
         .into_iter()
         .map(|session| {
@@ -859,19 +877,66 @@ async fn project_changes(edits: &mut Option<Subscription>) -> bool {
     false
 }
 
+struct Filing<'a> {
+    saved: &'a BTreeMap<String, String>,
+    engine: &'a EngineFacts,
+    other_folders: BTreeMap<&'a str, &'a str>,
+}
+
+impl<'a> Filing<'a> {
+    fn new(
+        projects: &'a [Project],
+        saved: &'a BTreeMap<String, String>,
+        engine: &'a EngineFacts,
+    ) -> Self {
+        let own = projects
+            .iter()
+            .filter(|project| !project.removed)
+            .map(|project| project.directory.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut other_folders = BTreeMap::new();
+        for project in projects.iter().filter(|project| !project.removed) {
+            for folder in &project.folders {
+                if !own.contains(folder.as_str()) {
+                    other_folders
+                        .entry(folder.as_str())
+                        .or_insert(project.directory.as_str());
+                }
+            }
+        }
+        Self {
+            saved,
+            engine,
+            other_folders,
+        }
+    }
+
+    fn known(&self, folder: &str) -> Option<&str> {
+        let project = self
+            .saved
+            .get(folder)
+            .map(String::as_str)
+            .or_else(|| self.other_folders.get(folder).copied())
+            .or_else(|| self.engine.worktree(folder).and_then(Path::to_str))?;
+        Some(self.other_folders.get(project).copied().unwrap_or(project))
+    }
+}
+
 fn measure(
     rows: &[Observed],
     home: &Path,
     projects: &[Project],
     worktrees: &BTreeMap<String, String>,
+    engine_facts: &EngineFacts,
     asks: &crate::asks::Book,
 ) -> (Sessions, Projects, Vec<Value>, Vec<Value>) {
+    let filing = Filing::new(projects, worktrees, engine_facts);
     let mut sessions = rows
         .iter()
         .map(|row| {
             (
                 row.session.id.clone(),
-                facts(&row.session, home, projects, worktrees, row.running),
+                facts(&row.session, home, &filing, row.running),
             )
         })
         .collect::<Sessions>();
@@ -988,7 +1053,7 @@ fn measure(
     let mut listed = Projects::new();
     let directories = projects
         .iter()
-        .filter(|project| !project.removed)
+        .filter(|project| !project.removed && filing.known(&project.directory).is_none())
         .map(|project| project.directory.as_str())
         .chain(
             sessions
@@ -1033,13 +1098,7 @@ async fn all_sessions(
         .collect()
 }
 
-fn facts(
-    session: &Session,
-    home: &Path,
-    projects: &[Project],
-    worktrees: &BTreeMap<String, String>,
-    running: bool,
-) -> Facts {
+fn facts(session: &Session, home: &Path, filing: &Filing<'_>, running: bool) -> Facts {
     let directory = session.directory();
     let notes = session.notes();
     let note = |key| {
@@ -1067,9 +1126,10 @@ fn facts(
         kind,
         directory: directory.to_owned(),
         created: session.time.created.unwrap_or_default(),
-        updated: session
-            .time
-            .activity
+        updated: filing
+            .engine
+            .activity(&session.id)
+            .or(session.time.activity)
             .or(session.time.updated)
             .unwrap_or_default(),
         extra: BTreeMap::new(),
@@ -1078,25 +1138,14 @@ fn facts(
         facts.extra.insert(key.to_owned(), value);
     };
     if kind == Kind::Project {
-        let worktree = worktrees.get(directory).map(String::as_str);
-        let filed = Path::new(worktree.unwrap_or(directory));
-        let project = projects
-            .iter()
-            .filter(|project| !project.removed)
-            .filter(|project| {
-                filed.starts_with(&project.directory)
-                    || project
-                        .folders
-                        .iter()
-                        .any(|folder| filed.starts_with(folder))
-            })
-            .max_by_key(|project| project.directory.len())
-            .map(|project| project.directory.as_str())
-            .or(worktree)
+        let mark = note("filed");
+        let project = filing
+            .known(directory)
             .or_else(|| {
-                (note("filed")["folder"] == directory)
-                    .then(|| note("filed")["project"].as_str())
-                    .flatten()
+                let named = mark["project"]
+                    .as_str()
+                    .filter(|named| !named.is_empty() && *named != directory)?;
+                (mark["folder"] == directory).then(|| filing.known(named).unwrap_or(named))
             })
             .unwrap_or(directory);
         set("project", json!(project));

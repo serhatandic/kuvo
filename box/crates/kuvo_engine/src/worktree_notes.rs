@@ -1,6 +1,10 @@
 //! The OpenCode side of a worktree's saved filing and session instructions.
 
-use std::{collections::BTreeMap, io, path::Path};
+use std::{
+    collections::BTreeMap,
+    io,
+    path::{Path, PathBuf},
+};
 
 use http::Method;
 use serde::Deserialize;
@@ -11,6 +15,14 @@ use tokio_util::sync::CancellationToken;
 use crate::{Engine, api, disk, lifetime::Demand, sessions};
 
 pub(crate) const FILE: &str = "worktrees.json";
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct WorktreeConversation {
+    pub session: String,
+    pub folder: PathBuf,
+    pub archived: bool,
+    pub running: bool,
+}
 
 #[derive(Deserialize)]
 pub(crate) struct Worktree {
@@ -112,6 +124,32 @@ pub(crate) fn watch(engine: Engine, stop: CancellationToken) -> mpsc::UnboundedS
 }
 
 impl Engine {
+    /// Read every local OpenCode conversation and its current run state.
+    /// The worktree owner combines this with the coding-agent inventory before removing files.
+    pub async fn worktree_inventory(&self) -> io::Result<Vec<WorktreeConversation>> {
+        let lease = self.acquire(Demand::Passive).await.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotConnected, "The engine isn't running.")
+        })?;
+        let inventory = crate::session_list::read_inventory(self, &lease)
+            .await
+            .map_err(io::Error::other)?;
+        Ok(inventory
+            .into_iter()
+            .filter_map(|row| {
+                let session = row.session;
+                session.check_independent().ok()?;
+                let folder = PathBuf::from(session.directory());
+                let archived = session.archived();
+                (!folder.as_os_str().is_empty()).then_some(WorktreeConversation {
+                    session: session.id,
+                    folder,
+                    archived,
+                    running: row.running,
+                })
+            })
+            .collect())
+    }
+
     /// Refresh OpenCode's instructions after the worktree owner records its branch.
     pub async fn tell_worktree(&self, session: &str) -> io::Result<bool> {
         if !sessions::valid_id(session) {
