@@ -405,6 +405,13 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
         fs::hard_link(&binary, &executable)
             .or_else(|_| fs::copy(&binary, &executable).map(drop))
             .unwrap();
+        #[cfg(windows)]
+        {
+            let unwind = binary.with_file_name("libunwind.dll");
+            if unwind.is_file() {
+                fs::copy(unwind, bin.join("libunwind.dll")).unwrap();
+            }
+        }
     }
     fs::create_dir_all(root.join("run")).unwrap();
     fs::write(
