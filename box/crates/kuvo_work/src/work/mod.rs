@@ -2,8 +2,10 @@
 //! (`kuvo/work/settings`), this Mac kept awake while agents work, what bots just did to their
 //! sessions (`kuvo/work/oversight`) and when each bot's work last changed (`kuvo/work/events`).
 
+pub mod answers;
 pub mod asks;
 pub mod bot;
+pub mod projects;
 pub mod records;
 pub mod settings;
 
@@ -17,6 +19,7 @@ use kuvo_protocol::routes::{
     get_kuvo_work_asks_events as asks_events, get_kuvo_work_events as changed_events,
     get_kuvo_work_oversight as oversight_get, get_kuvo_work_oversight_events as oversight_events,
     get_kuvo_work_settings as settings_get, patch_kuvo_work_settings as settings_patch,
+    post_kuvo_projects_new as project_new, post_kuvo_work_asks_id as ask_answer,
 };
 use kuvo_server::{Access, JsonLine, Refusal, Registry, RouteReply};
 use serde_json::{Value, json};
@@ -48,6 +51,7 @@ pub struct Work {
     pub records: Records,
     home: PathBuf,
     bots: PathBuf,
+    list: crate::bots::Bots,
     sessions: LocalSessions,
     peers: Reader,
     setup: std::sync::Arc<dyn crate::bots::setup::Setup>,
@@ -60,12 +64,14 @@ impl Work {
         sessions: LocalSessions,
         peers: Reader,
         setup: std::sync::Arc<dyn crate::bots::setup::Setup>,
+        bots: crate::bots::Bots,
     ) -> Self {
         Self {
             settings,
             records: Records::new(&home.join("run")),
             home: home.to_owned(),
-            bots: home.join("bots"),
+            bots: bots.bots_folder().to_owned(),
+            list: bots,
             sessions,
             peers,
             setup,
@@ -140,6 +146,43 @@ impl Work {
                 let given = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
                 let changed = settings.change(&given).map_err(refused)?;
                 Ok(RouteReply::json::<200>(typed(changed)?))
+            }
+        });
+        let work = self.clone();
+        routes.register::<project_new::Spec, _, _>(Access::Any, move |call| {
+            let work = work.clone();
+            async move {
+                let given = serde_json::from_slice::<Value>(&call.request.body).ok();
+                let Some(Value::Object(given)) = given else {
+                    return Err(refused((400, "Send {name}, and git or clone.".into())));
+                };
+                let (settings, home) = (&work.settings, &work.home);
+                let made = match projects::make_project(&given, None, settings, home).await {
+                    Err((403, message)) => {
+                        let needs = json!({ "message": message, "needs": "projectsFolder" });
+                        return Err(Refusal::json(StatusCode::FORBIDDEN, needs));
+                    }
+                    made => made.map_err(refused)?,
+                };
+                let text = projects::made_words(&made, settings.account(), settings.here());
+                let answer = json!({ "project": made.project, "text": text });
+                Ok(RouteReply::json_as_kept::<201>(answer))
+            }
+        });
+        let work = self.clone();
+        routes.register::<ask_answer::Spec, _, _>(Access::Any, move |call| {
+            let work = work.clone();
+            async move {
+                let id = percent_encoding::percent_decode_str(call.param("id").unwrap_or_default())
+                    .decode_utf8_lossy()
+                    .into_owned();
+                let given = serde_json::from_slice::<Value>(&call.request.body).ok();
+                let given = given
+                    .and_then(|given| given.as_object().cloned())
+                    .unwrap_or_default();
+                let mut answered = work.answer_work(&id, &given).await.map_err(refused)?;
+                answered.as_object_mut().map(|said| said.shift_remove("at"));
+                Ok(RouteReply::json::<200>(typed(answered)?))
             }
         });
         let work = self.clone();

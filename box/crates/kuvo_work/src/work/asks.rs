@@ -42,7 +42,7 @@ pub fn project_place(name: &str, root: Option<&Path>) -> Option<PathBuf> {
 }
 
 impl Work {
-    fn kept_asks(&self) -> Vec<Value> {
+    pub(super) fn kept_asks(&self) -> Vec<Value> {
         let kept: Value = kuvo_store::files::text_of(&self.records.folder().join("asks.json"))
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();

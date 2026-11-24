@@ -11,6 +11,7 @@ use kuvo_protocol::routes::get_kuvo_projects;
 use kuvo_protocol::version::{FormatRefusalCode, UnsupportedFormatVersion};
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 
+pub use projects::{ChangeFailed, Unsupported, change_projects, read_projects};
 use trees::LinkedTrees;
 
 /// The features these routes answer whole (`projects` waits on its changes and events).
