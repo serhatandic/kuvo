@@ -329,8 +329,10 @@ impl Writer {
         let by = kuvo_wire::keys::encode(key);
         let now = Timestamp::now().as_millisecond();
         self.receive_offline(relay, &peer, &by, queue, now).await?;
-        if let Some(hand) = queue.get("hand")
-            && let Some(answer) = self.receive_hand(&by, hand.clone(), now).await?
+        if let Some(hand) = queue.get("evidenceHand").or_else(|| queue.get("hand"))
+            && let Some(answer) = self
+                .receive_hand(&by, hand.clone(), queue.get("evidenceHand").is_some(), now)
+                .await?
         {
             send(relay, peer.clone(), json!({"handed":answer}), now).await;
         }

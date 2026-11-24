@@ -84,6 +84,12 @@ pub(in crate::queue::items) struct Hand {
 pub(in crate::queue::items) struct Prepared {
     pub proof: String,
     pub payload: Value,
+    #[serde(
+        rename = "carriesEvidence",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub carries_evidence: bool,
 }
 
 impl Prepared {

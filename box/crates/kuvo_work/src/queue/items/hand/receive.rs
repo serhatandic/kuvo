@@ -12,6 +12,7 @@ impl Writer {
         &self,
         sender: &str,
         given: Value,
+        carries_evidence: bool,
         now: i64,
     ) -> Result<Option<Answer>, Error> {
         let Ok(hand) = serde_json::from_value::<Hand>(given.clone()) else {
@@ -36,17 +37,19 @@ impl Writer {
                 Some(proof) => Ok(prepared
                     .filter(|stored| stored.proof == *proof && stored.payload["to"] == to)
                     .map_or(Loaded::Ignore, |stored| {
-                        Loaded::Pending(address, stored.payload, true)
+                        Loaded::Pending(address, stored.payload, true, stored.carries_evidence)
                     })),
-                None => Ok(Loaded::Pending(address, given, false)),
+                None => Ok(Loaded::Pending(address, given, false, carries_evidence)),
             }
         })
         .await
         .map_err(io::Error::other)??;
-        let (address, incoming, released) = match loaded {
+        let (address, incoming, released, carries_evidence) = match loaded {
             Loaded::Seen => return Ok(Some(Answer::accepted(hand.id))),
             Loaded::Ignore => return Ok(None),
-            Loaded::Pending(address, incoming, released) => (address, incoming, released),
+            Loaded::Pending(address, incoming, released, evidence) => {
+                (address, incoming, released, evidence)
+            }
         };
 
         let Some(from) = incoming["from"].as_str().filter(|id| owner_id(id)) else {
@@ -109,6 +112,7 @@ impl Writer {
                     incoming,
                     address,
                     released,
+                    carries_evidence,
                     checkpointed,
                 },
                 now,
@@ -128,6 +132,7 @@ impl Writer {
             incoming,
             address,
             released,
+            carries_evidence,
             checkpointed,
         } = arrival;
         let id = &hand.id;
@@ -212,6 +217,34 @@ impl Writer {
                 ));
             }
         };
+        if carries_evidence {
+            let evidence = match serde_json::from_value(incoming["evidence"].clone()) {
+                Ok(evidence) => evidence,
+                Err(_) => {
+                    return Ok(Answer::refused(
+                        hand.id,
+                        "This computer could not read the Work Queue item's forwarded decisions.",
+                        true,
+                    ));
+                }
+            };
+            let run = self.store.root.parent().expect("Work Queue under run");
+            let setup = self.setup.queue_setup();
+            if kuvo_peers::moves::place_queue_evidence(
+                run,
+                setup.as_ref().map(|setup| setup.id.as_str()),
+                &item.id,
+                evidence,
+            )
+            .is_err()
+            {
+                return Ok(Answer::refused(
+                    hand.id,
+                    "This computer could not retain the Work Queue item's forwarded decisions.",
+                    true,
+                ));
+            }
+        }
         if checkpointed && !released {
             if let Some(prepared) = Prepared::read(&address)? {
                 return Ok(Answer::prepared(hand.id, prepared.proof));
@@ -220,6 +253,7 @@ impl Writer {
             Prepared {
                 proof: proof.clone(),
                 payload: incoming,
+                carries_evidence,
             }
             .save(&self.store, &address)?;
             return Ok(Answer::prepared(hand.id, proof));
@@ -361,7 +395,7 @@ impl Writer {
 enum Loaded {
     Seen,
     Ignore,
-    Pending(PathBuf, Value, bool),
+    Pending(PathBuf, Value, bool, bool),
 }
 
 struct Arrival {
@@ -372,6 +406,7 @@ struct Arrival {
     incoming: Value,
     address: PathBuf,
     released: bool,
+    carries_evidence: bool,
     checkpointed: bool,
 }
 

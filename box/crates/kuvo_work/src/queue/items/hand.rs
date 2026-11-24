@@ -239,6 +239,11 @@ impl Writer {
             })
             .await
             .map_err(io::Error::other)??;
+            if payload.get("evidenceHand").is_some()
+                && !view.advertises(&peer.key, "data.forward-evidence")
+            {
+                continue;
+            }
             let Some(mails) = kuvo_peers::work_queue_mails(payload, now) else {
                 self.return_hand(&item, &hand, "it's too big to send", now)
                     .await
@@ -428,5 +433,16 @@ fn payload(
     if !attached.is_empty() {
         hand["labels"] = json!(attached);
     }
-    Ok(json!({"hand":hand}))
+    let run = store.root.parent().expect("Work Queue under run");
+    let evidence = kuvo_peers::moves::pack_queue_evidence(
+        run,
+        setup.map(|setup| setup.id.as_str()),
+        &item.id,
+    )?;
+    if let Some(evidence) = evidence {
+        hand["evidence"] = json!(evidence);
+        Ok(json!({"evidenceHand":hand}))
+    } else {
+        Ok(json!({"hand":hand}))
+    }
 }

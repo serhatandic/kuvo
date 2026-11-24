@@ -1599,14 +1599,30 @@ test("a Work Queue handoff keeps its files and relays only one live item", { tim
   }
   line.close();
   const app = { "x-kuvo-from": "app" };
+  const contents = "A signed-off decision.\n".repeat(3500);
   const add = await main("POST", "kuvo/work-queue/items", {
     operation: "item-for-remote-handoff", owner: author.id, title: "Keep this with its attachment",
-    files: [{ name: "decision.txt", uri: "data:text/plain;base64," + Buffer.from("A signed-off decision.").toString("base64") }],
+    files: [{ name: "decision.txt", uri: "data:text/plain;base64," + Buffer.from(contents).toString("base64") }],
   }, app);
   assert.equal(add.status, 200, add.text);
   const item = add.json.item.id;
   const itemPath = "kuvo/work-queue/items/" + item;
   const number = await until(async () => (await main("GET", itemPath)).json?.item?.number, "The item never received a number.");
+  const source = path.join(studio.home, "run", "owned-data", "mutations");
+  const destination = path.join(lab.home, "run", "owned-data", "mutations");
+  const evidence = (operation, id) => {
+    const file = createHash("sha256").update(JSON.stringify(["scoped-forward", setup.json.setup, operation])).digest("base64url") + ".json";
+    const decision = {
+      formatVersion: 1, digest: "d".repeat(43), at: 1700000000000,
+      forward: { kind: "forwardedQueueDecisions", setup: setup.json.setup, operation, owner: setup.json.you.key,
+        submitter: { kind: "computer" }, area: "queue", record: id, ref: { kind: "queueItems", id, queue: author.id } },
+      answer: { status: 200, value: { handled: true } },
+    };
+    write(path.join(source, file), JSON.stringify(decision));
+    return { file, decision };
+  };
+  const carried = evidence("handoff-kept-decision", item);
+  const unrelated = evidence("handoff-other-decision", "wqi_abcdefghijklmnopqrst");
   const args = { item, to: recipient.id };
   studio.engine.messages.set(author.id, [{ id: "msg_remote_hand", type: "assistant", content: [{ type: "tool",
     name: "kuvo-browser_queue_hand", state: { status: "running", input: args } }] }]);
@@ -1624,7 +1640,9 @@ test("a Work Queue handoff keeps its files and relays only one live item", { tim
   assert.equal(arrived.owner, recipient.id);
   const files = await member("GET", itemPath + "/files/decision.txt");
   assert.equal(files.status, 200, files.text);
-  assert.equal(files.text, "A signed-off decision.");
+  assert.equal(files.text, contents);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(destination, carried.file), "utf8")), carried.decision);
+  assert.equal(existsSync(path.join(destination, unrelated.file)), false);
   const handed = await until(async () => {
     const listed = await main("GET", "kuvo/work-queue?owner=" + author.id + "&glance=1");
     const rows = listed.json?.items.filter(row => row.id === item) ?? [];
