@@ -240,6 +240,7 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
         catch (error) {
           if ((error as { status?: number }).status !== 404) throw error;
           if ("was" in given) throw new Stale();
+          return undefined;
         }
       }, signal);
     } catch (error) {
