@@ -362,9 +362,13 @@ test("an unloaded model catalog leaves session readiness and the picker start un
   const { computer } = await bench(t);
   const here = await computer("unloaded-model-catalog");
   const model = reference("local", "one");
-  here.engine.sessions.push(session(here, "ses_loading", model), session(here, "ses_default"));
+  const unlisted = reference("own-project", "private");
+  const signingIn = reference("example-remote", "listedSoon");
+  here.engine.sessions.push(session(here, "ses_loading", model), session(here, "ses_default"),
+    session(here, "ses_projectOnly", unlisted), session(here, "ses_providerLoading", signingIn));
   const record = await here.start().ready();
-  const readiness = () => request(record, "GET", "kuvo/sessions/models?sessions=ses_loading,ses_default,ses_missing");
+  const readiness = () => request(record, "GET",
+    "kuvo/sessions/models?sessions=ses_loading,ses_default,ses_missing,ses_projectOnly,ses_providerLoading");
   const offered = () => request(record, "GET", "kuvo/models/offered");
   await until(() => here.engine.subscribers() > 0, "the resident to follow the engine catalog");
   const first = await readiness();
@@ -373,7 +377,9 @@ test("an unloaded model catalog leaves session readiness and the picker start un
   const picker = await offered();
   assert.deepEqual(picker.json.known, { engine: false, agents: false });
   assert.equal(Object.hasOwn(picker.json, "starting"), false);
-  here.engine.providers.push({ id: "local" });
+  assert.equal((await request(record, "POST", "kuvo/models/offered", {})).status, 405);
+  here.engine.providers.push({ id: "local" }, { id: signingIn.providerID });
+  here.engine.integrations.push({ id: signingIn.providerID, name: "Example", connections: [{ id: "signed-in" }], methods: [{ type: "oauth" }] });
   here.engine.emit({ type: "provider.updated", data: {} });
   assert.deepEqual((await readiness()).json.sessions, {});
   here.engine.models.push({ ...model, name: "Ready" });
@@ -395,22 +401,24 @@ test("session readiness distinguishes sign-in, project credentials, and a model 
   const here = await computer("engine-model-credentials");
   const openai = reference("openai", "main");
   const copilot = reference("github-copilot", "base");
+  const grok = reference("xai", "grok-main");
   const free = reference("opencode", "free");
   const zenPaid = reference("opencode", "paid");
   const local = reference("ollama", "default");
   const disabled = reference("ollama", "previous");
   here.engine.providers.push({ id: "opencode" });
   here.engine.models.push(
-    { ...openai, name: "Main" }, { ...copilot, name: "Base" }, { ...free, name: "Free" },
+    { ...openai, name: "Main" }, { ...copilot, name: "Base" }, { ...grok, name: "Grok 4.7" }, { ...free, name: "Free" },
     { ...local, name: "Local" }, { ...disabled, name: "Previous", enabled: false },
   );
   here.engine.integrations.push(
     { id: "openai", name: "OpenAI", connections: [], methods: [{ type: "key" }] },
     { id: "github-copilot", name: "GitHub Copilot", connections: [], methods: [{ type: "oauth", id: "device" }] },
+    { id: "xai", name: "xAI", connections: [], methods: [{ type: "key" }, { type: "oauth", id: "device" }] },
     { id: "opencode", name: "OpenCode Zen", connections: [], methods: [{ type: "key" }, { type: "oauth", id: "device" }] },
     { id: "ollama", name: "Ollama", methods: [] },
   );
-  const entries = [[openai, "key"], [copilot, "signIn"], [free, "free"], [zenPaid, "paid"],
+  const entries = [[openai, "key"], [copilot, "signIn"], [grok, "grokKey"], [free, "free"], [zenPaid, "paid"],
     [local, "local"], [disabled, "disabled"]];
   here.engine.sessions.push(...entries.map(([model, id]) => session(here, "ses_" + id, model)));
   const record = await here.start().ready();
@@ -432,6 +440,8 @@ test("session readiness distinguishes sign-in, project credentials, and a model 
     refusal: "Base needs a sign-in to GitHub Copilot: sign in, or choose another model.",
     action: { do: "signIn", label: "Sign In", help: "Sign in to GitHub Copilot" },
   });
+  assert.equal(start.ses_grokKey.refusal, "Grok 4.7 needs an xAI key: add one, or choose another model (with a SuperGrok plan, one under Grok).");
+  assert.equal(start.ses_grokKey.action.do, "addKey");
   assert.equal(start.ses_paid.missing, "signIn");
   assert.deepEqual(start.ses_free, { model: free, name: "Free", runs: true });
   assert.deepEqual(start.ses_local, { model: local, name: "Local", runs: true });

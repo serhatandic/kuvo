@@ -1136,6 +1136,50 @@ test("an idle inbox arrival advances after the grace period unless paused", { ti
   assert.deepEqual(here.engine.interrupted, [{ session: paused, resume: false }]);
 });
 
+test("the global queue line starts with a snapshot and reports holds and resumes", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("global-queue-line");
+  const session = "ses_queueLine";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  here.engine.inboxes.set(session, [{ id: "msg_later", type: "user", delivery: "queue", payload: { text: "Later." } }]);
+  const record = await here.start().ready();
+  const line = await openLine(record, "", "kuvo/sessions/queues/events");
+  t.after(() => line.close());
+  assert.equal(line.status, 200);
+  const frames = line.frames();
+  assert.deepEqual((await frames.next()).value, { queues: {} });
+  const route = `kuvo/sessions/${session}/queue`;
+  assert.equal((await request(record, "POST", route + "/hold")).status, 200);
+  assert.deepEqual((await frames.next()).value, { queues: { [session]: { paused: true, held: [] } } });
+  assert.equal((await request(record, "POST", route + "/resume")).status, 200);
+  assert.deepEqual((await frames.next()).value, { queues: {} });
+});
+
+test("a quick Resume supersedes the external Stop before its delayed hold", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("resume-after-external-stop");
+  const session = "ses_resumeAtStop";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.inboxes.set(session, [
+    { id: "msg_first", type: "user", delivery: "queue", payload: { text: "First." } },
+    { id: "msg_second", type: "user", delivery: "queue", payload: { text: "Second." } },
+  ]);
+  here.engine.running.add(session);
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the Stop");
+  here.engine.running.delete(session);
+  here.engine.emit({ type: "session.execution.interrupted", data: { sessionID: session, reason: "user" } });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const route = `kuvo/sessions/${session}/queue`;
+  const resumed = await request(record, "POST", route + "/resume");
+  assert.deepEqual(resumed.json, { paused: false, held: [] });
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.deepEqual((await request(record, "GET", route)).json, resumed.json);
+  assert.deepEqual(here.engine.inboxes.get(session).map(row => row.delivery), ["steer", "queue"]);
+  assert.equal(here.engine.asked.some(row => row.method === "PATCH" && row.json?.delivery === "queue"), false);
+});
+
 // Deterministic provider errors for side-by-side TS and Rust comparison. The
 // live queue scenario uses OpenCode Go separately.
 test("a usage limit survives an inbox error and a manual Resume survives restart", { timeout: 45000 }, async t => {
