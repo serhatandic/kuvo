@@ -113,6 +113,25 @@ fn keep_allowed(
     changed
 }
 
+/// A folder moved whole. Windows refuses while anything has a file in it open (a listing reading
+/// it a moment): tried again for up to two seconds there.
+async fn move_folder(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(error)
+                if cfg!(windows)
+                    && error.kind() == std::io::ErrorKind::PermissionDenied
+                    && tries < 40 =>
+            {
+                tries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            done => return done,
+        }
+    }
+}
+
 /// `fields` of a bot (in `folder`) changed now, each unless it was changed later already.
 fn note_edited(folder: &Path, fields: &[&str]) {
     if fields.is_empty() {
@@ -148,6 +167,11 @@ fn note_edited(folder: &Path, fields: &[&str]) {
 impl Bots {
     /// `PATCH kuvo/bots/<id>`: a bot here changed as Edit Bot changes it.
     pub(super) async fn change(&self, id: &str, given: Value) -> Answer {
+        let Some(session) = BotHere::read(&self.inner.bots, id).map(|here| here.session) else {
+            return no(404, GONE);
+        };
+        // (One at a time with what else tells it or writes in its folder: a retell as the engine starts.)
+        let _one = self.one_at_a_time(&session).await;
         let Some(mut here) = BotHere::read(&self.inner.bots, id) else {
             return no(404, GONE);
         };
@@ -466,13 +490,18 @@ impl Bots {
     /// `DELETE kuvo/bots/<id>`: a bot here goes, its folder (its memory, wake-ups and what it
     /// made) to Kuvo Code's trash here, then its conversation.
     pub(super) async fn delete(&self, id: &str) -> Answer {
+        let Some(session) = BotHere::read(&self.inner.bots, id).map(|here| here.session) else {
+            return no(404, GONE);
+        };
+        // (One at a time with what else tells it or writes in its folder: a retell as the engine starts.)
+        let _one = self.one_at_a_time(&session).await;
         let Some(here) = BotHere::read(&self.inner.bots, id) else {
             return no(404, GONE);
         };
         if here.moving() {
             return no(409, MOVING);
         }
-        let trashed = (|| {
+        let trash = (|| {
             if !self.inner.is_mac {
                 self.note_deleted(id)?;
             }
@@ -483,11 +512,13 @@ impl Bots {
                 .join("trash")
                 .join(format!("{when}-{}", std::process::id()));
             std::fs::create_dir_all(&trash)?;
-            let trashed = trash.join(id);
-            std::fs::rename(&here.folder, &trashed)?;
-            Ok::<_, std::io::Error>(trashed)
+            Ok::<_, std::io::Error>(trash.join(id))
         })();
-        if let Err(error) = trashed {
+        let moved = match trash {
+            Ok(trashed) => move_folder(&here.folder, &trashed).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = moved {
             return no(503, format!("The bot couldn’t be deleted: {error}"));
         }
         // All it has elsewhere, noted as left before any of it is tried: a box that stops meanwhile
