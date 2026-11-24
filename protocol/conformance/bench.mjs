@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { relayLeaseStandIn } from "../../box/bridge-tests/relay-lease-stand-in.js";
-import { boxBinary, boxCommand, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { standInEngine } from "./engine.mjs";
 
 export async function bench(t) {
@@ -27,6 +27,7 @@ export async function bench(t) {
       const engine = await standInEngine(folder, env);
       engines.push(engine);
       // This fixture seeds records in the current layout before either resident starts.
+      privateHome(home);
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       write(path.join(home, "run", "engine.json"), JSON.stringify(engine.record));
       write(path.join(home, "run", "link.json"), JSON.stringify({ phones: [], name }));
