@@ -21,7 +21,7 @@ use tokio::{
 };
 
 use crate::{
-    directory::{ComputerKey, RecordScope},
+    directory::ComputerKey,
     relay::{RelayEvent, RelayHandle},
     setup_lists::Reader,
 };
@@ -169,13 +169,8 @@ impl Handle {
         sessions
             .iter()
             .filter_map(|&id| {
-                let record = (RecordScope::Session, id.to_owned());
-                let key = ownership
-                    .journal
-                    .get(&record)
-                    .map(|key| *ownership.replacements.get(key).unwrap_or(key))
-                    .or_else(|| view.moved(id, now).and_then(|moved| decode_exact(&moved)))?;
-                Some((record.1, key))
+                let key = view.moved_with(id, now, &ownership)?;
+                Some((id.to_owned(), decode_exact(&key)?))
             })
             .collect()
     }
