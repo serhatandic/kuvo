@@ -14,6 +14,7 @@ import { gzipSync } from "node:zlib";
 
 import { boxBinary, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { sessionOf } from "./engine.mjs";
 import "./update-helper.mjs";
 
 const { peerTransferMs, keeperTrialMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
@@ -385,6 +386,12 @@ test("the returning bridge stays out of work placement during its Rust trial", {
   }
   write(path.join(member.home, previous, "boxes.json"), bridge);
   write(trial, previous + "/bin");
+  const sender = "ses_confirmedWork", recipient = "ses_returningWork";
+  for (const [computer, id] of [[main, sender], [member, recipient]]) {
+    const directory = path.join(computer.home, "chats");
+    fs.mkdirSync(directory, { recursive: true });
+    computer.engine.sessions.push(sessionOf({ id, title: id, directory }));
+  }
   const updateEnv = { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
   const [observer, returning] = await Promise.all([main.start(binary, updateEnv).ready(), member.start(binary, updateEnv).ready()]);
   const peerKey = (await request(returning, "GET", "kuvo/setup")).json.you.key;
@@ -398,6 +405,35 @@ test("the returning bridge stays out of work placement during its Rust trial", {
   const row = async () => (await runsOn(observer)).computers.find(item => item.computer.id === peerKey);
   const waiting = await until(row, "the returning computer should have a placement row");
   assert.deepEqual([waiting.away, waiting.updating], [true, true]);
+  const mainKey = (await request(observer, "GET", "kuvo/setup")).json.you.key;
+  await until(() => {
+    try { return readJSON(path.join(member.home, "run/peer-agents.json"))[mainKey]?.features?.includes("moves.two-computers"); }
+    catch { return false; }
+  }, "the returning resident should know the confirmed main");
+  const pending = [];
+  for (const [computer, local, remote, here, there] of [
+    [main, sender, recipient, mainKey, peerKey], [member, recipient, sender, peerKey, mainKey],
+  ]) {
+    const outbox = path.join(computer.home, "run/outbox/sending");
+    const remoteFile = path.join(outbox, "ltr_trialWork.json");
+    const controlFile = path.join(outbox, "ltr_localWork.json");
+    const letter = (to, peer, words, at) => ({ to, peer, text: words, at, wait: false,
+      note: { from: "Your computers", words, delivery: "queue" } });
+    write(remoteFile, JSON.stringify(letter(remote, there, "Work after confirmation", Date.now() - 1000)));
+    write(controlFile, JSON.stringify(letter(local, here, "Local work", Date.now())));
+    await until(() => !fs.existsSync(controlFile), "the local letter should finish a real outbox round");
+    assert.equal(readJSON(remoteFile).sentTo, undefined, "the remote letter should not have been attempted");
+    pending.push(remoteFile);
+  }
+  for (const [resident, id, to] of [[observer, sender, peerKey], [returning, recipient, mainKey]]) {
+    await until(async () => (await request(resident, "GET", `api/session/${id}`)).status === 200,
+      "the saved conversation should be readable");
+    const direct = await request(resident, "POST", "kuvo/moves", { kind: "chat", id, to, receipt: true });
+    assert.equal(direct.status, 409, direct.text);
+    const places = await request(resident, "GET", `kuvo/moves/places?kind=chat&id=${id}`);
+    assert.equal(places.status, 200, places.text);
+    assert.equal(places.json.places.find(place => place.key === to)?.ok, false);
+  }
 
   // The keeper owns confirmation. Publish its saved result and let the resident observe it.
   fs.unlinkSync(trial);
@@ -406,6 +442,14 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     const ready = await row();
     return ready && !ready.away && !ready.updating;
   }, "the confirmed Rust resident should be available for work");
+  await until(() => pending.every(file => !fs.existsSync(file)), "both saved remote letters should settle after confirmation");
+  for (const [computer, session] of [[main, sender], [member, recipient]]) {
+    await until(() => computer.engine.messages.get(session)?.some(message => message.text?.includes("Work after confirmation")),
+      "the remote work should arrive in the conversation");
+    assert.equal(computer.engine.messages.get(session).filter(message => message.text?.includes("Work after confirmation")).length, 1);
+  }
+  const direct = await request(observer, "POST", "kuvo/moves", { kind: "chat", id: sender, to: peerKey, receipt: true });
+  assert.equal(direct.status, 202, direct.text);
 });
 
 test("the main can ask a reachable member to retry its failed fleet download", { timeout: 60000 }, async t => {
