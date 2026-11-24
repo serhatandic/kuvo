@@ -581,7 +581,10 @@ test("work queue views merge live and deleted rows by their owning computer", { 
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
   const items = "kuvo/work-queue/items";
-  const added = await member("POST", items, { operation: "told-from-lab", title: "Lab prototype" }, app);
+  const added = await member("POST", items, {
+    operation: "told-from-lab", title: "Lab prototype", body: "The keeper's full description.",
+    files: [{ name: "proof.txt", uri: "data:text/plain;base64,Ynl0ZXM=" }],
+  }, app);
   assert.equal(added.status, 200, added.text);
   const id = added.json.item.id;
   const route = "kuvo/work-queue?owner=all&glance=1&counts=1";
@@ -599,6 +602,13 @@ test("work queue views merge live and deleted rows by their owning computer", { 
   const copy = JSON.parse(readFileSync(path.join(studio.home, "run", "work-queue", "peers", `${seen.item.computer.key}.json`), "utf8"));
   assert.equal(copy.formatVersion, 1);
   assert.equal(copy.items.find(item => item.id === id).title, "Lab prototype");
+  const detail = await main("GET", `${items}/${id}`, undefined, app);
+  assert.equal(detail.status, 200, detail.text);
+  assert.equal(detail.json.item.told, false);
+  assert.equal(detail.json.item.body, "The keeper's full description.");
+  const file = await main("GET", `${items}/${id}/files/proof.txt`, undefined, app);
+  assert.equal(file.status, 200, file.text);
+  assert.equal(file.text, "bytes");
   const deleted = await member("DELETE", `${items}/${id}`, undefined, app);
   assert.equal(deleted.status, 200, deleted.text);
   await until(async () => {

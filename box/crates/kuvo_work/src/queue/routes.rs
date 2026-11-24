@@ -1,8 +1,7 @@
 use super::{
-    assignees::Assignees,
-    attachments,
     github::Seen,
-    items, labels, mentions, numbers,
+    items, labels, numbers,
+    peer_reads::PeerReads,
     refs::References,
     sessions::Sessions,
     store::{Error, Store, owner_id},
@@ -12,7 +11,7 @@ use super::{
 use http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
 use kuvo_engine::LocalSessions;
 use kuvo_os::watch::{Options, Subscription, WatchHub};
-use kuvo_peers::{relay::RelayHandle, setup_lists::Reader};
+use kuvo_peers::{memory_read::Handle as MemoryRead, relay::RelayHandle, setup_lists::Reader};
 use kuvo_protocol::{
     JsonStatus,
     routes::{
@@ -36,7 +35,8 @@ pub async fn register(
     sessions: LocalSessions,
     setup: SetupHandle,
     relay: Option<RelayHandle>,
-) -> Result<items::Runtime, Box<dyn std::error::Error>> {
+    memory: MemoryRead,
+) -> Result<Runtime, Box<dyn std::error::Error>> {
     let store = Store::new(home);
     let startup = store.clone();
     tokio::task::spawn_blocking(move || {
@@ -63,6 +63,13 @@ pub async fn register(
     });
     follow(registry, lists.clone());
 
+    let reads = PeerReads {
+        store: store.clone(),
+        refs: references.clone(),
+        peers: peers.clone(),
+        sessions: sessions.clone(),
+        transport: memory,
+    };
     labels::register(registry, store.clone(), setup.clone());
     let runtime = items::register(
         registry,
@@ -112,59 +119,24 @@ pub async fn register(
         }
     });
 
-    let parser = references.clone();
-    let here = store.clone();
+    let here = reads.clone();
     registry.register::<get_kuvo_work_queue_items_item::Spec, _, _>(Access::Any, move |call| {
-        let catalog = sessions.clone();
-        let store = here.clone();
-        let parser = parser.clone();
+        let here = here.clone();
         let name = decode(call.param("item"));
-        async move {
-            let answer = blocking(move || {
-                let mut all = store.items()?;
-                mentions::recover(&parser.mentions, &mut all);
-                let item = parser
-                    .parse(&name)
-                    .and_then(|reference| parser.find(&all, &reference));
-                let seen = Seen::read(&store)?;
-                Ok(item.map_or(Value::Null, |item| {
-                    view::detail(
-                        item,
-                        &all,
-                        &parser,
-                        &seen,
-                        &Sessions::read(catalog.latest_record()),
-                        &Assignees::read(&store),
-                    )
-                }))
-            })
-            .await?;
-            if answer.is_null() {
-                return Err(Refusal::new(StatusCode::NOT_FOUND, "There's no such item."));
-            }
-            typed(answer)
-        }
+        let client = work_queue_client(&call.request.caller);
+        async move { typed(here.item(name, client).await?) }
     });
 
+    let here = reads.clone();
     registry.register::<get_kuvo_work_queue_items_item_files_name::Spec, _, _>(
         Access::Any,
         move |call| {
-            let store = store.clone();
-            let parser = references.clone();
+            let here = here.clone();
             let reference = decode(call.param("item"));
             let name = decode(call.param("name"));
+            let client = work_queue_client(&call.request.caller);
             async move {
-                let file = blocking(move || {
-                    let all = store.items()?;
-                    let item = parser
-                        .parse(&reference)
-                        .and_then(|reference| parser.find(&all, &reference));
-                    Ok(item.and_then(|item| attachments::read(&store, item, &name)))
-                })
-                .await?;
-                let Some(file) = file else {
-                    return Err(Refusal::new(StatusCode::NOT_FOUND, "There's no such file."));
-                };
+                let file = here.file(reference, name, client).await?;
                 let mut answer = RouteReply::bytes::<200>("application/octet-stream", file.bytes);
                 answer.headers_mut().insert(
                     CONTENT_TYPE,
@@ -174,7 +146,21 @@ pub async fn register(
             }
         },
     );
-    Ok(runtime)
+    Ok(Runtime {
+        _writer: runtime,
+        reads,
+    })
+}
+
+pub struct Runtime {
+    _writer: items::Runtime,
+    reads: PeerReads,
+}
+
+impl Runtime {
+    pub fn peer_reads(&self) -> PeerReads {
+        self.reads.clone()
+    }
 }
 
 #[derive(Clone)]

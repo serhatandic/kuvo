@@ -9,6 +9,7 @@ mod mentions;
 
 mod migration;
 mod numbers;
+mod peer_reads;
 mod refs;
 
 mod routes;
@@ -18,5 +19,4 @@ mod store;
 mod told;
 mod view;
 
-pub use items::Runtime;
-pub use routes::register;
+pub use routes::{Runtime, register};

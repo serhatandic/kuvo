@@ -8,7 +8,9 @@ status, order and fields, reads and writes manual relations, previews Markdown
 references, and stages client attachments with stable anchors and collision-safe
 names. Inline picture markers can be removed separately from their files. The
 peer snapshot capability exchanges combined views, retained deletions and
-reference chips. The full client feature is still gated on the remaining routes.
+reference chips. Whole items and attachments can be read quietly from their
+keeper through the same transport as setup search. The full client feature is
+still gated on the remaining routes.
 
 Case numbers follow declaration order in each TypeScript file. Partial means a
 conformance scenario exercises part of the TypeScript case. Open cases are
@@ -18,10 +20,10 @@ assigned to the indicated row for the rest of the port.
 |---|---:|---|
 | [work-queue](../../box/bridge-tests/work-queue.test.js) | 1, 5, 10, 16, 23, 25, 28, 57 | Partial, 5.2. Creation retry, summary counts and order, local delete and restore, label writes, saved attachment download and a view change written by another process. |
 | | 2–4, 6–9, 11–15, 17–22, 24, 26–27, 29–56, 58–60 | Open, 5.2. Agent operations, live session variations, edits, imports, staging, recovery and handoff. |
-| [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1, 4 | Partial, 5.2. Authenticated snapshots and acknowledgements carry remote rows and chips through the relay and retain the snapshot on disk. Quiet whole-item reads, mixed peers, retry timing and multipart scenarios remain open. |
+| [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1, 4 | Partial, 5.2. Authenticated snapshots and acknowledgements carry remote rows and chips through the relay, retain the snapshot on disk, and the shared memory transport reads the keeper's full item and file. Mixed peers, retry timing, multipart scenarios and writes through another computer remain open. |
 | | 2–3, 5–32 | Open, 5.2 and 2.4. Numbering and leases, further projections, forwarding, handoff and deduplication. Retain retired ranked numbering checks in TS. |
 | [work-queue-two-boxes](../../box/bridge-tests/work-queue-two-boxes.test.js) | 1 | Partial, 5.2. A member spends an ordinary block from the main after it goes away and the main's combined view shows the member's rows. Handoff remains open. |
-| | 2 | Partial, 5.2. A delete and restore on the keeper both reach the other computer. Reading and initiating the changes through that computer remain open. |
+| | 2 | Partial, 5.2. A delete and restore on the keeper both reach the other computer, which can also read the full item and its file. Initiating the changes through that computer remains open. |
 | [work-queue-statuses](../../box/bridge-tests/work-queue-statuses.test.js) | 1, 3, 9–10, 13–15 | Partial, 5.2. Local migration, retry, creation, search, one filter, label saves and a local move between statuses. Remaining edit, filter and view variants need scenarios. |
 | | 2, 4–8, 11–12, 16 | Open, 5.2. Settling active work after migration, writer locks and recovery, reassignment to a bot queue, action limits and agent tools. |
 | [work-queue-github](../../box/bridge-tests/work-queue-github.test.js) | 2, 9 | Partial, 5.2. The saved closure changes the projection on a glance and preserves the item bytes. Freshness, reconnect and reopening need the signed-in reader. |
@@ -61,7 +63,7 @@ checks the initial migration and future-format refusal through a real resident.
 | [Backup coverage](rust-backups-coverage.md) held queue records, replay fences and capture during handoff | Open for 5.2 live item claims, review writes, review receipts and handoff serialization. Backup bytes and capture are tracked in 2.5. |
 | [Move coverage](rust-moves-coverage.md) queue placement, handoff and attachment revisions | Open, 5.2 with 2.4. Preserve ownership evidence and original queue item and file placement. |
 
-Open work in 5.2 includes the quiet owner-read transport and remaining peer-view cases,
+Open work in 5.2 includes the remaining peer-view and owner-read cases,
 forwarded writes and receipts, offline merge and handoff, import claims and merge
 reservations, agent and forwarded attachments, mention binding after number grants and owner
 changes, bot reassignment and remaining status and order cases, live GitHub reads
