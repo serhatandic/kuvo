@@ -2630,14 +2630,17 @@ test("a letter waits until the recipient is told of its fresh sender", {
   await until(async () => (await request(target, "GET", "api/session/" + recipient)).status === 200,
     "The destination's engine did not become ready");
   const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
-  const sentBefore = new Map(), sourceAddress = Buffer.from(main.address, "base64url");
+  const sentBefore = new Map(), sent = new Set(), sourceAddress = Buffer.from(main.address, "base64url");
   const sourceKey = Buffer.from(main.key, "base64url"), secret = Buffer.alloc(32, 2);
   t.after(relay.intercept(sourceAddress, Buffer.from(member.address, "base64url"), packet => {
     if (packet.payload[0] !== Frame.mail) return false;
     const { payload } = openOneWay(packet.payload.subarray(5), secret, sourceKey);
     const mail = JSON.parse(payload);
     for (const agent of mail.agents?.list ?? []) sentBefore.get(agent.session)?.push("sender");
-    if (mail.letter) sentBefore.get(mail.letter.from)?.push("letter");
+    if (mail.letter) {
+      sent.add(mail.letter.id);
+      sentBefore.get(mail.letter.from)?.push("letter");
+    }
     return false;
   }));
   // The second resident starts with a saved list that lacks its newest chat.
@@ -2649,6 +2652,7 @@ test("a letter waits until the recipient is told of its fresh sender", {
     const entered = Promise.withResolvers(), release = Promise.withResolvers();
     t.after(() => release.resolve());
     here.engine.holdWholeList = { entered: entered.resolve, finish: release.promise };
+    if (trial === 2) here.engine.refuseLookup = sender;
     const words = `Can you check build ${trial}?`;
     write(path.join(here.home, "run/outbox/sending", id + ".json"), JSON.stringify({
       from: sender, to: recipient, text: words, peer: member.key, wait: false, at: Date.now(),
@@ -2656,10 +2660,15 @@ test("a letter waits until the recipient is told of its fresh sender", {
     const source = here.start();
     await source.ready();
     await entered.promise;
-    // The outbox takes a round while the engine's latest list is held.
-    await new Promise(resolve => setTimeout(resolve, 3500));
-    assert.deepEqual(names, []);
+    // A later letter that needs no introduction observes the outbox round.
+    const round = `ltr_freshRound${trial}`;
+    write(path.join(here.home, "run/outbox/sending", round + ".json"), JSON.stringify({
+      to: recipient, text: "A message with no sender.", peer: member.key, wait: false, at: Date.now(),
+    }));
+    await until(() => sent.has(round), "The outbox did not run while the engine list was held", 18000);
+    assert.deepEqual(names, [], `Sender ${trial} must wait for the list`);
     here.engine.holdWholeList = null;
+    here.engine.refuseLookup = null;
     release.resolve();
     await until(() => names.includes("letter"), "The letter did not follow the sender announcement", 18000);
     assert.equal(names[0], "sender");

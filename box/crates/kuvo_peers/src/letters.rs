@@ -12,7 +12,7 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use kuvo_engine::{Engine, SessionMove};
+use kuvo_engine::{Engine, MoveEngineError, SessionMove};
 use kuvo_store::{
     files,
     locks::{OnBusy, StaleLock},
@@ -89,7 +89,7 @@ struct Letters {
 
 struct Introduction {
     since: Instant,
-    listed: Option<bool>,
+    wait_for_list: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -286,14 +286,14 @@ impl Letters {
             .entry(pending.id.clone())
             .or_insert_with(|| Introduction {
                 since: Instant::now(),
-                listed: None,
+                wait_for_list: None,
             });
         if introduction.since.elapsed() >= INTRODUCING_FOR {
             return true;
         }
         // An older list can omit a newly created root while the engine has
         // it already. Check once before treating a missing name as unknown.
-        if introduction.listed.is_none() {
+        if introduction.wait_for_list.is_none() {
             let fresh = time::timeout(Duration::from_secs(10), async {
                 self.engine.session_move().await?.lookup(sender).await
             })
@@ -308,15 +308,30 @@ impl Letters {
             {
                 return true;
             }
-            let now = self.reader.now();
-            introduction.listed = Some(matches!(fresh, Ok(Ok(Some(info))) if !archived(&info)
-                && info["parentID"].is_null()
-                && info.pointer("/metadata/kuvo/seat").is_none_or(Value::is_null)
-                && info["title"].as_str().is_some_and(|title| !title.trim().is_empty())
-                && info.pointer("/time/created").and_then(Value::as_i64)
-                    .is_some_and(|created| now.saturating_sub(created) < INTRODUCING_FOR.as_millis() as i64)));
+            let now = self.reader.now().max(0) as u64;
+            let recent = |at| now.saturating_sub(at) < INTRODUCING_FOR.as_millis() as u64;
+            introduction.wait_for_list = Some(match fresh {
+                Ok(Ok(Some(info))) => {
+                    !archived(&info)
+                        && info["parentID"].is_null()
+                        && info
+                            .pointer("/metadata/kuvo/seat")
+                            .is_none_or(Value::is_null)
+                        && info["title"]
+                            .as_str()
+                            .is_some_and(|title| !title.trim().is_empty())
+                        && info
+                            .pointer("/time/created")
+                            .and_then(Value::as_u64)
+                            .is_some_and(recent)
+                }
+                Ok(Ok(None) | Err(MoveEngineError::InvalidTree)) => false,
+                // The engine may still be opening its session list. An error
+                // doesn't establish that a newly queued message has no sender.
+                _ => pending.letter.at.is_some_and(recent),
+            });
         }
-        sent == Some(false) && introduction.listed == Some(false)
+        sent == Some(false) && introduction.wait_for_list == Some(false)
     }
 
     fn recover_replies(&mut self, view: &View, now: u64) -> io::Result<()> {
