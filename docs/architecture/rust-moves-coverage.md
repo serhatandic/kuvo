@@ -50,7 +50,7 @@ for addressed work and receipt lookup.
 | Note addresses | Both residents learn session addresses from accepted notes and move announcements, keep the newer address across a restart, and send a pending note there when the original announcement expires. A redirect from the authenticated recipient is durable. A different computer's redirect is ignored. |
 | Older letter destinations | Both residents allow a lead to write to an unlisted conversation it started and refuse another conversation's letter. Listed conversations and recent arrivals still receive letters. |
 | Tool that stopped waiting | Both residents deliver an ordinary letter without the wait, cancel an unsent transcript request, and deliver a reply that was left behind to the local conversation. Replaying a delivered letter starts no second turn, and an unlisted sender hears that it cannot receive a reply. |
-| Transcript read | Both residents retry a temporarily unavailable page, return excerpts to the waiting tool and skip an undone passage. Only the lead can read its archived work. The read submits no prompt. Rust uses the shared 3.2 transcript reader. |
+| Transcript read | Both residents retry a temporarily unavailable page, return excerpts to the waiting tool and skip an undone passage. Only the lead can read its archived work. The read submits no prompt. Rust uses the shared 3.2 reader and returns authenticated replies while its agent list is unavailable. |
 | Late answer and notes | A saved answer, a local conversation's reply and two queued notes wait while the receiver is held. After the switch, the new owner accepts them once with their original attribution. A transcript left by an abandoned read is discarded. A separate transfer accepts a note on the new owner while the original awaits cleanup. |
 | Refused letter | Both residents ignore a refusal from another computer. They save the owner’s refusal while the sender is held, then deliver it once as a queued note after a resident restart and release of the hold. The archived recipient is untouched. |
 | Managed files | Both residents refuse missing and export-only attachments before switching. The destination keeps the exact bytes, verifies the file receipt, rebases typed root and child references and a held prompt while preserving a quotation, and opens the file after its own restart and loss of the original file. |
@@ -120,10 +120,18 @@ both residents. That production build passed five focused checks on native Windo
 six each on WSL2 GNU and static Linux musl. These covered wake-up holds and the return move,
 queue admission, letter replay and attachment placement.
 
-The expanded macOS TypeScript area passed 58 applicable scenarios. WSL2 GNU passed 59
-applicable Rust scenarios before integration with 3.2c. Focused checks on the integrated
-engine cover transcript mail and submission receipts after a move. The pinned OpenCode proof
-passed once on each implementation with disposable residents.
+After integration with 3.2c, macOS TypeScript passed all 59 applicable move scenarios and
+WSL2 GNU passed all 61 applicable Rust scenarios. The TypeScript owner-mutation reference
+passed six focused cases, and the Rust relay checked minute-based retries. Native Windows and
+static Linux musl each passed the three focused scenarios for receipt indexing after restart,
+preserving the issuing computer, and reading a transcript. The pinned OpenCode proof passed
+once on each implementation with disposable residents.
+
+The macOS Rust move area passed 61 of 62 before the final transcript fix. Holding the agent
+list reproduced the remaining failure. The corrected transcript and sender-order scenarios
+passed on macOS and WSL2 GNU. The final side-by-side run found no differences in the move
+requests or the persisted move, outbox and peer reach files. The full comparison still reports
+unrelated bootstrap and home files.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
