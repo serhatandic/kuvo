@@ -2,7 +2,7 @@
 //! driver, after it verifies the manifest and the move's ownership.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{self, Read, Write},
     path::{Component, Path},
@@ -15,10 +15,11 @@ use sha2::{Digest, Sha256};
 use tar::{Archive, Builder, Header};
 
 use super::{
-    manifest::{self, Manifest, SessionFile},
+    manifest::{self, Manifest, QueueFile, SessionFile},
     session_files,
     transfer::MAX_BUNDLE_BYTES,
     wake_archive,
+    work_queue::ExpectedQueueFile,
 };
 
 const MANIFEST: &str = "move.json";
@@ -95,7 +96,7 @@ pub fn write_manifest_only(path: &Path, manifest: &Manifest) -> Result<(), Error
     if needs_files(manifest) {
         return Err(Error::RequiresFiles);
     }
-    write_chat(path, manifest, None, None)
+    write_chat(path, manifest, None, None, None)
 }
 
 pub(super) fn write_chat(
@@ -103,18 +104,25 @@ pub(super) fn write_chat(
     manifest: &Manifest,
     staged: Option<&Path>,
     wake: Option<&Path>,
+    work_queue: Option<(&Path, &[QueueFile])>,
 ) -> Result<(), Error> {
     if manifest.folder.is_some() != wake.is_some()
         || manifest.lane.is_some()
-        || manifest.work_queue.is_some()
+        || manifest.work_queue.is_some() != work_queue.is_some()
     {
         return Err(Error::RequiresFiles);
     }
     let payloads = manifest.session_files.as_deref().unwrap_or_default();
     let bytes = manifest.encode()?;
-    let content = payloads.iter().fold(bytes.len() as u64, |n, file| {
-        n.saturating_add(file.proof.size)
-    });
+    let content = payloads
+        .iter()
+        .map(|file| file.proof.size)
+        .chain(
+            work_queue
+                .into_iter()
+                .flat_map(|(_, files)| files.iter().map(|file| file.proof.size)),
+        )
+        .fold(bytes.len() as u64, u64::saturating_add);
     if content > MAX_BUNDLE_BYTES {
         return Err(Error::TooLarge);
     }
@@ -146,6 +154,20 @@ pub(super) fn write_chat(
                 contents,
             )?;
         }
+        if let Some((root, files)) = work_queue {
+            for file in files {
+                let source = session_files::checked_path(root, Path::new(&file.relative))?;
+                let contents = files::open_payload(&source)?;
+                let mut header = Header::new_gnu();
+                header.set_size(file.proof.size);
+                header.set_mode(0o600);
+                archive.append_data(
+                    &mut header,
+                    format!("work-queue/{}", file.relative),
+                    contents,
+                )?;
+            }
+        }
         if let Some((wake, name)) = wake.zip(manifest.folder.as_deref()) {
             archive.follow_symlinks(false);
             archive.append_dir_all(name, wake)?;
@@ -161,12 +183,32 @@ pub(super) fn unpack_chat_files(
     stage: &Path,
     payloads: &[SessionFile],
     wake: Option<(&str, &Path)>,
-) -> Result<(), Error> {
+    queue: Option<(&Path, Vec<ExpectedQueueFile>)>,
+) -> Result<Vec<QueueFile>, Error> {
     let mut wake = wake.map(|(label, path)| wake_archive::Staging::new(label, path));
     let mut expected: BTreeMap<_, _> = payloads
         .iter()
-        .map(|file| (format!("session-files/{}", file.relative), file))
+        .map(|file| {
+            (
+                format!("session-files/{}", file.relative),
+                Expected::Session(stage, file),
+            )
+        })
         .collect();
+    if let Some((stage, queue)) = queue {
+        expected.extend(queue.into_iter().map(|file| {
+            (
+                format!("work-queue/{}", file.relative),
+                Expected::Queue(stage, file),
+            )
+        }));
+    }
+    let dirs = expected
+        .keys()
+        .flat_map(|path| path.match_indices('/').map(move |(end, _)| &path[..end]))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let mut queue_files = Vec::new();
     let mut archive = Archive::new(GzDecoder::new(File::open(path)?));
     for entry in archive.entries()? {
         let mut entry = entry?;
@@ -185,43 +227,57 @@ pub(super) fn unpack_chat_files(
         {
             continue;
         }
-        if kind.is_dir()
-            && entry.size() == 0
-            && payloads.iter().any(|file| {
-                name == "session-files"
-                    || name.strip_prefix("session-files/").is_some_and(|parent| {
-                        file.relative
-                            .strip_prefix(parent)
-                            .is_some_and(|tail| tail.starts_with('/'))
-                    })
-            })
-        {
+        if kind.is_dir() && entry.size() == 0 && dirs.contains(&name) {
             continue;
         }
-        let file = expected.remove(&name).ok_or(Error::Invalid)?;
-        if !kind.is_file() || entry.size() != file.proof.size {
+        let expected = expected.remove(&name).ok_or(Error::Invalid)?;
+        let (stage, relative, size, sha256) = match &expected {
+            Expected::Session(stage, file) => (
+                *stage,
+                file.relative.as_str(),
+                file.proof.size,
+                Some(file.proof.sha256.as_str()),
+            ),
+            Expected::Queue(stage, file) => (
+                *stage,
+                file.relative.as_str(),
+                file.size,
+                file.sha256.as_deref(),
+            ),
+        };
+        if !kind.is_file() || entry.size() != size {
             return Err(Error::Invalid);
         }
-        let destination = session_files::checked_path(stage, Path::new(&file.relative))?;
+        let destination = session_files::checked_path(stage, Path::new(relative))?;
+        let mut verified = None;
+        let exact = entry.size();
+        let failure = match expected {
+            Expected::Session(..) => "A session attachment did not match its receipt.",
+            Expected::Queue(..) => "A Work Queue attachment did not match its receipt.",
+        };
         files::write_generated(&destination, |to| {
             let mut hash = Sha256::new();
-            let mut bytes = vec![0; 64 * 1024];
+            let mut buffer = vec![0; 64 * 1024];
+            let mut copied = 0;
             loop {
-                let length = entry.read(&mut bytes)?;
+                let length = entry.read(&mut buffer)?;
                 if length == 0 {
                     break;
                 }
-                hash.update(&bytes[..length]);
-                to.write_all(&bytes[..length])?;
+                hash.update(&buffer[..length]);
+                to.write_all(&buffer[..length])?;
+                copied += length as u64;
             }
-            if encode(&hash.finalize()) != file.proof.sha256 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "A session attachment did not match its receipt.",
-                ));
+            let digest = encode(&hash.finalize());
+            if copied != exact || sha256.is_some_and(|given| given != digest) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, failure));
             }
+            verified = Some(digest);
             Ok(())
         })?;
+        if let Expected::Queue(_, file) = expected {
+            queue_files.push(file.installed(verified.expect("checked move attachment")));
+        }
     }
     if !expected.is_empty() {
         return Err(Error::RequiresFiles);
@@ -229,7 +285,12 @@ pub(super) fn unpack_chat_files(
     if let Some(wake) = wake {
         wake.seal()?;
     }
-    Ok(())
+    Ok(queue_files)
+}
+
+enum Expected<'a> {
+    Session(&'a Path, &'a SessionFile),
+    Queue(&'a Path, ExpectedQueueFile),
 }
 
 fn needs_files(manifest: &Manifest) -> bool {
