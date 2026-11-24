@@ -430,12 +430,13 @@ test("a member keeps its signed switching row during a quiet relay restart", { t
   assert.equal(localRetry.status, 409, localRetry.text);
 
   await sender.stop();
-  const heardAt = async age => {
+  const heardAt = async (age, { withoutComputer = false } = {}) => {
     await observer.stop();
     const peers = path.join(main.home, "run/peer-agents.json");
     const announced = readJSON(peers);
     const heard = Date.now() - age;
     announced[key].heard = heard;
+    if (withoutComputer) delete announced[key].computer;
     write(peers, encode(announced));
     const reach = path.join(main.home, "run/peer-reach.json");
     write(reach, encode({ [key]: heard }));
@@ -444,13 +445,21 @@ test("a member keeps its signed switching row during a quiet relay restart", { t
   };
   const quiet = await heardAt(3 * 60_000);
   assert.deepEqual(await switching(quiet.resident), active);
-  const expired = await heardAt(11 * 60_000 + 10_000);
-  const offline = await until(async () => {
-    const update = await row(expired.resident);
-    return update?.state === "off" && update;
-  }, "the member must read as offline once the switch grace has expired");
-  assert.equal(offline.seen, expired.heard);
-  assert.deepEqual(offline.line, { words: "beta.1 · seen 11 min ago", tone: "off", phase: "off" });
+  const offline = async (age, words, withoutComputer = false) => {
+    const expired = await heardAt(age, { withoutComputer });
+    const update = await until(async () => {
+      const update = await row(expired.resident);
+      return update?.state === "off" && update;
+    }, `the quiet computer must say ${words}`);
+    assert.equal(update.seen, expired.heard);
+    assert.deepEqual(update.line, { words, tone: "off", phase: "off" });
+    if (withoutComputer) assert.equal(update.current, null);
+  };
+  await offline(11 * 60_000 + 10_000, "beta.1 · seen 11 min ago");
+  await offline(2 * 3_600_000 + 5 * 60_000, "beta.1 · seen 2h ago");
+  await offline(26 * 3_600_000, "beta.1 · seen yesterday");
+  await offline(3 * 86_400_000 + 60_000, "beta.1 · seen 3 days ago");
+  await offline(5_000, "Seen just now", true);
 });
 
 test("a quiet member keeps preparing or shows its staged release switching", { timeout: 60000 }, async t => {

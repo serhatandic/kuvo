@@ -576,14 +576,15 @@ impl Fleet {
             .or(running.as_ref());
         let (local_row, peer_rows, summary) = signed_release
             .map(|release| {
-                let local = progress::row(release, &facts, UpdatePresence::default(), true, now);
+                let local =
+                    progress::row(release, Some(&facts), UpdatePresence::default(), true, now);
                 let members = view.roster.members_by_name();
                 let peers: BTreeMap<_, _> = members
                     .iter()
                     .map(|peer| {
                         let (presence, facts) = view.peer_update(&peer.key, now);
                         let can_retry = self.mail.is_some() && peer.host().is_some();
-                        let row = progress::row(release, &facts, presence, can_retry, now);
+                        let row = progress::row(release, facts.as_ref(), presence, can_retry, now);
                         (peer.key, row)
                     })
                     .collect();

@@ -102,10 +102,14 @@ impl View {
 
     pub fn peer_updates(&self, key: &ComputerKey, now: Millis) -> (bool, UpdateFacts) {
         let (presence, facts) = self.peer_update(key, now);
-        (presence.away_for.is_some(), facts)
+        (presence.away_for.is_some(), facts.unwrap_or_default())
     }
 
-    pub fn peer_update(&self, key: &ComputerKey, now: Millis) -> (UpdatePresence, UpdateFacts) {
+    pub fn peer_update(
+        &self,
+        key: &ComputerKey,
+        now: Millis,
+    ) -> (UpdatePresence, Option<UpdateFacts>) {
         let key = encode(key);
         let announcement = self.announced.get(&key);
         let presence =
@@ -113,7 +117,7 @@ impl View {
                 .update_presence(&key, announcement.and_then(|entry| entry.heard), now);
         let facts = announcement
             .and_then(|entry| entry.computer.as_ref())
-            .map_or_else(UpdateFacts::default, |computer| computer.updates());
+            .map(|computer| computer.updates());
         (presence, facts)
     }
 

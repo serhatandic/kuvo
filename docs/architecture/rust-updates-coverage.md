@@ -58,6 +58,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U42 | The first holder of a verified pack stops sending after five accepted parts. Its incomplete transfer times out. A second holder starts, the fraction stays at five parts until the second transfer exceeds that count, and the recipient confirms the release. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U43 | A saved keeper trial refusal blocks only its matching signed pack and reports the same reason in both update reads. It refuses retry and skips the download. A refusal for a different digest leaves the current pack eligible. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U44 | A successful prepare retires unused older releases and finishes an interrupted retirement. A running holder keeps its own older release until it exits. The selected and newly staged releases and unrelated folders remain available. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U45 | The computers list keeps the recorded last-heard time and shows minutes, hours, yesterday, or days as the gap grows. A recently heard but unreachable computer with no recorded update facts reads off immediately. Passed on Mac, native Linux, WSL2, and native Windows. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -317,7 +318,7 @@ dependencies.
 | [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | U34 checks preparation through confirmation. U39 checks a signed trial reported over relay and expiry past the restart window. U41 checks a brief gap during preparation and a ready computer that goes quiet before reporting a trial. | — |
 | Same, local box says it is switching and ready reads separately from done | Covered by U34. | — |
 | Same, preparation fraction is visible in local and peer rows | Covered by U38. | — |
-| Same, off row reports when it was last heard from | Partial. U34 checks one never heard from, and U39 checks the timestamp and minutes-ago wording after the quiet restart window. The remaining time ranges still need binary proof. | 7.2 |
+| Same, off row reports when it was last heard from | U34 checks one never heard from, U39 checks a quiet trial's expiry, and U45 checks last-heard wording and a peer without update facts. | — |
 | Same, notifier stays while restarting, phases and words, ten-minute settled display | U35 covers the live summary and saved settlement across restart. The exact peer restart grace remains part of the reach cases above. | 7.2 |
 | Same, verified kept pack is announced | Partial. U8–U9 cover signed manifest selection, prepared facts, and authenticated delivery from a new main. The kept-pack announcement boundary remains open. | 7.2 |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |
