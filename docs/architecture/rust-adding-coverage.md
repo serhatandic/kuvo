@@ -48,6 +48,7 @@ the races that span removal, backup, moves, and an authority change.
 | U18 | [A removed Unix member wipes on reconnect and retries its sealed completion](../../protocol/conformance/removal.test.mjs) | Both boxes preserve the revocation while the source is offline. After erasing the source, the worker retries the same removal frame from a fresh reply identity after the relay disconnects. The durable completion holds neither old private key. The main verifies and records the completion and acknowledges it to the fresh identity. |
 | U19 | [An app-owned Mac completes last-computer and member wipes](../../protocol/conformance/removal.test.mjs) | An isolated Helper clears integration keys while the original folder exists. The accepted wipe records the original inode before stopping its keeper. Keychain cleanup precedes detach for a last computer and follows detach for a member. Both finish the right receipt, preserve sibling data, and offer local reinstall only after a last-computer wipe. |
 | U20 | [An offline member keeps its data until its configured pre-wipe backup can be verified](../../protocol/conformance/removal.test.mjs) | After the signed offline removal, the source logs the unavailable configured disk and keeps its unprepared wipe and local work. When the disk returns, both boxes publish and verify a pre-wipe archive, erase the source, and replicate the completion to the observing member. |
+| U21 | [A live Unix member uninstalls after its main revokes the local desktop](../../protocol/conformance/removal.test.mjs) | The local CLI waits for the main's signed revocation before stopping the member, removes the local desktop identity and keeps its work. A live Noise session open on the Mac main closes and the revoked identity cannot reconnect. |
 
 ## Stored and inherited cases
 
@@ -80,10 +81,10 @@ targeted configured disk scenario on macOS. The Rust workspace compile check
 passes. The static x86-64 musl build through the configured disk scenario passes
 37 in WSL 2 and 37 in one lokum container capped at one CPU and 1 GB. Both
 Linux runs skip two Mac cases. TypeScript passes 34 in WSL 2 with five skips.
-The native Windows run after 8.1b passes 26 with twelve platform skips. Its only
-failure is removing a missing Windows sign-in task in stopped uninstall. 8.1c
-owns that fix. The original TypeScript fake SSH host,
-alias, WSL 1 refusal and device-revocation scenarios pass as reference checks.
+The native Windows run after 8.1c passes 27 with thirteen platform skips,
+including stopped uninstall when the sign-in task is already absent. The
+original TypeScript fake SSH host, alias, WSL 1 refusal and device-revocation
+scenarios pass as reference checks.
 The Windows PC’s WSL 2 account joined a Rust setup,
 acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
 joined, acknowledged unlink and re-enrolled after starting its resident in a
@@ -199,7 +200,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 32 have coverage and 162 still have open or partial work. Of those, 118 list 2.3 as an owner (90 open, 28 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 33 have coverage and 161 still have open or partial work. Of those, 117 list 2.3 as an owner (89 open, 28 partial).
 
 ### computers-add
 
@@ -437,7 +438,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 32 h
 | [the desktop app on a member's computer is paired through its own box and reaches every box of the setup, until another device removes it](../../box/bridge-tests/devices-two-boxes.test.js#L319) | Open | 2.3 |
 | [a removal reaches a member while the primary's inbound device switch stays off](../../box/bridge-tests/devices-two-boxes.test.js#L439) | U4 and the live Noise check cover the persisted off setting, refused pairing, replicated revocation, closed session, refused reconnect and machine unlink. Changing the setting on a live Mac belongs to 6.2. | 6.2 |
 | [local uninstall refuses to clear a primary while a member holds an open session](../../box/bridge-tests/devices-two-boxes.test.js#L690) | U9 and the live Noise check verify refusal, continued requests on the same session, the replicated grant and the saved desktop identity. | — |
-| [local uninstall revokes its desktop before stopping the box, including a session open to its primary](../../box/bridge-tests/devices-two-boxes.test.js#L729) | Open | 2.3 |
+| [local uninstall revokes its desktop before stopping the box, including a session open to its primary](../../box/bridge-tests/devices-two-boxes.test.js#L729) | U21 and the live Noise check verify the signed revocation on the main, closure of the existing session, refused reconnect, stopped member and retained work. | — |
 
 ### peers
 

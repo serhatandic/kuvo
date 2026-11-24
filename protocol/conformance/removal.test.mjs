@@ -1,7 +1,7 @@
 // The main and departing computer use real residents. The private relay lets
 // the test hold the removed computer offline while the main commits.
 import assert from "node:assert/strict";
-import { createHmac, createPublicKey, verify } from "node:crypto";
+import { createHmac, createPublicKey, generateKeyPairSync, verify } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -288,6 +288,50 @@ test("a member set aside by its main computer cannot pair a desktop", { timeout:
   assert.deepEqual((await ask("GET", "kuvo/phones")).json.phones, []);
   const forwards = path.join(lab.home, "run", "work-queue", "forward");
   assert.deepEqual(fs.existsSync(forwards) ? fs.readdirSync(forwards) : [], []);
+});
+
+test("a live Unix member uninstalls after its main revokes the local desktop", {
+  skip: process.platform === "win32", timeout: 60000,
+}, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const main = studio.connect(await studio.start().ready());
+  const setup = (await main("GET", "kuvo/setup")).json;
+  await until(() => leases.leaseFor(setup.setup), "Studio did not acquire the relay lease.");
+  const offer = await main("POST", "kuvo/computers/add/code", {}, fromMac);
+  assert.equal(offer.status, 201, offer.text);
+  const joined = await lab.join(offer.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const live = lab.start();
+  const member = lab.connect(await live.ready());
+  const desktop = generateKeyPairSync("x25519");
+  const key = desktop.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("base64url");
+  const privateKey = desktop.privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32).toString("base64url");
+  if (boxBinary().typescript) {
+    await until(async () => (await member("GET", "kuvo/computers")).json.computers.some(peer =>
+      peer.key === setup.you.key && peer.features?.includes("devices.remove.forward")),
+    "Lab did not learn the main computer's device revocation capability.", 20000);
+  }
+  const paired = await member("POST", "kuvo/devices/pair", { key, name: "Local desktop", kind: "desktop" }, { "x-kuvo-from": "app" });
+  assert.equal(paired.status, 200, paired.text);
+  const identity = path.join(lab.home, "desktop", "identity");
+  write(identity, `${privateKey}.${Buffer.alloc(32, 123).toString("base64url")}`, { mode: 0o600 });
+  // The selected area uses an idle engine stand-in. Its process belongs to the
+  // harness and is outside the resident's stop request.
+  fs.rmSync(path.join(lab.home, "run", "engine.json"), { force: true });
+  const work = path.join(lab.home, "bots", "bot_retained", "notes.md");
+  write(work, "keep this work");
+  const outcome = await lab.command(["uninstall"]);
+  assert.equal(outcome.code, 0, outcome.text + outcome.log);
+  assert.equal(JSON.parse(outcome.text).result, "uninstalled");
+  assert.equal((await live.exited).code, 0);
+  const saved = readJSON(path.join(studio.home, "run", "link.json")).shared.membershipAndAccess.value;
+  assert.ok(saved.devices.removed.some(revoked => revoked.key === key));
+  assert.ok(!saved.devices.phones.some(device => device.key === key));
+  assert.equal(fs.existsSync(identity), false);
+  assert.equal(fs.existsSync(path.join(lab.home, "run", "off")), true);
+  assert.equal(fs.readFileSync(work, "utf8"), "keep this work");
 });
 
 test("uninstalling a stopped machine clears its desktop identity and sign-ins but retains work", async t => {

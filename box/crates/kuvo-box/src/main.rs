@@ -158,6 +158,18 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
     }
     if let Some(check) = uninstall {
+        #[cfg(unix)]
+        let outcome = if check {
+            kuvo_setup::uninstall::run(&home, true)
+        } else {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime
+                .block_on(kuvo_setup::uninstall::stop_live(&home))
+                .unwrap_or_else(|| kuvo_setup::uninstall::run(&home, false))
+        };
+        #[cfg(not(unix))]
         let outcome = kuvo_setup::uninstall::run(&home, check);
         #[cfg(windows)]
         if !check && outcome.status == 0 {
@@ -403,9 +415,16 @@ fn here(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Err
 }
 
 async fn resident_shutdown(home: &std::path::Path, supervised: bool) {
+    let uninstall = async {
+        #[cfg(unix)]
+        kuvo_setup::uninstall::wait_for_stop(home).await;
+        #[cfg(not(unix))]
+        std::future::pending::<()>().await;
+    };
     tokio::select! {
         () = shutdown() => {},
         () = kuvo_keeper::wait_for_stop(home), if supervised => {},
+        () = uninstall => {},
     }
 }
 
