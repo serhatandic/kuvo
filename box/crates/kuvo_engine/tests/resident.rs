@@ -697,13 +697,16 @@ async fn local_background_activity() {
         home: home.to_owned(),
         installed,
     };
-    fs::create_dir_all(home.join("workspace")).unwrap();
+    let workspace = home.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
     let rows = [
-        json!({"id":"ses_root","title":"Root","metadata":{"kuvo":{"bot":"bot_coordinator"}}}),
-        json!({"id":"ses_sub","title":"Child","parentID":"ses_root"}),
+        json!({"id":"ses_root","title":"Root","location":{"directory":workspace},"metadata":{"kuvo":{"bot":"bot_coordinator"}}}),
+        json!({"id":"ses_sub","title":"Child","location":{"directory":workspace},"parentID":"ses_root"}),
         json!({"id":"ses_started","title":"Delegated","metadata":{"kuvo":{"startedBy":"ses_sub"}}}),
         json!({"id":"ses_unrelated","title":"Other"}),
         json!({"id":"ses_idle","title":"Done","parentID":"ses_root"}),
+        json!({"id":"ses_archivedTree","title":"Previous work","location":{"directory":workspace},"time":{"archived":1}}),
+        json!({"id":"ses_hiddenTree","title":"Internal","location":{"directory":workspace},"metadata":{"kuvo":{"engineFor":"ses_archivedTree"}}}),
     ];
     fs::write(
         home.join("workspace/attachments-list.json"),
@@ -762,6 +765,20 @@ async fn local_background_activity() {
             ),
         ]
     );
+    let inventory = server.engine.worktree_inventory().await.unwrap();
+    assert_eq!(inventory.len(), 2);
+    assert!(inventory.iter().any(|row| row.session == "ses_root"
+        && row.folder == workspace
+        && row.running
+        && !row.archived));
+    assert!(inventory.iter().any(|row| row.session == "ses_archivedTree"
+        && row.folder == workspace
+        && !row.running
+        && row.archived));
+    fs::write(workspace.join("active-sessions.json"), b"null").unwrap();
+    assert!(server.engine.worktree_inventory().await.is_err());
+    fs::write(workspace.join("attachment-inventory-unavailable"), []).unwrap();
+    assert!(server.engine.worktree_inventory().await.is_err());
     server.stop().await;
 }
 

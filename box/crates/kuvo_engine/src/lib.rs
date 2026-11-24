@@ -81,6 +81,7 @@ pub use session_move::{MoveEngineError, SessionMove};
 pub use start_session::Permission as SessionPermission;
 pub use transcript::{TranscriptError, TranscriptScope};
 pub use waiting::PeerWaiting;
+pub use worktree_notes::WorktreeConversation;
 
 impl Engine {
     pub fn register(&self, routes: &mut Registry) -> LocalSessions {
