@@ -439,6 +439,14 @@ pub(crate) struct Zone {
     kit_seen: Option<String>,
 }
 
+impl Zone {
+    /// Its name, and its rules where they were given with it.
+    pub(crate) fn with_rules(self) -> (String, Option<Vec<u8>>) {
+        let rules = decode_rules(self.zoneinfo.as_deref());
+        (self.zone, rules)
+    }
+}
+
 fn zone_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
         && !name.starts_with('/')

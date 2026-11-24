@@ -177,7 +177,8 @@ impl Engine {
         self.turns.acquire(session).await
     }
 
-    pub(crate) fn states(&self) -> watch::Receiver<State> {
+    /// The engine's state as it changes.
+    pub fn states(&self) -> watch::Receiver<State> {
         self.state.clone()
     }
 

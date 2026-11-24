@@ -303,6 +303,13 @@ impl Catalog {
         rows
     }
 
+    /// The model a new conversation starts on, with none named: `None` while the engine can't say.
+    pub(crate) fn starting_model(&self) -> Option<Option<Value>> {
+        let offered = self.offered();
+        self.starting(None, &offered)
+            .map(|model| model.map(|model| json!({"id": model.id, "providerID": model.provider})))
+    }
+
     fn starting(&self, wanted: Option<ModelRef>, offered: &[&Listed]) -> Option<Option<ModelRef>> {
         let runnable = |model: &ModelRef| {
             self.named(model).filter(|listed| {
@@ -779,6 +786,19 @@ impl Names {
             .find(|(provider, id, _)| provider == &model.provider && id == &model.id)
             .map(|(_, _, name)| name.as_str())
     }
+}
+
+/// The model a new conversation in `directory` starts on here, with none named (`starting_model`).
+pub(crate) async fn starting_here(
+    engine: &Engine,
+    lease: &Lease,
+    directory: &str,
+) -> Option<Option<Value>> {
+    engine
+        .catalogs
+        .get(engine, lease, directory, false)
+        .await?
+        .starting_model()
 }
 
 pub(crate) async fn readiness(engine: &Engine, lease: &Lease, session: &Session) -> Option<Value> {

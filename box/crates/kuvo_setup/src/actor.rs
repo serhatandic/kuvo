@@ -91,6 +91,27 @@ impl SetupHandle {
         self.rosters.clone()
     }
 
+    /// Your time zone, with its rules (TZif) where they were given with it; none where you set none.
+    pub fn time_zone(&self) -> Option<(String, Option<Vec<u8>>)> {
+        self.views.borrow().zone.clone()
+    }
+
+    /// Your personalities as the library has them now (each its `id`, `name` and `description`).
+    pub fn personalities(&self) -> Vec<Value> {
+        self.views
+            .borrow()
+            .personalities
+            .as_ref()
+            .ok()
+            .and_then(|library| library["personalities"].as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    /// This computer's id in its link, where it has one.
+    pub fn link_id(&self) -> Option<String> {
+        self.views.borrow().link_id.clone()
+    }
+
     pub fn ownership_state(&self) -> kuvo_peers::ownership::SetupState {
         self.views.borrow().ownership.clone()
     }
@@ -145,6 +166,8 @@ pub(crate) struct View {
     pub setup: Value,
     pub personalities: Result<Value, String>,
     pub clock: Value,
+    zone: Option<(String, Option<Vec<u8>>)>,
+    link_id: Option<String>,
     model_stars: Option<Vec<ModelStar>>,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
@@ -878,6 +901,13 @@ fn make_view(
             Err(error) => return Err(error),
         },
         clock: preferences::clock(files, link, name)?,
+        zone: preferences::zone(files, link)?.map(|zone| zone.with_rules()),
+        link_id: link
+            .extra
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned),
     })
 }
 
