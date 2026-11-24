@@ -1308,3 +1308,134 @@ async fn forwarded_pairing_waits_for_current_grants_after_restart() {
     assert_eq!(fresh.current_pairing(&key, "old"), PairingState::Revoked);
     assert_eq!(fresh.current_pairing(&key, "new"), PairingState::Allowed);
 }
+
+#[tokio::test]
+async fn a_quiet_peers_move_disappears_from_a_followed_list() {
+    use http::{HeaderMap, Method, StatusCode};
+    use http_body_util::BodyExt;
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_server::{Caller, DispatchRequest, LineTiming, LocalOrigin, Registry, Transport};
+    use kuvo_wire::keys::encode;
+    use serde_json::Value;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+    use tokio_util::sync::CancellationToken;
+
+    async fn next(body: &mut kuvo_server::Body) -> Value {
+        let data = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        serde_json::from_slice(&data).unwrap()
+    }
+
+    tokio::time::timeout(Duration::from_secs(12), async {
+        let home = tempfile::tempdir().unwrap();
+        let (relay, mut wire) = TestRelay::connect().await;
+        let here = public(RUST_KEY);
+        let peer = public(PEER_KEY);
+        let other = public([23; 32]);
+        let clock = Arc::new(AtomicI64::new(1_000_000));
+        let resident = ResidentPeers::start(
+            home.path(),
+            Roster {
+                here: Some(here),
+                main: Some(here),
+                name: "Observer".into(),
+                members: vec![
+                    Member {
+                        key: peer,
+                        address: Some(PEER_ADDRESS),
+                        name: "Source".into(),
+                        kind: ComputerKind::Machine,
+                    },
+                    Member {
+                        key: other,
+                        address: None,
+                        name: "Destination".into(),
+                        kind: ComputerKind::Machine,
+                    },
+                ],
+            },
+            Some(relay),
+            None,
+            false,
+            {
+                let clock = clock.clone();
+                Arc::new(move || clock.load(Ordering::Relaxed))
+            },
+        )
+        .await
+        .unwrap();
+        let devices = Devices::load(home.path(), "Observer".into(), ComputerKind::Machine)
+            .await
+            .unwrap()
+            .devices;
+        let mut routes = Registry::new();
+        kuvo_peers::routes::register(&mut routes, resident.reader(), devices);
+        let dispatcher = routes.build(LineTiming::default());
+        let line = dispatcher
+            .dispatch(
+                DispatchRequest {
+                    method: Method::GET,
+                    path: "kuvo/moves/events".into(),
+                    headers: HeaderMap::new(),
+                    body: Default::default(),
+                    caller: Caller::Local(Transport::Http {
+                        origin: LocalOrigin::App,
+                        internal: false,
+                    }),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(line.status, StatusCode::OK);
+        let mut body = line.body;
+        assert!(next(&mut body).await.get("elsewhere").is_none());
+        let move_notice = json!({
+            "id": "mov_quiet", "kind": "chat", "thing": "ses_quiet", "name": "Notes",
+            "from": encode(&peer), "to": encode(&other), "role": "from", "stage": "copying",
+            "sessions": ["ses_quiet", 42], "sent": "unfinished",
+        });
+        let mut changed = move_notice.clone();
+        changed["stage"] = "switching".into();
+        for (index, moves) in [json!([move_notice]), json!("all of them"), json!([changed])]
+            .into_iter()
+            .enumerate()
+        {
+            // The sender's clock changes, while the observing computer keeps receiving mail.
+            let at = if index == 0 {
+                10_000
+            } else {
+                -3_600_000 + index as i64
+            };
+            let given = json!({"at": at, "moving": {"moves": moves}});
+            let bytes = Envelope(given.as_object().unwrap().clone())
+                .seal(&PEER_KEY, &here)
+                .unwrap();
+            wire.send(frames::relay_send(&PEER_ADDRESS, &bytes)).await;
+            if index != 1 {
+                let list = next(&mut body).await;
+                let row = &list["elsewhere"][0];
+                assert_eq!(row["box"], encode(&peer));
+                let shown = &row["moves"][0];
+                assert_eq!(shown["id"], "mov_quiet");
+                assert_eq!(
+                    shown["stage"],
+                    if index == 0 { "copying" } else { "switching" }
+                );
+                assert_eq!(shown["sessions"], json!(["ses_quiet"]));
+                assert!(shown.get("sent").is_none());
+            }
+        }
+        clock.store(1_180_000, Ordering::Relaxed);
+        let expired = next(&mut body).await;
+        assert!(expired.get("elsewhere").is_none());
+        assert_eq!(expired["moves"], json!([]));
+    })
+    .await
+    .unwrap();
+}
