@@ -635,6 +635,83 @@ test("work queue views merge live and deleted rows by their owning computer", { 
   assert.deepEqual(onKeeper.json.item.events.slice(-2).map(event => event.kind), ["deleted", "restored"]);
 });
 
+test("closed Work Queue counts include items older than the peer's recent list", {
+  timeout: 90000,
+  skip: boxBinary().typescript && "The frozen TypeScript box still sends only the latest 100 closed rows.",
+}, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const queue = path.join(studio.home, "run", "work-queue");
+  const rows = Array.from({ length: 150 }, (_, index) => {
+    const stamp = { at: 1760000000000 + index, by: { user: true } };
+    return {
+      id: "wqi_" + String(index).padStart(20, "0"),
+      title: "Work item " + index, number: index + 1,
+      status: index === 149 ? "todo" : index % 2 ? "canceled" : "done",
+      created: stamp, updated: stamp, doneAt: stamp.at,
+    };
+  });
+  write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(queue, "queues", "usr_you.json"), JSON.stringify({
+    formatVersion: 1, owner: "usr_you", items: rows,
+  }));
+  const main = studio.connect(await studio.start().ready());
+  const setup = await main("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not obtain its number lease.");
+  const enrollment = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(enrollment.status, 201, enrollment.text);
+  const joined = await lab.join(enrollment.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const last = rows.at(-1).id;
+  const closed = await main("PATCH", "kuvo/work-queue/items/" + last, { status: "done" }, { "x-kuvo-from": "app" });
+  assert.equal(closed.status, 200, closed.text);
+  const route = "kuvo/work-queue?owner=all&glance=1&counts=1";
+  const view = await until(async () => {
+    const answer = await member("GET", route);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.items.length === 100
+      && answer.json.items.some(row => row.id === last && row.status === "done")
+      && answer.json;
+  }, "Lab did not receive the latest closed queue.", 30000);
+  const key = view.items[0].computer.key;
+  assert.equal(view.counts.statuses.done, 76);
+  assert.equal(view.counts.statuses.canceled, 74);
+  assert.equal(view.counts.open, 0);
+  assert.equal(view.counts.computers[key], 150);
+  const filtered = await member("GET", route + "&computers=" + encodeURIComponent(key));
+  assert.equal(filtered.status, 200, filtered.text);
+  assert.equal(filtered.json.counts.statuses.done + filtered.json.counts.statuses.canceled, 150);
+  const searched = await member("GET", route + "&q=Work+item+150");
+  assert.equal(searched.status, 200, searched.text);
+  assert.equal(searched.json.counts.statuses.done, 1);
+  assert.equal(searched.json.counts.statuses.canceled, 0);
+  const old = rows[0].id;
+  assert.ok(!view.items.some(row => row.id === old));
+  const reopened = await member("PATCH", "kuvo/work-queue/items/" + old, { status: "todo" }, { "x-kuvo-from": "app" });
+  assert.equal(reopened.status, 200, reopened.text);
+  const after = await member("GET", route);
+  assert.equal(after.status, 200, after.text);
+  assert.equal(after.json.counts.statuses.done, 75);
+  assert.equal(after.json.counts.statuses.canceled, 74);
+  assert.equal(after.json.counts.open, 1);
+  assert.equal(after.json.counts.computers[key], 150);
+  const reclosed = await main("PATCH", "kuvo/work-queue/items/" + old, { status: "canceled" }, { "x-kuvo-from": "app" });
+  assert.equal(reclosed.status, 200, reclosed.text);
+  const retold = await until(async () => {
+    const answer = await member("GET", route);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.items.length === 100
+      && answer.json.items.some(row => row.id === old && row.status === "canceled")
+      && answer.json;
+  }, "Lab did not receive Studio's reclosed item.", 30000);
+  assert.equal(retold.counts.statuses.done, 75);
+  assert.equal(retold.counts.statuses.canceled, 75);
+  assert.equal(retold.counts.open, 0);
+  assert.equal(retold.counts.computers[key], 150);
+});
+
 test("a Markdown backlog keeps its numbers, headings and previous imports", { timeout: 40000 }, async t => {
   const { computer, leases } = await bench(t);
   const studio = await computer("Studio");

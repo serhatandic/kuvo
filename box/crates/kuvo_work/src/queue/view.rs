@@ -244,7 +244,7 @@ pub(super) fn list(
     let retired = setup
         .and_then(|setup| setup.labels.as_ref())
         .map_or(&[][..], |accepted| accepted.library.removed.as_slice());
-    let elsewhere =
+    let mut elsewhere =
         told::items_elsewhere(store, &all, peers, &query.owner, sessions, retired, now)?;
     for label in elsewhere.labels {
         if !labels.iter().any(|mine| mine.id == label.id) {
@@ -354,7 +354,24 @@ pub(super) fn list(
         "items": items, "owners": owners, "removed": removed, "computers": elsewhere.computers, "pendingComputers": elsewhere.pending,
     });
     if query.counts {
-        answer["counts"] = counts(&items, &labels, removed.len(), key, &elsewhere.computers);
+        // The aggregates cannot tell whether an omitted row matches text, owner,
+        // source or label filters. Computer filters can still use exact totals.
+        elsewhere.omitted_by_computer.retain(|computer, _| {
+            query.search.is_empty()
+                && query.filters.keys().all(|filter| filter == "computers")
+                && query
+                    .filters
+                    .get("computers")
+                    .is_none_or(|keys| keys.contains(computer))
+        });
+        answer["counts"] = counts(
+            &items,
+            &labels,
+            removed.len(),
+            key,
+            &elsewhere.computers,
+            &elsewhere.omitted_by_computer,
+        );
     }
     if !query.search.is_empty() {
         answer["q"] = query.search.as_str().into();
@@ -371,6 +388,7 @@ fn counts(
     removed: usize,
     key: &str,
     computers: &[Value],
+    omitted_by_computer: &BTreeMap<String, told::StatusCounts>,
 ) -> Value {
     let mut by_status: BTreeMap<&str, usize> =
         STATUSES.iter().map(|status| (status.id, 0)).collect();
@@ -403,6 +421,16 @@ fn counts(
         }
         if let Some(source) = row["source"]["kind"].as_str() {
             *sources.entry(source).or_default() += 1;
+        }
+    }
+    for (computer, omitted) in omitted_by_computer {
+        for status in &STATUSES {
+            let count = omitted.get(status.id).copied().unwrap_or_default();
+            *by_status.entry(status.id).or_default() += count;
+            *by_computer.entry(computer.as_str()).or_default() += count;
+            if !status.closed {
+                open += count;
+            }
         }
     }
     json!({

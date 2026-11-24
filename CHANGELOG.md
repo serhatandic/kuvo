@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Work Queue totals on Rust computers include older Done and Canceled items kept on other Rust computers, even when only recent items are listed.
 - The Rust box checks Claude Code sign-in and lists the models available to each account.
 - Allowing a coding agent's command works again after a while with only coding agents at work: it no longer fails with "Kuvo couldn't verify this computer's current permissions", and Full Access no longer asks about every command then.
 - When Claude Code stops before answering, the error shows its last complete line, including words it wrote just after it stopped, and never part of a line it was still writing.

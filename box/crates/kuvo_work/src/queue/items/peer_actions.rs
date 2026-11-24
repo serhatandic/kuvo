@@ -121,8 +121,9 @@ impl Writer {
             let store = self.store.clone();
             let item = result["item"].clone();
             let key = target.key;
+            let previous = target.previous;
             let _ = tokio::task::spawn_blocking(move || {
-                told::apply_reply(&store, &key, &item, deleted)
+                told::apply_reply(&store, &key, &item, deleted, &previous)
             })
             .await;
         }

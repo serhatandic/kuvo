@@ -276,8 +276,9 @@ impl Writer {
             let store = self.store.clone();
             let item = changed["item"].clone();
             let deleted = matches!(tool, forward::records::Tool::Remove) && !undo;
+            let previous = target.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                told::apply_reply(&store, &key, &item, deleted)
+                told::apply_reply(&store, &key, &item, deleted, &previous)
             })
             .await;
         }
