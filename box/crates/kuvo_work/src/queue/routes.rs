@@ -1,5 +1,5 @@
 use super::{
-    github::Seen,
+    github::{self, Seen},
     items, labels, numbers,
     peer_reads::PeerReads,
     refs::References,
@@ -9,7 +9,7 @@ use super::{
     view::{self, Query},
 };
 use http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
-use kuvo_engine::LocalSessions;
+use kuvo_engine::{Engine, LocalSessions};
 use kuvo_os::watch::{Options, Subscription, WatchHub};
 use kuvo_peers::{
     memory_read::Handle as MemoryRead, ownership, relay::RelayHandle, setup_lists::Reader,
@@ -35,6 +35,7 @@ pub async fn register(
     home: &Path,
     peers: Reader,
     sessions: LocalSessions,
+    engine: Engine,
     setup: SetupHandle,
     relay: Option<RelayHandle>,
     memory: MemoryRead,
@@ -45,13 +46,29 @@ pub async fn register(
     tokio::task::spawn_blocking(move || {
         numbers::check(&startup)?;
         let _ = kuvo_store::files::create_private_dirs(&startup.root.join("forward"));
+        github::sign_in::prepare(&startup.root.with_file_name("github-sign-in"))?;
         startup.items()?;
         Ok::<_, Error>(())
     })
     .await??;
 
     let references = Arc::new(References::new());
+    let github = github::Reader::new(&store);
+    let sign_in_directory = if std::env::var_os("KUVO_BOX").is_some_and(|kind| kind == "mac") {
+        home.parent().unwrap_or(home).to_owned()
+    } else {
+        home.join("workspace")
+    };
+    let sign_in_directory = sign_in_directory
+        .canonicalize()
+        .unwrap_or(sign_in_directory);
+    github::sign_in::SignIn::new(
+        store.root.with_file_name("github-sign-in"),
+        sign_in_directory,
+    )
+    .register(registry);
     let lists = Views {
+        github: github.clone(),
         store: store.clone(),
         parser: references.clone(),
         peers: peers.clone(),
@@ -62,11 +79,17 @@ pub async fn register(
     registry.register::<get_kuvo_work_queue::Spec, _, _>(Access::Any, move |call| {
         let reader = reader.clone();
         let query = query(&call.request.path);
-        async move { reader.read(Arc::new(query?)).await.and_then(typed) }
+        async move {
+            reader
+                .read(Arc::new(query?), github::WAIT)
+                .await
+                .and_then(typed)
+        }
     });
     follow(registry, lists.clone());
 
     let reads = PeerReads {
+        github,
         store: store.clone(),
         refs: references.clone(),
         peers: peers.clone(),
@@ -81,6 +104,7 @@ pub async fn register(
         peers,
         references.clone(),
         sessions.clone(),
+        engine,
         relay,
         reads.clone(),
         owners,
@@ -174,6 +198,7 @@ impl Runtime {
 
 #[derive(Clone)]
 struct Views {
+    github: github::Reader,
     store: Store,
     parser: Arc<References>,
     peers: Reader,
@@ -203,7 +228,43 @@ impl Views {
         ))
     }
 
-    async fn read(&self, query: Arc<Query>) -> Result<Value, Refusal> {
+    fn visible_sources(&self, query: &Query) -> Result<Vec<Value>, Error> {
+        let view = self.peers.view();
+        let sessions = Sessions::read(self.sessions.latest_record());
+        let all = self.store.items()?;
+        let elsewhere = told::items_elsewhere(
+            &self.store,
+            &all,
+            &view,
+            &query.owner,
+            &sessions,
+            &[],
+            self.peers.now(),
+        )?;
+        let visible = all
+            .iter()
+            .filter(|item| query.visible(item, &sessions) && item.removed.is_none())
+            .filter_map(|item| item.source().map(|source| json!({"source":source})));
+        Ok(visible
+            .chain(
+                elsewhere
+                    .items
+                    .into_iter()
+                    .filter(|item| item.get("source").is_some()),
+            )
+            .collect())
+    }
+
+    async fn read(&self, query: Arc<Query>, wait: Duration) -> Result<Value, Refusal> {
+        if !query.glance {
+            let here = self.clone();
+            let selected = query.clone();
+            let issues = blocking(move || here.visible_sources(&selected)).await?;
+            self.github
+                .read_seen(self.parser.clone(), issues, wait)
+                .await;
+        }
+
         let here = self.clone();
         let key = self
             .peers
@@ -253,7 +314,7 @@ fn follow(registry: &mut Registry, views: Views) {
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last = None;
                 loop {
-                    let Ok(value) = reader.read(query.clone()).await else { break };
+                    let Ok(value) = reader.read(query.clone(), Duration::ZERO).await else { break };
                     if last.as_ref() != Some(&value) {
                         let answer: events::Status200 = serde_json::from_value(value.clone()).map_err(io::Error::other)?;
                         last = Some(value);

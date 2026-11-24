@@ -1,7 +1,7 @@
 // A real resident reads Work Queue files in an isolated home with a local relay.
 import assert from "node:assert/strict";
 import { verify } from "node:crypto";
-import { existsSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { boxBinary, boxCommand, isolatedEnv, localRelay, openLine, privateHome, request, scratch, startBox, until, write } from "./adapter.mjs";
@@ -812,4 +812,245 @@ test("ordinary revision-aware queue routes and the outbox replay the same decisi
   const stale = await submit({ operation: "try-before-deletion", baseRevision: changed.json.revision, fields: { body: "Stale draft" } });
   assert.equal(stale.status, 409, stale.text);
   assert.equal(stale.json.status, "refresh");
+});
+
+test("a visible GitHub issue is read through gh and a signed-out host backs off", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  let gh;
+  const studio = await computer("Studio", undefined, folder => {
+    gh = path.join(folder, "box", "gh-fixture");
+    const source = path.join(gh, "gh.cjs");
+    write(source, `
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const root = process.env.KQ_GH_FIXTURE;
+      fs.appendFileSync(path.join(root, "asked"), JSON.stringify(process.argv.slice(2)) + "\\n");
+      if (fs.existsSync(path.join(root, "fail"))) {
+        process.stderr.write("To get started with GitHub CLI, run: gh auth login\\n");
+        process.exit(1);
+      }
+      process.stdout.write(fs.readFileSync(path.join(root, "answer"), "utf8"));
+    `);
+    const windows = process.platform === "win32";
+    const program = path.join(gh, windows ? "gh.cmd" : "gh");
+    write(program, windows
+      ? '@echo off\r\n"%KQ_GH_NODE%" "%KQ_GH_FIXTURE%\\gh.cjs" %*\r\n'
+      : '#!/bin/sh\nexec "$KQ_GH_NODE" "$KQ_GH_FIXTURE/gh.cjs" "$@"\n');
+    if (!windows) chmodSync(program, 0o700);
+    return {
+      PATH: gh + path.delimiter + (process.env.PATH ?? ""),
+      KQ_GH_NODE: process.execPath,
+      KQ_GH_FIXTURE: gh,
+      GH_CONFIG_DIR: path.join(gh, "account"),
+      GH_TOKEN: "", GITHUB_TOKEN: "",
+    };
+  });
+  const id = "wqi_abcdefghijklmnopqrst";
+  const file = path.join(studio.home, "run", "work-queue", "queues", "usr_you.json");
+  const ledger = path.join(studio.home, "run", "work-queue", "seen.json");
+  const stamp = { at: 1760000000000, by: { user: true } };
+  const ref = "gh:kuvo-test/app#19";
+  const url = "https://github.com/kuvo-test/app/issues/19";
+  const original = JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [{
+    id, title: "Cached queue title", body: "", status: "waiting", order: 0,
+    source: { kind: "github", host: "github.com", ref, id: "I_19", url },
+    created: stamp, updated: stamp,
+  }] });
+  write(path.join(studio.home, "run", "work-queue", "model.json"), '{"formatVersion":1,"model":2}');
+  write(file, original);
+  write(path.join(gh, "answer"), JSON.stringify({ data: { p0: { issueOrPullRequest: {
+    __typename: "Issue", id: "I_19", number: 19, title: "The issue title from GitHub",
+    url, state: "CLOSED", stateReason: "COMPLETED", closedAt: "2026-11-10T09:00:00Z",
+  } } } }));
+  const ask = studio.connect(await studio.start().ready());
+  const glanced = await ask("GET", "kuvo/work-queue?owner=all&glance=1");
+  assert.equal(glanced.status, 200, glanced.text);
+  assert.equal(glanced.json.items[0].title, "Cached queue title");
+  assert.equal(existsSync(path.join(gh, "asked")), false);
+  const query = "kuvo/work-queue?owner=all";
+  const answer = await ask("GET", query);
+  assert.equal(answer.status, 200, answer.text);
+  assert.equal(answer.json.items[0].title, "The issue title from GitHub");
+  assert.equal(answer.json.items[0].status, "done");
+  assert.equal(answer.json.items[0].keptIn, "waiting");
+  const trace = () => readFileSync(path.join(gh, "asked"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(trace().length, 1);
+  assert.deepEqual(trace()[0].slice(0, 5), ["api", "graphql", "--hostname", "github.com", "-f"]);
+  assert.match(trace()[0][5], /query=query \{ p0: repository\(owner: "kuvo-test", name: "app"\)/);
+  const kept = JSON.parse(readFileSync(ledger, "utf8"));
+  const key = "github.com/kuvo-test/app#19";
+  kept.reads[key].at = Date.now() - 45 * 60_000;
+  delete kept.reads[key].checked;
+  write(ledger, JSON.stringify(kept));
+  write(path.join(gh, "fail"), "");
+  const lock = ledger + ".lock";
+  mkdirSync(lock);
+  write(path.join(lock, "other-hold"), "");
+  const stillHeld = await ask("GET", query);
+  assert.equal(stillHeld.status, 200, stillHeld.text);
+  assert.equal(stillHeld.json.items[0].title, "The issue title from GitHub");
+  assert.equal(trace().length, 1);
+  assert.equal(existsSync(path.join(lock, "other-hold")), true);
+  const stale = new Date(Date.now() - 181_000);
+  utimesSync(lock, stale, stale);
+  for (let i = 0; i < 2; i++) {
+    const read = await ask("GET", query);
+    assert.equal(read.status, 200, read.text);
+    assert.equal(read.json.items[0].title, "The issue title from GitHub");
+  }
+  assert.equal(trace().length, 2);
+  const after = JSON.parse(readFileSync(ledger, "utf8"));
+  assert.ok(after.hosts["github.com"] > Date.now());
+  assert.equal(readFileSync(file, "utf8"), original);
+  assert.equal(existsSync(ledger + ".lock"), false);
+});
+
+test("a running agent adds a GitHub issue and another computer sees the same item", { timeout: 100000 }, async t => {
+  const { computer, leases } = await bench(t);
+  let gh;
+  const reference = "gh:kuvo-test/app#82";
+  const url = "https://github.com/kuvo-test/app/issues/82";
+  const makeGh = folder => {
+    gh = path.join(folder, "box", "gh-fixture");
+    const source = path.join(gh, "gh.cjs");
+    write(source, `
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const args = process.argv.slice(2);
+      if (fs.existsSync(path.join(process.env.KQ_GH_FIXTURE, "signed-out"))) {
+        process.stderr.write("Run gh auth login to sign in.\\n");
+        process.exit(1);
+      }
+      if (args[0] !== "api" || args[1] !== "graphql" || args[3] !== "github.com") process.exit(4);
+      process.stdout.write(JSON.stringify({data: {p0: {issueOrPullRequest: {
+        __typename: "Issue", id: "I_82", number: 82, title: "Issue from the stand-in", url: "${url}",
+        state: "OPEN", body: "A description from the stand-in."
+      }}}}));
+    `);
+    const windows = process.platform === "win32";
+    const program = path.join(gh, windows ? "gh.cmd" : "gh");
+    write(program, windows
+      ? '@echo off\r\n"%KQ_GH_NODE%" "%KQ_GH_FIXTURE%\\gh.cjs" %*\r\n'
+      : '#!/bin/sh\nexec "$KQ_GH_NODE" "$KQ_GH_FIXTURE/gh.cjs" "$@"\n');
+    if (!windows) chmodSync(program, 0o700);
+    return {
+      PATH: gh + path.delimiter + (process.env.PATH ?? ""),
+      KQ_GH_NODE: process.execPath, KQ_GH_FIXTURE: gh,
+      GH_CONFIG_DIR: path.join(gh, "account"), GH_TOKEN: "", GITHUB_TOKEN: "",
+    };
+  };
+  const studio = await computer("Studio", undefined, makeGh);
+  const lab = await computer("Lab", undefined, makeGh);
+  const session = { id: "ses_QueueIssue", title: "Fixer", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(session);
+  const arguments_ = { issue: reference, status: "waiting" };
+  studio.engine.messages.set(session.id, [
+    { id: "msg_1", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_queue_add", callID: "call_1",
+      state: { status: "running", input: arguments_ } }] },
+  ]);
+  const main = studio.connect(await studio.start().ready());
+  const setup = await main("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  const joined = await lab.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const endpoint = "kuvo/work-queue/tools";
+  const proposal = { name: "queue_add", arguments: arguments_, session: session.id };
+  const denied = await main("POST", endpoint, { ...proposal, arguments: { ...arguments_, title: "Different tool arguments" } });
+  assert.equal(denied.status, 200, denied.text);
+  assert.equal(denied.json.isError, true);
+  assert.match(denied.json.text, /this one isn't running in it/);
+  const draft = { ...proposal, operation: "fixture-github-issue" };
+  const added = await main("POST", endpoint, draft);
+  assert.equal(added.status, 200, added.text);
+  assert.equal(added.json.isError, false, added.text);
+  assert.match(added.json.text, /Added gh:kuvo-test\/app#82 "Issue from the stand-in" \(open on GitHub\) as Waiting\./);
+  studio.engine.messages.set(session.id, []);
+  const repeated = await main("POST", endpoint, draft);
+  assert.equal(repeated.status, 200, repeated.text);
+  assert.deepEqual(repeated.json, added.json);
+  const reuse = await main("POST", endpoint, { ...draft, arguments: { ...arguments_, title: "Changed proposal" } });
+  assert.equal(reuse.status, 409, reuse.text);
+  const expected = await until(async () => {
+    const list = await member("GET", "kuvo/work-queue?owner=all&glance=1");
+    return list.json?.items.find(item => item.source?.ref === reference);
+  }, "The member did not observe the GitHub issue.", 40000, 100);
+  assert.equal(expected.title, "Issue from the stand-in");
+  assert.equal(expected.status, "waiting");
+  assert.equal(expected.computer.name, "Studio");
+  assert.equal(expected.number, undefined);
+  const detail = await member("GET", "kuvo/work-queue/items/" + expected.id, undefined, { "x-kuvo-from": "app" });
+  assert.equal(detail.status, 200, detail.text);
+  assert.equal(detail.json.item.told, false);
+  assert.equal(detail.json.item.body, "A description from the stand-in.");
+  assert.deepEqual(detail.json.item.created.by, { session: session.id, name: session.title });
+  write(path.join(studio.home, "gh-fixture", "signed-out"), "");
+  const another = { issue: "gh:kuvo-test/app#83" };
+  studio.engine.messages.set(session.id, [
+    { id: "msg_2", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_queue_add",
+      state: { status: "pending", input: another } }] },
+  ]);
+  const signedOut = await main("POST", endpoint, { ...proposal, arguments: another });
+  assert.equal(signedOut.status, 200, signedOut.text);
+  assert.deepEqual(signedOut.json, {
+    isError: true,
+    text: "On this machine, sign in under Settings → Accounts → GitHub for Work Queue.",
+  });
+
+});
+
+test("GitHub device sign-in keeps the same located attempt for its client", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio", undefined, folder => {
+    const gh = path.join(folder, "box", "gh-fixture");
+    write(path.join(gh, "gh.cjs"), `
+      const args = process.argv.slice(2);
+      if (args[0] === "auth" && args[1] === "status") process.exit(1);
+      if (args[0] !== "auth" || args[1] !== "login") process.exit(4);
+      process.stderr.write("One-time code: ABCD-1234\\nhttps://github.com/login/device\\n");
+      process.stdin.resume();
+    `);
+    const windows = process.platform === "win32";
+    const program = path.join(gh, windows ? "gh.cmd" : "gh");
+    write(program, windows
+      ? '@echo off\r\n"%KQ_GH_NODE%" "%KQ_GH_FIXTURE%\\gh.cjs" %*\r\n'
+      : '#!/bin/sh\nexec "$KQ_GH_NODE" "$KQ_GH_FIXTURE/gh.cjs" "$@"\n');
+    if (!windows) chmodSync(program, 0o700);
+    return { PATH: gh + path.delimiter + (process.env.PATH ?? ""),
+      KQ_GH_NODE: process.execPath, KQ_GH_FIXTURE: gh, GH_CONFIG_DIR: path.join(gh, "account"),
+      GH_TOKEN: "", GITHUB_TOKEN: "" };
+  });
+  const ask = studio.connect(await studio.start().ready());
+  const route = "api/integration/github-work-queue";
+  const oauth = route + "/connect/oauth";
+  const client = { "x-kuvo-from": "app", "x-kuvo-sign-in-client": "a".repeat(32) };
+  const other = { ...client, "x-kuvo-sign-in-client": "b".repeat(32) };
+  const integration = await until(async () => {
+    const answer = await ask("GET", route, undefined, client);
+    return answer.status === 200 && answer.json;
+  }, "Work Queue GitHub sign-in did not start.", 15000, 150);
+  assert.equal(integration.data.id, "github-work-queue");
+  assert.equal(integration.location.directory, path.join(studio.home, "workspace"));
+  assert.deepEqual(integration.data.connections, []);
+  const given = { methodID: "device" };
+  const started = await ask("POST", oauth, given, client);
+  assert.equal(started.status, 200, started.text);
+  assert.deepEqual(started.json.location, integration.location);
+  const { attemptID, time } = started.json.data;
+  assert.equal(started.json.data.userCode, "ABCD-1234");
+  assert.equal(started.json.data.url, "https://github.com/login/device");
+  assert.equal(started.json.data.mode, "auto");
+  assert.match(attemptID, /^att_[A-Za-z0-9]+$/);
+  assert.equal(time.expires - time.created, 900_000);
+  assert.deepEqual((await ask("POST", oauth, given, client)).json, started.json);
+  assert.equal((await ask("POST", oauth, given, other)).status, 409);
+  assert.deepEqual((await ask("GET", oauth + "/" + attemptID, undefined, client)).json, {
+    location: integration.location,
+    data: { status: "pending", userCode: "ABCD-1234", url: "https://github.com/login/device" },
+  });
+  assert.equal((await ask("DELETE", oauth + "/" + attemptID, undefined, client)).status, 200);
+  assert.equal((await ask("GET", oauth + "/" + attemptID, undefined, client)).json.data.status, "expired");
 });

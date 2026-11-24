@@ -785,6 +785,13 @@ pub(super) fn outgoing(
     let mut removed = Vec::new();
     for item in &all {
         let mut row = summary(item, now_date, refs, &seen, sessions, &owners);
+        if row.get("seen").is_some()
+            && let Some(checked) = item
+                .source()
+                .and_then(|source| seen.last_checked(refs, source))
+        {
+            row["seen"]["checked"] = checked;
+        }
         let fields = row.as_object_mut().expect("queue summary");
         for local in ["can", "overdue", "doneAs", "struck", "closesOn"] {
             fields.remove(local);
@@ -933,6 +940,13 @@ pub(super) fn outgoing(
     let fields = content.as_object_mut().expect("snapshot object");
     fields.remove("id");
     fields.remove("at");
+    if let Some(rows) = fields.get_mut("items").and_then(Value::as_array_mut) {
+        for item in rows {
+            if let Some(seen) = item.get_mut("seen").and_then(Value::as_object_mut) {
+                seen.remove("checked");
+            }
+        }
+    }
     let bytes = kuvo_wire::json::ordinary(&content);
     report.id = format!("wqt_{}", &encode(&Sha256::digest(bytes.as_bytes()))[..22]);
     Ok(report)

@@ -1,3 +1,10 @@
+mod command;
+mod hold;
+mod readings;
+pub(super) mod sign_in;
+
+pub(super) use readings::{Reader, WAIT};
+
 use super::{
     refs::{Issue, References},
     store::{self, Error, Store},
@@ -37,10 +44,29 @@ impl Seen {
         let mut source = source.clone();
         source["name"] = self.name(&issue).into();
         let key = issue.key();
-        row["closesOn"] = "github".into();
+        let mut seen = row.get("seen").cloned();
+        let kept_in = row.get("keptIn").cloned();
+        let done_at = row.get("doneAt").cloned();
+        let status = kept_in.as_ref().unwrap_or(&row["status"]).clone();
+        let mut closed_at = None;
         if let Some(read) = self.reads.get(&key) {
             let kept = read.get("value").unwrap_or(&read["pull"]);
-            if !kept.is_null() {
+            let gone = read["gone"] == true;
+            let time = |entry: &Value| {
+                entry["checked"]
+                    .as_f64()
+                    .or_else(|| entry["at"].as_f64())
+                    .unwrap_or(f64::NEG_INFINITY)
+            };
+            let newer = seen.as_ref().is_none_or(|remote| {
+                let remote_gone = remote["gone"] == true;
+                if gone == remote_gone {
+                    time(read) >= time(remote)
+                } else {
+                    !gone
+                }
+            });
+            if !kept.is_null() && newer {
                 for field in ["kind", "url", "id"] {
                     if let Some(value) = kept.get(field) {
                         source[field] = value.clone();
@@ -51,36 +77,67 @@ impl Seen {
                 if let Some(title) = kept.get("title") {
                     row["title"] = title.clone();
                 }
-                let state = kept["state"].as_str().unwrap_or_default();
-                let gone = read["gone"].as_bool() == Some(true);
-                let mut seen = json!({"at": read["at"], "state": state});
+                let mut local = json!({"at":read["at"],"state":kept["state"]});
                 if gone {
-                    seen["gone"] = true.into();
+                    local["gone"] = true.into();
                 }
-                row["seen"] = seen;
-                if gone || matches!(state, "not_planned" | "closed") {
-                    row["struck"] = true.into();
-                }
-                if gone || matches!(state, "completed" | "not_planned" | "merged" | "closed") {
-                    row["keptIn"] = row["status"].clone();
-                    row["status"] = "done".into();
-                    row["doneAt"] = kept
-                        .get("closedAt")
-                        .filter(|at| !at.is_null())
-                        .unwrap_or(&read["at"])
-                        .clone();
-                    row["doneAs"] = if gone {
+                seen = Some(local);
+                closed_at = kept
+                    .get("closedAt")
+                    .filter(|time| time.is_number())
+                    .cloned();
+            }
+        }
+        let fields = row.as_object_mut().expect("Work Queue summary");
+        for name in ["keptIn", "doneAt", "struck", "doneAs"] {
+            fields.remove(name);
+        }
+        fields.insert("source".into(), source);
+        fields.insert("closesOn".into(), "github".into());
+        fields.insert("status".into(), status.clone());
+        if let Some(seen) = seen {
+            let state = seen["state"].as_str().unwrap_or_default();
+            let gone = seen["gone"] == true;
+            if gone || matches!(state, "not_planned" | "closed") {
+                fields.insert("struck".into(), true.into());
+            }
+            if gone || matches!(state, "completed" | "not_planned" | "merged" | "closed") {
+                fields.insert("keptIn".into(), status);
+                fields.insert("status".into(), "done".into());
+                let time = closed_at
+                    .or_else(|| kept_in.as_ref().and(done_at.clone()))
+                    .unwrap_or_else(|| seen["at"].clone());
+                fields.insert("doneAt".into(), time);
+                fields.insert(
+                    "doneAs".into(),
+                    if gone {
                         "Gone from GitHub"
                     } else if state == "merged" {
                         "Merged on GitHub"
                     } else {
                         "Closed on GitHub"
                     }
-                    .into();
-                }
+                    .into(),
+                );
             }
+            fields.insert("seen".into(), seen);
         }
-        row["source"] = source;
+        if kept_in.is_none()
+            && !fields.contains_key("doneAt")
+            && let Some(at) = done_at
+        {
+            fields.insert("doneAt".into(), at);
+        }
+    }
+
+    pub fn last_checked(&self, refs: &References, source: &Value) -> Option<Value> {
+        let reference = refs.issue(source["ref"].as_str()?)?;
+        let reading = self.reads.get(&reference.key())?;
+        reading
+            .get("checked")
+            .or_else(|| reading.get("at"))
+            .filter(|stamp| stamp.is_number())
+            .cloned()
     }
 
     fn name(&self, issue: &Issue<'_>) -> String {

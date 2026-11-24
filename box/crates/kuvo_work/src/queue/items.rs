@@ -5,6 +5,7 @@ mod edit;
 mod importing;
 mod offline;
 mod peer_actions;
+mod tools;
 
 use super::{
     assignees::Assignees,
@@ -23,7 +24,7 @@ use super::{
 };
 use http::{HeaderMap, StatusCode};
 use jiff::Timestamp;
-use kuvo_engine::LocalSessions;
+use kuvo_engine::{Engine, LocalSessions};
 use kuvo_peers::{
     directory::RecordScope,
     ownership,
@@ -89,6 +90,7 @@ pub(super) fn register(
     peers: Reader,
     refs: Arc<References>,
     sessions: LocalSessions,
+    engine: Engine,
     relay: Option<RelayHandle>,
     reads: PeerReads,
     owners: ownership::Handle,
@@ -189,6 +191,7 @@ pub(super) fn register(
     });
     writer.register_edits(registry);
     writer.register_import(registry);
+    writer.register_tools(registry, engine);
     writer.start(relay)
 }
 

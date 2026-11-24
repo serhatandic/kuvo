@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, HashSet};
 pub(super) struct Query {
     pub owner: String,
     pub counts: bool,
+    pub glance: bool,
     search: String,
     filters: BTreeMap<String, Vec<String>>,
 }
@@ -36,6 +37,7 @@ impl Query {
             match key.as_ref() {
                 "owner" => query.owner = value.into_owned(),
                 "counts" => query.counts = value == "1",
+                "glance" => query.glance = value == "1",
                 "q" => query.search = limit(value.trim(), 200),
                 "computers" | "sources" | "owners" | "labels" => {
                     let mut names = HashSet::new();
@@ -58,7 +60,7 @@ impl Query {
         query
     }
 
-    fn visible(&self, item: &Item, sessions: &Sessions) -> bool {
+    pub(super) fn visible(&self, item: &Item, sessions: &Sessions) -> bool {
         self.owner == "all"
             || self.owner == item.owner
             || (self.owner.starts_with("ses_") && sessions.under(&self.owner, &item.owner))
@@ -277,6 +279,7 @@ pub(super) fn list(
         }
     }
     let remote = |mut row: Value| {
+        seen.apply(references, &mut row);
         row.as_object_mut().expect("peer item").remove("handedFrom");
         let away = elsewhere.computers.iter().any(|computer| {
             computer["key"] == row["computer"]["key"] && computer.get("away").is_some()

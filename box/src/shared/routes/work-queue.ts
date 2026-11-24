@@ -144,6 +144,11 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   // An owner's view (`owner=ses_…|grp_…|usr_you|all`), across your computers; `q`, filters and `counts=1`.
   { route: "GET kuvo/work-queue", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
   { route: "GET kuvo/work-queue/events", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+  // The provider API carried through the coding agents' bridge for Work Queue GitHub sign-in.
+  { route: "GET api/integration/github-work-queue", feature: "sign-in.methods", answers: { 200: object({ location: object({ directory: string }), data: any }) } },
+  { route: "POST api/integration/github-work-queue/connect/oauth", feature: "sign-in.methods", answers: { 200: object({ location: object({ directory: string }), data: any }) } },
+  { route: "GET api/integration/github-work-queue/connect/oauth/:attempt", feature: "sign-in.methods", answers: { 200: object({ location: object({ directory: string }), data: any }) } },
+  { route: "DELETE api/integration/github-work-queue/connect/oauth/:attempt", feature: "sign-in.methods", answers: { 200: any } },
   // The agents' `queue_…` tools (MCP definitions) and their instructions, for a tool server to list.
   { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
   // Runs an agent's `queue_…` call (`{name, arguments, session}`), only while that session is making it.

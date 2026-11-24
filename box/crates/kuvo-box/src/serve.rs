@@ -160,6 +160,7 @@ pub async fn run(
         home,
         peers.reader(),
         sessions.clone(),
+        engine.clone(),
         setup.handle(),
         peers.relay_handle(),
         memory.clone(),

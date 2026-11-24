@@ -28,6 +28,7 @@ const ATTACHMENTS: &str = "work-queue.attachments";
 
 #[derive(Clone)]
 pub struct PeerReads {
+    pub(super) github: super::github::Reader,
     pub(super) store: Store,
     pub(super) refs: Arc<References>,
     pub(super) sessions: LocalSessions,
@@ -100,6 +101,9 @@ impl PeerReads {
 
     /// The shared memory transport only calls this for a GET from an accepted computer.
     pub async fn answer(&self, read: Read) -> Answer {
+        if matches!(read.kind, Kind::Record) {
+            self.refresh_local(&read.item).await;
+        }
         let here = self.clone();
         match blocking(move || {
             let mut all = here.store.items()?;
@@ -132,6 +136,27 @@ impl PeerReads {
         }
     }
 
+    async fn refresh_local(&self, name: &str) {
+        let here = self.clone();
+        let name = name.to_owned();
+        let source = blocking(move || {
+            let all = here.store.items()?;
+            Ok(here
+                .refs
+                .parse(&name)
+                .and_then(|reference| here.refs.find(&all, &reference))
+                .filter(|item| item.removed.is_none())
+                .and_then(|item| item.source())
+                .map(|source| json!({"source":source})))
+        })
+        .await;
+        if let Ok(Some(source)) = source {
+            self.github
+                .read_seen(self.refs.clone(), vec![source], super::github::WAIT)
+                .await;
+        }
+    }
+
     fn detail(&self, item: &Item, all: &[Item]) -> Result<Value, super::store::Error> {
         Ok(view::detail(
             item,
@@ -144,6 +169,7 @@ impl PeerReads {
     }
 
     pub(super) async fn item(&self, name: String, client: bool) -> Result<Value, Refusal> {
+        self.refresh_local(&name).await;
         let here = self.clone();
         let lookup = name.clone();
         let (local, target) = blocking(move || {
@@ -178,6 +204,19 @@ impl PeerReads {
                         target.computer,
                         target.key,
                     ));
+                }
+            }
+            if target.item.get("source").is_some() {
+                self.github
+                    .read_seen(
+                        self.refs.clone(),
+                        vec![target.item.clone()],
+                        super::github::WAIT,
+                    )
+                    .await;
+                let here = self.clone();
+                if let Ok(seen) = blocking(move || Seen::read(&here.store)).await {
+                    seen.apply(&self.refs, &mut target.item);
                 }
             }
             let peer = self.peers.view();
