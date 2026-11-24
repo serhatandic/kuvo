@@ -182,6 +182,13 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sign-in/status", feature: "sign-in.codes", answers: { 200: SIGN_IN_STATUS } },
   // Start signing in by one of an account's ways: its page, code and how it ends.
   { route: "POST kuvo/sign-in/start", feature: "sign-in.methods", body: object({ methodID: string, "answer?": any, "browserReturn?": bool }), answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 409: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
+  // The native sign-in for a coding-agent account.
+  { route: "POST kuvo/agents/api/integration/:provider/connect/oauth", feature: "agents.accounts", body: object({ methodID: string, "remote?": bool, "browserReturn?": bool }), answers: { 200: object({ data: SIGN_IN_STARTED, location: object({ directory: string }) }), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
+  { route: "GET kuvo/agents/api/integration/:provider/connect/oauth/:attempt", feature: "agents.accounts", answers: { 200: object({ data: SIGN_IN_STATUS, location: object({ directory: string }) }), 404: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/agents/api/integration/:provider/connect/oauth/:attempt/complete", feature: "agents.accounts", body: object({ code: string }), answers: { 200: object({}), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
+  { route: "DELETE kuvo/agents/api/integration/:provider/connect/oauth/:attempt", feature: "agents.accounts", answers: { 200: object({}), 404: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/agents/api/integration/:provider/connect/key", feature: "agents.accounts", body: object({ key: string }), answers: { 200: object({}), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/agents/api/integration/:provider/disconnect", feature: "agents.accounts", answers: { 200: object({}), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
   // Searches reachable computers when asked and names computers whose search could not run.
   { route: "GET kuvo/setup/search", feature: "search.setup", answers: { 200: SEARCH_FOUND } },
   // Sessions whose conversation has the words searched for, the latest first.

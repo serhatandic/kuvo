@@ -688,6 +688,10 @@ export const BOX_ROUTES: RouteShape[] = [
   // Who `&` can name: this box's bots and latest sessions, then those your other computers told of.
   { route: "GET kuvo/named", feature: "named", answers: { 200: NAMED } },
   // The plans whose sign-in ended and couldn't be renewed, until one works again.
+  // Manage a separate account in its own coding-agent folder.
+  { route: "POST kuvo/agents/api/kuvo/accounts", feature: "agents.accounts", body: object({ "agent?": string, "provider?": string, "label?": string }), answers: { 200: object({ data: object({ providerID: string }) }), 400: object({ message: string }), 503: object({ message: string }) } },
+  { route: "PATCH kuvo/agents/api/kuvo/accounts/:provider", feature: "agents.accounts", body: object({ "label?": string }), answers: { 200: object({}), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
+  { route: "DELETE kuvo/agents/api/kuvo/accounts/:provider", feature: "agents.accounts", answers: { 200: object({}), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/accounts/ended", feature: "accounts.ended", answers: { 200: ENDED } },
   // Disconnect a plan: this box's sign-ins and keys for it removed.
   { route: "POST kuvo/accounts/:provider/forget", feature: "accounts.ended", answers: { 200: NOTHING } },

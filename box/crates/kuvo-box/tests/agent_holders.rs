@@ -1,14 +1,21 @@
 // Real Rust controller and holder, with this test binary standing in for a line-based agent.
 // Each controller is a separate process, so killing one tests OS process ownership as well as replay.
-use kuvo_agents::hold::{Controller, Directory, HoldKind, Limits, Output, Replay, Start};
+use kuvo_agents::{
+    accounts::{Account, AgentKind},
+    hold::{Controller, Directory, HoldKind, Limits, Output, Record, Start, TurnNote},
+    roster::{Agent, Factory},
+    runtime::{AdapterCall, Adoption, Runtime},
+};
 use kuvo_os::platform::Environment;
 use kuvo_store::home::Home;
 use serde_json::json;
 use std::{
+    collections::{BTreeMap, HashMap},
     env, fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::Arc,
     time::Duration,
 };
 
@@ -155,9 +162,10 @@ fn controller_probe() {
 }
 
 async fn drive(root: PathBuf, binary: PathBuf, mode: String) {
-    let directory = Directory::for_home(&Home::new(root.clone()).unwrap());
+    let runtime = Runtime::for_home(&Home::new(root.clone()).unwrap());
     if mode == "original" {
-        let mut active = directory
+        let mut active = runtime
+            .holders()
             .start(
                 &binary,
                 Start {
@@ -202,51 +210,99 @@ async fn drive(root: PathBuf, binary: PathBuf, mode: String) {
         announce(&active);
         std::future::pending::<()>().await;
     } else {
-        let records = directory.records().await.unwrap();
-        let [record] = records.as_slice() else {
-            panic!("Expected one live Rust holder")
-        };
-        let turns = record.turns().unwrap();
-        assert_eq!(turns["thread"].session, "ses_held");
-        let mut active = directory
-            .adopt(record, Replay::Complete(turns["thread"].from))
-            .await
-            .unwrap();
-        let mut before = 0;
-        loop {
-            match active.output.next().await.unwrap() {
-                Output::Line { line, .. } if line == "before" => before += 1,
-                Output::Line { line, again, .. } if line == ASK => {
-                    assert!(!again);
-                    break;
+        let factories = HashMap::from([(
+            AgentKind::Codex,
+            Arc::new(FixtureFactory) as Arc<dyn Factory>,
+        )]);
+        let (roster, failures) = runtime.activate(&factories).await.unwrap();
+        assert_eq!(roster.all().len(), 1);
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+}
+
+struct FixtureFactory;
+
+impl Factory for FixtureFactory {
+    fn create(&self, account: &Account, home: Option<PathBuf>) -> std::io::Result<Arc<dyn Agent>> {
+        assert_eq!(account.id, "default");
+        assert!(home.is_none());
+        Ok(Arc::new(FixtureAdapter))
+    }
+}
+
+struct FixtureAdapter;
+
+impl Agent for FixtureAdapter {
+    fn probe_account(
+        &self,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<kuvo_agents::account_check::AccountStatus, kuvo_agents::account_check::CheckFailure>,
+    > {
+        Box::pin(async { Err(kuvo_agents::account_check::CheckFailure::TimedOut) })
+    }
+
+    fn models(&self, _: bool) -> AdapterCall<'_, kuvo_agents::catalog::Models> {
+        Box::pin(async { Ok(kuvo_agents::catalog::Models::default()) })
+    }
+
+    fn shutdown(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl Adoption for FixtureAdapter {
+    fn accepts(&self, _: &Record, turns: &BTreeMap<String, TurnNote>) -> bool {
+        turns.contains_key("thread")
+    }
+
+    fn attach<'a>(
+        &'a self,
+        account: &'a Account,
+        _: Record,
+        turns: BTreeMap<String, TurnNote>,
+        mut active: Controller,
+    ) -> AdapterCall<'a, ()> {
+        Box::pin(async move {
+            assert_eq!(account.provider().to_string(), "codex-cli");
+            assert_eq!(turns["thread"].session, "ses_held");
+            let mut before = 0;
+            loop {
+                match active.output.next().await.unwrap() {
+                    Output::Line { line, .. } if line == "before" => before += 1,
+                    Output::Line { line, again, .. } if line == ASK => {
+                        assert!(!again);
+                        break;
+                    }
+                    Output::Line { .. } => {}
+                    frame => panic!("Unexpected holder output: {frame:?}"),
                 }
-                Output::Line { .. } => {}
-                frame => panic!("Unexpected holder output: {frame:?}"),
             }
-        }
-        assert_eq!(before, 1);
-        active.input.unpin().await.unwrap();
-        active.input.write(REPLY).await.unwrap();
-        assert!(
-            matches!(active.output.next().await.unwrap(), Output::Line { line, .. } if line == "after")
-        );
-        active.input.end().await.unwrap();
-        loop {
-            match active.output.next().await.unwrap() {
-                Output::Exited { exit } => {
-                    assert_eq!(exit.code, Some(0));
-                    break;
+            assert_eq!(before, 1);
+            active.input.unpin().await.unwrap();
+            active.input.write(REPLY).await.unwrap();
+            assert!(
+                matches!(active.output.next().await.unwrap(), Output::Line { line, .. } if line == "after")
+            );
+            active.input.end().await.unwrap();
+            loop {
+                match active.output.next().await.unwrap() {
+                    Output::Exited { exit } => {
+                        assert_eq!(exit.code, Some(0));
+                        break;
+                    }
+                    Output::Line { .. } => {}
+                    frame => panic!("Unexpected holder output: {frame:?}"),
                 }
-                Output::Line { .. } => {}
-                frame => panic!("Unexpected holder output: {frame:?}"),
             }
-        }
-        active.input.bye().await.unwrap();
-        assert_eq!(
-            active.output.next().await.unwrap_err().kind(),
-            std::io::ErrorKind::UnexpectedEof
-        );
-        announce(&active);
+            active.input.bye().await.unwrap();
+            assert_eq!(
+                active.output.next().await.unwrap_err().kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+            announce(&active);
+            Ok(())
+        })
     }
 }
 
@@ -316,4 +372,152 @@ fn scans_only_live_rust_holders_and_leaves_typescript_records_alone() {
         fs::read_to_string(legacy_record).unwrap(),
         stale.to_string()
     );
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+#[test]
+fn keeper_release_switch_adopts_the_residents_running_holder() {
+    use kuvo_os::process::ProcessIdentity;
+
+    const OLD: &str = "versions/0.8.0-beta.1-123456789abc/bin";
+    const NEW: &str = "versions/0.8.0-beta.2-123456789abc/bin";
+    let scratch = scratch();
+    let root = scratch.path().join("state");
+    #[cfg(windows)]
+    kuvo_os::windows::private_home(&root, true).unwrap();
+    kuvo_store::layout::open(&Home::new(root.clone()).unwrap()).unwrap();
+    let binary = env::var_os("KUVO_HOLDER_TEST_BOX")
+        .map_or_else(
+            || PathBuf::from(env!("CARGO_BIN_EXE_kuvo-box")),
+            PathBuf::from,
+        )
+        .canonicalize()
+        .unwrap();
+    for (release, version) in [(OLD, "0.8.0-beta.1"), (NEW, "0.8.0-beta.2")] {
+        let bin = root.join(release);
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            bin.join("../box.json"),
+            json!({"kuvo":"box/1","version":version,"launch":"rust"}).to_string(),
+        )
+        .unwrap();
+        let executable = bin.join(binary.file_name().unwrap());
+        fs::hard_link(&binary, &executable)
+            .or_else(|_| fs::copy(&binary, &executable).map(drop))
+            .unwrap();
+    }
+    fs::create_dir_all(root.join("run")).unwrap();
+    fs::write(
+        root.join("run/agent-fixture-program"),
+        env::current_exe().unwrap().to_str().unwrap(),
+    )
+    .unwrap();
+    let profile = scratch.path().join("profile");
+    fs::create_dir(&profile).unwrap();
+
+    let keeper = KeeperFixture {
+        binary,
+        root,
+        profile,
+    };
+    keeper.control(&["select", OLD]);
+    let _worker = Probe(keeper.command().arg("keep").spawn().unwrap());
+    let first = fixture_until("the first release to publish its ready resident", || {
+        let id = fs::read_to_string(keeper.root.join("run/link.pid")).ok()?;
+        let identity = ProcessIdentity::read(id.trim().parse().ok()?).ok()??;
+        keeper.ready(&id).then_some(identity)
+    });
+
+    fs::write(keeper.root.join("run/agent-fixture-begin"), b"").unwrap();
+    let started = fixture_until("the first resident to start a held turn", || {
+        fixture_checkpoint(&keeper.root, "agent-fixture-started")
+    });
+    assert_eq!(started["resident"], first.pid);
+    assert_eq!(started["generation"], 1);
+
+    keeper.control(&["select", NEW]);
+    let finished = fixture_until("the new release to finish the held turn", || {
+        fixture_checkpoint(&keeper.root, "agent-fixture-finished")
+    });
+    let second = finished["resident"].as_u64().unwrap() as u32;
+    assert_ne!(second, first.pid);
+    assert_eq!(finished["agent"], started["agent"]);
+    assert_eq!(finished["holder"], started["holder"]);
+    assert_eq!(finished["generation"], 2);
+    fixture_until(
+        "the new resident to answer and the keeper to confirm its trial",
+        || {
+            (keeper.ready(&second.to_string())
+                && !keeper.root.join("run/previous").exists()
+                && fs::read_to_string(keeper.root.join(kuvo_keeper::SELECTOR))
+                    .ok()?
+                    .as_str()
+                    == NEW)
+                .then_some(())
+        },
+    );
+    keeper.control(&["off"]);
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+struct KeeperFixture {
+    binary: PathBuf,
+    root: PathBuf,
+    profile: PathBuf,
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+impl KeeperFixture {
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.binary);
+        command
+            .env_clear()
+            .envs(environment(&self.profile))
+            .env("KUVO_HOME", &self.root)
+            .stdin(Stdio::null());
+        command
+    }
+
+    fn control(&self, args: &[&str]) {
+        let result = self.command().arg("keep").args(args).output().unwrap();
+        assert!(
+            result.status.success(),
+            "keeper {args:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    fn ready(&self, pid: &str) -> bool {
+        self.command()
+            .args(["resident-info", pid.trim()])
+            .output()
+            .is_ok_and(|result| result.status.success())
+    }
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+impl Drop for KeeperFixture {
+    fn drop(&mut self) {
+        let _ = self.command().args(["keep", "off"]).output();
+    }
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+fn fixture_until<T>(what: &str, mut read: impl FnMut() -> Option<T>) -> T {
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(value) = read() {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "Timed out waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+fn fixture_checkpoint(root: &Path, name: &str) -> Option<serde_json::Value> {
+    serde_json::from_slice(&fs::read(root.join("run").join(name)).ok()?).ok()
 }
