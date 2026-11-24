@@ -153,7 +153,7 @@ impl Restores {
             async move {
                 typed(
                     service
-                        .from_client(call.request.caller, call.request.body.as_ref(), true)
+                        .answer_client(call.request.caller, call.request.body.as_ref(), true)
                         .await?,
                 )
             }
@@ -164,14 +164,14 @@ impl Restores {
             async move {
                 typed(
                     service
-                        .from_client(call.request.caller, call.request.body.as_ref(), false)
+                        .answer_client(call.request.caller, call.request.body.as_ref(), false)
                         .await?,
                 )
             }
         });
     }
 
-    pub async fn from_peer(&self, read: Read) -> Answer {
+    pub async fn answer_peer(&self, read: Read) -> Answer {
         if read.item != ROUTE || read.kind != Kind::Record {
             return Answer {
                 status: 404,
@@ -187,7 +187,7 @@ impl Restores {
         }
     }
 
-    async fn from_client(
+    async fn answer_client(
         &self,
         caller: Caller,
         bytes: &[u8],

@@ -259,13 +259,15 @@ pub async fn run(
     let work_queue = kuvo_work::queue::register(
         &mut routes,
         home,
-        peers.reader(),
         sessions.clone(),
         engine.clone(),
         setup.handle(),
-        peers.relay_handle(),
-        memory.clone(),
-        owners.clone(),
+        kuvo_work::queue::Network {
+            peers: peers.reader(),
+            relay: peers.relay_handle(),
+            memory: memory.clone(),
+            owners: owners.clone(),
+        },
     )
     .await?;
     let queue_reads = work_queue.peer_reads();
@@ -368,7 +370,8 @@ pub async fn run(
     );
     approvals.register(&mut routes);
     let approvals_kept = approvals.keep();
-    let work_settings = kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
+    let work_settings =
+        kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
     let working = sessions.clone();
     let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
     let work = kuvo_work::work::Work::new(

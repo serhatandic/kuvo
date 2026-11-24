@@ -85,13 +85,15 @@ impl Writer {
                     return Err(bad("It's deleted: bring it back first."));
                 }
                 writer.edit_fields(
-                    &all,
                     item,
                     &fields,
                     &staged,
-                    now,
-                    &people,
-                    &json!({"user":true}),
+                    ChangeContext {
+                        all: &all,
+                        people: &people,
+                        now,
+                        who: &json!({"user":true}),
+                    },
                     |row| {
                         writer.observe_known(row, &item.id);
                         Ok(())
@@ -179,23 +181,17 @@ impl Writer {
 
     pub(super) fn edit_fields(
         &self,
-        all: &[Item],
         item: &Item,
         fields: &Value,
         staged: &Staged,
-        now: i64,
-        people: &Assignees,
-        who: &Value,
+        context: ChangeContext<'_>,
         revise: impl FnOnce(&mut Value) -> Result<(), Refusal>,
     ) -> Result<Value, Refusal> {
         self.edit_row(
-            all,
             item,
             fields,
             staged,
-            now,
-            people,
-            who,
+            context,
             Value::Object(item.saved.clone()),
             |row, _| revise(row),
         )
@@ -203,19 +199,22 @@ impl Writer {
 
     pub(super) fn edit_row(
         &self,
-        all: &[Item],
         item: &Item,
         fields: &Value,
         staged: &Staged,
-        now: i64,
-        people: &Assignees,
-        who: &Value,
+        context: ChangeContext<'_>,
         mut row: Value,
         revise: impl FnOnce(
             &mut Value,
             &mut std::collections::BTreeMap<String, Document>,
         ) -> Result<(), Refusal>,
     ) -> Result<Value, Refusal> {
+        let ChangeContext {
+            all,
+            people,
+            now,
+            who,
+        } = context;
         let mut documents = std::collections::BTreeMap::<String, Document>::new();
         let previous = item.status.as_str();
         let new_status = fields
@@ -385,9 +384,11 @@ impl Writer {
                 }
             };
             if neighbor(&peers).is_some_and(|order| (order - peers[anchor].1).abs() < 1e-6) {
-                let moving = status_changed
-                    .then(|| place(all, Some(&item.id), new_status, to_top))
-                    .unwrap_or(item.order);
+                let moving = if status_changed {
+                    place(all, Some(&item.id), new_status, to_top)
+                } else {
+                    item.order
+                };
                 let before_moving = peers
                     .iter()
                     .filter(|(other, order)| {

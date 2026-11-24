@@ -112,7 +112,7 @@ impl PeerReads {
     pub async fn answer(&self, read: Read) -> Answer {
         if read.area.is_some() {
             if self.serves_ownership(&read) {
-                return self.restore_labels.from_peer(read).await;
+                return self.restore_labels.answer_peer(read).await;
             }
             return Answer {
                 status: 404,

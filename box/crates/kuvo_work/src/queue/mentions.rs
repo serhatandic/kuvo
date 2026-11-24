@@ -361,11 +361,8 @@ pub(super) fn recover(parser: &Mentions, items: &mut [Item]) {
     let updates: Vec<_> = items
         .iter()
         .enumerate()
-        .filter_map(|(index, item)| {
-            Index::read(item)
-                .is_none()
-                .then(|| (index, Index::rebuild(parser, item, items, None)))
-        })
+        .filter(|(_, item)| Index::read(item).is_none())
+        .map(|(index, item)| (index, Index::rebuild(parser, item, items, None)))
         .collect();
     for (index, rebuilt) in updates {
         let saved = &mut items[index].saved;
