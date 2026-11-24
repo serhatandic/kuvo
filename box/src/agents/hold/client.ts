@@ -287,7 +287,8 @@ export function stopAllHeld() {
   }
 }
 
-type Exit = { code: number | null; signal: string | null }
+/** How it ended; `heardAll`: all it said on stderr came (none held it open past the holder's wait). */
+type Exit = { code: number | null; signal: string | null; heardAll?: boolean }
 
 /**
  * An agent's process under a holder, as this bridge drives it: lines it wrote (each once, in order,
@@ -400,7 +401,7 @@ export class Held {
           else this.earlyErrors.push(frame.e)
         } else if (frame.x) {
           this.heardEnd = true
-          exit({ code: frame.x.code ?? null, signal: frame.x.signal ?? null })
+          exit({ code: frame.x.code ?? null, signal: frame.x.signal ?? null, heardAll: frame.x.heardAll === true })
           this.send({ ack: this.seen })
           if (!this.provisional) this.send({ bye: true })
         } else if (typeof frame.prepared === "boolean") {
