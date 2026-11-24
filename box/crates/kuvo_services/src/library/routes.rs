@@ -204,10 +204,19 @@ pub fn register(
         let p = p.clone();
         let params = parse_query(&call.request.path);
         async move {
-            let filter = filter_of(&params)
-                .map_err(|msg| Refusal::new(StatusCode::BAD_REQUEST, msg))?;
             let query = list_query_string(&params);
-            let here = own_part(&h, p.as_deref(), &filter);
+            let here = match filter_of(&params) {
+                Ok(filter) => own_part(&h, p.as_deref(), &filter),
+                Err(_) => Asked {
+                    computer: local_computer(&h, p.as_deref()),
+                    state: PartState::Failed(
+                        "This computer’s Library can’t be read right now. Try again in a moment."
+                            .to_owned(),
+                    ),
+                    part: None,
+                    seen: None,
+                },
+            };
             let there = match p.as_deref() {
                 Some(peers) => peers.ask_peers(&query).await,
                 None => Vec::new(),
@@ -228,8 +237,7 @@ pub fn register(
         let params = parse_query(&call.request.path);
         let cancel = call.cancel.clone();
         async move {
-            let filter = filter_of(&params)
-                .map_err(|msg| Refusal::new(StatusCode::BAD_REQUEST, msg))?;
+            let filter = filter_of(&params).ok();
             let query = list_query_string(&params);
             let local_rx = match &h {
                 LibraryHandle::Ready(service) => Some(service.store().subscribe()),
@@ -278,7 +286,18 @@ pub fn register(
                                 there = peers.ask_peers(&query).await;
                             }
                         }
-                        let here = own_part(&h, p.as_deref(), &filter);
+                        let here = match &filter {
+                            Some(f) => own_part(&h, p.as_deref(), f),
+                            None => Asked {
+                                computer: local_computer(&h, p.as_deref()),
+                                state: PartState::Failed(
+                                    "This computer’s Library can’t be read right now. Try again in a moment."
+                                        .to_owned(),
+                                ),
+                                part: None,
+                                seen: None,
+                            },
+                        };
                         let mut all = Vec::with_capacity(1 + there.len());
                         all.push(here);
                         all.extend(there.clone());

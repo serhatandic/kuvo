@@ -187,8 +187,10 @@ pub struct RecorderOptions {
     pub handed: Option<HandedHook>,
 }
 
+pub type FolderMaker = Arc<dyn Fn(&str) -> Made + Send + Sync>;
+
 struct Context {
-    made: Arc<dyn Fn(&str) -> Made + Send + Sync>,
+    made: FolderMaker,
     bot: Option<String>,
     folder: Option<String>,
 }
@@ -214,7 +216,7 @@ impl Recorder {
         remember_map(&mut st.parts, &mut st.parts_order, prompt.to_owned(), chat.to_owned());
     }
 
-    pub fn made_in_folder(&self, bot: &str) -> Option<Arc<dyn Fn(&str) -> Made + Send + Sync>> {
+    pub fn made_in_folder(&self, bot: &str) -> Option<FolderMaker> {
         self.state
             .lock()
             .unwrap()
@@ -603,24 +605,25 @@ impl Recorder {
         }
 
         let show_screenshot = input.get("show").and_then(Value::as_bool).unwrap_or(false);
-        if is_maker_tool(&name) && (name != "browser_screenshot" || show_screenshot) {
-            if let Some(parts) = content.and_then(Value::as_array) {
-                for part in parts {
-                    if part.get("type").and_then(Value::as_str) != Some("file") {
-                        continue;
-                    }
-                    let Some(uri) = part.get("uri").and_then(Value::as_str) else {
-                        continue;
-                    };
-                    let Some(file_path) = file_uri_to_path(uri) else {
-                        continue;
-                    };
-                    let path = absolute(&file_path);
-                    let made = (ctx.made)(&name);
-                    self.store.change(&path, made.clone()).await;
-                    if name == "generate_image" {
-                        self.emit_handed(&made, &path, How::Generated, message_id, part_id);
-                    }
+        if is_maker_tool(&name)
+            && (name != "browser_screenshot" || show_screenshot)
+            && let Some(parts) = content.and_then(Value::as_array)
+        {
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) != Some("file") {
+                    continue;
+                }
+                let Some(uri) = part.get("uri").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(file_path) = file_uri_to_path(uri) else {
+                    continue;
+                };
+                let path = absolute(&file_path);
+                let made = (ctx.made)(&name);
+                self.store.change(&path, made.clone()).await;
+                if name == "generate_image" {
+                    self.emit_handed(&made, &path, How::Generated, message_id, part_id);
                 }
             }
         }

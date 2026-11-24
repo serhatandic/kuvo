@@ -6,8 +6,9 @@ import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "no
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { boxBinary, boxCommand, isolatedEnv, scratch } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, scratch, until } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { seedPeerSetup } from "./peer-fixture.mjs";
 
 const sha256 = data => createHash("sha256").update(data).digest("hex");
 const artId = filePath => "art_" + sha256(filePath).slice(0, 24);
@@ -233,7 +234,11 @@ test("library routes: list, filter, hide, gone fallback, backfill and format ref
   assert.deepEqual((await ask("GET", "kuvo/library?source=you")).json.items.map(i => i.name), ["brief.pdf"]);
   assert.deepEqual((await ask("GET", "kuvo/library?kind=document")).json.items.map(i => i.name), ["brief.pdf"]);
   assert.deepEqual((await ask("GET", "kuvo/library?q=ada")).json.items.map(i => i.name), ["hero.png", "deleted.png"]);
-  assert.equal((await ask("GET", "kuvo/library?kind=video")).status, 400);
+  const badKind = await ask("GET", "kuvo/library?kind=video");
+  assert.equal(badKind.status, 200);
+  assert.deepEqual(badKind.json.items, []);
+  assert.equal(badKind.json.computers[0].state, "failed");
+  assert.equal((await ask("GET", "kuvo/setup/library/events?kind=video")).status, 400);
 
   // Gone image opens from artifact copy
   const goneFile = await ask("GET", `kuvo/library/${libId(goneImg)}/file`);
@@ -269,7 +274,7 @@ test("library backfill runs once from saved sessions", async t => {
   const { computer } = await bench(t);
   const box = await computer("Backfill");
   const project = path.join(realpathSync(box.home), "project");
-  const saved = path.join(box.home, "sessions", "ses_old");
+  const saved = path.join(box.home, "agents", "sessions", "ses_old");
   mkdirSync(project, { recursive: true });
   mkdirSync(saved, { recursive: true });
   const deck = path.join(project, "deck.pdf");
@@ -325,4 +330,169 @@ test("artifact version binary bytes come back whole over route command", async t
   assert.equal(answer.status, 200);
   assert.equal(answer.type, "image/png");
   assert.deepEqual(Buffer.from(answer.bodyBase64, "base64"), png);
+});
+
+test("library thumbnails, followed event lines, and future library format refusal", async t => {
+  const { computer } = await bench(t);
+  const box = await computer("StreamsAndThumbs");
+  const project = path.join(realpathSync(box.home), "project");
+  mkdirSync(project, { recursive: true });
+  const img = path.join(project, "pixel.png");
+  const bin = path.join(project, "archive.bin");
+  // Minimal valid 1x1 PNG
+  const png = Buffer.from(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c63f8cfc000000301010018dd8db00000000049454e44ae426082",
+    "hex",
+  );
+  writeFileSync(img, png);
+  writeFileSync(bin, Buffer.from([0, 1, 2, 3, 4]));
+  const imgHex = sha256(png);
+  seedArtifacts(
+    box.home,
+    [{
+      a: {
+        id: artId(img), path: img, name: "pixel.png", kind: "image", type: "image/png",
+        where: { bots: ["bot_ada"], project, sessions: ["ses_s1"], groups: [] },
+        pinned: null, gone: null, updated: "2026-10-26T10:00:00.000Z",
+      },
+      v: {
+        n: 1, at: "2026-10-26T10:00:00.000Z", by: { kind: "agent", bot: "bot_ada" },
+        via: ["generate_image"], status: "added", edits: 1, size: png.length, hash: "sha256:" + imgHex, kept: true,
+      },
+    }],
+    [[imgHex, png]],
+  );
+  seedLibrary(box.home, [
+    { id: libId(img), path: img, name: "pixel.png", kind: "image", type: "image/png", how: "generated", bot: "bot_ada", session: "ses_s1", at: "2026-10-26T10:05:00.000Z" },
+    { id: libId(bin), path: bin, name: "archive.bin", kind: "other", type: "application/octet-stream", how: "attached", session: "ses_s1", at: "2026-10-26T10:04:00.000Z" },
+  ]);
+
+  const ask = box.connect(await box.start().ready());
+
+  // Thumbnail for PNG returns PNG bytes; non-thumbnailable returns 404
+  const thumb = await ask("GET", `kuvo/library/${libId(img)}/thumbnail`);
+  assert.equal(thumb.status, 200);
+  assert.equal(thumb.bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.equal((await ask("GET", `kuvo/library/${libId(bin)}/thumbnail`)).status, 404);
+
+  // Merged setup library and setup outputs over kuvo/line?once=1
+  const watch = Buffer.from(JSON.stringify({
+    lib: "kuvo/setup/library/events",
+    outputs: "kuvo/setup/outputs/events?session=ses_s1",
+  })).toString("base64url");
+  const line = await ask("GET", `kuvo/line?once=1&watch=${watch}`);
+  assert.equal(line.status, 200, line.text);
+  const frames = line.text.trim().split("\n").map(s => JSON.parse(s));
+  const libFrame = frames.find(f => f.t === "lib");
+  const outFrame = frames.find(f => f.t === "outputs");
+  assert.ok(libFrame, `missing lib frame in ${line.text}`);
+  assert.deepEqual(libFrame.d.items.map(i => i.name), ["pixel.png", "archive.bin"]);
+  assert.ok(outFrame, `missing outputs frame in ${line.text}`);
+  assert.deepEqual(outFrame.d.artifacts.map(a => a.name), ["pixel.png"]);
+});
+
+test("future library log formatVersion is refused without modifying the log", async t => {
+  const { computer } = await bench(t);
+  const box = await computer("FutureLibFormat");
+  const logFile = path.join(box.home, "library", "log.jsonl");
+  mkdirSync(path.dirname(logFile), { recursive: true });
+  const futureLine = '{"formatVersion":2}\n';
+  writeFileSync(logFile, futureLine);
+  writeFileSync(path.join(box.home, "library", "backfill.json"), JSON.stringify({ done: 1 }));
+  const ask = box.connect(await box.start().ready());
+  const list = await ask("GET", "kuvo/library");
+  assert.equal(list.status, 200);
+  assert.equal(list.json.computers[0].state, "failed");
+  assert.equal(readFileSync(logFile, "utf8"), futureLine);
+});
+
+test("merged Library and Outputs views include away peers' kept copies and pending computers", { timeout: 30000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const near = await computer("Studio");
+  const livePeer = await computer("Spare");
+  const { main, member, spare, save } = seedPeerSetup(near.home, relay.url, 1, 3);
+  seedPeerSetup(livePeer.home, relay.url, 3, 3);
+  const seen = 1_700_000_000_000;
+
+  // Local library item for bot_ada
+  const project = path.join(realpathSync(near.home), "project");
+  mkdirSync(project, { recursive: true });
+  const localBrief = path.join(project, "brief.pdf");
+  writeFileSync(localBrief, "%PDF-1.4 local");
+  seedLibrary(near.home, [
+    { id: libId(localBrief), path: localBrief, name: "brief.pdf", kind: "document", type: "application/pdf", how: "shown", bot: "bot_ada", session: "ses_near", at: "2026-10-26T10:00:00.000Z" },
+  ]);
+
+  // Lab (member) is away with kept library-v1.json, outputs-v1.json, and lists-v1.json (delegated session);
+  // Spare is connected on the relay with its mail held so its first copy hasn't arrived yet -> pendingComputers.
+  const catalog = { agents: [], offered: { known: { engine: false, agents: false }, models: [] } };
+  save("run/peer-agents.json", {
+    [member.key]: { at: seen, heard: seen, list: [], kind: member.kind, features: ["library", "line.merged-library", "artifacts", "line.merged-outputs"] },
+  });
+  save("run/peer-reach.json", { [member.key]: seen });
+  save("run/peer-reach-checked.json", { [member.key]: Date.now() });
+  save(`run/peers/${member.key}/lists-v1.json`, {
+    at: seen, seen,
+    sessions: [{ id: "ses_far", facts: { kind: "chat", directory: "/scratch", title: "Delegated", created: 10, updated: 20, parent: "ses_near" }, actions: ["open", "manage"] }],
+    projects: [], queues: [], waiting: [], catalog,
+  });
+  save(`run/peers/${member.key}/library-v1.json`, {
+    at: seen, seen,
+    items: [{
+      id: "lib_" + "a".repeat(24), name: "brief.pdf", kind: "document", type: "application/pdf",
+      how: "shown", path: "/far/brief.pdf", bot: "bot_ada", session: "ses_far",
+      at: Date.parse("2026-10-26T10:05:00.000Z") / 1000, there: true, thumbnail: false,
+    }],
+    sources: { bots: [{ id: "bot_ada", name: "Ada" }], you: false },
+    botNames: { bot_ada: "Ada" },
+  });
+  save(`run/peers/${member.key}/outputs-v1.json`, {
+    at: seen, seen,
+    artifacts: [{
+      id: "art_" + "b".repeat(24), path: "/far/delegated.txt", name: "delegated.txt", kind: "document",
+      type: "text/plain", gone: null, updated: Date.parse("2026-10-26T10:06:00.000Z") / 1000, pinned: false,
+      latest: { n: 1, hash: "sha256:" + "c".repeat(64) }, sessions: ["ses_far"],
+    }],
+  });
+
+  const from = Buffer.from(spare.address, "base64url");
+  const to = Buffer.from(main.address, "base64url");
+  const release = relay.intercept(from, to, () => true);
+  t.after(release);
+  await livePeer.start().ready();
+  await until(() => relay.has(from), "Spare did not connect to the relay");
+
+  const ask = near.connect(await near.start().ready());
+  const watch = Buffer.from(JSON.stringify({
+    lib: "kuvo/setup/library/events?source=bot_ada&kind=document&q=brief",
+    outputs: "kuvo/setup/outputs/events?session=ses_near",
+  })).toString("base64url");
+  const line = await ask("GET", `kuvo/line?once=1&watch=${watch}`);
+  assert.equal(line.status, 200, line.text);
+  const frames = line.text.trim().split("\n").map(s => JSON.parse(s));
+
+  const libFrame = frames.find(f => f.t === "lib");
+  assert.ok(libFrame, `missing lib frame in ${line.text}`);
+  assert.deepEqual(
+    libFrame.d.items.map(i => ({ name: i.name, there: i.there, computer: i.computer.name })),
+    [
+      { name: "brief.pdf", there: false, computer: member.name },
+      { name: "brief.pdf", there: true, computer: main.name },
+    ],
+  );
+  const labComp = libFrame.d.computers.find(c => c.key === member.key);
+  assert.equal(labComp.state, "away");
+  assert.equal(typeof labComp.seen, "number");
+  assert.ok(
+    libFrame.d.pendingComputers.some(c => c.id === spare.key && c.name === spare.name),
+    `expected ${spare.name} in pendingComputers: ${JSON.stringify(libFrame.d.pendingComputers)}`,
+  );
+
+  const outFrame = frames.find(f => f.t === "outputs");
+  assert.ok(outFrame, `missing outputs frame in ${line.text}`);
+  assert.equal(outFrame.d.artifacts.length, 1);
+  assert.equal(outFrame.d.artifacts[0].name, "delegated.txt");
+  assert.equal(outFrame.d.artifacts[0].computer.id, member.key);
+  assert.equal(outFrame.d.artifacts[0].away, true);
+  assert.equal(typeof outFrame.d.artifacts[0].lastSeen, "number");
 });

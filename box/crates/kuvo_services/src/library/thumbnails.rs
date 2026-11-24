@@ -41,12 +41,14 @@ impl ThumbnailPlatform {
     }
 }
 
+type InFlight = Arc<Mutex<HashMap<String, watch::Receiver<Option<Option<Vec<u8>>>>>>>;
+
 #[derive(Clone)]
 pub struct Thumbnails {
     folder: PathBuf,
     platform: ThumbnailPlatform,
     slots: Arc<Semaphore>,
-    in_flight: Arc<Mutex<HashMap<String, watch::Receiver<Option<Option<Vec<u8>>>>>>>,
+    in_flight: InFlight,
 }
 
 impl Thumbnails {

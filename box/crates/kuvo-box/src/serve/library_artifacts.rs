@@ -69,7 +69,7 @@ impl ResidentLibraryArtifacts {
         let artifacts_root = home.join("artifacts");
         let library_root = home.join("library");
         let bots_dir = home.join("bots");
-        let sessions_dir = home.join("sessions");
+        let sessions_dir = home.join("agents").join("sessions");
         let run_dir = home.join("run");
 
         let prev_checkpoints = load_citation_checkpoints(&artifacts_root);
@@ -506,7 +506,7 @@ impl LibraryPeers for PeerAdapter {
         body: Option<Map<String, Value>>,
     ) -> kuvo_services::library::peers::PeerFuture<'a, Result<(u16, Value), (u16, String)>> {
         Box::pin(async move {
-            let Ok(key) = decode_exact::<32>(computer_key) else {
+            let Some(key) = decode_exact::<32>(computer_key) else {
                 return Err((404, "That computer isn’t one of yours any more.".to_owned()));
             };
             let view = self.peers.view();
@@ -657,40 +657,39 @@ async fn sync_peer_snapshots(
                 match res {
                     Ok(event) => {
                         if let RelayEvent::Mail { key, envelope, .. } = event.as_ref() {
-                            if let Ok(payload) = serde_json::from_slice::<Value>(&envelope.payload) {
-                                let key_str = encode(key);
-                                let now = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .map_or(0, |d| d.as_millis() as i64);
-                                let mut updated = false;
-                                if let Some(lib_copy) = payload.get("libraryCopy").and_then(Value::as_object) {
-                                    let mut doc = lib_copy.clone();
-                                    doc.insert("at".into(), Value::from(now));
-                                    doc.insert("seen".into(), Value::from(now));
-                                    if let Ok(bytes) = serde_json::to_vec(&Value::Object(doc)) {
-                                        let _ = kuvo_store::files::write_secret(
-                                            &run.join("peers").join(&key_str).join(LIBRARY_FILE),
-                                            &bytes,
-                                        );
-                                        updated = true;
-                                    }
+                            let payload = &envelope.0;
+                            let key_str = encode(key);
+                            let now = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map_or(0, |d| d.as_millis() as i64);
+                            let mut updated = false;
+                            if let Some(lib_copy) = payload.get("libraryCopy").and_then(Value::as_object) {
+                                let mut doc = lib_copy.clone();
+                                doc.insert("at".into(), Value::from(now));
+                                doc.insert("seen".into(), Value::from(now));
+                                if let Ok(bytes) = serde_json::to_vec(&Value::Object(doc)) {
+                                    let _ = kuvo_store::files::write_secret(
+                                        &run.join("peers").join(&key_str).join(LIBRARY_FILE),
+                                        &bytes,
+                                    );
+                                    updated = true;
                                 }
-                                if let Some(out_copy) = payload.get("outputCopy").and_then(Value::as_object) {
-                                    let mut doc = out_copy.clone();
-                                    doc.insert("at".into(), Value::from(now));
-                                    doc.insert("seen".into(), Value::from(now));
-                                    if let Ok(bytes) = serde_json::to_vec(&Value::Object(doc)) {
-                                        let _ = kuvo_store::files::write_secret(
-                                            &run.join("peers").join(&key_str).join(OUTPUTS_FILE),
-                                            &bytes,
-                                        );
-                                        updated = true;
-                                    }
+                            }
+                            if let Some(out_copy) = payload.get("outputCopy").and_then(Value::as_object) {
+                                let mut doc = out_copy.clone();
+                                doc.insert("at".into(), Value::from(now));
+                                doc.insert("seen".into(), Value::from(now));
+                                if let Ok(bytes) = serde_json::to_vec(&Value::Object(doc)) {
+                                    let _ = kuvo_store::files::write_secret(
+                                        &run.join("peers").join(&key_str).join(OUTPUTS_FILE),
+                                        &bytes,
+                                    );
+                                    updated = true;
                                 }
-                                if updated {
-                                    seq = seq.wrapping_add(1);
-                                    let _ = notify.send(seq);
-                                }
+                            }
+                            if updated {
+                                seq = seq.wrapping_add(1);
+                                let _ = notify.send(seq);
                             }
                         }
                     }
@@ -744,7 +743,7 @@ async fn push_snapshot(
     if payload.is_empty() {
         return;
     }
-    let Ok(bytes) = serde_json::to_vec(&Value::Object(payload)) else {
+    let Ok(bytes) = serde_json::to_vec(&Value::Object(payload.clone())) else {
         return;
     };
     if bytes.len() > kuvo_wire::mail::MAX_PLAINTEXT {
@@ -758,10 +757,7 @@ async fn push_snapshot(
             address,
             key: member.key,
         };
-        let env = Envelope {
-            kind: "library-snapshot".to_owned(),
-            payload: bytes.clone(),
-        };
+        let env = Envelope(payload.clone());
         let _ = relay.sender.mail(host, env).await;
     }
 }

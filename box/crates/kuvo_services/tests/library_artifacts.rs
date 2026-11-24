@@ -20,7 +20,7 @@ use kuvo_services::{
         folders::wire_record,
         policy::DiskSpace,
         recorder::{Event, Recorder, RecorderOptions, SessionDetails, SessionFuture, SessionSource},
-        store::{Made, PinBy, Who, WhoKind},
+        store::{Made, PinBy},
         turnfiles::changed_since,
     },
     library::{
@@ -331,7 +331,7 @@ async fn queued_reads_never_hide_newer_writes() {
     fs::write(&file, b"v2").unwrap();
     first.await;
     assert!(!store.as_seen(&file_str));
-    store.change_all(&[file_str.clone()], Made::outside("outside")).await;
+    store.change_all(std::slice::from_ref(&file_str), Made::outside("outside")).await;
     let expected = format!("sha256:{}", hex::encode(Sha256::digest(b"v2")));
     assert_eq!(
         store.at(&file_str).unwrap().versions.last().unwrap().hash.as_deref(),

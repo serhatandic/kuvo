@@ -278,11 +278,13 @@ fn platform_free_space(folder: &Path) -> Option<DiskSpace> {
     }
     // SAFETY: `statvfs` returned 0, so `stats` is initialized.
     let stats = unsafe { stats.assume_init() };
+    #[allow(clippy::unnecessary_cast)]
     let unit = if stats.f_frsize > 0 {
         stats.f_frsize as u64
     } else {
         stats.f_bsize as u64
     };
+    #[allow(clippy::unnecessary_cast)]
     Some(DiskSpace {
         free: (stats.f_bavail as u64).saturating_mul(unit),
         total: (stats.f_blocks as u64).saturating_mul(unit),

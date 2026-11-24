@@ -723,55 +723,87 @@ impl ArtifactStore {
         }
     }
 
-    pub async fn change(&self, path: &str, made: Made) -> Option<Artifact> {
+    pub fn change(
+        &self,
+        path: &str,
+        made: Made,
+    ) -> impl std::future::Future<Output = Option<Artifact>> + Send + 'static {
         let at_ms = wall_ms();
         let seen = look(Path::new(path));
-        let _wait = self.enqueue_waiting(
-            &[path.to_owned()],
+        let path = path.to_owned();
+        let wait = self.enqueue_waiting(
+            std::slice::from_ref(&path),
             Some(Waiting::Seen {
                 seen: seen.clone(),
                 at_ms,
             }),
         );
-        let _lock = self.write_lock.lock().await;
-        self.policy.learn(&[PathBuf::from(path)]).await;
-        let mut inner = self.inner.lock().unwrap();
-        inner.change_now(path, &made, Some((seen, at_ms)))
-    }
-
-    pub async fn change_all(&self, paths: &[String], made: Made) {
-        if paths.is_empty() {
-            return;
-        }
-        let _wait = self.enqueue_waiting(paths, Some(Waiting::Read));
-        let _lock = self.write_lock.lock().await;
-        let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-        self.policy.learn(&pb).await;
-        for path in paths {
-            {
-                let mut inner = self.inner.lock().unwrap();
-                let _ = inner.change_now(path, &made, None);
-            }
-            if paths.len() > 1 {
-                tokio::task::yield_now().await;
-            }
+        let this = self.clone();
+        async move {
+            let _wait = wait;
+            let _lock = this.write_lock.lock().await;
+            this.policy.learn(&[PathBuf::from(&path)]).await;
+            let mut inner = this.inner.lock().unwrap();
+            inner.change_now(&path, &made, Some((seen, at_ms)))
         }
     }
 
-    pub async fn before(&self, path: &str, bytes: Vec<u8>, bot: Option<String>, at: Option<Timestamp>) {
+    pub fn change_all(
+        &self,
+        paths: &[String],
+        made: Made,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let paths = paths.to_vec();
+        let wait = if paths.is_empty() {
+            None
+        } else {
+            Some(self.enqueue_waiting(&paths, Some(Waiting::Read)))
+        };
+        let this = self.clone();
+        async move {
+            let Some(_wait) = wait else {
+                return;
+            };
+            let _lock = this.write_lock.lock().await;
+            let pb: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+            this.policy.learn(&pb).await;
+            for path in &paths {
+                {
+                    let mut inner = this.inner.lock().unwrap();
+                    let _ = inner.change_now(path, &made, None);
+                }
+                if paths.len() > 1 {
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+    }
+
+    pub fn before(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        bot: Option<String>,
+        at: Option<Timestamp>,
+    ) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let path = path.to_owned();
         let should_wait = {
             let inner = self.inner.lock().unwrap();
-            inner.artifacts.get(&Self::id_of(path)).is_none() && !inner.waiting.contains_key(path)
+            inner.artifacts.get(&Self::id_of(&path)).is_none() && !inner.waiting.contains_key(&path)
         };
-        let _wait = self.enqueue_waiting(
-            &[path.to_owned()],
+        let wait = self.enqueue_waiting(
+            std::slice::from_ref(&path),
             should_wait.then(|| Waiting::Before(bytes.clone())),
         );
-        let _lock = self.write_lock.lock().await;
-        self.policy.learn(&[PathBuf::from(path)]).await;
-        let mut inner = self.inner.lock().unwrap();
-        let when = at.unwrap_or_else(|| (inner.clock)());
-        inner.before_now(path, &bytes, bot.as_deref(), when);
+        let this = self.clone();
+        async move {
+            let _wait = wait;
+            let _lock = this.write_lock.lock().await;
+            this.policy.learn(&[PathBuf::from(&path)]).await;
+            let mut inner = this.inner.lock().unwrap();
+            let when = at.unwrap_or_else(|| (inner.clock)());
+            inner.before_now(&path, &bytes, bot.as_deref(), when);
+        }
     }
 
     pub async fn pin(&self, id: &str, pinned: Option<(PinBy, Option<String>)>) -> Option<Artifact> {
@@ -795,12 +827,21 @@ impl ArtifactStore {
         inner.restore_now(id, n, when)
     }
 
-    pub async fn shown(&self, path: &str, made: Made) -> Option<Artifact> {
-        let _wait = self.enqueue_waiting(&[path.to_owned()], Some(Waiting::Read));
-        let _lock = self.write_lock.lock().await;
-        self.policy.learn(&[PathBuf::from(path)]).await;
-        let mut inner = self.inner.lock().unwrap();
-        inner.shown_now(path, &made)
+    pub fn shown(
+        &self,
+        path: &str,
+        made: Made,
+    ) -> impl std::future::Future<Output = Option<Artifact>> + Send + 'static {
+        let path = path.to_owned();
+        let wait = self.enqueue_waiting(std::slice::from_ref(&path), Some(Waiting::Read));
+        let this = self.clone();
+        async move {
+            let _wait = wait;
+            let _lock = this.write_lock.lock().await;
+            this.policy.learn(&[PathBuf::from(&path)]).await;
+            let mut inner = this.inner.lock().unwrap();
+            inner.shown_now(&path, &made)
+        }
     }
 
     pub async fn check_gone(&self, id: &str) -> Option<Artifact> {
@@ -2007,18 +2048,17 @@ impl StoreInner {
             && artifact.pinned.is_none()
             && !kinds_kept_whole(artifact.kind)
             && self.policy.low_on(0)
+            && let Some(prev_mut) = artifact.versions.iter_mut().find(|v| v.n == prev.n)
         {
-            if let Some(prev_mut) = artifact.versions.iter_mut().find(|v| v.n == prev.n) {
-                prev_mut.kept = false;
-                prev_mut.reason = Some(NoCopy::LowDisk);
-                let prev_hash = prev_mut.hash.clone();
-                let prev_size = prev_mut.size;
-                let prev_clone = prev_mut.clone();
-                if let Some(hash) = prev_hash {
-                    self.use_copy(&hash, prev_size, -1);
-                }
-                let _ = self.write_entry(&artifact, Some(&prev_clone));
+            prev_mut.kept = false;
+            prev_mut.reason = Some(NoCopy::LowDisk);
+            let prev_hash = prev_mut.hash.clone();
+            let prev_size = prev_mut.size;
+            let prev_clone = prev_mut.clone();
+            if let Some(hash) = prev_hash {
+                self.use_copy(&hash, prev_size, -1);
             }
+            let _ = self.write_entry(&artifact, Some(&prev_clone));
         }
 
         artifact.updated = version.at.clone();
