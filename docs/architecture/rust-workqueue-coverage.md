@@ -8,7 +8,14 @@ status, order and fields, reads and writes manual relations, previews Markdown
 references, and stages client attachments with stable anchors and collision-safe
 names. Inline picture markers can be removed separately from their files. The
 peer snapshot capability exchanges combined views, retained deletions and
-reference chips. Whole items and attachments can be read quietly from their
+reference chips. Rust snapshots also carry optional per-status counts of
+unlisted items, so setup-wide status and computer totals include older
+closed work. The two-resident conformance case checks all 150 items across
+the 100-row limit, reopening an older record and closing it again. It is
+skipped on the frozen TypeScript box, which still caps remote counts.
+Text, source, label and individual-owner filtering still counts matching
+listed rows; the aggregate does not describe the omitted rows' contents.
+Whole items and attachments can be read quietly from their
 keeper through the same transport as setup search. A computer can send an item
 edit, delete or restore to its keeper through the tracked request and receipt
 exchange. Markdown imports read the backlog files and claim each number on the

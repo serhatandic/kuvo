@@ -295,6 +295,7 @@ pub async fn run(
         let library_reader = library_reader.clone();
         async move {
             match read.area.as_deref() {
+                Some("ownership") if queues.serves_ownership(&read) => queues.answer(read).await,
                 Some("ownership") => owner.answer(read).await,
                 Some("search") => super::setup_search::answer(engine, read).await,
                 Some("library") => library_reader.answer_library_read(read).await,

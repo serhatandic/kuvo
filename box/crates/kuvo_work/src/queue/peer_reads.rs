@@ -48,6 +48,7 @@ pub(super) struct QueueTarget {
     pub key: ComputerKey,
     pub computer: Value,
     pub id: String,
+    pub previous: Value,
 }
 
 impl PeerReads {
@@ -74,6 +75,7 @@ impl PeerReads {
                 key: target.key,
                 computer: target.computer,
                 id: target.item["id"].as_str().unwrap_or_default().to_owned(),
+                previous: target.item,
             }));
         }
         if !try_elsewhere {
@@ -83,6 +85,7 @@ impl PeerReads {
             key: peer.key,
             computer: computer(&peer),
             id: answer["item"]["id"].as_str().unwrap_or_default().to_owned(),
+            previous: answer["item"].clone(),
         }))
     }
 
@@ -97,13 +100,18 @@ impl PeerReads {
                 key: target.key,
                 computer: target.computer,
                 id: id.into(),
+                previous: target.item,
             }))
+    }
+
+    pub fn serves_ownership(&self, read: &Read) -> bool {
+        read.area.as_deref() == Some("ownership") && read.item == super::labels::RESTORE_ROUTE
     }
 
     /// The shared memory transport only calls this for a GET from an accepted computer.
     pub async fn answer(&self, read: Read) -> Answer {
-        if let Some(area) = read.area.as_deref() {
-            if area == "ownership" && read.item == super::labels::RESTORE_ROUTE {
+        if read.area.is_some() {
+            if self.serves_ownership(&read) {
                 return self.restore_labels.from_peer(read).await;
             }
             return Answer {

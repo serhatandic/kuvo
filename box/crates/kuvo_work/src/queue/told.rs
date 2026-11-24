@@ -22,7 +22,7 @@ use kuvo_wire::keys::encode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
     path::PathBuf,
     sync::Arc,
@@ -34,11 +34,20 @@ pub(super) use kuvo_peers::WORK_QUEUE_SNAPSHOTS as FEATURE;
 pub(super) const MOST_ITEMS: usize = 1500;
 pub(super) const MOST_DONE: usize = 100;
 
+pub(super) type StatusCounts = BTreeMap<String, usize>;
+
 #[derive(Deserialize, Serialize)]
 pub(super) struct Told {
     pub id: String,
     pub at: i64,
     pub items: Vec<Value>,
+    // Counts of live rows excluded from the summary, not the rows themselves.
+    #[serde(
+        default,
+        rename = "omittedByStatus",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub omitted_by_status: StatusCounts,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub removed: Option<Vec<Value>>,
     pub owners: Vec<Value>,
@@ -219,6 +228,14 @@ fn incoming(raw: &Value, now: i64) -> Option<Told> {
         id: id.into(),
         at,
         items,
+        omitted_by_status: status::STATUSES
+            .iter()
+            .filter_map(|status| {
+                let count = raw["omittedByStatus"][status.id].as_u64()?;
+                (count > 0 && count <= u32::MAX as u64)
+                    .then(|| (status.id.to_owned(), count as usize))
+            })
+            .collect(),
         removed,
         owners,
         labels,
@@ -454,6 +471,7 @@ pub(super) struct Elsewhere {
     pub labels: Vec<kuvo_setup::QueueLabel>,
     pub computers: Vec<Value>,
     pub pending: Vec<Value>,
+    pub omitted_by_computer: BTreeMap<String, StatusCounts>,
 }
 
 pub(super) fn items_elsewhere(
@@ -496,6 +514,11 @@ pub(super) fn items_elsewhere(
             copy["away"] = last_seen.unwrap_or(kept.heard).into();
         }
         merged.computers.push(copy);
+        if owner_id == "all" && !kept.told.omitted_by_status.is_empty() {
+            merged
+                .omitted_by_computer
+                .insert(key, kept.told.omitted_by_status);
+        }
         for mut item in kept
             .told
             .items
@@ -755,11 +778,22 @@ fn fitted(told: &Told, now: i64) -> Option<Vec<kuvo_wire::mail::Envelope>> {
         .filter(|most| *most < told.items.len())
     {
         body["items"] = json!(&told.items[..most]);
+        let mut omitted = told.omitted_by_status.clone();
+        count_omitted(&mut omitted, &told.items[most..]);
+        body["omittedByStatus"] = json!(omitted);
         if let Some(fitted) = send(&body) {
             return Some(fitted);
         }
     }
     None
+}
+
+fn count_omitted<'a>(counts: &mut StatusCounts, rows: impl IntoIterator<Item = &'a Value>) {
+    for row in rows {
+        if let Some(status) = row["status"].as_str() {
+            *counts.entry(status.to_owned()).or_default() += 1;
+        }
+    }
 }
 
 pub(super) fn outgoing(
@@ -833,9 +867,18 @@ pub(super) fn outgoing(
     open.sort_by(|a, b| b.0.total_cmp(&a.0));
     done.sort_by(|a, b| b.0.total_cmp(&a.0));
     removed.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let most_open = MOST_ITEMS - done.len().min(MOST_DONE);
+    let mut omitted_by_status = StatusCounts::new();
+    count_omitted(
+        &mut omitted_by_status,
+        open.iter()
+            .skip(most_open)
+            .chain(done.iter().skip(MOST_DONE))
+            .map(|(_, row)| row),
+    );
     let items = open
         .into_iter()
-        .take(MOST_ITEMS - done.len().min(MOST_DONE))
+        .take(most_open)
         .chain(done.into_iter().take(MOST_DONE))
         .map(|(_, row)| row)
         .collect::<Vec<_>>();
@@ -931,6 +974,7 @@ pub(super) fn outgoing(
         id: String::new(),
         at: now,
         items,
+        omitted_by_status,
         removed,
         owners: owner_rows,
         labels,
@@ -968,6 +1012,7 @@ pub(super) fn apply_reply(
     sender: &ComputerKey,
     item: &Value,
     deleted: bool,
+    before: &Value,
 ) -> Result<(), Error> {
     let Some(fresh) = summary(item, i64::MAX, deleted) else {
         return Ok(());
@@ -994,6 +1039,27 @@ pub(super) fn apply_reply(
     let changed = |row: &Value| at(&row["updated"]["at"]).max(at(&row["removed"]["at"]));
     if previous.is_some_and(|previous| changed(previous) > changed(&fresh)) {
         return Ok(());
+    }
+    // A direct lookup can reach rows that were counted but not listed. Move
+    // such a row out of the aggregate when adding its acknowledged summary.
+    let mut omitted = fields
+        .get("omittedByStatus")
+        .and_then(|value| serde_json::from_value::<StatusCounts>(value.clone()).ok())
+        .unwrap_or_default();
+    if previous.is_none() && !omitted.is_empty() {
+        let snapshot_at = at(fields.get("at").unwrap_or(&Value::Null));
+        if changed(&fresh) <= snapshot_at {
+            return Ok(());
+        }
+        if before.get("removed").is_none()
+            && changed(before) <= snapshot_at
+            && let Some(count) = before["status"]
+                .as_str()
+                .and_then(|status| omitted.get_mut(status))
+        {
+            *count = count.saturating_sub(1);
+        }
+        omitted.retain(|_, count| *count > 0);
     }
     let mut items: Vec<_> = formerly
         .iter()
@@ -1028,6 +1094,11 @@ pub(super) fn apply_reply(
     }
     fields.insert("items".into(), json!(items));
     fields.insert("removed".into(), json!(removed));
+    if omitted.is_empty() {
+        fields.remove("omittedByStatus");
+    } else {
+        fields.insert("omittedByStatus".into(), json!(omitted));
+    }
     let bytes = serde_json::to_vec(&FORMAT.encode(fields)).map_err(io::Error::other)?;
     files::write_secret(&file, &bytes)?;
     Ok(())
