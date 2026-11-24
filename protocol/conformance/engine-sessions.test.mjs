@@ -960,6 +960,48 @@ test("a slow reorder reads the queue after a concurrent Add and Send Now finish"
   assert.deepEqual(delivered(), [drafts[0], drafts[2], drafts[1], drafts[3]]);
 });
 
+test("Send Now recovers a confirmed message after the queue index fails to save", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-index-after-send");
+  const session = "ses_indexFailure";
+  const base = `kuvo/sessions/${session}`;
+  const queue = base + "/queue";
+  const draft = "msg_cannotSeal";
+  const later = "msg_afterSealing";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const record = await here.start().ready();
+  assert.equal((await request(record, "POST", base + "/stop")).json.paused, true);
+  for (const id of [draft, later]) {
+    assert.equal((await request(record, "POST", queue + "/add", { id, words: id }, { "x-kuvo-from": "app" })).json.waits, true);
+  }
+  const index = path.join(here.home, "run", "queues.json");
+  const backup = index + ".fixture";
+  const send = () => request(record, "POST", `${queue}/${draft}/now`);
+  const calls = () => here.engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt")).map(row => row.json.id);
+  here.engine.afterPromptAccepted = (_session, id) => {
+    if (id !== draft) return;
+    fs.renameSync(index, backup);
+    fs.mkdirSync(index);
+  };
+  try {
+    const refused = await send();
+    assert.equal(refused.status, 502, refused.text);
+    assert.ok(fs.existsSync(backup));
+    assert.deepEqual(calls(), [draft]);
+    assert.ok(fs.existsSync(path.join(here.home, "run", "waiting", draft + ".json")));
+  } finally {
+    here.engine.afterPromptAccepted = null;
+    if (fs.existsSync(backup)) {
+      fs.rmdirSync(index);
+      fs.renameSync(backup, index);
+    }
+  }
+  const recovered = await send();
+  assert.equal(recovered.status, 200, recovered.text);
+  assert.deepEqual(calls(), [draft]);
+  assert.deepEqual(recovered.json.waiting.map(row => row.id), [later]);
+});
+
 test("legacy waiting queues read and future formats are refused before removal or Resume", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-queue-format");
@@ -1950,6 +1992,39 @@ test("a session list saved before Needs you is read while OpenCode catches up", 
   assert.deepEqual(read.json.projects, { [project]: { updated: 2, asking: 0, working: 0 } });
   assert.deepEqual(read.json.needsYou, [{ session: id, asks: { kind: "other", summary: "waits on you" } }]);
   assert.equal((await request(record, "POST", "kuvo/sessions/list", {})).status, 405);
+});
+
+test("a subagent changes only its own row and the parent whose list was reordered", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("subagent-delta");
+  const parent = sessionOf({ id: "ses_parentDelta", directory: here.home, updated: 110 });
+  const first = sessionOf({ id: "ses_childDelta", directory: here.home, updated: 120, parent: parent.id });
+  const next = sessionOf({ id: "ses_nextDelta", directory: here.home, updated: 130, parent: parent.id });
+  const other = sessionOf({ id: "ses_otherDelta", directory: here.home, updated: 140 });
+  first.time.created = 120;
+  next.time.created = 130;
+  here.engine.sessions.push(parent, first, next, other);
+  const record = await here.start().ready();
+  const list = at => request(record, "GET", "kuvo/sessions/list" + (at ? "?since=" + encodeURIComponent(at) : ""));
+  const initial = (await list()).json;
+  assert.deepEqual(initial.sessions[parent.id].subagents, [next.id, first.id]);
+  await until(() => here.engine.subscribers() > 0, "the resident to follow subagent events");
+  other.time.updated = 200;
+  here.engine.emit({ type: "session.updated", data: { sessionID: other.id, info: other } });
+  const changed = await until(async () => {
+    const page = (await list(initial.at)).json;
+    return page?.sessions?.[other.id]?.updated === 200 && page;
+  }, "the unrelated conversation delta");
+  assert.deepEqual(Object.keys(changed.sessions), [other.id]);
+
+  here.engine.running.add(first.id);
+  here.engine.emit({ type: "session.execution.started", data: { sessionID: first.id } });
+  const started = await until(async () => {
+    const page = (await list(changed.at)).json;
+    return page?.sessions?.[first.id]?.running === true && page;
+  }, "the active subagent delta");
+  assert.deepEqual(Object.keys(started.sessions).sort(), [first.id, parent.id]);
+  assert.deepEqual(started.sessions[parent.id].subagents, [first.id, next.id]);
 });
 
 test("the first inventory never publishes a conversation deleted while its page was held", { timeout: 45000 }, async t => {

@@ -198,6 +198,7 @@ export async function standInEngine(root, env) {
             engine.messages.set(session, messages);
           }
           publish({ type: "session.inbox.updated", data: { sessionID: session, item: { id: given.id } } });
+          engine.afterPromptAccepted?.(session, given.id);
         };
         if (held?.beforeAcceptance) {
           held.accepted();
