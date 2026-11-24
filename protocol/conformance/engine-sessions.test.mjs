@@ -1974,6 +1974,7 @@ test("the first inventory never publishes a conversation deleted while its page 
   assert.equal(fs.existsSync(path.join(here.home, "run", "lists", "sessions.json")), false);
   const asks = path.join(here.home, "run", "glance", "asks.json");
   await until(() => fs.existsSync(asks) && readJSON(asks).asks[form.id], "the resident to hear the deletion");
+  assert.equal(here.engine.heldInventories, 1, "only one complete inventory may be in flight");
   here.engine.holdSessionList = null;
   gate.resolve();
   const initial = await reading;
@@ -1981,6 +1982,7 @@ test("the first inventory never publishes a conversation deleted while its page 
   assert.equal(initial.json.full, true);
   assert.deepEqual(Object.keys(initial.json.sessions), [kept.id]);
   assert.equal(initial.json.gone, undefined);
+  assert.equal(here.engine.inventoryReads, 2, "the change requests one new inventory");
 });
 
 test("an earlier session read cannot bring back an old name or undo a pin or deletion", { timeout: 45000 }, async t => {
