@@ -60,6 +60,7 @@ export async function standInEngine(root, env) {
       const moveExport = url.pathname.match(/^\/api\/experimental\/session\/([^/]+)\/export$/);
       if (moveExport && request.method === "GET") {
         const id = decodeURIComponent(moveExport[1]);
+        if (engine.refuseExport === id) return send({ message: "The backup export is unavailable." }, 503);
         const info = engine.sessions.find(each => each.id === id);
         return info ? send({ data: { info, messages: engine.messages.get(id) ?? [] } }) : send({}, 404);
       }
@@ -91,7 +92,9 @@ export async function standInEngine(root, env) {
         return send({ data: found });
       }
       if (one && request.method === "DELETE") {
-        const at = engine.sessions.findIndex(each => each.id === decodeURIComponent(one[1]));
+        const id = decodeURIComponent(one[1]);
+        if (engine.refuseDelete === id) return send({ message: "The engine cannot remove this copy yet." }, 503);
+        const at = engine.sessions.findIndex(each => each.id === id);
         if (at < 0) return send({ message: "No such session." }, 404);
         const [removed] = engine.sessions.splice(at, 1);
         publish({ type: "session.deleted", data: { sessionID: removed.id } });
