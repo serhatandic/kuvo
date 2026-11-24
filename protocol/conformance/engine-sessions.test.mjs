@@ -2027,6 +2027,51 @@ test("a project query accepts a Windows key while route paths keep their separat
   assert.equal((await request(record, "GET", "api/fs/list?path=Kuvo%2F..")).status, 403);
 });
 
+test("a project file change refiles the saved inventory without another engine read", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("project-filing-from-disk");
+  const project = path.join(here.home, "work");
+  const tree = path.join(here.home, "side-tree");
+  const session = "ses_rehomeProject";
+  for (const folder of [project, tree]) fs.mkdirSync(folder, { recursive: true });
+  const projects = path.join(here.home, "box", "projects.json");
+  const list = folders => JSON.stringify({ version: 1, projects: [{ directory: project, name: "Work", folders }] });
+  write(projects, list([]));
+  here.engine.sessions.push(sessionOf({ id: session, directory: tree }));
+  const record = await here.start().ready();
+  const before = await until(async () => {
+    const reply = await request(record, "GET", "kuvo/sessions/list");
+    return reply.json?.sessions?.[session]?.project === tree && reply.json;
+  }, "the initial project filing");
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the engine");
+  const calls = () => here.engine.inventoryReads ?? 0;
+  const readBefore = calls();
+  const release = Promise.withResolvers();
+  t.after(release.resolve);
+  here.engine.holdSessionList = release.promise;
+  write(projects + ".next", list([tree]));
+  fs.renameSync(projects + ".next", projects);
+  let latest;
+  const changed = await until(async () => {
+    const reply = await request(record, "GET", "kuvo/sessions/list?since=" + encodeURIComponent(before.at));
+    latest = reply.json;
+    return latest?.sessions?.[session]?.project === project && latest;
+  }, () => `The project change did not refile the saved engine inventory after ${calls() - readBefore} engine reads: ${JSON.stringify(latest)}`, 8000);
+  assert.deepEqual(Object.keys(changed.sessions), [session]);
+  assert.deepEqual(changed.projects[project].shown, [session]);
+  assert.equal(changed.projects[tree], undefined);
+  assert.equal(calls(), readBefore);
+
+  const formerProject = path.join(here.home, "former-project");
+  write(path.join(here.home, "box", "worktrees.json"), JSON.stringify({ handedOver: { [tree]: formerProject } }));
+  const handedOver = await until(async () => {
+    const reply = await request(record, "GET", "kuvo/sessions/list?since=" + encodeURIComponent(changed.at));
+    return reply.json?.sessions?.[session]?.project === formerProject && reply.json;
+  }, "the old Mac worktree record to refile its session", 8000);
+  assert.deepEqual(handedOver.projects[formerProject].shown, [session]);
+  assert.equal(calls(), readBefore);
+});
+
 test("a project page grows in steps and keeps its running conversations first", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("project-page");

@@ -11,6 +11,7 @@ use std::{
 };
 
 use http::{Method, StatusCode};
+use kuvo_os::watch::{Notice, Options, Subscription, WatchHub};
 use kuvo_protocol::routes::{
     get_kuvo_sessions_list as read, get_kuvo_sessions_list_events as events,
     get_kuvo_sessions_page as page,
@@ -20,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
     sync::{mpsc, watch},
+    task::JoinSet,
     time,
 };
 use tokio_util::sync::CancellationToken;
@@ -172,13 +174,46 @@ impl LocalSessions {
             }
             let mut first = true;
             let mut state = engine.states();
-            let mut check = time::interval(Duration::from_secs(60));
+            let files = WatchHub::default();
+            let mut edits = files
+                .subscribe(
+                    engine.home.join("box"),
+                    Options {
+                        create: true,
+                        ..Options::default()
+                    },
+                )
+                .await
+                .ok();
+            let mut inventory = None;
+            let mut reads = JoinSet::new();
+            let mut read_again = true;
+            let period = Duration::from_secs(60);
+            let mut check = time::interval_at(time::Instant::now() + period, period);
             check.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             loop {
+                if read_again && reads.is_empty() {
+                    read_again = false;
+                    let at = *revisions.borrow();
+                    let reader = engine.clone();
+                    reads.spawn(async move {
+                        let lease = reader.acquire(Demand::Passive).await?;
+                        read_inventory(&reader, &lease)
+                            .await
+                            .ok()
+                            .map(|rows| (at, rows))
+                    });
+                }
                 tokio::select! {
                     biased;
-                    next = requests.recv() => if next.is_none() { break; },
-                    changed = ask_changes.changed() => if changed.is_err() { break; },
+                    next = requests.recv() => {
+                        if next.is_none() { break; }
+                        read_again = true;
+                        continue;
+                    },
+                    changed = ask_changes.changed() => {
+                        if changed.is_err() { break; }
+                    },
                     changed = thought.changed() => {
                         if changed.is_err() { break; }
                         if !first && last.apply_thinking(&thought.borrow_and_update()) {
@@ -192,26 +227,51 @@ impl LocalSessions {
                             Some(external) => external.changed().await,
                             None => std::future::pending().await,
                         }
-                    } => if changed.is_err() { external = None; },
-                    changed = state.changed() => if changed.is_err() { break; },
-                    _ = check.tick() => {},
+                    } => {
+                        if changed.is_err() { external = None; }
+                    },
+                    changed = state.changed() => {
+                        if changed.is_err() { break; }
+                        read_again = true;
+                        continue;
+                    },
+                    changed = project_changes(&mut edits) => {
+                        if !changed {
+                            edits = None;
+                            continue;
+                        }
+                    },
+                    _ = check.tick() => {
+                        read_again = true;
+                        continue;
+                    },
+                    finished = reads.join_next(), if !reads.is_empty() => {
+                        let Some(Ok(Some((at, rows)))) = finished else { continue; };
+                        if at != *revisions.borrow() { continue; }
+                        inventory = Some((at, rows));
+                    },
                 }
-                let Some(lease) = engine.acquire(Demand::Passive).await else {
+                let Some((began, rows)) = &inventory else {
+                    // Mark an ask heard even while there is no complete engine inventory.
+                    ask_changes.borrow_and_update();
                     continue;
                 };
-                let began = *revisions.borrow();
                 let mut book = ask_changes.borrow_and_update().clone();
                 if let Some(external) = &external {
                     crate::asks::include_external(Arc::make_mut(&mut book), &external.borrow());
                 }
-                let Some((mut sessions, projects, archived, needs_you)) =
-                    measure(&engine, &lease, &book).await.ok()
-                else {
+                let (projects, worktrees) = tokio::join!(
+                    read_projects(&engine.home),
+                    crate::worktree_notes::read(&engine.home)
+                );
+                let Ok(worktrees) = worktrees else {
                     continue;
                 };
+                let (mut sessions, projects, archived, needs_you) =
+                    measure(rows, &engine.home, &projects, &worktrees.filed, &book);
                 let published = {
                     let revision = revisions.borrow();
-                    if *revision != began {
+                    if *revision != *began {
                         // The feed queued another read. A stale page cannot revive a deleted row.
                         continue;
                     }
@@ -256,11 +316,11 @@ impl LocalSessions {
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Arc<Snapshot>, Refusal> {
-        self.refresh();
         let current = self.snapshot.borrow_and_update().clone();
         if let Some(current) = current {
             return Ok(current);
         }
+        self.refresh();
         tokio::select! {
             result = time::timeout(api::WAIT, self.snapshot.wait_for(Option::is_some)) => {
                 if let Ok(Ok(snapshot)) = result {
@@ -750,30 +810,71 @@ async fn read_projects(home: &Path) -> Vec<Project> {
         .map_or_else(Vec::new, |file| file.projects)
 }
 
-async fn measure(
+struct Observed {
+    session: Session,
+    running: bool,
+}
+
+async fn read_inventory(
     engine: &Engine,
     lease: &Lease,
-    asks: &crate::asks::Book,
-) -> Result<(Sessions, Projects, Vec<Value>, Vec<Value>), Box<dyn std::error::Error + Send + Sync>>
-{
-    let (rows, active, projects) = tokio::join!(
+) -> Result<Vec<Observed>, Box<dyn std::error::Error + Send + Sync>> {
+    let (rows, active) = tokio::join!(
         all_sessions(engine, lease),
-        engine.call::<Value>(lease, Method::GET, "api/session/active", None),
-        read_projects(&engine.home)
+        engine.call::<Value>(lease, Method::GET, "api/session/active", None)
     );
-    let rows = rows?;
     let active = active?;
-    let mut sessions = Sessions::new();
-    for session in rows {
-        let running = active
-            .as_array()
-            .is_some_and(|active| active.iter().any(|row| row == &session.id))
-            || active
-                .get(&session.id)
-                .is_some_and(|value| !value.is_null());
-        let facts = facts(&session, &engine.home, &projects, running);
-        sessions.insert(session.id, facts);
+    Ok(rows?
+        .into_iter()
+        .map(|session| {
+            let running = active
+                .as_array()
+                .is_some_and(|active| active.iter().any(|row| row == &session.id))
+                || active
+                    .get(&session.id)
+                    .is_some_and(|value| !value.is_null());
+            Observed { session, running }
+        })
+        .collect())
+}
+
+async fn project_changes(edits: &mut Option<Subscription>) -> bool {
+    let Some(edits) = edits else {
+        return std::future::pending().await;
+    };
+    while let Some(notice) = edits.recv().await {
+        match notice {
+            Notice::Rescan => return true,
+            Notice::Changed { paths }
+                if paths.iter().any(|path| {
+                    path == Path::new("projects.json")
+                        || path == Path::new(crate::worktree_notes::FILE)
+                }) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
     }
+    false
+}
+
+fn measure(
+    rows: &[Observed],
+    home: &Path,
+    projects: &[Project],
+    worktrees: &BTreeMap<String, String>,
+    asks: &crate::asks::Book,
+) -> (Sessions, Projects, Vec<Value>, Vec<Value>) {
+    let mut sessions = rows
+        .iter()
+        .map(|row| {
+            (
+                row.session.id.clone(),
+                facts(&row.session, home, projects, worktrees, row.running),
+            )
+        })
+        .collect::<Sessions>();
 
     let mut busy_ancestors = BTreeSet::new();
     for facts in sessions
@@ -916,8 +1017,8 @@ async fn measure(
         }
         listed.insert(directory.to_owned(), project);
     }
-    let archived = archived_groups(&sessions, &listed, &projects);
-    Ok((sessions, listed, archived, needs_you))
+    let archived = archived_groups(&sessions, &listed, projects);
+    (sessions, listed, archived, needs_you)
 }
 
 async fn all_sessions(
@@ -932,7 +1033,13 @@ async fn all_sessions(
         .collect()
 }
 
-fn facts(session: &Session, home: &Path, projects: &[Project], running: bool) -> Facts {
+fn facts(
+    session: &Session,
+    home: &Path,
+    projects: &[Project],
+    worktrees: &BTreeMap<String, String>,
+    running: bool,
+) -> Facts {
     let directory = session.directory();
     let notes = session.notes();
     let note = |key| {
@@ -971,18 +1078,21 @@ fn facts(session: &Session, home: &Path, projects: &[Project], running: bool) ->
         facts.extra.insert(key.to_owned(), value);
     };
     if kind == Kind::Project {
+        let worktree = worktrees.get(directory).map(String::as_str);
+        let filed = Path::new(worktree.unwrap_or(directory));
         let project = projects
             .iter()
             .filter(|project| !project.removed)
             .filter(|project| {
-                Path::new(directory).starts_with(&project.directory)
+                filed.starts_with(&project.directory)
                     || project
                         .folders
                         .iter()
-                        .any(|folder| Path::new(directory).starts_with(folder))
+                        .any(|folder| filed.starts_with(folder))
             })
             .max_by_key(|project| project.directory.len())
             .map(|project| project.directory.as_str())
+            .or(worktree)
             .or_else(|| {
                 (note("filed")["folder"] == directory)
                     .then(|| note("filed")["project"].as_str())

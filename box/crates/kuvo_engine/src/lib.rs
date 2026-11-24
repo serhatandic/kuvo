@@ -35,6 +35,7 @@ mod transcript;
 mod turns;
 mod typed;
 mod waiting;
+mod worktree_notes;
 
 use http::StatusCode;
 use kuvo_protocol::routes::{

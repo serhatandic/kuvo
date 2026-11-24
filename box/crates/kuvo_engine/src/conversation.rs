@@ -86,6 +86,7 @@ pub(crate) fn watch(
     use tokio::time::{Duration, sleep};
 
     let attachments = crate::attachment_retention::watch(engine.clone());
+    let worktrees = crate::worktree_notes::watch(engine.clone(), stop.clone());
     tokio::spawn(async move {
         let mut states = engine.states();
         let mut asks = crate::asks::Book::new();
@@ -222,6 +223,9 @@ pub(crate) fn watch(
                                 .or_else(|| event.data["info"]["id"].as_str())
                                 .filter(|id| crate::sessions::valid_id(id))
                             {
+                                if event.kind == "session.created" {
+                                    let _ = worktrees.send(session.to_owned());
+                                }
                                 if reasoning.hear(session, &event.kind) {
                                     thinking.send_replace(Arc::new(reasoning.visible()));
                                 }

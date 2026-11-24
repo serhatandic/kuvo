@@ -94,6 +94,29 @@ test("a sibling project folder files both explicit and delegated starts under th
   assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")).projects.map(row => row.directory), [project]);
 });
 
+test("a session made through OpenCode is told its recorded worktree and branch", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const { home, engine, start } = await computer("worktree-instructions");
+  const project = path.join(home, "project");
+  const tree = path.join(home, "worktree");
+  const branch = "kuvo/prepared";
+  for (const folder of [project, tree]) fs.mkdirSync(folder, { recursive: true });
+  write(path.join(home, "box", "worktrees.json"), JSON.stringify({ worktrees: [{ project, root: tree, folder: tree, branch }] }));
+  const record = await start().ready();
+  await until(() => engine.subscribers() > 0, "the resident to follow OpenCode's created sessions");
+  const create = directory => request(record, "POST", "api/session", { location: { directory } });
+  const made = await create(tree);
+  assert.equal(made.status, 200, made.text);
+  const link = `/api/experimental/session/${made.json.data.id}/instructions/entries/kuvo.worktree`;
+  const instruction = await until(() => engine.asked.find(row => row.method === "PUT" && row.path === link),
+    "a session created in a worktree to get its instructions");
+  assert.deepEqual(instruction.json, { value: `You work in a git worktree of this project, on the branch ${branch}, so your changes stay apart from the user's own checkout at ${project} until they merge them. Make your changes here, not there.` });
+  const plain = await create(project);
+  assert.equal(plain.status, 200, plain.text);
+  await until(async () => (await request(record, "GET", "kuvo/sessions/list")).json?.sessions?.[plain.json.data.id], "the regular project session to be observed");
+  assert.equal(engine.asked.some(row => row.method === "PUT" && row.path.includes(`/${plain.json.data.id}/instructions/`)), false);
+});
+
 test("an interrupted start removes an unused worktree and keeps the one an OpenCode session took", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const { home, engine, start } = await computer("failed-session-worktree");

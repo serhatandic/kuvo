@@ -47,6 +47,7 @@ export async function standInEngine(root, env) {
       if (route === "GET /api/session") {
         if (engine.sessionListUnavailable) return send({ message: "The list is unavailable." }, 503);
         const parent = url.searchParams.get("parentID");
+        if (parent === null && url.searchParams.get("limit") !== "1") engine.inventoryReads = (engine.inventoryReads ?? 0) + 1;
         const rows = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
         const descendants = parent && parent !== "null" && Number(url.searchParams.get("limit")) > 0;
         const page = engine.paged || descendants ? paged(rows, 100) : { data: rows };
@@ -102,6 +103,10 @@ export async function standInEngine(root, env) {
           return;
         }
         return send({ data: info });
+      }
+      const instructions = url.pathname.match(/^\/api\/experimental\/session\/([^/]+)\/instructions\/entries\/kuvo\.worktree$/);
+      if (instructions && request.method === "PUT") {
+        return engine.sessions.some(row => row.id === decodeURIComponent(instructions[1])) ? send({}) : send({}, 404);
       }
       if (one && request.method === "GET") {
         if (engine.unavailableSession === decodeURIComponent(one[1])) return send({ message: "Busy." }, 500);
