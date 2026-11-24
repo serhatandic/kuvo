@@ -436,6 +436,64 @@ async fn scenario(root: PathBuf) {
     tokio::time::sleep(Duration::from_millis(20)).await;
     fs::write(root.join(".claude/.credentials.json"), "{}").unwrap();
     assert!(restored.probe_account().await.unwrap().signed_in);
+
+    // Where the plan's limits stand, as Claude Code hears in a turn: for the sign-in it started
+    // under, as a fingerprint of who that is (the reference's own, from `.claude.json`).
+    let account = |id: &str| {
+        fs::write(
+            root.join(".claude.json"),
+            json!({"oauthAccount": {"accountUuid": id, "organizationUuid": "O-1"}}).to_string(),
+        )
+        .unwrap();
+    };
+    let heard = |end: &[EventEnvelope]| {
+        end.iter()
+            .filter_map(|event| match &event.event {
+                TurnEvent::PlanLimit(reading) => Some(reading.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    account("A-1");
+    let limits =
+        |id: &str, text: &str| input(id, TurnKind::Prompt(prompt(&format!("msg_{id}"), text)));
+    let (sink, mut first, _) = Sink::new();
+    holder
+        .start(limits("turn_limits", "hear the limits"), sink)
+        .await
+        .unwrap();
+    let readings = heard(&finish(&mut first).await);
+    assert_eq!(readings.len(), 1, "{readings:?}");
+    assert_eq!(readings[0].sign_in.as_deref(), Some("ddfa9296fabdbb7b"));
+    assert_eq!(
+        readings[0]
+            .windows
+            .iter()
+            .map(|window| (window.id.as_str(), window.used))
+            .collect::<Vec<_>>(),
+        [("five_hour", 0.3), ("seven_day", 0.81)]
+    );
+    // Signed in as another account since: its next turn starts a Claude Code under that one, and
+    // what it hears counts for it.
+    account("B-2");
+    let (sink, mut second, _) = Sink::new();
+    holder
+        .start(limits("turn_limits_b", "hear the limits"), sink)
+        .await
+        .unwrap();
+    let readings = heard(&finish(&mut second).await);
+    assert_eq!(readings.len(), 1, "{readings:?}");
+    assert_eq!(readings[0].sign_in.as_deref(), Some("fc35f91bb5886e9b"));
+    // A sign-in that changes while it runs: what it hears then counts for no one.
+    let (sink, mut third, _) = Sink::new();
+    holder
+        .start(
+            limits("turn_limits_c", "hear the limits after a sign-in"),
+            sink,
+        )
+        .await
+        .unwrap();
+    assert!(heard(&finish(&mut third).await).is_empty());
     restored.shutdown().await.unwrap();
     assert!(events.try_recv().is_ok());
 }
@@ -682,6 +740,26 @@ fn claude_wire_fixture() {
                             json!({"type":"result","subtype":"success","is_error":true,"result":words,
                             "user_message_uuids":[message["uuid"]]}),
                         );
+                    }
+                    "hear the limits" | "hear the limits after a sign-in" => {
+                        if text.ends_with("sign-in") {
+                            let home = env::var_os("HOME")
+                                .or_else(|| env::var_os("USERPROFILE"))
+                                .unwrap();
+                            fs::write(
+                                PathBuf::from(home).join(".claude.json"),
+                                json!({"oauthAccount": {"accountUuid": "C-3"}}).to_string(),
+                            )
+                            .unwrap();
+                        }
+                        emit(json!({"type":"rate_limit_event","rate_limit_info":{
+                            "status":"allowed","rateLimitType":"five_hour","utilization":0.3,
+                            "unifiedWindows":{
+                                "five_hour":{"utilization":0.3,"resetsAt":1_794_100_000},
+                                "seven_day":{"utilization":0.81,"resetsAt":1_794_200_000}
+                            }
+                        }}));
+                        result(vec![message["uuid"].clone()]);
                     }
                     "resume" => {
                         assistant("resume", &format!("resumed {}", resume.as_deref().unwrap()));
