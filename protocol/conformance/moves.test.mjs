@@ -478,10 +478,10 @@ test("a switched move keeps the original until its backup can be written", {
   assert.equal(final.json.note, undefined, final.text);
 });
 
-async function moveMail(t, relay, main) {
-  const from = Buffer.alloc(32, 2), to = Buffer.from(main.key, "base64url");
+async function moveMail(t, relay, main, remote = 2) {
+  const from = Buffer.alloc(32, remote), to = Buffer.from(main.key, "base64url");
   const address = Buffer.from(main.address, "base64url");
-  const sender = relay.device(Buffer.alloc(32, 52));
+  const sender = relay.device(Buffer.alloc(32, 50 + remote));
   t.after(() => sender.leave());
   const { sealOneWay, openOneWay, readFrame, frame, Frame } = await testMail(t, boxBinary(wireFixture));
   const receive = async () => {
@@ -543,7 +543,7 @@ test("a dropped copy stays held through an engine failure and a late switch", {
   const imported = sessionOf({ id: session, directory: path.join(here.home, "chats") });
   imported.metadata = { "kuvo.moveImport": `${id}:${generation}:${hash}` };
   here.engine.sessions.push(imported);
-  here.engine.refuseDelete = session;
+  here.engine.refuseDeletes.add(session);
   save(journal, {
     formatVersion: 1, id, thing: session, name: "Held copy", kind: "chat", from: member.key,
     to: main.key, peer: member.key, role: "to", stage: "copying", sessions: [session],
@@ -564,15 +564,94 @@ test("a dropped copy stays held through an engine failure and a late switch", {
   assert.ok(list.json.away.includes(session));
   assert.equal(fs.readFileSync(paused, "utf8"), "moving:" + id);
   assert.deepEqual(await ask({ ...drop, op: "switch", safeSwitch: true }), proof);
+  const offer = { ...drop, op: "offer", kind: "chat", thing: session, name: "Held copy",
+    size: 30000, safeSwitch: true, twoComputers: true };
+  const repeated = await ask(offer);
+  assert.equal(repeated.op, "refused");
+  assert.equal(repeated.message, `An earlier copy of Held copy on ${member.name} couldn’t be let go of yet. Try again in a moment.`);
+  const retry = "mov_reofferedCopy";
+  const refused = await ask({ ...offer, id: retry });
+  assert.equal(refused.op, "refused");
+  assert.equal(refused.message, `An earlier copy of Held copy on ${main.name} couldn’t be let go of yet. Try again in a moment.`);
+  assert.equal(fs.existsSync(path.join(here.home, "run/moves", retry + ".json")), false);
   const blocked = await request(resident, "POST", "api/session/" + session + "/prompt", { text: "Stay held." });
   assert.equal(blocked.status, 409, blocked.text);
-  here.engine.refuseDelete = undefined;
-  // The source repeats its durable decision query once the engine is back.
-  assert.deepEqual(await ask(drop), proof);
+  here.engine.refuseDeletes.delete(session);
+  const admitted = await ask({ ...offer, id: retry });
+  assert.equal(admitted.op, "ready", JSON.stringify(admitted));
   await until(() => !fs.existsSync(path.join(here.home, journal)) && !fs.existsSync(folder),
     () => "The destination did not clean up the rejected copy\n" + process.log());
   assert.equal(here.engine.sessions.some(record => record.id === session), false);
   assert.deepEqual(await ask(drop), proof);
+  assert.equal((await ask({ ...drop, id: retry })).op, "dropped");
+});
+
+test("a second computer cannot take over a held incoming move", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("contended-copy");
+  const { main, member, spare } = seedPeerSetup(here.home, relay.url, 1, 3);
+  const ask = await moveMail(t, relay, main), other = await moveMail(t, relay, main, 3);
+  await here.start().ready();
+  const id = "mov_contendedCopy", next = "mov_contendingCopy", session = "ses_contendedCopy";
+  const hash = "A".repeat(43);
+  const offer = { op: "offer", id, generation: 1, hash, kind: "chat", thing: session, name: "Notes",
+    size: 30000, safeSwitch: true, twoComputers: true };
+  assert.equal((await ask({ ...offer, from: member.key })).op, "ready");
+  const journal = path.join(here.home, "run/moves", id + ".json");
+  for (const conflicting of [id, next]) {
+    const response = await other({ ...offer, id: conflicting, from: spare.key });
+    assert.equal(response.op, "refused");
+    assert.equal(response.message, "It’s moving to another computer. Try again once it’s there.");
+    assert.equal(readJSON(journal).peer, member.key);
+  }
+  assert.equal(fs.existsSync(path.join(here.home, "run/moves", next + ".json")), false);
+  assert.equal((await ask({ op: "drop", id, generation: 1, hash })).op, "dropped");
+  await until(() => !fs.existsSync(journal), "The first computer's copy did not retire");
+  assert.equal((await other({ ...offer, id: next, from: spare.key })).op, "ready");
+  assert.equal(readJSON(path.join(here.home, "run/moves", next + ".json")).peer, spare.key);
+  assert.equal(here.engine.sessions.length, 0);
+});
+
+test("the week-long cleanup warning dates from the drop and keeps the copy held", {
+  timeout: 40000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("expired-drop");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const starting = Date.now() - 8 * 86400000, generation = 1, hash = "A".repeat(43);
+  const stuck = "ses_stuckDrop", fresh = "ses_freshDrop";
+  for (const [session, id, name, dropSince] of [
+    [stuck, "mov_stuckDrop", "Week-old cleanup", starting],
+    [fresh, "mov_freshDrop", "New cleanup", Date.now()],
+  ]) {
+    const imported = sessionOf({ id: session, directory: path.join(here.home, "chats") });
+    imported.metadata = { "kuvo.moveImport": `${id}:${generation}:${hash}` };
+    here.engine.sessions.push(imported);
+    here.engine.refuseDeletes.add(session);
+    save("run/moves/" + id + ".json", {
+      formatVersion: 1, id, thing: session, name, kind: "chat", from: member.key, to: main.key,
+      peer: member.key, role: "to", stage: "copying", sessions: [session], createdSessions: [session],
+      started: starting, dropSince, complete: true, setUpAt: starting, dropping: true, safeSwitch: true,
+      twoComputers: true, generation, hash,
+    });
+  }
+  const process = here.start(), resident = await process.ready();
+  const warning = /a copy of Week-old cleanup that came here couldn’t be let go of in a week/g;
+  await until(() => process.log().match(warning)?.length, () => "The old drop did not report its warning\n" + process.log(), 12000);
+  const listing = await request(resident, "GET", "kuvo/moves");
+  assert.deepEqual([...listing.json.away].sort(), [fresh, stuck].sort());
+  assert.deepEqual(listing.json.moves, []);
+  assert.ok(!process.log().includes("a copy of New cleanup"));
+  assert.equal(process.log().match(warning).length, 1);
+  here.engine.refuseDeletes.clear();
+  for (const id of ["mov_stuckDrop", "mov_freshDrop"]) {
+    assert.equal((await ask({ op: "drop", id, generation, hash })).op, "dropped");
+  }
+  await until(() => here.engine.sessions.length === 0, "The held copies were not removed once the engine recovered");
+  assert.equal(process.log().match(warning).length, 1);
 });
 
 test("an expired partial copy is discarded without making a conversation", {

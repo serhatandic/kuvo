@@ -8,7 +8,7 @@ export const git = (env, cwd, ...args) => execFileSync("git", args, { cwd, env, 
 
 export async function standInEngine(root, env) {
   // Its sessions (`given.session`), which run, its sign-ins, and every request it got.
-  const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), permissions: new Map(), forms: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
+  const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), permissions: new Map(), forms: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map(), refuseDeletes: new Set() };
   const folderOf = request => {
     try { return decodeURIComponent(request.headers["x-opencode-directory"] ?? ""); } catch { return ""; }
   };
@@ -93,7 +93,9 @@ export async function standInEngine(root, env) {
       }
       if (one && request.method === "DELETE") {
         const id = decodeURIComponent(one[1]);
-        if (engine.refuseDelete === id) return send({ message: "The engine cannot remove this copy yet." }, 503);
+        if (engine.refuseDeletes.has(id)) {
+          return send({ message: "The engine cannot remove this copy yet." }, 503);
+        }
         const at = engine.sessions.findIndex(each => each.id === id);
         if (at < 0) return send({ message: "No such session." }, 404);
         const [removed] = engine.sessions.splice(at, 1);

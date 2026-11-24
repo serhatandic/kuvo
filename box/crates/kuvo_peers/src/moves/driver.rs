@@ -57,6 +57,7 @@ const SET_UP_AT_MOST: Duration = Duration::from_secs(30 * 60);
 const WAITING_AFTER: Duration = Duration::from_secs(90);
 const WAITING_FOR_SWITCH: Duration = Duration::from_secs(150);
 const HELD_AT_MOST: Millis = 7 * 24 * 60 * 60_000;
+const DROP_AGAIN_LATE: Millis = 60 * 60_000;
 const DROP_AT_MOST: Millis = 24 * 3_600_000;
 
 #[derive(Deserialize)]
@@ -107,6 +108,7 @@ pub(crate) fn start(
         copies: Receiving::default(),
         sending: HashMap::new(),
         retry: HashMap::new(),
+        logged_stuck: HashSet::new(),
         owned: HashSet::new(),
         heard: HashMap::new(),
         looking_since: Instant::now(),
@@ -136,6 +138,7 @@ struct Driver {
     copies: Receiving,
     sending: HashMap<String, Sending>,
     retry: HashMap<String, RetryClock>,
+    logged_stuck: HashSet<String>,
     owned: HashSet<String>,
     heard: HashMap<String, Instant>,
     looking_since: Instant,
@@ -308,8 +311,10 @@ impl Driver {
         for mut row in rows {
             let result = if row.role == Role::From {
                 self.source_step(&view, &mut row).await
+            } else if row.dropping && row.activation.is_none() {
+                self.retry_drop(&view, &mut row, now).await;
+                Ok(())
             } else if row.activation.is_some()
-                || row.dropping
                 || row.set_up_since.is_some()
                 || Receipts::open(self.run_dir())
                     .for_peer(&row.id, &row.peer)
@@ -331,6 +336,28 @@ impl Driver {
             }
         }
         Ok(())
+    }
+
+    async fn retry_drop(&mut self, view: &View, row: &mut Journal, now: Millis) {
+        let drop_since = row
+            .extra
+            .get("dropSince")
+            .and_then(Value::as_i64)
+            .unwrap_or(row.started);
+        let late = now.saturating_sub(drop_since) > HELD_AT_MOST;
+        let every = if late { DROP_AGAIN_LATE } else { STEP_AGAIN };
+        if self.retry.contains_key(&row.id) && !self.retry_due(row, every) {
+            return;
+        }
+        if let Err(error) = self.resume_destination(view, row).await
+            && late
+            && self.logged_stuck.insert(row.id.clone())
+        {
+            eprintln!(
+                "kuvo-link: a copy of {} that came here couldn’t be let go of in a week, so it stays held: {error}",
+                row.display_name()
+            );
+        }
     }
 
     fn refresh_waiting(&mut self, rows: &[Journal]) {
@@ -519,12 +546,12 @@ impl Driver {
             _ => {}
         }
         let stored = Journal::read(self.run_dir(), id)?;
-        if stored.as_ref().is_some_and(|row| row.peer != peer) {
+        if op != "offer" && stored.as_ref().is_some_and(|row| row.peer != peer) {
             return Ok(());
         }
         if stored
             .as_ref()
-            .is_some_and(|row| op == "checked" || row.bundle.matches(given))
+            .is_some_and(|row| row.peer == peer && (op == "checked" || row.bundle.matches(given)))
         {
             self.heard.insert(id.into(), Instant::now());
             self.waiting.send_if_modified(|waiting| {
@@ -1225,6 +1252,7 @@ impl Driver {
     }
 
     fn retire_memory(&mut self, id: &str) {
+        self.logged_stuck.remove(id);
         self.retry.remove(id);
         self.owned.remove(id);
         self.sending.remove(id);
@@ -1245,13 +1273,14 @@ impl Driver {
                 .filter(|generation| (1..=9_007_199_254_740_991).contains(generation)),
             hash: given["hash"].as_str().map(str::to_owned),
         };
+        let clock = self.reader.clone();
         let refused = |message: &str| {
             packet(
                 id,
                 &bundle,
                 "refused",
                 json!({"message":message}),
-                self.reader.now(),
+                clock.now(),
             )
         };
         let thing = given["thing"].as_str().unwrap_or_default();
@@ -1294,34 +1323,47 @@ impl Driver {
                 &bundle,
                 "ready",
                 json!({"safeSwitch":true,"verifyPayloads":true,"typedAttachmentPaths":true}),
-                self.reader.now(),
+                clock.now(),
             )
         };
+        let name = given["name"].as_str().unwrap_or("It");
+        let sender = encode(&key);
         if let Some(row) = before.as_ref() {
             if row.role != Role::To
+                || row.peer != sender
                 || row.thing != thing
                 || row.kind != Some(Kind::Chat)
-                || row.dropping
-                || row.activation.is_some()
             {
                 send(&self.relay, view, key, refused(MOVING)).await;
                 return Ok(());
             }
-            if row.bundle.generation >= bundle.generation {
-                if row.bundle == bundle {
-                    send(&self.relay, view, key, ready()).await;
-                }
+            if row.bundle.generation > bundle.generation {
+                return Ok(());
+            }
+            if row.dropping {
+                let place = listing::place_name(listing::name_of(&view.roster, &sender));
+                send(&self.relay, view, key, refused(&old_copy(name, &place))).await;
                 return Ok(());
             }
         }
-        if Receipts::open(self.run_dir())
-            .is_decided(id)
-            .map_err(io::Error::other)?
+        if before.as_ref().is_some_and(|row| row.activation.is_some())
+            || Receipts::open(self.run_dir())
+                .is_decided(id)
+                .map_err(io::Error::other)?
         {
             send(&self.relay, view, key, refused(MOVING)).await;
             return Ok(());
         }
-        let name = given["name"].as_str().unwrap_or("It");
+        if let Some(row) = before
+            .as_ref()
+            .filter(|row| row.bundle.generation == bundle.generation)
+        {
+            if row.bundle == bundle {
+                send(&self.relay, view, key, ready()).await;
+            }
+            return Ok(());
+        }
+        let place = local_place(self.run_dir(), view);
         if size > MAX_BUNDLE_BYTES {
             send(&self.relay, view, key, refused(&too_large(name))).await;
             return Ok(());
@@ -1350,28 +1392,47 @@ impl Driver {
         );
         if let Some(before) = before {
             drop(engine);
-            self.clear_copy(&before).await?;
+            if let Err(error) = self.clear_copy(&before).await {
+                send(&self.relay, view, key, refused(&old_copy(name, &place))).await;
+                return Err(error);
+            }
             handoff::remove_completed(self.run_dir(), &before)?;
-        } else if wake_folder::at(self.run_dir(), thing)?.try_exists()?
-            || engine
-                .lookup(thing)
-                .await
+        } else {
+            let earlier = journals(self.run_dir())
                 .map_err(io::Error::other)?
-                .is_some()
-        {
-            let place = if cfg!(target_os = "macos") {
-                "this Mac"
-            } else {
-                "this machine"
-            };
-            send(
-                &self.relay,
-                view,
-                key,
-                refused(&format!("{} is on {place} already.", row.display_name())),
-            )
-            .await;
-            return Ok(());
+                .into_iter()
+                .find(|row| row.live() && row.covers(thing));
+            if let Some(mut earlier) = earlier {
+                if earlier.thing == thing
+                    && earlier.dropping
+                    && earlier.role == Role::To
+                    && earlier.peer == sender
+                    && let Err(error) = self.drop_copy(view, key, &mut earlier, false).await
+                {
+                    send(&self.relay, view, key, refused(&old_copy(name, &place))).await;
+                    return Err(error);
+                }
+                if Journal::read(self.run_dir(), &earlier.id)?.is_some() {
+                    send(&self.relay, view, key, refused(MOVING)).await;
+                    return Ok(());
+                }
+            }
+            if wake_folder::at(self.run_dir(), thing)?.try_exists()?
+                || engine
+                    .lookup(thing)
+                    .await
+                    .map_err(io::Error::other)?
+                    .is_some()
+            {
+                send(
+                    &self.relay,
+                    view,
+                    key,
+                    refused(&format!("{} is on {place} already.", row.display_name())),
+                )
+                .await;
+                return Ok(());
+            }
         }
         row.bundle = bundle.clone();
         row.size = Some(size);
@@ -1826,6 +1887,7 @@ impl Driver {
                 .insert("dropSince".into(), self.reader.now().into());
             row.save(self.run_dir())?;
         }
+        self.mark_retry(row);
         if explicit {
             self.answer_decision(view, key, row).await?;
         }
@@ -2169,6 +2231,12 @@ fn index(given: &Value) -> Option<u32> {
 fn too_large(name: &str) -> String {
     format!(
         "{name} is more than 1 GB, too big to move to another computer, so it stays where it is."
+    )
+}
+
+fn old_copy(name: &str, place: &str) -> String {
+    format!(
+        "An earlier copy of {name} on {place} couldn’t be let go of yet. Try again in a moment."
     )
 }
 
