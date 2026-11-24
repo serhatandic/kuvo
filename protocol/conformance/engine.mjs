@@ -177,8 +177,13 @@ export async function standInEngine(root, env) {
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") {
         const session = decodeURIComponent(messages[1]);
+        const cursor = url.searchParams.get("cursor");
+        if (engine.refuseMessagePage?.session === session && engine.refuseMessagePage.cursor === cursor) {
+          engine.refuseMessagePage = null;
+          return send({ message: "That page was temporarily unavailable." }, 503);
+        }
         const pages = engine.messagePages?.get(session);
-        const page = pages?.get(url.searchParams.get("cursor"));
+        const page = pages?.get(cursor);
         if (page) return send(page);
         const history = engine.messages.get(session) ?? [];
         if (url.searchParams.get("order") === "desc") {

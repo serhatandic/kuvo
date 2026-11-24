@@ -1645,6 +1645,7 @@ test("a transcript read returns to its tool without prompting the conversation",
       { id: "msg_readQuestion", type: "user", text: "Can you book a table?" },
     ] }],
   ])]]);
+  there.engine.refuseMessagePage = { session: recipient, cursor: "page/2" };
   const sourceProcess = here.start(), targetProcess = there.start();
   const [source, target] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
   await Promise.all([[source, sender], [target, recipient]].map(([resident, session]) =>

@@ -37,8 +37,7 @@ pub(super) async fn read(
     query: Option<&str>,
 ) -> Result<String, Error> {
     let root = format!("api/session/{session}/message?limit=200");
-    let mut page: Page =
-        request(dispatcher, Method::GET, format!("{root}&order=desc"), None).await?;
+    let mut page = read_page(dispatcher, &format!("{root}&order=desc")).await?;
     let mut messages = Vec::new();
     let mut ids = HashSet::new();
     let mut missing = None;
@@ -67,14 +66,7 @@ pub(super) async fn read(
             break;
         };
         let cursor = utf8_percent_encode(&cursor, NON_ALPHANUMERIC);
-        match request(
-            dispatcher,
-            Method::GET,
-            format!("{root}&cursor={cursor}"),
-            None,
-        )
-        .await
-        {
+        match read_page(dispatcher, &format!("{root}&cursor={cursor}")).await {
             Ok(older) => page = older,
             Err(error) => {
                 if undo.is_some_and(|id| !messages.iter().any(|message| message["id"] == id)) {
@@ -106,17 +98,28 @@ pub(super) async fn read(
     })
 }
 
+async fn read_page(dispatcher: &Dispatcher, path: &str) -> Result<Page, Error> {
+    match request(dispatcher, Method::GET, path, None, Duration::from_secs(10)).await {
+        Err(error) if error.retry => {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            request(dispatcher, Method::GET, path, None, Duration::from_secs(20)).await
+        }
+        answer => answer,
+    }
+}
+
 async fn request<T: DeserializeOwned>(
     dispatcher: &Dispatcher,
     method: Method,
-    path: String,
+    path: &str,
     body: Option<Value>,
+    wait: Duration,
 ) -> Result<T, Error> {
     let cancel = CancellationToken::new();
     let _guard = cancel.clone().drop_guard();
     let request = DispatchRequest {
         method,
-        path,
+        path: path.to_owned(),
         headers: HeaderMap::new(),
         body: body
             .map_or_else(Vec::new, |body| body.to_string().into_bytes())
@@ -126,7 +129,7 @@ async fn request<T: DeserializeOwned>(
             internal: true,
         }),
     };
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(wait, async {
         let reply = dispatcher.dispatch(request, cancel).await;
         let status = reply.status;
         let bytes = Limited::new(reply.body, MAX_PAGE_BYTES)
@@ -207,9 +210,13 @@ async fn markdown(
         agent: title,
     };
     for (page_index, page) in messages.chunks(200).enumerate() {
-        let parse: Value = request(dispatcher, Method::POST, "kuvo/messages/parts".into(), Some(json!({
-            "texts": page.iter().map(|message| message["text"].as_str().unwrap_or("")).collect::<Vec<_>>()
-        }))).await?;
+        let parse: Value = request(
+            dispatcher, Method::POST, "kuvo/messages/parts",
+            Some(json!({
+                "texts": page.iter().map(|message| message["text"].as_str().unwrap_or("")).collect::<Vec<_>>()
+            })),
+            Duration::from_secs(15),
+        ).await?;
         for (index, message) in page.iter().enumerate() {
             match message["type"].as_str() {
                 Some("user") => {
