@@ -773,7 +773,7 @@ pub(crate) async fn git(folder: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-async fn linked_location(folder: &Path) -> Option<PathBuf> {
+pub(crate) async fn linked_location(folder: &Path) -> Option<PathBuf> {
     let folder = fs::canonicalize(folder).await.ok()?;
     let top = fs::canonicalize(git(&folder, &["rev-parse", "--show-toplevel"]).await?)
         .await
@@ -804,7 +804,12 @@ async fn linked_location(folder: &Path) -> Option<PathBuf> {
     if fs::canonicalize(private.join(backlink.trim())).await.ok()? != top.join(".git") {
         return None;
     }
-    Some(main.join(folder.strip_prefix(top).ok()?))
+    let nested = folder.strip_prefix(top).ok()?;
+    if nested.as_os_str().is_empty() {
+        Some(main.to_owned())
+    } else {
+        Some(main.join(nested))
+    }
 }
 
 struct Tree {
