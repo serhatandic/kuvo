@@ -393,10 +393,15 @@ your sign-ins added and renewed as they run out. They're read again at most
 every few seconds, and the last known stay while the engine can't say. A
 refused sign-in connects the server again for the folder and for the
 engine. Kuvo Code's own tools are the program the engine's settings name
-(`kuvo-browser`). An agent in the sandbox reaches them through the relay;
-where the box keeps agents through its updates, it reaches them through
-`kuvo-box mcp`, which waits for the relay. Three scenarios cover the
-engine's servers, connecting again and what an agent is given.
+(`kuvo-browser`). An agent in the sandbox reaches them through
+`kuvo-box mcp`, which forwards to the relay and waits for it through an
+update. Every resident runs in a box home of its own, a Mac's too, as the
+bridge did (its keeper starts it as a machine's in every home), so this
+holds on a Mac as on any computer. Three scenarios cover the engine's
+servers, connecting again and what an agent is given. An agent-turn case
+on a Mac home shows it end to end: a held agent in the sandbox calls a
+tool through the forwarder before the resident is replaced and again
+after, and both calls reach Kuvo Code's tools as its conversation's.
 
 What later rows plug in:
 

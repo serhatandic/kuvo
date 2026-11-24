@@ -79,7 +79,8 @@ pub async fn run(
     } else {
         bootstrap.devices
     };
-    let factories = agents::factories(home).await;
+    let tools = agents::tools::relay(home, engine.clone())?;
+    let factories = agents::factories(home, &tools).await;
     let resident_agents = if factories.is_empty() {
         None
     } else {
@@ -101,9 +102,7 @@ pub async fn run(
             }
         }
     };
-    let machine = kind != ComputerKind::Mac;
-    let tools = agents::tools::relay(home, machine, engine.clone())?;
-    if machine && let Some((runtime, _)) = &resident_agents {
+    if let Some((runtime, _)) = &resident_agents {
         agents::tools::take_up(&tools, runtime).await;
     }
     let info = info(

@@ -230,3 +230,55 @@ test("a resident replaced while its agent asks: the next shows the ask once, ref
       await until(() => left().length === 0, () => "Holders were left: " + left().join(", "), 30000);
     });
   });
+
+test("a Mac's held agent in the sandbox reaches Kuvo Code's tools through the box's forwarder, and still does after the resident is replaced",
+  { timeout: 60000 }, t => {
+    if (boxBinary().typescript) {
+      t.skip("The stand-in implements the Rust adapter contract.");
+      return;
+    }
+    const id = "ses_held_tools";
+    const route = `kuvo/agents/api/session/${id}`;
+    const headers = { "x-kuvo-from": "app" };
+    // Kuvo Code's tools as the engine's settings name them: a program that
+    // says whose call it answered.
+    const tools = `require("readline").createInterface({ input: process.stdin }).on("line", line => {
+      const m = JSON.parse(line);
+      if (m.id === undefined) return;
+      const said = m.method === "tools/call" ? { content: [{ type: "text", text: "for " + m.params._meta["ai.opencode/sessionID"] }] }
+        : { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "tools", version: "1" } };
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: said }) + "\\n");
+    });`;
+    const settings = { mcp: { servers: { "kuvo-browser": { command: [process.execPath, "-e", tools] } } } };
+    return withAgentFixture(t, home => {
+      write(path.join(home, "box", "kind"), "mac\n");
+      write(path.join(home, "agents", "sessions", id, "session.json"), JSON.stringify({
+        id, projectID: "fixture", agent: "build", location: { directory: home },
+        model: { providerID: "codex-cli", id: "stand-in" },
+        time: { created: 1, updated: 1 },
+        permissions: [{ action: "edit", resource: "*", effect: "ask" }],
+      }));
+    }, async (first, home, { restart }) => {
+      let listener = first;
+      const call = (method, tail, body) => request(listener, method, route + tail, body, headers);
+      const said = async () => (await call("GET", "/message?order=asc")).json.data
+        .filter(row => row.type === "assistant").map(row => row.content.map(part => part.text ?? "").join(""));
+      assert.equal((await call("POST", "/prompt", { id: "msg_held_tools_1", text: "edit" })).status, 200);
+      const asked = await until(async () => (await call("GET", "/permission")).json.data[0],
+        "The held stand-in did not ask.");
+      listener = await restart();
+      const again = await until(async () => (await call("GET", "/permission")).json.data[0],
+        "The ask did not come again.");
+      assert.equal(again.id, asked.id);
+      assert.equal((await call("POST", `/permission/${asked.id}/reply`, { decision: "once" })).status, 200);
+      const done = await until(async () => {
+        const all = (await call("GET", "/message?order=asc")).json.data;
+        return all.some(row => row.type === "idle") && all;
+      }, "The turn did not end.");
+      assert.deepEqual(done.filter(row => row.type === "idle").map(row => row.outcome), ["succeeded"]);
+      assert.deepEqual(await said(), [`Asked to edit; tools said for ${id}; approved; then for ${id}`]);
+      const holders = path.join(home, "run", "agents", "hold");
+      const left = () => existsSync(holders) ? readdirSync(holders).filter(name => name !== "lifecycle.log") : [];
+      await until(() => left().length === 0, () => "Holders were left: " + left().join(", "), 30000);
+    }, { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(settings) } });
+  });
