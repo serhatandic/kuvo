@@ -252,7 +252,9 @@ impl Handle {
             }
         });
         let held = inventory.frozen.contains(session);
-        let retiring = inventory.journal.get(&(RecordScope::Session, session.into()))
+        let retiring = inventory
+            .journal
+            .get(&(RecordScope::Session, session.into()))
             .is_some_and(|move_to| move_to.retiring);
         Ok(Scope {
             setup: setup.id,
