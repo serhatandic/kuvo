@@ -339,6 +339,66 @@ test("a resident keeps the saved draft pending while a recovered move holds its 
   assert.deepEqual(here.engine.messages.get(session).map(row => row.id), [draft.id]);
 });
 
+test("a source resumes the original only after the destination proves it dropped its copy", {
+  timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("drop-proof-source"), there = await computer("drop-proof-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_dropProof", directory = path.join(here.home, "chats");
+  const pause = path.join(here.home, "wakes", session, "paused");
+  write(pause, "user-paused");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, title: "Trip plans", directory }));
+  const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
+  const { sealOneWay, openOneWay, Frame, frame } = await testMail(t, boxBinary(wireFixture));
+  const key = peer => Buffer.from(peer.key, "base64url");
+  let switching, dropProof;
+  t.after(relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), key(main));
+    const move = JSON.parse(payload).move;
+    if (move?.op !== "switch") return false;
+    switching = move;
+    return true;
+  }));
+  const releaseProof = relay.intercept(to, from, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 1), key(member));
+    if (JSON.parse(payload).move?.op !== "dropped") return false;
+    dropProof = packet;
+    return true;
+  });
+  t.after(releaseProof);
+  const sourceProcess = here.start(), destinationProcess = there.start();
+  const [source] = await Promise.all([sourceProcess.ready(), destinationProcess.ready()]);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const { id, generation, hash } = await until(() => switching, "The source did not attempt to switch");
+  const send = (a, b, secret, receiver, move) => {
+    const payload = Buffer.from(JSON.stringify({ at: Date.now(), move }));
+    const { message } = sealOneWay(payload, Buffer.alloc(32, secret), key(receiver));
+    relay.replay({ from: a, to: b, payload: frame(Frame.mail, 0, message) });
+  };
+  send(to, from, 2, main, { op: "dropped", id, generation: generation + 1, hash, neverSwitched: true });
+  send(from, to, 1, member, { op: "drop", id, generation, hash });
+  await until(() => dropProof, "The destination did not prove its copy was dropped");
+  const route = "kuvo/moves/receipt?id=" + id;
+  assert.equal((await request(source, "GET", route)).json.state, "moving");
+  assert.equal(fs.readFileSync(pause, "utf8"), "moving:" + id);
+
+  releaseProof();
+  relay.replay(dropProof);
+  await moveRetired(here, id, () => sourceProcess.log() + "\n" + destinationProcess.log());
+  const result = await request(source, "GET", route);
+  assert.deepEqual(result.json, { state: "failed", message: "“Trip plans” couldn’t be set up there, so it stayed here. Try again." });
+  assert.equal(fs.readFileSync(pause, "utf8"), "user-paused");
+  assert.ok(here.engine.sessions.some(row => row.id === session));
+  await until(() => !there.engine.sessions.some(row => row.id === session), "The destination did not remove the dropped copy");
+});
+
 test("a destination rolls back the import that lost its engine reply during restart", { timeout: 105000 }, async t => {
   const { computer, relay } = await bench(t);
   const source = await computer("aborted-source"), destination = await computer("aborted-destination");
@@ -1013,9 +1073,17 @@ test("a move carries replay evidence saved after the first offer", {
   assert.equal(begun.status, 202, begun.text);
   const { id } = begun.json.move;
   const installed = path.join(there.home, file);
-  await until(() => fs.existsSync(installed), () => "The destination never installed the evidence\n"
-    + sourceProcess.log() + "\n" + destinationProcess.log(), 20000);
   const outcome = path.join(here.home, "run/moves", id + ".outcome.json");
+  const journal = computer => {
+    const file = path.join(computer.home, "run/moves", id + ".json");
+    return fs.existsSync(file) ? readJSON(file) : null;
+  };
+  await until(() => {
+    if (fs.existsSync(outcome)) assert.notEqual(readJSON(outcome).ok, false, fs.readFileSync(outcome, "utf8"));
+    return fs.existsSync(installed);
+  }, () => "The destination never installed the evidence\n" + JSON.stringify({
+    generations: [...generations], source: journal(here), destination: journal(there),
+  }) + "\n" + sourceProcess.log() + "\n" + destinationProcess.log(), 20000);
   await until(() => fs.existsSync(outcome), () => "The source did not record the move result\n"
     + sourceProcess.log() + "\n" + destinationProcess.log(), 30000);
   const receipt = await request(source, "GET", "kuvo/moves/receipt?id=" + id, undefined, {}, 20000);
@@ -1744,15 +1812,16 @@ test("a refused letter becomes one queued note to the conversation that sent it"
 });
 
 test("an answer left by a tool reaches the new owner once", {
-  timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 80000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("late-answer-source"), there = await computer("late-answer-target");
   const { main, member } = seedPeerSetup(here.home, relay.url);
   seedPeerSetup(there.home, relay.url, 2);
-  const session = "ses_lateAnswer", directory = path.join(here.home, "chats");
+  const session = "ses_lateAnswer", responder = "ses_lateLocalResponder", directory = path.join(here.home, "chats");
   fs.mkdirSync(directory, { recursive: true });
-  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  here.engine.sessions.push(sessionOf({ id: session, title: "Trip plans", directory }));
+  here.engine.sessions.push(sessionOf({ id: responder, title: "Ada", directory }));
   const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
   const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
   const sender = Buffer.from(main.key, "base64url"), secret = Buffer.alloc(32, 2);
@@ -1773,6 +1842,22 @@ test("an answer left by a tool reaches the new owner once", {
     catch { return false; }
   }, () => "The source did not hear the destination's move capability\n" + logs(), 15000);
   await readyToMove(source, session, member);
+  await until(() => {
+    try {
+      const listed = readJSON(path.join(there.home, "run/peer-agents.json"))[main.key]?.list ?? [];
+      return [session, responder].every(id => listed.some(agent => agent.session === id));
+    } catch { return false; }
+  }, "The source did not announce both local correspondents", 15000);
+  const keptReplies = path.join(here.home, "run/replies");
+  const sending = path.join(here.home, "run/outbox/sending");
+  const local = "ltr_localWaitingAnswer", localTool = path.join(keptReplies, local);
+  write(localTool + ".alive", "");
+  write(path.join(sending, local + ".json"), JSON.stringify({
+    from: session, to: responder, text: "Is the table reserved?", wait: true, at: Date.now(),
+  }));
+  const conversation = await until(() => here.engine.messages.get(responder), "The local letter did not reach Ada");
+  assert.match(conversation[0].text, /They're waiting for your reply/);
+  write(localTool + ".gaveup", "");
   const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   assert.equal(begun.status, 202, begun.text);
   await until(() => switching, () => "The destination did not get a held copy\n" + logs(), 15000);
@@ -1783,6 +1868,14 @@ test("an answer left by a tool reaches the new owner once", {
   write(reply + ".json", JSON.stringify({ to: session, from: "ses_scout", name: "Scout", text: answer }));
   write(abandonedRead, JSON.stringify({ read: true, to: session, text: "The transcript." }));
   await until(() => !fs.existsSync(abandonedRead), "The resident did not process abandoned tool replies");
+  const localAnswer = "The table is reserved.";
+  conversation.push({ id: conversation[0].id.slice(0, -1) + "z0", type: "assistant",
+    content: [{ type: "text", text: localAnswer }] });
+  await until(() => [keptReplies, sending].some(folder => fs.readdirSync(folder).some(name => {
+    if (!name.endsWith(".json")) return false;
+    try { return readJSON(path.join(folder, name)).text === localAnswer; }
+    catch (error) { if (error.code !== "ENOENT") throw error; return false; }
+  })), () => "The local reply did not wait with the held conversation\n" + logs(), 18000);
   assert.equal(readJSON(reply + ".json").text, answer, "The reply is kept while its conversation is held");
   assert.equal(here.engine.messages.has(session), false);
   assert.deepEqual(there.engine.messages.get(session) ?? [], []);
@@ -1795,6 +1888,11 @@ test("an answer left by a tool reaches the new owner once", {
   const received = there.engine.messages.get(session).filter(message => message.text?.includes(answer));
   assert.equal(received.length, 1);
   assert.match(received[0].text, /^\[Message from Scout · ses_scout\][^\n]*\n\nThe venue is booked\.$/);
+  await until(() => there.engine.messages.get(session)?.some(message => message.text?.includes(localAnswer)),
+    "Ada's answer did not follow the moved conversation", 18000);
+  const replies = there.engine.messages.get(session).filter(message => message.text?.includes(localAnswer));
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].text, `[Message from Ada · ${responder}] (To answer, use send_message to ${responder}.)\n\n${localAnswer}`);
   assert.equal(here.engine.messages.has(session), false);
   assert.ok(!fs.existsSync(reply + ".gaveup"));
 });
