@@ -153,12 +153,17 @@ pub fn refreshed_rules(current: &[Rule], settings: &[Rule]) -> Vec<Rule> {
             .collect()
     };
     // (Its own folders are those Settings says nothing of.)
-    made.extend(current.iter().filter(|rule| {
-        rule.is_particular()
-            && !settings
-                .iter()
-                .any(|set| set.action == "external_directory" && set.resource == rule.resource)
-    }).cloned());
+    made.extend(
+        current
+            .iter()
+            .filter(|rule| {
+                rule.is_particular()
+                    && !settings.iter().any(|set| {
+                        set.action == "external_directory" && set.resource == rule.resource
+                    })
+            })
+            .cloned(),
+    );
     made
 }
 
@@ -315,7 +320,10 @@ impl Approvals {
             }
             Err(_) => return None,
         };
-        let rules = settings["permissions"].as_array().cloned().unwrap_or_default();
+        let rules = settings["permissions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         Some(Rule::all(&rules).unwrap_or_default())
     }
 
@@ -333,9 +341,13 @@ impl Approvals {
     }
 
     fn made(&self, approval: Approval, current: &[Rule]) -> Vec<Rule> {
-        let settings = self
-            .permissions_here()
-            .unwrap_or_else(|| current.iter().filter(|rule| rule.holds_back()).cloned().collect());
+        let settings = self.permissions_here().unwrap_or_else(|| {
+            current
+                .iter()
+                .filter(|rule| rule.holds_back())
+                .cloned()
+                .collect()
+        });
         let start: Vec<Rule> = approval
             .asks_before_commands()
             .then(|| Rule::new("shell", "*", "ask"))
@@ -345,14 +357,20 @@ impl Approvals {
         let mut made = refreshed_rules(&start, &settings);
         if approval == Approval::AcceptEdits {
             for rule in &mut made {
-                if EDITS.contains(&rule.action.as_str()) && rule.resource == "*" && rule.effect == "ask"
+                if EDITS.contains(&rule.action.as_str())
+                    && rule.resource == "*"
+                    && rule.effect == "ask"
                 {
                     rule.effect = "allow".into();
                 }
             }
         }
         if approval == Approval::Auto
-            && settings.iter().rev().find(|rule| rule.is_outside()).is_some_and(|rule| rule.effect == "ask")
+            && settings
+                .iter()
+                .rev()
+                .find(|rule| rule.is_outside())
+                .is_some_and(|rule| rule.effect == "ask")
         {
             for rule in &mut made {
                 if rule.is_outside() && rule.effect == "allow" {
@@ -378,7 +396,8 @@ impl Approvals {
         let applied = own.and_then(|own| own.get("applied"));
         // (As TypeScript reads it on every call: kept the first time.)
         let _ = self.since();
-        if let (Some(kept), Some(applied)) = (kept.and_then(Approval::of), applied.and_then(Approval::of))
+        if let (Some(kept), Some(applied)) =
+            (kept.and_then(Approval::of), applied.and_then(Approval::of))
             && made_for(rules, applied)
         {
             let (effective, held) = self.effective(kept);

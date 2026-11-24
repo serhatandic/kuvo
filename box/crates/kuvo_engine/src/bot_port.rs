@@ -76,7 +76,13 @@ impl BotEngine {
         }
         match self
             .engine
-            .call_raw(&self.lease, Method::DELETE, &sessions::path(session), None, WAIT * 3)
+            .call_raw(
+                &self.lease,
+                Method::DELETE,
+                &sessions::path(session),
+                None,
+                WAIT * 3,
+            )
             .await
         {
             Ok(_) => true,

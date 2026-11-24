@@ -20,7 +20,15 @@ use super::{
 const WORK_ACTIONS: &[&str] = &["makeProject", "cloneProject"];
 /// The fields of a change whose times are noted (`edited.json`).
 const EDITED_FIELDS: &[&str] = &[
-    "name", "look", "personality", "job", "jobLine", "jobDetails", "model", "effort", "work",
+    "name",
+    "look",
+    "personality",
+    "job",
+    "jobLine",
+    "jobDetails",
+    "model",
+    "effort",
+    "work",
 ];
 /// How long a field's time is kept.
 const EDITED_KEPT: i64 = 30 * 86_400_000;
@@ -125,7 +133,8 @@ fn note_edited(folder: &Path, fields: &[&str]) {
         .into_iter()
         .filter_map(|(field, at)| {
             let at = at.as_f64()?;
-            ((now as f64) - at < EDITED_KEPT as f64).then(|| (field, json!(at.min(now as f64) as i64)))
+            ((now as f64) - at < EDITED_KEPT as f64)
+                .then(|| (field, json!(at.min(now as f64) as i64)))
         })
         .collect();
     for field in fields {
@@ -180,7 +189,10 @@ impl Bots {
             } else {
                 return no(
                     400,
-                    format!("There’s no personality “{}”.", super::here::js_string(wanted)),
+                    format!(
+                        "There’s no personality “{}”.",
+                        super::here::js_string(wanted)
+                    ),
                 );
             }
         }
@@ -280,7 +292,8 @@ impl Bots {
                     work.insert("allowed".into(), json!(allowed));
                 }
             }
-            limits_changed = serde_json::to_string(&work).ok() != serde_json::to_string(&before).ok();
+            limits_changed =
+                serde_json::to_string(&work).ok() != serde_json::to_string(&before).ok();
             if work.is_empty() {
                 changed.remove("work");
             } else {
@@ -293,7 +306,11 @@ impl Bots {
             change_description(
                 &folder,
                 |now| {
-                    let next = keep_allowed(onto(now.clone(), &described, changed), now.as_ref(), names_allowed);
+                    let next = keep_allowed(
+                        onto(now.clone(), &described, changed),
+                        now.as_ref(),
+                        names_allowed,
+                    );
                     saved = Some(next.clone());
                     Ok(Some(next))
                 },
@@ -392,7 +409,11 @@ impl Bots {
     }
 
     /// The effort `given` names for `model`, as its variant: none for null or "" (the model's own).
-    async fn effort_of(&self, model: &Value, given: &Value) -> Result<Option<String>, (u16, String)> {
+    async fn effort_of(
+        &self,
+        model: &Value,
+        given: &Value,
+    ) -> Result<Option<String>, (u16, String)> {
         let effort = match given {
             Value::Null => return Ok(None),
             Value::String(text) if text.is_empty() => return Ok(None),
@@ -411,12 +432,22 @@ impl Bots {
         };
         let Some(listed) = reach::model_named(model, &models) else {
             if models.is_empty() {
-                return no(503, format!("The efforts of {id} can’t be read on {here} now. Try again in a moment.")).map(|_| None);
+                return no(
+                    503,
+                    format!(
+                        "The efforts of {id} can’t be read on {here} now. Try again in a moment."
+                    ),
+                )
+                .map(|_| None);
             }
             return no(422, format!("{id} can’t be used on {here} now, so its effort can’t be set: sign in to it in Settings › Accounts, or choose another model.")).map(|_| None);
         };
         if listed.efforts.is_empty() {
-            return no(400, format!("{} has no efforts to choose from.", listed.name)).map(|_| None);
+            return no(
+                400,
+                format!("{} has no efforts to choose from.", listed.name),
+            )
+            .map(|_| None);
         }
         if !listed.efforts.contains(&effort) {
             return no(
@@ -472,12 +503,13 @@ impl Bots {
     /// A deleted bot's conversation gone as far as it can be now; its group chats are the coding
     /// agents' (not in this box yet), so they're left noted. Whether anything is still left.
     async fn leave_behind(&self, left: &mut Value) -> bool {
-        if left["conversation"] == true && left["agents"] != true {
-            if let Some(engine) = self.inner.engine.bot_engine().await {
-                let session = left["session"].as_str().unwrap_or_default().to_owned();
-                let gone = engine.delete_session(&session).await;
-                left["conversation"] = json!(!gone);
-            }
+        if left["conversation"] == true
+            && left["agents"] != true
+            && let Some(engine) = self.inner.engine.bot_engine().await
+        {
+            let session = left["session"].as_str().unwrap_or_default().to_owned();
+            let gone = engine.delete_session(&session).await;
+            left["conversation"] = json!(!gone);
         }
         left["groups"] == true || left["conversation"] == true
     }
@@ -518,7 +550,10 @@ impl Bots {
                 };
             }
             let new = file.with_extension("json.new");
-            std::fs::write(&new, serde_json::to_string(&json!({ "left": bots })).expect("JSON"))?;
+            std::fs::write(
+                &new,
+                serde_json::to_string(&json!({ "left": bots })).expect("JSON"),
+            )?;
             std::fs::rename(&new, &file)
         })();
     }
@@ -559,7 +594,10 @@ impl Bots {
         deleted.truncate(500);
         std::fs::create_dir_all(&self.inner.bots)?;
         let new = file.with_extension("json.new");
-        std::fs::write(&new, serde_json::to_string(&json!({ "deleted": deleted })).expect("JSON"))?;
+        std::fs::write(
+            &new,
+            serde_json::to_string(&json!({ "deleted": deleted })).expect("JSON"),
+        )?;
         std::fs::rename(&new, &file)
     }
 }

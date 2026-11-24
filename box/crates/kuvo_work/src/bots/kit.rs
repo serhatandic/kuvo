@@ -11,7 +11,13 @@ pub const NO_KIT: &str =
     "Kuvo Code on this computer is missing its words for bots: update it, then try again.";
 
 /// The coding agents' providers: a bot on one of theirs runs with them.
-const AGENT_PROVIDERS: &[&str] = &["claude-code", "codex-cli", "cursor", "grok-cli", "antigravity"];
+const AGENT_PROVIDERS: &[&str] = &[
+    "claude-code",
+    "codex-cli",
+    "cursor",
+    "grok-cli",
+    "antigravity",
+];
 
 /// Whether a model runs with the coding agents.
 pub fn runs_with_agents(model: Option<&Value>) -> bool {
@@ -126,9 +132,15 @@ fn read_words(file: &Path) -> Option<Map<String, Value>> {
         && words["here"].get("mac").is_some_and(Value::is_object)
         && words["here"].get("machine").is_some_and(Value::is_object)
         && words.get("job").is_some_and(Value::is_object)
-        && ["personalityWords", "projectNote", "identityNote", "memory", "greeting"]
-            .iter()
-            .all(|key| words.get(*key).is_some_and(Value::is_string));
+        && [
+            "personalityWords",
+            "projectNote",
+            "identityNote",
+            "memory",
+            "greeting",
+        ]
+        .iter()
+        .all(|key| words.get(*key).is_some_and(Value::is_string));
     whole.then_some(words)
 }
 
@@ -162,7 +174,11 @@ fn words_here(instructions: &[Value], here: &Map<String, Value>, place: &Place<'
     let named = systems
         .and_then(|systems| systems.get(place.system).or_else(|| systems.get("other")))
         .map_or_else(|| "machine".to_owned(), text);
-    let joined = instructions.iter().map(text).collect::<Vec<_>>().join("\n\n");
+    let joined = instructions
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>()
+        .join("\n\n");
     let mut out = String::with_capacity(joined.len());
     let mut rest = joined.as_str();
     // (Each of ⟦place⟧, ⟦clock⟧ and ⟦browser⟧ in one pass: what they're filled with isn't looked at again.)
@@ -250,7 +266,9 @@ impl Kit {
 
     /// The template `id`, where the kit has one.
     pub fn template(&self, id: &Value) -> Option<&Map<String, Value>> {
-        self.templates.iter().find(|each| each.get("id") == Some(id))
+        self.templates
+            .iter()
+            .find(|each| each.get("id") == Some(id))
     }
 
     /// The personalities a bot made here can have: Kuvo Code's own, then yours (`library`).
@@ -286,7 +304,10 @@ impl Kit {
         job: Option<&JobText>,
     ) -> String {
         let working = job.is_some_and(|job| !job.section.is_empty() || !job.line.is_empty());
-        let mut text = self.instructions.replace("⟦name⟧", name).replace("⟦folder⟧", folder);
+        let mut text = self
+            .instructions
+            .replace("⟦name⟧", name)
+            .replace("⟦folder⟧", folder);
         text = match personality.filter(|personality| !personality.is_empty()) {
             Some(personality) => text.replacen("⟦personality⟧", personality, 1),
             None => text.replacen("\n⟦personality⟧\n", "", 1),
@@ -353,7 +374,10 @@ impl Kit {
         let place = if is_mac {
             "mac".to_owned()
         } else {
-            machine.filter(|name| !name.is_empty()).unwrap_or("machine").to_owned()
+            machine
+                .filter(|name| !name.is_empty())
+                .unwrap_or("machine")
+                .to_owned()
         };
         json!({
             "templates": templates,
@@ -366,7 +390,9 @@ impl Kit {
 }
 
 fn told(words: &str, name: &str, description: &str) -> String {
-    words.replace("⟦name⟧", name).replace("⟦description⟧", description)
+    words
+        .replace("⟦name⟧", name)
+        .replace("⟦description⟧", description)
 }
 
 #[cfg(test)]
@@ -377,7 +403,10 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join("bin")).unwrap();
         std::fs::copy(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../src/shared/bot-words.json"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../src/shared/bot-words.json"
+            ),
             home.path().join("bin/bot-words.json"),
         )
         .unwrap();
@@ -442,7 +471,9 @@ mod tests {
 
     #[test]
     fn models_on_the_coding_agents() {
-        assert!(runs_with_agents(Some(&json!({"providerID": "claude-code@2"}))));
+        assert!(runs_with_agents(Some(
+            &json!({"providerID": "claude-code@2"})
+        )));
         assert!(runs_with_agents(Some(&json!({"providerID": "auto"}))));
         assert!(!runs_with_agents(Some(&json!({"providerID": "opencode"}))));
         assert!(!runs_with_agents(None));

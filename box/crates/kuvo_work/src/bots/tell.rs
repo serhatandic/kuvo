@@ -54,15 +54,27 @@ pub fn permission(rule: &Rule) -> SessionPermission {
 impl Bots {
     /// What a bot here is told now: the kit's words with its name, folder, personality and
     /// project, and its job as its memory has it (`described`, its description as it's changed).
-    pub(super) fn told_now(&self, kit: &Kit, here: &BotHere, described: &Map<String, Value>) -> String {
+    pub(super) fn told_now(
+        &self,
+        kit: &Kit,
+        here: &BotHere,
+        described: &Map<String, Value>,
+    ) -> String {
         let library = self.inner.setup.personalities();
         let personality = described
             .get("personality")
             .and_then(Value::as_str)
-            .and_then(|id| kit.personalities(&library).into_iter().find(|each| each.id == id))
+            .and_then(|id| {
+                kit.personalities(&library)
+                    .into_iter()
+                    .find(|each| each.id == id)
+            })
             .map(|each| each.instruction);
         let job = job_of(here, true);
-        let name = described.get("name").and_then(Value::as_str).unwrap_or_default();
+        let name = described
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let project = described.get("project").and_then(Value::as_str);
         kit.instructions_for(
             name,
@@ -77,10 +89,18 @@ impl Bots {
     }
 
     /// Tells a bot's conversation `text`, and notes it. Whether it got there.
-    pub(super) async fn tell_bot(engine: &BotEngine, here: &BotHere, session: &str, text: &str) -> bool {
+    pub(super) async fn tell_bot(
+        engine: &BotEngine,
+        here: &BotHere,
+        session: &str,
+        text: &str,
+    ) -> bool {
         let told = reach::tell(engine, session, text).await;
         if told {
-            note_told(&here.folder, &[("session", session), ("instructions", &digest(text))]);
+            note_told(
+                &here.folder,
+                &[("session", session), ("instructions", &digest(text))],
+            );
         }
         told
     }
@@ -99,7 +119,10 @@ impl Bots {
             .described
             .get("project")
             .and_then(Value::as_str)
-            .map_or_else(|| here.folder.join("workspace").display().to_string(), str::to_owned);
+            .map_or_else(
+                || here.folder.join("workspace").display().to_string(),
+                str::to_owned,
+            );
         let _ = (|| {
             write("directory", directory.as_bytes())?;
             self.zone_files().write(&here.folder)?;
@@ -114,7 +137,12 @@ impl Bots {
 
     /// A bot's own rules as they're made now: its approval with this computer's Settings ›
     /// Permissions, then its folder here. Whether they're right now.
-    pub(super) async fn repair_rules(&self, engine: &BotEngine, here: &BotHere, session: &str) -> bool {
+    pub(super) async fn repair_rules(
+        &self,
+        engine: &BotEngine,
+        here: &BotHere,
+        session: &str,
+    ) -> bool {
         let id = here.id.clone();
         let own = Rule::new(
             "external_directory",
@@ -151,7 +179,8 @@ impl Bots {
                 let settings = typed.as_ref().and(approvals.permissions_here());
                 let made = match (&typed, &settings) {
                     (Some(kept), Some(settings)) => {
-                        let approval = approvals.of_bot(kept, data.get("metadata").filter(|m| m.is_object()));
+                        let approval =
+                            approvals.of_bot(kept, data.get("metadata").filter(|m| m.is_object()));
                         let made = if approval.stored {
                             approvals.rules(approval.effective, kept, &[])
                         } else {
@@ -167,7 +196,8 @@ impl Bots {
                     _ => kept
                         .into_iter()
                         .filter(|rule| {
-                            Rule::of(rule).is_none_or(|rule| !without_former_asks(&[rule], &[]).is_empty())
+                            Rule::of(rule)
+                                .is_none_or(|rule| !without_former_asks(&[rule], &[]).is_empty())
                         })
                         .collect(),
                 };
@@ -231,7 +261,8 @@ impl Bots {
         let ids = crate::wakes::folder::names(&self.inner.bots);
         let mut engine = None;
         for id in ids {
-            let Some(here) = BotHere::read(&self.inner.bots, &id).filter(|here| !here.moving()) else {
+            let Some(here) = BotHere::read(&self.inner.bots, &id).filter(|here| !here.moving())
+            else {
                 continue;
             };
             if here.agents {
@@ -273,14 +304,22 @@ impl Bots {
             .ok_or_else(|| (503, "The engine isn’t running.".to_owned()))?;
         let text = self.told_now(&kit, &here, &here.described);
         let there = reach::told_there(&engine, &here.session).await;
-        let already = there.as_ref().is_some_and(|there| there.as_deref() == Some(text.as_str()));
+        let already = there
+            .as_ref()
+            .is_some_and(|there| there.as_deref() == Some(text.as_str()));
         if already {
-            note_told(&here.folder, &[("session", &here.session), ("instructions", &digest(&text))]);
+            note_told(
+                &here.folder,
+                &[("session", &here.session), ("instructions", &digest(&text))],
+            );
         }
         let told = already || Self::tell_bot(&engine, &here, &here.session, &text).await;
         let ruled = self.repair_rules(&engine, &here, &here.session).await;
         if ruled {
-            note_told(&here.folder, &[("rules", &here.folder.display().to_string())]);
+            note_told(
+                &here.folder,
+                &[("rules", &here.folder.display().to_string())],
+            );
         }
         if !told || !ruled {
             return Err((

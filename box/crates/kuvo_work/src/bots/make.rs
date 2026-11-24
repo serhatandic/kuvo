@@ -42,7 +42,9 @@ pub struct Requests {
 fn request_id(given: &Value) -> Option<String> {
     let id = given.get("request")?.as_str()?;
     ((8..=64).contains(&id.len())
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
     .then(|| id.to_owned())
 }
 
@@ -114,7 +116,10 @@ impl Bots {
     /// box's rule) and the projects it can work in.
     pub(super) async fn templates(&self) -> Result<Value, kuvo_server::Refusal> {
         let Some(kit) = self.kit() else {
-            return Err(kuvo_server::Refusal::new(http::StatusCode::CONFLICT, NO_KIT));
+            return Err(kuvo_server::Refusal::new(
+                http::StatusCode::CONFLICT,
+                NO_KIT,
+            ));
         };
         let starting = match self.inner.engine.bot_engine().await {
             Some(engine) => reach::starting_model(&engine).await,
@@ -208,7 +213,10 @@ impl Bots {
             Some(wanted) => match kit.template(wanted) {
                 Some(template) => Some(template.clone()),
                 None => {
-                    return no(400, &format!("There’s no template “{}”.", js_string(wanted)));
+                    return no(
+                        400,
+                        &format!("There’s no template “{}”.", js_string(wanted)),
+                    );
                 }
             },
             None => None,
@@ -223,7 +231,9 @@ impl Bots {
             .map(|job| {
                 first_message_of(
                     job.get("line").and_then(Value::as_str).unwrap_or_default(),
-                    job.get("details").and_then(Value::as_str).unwrap_or_default(),
+                    job.get("details")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
                 )
             })
             .filter(|message| !message.is_empty());
@@ -283,9 +293,25 @@ impl Bots {
             None => match &engine {
                 Some(engine) => match reach::starting_model(engine).await {
                     Some(model) => model,
-                    None => return no(422, &format!("There’s no model to start it on here: sign in to an account on {} first.", self.here())),
+                    None => {
+                        return no(
+                            422,
+                            &format!(
+                                "There’s no model to start it on here: sign in to an account on {} first.",
+                                self.here()
+                            ),
+                        );
+                    }
                 },
-                None => return no(422, &format!("There’s no model to start it on here: sign in to an account on {} first.", self.here())),
+                None => {
+                    return no(
+                        422,
+                        &format!(
+                            "There’s no model to start it on here: sign in to an account on {} first.",
+                            self.here()
+                        ),
+                    );
+                }
             },
         };
         let Some(engine) = engine else {
@@ -320,7 +346,9 @@ impl Bots {
                     project: project.as_deref(),
                     model: &model,
                     look: &look,
-                    personality: personality.as_ref().map(|each| (each.id.as_str(), each.instruction.as_str())),
+                    personality: personality
+                        .as_ref()
+                        .map(|each| (each.id.as_str(), each.instruction.as_str())),
                 },
                 &mut session,
             )
@@ -328,7 +356,12 @@ impl Bots {
         if let Err(error) = made {
             if let Some(session) = &session {
                 let _ = engine
-                    .call(Method::DELETE, &format!("api/session/{}", segment(session)), None, BOT_STEP)
+                    .call(
+                        Method::DELETE,
+                        &format!("api/session/{}", segment(session)),
+                        None,
+                        BOT_STEP,
+                    )
                     .await;
             }
             let _ = std::fs::remove_dir_all(&folder);
@@ -340,7 +373,10 @@ impl Bots {
             .as_ref()
             .map(|template| {
                 first_message_of(
-                    template.get("job").and_then(Value::as_str).unwrap_or_default(),
+                    template
+                        .get("job")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
                     template
                         .get("instructions")
                         .and_then(Value::as_str)
@@ -354,7 +390,9 @@ impl Bots {
                 .call(
                     Method::POST,
                     &format!("api/session/{}/synthetic", segment(&session)),
-                    Some(&json!({"text": kit.greeting, "description": "A new bot's first message"})),
+                    Some(
+                        &json!({"text": kit.greeting, "description": "A new bot's first message"}),
+                    ),
                     BOT_STEP,
                 )
                 .await;

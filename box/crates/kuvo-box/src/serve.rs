@@ -266,8 +266,11 @@ pub async fn run(
         wakes.clone(),
         peers.reader(),
         sessions.clone(),
+        engine.clone(),
+        Arc::new(super::bot_setup::BotSetup(setup.handle())),
     );
     bots.register(&mut routes);
+    let bots_follow_engine = bots.follow_engine();
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -407,6 +410,7 @@ pub async fn run(
         }
     }
     firing.stop().await;
+    bots_follow_engine.abort();
     if let Some(updates) = updates {
         updates.stop().await;
     }

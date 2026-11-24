@@ -91,7 +91,10 @@ pub async fn usable_models(engine: &BotEngine) -> Vec<Usable> {
             {
                 return None;
             }
-            let name = each["name"].as_str().filter(|name| !name.is_empty()).unwrap_or(id);
+            let name = each["name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .unwrap_or(id);
             Some(Usable {
                 provider: provider.to_owned(),
                 id: id.to_owned(),
@@ -108,20 +111,26 @@ pub async fn usable_models(engine: &BotEngine) -> Vec<Usable> {
 pub fn model_named<'a>(model: &Value, models: &'a [Usable]) -> Option<&'a Usable> {
     let provider = model["providerID"].as_str()?;
     let id = model["id"].as_str()?;
-    let of_provider: Vec<_> = models.iter().filter(|each| each.provider == provider).collect();
+    let of_provider: Vec<_> = models
+        .iter()
+        .filter(|each| each.provider == provider)
+        .collect();
     of_provider
         .iter()
         .find(|each| each.id == id)
-        .or_else(|| of_provider.iter().find(|each| each.aliases.iter().any(|alias| alias == id)))
+        .or_else(|| {
+            of_provider
+                .iter()
+                .find(|each| each.aliases.iter().any(|alias| alias == id))
+        })
         .copied()
 }
 
 /// The model a new bot starts on here, with none named: by the box's rule, else (while that
 /// can't say) this computer's default where it runs, else the first that runs; none for none.
 pub async fn starting_model(engine: &BotEngine) -> Option<Value> {
-    match engine.starting_model("").await {
-        Some(model) => return model,
-        None => {}
+    if let Some(model) = engine.starting_model("").await {
+        return model;
     }
     let models: Vec<Usable> = usable_models(engine)
         .await

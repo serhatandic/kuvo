@@ -30,7 +30,10 @@ impl Bots {
         let was = seen.get(id).and_then(Value::as_i64).unwrap_or(0);
         seen.insert(id.to_owned(), json!(was.max(at)));
         let text = serde_json::to_string(&json!({ "bots": seen })).expect("JSON");
-        kuvo_store::files::write_secret(&self.inner.run.join("bots-seen/seen.json"), text.as_bytes())
+        kuvo_store::files::write_secret(
+            &self.inner.run.join("bots-seen/seen.json"),
+            text.as_bytes(),
+        )
     }
 
     /// `POST kuvo/bots/<id>/seen`.

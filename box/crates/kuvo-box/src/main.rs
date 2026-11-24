@@ -4,6 +4,7 @@ mod install_linux;
 mod install_media;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod install_released;
+mod bot_setup;
 mod model_stars;
 mod serve;
 mod session_ownership;

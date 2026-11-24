@@ -31,24 +31,52 @@ fn ask_first_asks_before_everything_and_keeps_settings_and_its_folders() {
         rule("external_directory", "/work/*", "allow"),
     ];
     let made = refreshed_rules(&current, &settings);
-    let asks: Vec<_> = made.iter().take(8).map(|rule| rule.action.as_str()).collect();
+    let asks: Vec<_> = made
+        .iter()
+        .take(8)
+        .map(|rule| rule.action.as_str())
+        .collect();
     assert_eq!(
         asks,
-        ["edit", "write", "patch", "shell", "webfetch", "kuvo-browser_browser_save_pdf",
-         "kuvo-browser_browser_upload", "kuvo-browser_watch_for_change"],
+        [
+            "edit",
+            "write",
+            "patch",
+            "shell",
+            "webfetch",
+            "kuvo-browser_browser_save_pdf",
+            "kuvo-browser_browser_upload",
+            "kuvo-browser_watch_for_change"
+        ],
         "outside folders aren't asked about where Settings doesn't allow them everywhere"
     );
     assert_eq!(made[8], rule("shell", "git status*", "allow"));
     assert_eq!(made[9], rule("shell", "rm -rf*", "deny"));
-    assert_eq!(made[10], rule("external_directory", "/bots/bot_a/*", "allow"));
-    assert_eq!(made.len(), 11, "a folder Settings names is Settings' to say");
+    assert_eq!(
+        made[10],
+        rule("external_directory", "/bots/bot_a/*", "allow")
+    );
+    assert_eq!(
+        made.len(),
+        11,
+        "a folder Settings names is Settings' to say"
+    );
 }
 
 #[test]
 fn approve_all_runs_what_settings_asks_about_and_keeps_its_denies() {
-    let settings = [rule("shell", "npm publish*", "ask"), rule("webfetch", "*", "deny")];
+    let settings = [
+        rule("shell", "npm publish*", "ask"),
+        rule("webfetch", "*", "deny"),
+    ];
     let made = refreshed_rules(&[], &settings);
-    assert_eq!(made, [rule("shell", "npm publish*", "allow"), rule("webfetch", "*", "deny")]);
+    assert_eq!(
+        made,
+        [
+            rule("shell", "npm publish*", "allow"),
+            rule("webfetch", "*", "deny")
+        ]
+    );
 }
 
 #[test]
@@ -77,14 +105,20 @@ fn a_new_bot_gets_this_computers_default_and_auto_asks_first_without_the_sandbox
 #[test]
 fn full_access_is_had_only_once_confirmed_and_never_holds_env_reads() {
     let (home, approvals) = machine(None);
-    assert_eq!(approvals.effective(Approval::FullAccess).0, Approval::AskFirst);
+    assert_eq!(
+        approvals.effective(Approval::FullAccess).0,
+        Approval::AskFirst
+    );
     fs::write(
         home.path().join("box/approval.json"),
         json!({"fullAccess": true, "last": "fullAccess"}).to_string(),
     )
     .unwrap();
     assert_eq!(approvals.default_approval(), Approval::FullAccess);
-    assert_eq!(approvals.effective(Approval::FullAccess).0, Approval::FullAccess);
+    assert_eq!(
+        approvals.effective(Approval::FullAccess).0,
+        Approval::FullAccess
+    );
     // (A machine whose settings aren't its own yet runs with the Don't Allows it has.)
     assert_eq!(approvals.permissions_here(), None);
     let made = approvals.rules(Approval::FullAccess, &[rule("bash", "x", "deny")], &[]);
@@ -122,7 +156,10 @@ fn former_asks_go_unless_settings_has_them() {
     ];
     assert_eq!(
         without_former_asks(&rules, &[rule("shell", "git push*", "ask")]),
-        [rule("shell", "git push*", "ask"), rule("shell", "make", "allow")]
+        [
+            rule("shell", "git push*", "ask"),
+            rule("shell", "make", "allow")
+        ]
     );
     assert!(has_former_asks(&rules, &[]));
     assert!(!has_former_asks(&rules[2..], &[]));
