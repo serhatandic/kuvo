@@ -29,6 +29,7 @@ import { shellOutput, shells } from "../../src/agents/shells"
 import { Store } from "../../src/agents/store"
 import type { Message, PermissionRule } from "../../src/agents/wire"
 import { holding } from "../../src/agents/hold/adopt"
+import { heldIn, holdFolder } from "../../src/agents/hold/client"
 import { compactionFile } from "../../src/shared/context"
 import { QUEUE_ROUTE, queueRoute } from "../../src/link/areas/queue"
 import { SEND_ROUTE, sendRoute } from "../../src/link/areas/messages"
@@ -2098,6 +2099,52 @@ describe("Claude Code in the box's sandbox", () => {
           await sessions.interrupt(id, false)
           await until(() => idles(id).length === 1)
           expect(idles(id)[0].outcome).toBe("interrupted")
+        } finally {
+          writeFileSync(go, "")
+        }
+      })
+    })
+
+    describe("under its holder, with its error output held open by what it left running", () => {
+      beforeAll(() => {
+        holding.on = true
+      })
+      afterAll(() => {
+        holding.on = false
+        const folder = holdFolder(process.env.KUVO_HOME!)
+        for (const record of folder ? heldIn(folder) : []) process.kill(record.pid, "SIGTERM")
+      })
+      /** Says `before`, exits, and leaves a process holding its error output (only) that says `after` once `go` is there (or a moment later). */
+      const stops = (before: string, after: string, go?: string) => {
+        launcher(`printf '${before}' >&2\n( ${go ? `while [ ! -e ${JSON.stringify(go)} ]; do sleep 0.01; done; ` : "sleep 0.3; "}printf '${after}' >&2 ) >/dev/null &\nexit 1`)
+        fake.onServers = async () => {
+          const child = spawned()
+          await new Promise((resolve) => child.once("exit", resolve))
+          fake.crash(new Error(plain))
+          await new Promise((resolve) => setTimeout(resolve, 0))
+        }
+      }
+
+      test("what comes after it exits still counts, for as long as its holder waits", async () => {
+        turnOn()
+        stops("", "said as it went\\n")
+        const id = newSession()
+        send(id, 1)
+        await until(() => idles(id).length === 1, 10_000)
+        expect(idles(id)[0].error?.message).toBe(`${plain}: said as it went`)
+      })
+
+      test("a line still coming isn't said back, so no piece of a secret gets through", async () => {
+        turnOn()
+        const go = join(root, "go-held")
+        stops("a whole line\\nhttps://me:hunt", "er2@proxy\\n", go)
+        const id = newSession()
+        try {
+          const started = Date.now()
+          send(id, 1)
+          await until(() => idles(id).length === 1, 10_000)
+          expect(idles(id)[0].error?.message).toBe(`${plain}: a whole line`)
+          expect(Date.now() - started).toBeLessThan(5_000)
         } finally {
           writeFileSync(go, "")
         }
