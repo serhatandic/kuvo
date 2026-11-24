@@ -2043,6 +2043,11 @@ async fn a_part_rejected_by_the_disconnected_relay_goes_on_the_next_round() {
     source_deadline(SourceDeadline::RejectedPart).await;
 }
 
+#[tokio::test]
+async fn a_legacy_setup_can_try_an_unannounced_peer_as_a_destination() {
+    source_deadline(SourceDeadline::UnknownPeer).await;
+}
+
 #[derive(PartialEq)]
 enum SourceDeadline {
     Parts,
@@ -2050,6 +2055,7 @@ enum SourceDeadline {
     SecondOffer,
     Undriven,
     RejectedPart,
+    UnknownPeer,
 }
 
 async fn source_deadline(deadline: SourceDeadline) {
@@ -2094,7 +2100,9 @@ async fn source_deadline(deadline: SourceDeadline) {
         "stage":"holding", "step":"check", "sessions":[session], "started":1_000_000,
         "twoComputers":true,
     });
-    files::write_atomic(&journal, &serde_json::to_vec(&row).unwrap()).unwrap();
+    if deadline != SourceDeadline::UnknownPeer {
+        files::write_atomic(&journal, &serde_json::to_vec(&row).unwrap()).unwrap();
+    }
     let (exported, mut exports) = tokio::sync::mpsc::unbounded_channel();
     let export_allowed = Arc::new(tokio::sync::Semaphore::new(0));
     let permit = export_allowed.clone();
@@ -2103,6 +2111,7 @@ async fn source_deadline(deadline: SourceDeadline) {
     let hold_check = Arc::new(AtomicBool::new(false));
     let blocks_check = hold_check.clone();
     let slow_exports = deadline == SourceDeadline::Preparation;
+    let chats = home.path().join("chats");
     let server = tokio::spawn(async move {
         while let Ok((socket, _)) = listener.accept().await {
             let mut socket = BufReader::new(socket);
@@ -2143,7 +2152,7 @@ async fn source_deadline(deadline: SourceDeadline) {
             {
                 json!({"data":[{"id":"ses_slowerOne"},{"id":"ses_slowerTwo"},{"id":"ses_slowerThree"}]})
             } else if route == format!("/api/session/{session}") {
-                json!({"data":{"id":session,"title":"Quiet chat"}})
+                json!({"data":{"id":session,"title":"Quiet chat","directory":chats}})
             } else {
                 json!({"data":[]})
             };
@@ -2240,7 +2249,70 @@ async fn source_deadline(deadline: SourceDeadline) {
         assert!(server.await.unwrap_err().is_cancelled());
         return;
     }
-    resident.attach_moves(engine, owner).await.unwrap();
+    resident.attach_moves(engine.clone(), owner).await.unwrap();
+    if deadline == SourceDeadline::UnknownPeer {
+        use http::{HeaderMap, Method, StatusCode};
+        use http_body_util::BodyExt;
+        use kuvo_server::{Caller, DispatchRequest, LineTiming, LocalOrigin, Registry, Transport};
+        use tokio_util::sync::CancellationToken;
+
+        let mut reader = resident.reader();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !reader.view().relay_connected {
+                reader.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        let mut registry = Registry::new();
+        resident.register_moves(&mut registry, engine);
+        let dispatcher = registry.build(LineTiming::default());
+        let place = dispatcher
+            .dispatch(
+                DispatchRequest {
+                    method: Method::GET,
+                    path: format!("kuvo/moves/places?kind=chat&id={session}"),
+                    headers: HeaderMap::new(),
+                    body: Default::default(),
+                    caller: Caller::Local(Transport::Http {
+                        origin: LocalOrigin::App,
+                        internal: false,
+                    }),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(place.status, StatusCode::OK);
+        let body = place.body.collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["places"][0]["key"], encode(&peer));
+        assert_eq!(body["places"][0]["ok"], true);
+        let reply = dispatcher
+            .dispatch(
+                DispatchRequest {
+                    method: Method::POST,
+                    path: "kuvo/moves".into(),
+                    headers: HeaderMap::new(),
+                    body: json!({"kind":"chat","id":session,"to":encode(&peer),"receipt":true})
+                        .to_string()
+                        .into(),
+                    caller: Caller::Local(Transport::Http {
+                        origin: LocalOrigin::App,
+                        internal: false,
+                    }),
+                },
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::ACCEPTED);
+        let offer = tokio::time::timeout(Duration::from_secs(5), wire.move_step("offer"))
+            .await
+            .unwrap();
+        assert_eq!(offer["thing"], session);
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        return;
+    }
 
     let mail = |movement: Value| {
         let packet = json!({"at":clock.load(Ordering::Relaxed), "move":movement});
@@ -2445,6 +2517,15 @@ async fn source_deadline(deadline: SourceDeadline) {
 
 #[tokio::test]
 async fn a_destination_deadline_retires_every_import_and_its_wake_folder() {
+    destination_import(false).await;
+}
+
+#[tokio::test]
+async fn an_older_setup_replaces_a_copy_after_its_in_flight_import_finishes() {
+    destination_import(true).await;
+}
+
+async fn destination_import(replacement: bool) {
     use flate2::{Compression, write::GzEncoder};
     use kuvo_engine::{Engine, Timing};
     use kuvo_peers::{
@@ -2579,9 +2660,11 @@ async fn a_destination_deadline_retires_every_import_and_its_wake_folder() {
     resident.attach_moves(engine, ownership).await.unwrap();
 
     let mut exports = vec![json!({"info":{"id":session,"title":"Arrival"},"messages":[]})];
-    exports.extend((1..25).map(
-        |child| json!({"info":{"id":format!("ses_child{child}"),"parentID":session},"messages":[]}),
-    ));
+    if !replacement {
+        exports.extend((1..25).map(
+            |child| json!({"info":{"id":format!("ses_child{child}"),"parentID":session},"messages":[]}),
+        ));
+    }
     let manifest =
         json!({"kind":"chat","thing":session,"name":"Arrival","exports":exports,"folder":session})
             .to_string();
@@ -2605,7 +2688,11 @@ async fn a_destination_deadline_retires_every_import_and_its_wake_folder() {
             .unwrap();
         frames::relay_send(&PEER_ADDRESS, &bytes)
     };
-    wire.send(send(json!({"id":id,"op":"offer","kind":"chat","thing":session,"name":"Arrival","generation":1,"hash":hash,"size":contents.len(),"safeSwitch":true,"twoComputers":true}))).await;
+    let mut offer = json!({"id":id,"op":"offer","kind":"chat","thing":session,"name":"Arrival","generation":1,"hash":hash,"size":contents.len(),"safeSwitch":true});
+    if !replacement {
+        offer["twoComputers"] = true.into();
+    }
+    wire.send(send(offer.clone())).await;
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(10), wire.move_step("ready"))
             .await
@@ -2634,6 +2721,47 @@ async fn a_destination_deadline_retires_every_import_and_its_wake_folder() {
         std::fs::read_to_string(wake.join("paused")).unwrap(),
         format!("moving:{id}")
     );
+    let journal = |id| run.join("moves").join(format!("{id}.json"));
+    if replacement {
+        let next = "mov_replacementCopy";
+        offer["id"] = next.into();
+        wire.send(send(offer)).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), wire.move_step("ready"))
+                .await
+                .is_err()
+        );
+        assert_eq!(engine_sessions.lock().unwrap().len(), 1);
+        accepted.add_permits(1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), wire.move_step("ready"))
+                .await
+                .unwrap()["id"],
+            next
+        );
+        assert!(engine_sessions.lock().unwrap().is_empty());
+        assert!(!journal(id).exists());
+        assert!(journal(next).exists());
+        assert!(!wake.exists());
+        wire.send(send(
+            json!({"id":next,"op":"drop","generation":1,"hash":hash}),
+        ))
+        .await;
+        let dropped = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let proof = wire.move_step("dropped").await;
+                if proof["id"] == next {
+                    break proof;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(dropped["neverSwitched"], true);
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        return;
+    }
 
     tokio::time::pause();
     for child in 1..=23 {
@@ -2666,7 +2794,7 @@ async fn a_destination_deadline_retires_every_import_and_its_wake_folder() {
             .unwrap()
             .contains("too long to set up")
     );
-    let journal = run.join("moves").join(format!("{id}.json"));
+    let journal = journal(id);
     tokio::time::timeout(Duration::from_secs(10), async {
         while journal.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;

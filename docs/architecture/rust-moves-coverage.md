@@ -105,9 +105,9 @@ home files still differ.
 
 The later macOS move-area runs passed 58 Rust and 56 applicable TypeScript scenarios,
 including the two-binary reach comparison. Focused checks added afterward passed on
-both residents. Native Windows passed nine focused cases on its latest build. The
-latest WSL2 GNU and static Linux musl builds each passed four focused queue, letter
-replay and attachment scenarios.
+both residents. The latest production build passed five focused checks on native Windows and
+six each on WSL2 GNU and static Linux musl. These covered wake-up holds and the return move,
+queue admission, letter replay and attachment placement.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
@@ -138,7 +138,7 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Eighty-eight have full scenario coverage, 17 have partial proof,
+below counts 212 declarations. Ninety have full scenario coverage, 15 have partial proof,
 and 107 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
@@ -189,8 +189,8 @@ separately where they appear.
 | | 25 | Covered by resuming an old failed offer and a journal that requires acknowledgement. The destination's drop receipt retires each journal. |
 | | 26 | Covered by replay of a legacy switch receipt eight days old, after the announcement would have expired. |
 | | 27 | Covered by refusing a bundle that includes a local conversation, claims a different root, has an unrelated child, or contains a cycle. |
-| | 29 | Partial, an older computer that announces its features is refused by the move choices and start route. The unannounced legacy peer comparison remains 2.4 and 7.3. |
-| | 30 | Partial, the original sender can replace an incomplete copy. A complete copy on a managed setup requires an explicit drop. Replacing an older non-checkpointed copy while its engine import is still running remains 2.4. |
+| | 29 | Covered by refusing an older computer with known capabilities and by trying an unannounced computer on an older setup. |
+| | 30 | Covered by replacing an incomplete copy from the same sender, requiring a drop of a complete managed copy, and waiting before replacing a copy still importing on an older setup. |
 | | 34 | Covered by a failed export keeping the original retired and reporting cleanup pending, followed by a successful retry on the same resident after its interval. |
 | | 31 | Covered by the live lost switch acknowledgement and by a restarted destination replying only with its durable decision. |
 | | 35 | Covered by a receiving resident whose cumulative import time reaches thirty minutes. It sends the matching failure and removes all the imports and the installed wake-up folder, including the import that accepted but never replied. |
