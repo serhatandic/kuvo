@@ -16,6 +16,7 @@ agent-runtime-fixture = []
 base64 = "0.22"
 hostname = "0.4"
 http = "1"
+jiff = "0.2"
 kuvo_agents = { path = "../kuvo_agents" }
 kuvo_engine = { path = "../kuvo_engine" }
 kuvo_keeper = { path = "../kuvo_keeper" }
@@ -30,13 +31,13 @@ kuvo_store = { path = "../kuvo_store" }
 kuvo_wire = { path = "../kuvo_wire" }
 kuvo_work = { path = "../kuvo_work" }
 percent-encoding = "2"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
 tokio-util = "0.7"
-serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 futures-util = { version = "0.3", features = ["sink"] }
 tokio = { version = "1", features = ["macros", "process"] }

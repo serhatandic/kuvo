@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod install_linux;
 #[cfg(target_os = "macos")]
 mod install_media;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -41,6 +43,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if word(0) == Some("install-released-machine") {
         return Ok(install_released::run(&args[1..]));
+    }
+    #[cfg(target_os = "linux")]
+    if word(0) == Some("install-linux") {
+        return Ok(install_linux::run(&args[1..]));
     }
     #[cfg(target_os = "macos")]
     if (word(0), args.len()) == (Some("helper-hand-over"), 1) {
