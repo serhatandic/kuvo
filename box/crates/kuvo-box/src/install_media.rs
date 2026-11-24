@@ -4,7 +4,7 @@ use std::{
     ffi::OsString,
     fs,
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::Path,
     process::ExitCode,
 };
 
@@ -68,7 +68,7 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         })
         .into());
     }
-    let home = Home::new(PathBuf::from(target))?;
+    let home = Home::new(target)?;
     let app = profile.join("Library/Application Support").join(&app_id);
     let before = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
     let verified = || -> io::Result<(SignedRelease, Vec<u8>)> {
