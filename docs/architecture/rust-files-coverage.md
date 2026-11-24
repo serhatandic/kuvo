@@ -69,20 +69,15 @@ Counts: 19 cases, all covered. Added since: names in other scripts and folder er
 - Folder errors in Node's words: Unix error numbers map to libuv's words exactly; on Windows the
   map goes by error kind (a loop of links, a name too long, busy, memory, time, an invalid
   argument), and anything else says the system's own words.
-- OSes: the conformance area and the differential runs pass on macOS (16 of 16, both boxes).
-  Native Windows, run directly (the cross-built `kuvo-box.exe` and the conformance files in a
-  scratch folder over SSH, as row 7.1 does), passes 8 of 16; the TS box can't serve on native
-  Windows (`EPERM` on `fsync` at startup), so there's no reference there but Node itself. Done for
-  Windows: folder paths with backslashes pass the query guard in both boxes (`..` between either
-  separator still refused); Windows' invalid-name error reads as not there, as libuv reads it; the
-  case file skips what Windows can't do (unreadable mode bits, execute bits, names with `\`,
-  `<>:"|?*`, links without Developer Mode) and says why. Still failing there:
-  - a network path's name: `name_of` looks at the last component, but `\\host\x` ends in a root
-    after its prefix; it should read the first;
-  - the git cases: `GIT_CONFIG_GLOBAL=NUL` makes git refuse to start (`unable to access
-    '\\.\nul'`); the cases should point it at an empty file of their own;
-  - suggested folders: `fs::canonicalize` gives `\\?\C:\…`, where Node's `realpath` gives
-    `C:\…`; `located` needs a Windows seam that drops the verbatim prefix;
-  - a link to itself answers 404 "Not a folder" on Windows; what Node answers there is to be read
-    from Node on that computer before choosing.
-  Linux is left.
+- OSes: macOS, the conformance area and the differential runs (16 of 16, both boxes). Native
+  Windows, run directly (the cross-built `kuvo-box.exe` and the conformance files in a scratch
+  folder over SSH, as row 7.1 does): 15 pass, 1 skipped (unreadable files: Windows has no mode bits
+  that stop the owner reading). The TS box can't serve on native Windows (`EPERM` on `fsync` at
+  startup); there the reference is Node itself, read on that computer. Fixed for Windows: folder
+  paths with backslashes pass the query guard in both boxes (`..` between either separator still
+  refused); a network path's name is its share (`\\host\x`: `x`); a link that leads round to
+  itself says ELOOP and an invalid name reads as not there, as Node says them; found files' full
+  paths are joined part by part, as `path.join` writes them; suggested folders drop Windows'
+  verbatim prefix (`\\?\`), as Node's `realpath` does. The bench makes each box's home private
+  on Windows (owned by the user, nothing inherited), which the Rust box requires there, and the
+  cases skip, with their reason, what Windows can't name or set. Linux is left.
