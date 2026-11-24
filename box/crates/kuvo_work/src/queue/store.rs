@@ -148,6 +148,7 @@ pub(super) fn who(value: &Value) -> Option<Value> {
     (!kept.is_empty()).then_some(Value::Object(kept))
 }
 
+#[derive(Clone)]
 pub(super) struct Item {
     pub id: String,
     pub number: Option<f64>,
@@ -381,7 +382,7 @@ pub(super) fn owner_id(id: &str) -> bool {
         })
 }
 
-fn session_id(id: &str) -> bool {
+pub(super) fn session_id(id: &str) -> bool {
     id.strip_prefix("ses_")
         .is_some_and(|tail| bounded_ascii(tail, 1, 60, |byte| byte.is_ascii_alphanumeric()))
 }

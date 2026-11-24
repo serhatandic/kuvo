@@ -60,6 +60,42 @@ pub(super) fn clean_label(id: &str, name: &str, color: &str) -> Option<QueueLabe
     })
 }
 
+pub(super) fn keep_handed(
+    store: &Store,
+    setup: Option<&QueueSetup>,
+    given: Vec<QueueLabel>,
+) -> Result<Vec<QueueLabel>, Error> {
+    if !given.is_empty() {
+        let _lock = StaleLock::acquire(
+            &store.root.join(".labels.lock"),
+            Duration::from_secs(10),
+            Duration::from_secs(3),
+            OnBusy::Refuse,
+        )?;
+        let mut kept = local(store, setup)?;
+        let accepted = setup.and_then(|setup| setup.labels.as_ref());
+        let before = kept.library.labels.len();
+        for label in given {
+            if kept.library.labels.len() < 60
+                && !kept.library.removed.contains(&label.id)
+                && !accepted.is_some_and(|have| {
+                    have.library.removed.contains(&label.id)
+                        || have.library.labels.iter().any(|known| known.id == label.id)
+                })
+                && !kept.library.labels.iter().any(|known| known.id == label.id)
+            {
+                kept.library.labels.push(label);
+            }
+        }
+        if kept.library.labels.len() != before {
+            kept.metadata
+                .insert("labels".into(), json!(kept.library.labels));
+            store::write(&store.root.join("labels.json"), LABELS, kept.metadata)?;
+        }
+    }
+    shown(store, setup)
+}
+
 fn local(store: &Store, setup: Option<&QueueSetup>) -> Result<Kept, Error> {
     let metadata = store::read(&store.root.join("labels.json"), LABELS)?.unwrap_or_default();
     let current = match (metadata.get("removedSetup"), setup) {

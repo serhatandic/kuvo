@@ -84,7 +84,10 @@ impl Engine {
     }
 
     /// Resolve a handoff recipient in the local session catalog.
-    pub async fn tool_session_owner(&self, session: &str) -> io::Result<Option<(String, String)>> {
+    pub async fn tool_session_owner(
+        &self,
+        session: &str,
+    ) -> io::Result<Option<(String, String, bool)>> {
         if !session_id(session) {
             return Ok(None);
         }
@@ -107,7 +110,8 @@ impl Engine {
             .filter(|title| !title.is_empty())
             .unwrap_or("that session")
             .to_owned();
-        Ok(Some((id, title)))
+        let seat = root.pointer("/metadata/kuvo/seat").is_some();
+        Ok(Some((id, title, seat)))
     }
 
     async fn root_record(&self, lease: &Lease, session: &str) -> Result<Value, api::Error> {

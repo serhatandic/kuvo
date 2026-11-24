@@ -53,6 +53,35 @@ pub(super) fn read(store: &Store, item: &Item, name: &str) -> Option<Download> {
     Some(Download { media_type, bytes })
 }
 
+pub(super) fn place_handoff(
+    store: &Store,
+    item: &str,
+    carried: &std::collections::BTreeMap<String, Vec<u8>>,
+) -> io::Result<()> {
+    let run = store
+        .root
+        .parent()
+        .expect("Work Queue under run")
+        .canonicalize()?;
+    let queue = run.join("work-queue");
+    let parent = queue.join("files");
+    for path in [&queue, &parent] {
+        if path == &parent {
+            files::create_private_dirs(path)?;
+        }
+        let info = open(path, true)?.metadata()?;
+        if !info.is_dir() || is_link(&info) {
+            return Err(io::Error::other("Invalid Work Queue attachment directory."));
+        }
+    }
+    let folder = parent.join(item);
+    files::remove_tree_synced(&folder)?;
+    for (name, bytes) in carried {
+        files::write_atomic_through(&folder.join(name), bytes, &run)?;
+    }
+    Ok(())
+}
+
 fn folders(paths: &[PathBuf; 4]) -> Option<Vec<FileStamp>> {
     paths
         .iter()

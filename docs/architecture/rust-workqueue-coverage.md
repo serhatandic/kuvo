@@ -37,7 +37,11 @@ Agents can also manage the main computer's label library. Removing a label
 records the agent on the items it changed. Working links record starts and stops and are cleared when work closes.
 An agent can hand an item to a conversation on the same computer. The new
 queue is written before the old copy is retired, and the item stays in both
-conversations' views.
+conversations' views. Across computers, the keeper sends the item and its
+files over the existing Work Queue relay. A checkpointed destination stages the
+item through a prepare and release exchange. The source retires it only after
+the destination saves the item and its receipt. The original number and the
+source conversation's view survive.
 The private label restore command previews the main computer's accepted
 library over the quiet read transport. A member sends a restore to the main,
 which signs the save and publishes it to the setup. Queue writes, numbering
@@ -52,9 +56,9 @@ assigned to the indicated row for the rest of the port.
 |---|---:|---|
 | [work-queue](../../box/bridge-tests/work-queue.test.js) | 1–5, 7–8, 10–11, 13, 16–17, 23, 25, 28, 31–32, 48, 57 | Partial, 5.2. Creation retry, summary counts and order, local delete and restore, label writes, saved attachment download and a view change written by another process. A verified agent adds, lists and reads numbered work, including progress, history and attachments. Agent updates, deletion, undo, starts and stops record the agent's identity. A quick restart folds an intervening stop. A local handoff stays visible in both queues' views with one saved item. Changed invocation arguments fail admission. Expired attachments are retired. Both client Markdown and agent structured imports preserve status and number, and a member receives its claimed numbers from the main. Subagent, one-shot, working links across computers, project folder, mixed import and failure variants need scenarios. |
 | | 6, 9, 12, 14–15, 18–22, 24, 26–27, 29–30, 33–47, 49–56, 58–60 | Open, 5.2. Agent operations, live session variations, edits, remaining import cases, staging, recovery and handoff. |
-| [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1, 4, 18, 20, 24 | Partial, 5.2. Authenticated snapshots and acknowledgements carry remote rows and chips through the relay. The shared memory transport reads the keeper's full item and file. Client and attributed agent edits, attachments, deletions and restores reach the keeper from another computer. Shared label changes reach both residents. Mixed peers, partition and receipt replay, scoped forwarding and retained local label cases still need scenarios. |
-| | 2–3, 5–17, 19, 21–23, 25–32 | Open, 5.2 and 2.4. Numbering and leases, further projections, forwarding, handoff and deduplication. Retain retired ranked numbering checks in TS. |
-| [work-queue-two-boxes](../../box/bridge-tests/work-queue-two-boxes.test.js) | 1 | Partial, 5.2. A member spends an ordinary block from the main after it goes away and the main's combined view shows the member's rows. Handoff remains open. |
+| [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1, 4, 9–10, 13, 16, 18, 20, 24 | Partial, 5.2. Authenticated snapshots and acknowledgements carry remote rows and chips through the relay. The shared memory transport reads the keeper's full item and file. Client and attributed agent edits, attachments, deletions and restores reach the keeper from another computer. Shared label changes reach both residents. A two-resident handoff preserves the number and file, and leaves a single live item. Mixed peers, blocked and retried handoffs, partition and receipt replay, scoped forwarding and retained local label cases still need scenarios. |
+| | 2–3, 5–8, 11–12, 14–15, 17, 19, 21–23, 25–32 | Open, 5.2 and 2.4. Numbering and leases, further projections, forwarding, handoff and deduplication. Retain retired ranked numbering checks in TS. |
+| [work-queue-two-boxes](../../box/bridge-tests/work-queue-two-boxes.test.js) | 1 | Partial, 5.2. A member spends an ordinary block from the main after it goes away and the main's combined view shows the member's rows. A handoff moves the item and its attachment to a conversation on the other computer. Bot and retry variants remain open. |
 | | 2 | Partial, 5.2. Both computers see deletion and restoration. Either computer can initiate the changes, and the keeper preserves their history. The other computer can read the full item and its file and change its priority. Partition and mixed-peer cases remain open. |
 | [work-queue-statuses](../../box/bridge-tests/work-queue-statuses.test.js) | 1, 3, 9–10, 13–16 | Partial, 5.2. Local migration, retry, creation, search, one filter, label saves and a local move between statuses. Agents manage labels and update the status of work. Remaining edit, filter, due date, assignee and view variants need scenarios. |
 | | 2, 4–8, 11–12 | Open, 5.2. Settling active work after migration, migration writer contention and recovery, reassignment to a bot queue and action limits. |
@@ -72,7 +76,7 @@ assigned to the indicated row for the rest of the port.
 | | 11 | Covered. The live writer keeps its lock and an unrelated route responds during the wait. The queue and ledger both recover from a dead writer. |
 | [queue-live](../../box/bridge-tests/queue-live.test.js), [queue-stop](../../box/test/queue-stop.test.ts), [queue-items](../../box/test/queue-items.test.ts) | 1, 1–6, 1–25 respectively | Conversation message queues. See the case-by-case [engine map](rust-engine-coverage.md) for status and rows 3.2, 4.1 and 5.1. |
 
-Of the 182 directly named cases, 5 are covered, 55 are partial, 90 are open in
+Of the 182 directly named cases, 5 are covered, 59 are partial, 86 are open in
 Work Queue and 32 are tracked in the engine map. The Work Queue conformance area also
 checks the initial migration and future-format refusal through a real resident.
 

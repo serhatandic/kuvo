@@ -3,6 +3,7 @@
 mod book;
 mod edit;
 mod fences;
+mod hand;
 mod importing;
 mod offline;
 mod peer_actions;
@@ -220,13 +221,14 @@ impl Writer {
             let mut retry = std::collections::HashMap::new();
             let mut label_revision = None;
             let mut snapshots = told::Delivery::default();
+            let mut handings = hand::Delivery::default();
             loop {
                 let result = tokio::select! {
-                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut label_revision, &mut snapshots, &mut retry).await,
+                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut label_revision, &mut snapshots, &mut retry, &mut handings).await,
                     message = next_mail(&mut incoming) => {
                         match (relay.as_ref(), message.as_deref()) {
                             (Some(relay), Some(RelayEvent::Mail { key, envelope, .. })) => {
-                                self.received(relay, key, &Value::Object(envelope.0.clone()), &mut snapshots).await
+                                self.received(relay, key, &Value::Object(envelope.0.clone()), &mut snapshots, &mut handings).await
                             }
                             _ => Ok(()),
                         }
@@ -246,6 +248,7 @@ impl Writer {
         label_revision: &mut Option<(String, u64)>,
         snapshots: &mut told::Delivery,
         retry: &mut std::collections::HashMap<String, i64>,
+        handings: &mut hand::Delivery,
     ) -> Result<(), Error> {
         if let Some(setup) = self.setup.queue_setup()
             && let Some(accepted) = setup.labels
@@ -268,6 +271,7 @@ impl Writer {
             self.number_waiting(grants).await?;
         }
         self.retry_offline(relay, now, retry).await?;
+        self.send_handings(relay, handings, now).await?;
         if let Some(relay) = relay {
             let local_max = self.local_max().await?;
             if let Some((main, ask)) = self.numbers.ask_to_send(local_max, now).await?
@@ -302,6 +306,7 @@ impl Writer {
         key: &[u8; 32],
         envelope: &Value,
         snapshots: &mut told::Delivery,
+        handings: &mut hand::Delivery,
     ) -> Result<(), Error> {
         let queue = &envelope["workQueue"];
         if !queue.is_object()
@@ -324,6 +329,14 @@ impl Writer {
         let by = kuvo_wire::keys::encode(key);
         let now = Timestamp::now().as_millisecond();
         self.receive_offline(relay, &peer, &by, queue, now).await?;
+        if let Some(hand) = queue.get("hand")
+            && let Some(answer) = self.receive_hand(&by, hand.clone(), now).await?
+        {
+            send(relay, peer.clone(), json!({"handed":answer}), now).await;
+        }
+        if let Some(answer) = queue.get("handed") {
+            self.handed_back(*key, answer, handings, now).await?;
+        }
         if queue.get("scopedAct").is_none()
             && self.forward.admits(*key)
             && let Some(act) = queue.get("act").and_then(Act::parse)

@@ -257,18 +257,30 @@ impl Writer {
             ));
         }
         let people = Assignees::read(&self.store);
-        let (owner, name) = if to.starts_with("ses_") && owner_id(to) {
+        let (owner, name, peer) = if store::session_id(to) {
             let (computer, heading) = self.computer_words();
             let found = engine.tool_session_owner(to).await.map_err(|_| {
                 bad(format!(
                     "{heading}'s engine can't say where {to} is now. Try again in a moment."
                 ))
             })?;
-            let (owner, mut name) = found.ok_or_else(|| bad(format!("There's no session {to} on {computer} or your other computers that this one knows of. Give the address list_agents or list_sessions shows.")))?;
-            if let Some(bot) = people.for_session(&owner) {
-                name = bot.info.name.clone();
+            if let Some((owner, mut name, _)) = found {
+                if let Some(bot) = people.for_session(&owner) {
+                    name = bot.info.name.clone();
+                }
+                (owner, name, None)
+            } else if let Some(peer) = self.hand_peer(to) {
+                let view = self.peers.view();
+                let name = view
+                    .peer_session_name(&peer.key, to)
+                    .unwrap_or(to)
+                    .to_owned();
+                (to.to_owned(), name, Some(peer))
+            } else {
+                return Err(bad(format!(
+                    "There's no session {to} on {computer} or your other computers that this one knows of. Give the address list_agents or list_sessions shows."
+                )));
             }
-            (owner, name)
         } else {
             let matching = people
                 .rows()
@@ -280,20 +292,27 @@ impl Writer {
                             .is_some_and(|name| name.to_lowercase() == to.to_lowercase())
                 })
                 .collect::<Vec<_>>();
-            let Some((owner, bot)) = matching
+            if let Some((owner, bot)) = matching
                 .first()
                 .filter(|_| matching.len() == 1)
                 .and_then(|bot| Some((people.bot_session(bot["id"].as_str()?)?, bot)))
-            else {
-                return Err(bad(format!(
+            {
+                (
+                    owner.to_owned(),
+                    bot["name"].as_str().unwrap_or_default().to_owned(),
+                    None,
+                )
+            } else {
+                let view = self.peers.view();
+                let far = view.peer_bot_named(to).and_then(|bot| {
+                    self.hand_peer(&bot.session)
+                        .map(|peer| (bot.session.clone(), bot.name.clone(), Some(peer)))
+                });
+                far.ok_or_else(|| bad(format!(
                     "There's no bot called {to} on {} or your other computers. Give a session's address (from start_session or list_sessions).",
                     self.computer_words().0
-                )));
-            };
-            (
-                owner.to_owned(),
-                bot["name"].as_str().unwrap_or_default().to_owned(),
-            )
+                )))?
+            }
         };
         let guard = self.lock().await?;
         let writer = self.clone();
@@ -320,6 +339,20 @@ impl Writer {
                 let item = read::item_name(&Value::Object(item.saved.clone()));
                 return Err(bad(format!("{item} is in that queue already.")));
             }
+            if let Some(peer) = peer {
+                let answer = writer.hand_away(
+                    item,
+                    &all,
+                    peer,
+                    owner,
+                    name,
+                    actor(&caller),
+                    operation,
+                    now,
+                )?;
+                compaction.finish(&writer, now)?;
+                return Ok(answer);
+            }
             writer.admit(&owner)?;
             edit::refuse_handing(item)?;
             if all
@@ -337,17 +370,7 @@ impl Writer {
             let mut row = Value::Object(item.saved.clone());
             row["owner"] = owner.clone().into();
             row["updated"] = json!({"at":now,"by":who});
-            if row.get("handedBy").is_none() {
-                row["handedBy"] = item.owner.clone().into();
-            }
-            let mut handed = item.handed.clone();
-            handed.push(json!({"from":item.owner,"to":owner,"at":now}));
-            handed.drain(..handed.len().saturating_sub(20));
-            row["handed"] = handed.into();
-            append_event(
-                &mut row,
-                json!({"at":now,"by":who,"kind":"handed","to":owner}),
-            );
+            hand::note_hand(&mut row, &item.owner, &owner, &who, now);
             if owner.starts_with("ses_") && !status::closed(&item.status) {
                 let mut sessions = item.sessions.clone();
                 if !sessions.iter().any(|link| link["session"] == owner) {

@@ -58,6 +58,8 @@ pub struct QueueSetup {
     pub primary: String,
     pub main_here: bool,
     pub merging: bool,
+    pub checkpointed: bool,
+    pub removed_computers: Vec<String>,
     pub allocation: Option<QueueNumberAllocation>,
     pub labels: Option<AcceptedQueueLabels>,
 }
@@ -73,6 +75,12 @@ pub(super) fn accepted(link: &Link) -> Option<QueueSetup> {
         epoch: setup.position.epoch,
         primary: setup.position.primary.clone(),
         main_here: setup.role == Role::Primary,
+        checkpointed: setup.checkpointed,
+        removed_computers: link
+            .member_list()
+            .ok()
+            .map(|members| members.left)
+            .unwrap_or_default(),
         merging: link
             .extra
             .get("setupMerge")

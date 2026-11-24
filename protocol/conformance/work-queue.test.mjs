@@ -1570,3 +1570,67 @@ test("queue writers use the resident PID to reclaim a dead owner and wait for a 
   const written = await waiting;
   assert.equal(written.status, 200, written.text);
 });
+
+test("a Work Queue handoff keeps its files and relays only one live item", { timeout: 155000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const author = { id: "ses_RemoteHandAuthor", title: "Author", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  const recipient = { id: "ses_RemoteHandRecipient", title: "Recipient", location: { directory: lab.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(author);
+  lab.engine.sessions.push(recipient);
+  const resident = await studio.start().ready();
+  const main = studio.connect(resident);
+  const setup = await main("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  const joined = await lab.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const line = await openLine(resident, "", "kuvo/setup/sessions/events");
+  t.after(() => line.close());
+  assert.equal(line.status, 200);
+  const frames = line.frames();
+  for (;;) {
+    const { value, done } = await frames.next();
+    assert.equal(done, false, "The setup list ended before the source learned the destination.");
+    if (JSON.stringify(value).includes(recipient.id)) break;
+  }
+  line.close();
+  const app = { "x-kuvo-from": "app" };
+  const add = await main("POST", "kuvo/work-queue/items", {
+    operation: "item-for-remote-handoff", owner: author.id, title: "Keep this with its attachment",
+    files: [{ name: "decision.txt", uri: "data:text/plain;base64," + Buffer.from("A signed-off decision.").toString("base64") }],
+  }, app);
+  assert.equal(add.status, 200, add.text);
+  const item = add.json.item.id;
+  const itemPath = "kuvo/work-queue/items/" + item;
+  const number = await until(async () => (await main("GET", itemPath)).json?.item?.number, "The item never received a number.");
+  const args = { item, to: recipient.id };
+  studio.engine.messages.set(author.id, [{ id: "msg_remote_hand", type: "assistant", content: [{ type: "tool",
+    name: "kuvo-browser_queue_hand", state: { status: "running", input: args } }] }]);
+  const result = await main("POST", "kuvo/work-queue/tools", {
+    name: "queue_hand", arguments: args, session: author.id, operation: "remote-agent-hand",
+  });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(result.json.isError, false, result.text);
+  assert.match(result.json.text, /Handing .* to Recipient on Lab: it goes into its queue there, linked to it/);
+  const arrived = await until(async () => {
+    const listed = await member("GET", "kuvo/work-queue?owner=" + recipient.id + "&glance=1");
+    return listed.json?.items.find(row => row.id === item && !row.computer);
+  }, "The destination never activated the accepted item.", 90000, 250);
+  assert.equal(arrived.number, number);
+  assert.equal(arrived.owner, recipient.id);
+  const files = await member("GET", itemPath + "/files/decision.txt");
+  assert.equal(files.status, 200, files.text);
+  assert.equal(files.text, "A signed-off decision.");
+  const handed = await until(async () => {
+    const listed = await main("GET", "kuvo/work-queue?owner=" + author.id + "&glance=1");
+    const rows = listed.json?.items.filter(row => row.id === item) ?? [];
+    return rows.length === 1 && rows[0].computer?.name === "Lab" && rows[0];
+  }, "The source did not retire its copy.", 20000);
+  assert.equal(handed.owner, recipient.id);
+  const filesHere = path.join(studio.home, "run", "work-queue", "files", item);
+  assert.equal(existsSync(filesHere), false);
+});

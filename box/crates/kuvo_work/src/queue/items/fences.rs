@@ -41,6 +41,26 @@ impl Writer {
             .map_err(storage_refusal)
     }
 
+    pub(super) fn note_departed(
+        &self,
+        item: &Item,
+        queue: &str,
+        computer: &str,
+    ) -> Result<(), Refusal> {
+        let path = Fence::Departed.path(&self.store, &item.id);
+        self.fence(Fence::Departed, &item.id)?;
+        let mut fields = Fields::from_iter([
+            ("queue".into(), queue.into()),
+            ("computer".into(), computer.into()),
+        ]);
+        if let Some(creation) = item.saved.get("creationReceipt") {
+            fields.insert("creationReceipt".into(), creation.clone());
+        }
+        let bytes = serde_json::to_vec(&RECEIPT.encode(fields)).map_err(internal)?;
+        let run = self.store.root.parent().expect("Work Queue under run");
+        files::write_atomic_through(&path, &bytes, run).map_err(internal)
+    }
+
     pub(super) fn changes(&self, now: i64) -> Result<(Vec<Item>, Compaction), Refusal> {
         let (owners, mut items) = self.strict_items(now)?;
         let mut expired = HashSet::new();

@@ -30,6 +30,7 @@ use crate::{
 
 pub(crate) use driver::Handle;
 pub(crate) use driver::start;
+pub use handoff::note_queue_placement;
 pub(crate) use listing::{is_mac, plain_name, register, register_start};
 pub(crate) use notices::{Announcer, Notices};
 
