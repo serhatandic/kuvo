@@ -57,6 +57,16 @@ pub struct Judgement {
     pub status: Value,
 }
 
+impl Judgement {
+    pub fn unreadable_move(&self) -> Option<&str> {
+        if self.verdict == Verdict::Stuck && self.status["step"].is_null() {
+            self.status["failed"]["message"].as_str()
+        } else {
+            None
+        }
+    }
+}
+
 /// Inspect the folders without starting Kuvo. Helper readiness comes from
 /// the installer because the same home can be used by a demo copy.
 pub fn judge(

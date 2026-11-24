@@ -48,6 +48,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - When an earlier Mac app still has sessions, the installer explains why it offers a move.
 - The Mac installer explains when it keeps an existing machine setup in place.
 - The Mac installer explains when there is nothing to move or an earlier move needs to finish first.
+- The Mac installer reports an unreadable move journal before preparing a release.
 - The Linux installer can set up a computer from a signed Rust release and retry a failed first start while keeping earlier work.
 - After a successful Linux install, earlier unfinished installer staging no longer makes the computer look uninstalled.
 - A Linux installation stays complete if its old staging files cannot be deleted.

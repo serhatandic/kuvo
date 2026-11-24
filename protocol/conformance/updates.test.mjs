@@ -2466,6 +2466,28 @@ test("the Mac installer keeps a saved move when asked for new setup", t => {
   }
 });
 
+test("the Mac installer leaves an unreadable move journal untouched", t => {
+  if (process.platform !== "darwin") return t.skip("Uses a Mac move journal.");
+  const fixture = box(t);
+  const { env, body, key, release } = fixture;
+  const home = path.join(env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.bad-journal-fixture");
+  const journal = path.join(home, "updates/rehome/journal.json");
+  write(journal, "{");
+  write(path.join(release, "box.tar.gz"), "pack");
+  write(path.join(release, "boxes.json"), encode(envelope({
+    ...body, launch: "rust", packs: { [target]: body.pack },
+  }, key)));
+  env.KUVO_TEST_RELEASE_KEY = key.key;
+  const expected = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(expected[0], 1);
+  assert.equal(expected[1].result, "refused");
+  assert.match(expected[1].message, /can't tell how far it got/);
+  for (const verb of ["move", "new"]) assert.deepEqual(macInstallerRequest(fixture, bundle, verb), expected);
+  assert.equal(fs.readFileSync(journal, "utf8"), "{");
+  assert.deepEqual(fs.readdirSync(path.join(home, "updates")), ["rehome"]);
+});
+
 test("the Mac installer waits for a live move", async t => {
   if (process.platform !== "darwin") return t.skip("Uses the Mac move lock.");
   const fixture = box(t);
