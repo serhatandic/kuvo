@@ -96,7 +96,12 @@ impl Pipe {
                 .meta
                 .get("claudeCompactAt")
                 .and_then(Value::as_u64),
-            said: Said::default(),
+            // (What it said before this resident was there, if it stopped that soon.)
+            said: {
+                let mut said = Said::default();
+                said.add(&controller.welcome.stderr);
+                said
+            },
             sign_in: controller
                 .welcome
                 .meta

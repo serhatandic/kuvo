@@ -293,7 +293,11 @@ describe("summarizing on its own, as the conversation fills up", { skip }, () =>
     await until(async () => summaries(await box.claude.rows(id)).length === 1, "It never said it was summarizing.");
     await box.claude.prompt(id, "and the tests too");
     await until(() => heardUser(box.claude, "and the tests too").length === 1, "Claude Code never took it.");
-    const during = await box.claude.rows(id);
+    // (Its row is written as it's handed over: a moment after Claude Code has it.)
+    const during = await until(async () => {
+      const rows = await box.claude.rows(id);
+      return rows.length >= 4 && rows;
+    }, "Your message never showed.");
     assertMatch(summaries(during), [{ status: "running" }]);
     // After the row, which still says it's summarizing.
     assert.deepEqual(during.map(row => row.type), ["user", "assistant", "compaction", "user"]);
