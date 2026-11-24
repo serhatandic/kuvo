@@ -525,7 +525,10 @@ export async function answerSkills(method: string, requestPath: string, body: Sk
       return { status: 404, value: {} };
     }
     if (parts[1] === "skill-library") {
-      if (parts.length === 2 && method === "GET") return { status: 200, value: { repositories: SKILL_REPOSITORIES.map(({ branch, ...shown }) => shown) } satisfies SkillLibrary };
+      if (parts.length === 2) {
+        if (method !== "GET") return { status: 405, value: {} };
+        return { status: 200, value: { repositories: SKILL_REPOSITORIES.map(({ branch, ...shown }) => shown) } satisfies SkillLibrary };
+      }
       if (parts.length === 3 && parts[2] === "install" && method === "POST") {
         const skill = await githubSkill(body ?? {}, true);
         writeSkillPackage(skill);
