@@ -483,6 +483,7 @@ test("Rust prepares its target without changing the selected release and its kee
 test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
 test("a new main finishes a prepared release after the old main goes away", { timeout: 240000 }, t => fleetRun(t, { failover: true }));
 test("the main takes a signed release from a member already running it", { timeout: 150000 }, t => fleetRun(t, { aheadMember: true }));
+test("a slow member can catch up after the main's preparation deadline", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true, stageDeadline: true }));
 test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true }));
 test("the deployed beta refuses a direct Rust pack", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true, expectRefusal: true }));
 test("the deployed beta takes the bridge before joining a Rust fleet", { timeout: 360000 }, t => fleetRun(t, { returningTypescript: true, bridgeBeta: true }));
@@ -531,7 +532,7 @@ if [ -e "$KUVO_FIXTURE_CLOCK" ]; then echo 1121; else touch "$KUVO_FIXTURE_CLOCK
   }
 });
 
-async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal, aheadMember }) {
+async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal, aheadMember, stageDeadline }) {
   const binary = boxBinary();
   const windows = process.platform === "win32";
   if (binary.typescript || (windows && !failover && !aheadMember)) {
@@ -836,6 +837,20 @@ Buffer.from = function (value, encoding, ...args) {
 
     await reply("turn before release switch");
     if (shellKeepers) await runningTurn();
+    if (stageDeadline) {
+      // Age only the keeper's saved preparation clock. The relay and the
+      // live member keep running on their normal clocks during this check.
+      const clock = path.join(main.home, "run/fleet-stage-clock.json");
+      await until(() => fs.existsSync(clock) && staged(main), diagnose, 15000);
+      const first = readJSON(clock);
+      const draft = clock + ".fixture";
+      write(draft, encode({ ...first, at: first.at - 300_000 }));
+      fs.renameSync(draft, clock);
+      await until(() => confirmed(main), diagnose, 75000);
+      assert.equal(active(member), initial(member));
+      assert.equal(staged(member), false);
+      t.diagnostic("main confirmed while the member was still waiting for its download");
+    }
     let leader = main;
     if (failover) {
       holdChecks = true;
@@ -864,7 +879,7 @@ Buffer.from = function (value, encoding, ...args) {
     for (const res of waiting) res.end(pack);
     await until(() => confirmed(leader), diagnose, 75000);
     if (failover) assert.ok(heldChecks > 0, "the new main checks the feed without waiting to activate");
-    t.diagnostic(`main confirmed ${Math.round(performance.now() - released)} ms after member download resumed`);
+    if (!stageDeadline) t.diagnostic(`main confirmed ${Math.round(performance.now() - released)} ms after member download resumed`);
     await until(() => confirmed(member), diagnose, 75000);
     await reply("same turn after release switch");
     if (shellKeepers) await runningTurn();
