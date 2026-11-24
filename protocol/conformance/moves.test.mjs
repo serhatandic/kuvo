@@ -1349,7 +1349,52 @@ test("a transcript read returns to its tool without prompting the conversation",
   assert.equal(here.engine.messages.has(sender), false);
 });
 
-test("a letter that waits hears the authenticated answer after the sender restarts", { timeout: 55000 }, async t => {
+test("a tool that gives up leaves its letter on the way without waiting", { timeout: 35000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("gave-up-source"), there = await computer("gave-up-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const sender = "ses_gaveUpSender", recipient = "ses_gaveUpTarget", readTarget = "ses_gaveUpRead";
+  here.engine.sessions.push(sessionOf({ id: sender, title: "Reader", directory: path.join(here.home, "chats") }));
+  there.engine.sessions.push(sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") }));
+  there.engine.sessions.push(sessionOf({ id: readTarget, title: "Unopened transcript", directory: path.join(there.home, "chats") }));
+  const [source, target] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await Promise.all([[source, sender], [target, recipient]].map(([resident, session]) =>
+    until(async () => (await request(resident, "GET", "api/session/" + session)).status === 200,
+      "The conversation's engine did not become ready")));
+  await until(() => {
+    try { return readJSON(path.join(there.home, "run/peer-agents.json"))[main.key]?.list.some(row => row.session === sender); }
+    catch { return false; }
+  }, "The destination did not learn the letter's sender");
+  const id = "ltr_leaveWithoutWaiting", read = "ltr_cancelRead";
+  const tool = path.join(here.home, "run/replies");
+  const pending = path.join(here.home, "run/outbox/sending");
+  const letter = { from: sender, to: recipient, text: "Is the table booked?", peer: member.key, wait: true, at: Date.now() };
+  for (const [letterId, contents] of [[id, letter], [read, { ...letter, to: readTarget, read: {} }]]) {
+    write(path.join(pending, letterId + ".json"), JSON.stringify(contents));
+    write(path.join(tool, letterId + ".gaveup"), "");
+  }
+  const prompts = await until(() => there.engine.messages.get(recipient), "The letter never reached the destination");
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].text, `[Message from Reader · ${sender}] (To answer, use send_message to ${sender}.)\n\nIs the table booked?`);
+  for (const letterId of [id, read]) {
+    await until(() => !fs.existsSync(path.join(pending, letterId + ".json")), "The outbox did not retire " + letterId);
+    assert.equal(fs.existsSync(path.join(tool, letterId + ".wait")), false);
+    assert.equal(fs.existsSync(path.join(tool, letterId + ".gaveup")), false);
+  }
+  assert.ok(!there.engine.asked.some(call => call.path === "/api/session/" + readTarget + "/message"));
+  // A finished tool can also leave a reply without writing a marker.
+  const left = path.join(tool, "ltr_uncollectedAnswer.json");
+  write(left, JSON.stringify({ to: sender, from: recipient, name: "Reservations", text: "Yes, it's booked." }));
+  const recovered = await until(() => here.engine.messages.get(sender), "The late reply did not reach the local conversation");
+  assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].text, `[Message from Reservations · ${recipient}] (To answer, use send_message to ${recipient}.)\n\nYes, it's booked.`);
+  assert.ok(!fs.existsSync(left));
+});
+
+test("a letter that waits hears the authenticated answer after the sender restarts", {
+  timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("waiting-letter-source"), there = await computer("waiting-letter-target");
   const { main, member } = seedPeerSetup(here.home, relay.url);

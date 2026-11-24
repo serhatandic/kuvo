@@ -236,14 +236,21 @@ impl Letters {
         };
         for entry in entries {
             let path = entry?.path();
+            let extension = path.extension().and_then(|ext| ext.to_str());
+            if !matches!(extension, Some("json" | "gaveup")) {
+                continue;
+            }
             let Some(id) = path
-                .file_name()
+                .file_stem()
                 .and_then(|name| name.to_str())
-                .and_then(|name| name.strip_suffix(".json"))
                 .and_then(|id| Id::try_from(id.to_owned()).ok())
             else {
                 continue;
             };
+            if extension == Some("gaveup") {
+                self.give_up(&id, &path)?;
+                continue;
+            }
             if tool_alive(&self.reader.run, &id, now) {
                 continue;
             }
@@ -293,7 +300,18 @@ impl Letters {
                 )?;
             }
             files::remove_file_synced(&path)?;
-            files::remove_file_synced(&path.with_extension("gaveup"))?;
+            let gave_up = path.with_extension("gaveup");
+            if gave_up.try_exists()? {
+                self.give_up(&id, &gave_up)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn give_up(&mut self, id: &Id, marker: &Path) -> io::Result<()> {
+        if self.outbox()?.give_up(id).map_err(io::Error::other)? {
+            files::remove_file_synced(&marker.with_extension("alive"))?;
+            files::remove_file_synced(marker)?;
         }
         Ok(())
     }

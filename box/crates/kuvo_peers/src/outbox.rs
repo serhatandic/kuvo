@@ -225,6 +225,30 @@ impl Outbox {
         Ok(true)
     }
 
+    /// A tool stopped waiting. A request for a transcript has no recipient
+    /// for its result, while a message can still go on without a waiter.
+    pub(crate) fn give_up(&mut self, id: &Id) -> Result<bool, Error> {
+        let pending = self.pending(id);
+        let letter = match read::<Letter>(&pending) {
+            Ok(letter) => letter,
+            Err(Error::Json { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(mut letter) = letter {
+            if letter.other.contains_key("call") || letter.other.contains_key("seat") {
+                return Ok(false);
+            }
+            if letter.read.is_some() {
+                remove(&pending)?;
+            } else if letter.wait {
+                letter.wait = false;
+                write(&pending, &letter)?;
+            }
+        }
+        remove(&self.waiting(id))?;
+        Ok(true)
+    }
+
     pub fn due(&mut self, now: u64, online: bool) -> Result<Vec<Pending>, Error> {
         let mut due = Vec::new();
         for file in fs::read_dir(&self.sending).map_err(|source| storage(&self.sending, source))? {
