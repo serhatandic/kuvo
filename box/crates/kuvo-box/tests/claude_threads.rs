@@ -201,6 +201,13 @@ async fn scenario(root: PathBuf) {
     let before = runtime.holders().records().await.unwrap().pop().unwrap();
     assert!(before.child.is_some());
     old.prepare_replacement().await.unwrap();
+    // The turn goes on with the next resident: this one doesn't end it, so what it reports to
+    // stays open for as long as this resident is there.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        Arc::strong_count(&sink) > 1,
+        "the handed-over turn was let go"
+    );
     drop(active);
     drop(holder);
     drop(first);

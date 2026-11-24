@@ -204,7 +204,12 @@ pub(super) struct Conversation {
     session: String,
     directory: PathBuf,
     config: Option<PathBuf>,
+    /// Where a turn handed to the next resident reports, kept open while this one is here: it
+    /// isn't this resident's to end.
+    _handed: Handed,
 }
+
+type Handed = Arc<std::sync::Mutex<Option<Arc<dyn TurnSink>>>>;
 
 type Reply<T> = oneshot::Sender<io::Result<T>>;
 
@@ -226,11 +231,13 @@ impl Conversation {
         recovered: Option<Recovery>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(16);
+        let handed = Handed::default();
         let conversation = Self {
             commands,
             session: context.session_id.clone(),
             directory: context.directory.clone(),
             config: program.config_home(&context.directory),
+            _handed: handed.clone(),
         };
         let (pipe, recovery, instructions) = recovered.map_or((None, None, None), |old| {
             (Some(old.pipe), old.note, old.instructions)
@@ -255,6 +262,7 @@ impl Conversation {
                 configured: None,
                 closing: false,
                 noticed: HashSet::new(),
+                handed,
             }
             .run(receiver),
         );
@@ -365,6 +373,7 @@ struct Actor {
     closing: bool,
     /// What this Claude Code has said once already (a retry, a limit's warning).
     noticed: HashSet<String>,
+    handed: Handed,
 }
 
 struct Ask {
@@ -888,6 +897,12 @@ impl Actor {
                 if let Some(reply) = self.prepare.take() {
                     if prepared {
                         self.pipe.take();
+                        if let Some(turn) = self.running.take() {
+                            *self
+                                .handed
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = Some(turn.sink);
+                        }
                         self.closing = true;
                         let _ = reply.send(Ok(()));
                     } else {

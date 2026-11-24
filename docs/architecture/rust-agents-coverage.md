@@ -562,11 +562,17 @@ Seen once: on lokum, in a one-CPU container, at d50d27912, "the Rust keeper
 keeps an actual Claude adapter turn across a release switch" failed with
 `The replacement resident never finished the held turn.` (adapter.mjs
 `until`, agents-claude.test.mjs:205), after 32.5 s. Two reruns of the same
-build passed, as did WSL and native Windows. Seen again at 058ce659d, the
-same way, after 32.7 s. Eight later runs passed there, three of them with a
-second process using the CPU, so the cause isn't known yet. The case now
-reports the replacement's last rows, what Claude Code heard and the keeper's
-log when it fails.
+build passed, as did WSL and native Windows. It failed again at 058ce659d
+and at 6aa76a156, the second time with the case's new report: the first resident had ended the
+turn as failed ("The adapter stopped reporting its turn.") and the next one
+never took it up. Cause: once the holder confirmed the handover, the first
+resident's Claude thread dropped the turn's sink. Its turn runtime then read
+the closed channel as an agent gone quiet, and wrote a failed end before that
+resident exited. The failure needed the resident to live on briefly after the
+handover, which one CPU allowed. A handed-over turn's sink now stays open for
+as long as that resident is there. The holder scenario checks this, and the
+keeper case reports the last rows, what Claude Code heard and the keeper's
+log if it ever fails.
 
 A turn's end is written before its Claude Code's holder hears that it ended.
 If the resident goes between the two, the next resident finds a holder still
