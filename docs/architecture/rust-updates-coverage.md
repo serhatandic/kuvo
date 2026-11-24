@@ -88,6 +88,7 @@ Intel Mac: checked without running; a real run waits for an Intel Mac.
 | U69 | The before-Rust backup preserves saved work and the route folder's ordinary files when a Unix socket is present. The endpoint stays in the source and does not enter the backup. |
 | U70 | The returning bridge stays unavailable in Runs on while its native Rust resident is on trial and reports the signed bridge as current. The resident becomes available once it reports the confirmed Rust release. |
 | U71 | Direct conversation moves in either direction refuse during the same trial. Saved cross-computer letters wait while local letters finish, then settle once each after confirmation. Release mail remains independent. |
+| U72 | Linux installer status calls a bare launcher a machine, then offers new when its making was interrupted, even with a saved link and key. Native Linux and WSL2 return identical full status replies and preserve the same files in both boxes. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -378,7 +379,7 @@ dependencies.
 | Same 766, Linux move refusal | Covered by U26. | — |
 | Same 774 and 793, Mac app copy and case spelling | U60 checks the installer entry for an alternate spelling and keeps production and scratch homes separate. 2.6 checks the Mac command's matching home. | — |
 | Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. U27 covers interruption after publication and retiring earlier incomplete staging. U36 covers a cleanup failure after startup. U37 replays interruption during archival and between the engine and release moves. | — |
-| [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 and U67 check Helper registration, readiness and restart with a stand-in. U61 checks a live move lock through both installer commands. U62 checks restarted fresh making (74). U65 and U66 check fresh refusal, moved-back receipt, and unfinished or unreadable journals. Real Helper readiness and Linux starter admission (169) remain open. | 6.2, 7.2, 9.3 |
+| [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 and U67 check Helper registration, readiness and restart with a stand-in. U61 checks a live move lock through both installer commands. U62 checks restarted fresh making (74). U65 and U66 check fresh refusal, moved-back receipt, and unfinished or unreadable journals. U72 compares Linux starter admission (169) on both boxes. Real Helper readiness remains open. | 6.2, 9.3 |
 
 ## Inherited cases and system proof
 

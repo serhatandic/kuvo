@@ -2046,6 +2046,44 @@ async function concurrentInstallStatus(start, home) {
   }
 }
 
+test("Linux installer status distinguishes a machine launcher from an interrupted making", t => {
+  if (process.platform !== "linux") return t.skip("Uses the Linux machine installer verdict.");
+  const binary = boxBinary();
+  const root = scratch();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const starter = path.join(home, "bin/kuvo-start");
+  const making = path.join(home, "updates/install/making");
+  const link = path.join(home, "run/link.json");
+  const key = path.join(home, "box/keys/k");
+  const starterBody = "#!/bin/sh\nexit 0\n";
+  const linkBody = JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] });
+  const command = ["install", "--status", "--root", ".kuvo-code"];
+  const ask = (verdict, verb) => {
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file,
+      binary.typescript ? ["--config=/dev/null", "--no-env-file", binary.file, ...command] : command,
+      { cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const reply = JSON.parse(result.stdout);
+    assert.deepEqual([reply.verdict, reply.verb], [verdict, verb]);
+    return reply;
+  };
+  write(starter, starterBody, { mode: 0o700 });
+  const machine = ask("machine", null);
+  write(making, "1\n");
+  const fresh = ask("fresh", "new");
+  write(link, linkBody);
+  write(key, "saved key");
+  assert.deepEqual(ask("fresh", "new"), fresh);
+  assert.deepEqual(machine.status, fresh.status);
+  assert.deepEqual([starter, making, link, key].map(file => fs.readFileSync(file, "utf8")),
+    [starterBody, "1\n", linkBody, "saved key"]);
+  assert.equal(fs.existsSync(path.join(home, "active-release")), false);
+  t.diagnostic(JSON.stringify({ machine, fresh }));
+});
+
 test("signed Linux installer makes a fresh machine and keeps unrelated reboot jobs", { timeout: 120000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
