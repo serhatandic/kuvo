@@ -284,6 +284,9 @@ pub enum TurnEvent {
         window: Option<u64>,
     },
     ContextCleared,
+    /// What the turn cost besides its steps' own costs, in dollars: an agent
+    /// that says what it spent once per turn.
+    Cost(f64),
     RanOn(String),
     Notice(String),
     CompactionStarted,

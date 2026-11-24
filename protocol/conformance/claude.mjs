@@ -5,7 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { standInClaude } from "../../box/bridge-tests/claude-stand-in.js";
 import assert from "node:assert/strict";
-import { boxCommand, launch, readJSON, request, typescriptRuntime, until, write } from "./adapter.mjs";
+import {
+  boxBinary, boxCommand, isolatedEnv, launch, localRelay, privateHome, readJSON, request, scratch,
+  startBox, typescriptRuntime, until, write,
+} from "./adapter.mjs";
 
 export const headers = { "x-kuvo-from": "app" };
 export const provider = "claude-code";
@@ -127,3 +130,151 @@ async function freePort() {
   await new Promise(resolve => server.close(resolve));
   return port;
 }
+
+// One resident (and, for the reference, its bridge) on a scripted Claude stand-in, shared by a
+// file's cases: each case seeds its own session and scripts its own prompts.
+export async function scriptedClaude(fixture = {}) {
+  const binary = boxBinary();
+  const root = scratch();
+  const home = path.join(root, "box");
+  const relay = await localRelay();
+  privateHome(home);
+  const env = { ...claudeEnvironment(binary, home, isolatedEnv(root), { turns: true, ...fixture }), KUVO_SANDBOX: "off" };
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  let bridge, resident, listener;
+  const scripts = {};
+  const heardFile = path.join(env.HOME, "claude-heard.jsonl");
+  const claude = {
+    binary, home, env,
+    get listener() { return listener; },
+    async start() {
+      bridge = await startClaudeBridge(binary, home, env);
+      resident = startBox({ binary, home, env, relay });
+      listener = await resident.ready();
+      return listener;
+    },
+    async stop() {
+      await resident?.stop();
+      await bridge?.stop();
+      resident = bridge = undefined;
+    },
+    async close() {
+      await claude.stop();
+      await stopFixtureHolders(home);
+      await relay.close();
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    },
+    log: () => [resident?.log(), bridge?.log()].filter(Boolean).join("\n"),
+    /** What the prompt whose first line is `text` makes the stand-in do. */
+    script(text, steps) {
+      scripts[text] = steps;
+      write(path.join(env.HOME, "claude-script.json"), JSON.stringify(scripts));
+    },
+    /** What the stand-in read: its arguments and every line, from each Claude Code it ran. */
+    heard: () => fs.existsSync(heardFile)
+      ? fs.readFileSync(heardFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [],
+    seed: (id, options) => seedSession(home, id, options),
+    /** Lets a script waiting `{until: name}` go on. */
+    go: name => write(path.join(env.HOME, name), ""),
+    /** The session as it's saved (its totals, once a turn ends). */
+    saved: id => readJSON(path.join(home, "agents/sessions", id, "session.json")),
+    route: id => `kuvo/agents/api/session/${id}`,
+    async prompt(id, text, more = {}) {
+      const answer = await request(listener, "POST", claude.route(id) + "/prompt", {
+        id: `msg_${id.replace(/^ses_/, "")}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        text, ...more,
+      }, headers, 45000);
+      assert.equal(answer.status, 200, answer.text);
+    },
+    rows: id => transcript(listener, claude.route(id)),
+    async idles(id, count = 1, why = "The Claude turn never ended.") {
+      return until(async () => {
+        const rows = await claude.rows(id);
+        return rows.filter(row => row.type === "idle").length >= count && rows;
+      }, () => why + "\n" + claude.log(), 20000);
+    },
+    async interrupt(id) {
+      const answer = await request(listener, "POST", claude.route(id) + "/interrupt", {}, headers, 20000);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json;
+    },
+    async permissions(id) {
+      const answer = await request(listener, "GET", claude.route(id) + "/permission", undefined, headers);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json.data ?? answer.json;
+    },
+    async replyPermission(id, request_, decision) {
+      const answer = await request(listener, "POST", `${claude.route(id)}/permission/${request_}/reply`, { decision }, headers);
+      assert.ok(answer.status < 300, answer.text);
+    },
+    async forms(id) {
+      const answer = await request(listener, "GET", claude.route(id) + "/form", undefined, headers);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json.data ?? answer.json;
+    },
+    async session(id) {
+      const answer = await request(listener, "GET", `kuvo/agents/api/session/${id}`, undefined, headers);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json.data;
+    },
+  };
+  return claude;
+}
+
+/** A request's reply as Claude Code streams it: each block whole as it ends, with its usage. */
+export function streams(uuid, blocks, usage = { input: 10, read: 0, write: 0, output: 5 }) {
+  const id = `msg_${Math.random().toString(36).slice(2)}`;
+  const event = event => ({ type: "stream_event", event, parent_tool_use_id: null, session_id: "$SESSION" });
+  const frames = [event({ type: "message_start", message: { id, model: "claude-opus-5-5", usage: { input_tokens: usage.input, cache_read_input_tokens: usage.read, cache_creation_input_tokens: usage.write, output_tokens: 1 } } })];
+  blocks.forEach((block, index) => {
+    if (block.type === "text") {
+      frames.push(event({ type: "content_block_start", index, content_block: { type: "text", text: "" } }));
+      frames.push(event({ type: "content_block_delta", index, delta: { type: "text_delta", text: block.text } }));
+    } else {
+      frames.push(event({ type: "content_block_start", index, content_block: { ...block, input: {} } }));
+      frames.push(event({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) } }));
+    }
+    frames.push(event({ type: "content_block_stop", index }));
+    frames.push({ type: "assistant", message: { id, model: "claude-opus-5-5", role: "assistant", content: [block] }, parent_tool_use_id: null, session_id: "$SESSION", user_message_uuids: [uuid] });
+  });
+  frames.push(event({ type: "message_delta", delta: { stop_reason: blocks.some(block => block.type === "tool_use") ? "tool_use" : "end_turn" }, usage: { output_tokens: usage.output } }));
+  frames.push(event({ type: "message_stop" }));
+  return frames;
+}
+
+/** What a tool came back with, and Claude Code's own account of it. */
+export function toolResult(id, content, { error, structured } = {}) {
+  return { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error: error }] }, parent_tool_use_id: null, session_id: "$SESSION", tool_use_result: structured };
+}
+
+export function result(uuids, subtype = "success", more = {}) {
+  return { type: "result", subtype, is_error: subtype !== "success", result: "", session_id: "$SESSION", user_message_uuids: uuids, ...more };
+}
+
+/** Claude Code asking whether it may use a tool, as `request` (the box answers it). */
+export function canUse(request_id, tool_name, input, tool_use_id, more = {}) {
+  return { type: "control_request", request_id, request: { subtype: "can_use_tool", tool_name, input, tool_use_id, ...more } };
+}
+
+/** Like Bun's `toMatchObject`: objects in part, lists whole. */
+export function assertMatch(actual, expected, at = "value") {
+  if (expected === null || typeof expected !== "object") {
+    assert.deepEqual(actual, expected, `${at}: ${JSON.stringify(actual)}`);
+    return;
+  }
+  if (Array.isArray(expected)) {
+    assert.ok(Array.isArray(actual), `${at} should be a list: ${JSON.stringify(actual)}`);
+    assert.equal(actual.length, expected.length, `${at} should have ${expected.length}: ${JSON.stringify(actual)}`);
+    expected.forEach((each, index) => assertMatch(actual[index], each, `${at}[${index}]`));
+    return;
+  }
+  assert.ok(actual && typeof actual === "object", `${at} should be an object: ${JSON.stringify(actual)}`);
+  for (const [key, each] of Object.entries(expected)) assertMatch(actual[key], each, `${at}.${key}`);
+}
+
+export const askFirst = ["edit", "write", "patch", "shell", "webfetch", "external_directory"]
+  .map(action => ({ action, resource: "*", effect: "ask" }));
+export const steps = rows => rows.filter(row => row.type === "assistant");
+export const texts = rows => steps(rows).flatMap(row => row.content.flatMap(part => part.type === "text" ? [part.text] : []));
+export const toolCalls = rows => steps(rows).flatMap(row => row.content.filter(part => part.type === "tool"));
+export const idles = rows => rows.filter(row => row.type === "idle");

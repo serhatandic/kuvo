@@ -359,6 +359,20 @@ steered message, withdraws an ask on cancellation or Stop, stores the native
 ID from `/clear`, resumes that ID after process shutdown, and redacts a
 credential from the departing process's diagnostics.
 
+[agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs)
+ports `claude.test.ts` scenarios to both boxes. A scripted stand-in plays
+each scenario's Claude Code lines and records what it reads, and the cases
+check the saved transcript, the session's totals and the asks. Rust now
+follows the reference adapter's projection: tools as the app names them,
+an edit's file change from Claude Code's own hunks, a command's output and
+notes, server tool results, Claude Code's notes, retries and limit
+warnings, and summaries it makes by itself. A turn paid by an API key adds
+what Claude Code says it cost. The shared turn projection gained
+`TurnEvent::Cost` (additive) and the session's token and cost totals.
+Tools still running when a turn ends are stopped. A summary reported only
+once it's done gets its own row. A repeated note is written once. Stop
+tells Claude Code no for an open ask.
+
 A message handed to a running turn has a receipt before it is sent: the
 UUID Claude acknowledges it by. The receipt stays unresolved while a live or
 recovered turn hasn't acknowledged the message. After that, the message
@@ -387,8 +401,9 @@ The two rows expanded from the bot and session steering loop count separately.
 | 73–85 | 4.4b bounded and redacted native process diagnostics, history of the current process and interruption. |
 | 86–92 | 4.4b sandbox launch, file copies, sign-out and adoption. 6.1 owns sandbox policy and 6.3 owns worktree paths. |
 | 93–103 | 4.4b Claude permissions, Plan mode and question fields. 4.1b owns the cards and session rules. 6.1 supplies the computer's permission rules. |
-| 104–109 | 4.4b usage, tool results, file diffs and interrupt. 4.1b owns event projection, queue and asks. |
-| 110–122 | 4.4b typed and automatic compaction, command lifecycle and its interaction with steering and process exit. |
+| 104–109 | Ported to [agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs) on both boxes. The reference bridge under its holder starts Claude Code again after Stop, so only Rust checks that the same process takes the next message. |
+| 110–114 | 4.4b typed `/compact`. The Rust resident has no `session/:id/compact` route yet. |
+| 115–122 | Ported to agents-claude-turns on both boxes, except the `session.compaction.*` events, which the conformance cases don't read. |
 | 123–127 | 4.4b notices and one-time instruction updates. 4.6 owns carry and handover. |
 | 128–131 | 4.4b credential attribution and generation fences. 5.4 owns the account's gathered usage and limits. |
 | 132–136 | 4.6 subagent definition and policy projection, with 6.1 for Agents settings. |
