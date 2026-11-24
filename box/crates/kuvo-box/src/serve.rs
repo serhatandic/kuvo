@@ -132,12 +132,17 @@ pub async fn run(
     let sessions = engine.register_with_merged_pages(&mut routes, move |project, shown, step| {
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
-    let owner_requests = tokio::spawn(super::session_ownership::serve(
-        owners,
-        engine.clone(),
-        sessions.clone(),
-    ));
-    peers.advertise_engine_submissions().await?;
+    let owner_requests = if let Ok(requests) = owners.incoming() {
+        peers.advertise_engine_submissions().await?;
+        Some(tokio::spawn(super::session_ownership::serve(
+            owners,
+            requests,
+            engine.clone(),
+            sessions.clone(),
+        )))
+    } else {
+        None
+    };
     let accepted = setup.handle();
     let memory =
         kuvo_peers::memory_read::Handle::new(peers.reader(), peers.relay_handle(), move || {
@@ -266,7 +271,10 @@ pub async fn run(
         })
         .await;
     session_source.abort();
-    owner_requests.abort();
+    if let Some(owner_requests) = owner_requests {
+        owner_requests.abort();
+        let _ = owner_requests.await;
+    }
     if let Some(memory_reads) = memory_reads {
         memory_reads.abort();
         let _ = memory_reads.await;
@@ -275,7 +283,6 @@ pub async fn run(
         holder.shutdown().await;
     }
     let _ = session_source.await;
-    let _ = owner_requests.await;
     drop(daily_backups);
     drop(backup_receiver);
     drop(setup);
