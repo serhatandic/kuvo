@@ -104,7 +104,32 @@ pub(crate) struct Suggested {
 
 /// A folder as the system names it (links resolved), or as given where it can't say.
 pub(crate) fn located(folder: &Path) -> PathBuf {
-    fs::canonicalize(folder).unwrap_or_else(|_| resolved(folder))
+    fs::canonicalize(folder).map_or_else(|_| resolved(folder), platform::as_node_names)
+}
+
+#[cfg(not(windows))]
+mod platform {
+    pub(super) fn as_node_names(path: std::path::PathBuf) -> std::path::PathBuf {
+        path
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    use std::path::PathBuf;
+
+    /// A real path as Node's `realpath` names it: Windows gives a verbatim one (`\\?\C:\a`,
+    /// `\\?\UNC\host\share`); Node gives `C:\a` and `\\host\share`.
+    pub(super) fn as_node_names(path: PathBuf) -> PathBuf {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        match text.strip_prefix(r"\\?\") {
+            Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+            _ => path,
+        }
+    }
 }
 
 fn text(path: &Path) -> String {

@@ -71,6 +71,7 @@ impl Places {
 /// Why a folder couldn't be read, by why: 404 for one that isn't there (or isn't a folder), 403
 /// for one this box isn't let into, 500 for anything else, each with the system's reason.
 pub(crate) fn refusal(at: &Path, error: &io::Error) -> Refusal {
+    let error = &platform::as_node_sees(at, error);
     let at = at.display();
     let (status, message, reason) = match platform::kind(error) {
         io::ErrorKind::NotFound => (
@@ -100,6 +101,14 @@ pub(crate) fn refusal(at: &Path, error: &io::Error) -> Refusal {
     )
 }
 
+/// An error of the same kind and number.
+fn copy(error: &io::Error) -> io::Error {
+    error.raw_os_error().map_or_else(
+        || io::Error::new(error.kind(), error.to_string()),
+        io::Error::from_raw_os_error,
+    )
+}
+
 /// The system's reason for an error, as Node says it (libuv's words, capitalized), so a client
 /// shows the same words from either box.
 fn said(error: &io::Error) -> String {
@@ -126,6 +135,11 @@ fn said(error: &io::Error) -> String {
 mod platform {
     pub(super) fn kind(error: &std::io::Error) -> std::io::ErrorKind {
         error.kind()
+    }
+
+    /// The error as Node reports it: on Unix, the system's own.
+    pub(super) fn as_node_sees(_at: &std::path::Path, error: &std::io::Error) -> std::io::Error {
+        super::copy(error)
     }
 
     /// libuv's message for an error number (`uv_strerror`), as Node's errors carry it.
@@ -171,6 +185,19 @@ mod platform {
 mod platform {
     /// As Node reads it: libuv takes ERROR_INVALID_NAME (a name too long, a bad character) for one
     /// that isn't there.
+    /// ERROR_CANT_RESOLVE_FILENAME: a link that leads round to itself.
+    const LOOP: i32 = 1921;
+
+    /// The error as Node reports it. Windows answers listing a link that leads round to itself as
+    /// "not a folder"; libuv reads the link and says ELOOP, as following it does.
+    pub(super) fn as_node_sees(at: &std::path::Path, error: &std::io::Error) -> std::io::Error {
+        let link = std::fs::symlink_metadata(at).is_ok_and(|meta| meta.file_type().is_symlink());
+        if link && std::fs::metadata(at).err().and_then(|e| e.raw_os_error()) == Some(LOOP) {
+            return std::io::Error::from_raw_os_error(LOOP);
+        }
+        super::copy(error)
+    }
+
     pub(super) fn kind(error: &std::io::Error) -> std::io::ErrorKind {
         if error.raw_os_error() == Some(123) {
             std::io::ErrorKind::NotFound
@@ -182,7 +209,7 @@ mod platform {
     /// libuv's message for the error libuv maps a Windows error code to (`uv_translate_sys_error`).
     pub(super) fn libuv_words(error: &std::io::Error) -> Option<&'static str> {
         Some(match error.raw_os_error()? {
-            1921 => "too many symbolic links encountered", // ERROR_CANT_RESOLVE_FILENAME
+            LOOP => "too many symbolic links encountered", // ERROR_CANT_RESOLVE_FILENAME
             206 => "name too long",                        // ERROR_FILENAME_EXCED_RANGE
             32 | 33 | 170 => "resource busy or locked",    // sharing, lock, busy
             8 | 14 => "not enough memory",
