@@ -68,6 +68,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Adding over SSH explains how to clear a reservation left by an older Kuvo Code after restarting the other computer.
 - An SSH Add stops before copying Kuvo Code if the desktop that started it loses access during the check.
 - Adding a computer over SSH accepts the engine when its verified download runs successfully.
+- If a computer cannot join over SSH, Add reports the last enrollment diagnostic from that computer.
+- A removed computer can clear its wipe receipt after the main computer receives its first completion message.
 - An installer code can carry the sign-ins and keys you select from a Rust computer. Retry the same code if the new computer’s engine could not save them.
 - If work appears on a computer after it starts joining, the installer keeps that work and cancels its unfinished enrollment.
 - Uninstall on a stopped, standalone Rust computer can clear its desktop identity and local credentials while retaining its saved work.

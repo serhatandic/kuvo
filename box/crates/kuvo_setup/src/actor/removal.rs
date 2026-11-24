@@ -716,9 +716,6 @@ impl Owner {
                 )?;
                 self.commit(next).await?;
                 self.publish(false).await?;
-                if erase {
-                    return Ok(());
-                }
             }
             let reply = message
                 .get("receipt")

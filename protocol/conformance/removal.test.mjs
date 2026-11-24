@@ -633,15 +633,28 @@ async function appOwnedWipe(t, member, { resumeWithoutHelper = false, diskDiscon
   const seed = Buffer.alloc(32, 94).toString("base64url");
   let identity = { key: seed, sign: seed, secret: seed };
   let studio;
+  let sawCompletion = false;
   if (member) {
     const setMac = roster => { roster.boxes[1].kind = "mac"; };
     studio = await computer("Studio");
-    seedPeerSetup(studio.home, relay.url, 1, 2, setMac);
+    const { main } = seedPeerSetup(studio.home, relay.url, 1, 2, setMac);
     seedPeerSetup(home, relay.url, 2, 2, setMac);
     const file = path.join(home, "run", "link.json");
     const { key, secret, sign, ...link } = readJSON(file);
     identity = { key, secret, sign };
     write(file, JSON.stringify(link), { mode: 0o600 });
+    const completionFile = path.join(receipts, `${operation}.json`);
+    // The first completion arrives. Lose any repeat, as when the return path
+    // survives briefly after the path to the main computer goes away.
+    relay.intercept(null, Buffer.from(main.address, "base64url"), ({ from, payload }) => {
+      if (!fs.existsSync(completionFile)) return false;
+      const completion = readJSON(completionFile);
+      if (!from.equals(relayAddress(Buffer.from(completion.secret, "base64url")))
+        || !payload.equals(Buffer.from(completion.done, "base64url").subarray(17))) return false;
+      if (sawCompletion) return true;
+      sawCompletion = true;
+      return false;
+    });
   }
   const helper = http.createServer(async (req, res) => {
     const bytes = [];
@@ -797,6 +810,7 @@ printf 'keychain %s\\n' "$5" >> '${steps}'
     await until(() => readJSON(primaryLink).shared.membershipAndAccess.value.removals[you.key]?.delivered,
       "The main did not accept the app member's completion.");
     await until(() => !fs.existsSync(path.join(receipts, `${operation}.json`)), "The app member did not retire its acknowledgment.", 25000);
+    assert.equal(sawCompletion, true);
   }
   status ??= await install();
   assert.deepEqual([status.verdict, status.verb, status.offer, status.wipeReceipt], member

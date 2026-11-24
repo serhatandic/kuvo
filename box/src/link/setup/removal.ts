@@ -392,8 +392,8 @@ function deliverToRemoved(sender: string, message: Record<string, unknown>, host
         current.removalAcks = { ...current.removalAcks, [sender]: record.operation };
         return current;
       }, { durable: true });
-      recordCompletion(record);
-      return;
+      // The wiped computer may only get one completion through.
+      if (!recordCompletion(record) || !record.wipe || record.resolution) return;
     }
     const receipt = typeof message.receipt === "string" && KEY.test(message.receipt) && from?.length === 16
       ? { key: message.receipt, address: from.toString("base64url") } : record.peer;
