@@ -215,7 +215,8 @@ test("a conversation lists and answers its child's vault ask through the live ho
   fs.mkdirSync(project);
   const root = sessionOf({ id: "ses_vaultRoot", title: "Release", directory: project });
   const child = sessionOf({ id: "ses_vaultChild", title: "Find sign-in", directory: project, parent: root.id });
-  box.engine.sessions.push(root, child);
+  const other = sessionOf({ id: "ses_vaultUnrelated", title: "Other work", directory: project });
+  box.engine.sessions.push(root, child, other);
   const secret = value();
   const { ask, item } = await create(box, secret);
   const args = { need: "site login", why: "Check the authorized fixture." };
@@ -240,12 +241,49 @@ test("a conversation lists and answers its child's vault ask through the live ho
     "the vault question to count once for its conversation");
   const refused = await ask("POST", route + "/" + card.id, { answer: "once", item: item.id });
   assert.equal(refused.status, 403, refused.text);
+  const outside = await ask("POST", `kuvo/sessions/${other.id}/asks/${card.id}`, { answer: "once", item: item.id }, header);
+  assert.equal(outside.status, 404, outside.text);
   const granted = await ask("POST", route + "/" + card.id, { answer: "once", item: item.id }, header);
   assert.equal(granted.status, 200, granted.text);
   assert.equal((await pending).json.isError, false);
+  assert.equal((await ask("POST", route + "/" + card.id, { answer: "once", item: item.id }, header)).status, 404);
   assert.deepEqual((await ask("GET", route, undefined, header)).json.asks, []);
   await until(async () => (await ask("GET", "kuvo/waiting")).json.sessions === 0,
     "the answered vault question to leave the waiting total");
+});
+
+test("conversation vault cards offer a lasting grant only for a project", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const box = await computer("Vault grant scope", boxBinary(), () => ({ KUVO_VAULT_AGENTS: "1", KUVO_TEST_LOGIN_ENV: "off" }));
+  const project = path.join(box.home, "project");
+  const account = path.join(path.dirname(box.home), "account");
+  fs.mkdirSync(project);
+  const { ask, item } = await create(box, value());
+  for (const [id, directory, lasting] of [["ses_vaultHome", account, false], ["ses_vaultProject", project, true]]) {
+    const session = sessionOf({ id, title: "Check authorized scope", directory });
+    box.engine.sessions.push(session);
+    const args = { command: "printf '%s' \"$FIXTURE\"", variables: { FIXTURE: item.name }, why: "Verify the approval choices." };
+    calling(box, session, "vault_run", args, "call_" + id);
+    const pending = ask("POST", vault + "/tools", { session: id, name: "vault_run", arguments: args });
+    pending.catch(() => {});
+    const route = `kuvo/sessions/${id}/asks`;
+    const card = await until(async () => {
+      const response = await ask("GET", route, undefined, header);
+      return response.json?.asks?.find(row => row.kind === "vault");
+    }, "the conversation's real vault grant request to appear");
+    assert.equal(card.need, "use");
+    assert.equal(card.session, id);
+    assert.deepEqual(card.choices.map(row => row.answer), lasting ? ["once", "always", "reject"] : ["once", "reject"]);
+    const decision = route + "/" + card.id;
+    if (!lasting) {
+      const refused = await ask("POST", decision, { answer: "always" }, header);
+      assert.equal(refused.status, 400, refused.text);
+      assert.deepEqual(refused.json, { message: "Answer once, reject." });
+    }
+    assert.equal((await ask("POST", decision, { answer: "reject" }, header)).status, 200);
+    assert.equal((await pending).json.isError, true);
+    assert.equal((await ask("POST", decision, { answer: "once" }, header)).status, 404);
+  }
 });
 
 test("asks wait for the user, a grant is used once, and command output is masked", {
