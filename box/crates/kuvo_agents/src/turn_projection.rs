@@ -32,6 +32,7 @@ impl Projection {
         session: String,
         agent: String,
         input: &TurnInput,
+        shown: Option<&Prompt>,
         note: Option<Map<String, Value>>,
     ) -> io::Result<Self> {
         let prior = if matches!(input.kind, TurnKind::Recover { .. }) {
@@ -58,7 +59,7 @@ impl Projection {
             prior,
         };
         if let TurnKind::Prompt(prompt) = &input.kind {
-            let mut row = user(prompt);
+            let mut row = user(shown.unwrap_or(prompt));
             if let Some(note) = note {
                 row["metadata"] = Value::Object(note);
             }
@@ -255,6 +256,40 @@ impl Projection {
             | TurnEvent::ReplayCaughtUp => Vec::new(),
         }
     }
+}
+
+/// A message whose agent couldn't start: it's in the conversation with the
+/// turn that failed, as one whose agent broke at once.
+pub(crate) async fn record_failed_start(
+    store: SessionStore,
+    session: String,
+    agent: String,
+    input: &TurnInput,
+    shown: Option<&Prompt>,
+    note: Option<Map<String, Value>>,
+    error: &io::Error,
+) -> io::Result<()> {
+    let mut projection = Projection::start(store, session, agent, input, shown, note).await?;
+    let message = error.to_string();
+    let finished = EventEnvelope {
+        position: None,
+        delivery: crate::session::Delivery::Live,
+        event: TurnEvent::Finished(TurnResult {
+            outcome: Outcome::Failed(TurnError {
+                kind: "agent".into(),
+                message: if message.is_empty() {
+                    "The agent stopped with an error.".into()
+                } else {
+                    message
+                },
+                status: None,
+                limit: None,
+            }),
+            took_prompt: false,
+            missed: Vec::new(),
+        }),
+    };
+    projection.apply(&finished).await
 }
 
 fn row_prefix(turn: &str) -> String {

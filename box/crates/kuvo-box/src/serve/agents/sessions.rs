@@ -9,7 +9,7 @@ use kuvo_agents::{
     accounts::Provider,
     live_asks::AskKey,
     resident::ResidentAgents,
-    session::{Prompt, TurnKind},
+    inbox::{Delivery, Input},
     session_store::{NewSession, SessionPatch},
     session_view,
 };
@@ -152,32 +152,10 @@ impl AgentSessionSource for Inventory {
                 .running
                 .as_ref()
                 .ok_or_else(|| io::Error::other("The coding agents aren't running here."))?;
-            let saved = self
-                .store
-                .read(id)
-                .await?
-                .ok_or(io::ErrorKind::NotFound)?;
-            let folder = saved
-                .directory()
-                .map(std::path::PathBuf::from)
-                .ok_or(io::ErrorKind::InvalidData)?;
             let AgentPrompt { id: message, text, metadata } = prompt;
-            let (input, policy) = super::turns::turn_setup(
-                &self.home,
-                folder,
-                &saved.into_fields(),
-                &message,
-                TurnKind::Prompt(Prompt {
-                    id: message.clone(),
-                    text,
-                    files: Vec::new(),
-                    synthetic: false,
-                }),
-            )
-            .map_err(|refusal| io::Error::other(format!("{:?}", refusal.reply().status)))?;
-            runs.run_turn_noted(id.to_owned(), input, policy, metadata)
-                .await
-                .map(|_| ())
+            let mut input = Input::new(message, text, Vec::new(), Delivery::Steer);
+            input.metadata = metadata;
+            runs.prompt(id.to_owned(), input, None).await
         })
     }
 

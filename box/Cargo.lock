@@ -1274,12 +1274,14 @@ dependencies = [
 name = "kuvo_agents"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "getrandom 0.4.3",
  "hex",
  "jiff",
  "kuvo_os",
  "kuvo_store",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
@@ -1288,6 +1290,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]

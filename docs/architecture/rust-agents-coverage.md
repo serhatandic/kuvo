@@ -177,6 +177,26 @@ checkpoint rewrites only that slot. A conversation from before slots
 gives its single state to the agent that wrote its last reply, as the
 bridge does, the first time the record is saved.
 
+Each conversation has a line of messages waiting for its agent, kept in
+`agent.json` (`inbox`) in the bridge's shape (`kuvo_agents::inbox`). The
+resident's sessions apply the bridge's rules to it: a message goes into the
+turn under way where its agent takes one partway, now when nothing runs
+(a queued one too, unless others wait before it), or after the turn; a turn
+that ends on its own starts the next, steered ones first; a Stop or an
+error holds what waits until Steer or Send Now; one sent twice goes once;
+one handed to the turn and taken back meanwhile is sent if the agent took
+it and cancelled if it didn't; a text file goes into the words. An
+uncertain handoff saves its receipt before the message is sent
+(`ActiveTurn::steer_receipt`), keeps everything behind it waiting, and is
+settled from the agent's own conversation every second, never by sending
+it again, also by the next resident. A message whose agent can't start is
+kept, failed. A handoff token the box cancelled refuses its late message.
+Twenty Rust scenarios with a scripted agent (`kuvo_agents/tests/inbox.rs`)
+port `sessions.test.ts` cases 3–7, 10, 11, 13–17, 48 and 54–58 and 61, and
+Codex's uncertain-handoff rule. The compatibility prompt route now puts the
+message in the line (`delivery`, `metadata`, `handoffToken`) and interrupt
+takes `resume`.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.

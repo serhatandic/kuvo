@@ -10,8 +10,11 @@ use std::{
     time::Duration,
 };
 
+mod line;
 mod metadata;
 mod projection;
+
+pub use line::Line;
 
 pub use metadata::{NewSession, SessionPatch};
 
@@ -41,6 +44,11 @@ impl SessionHeader {
 
     pub fn directory(&self) -> Option<&str> {
         self.fields.get("location")?.get("directory")?.as_str()
+    }
+
+    /// How its last turn ended: `succeeded`, `failed` or `interrupted`.
+    pub fn outcome(&self) -> Option<&str> {
+        self.fields.get("outcome")?.as_str()
     }
 
     /// The conversation that started this one, for a subagent's.
@@ -203,18 +211,25 @@ impl SessionStore {
         id: &str,
         change: impl FnOnce(&Path) -> io::Result<()> + Send + 'static,
     ) -> io::Result<bool> {
+        Ok(self.mutate_existing_with(id, change).await?.is_some())
+    }
+
+    async fn mutate_existing_with<T: Send + 'static>(
+        &self,
+        id: &str,
+        change: impl FnOnce(&Path) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<Option<T>> {
         let Some(folder) = self.folder(id) else {
-            return Ok(false);
+            return Ok(None);
         };
         let lock = self.root.join(format!(".{id}.lock"));
         let id = id.to_owned();
         tokio::task::spawn_blocking(move || {
             let _guard = OwnedLock::acquire(&lock, Duration::from_secs(1))?;
             if read_header(&folder, &id)?.is_none() {
-                return Ok(false);
+                return Ok(None);
             }
-            change(&folder)?;
-            Ok(true)
+            change(&folder).map(Some)
         })
         .await?
     }

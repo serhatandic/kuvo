@@ -2,9 +2,10 @@
 
 use http::StatusCode;
 use kuvo_agents::{
-    permissions::{Policy, Rule},
+    inbox::{Delivery, Input},
+    permissions::Policy,
     runtime::AdoptedTurn,
-    session::{ModelRef, PermissionMode, Prompt, PromptFile, TurnInput, TurnKind},
+    session::{TurnInput, TurnKind},
     session_runs::SessionRuns,
     session_store::SessionStore,
 };
@@ -71,60 +72,17 @@ pub(crate) async fn restore(
     while restoring.join_next().await.is_some() {}
 }
 
-pub(crate) fn register(
-    runs: SessionRuns,
-    store: SessionStore,
-    home: PathBuf,
-    routes: &mut Registry,
-) {
+pub(crate) fn register(runs: SessionRuns, routes: &mut Registry) {
     let as_turns = runs.clone();
     routes.register::<prompt::Spec, _, _>(Access::DesktopOrPaired, move |call| {
         let runs = as_turns.clone();
-        let store = store.clone();
-        let home = home.clone();
         async move {
-            use kuvo_agents::session::Steer;
             let id = session_id(call.param("id"))?;
-            let stored = store
-                .read(&id)
+            let input = read_input(&call.body)?;
+            let handoff = call.body["handoffToken"].as_str().map(str::to_owned);
+            runs.prompt(id, input, handoff)
                 .await
-                .map_err(super::refuse)?
-                .ok_or_else(|| super::sessions::missing(&id))?;
-            let folder = stored.directory().map(PathBuf::from).ok_or_else(|| {
-                Refusal::new(
-                    StatusCode::BAD_REQUEST,
-                    "Give the conversation’s working directory.",
-                )
-            })?;
-            let header = stored.into_fields();
-            let message = read_prompt(&call.body)?;
-            if store
-                .has_message(&id, &message.id)
-                .await
-                .map_err(super::refuse)?
-            {
-                return Ok(RouteReply::json::<200>(prompt::Status200 {}));
-            }
-            if runs.running().contains(&id) && call.body["delivery"] != "queue" {
-                match runs
-                    .steer(id.clone(), message.clone())
-                    .await
-                    .map_err(super::refuse)?
-                {
-                    Steer::Accepted | Steer::InDoubt(_) => {
-                        return Ok(RouteReply::json::<200>(prompt::Status200 {}));
-                    }
-                    Steer::Declined => {}
-                }
-            }
-            let (input, policy) = turn_setup(
-                &home,
-                folder,
-                &header,
-                &message.id,
-                TurnKind::Prompt(message.clone()),
-            )?;
-            runs.run_turn(id, input, policy).await.map_err(turn_error)?;
+                .map_err(super::refuse)?;
             Ok(RouteReply::json::<200>(prompt::Status200 {}))
         }
     });
@@ -132,7 +90,12 @@ pub(crate) fn register(
         let runs = runs.clone();
         async move {
             let id = session_id(call.param("id"))?;
-            let interrupted = runs.interrupt(id).await.map_err(turn_error)?;
+            let resume = call
+                .request
+                .path
+                .split_once('?')
+                .is_some_and(|(_, query)| query.split('&').any(|pair| pair == "resume=true"));
+            let interrupted = runs.interrupt_and(id, resume).await.map_err(turn_error)?;
             Ok(RouteReply::json::<200>(interrupt::Status200 {
                 interrupted,
             }))
@@ -147,83 +110,11 @@ pub(super) fn turn_setup(
     turn: &str,
     kind: TurnKind,
 ) -> Result<(TurnInput, Policy), Refusal> {
-    let model = header.get("model").unwrap_or(&Value::Null);
-    let read = |key| {
-        model[key]
-            .as_str()
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned)
-    };
-    let bad_model = || {
-        Refusal::new(
-            StatusCode::BAD_REQUEST,
-            "Pick a model of an agent you've connected.",
-        )
-    };
-    let selected = ModelRef {
-        provider: read("providerID").ok_or_else(bad_model)?,
-        id: read("id").ok_or_else(bad_model)?,
-        variant: read("variant"),
-    };
-    let settings = header
-        .get("metadata")
-        .and_then(|meta| meta.get("kuvo"))
-        .unwrap_or(&Value::Null);
-    let applied = settings["applied"].as_str();
-    let permissions = if matches!(applied, Some("auto" | "fullAccess")) {
-        PermissionMode::ApproveAll
-    } else {
-        PermissionMode::AskFirst
-    };
-    let plan = header.get("agent").and_then(Value::as_str) == Some("plan");
-    let mut policy = Policy::new(folder, None);
-    policy.person_home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from);
-    policy.session_rules = header
-        .get("permissions")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|rule| serde_json::from_value::<Rule>(rule.clone()).ok())
-        .collect();
-    policy.auto_without_sandbox = applied == Some("auto") && !home.join("run/fence/on").exists();
-    Ok((
-        TurnInput {
-            id: turn.to_owned(),
-            kind,
-            model: selected,
-            instructions: String::new(),
-            permissions,
-            plan,
-            auto: false,
-        },
-        policy,
-    ))
+    kuvo_agents::turn_setup::turn_setup(home, folder, header, turn, kind).map_err(super::refuse)
 }
 
-fn read_prompt(body: &Value) -> Result<Prompt, Refusal> {
-    let text = body["text"].as_str().unwrap_or_default().to_owned();
-    let files = body["files"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|file| {
-            Some(PromptFile {
-                uri: file["uri"].as_str().unwrap_or_default().to_owned(),
-                mime: file["mime"].as_str()?.to_owned(),
-                name: file["name"].as_str().map(str::to_owned),
-                path: file["path"].as_str().map(PathBuf::from),
-                data: file["data"].as_str().map(str::to_owned),
-            })
-        })
-        .collect::<Vec<_>>();
-    if text.trim().is_empty() && files.is_empty() {
-        return Err(Refusal::new(
-            StatusCode::BAD_REQUEST,
-            "Give a message or an attachment.",
-        ));
-    }
+/// A message for the conversation's line, as the box hands it over.
+pub(super) fn read_input(body: &Value) -> Result<Input, Refusal> {
     let id = match body["id"].as_str() {
         Some(id)
             if !id.is_empty()
@@ -241,12 +132,19 @@ fn read_prompt(body: &Value) -> Result<Prompt, Refusal> {
         }
         None => SessionStore::make_id("msg").map_err(super::refuse)?,
     };
-    Ok(Prompt {
-        id,
-        text,
-        files,
-        synthetic: false,
-    })
+    let text = match &body["text"] {
+        Value::String(text) => text.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    let files = body["files"].as_array().cloned().unwrap_or_default();
+    let delivery = match body["delivery"].as_str() {
+        Some("queue") => Delivery::Queue,
+        _ => Delivery::Steer,
+    };
+    let mut input = Input::new(id, text, files, delivery);
+    input.metadata = body["metadata"].as_object().cloned();
+    Ok(input)
 }
 
 pub(super) fn session_id(raw: Option<&str>) -> Result<String, Refusal> {
