@@ -196,6 +196,36 @@ pub struct ChildGroup {
     pub stderr: Option<PipeReader>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GroupSignal {
+    Hangup,
+    Interrupt,
+    Quit,
+    Kill,
+    Terminate,
+    User1,
+    User2,
+}
+
+impl GroupSignal {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "SIGHUP" => Self::Hangup,
+            "SIGINT" => Self::Interrupt,
+            "SIGQUIT" => Self::Quit,
+            "SIGKILL" => Self::Kill,
+            "SIGTERM" => Self::Terminate,
+            "SIGUSR1" => Self::User1,
+            "SIGUSR2" => Self::User2,
+            _ => return None,
+        })
+    }
+
+    pub fn name_from_exit(status: ExitStatus) -> Option<String> {
+        sys::signal_from_exit(status)
+    }
+}
+
 impl ChildGroup {
     pub fn identity(&self) -> &ProcessIdentity {
         &self.identity
@@ -232,6 +262,10 @@ impl ChildGroup {
     /// True once the leader has exited, without giving up ownership of its group.
     pub fn has_exited(&self) -> io::Result<bool> {
         self.owner.has_exited()
+    }
+
+    pub fn signal(&self, signal: GroupSignal) -> io::Result<()> {
+        self.owner.send_signal(signal)
     }
 }
 

@@ -1245,6 +1245,7 @@ dependencies = [
  "futures-util",
  "hostname",
  "http",
+ "kuvo_agents",
  "kuvo_engine",
  "kuvo_keeper",
  "kuvo_move",
@@ -1268,6 +1269,17 @@ dependencies = [
 [[package]]
 name = "kuvo_agents"
 version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "hex",
+ "jiff",
+ "kuvo_os",
+ "kuvo_store",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+]
 
 [[package]]
 name = "kuvo_engine"

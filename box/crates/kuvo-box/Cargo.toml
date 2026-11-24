@@ -13,6 +13,7 @@ workspace = true
 base64 = "0.22"
 hostname = "0.4"
 http = "1"
+kuvo_agents = { path = "../kuvo_agents" }
 kuvo_engine = { path = "../kuvo_engine" }
 kuvo_keeper = { path = "../kuvo_keeper" }
 kuvo_move = { path = "../kuvo_move" }

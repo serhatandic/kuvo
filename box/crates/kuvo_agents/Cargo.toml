@@ -7,3 +7,14 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+getrandom = "0.4"
+hex = "0.4"
+jiff = "0.2"
+kuvo_os = { path = "../kuvo_os" }
+kuvo_store = { path = "../kuvo_store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+subtle = "2"
+tokio = { version = "1", features = ["io-util", "macros", "rt", "signal", "sync", "time"] }
