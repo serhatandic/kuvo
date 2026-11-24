@@ -338,6 +338,16 @@ impl<R: RouteSpec> RouteReply<R> {
         )
     }
 
+    /// An answer that echoes records as they're kept, fields the route doesn't name and all, as the
+    /// TypeScript box answers them (a project in `box/projects.json`). Only for a status the route
+    /// answers in JSON; the caller builds the route's own fields itself.
+    pub fn json_as_kept<const STATUS: u16>(value: serde_json::Value) -> Self
+    where
+        R: JsonStatus<STATUS>,
+    {
+        Self(Reply::json(status(STATUS), value), PhantomData)
+    }
+
     /// Add transport metadata to an otherwise typed object answer.
     pub fn json_with<const STATUS: u16>(
         body: <R as JsonStatus<STATUS>>::Body,

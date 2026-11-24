@@ -49,6 +49,8 @@ test("the projects list: as kept, other folders and worktrees filed under their 
       // Marked removed by hand some other way: as it's filed, removed or not.
       { directory: "/zero", folders: ["/zero-web"], removed: 0 },
       { directory: "/yes", folders: ["/yes-web"], removed: "yes" },
+      // Fields the route doesn't name, kept by a newer client or by hand: answered as they're kept.
+      { directory: "/extra", folders: [], color: "blue", note: { pinned: [1, null] }, name: 5 },
     ] }));
     write(path.join(box.home, "box", "worktrees.json"), JSON.stringify({ formatVersion: 1,
       worktrees: [{ root: "/trees/app-1", folder: "/trees/app-1/web", project: app }, { root: 3 }],
@@ -69,6 +71,7 @@ test("the projects list: as kept, other folders and worktrees filed under their 
       { directory: "/made", folders: [], addedByBox: true, madeBy: { bot: "b1", name: "Bot", at: 5 } },
       { directory: "/zero", folders: ["/zero-web"] },
       { directory: "/yes", folders: ["/yes-web"], removed: true },
+      { directory: "/extra", folders: [], color: "blue", note: { pinned: [1, null] }, name: 5 },
     ]);
     assert.deepEqual(reply.json.worktrees, {
       "/shared": app,
