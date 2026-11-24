@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
 import { boxBinary, isolatedEnv, openLine, readJSON, request, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
@@ -744,6 +745,68 @@ test("incoming bundles keep independent conversations and import a repeated part
   assert.deepEqual(await ask(switching, "switched"), switched);
   assert.equal(imports(), 1);
   assert.ok(!(await request(resident, "GET", "kuvo/moves")).json.away.includes(moved));
+});
+
+test("incoming archive links cannot touch files outside the move", {
+  timeout: 55000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("archive-links");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const resident = await here.start().ready();
+  await until(async () => (await request(resident, "GET", "api/session")).status === 200,
+    "The destination engine did not become ready");
+  const retained = path.join(here.home, "private-chat.txt");
+  write(retained, "PRIVATE-ef3e retained here");
+
+  // Encode a small ustar archive without requiring permission to make links on the test host.
+  const tar = entries => {
+    const blocks = entries.flatMap(([name, type, content]) => {
+      const data = Buffer.from(type === "0" ? content : "");
+      const header = Buffer.alloc(512);
+      header.write(name, 0, 100);
+      header.write("0000700", 100);
+      header.write(data.length.toString(8).padStart(11, "0"), 124);
+      header.fill(0x20, 148, 156);
+      header.write(type, 156);
+      if (type === "2") header.write(content, 157, 100);
+      header.write("ustar\0", 257);
+      header.write("00", 263);
+      header.write([...header].reduce((a, b) => a + b, 0).toString(8).padStart(6, "0") + "\0 ", 148);
+      const padded = Buffer.alloc(Math.ceil(data.length / 512) * 512);
+      data.copy(padded);
+      return [header, padded];
+    });
+    return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
+  };
+  const manifest = session => JSON.stringify({
+    formatVersion: 1, kind: "chat", thing: session, name: "Notes", folder: session,
+    exports: [{ info: sessionOf({ id: session, directory: path.join(here.home, "chats") }), messages: [] }],
+  });
+  const cases = [
+    ["ManifestLink", () => [["move.json", "2", retained]], /isn’t a move/],
+    ["FolderLink", session => [["move.json", "0", manifest(session)], [session, "2", here.home]], /link/],
+    ["OutsideLink", session => [["move.json", "0", manifest(session)], [session, "5", ""],
+      [session + "/outside", "2", "../../private-chat.txt"]], /link/],
+    ["ChainedLink", session => [["move.json", "0", manifest(session)], [session, "5", ""],
+      [session + "/d", "5", ""], [session + "/e", "5", ""], [session + "/e/notes.txt", "0", "Notes"],
+      [session + "/d/L", "2", "../e"], [session + "/A", "2", "d/L/../../move.json"]], /link/],
+  ];
+  for (const [label, entries, reason] of cases) {
+    const session = "ses_" + label;
+    const bytes = tar(entries(session));
+    const identity = { id: "mov_" + label, generation: 1, hash: createHash("sha256").update(bytes).digest("base64url") };
+    assert.equal((await ask({ ...identity, op: "offer", from: member.key, kind: "chat",
+      thing: session, name: "Notes", size: bytes.length, safeSwitch: true, twoComputers: true })).op, "ready");
+    assert.equal((await ask({ ...identity, op: "part", i: 0, of: 1, d: bytes.toString("base64url") }, "got")).op, "got");
+    const failed = await ask({ ...identity, op: "arrive" }, "failed");
+    assert.match(failed.message, reason, label);
+    assert.doesNotMatch(failed.message, /PRIVATE-ef3e/);
+    assert.equal(fs.readFileSync(retained, "utf8"), "PRIVATE-ef3e retained here");
+    assert.ok(!here.engine.sessions.some(row => row.id === session));
+    assert.ok(!fs.existsSync(path.join(here.home, "wakes", session)));
+  }
 });
 
 test("the week-long cleanup warning dates from the drop and keeps the copy held", {

@@ -25,6 +25,7 @@ for addressed work and receipt lookup.
 | Retired backup | Only the destination starts the retention clock. The backup stays while a move back is in progress. Once that move is dropped, an expired backup stays recorded through a failed deletion and the next round retries it. A destination distinguishes the first local reply from a carried reply with a future timestamp. |
 | Unproven import | An authenticated drop sends proof that the source can stay active. Both residents keep an older incoming journal held when it has no evidence that its local session came from the move. |
 | Arrival query and size limit | Both residents answer an authenticated repeat with the held copy's generation and hash and report failure for an unknown copy. An offer one byte over 1 GB receives the size-limit refusal without opening a copy. |
+| Archive links | Both residents refuse a linked manifest, a linked wake-up directory, a link outside that directory and a chain of links that would escape it. The destination keeps its own file private and unchanged and creates no conversation or wake-up directory. |
 | Destination checks | Both residents show the destination by name and mention a running turn in the move confirmation. They leave the original active after an unanswered check, an unavailable engine or a missing sign-in. A retry after sign-in moves the original. |
 | Background work | Both residents refuse a move while the source has a running background command. The source also checks children as it discovers them, and ignores background work past the six-hour reporting limit. |
 | Wake-up folder | Both residents hold a wake-up folder on each computer until the switch. The source uses configured roots outside its home. The destination rebases the directory and restores the saved pause. The source retains a backup with its conversation. Both move the unpaused folder back and read the receipt after the journal retires. Letters and notes reach the returned conversation while the full engine list is unavailable. A source wake-up folder over 1 GB is refused and its hold is released. |
@@ -116,8 +117,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Fifty-four have full scenario coverage, 21 have partial proof,
-and 137 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Fifty-eight have full scenario coverage, 21 have partial proof,
+and 133 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -144,6 +145,7 @@ separately where they appear.
 | | 5 | Covered by the source ignoring a drop for another generation and releasing its original after the destination’s matching drop receipt. |
 | | 6 | Covered by a duplicate bundle part before activation and a delayed repeat afterward. There is one import and the same durable switch receipt. |
 | | 12 | Covered by a live destination refusing an offer over an existing chat and leaving its original unchanged. |
+| | 13–14, 28, 33 | Covered by refusing four invalid archive links while preserving the destination's unrelated file and conversations. |
 | | 15 | Covered by a second authenticated computer trying the held move’s ID and a different ID for the same conversation. |
 | | 16 | Covered by a live restart of the destination after it acknowledges the first part of a two-part bundle. |
 | | 17 | Covered by three live offers while the transcript changes on each try. The original stays active with every message. |
@@ -163,7 +165,7 @@ separately where they appear.
 | | 48 | Covered by move choices that count a chat’s delegated work and unanswered questions, including a second level of work. |
 | | 53–54 | Native account fallback is owned by 4.6. Bot key handling is owned by 5.1 with native carry in 4.6. |
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
-| | 1–4, 7–8, 10–11, 13–14, 18, 21–23, 25, 28, 30, 32–33, 35, 38, 40, 51 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
+| | 1–4, 7–8, 10–11, 18, 21–23, 25, 30, 32, 35, 38, 40, 51 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |
