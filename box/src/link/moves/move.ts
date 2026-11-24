@@ -15,7 +15,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
-import { isObject } from "../../shared/json";
+import { isObject, sortedJSON } from "../../shared/json";
 import { moveHold, moveMarker } from "../../shared/move-hold";
 import type { Target } from "../../shared/records";
 import type { Move, MoveConfirm, MoveKind, MovePlace, MoveStays } from "../../shared/routes/moves";
@@ -629,10 +629,11 @@ function refuseMove(id: string, error: unknown): Promise<void> {
 /** What a move carries of its conversations, to see whether anything changed as it went: their
  * messages, word for word (`conversationHash`), or, with a coding agent, those and each agent's own
  * files (the bridge's `digest`), and their queues (what waits for them), but when each was read as
- * waiting. */
-const fingerprint = (conversation: string, queues: Record<string, unknown>, notes?: Contents["sessionNotes"]): string =>
+ * waiting. Forwarded decisions must also travel with their latest durable evidence. */
+const fingerprint = (conversation: string, queues: Record<string, unknown>, notes?: Contents["sessionNotes"],
+  evidence?: Contents["forwardEvidence"]): string =>
   `${conversation}.${crypto.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value))
-    .update(JSON.stringify(notes ?? null)).digest("base64url")}`;
+    .update(JSON.stringify(notes ?? null)).update(sortedJSON(evidence ?? null)).digest("base64url")}`;
 
 /** What waits for its conversations, as a move carries it (`packQueues`); one the engine held that
  * can't go with it, and it doesn't go yet. */
@@ -647,7 +648,7 @@ const queuesOf = (engine: Target, sessions: readonly string[], name: string) => 
 // their way (by when they went).
 // (`window`: how many may be on their way now: halved as one's lost, one more as each comes, up to
 // `IN_FLIGHT`; a slow connection isn't sent everything again and again.)
-const outgoing = new Map<string, { got: Set<number>; flying: Map<number, number>; since: number; exports: string; digest?: string; payloads: NonNullable<MoveRecord["payloads"]>; window?: number }>();
+const outgoing = new Map<string, { got: Set<number>; flying: Map<number, number>; since: number; exports: string; digest?: string; evidenceScope: ForwardMoveScope; payloads: NonNullable<MoveRecord["payloads"]>; window?: number }>();
 
 /** The box it leaves, carrying on from where it is (as it starts, or step by step). */
 async function carryOn(id: string): Promise<void> {
@@ -744,8 +745,8 @@ async function carryOn(id: string): Promise<void> {
     if (record.kind === "bot") {
     }
   }
-  contents.forwardEvidence = packForwardEvidence(followedSetup(readLink())?.id,
-    forwardMoveScope(record, record.sessions, contents.workQueue));
+  const evidenceScope = forwardMoveScope(record, record.sessions, contents.workQueue);
+  contents.forwardEvidence = packForwardEvidence(followedSetup(readLink())?.id, evidenceScope);
   if (contents.forwardEvidence && !takesForwarded(record.peer, FORWARD_EVIDENCE_FEATURE))
     throw new Refused("Update the destination computer before moving these forwarded decisions.");
   if (takenBack()) return;
@@ -758,7 +759,8 @@ async function carryOn(id: string): Promise<void> {
   if (takenBack()) return;
   const payloads = { sessions: bundle.payloads, queue: bundle.queueFiles };
   const verifyPayloads = record.wipePreparation || payloads.sessions.length > 0 || payloads.queue.length > 0;
-  outgoing.set(id, { got: new Set(), flying: new Map(), since: performance.now(), exports: fingerprint(digest, queues, contents.sessionNotes), digest, payloads });
+  outgoing.set(id, { got: new Set(), flying: new Map(), since: performance.now(),
+    exports: fingerprint(digest, queues, contents.sessionNotes, contents.forwardEvidence), digest, evidenceScope, payloads });
   const now = changeMove(id, each => {
     Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, members: record.members, generation: record.tries + 1, verifyPayloads: verifyPayloads ? true : undefined, typedAttachmentPaths: payloads.sessions.length ? true : undefined, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), againAt: undefined, holdSince: undefined });
   });
@@ -891,10 +893,13 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
         throw error;
       })).digest
       : conversationHash(await exportAll(target, record.sessions[0]));
-    const before = outgoing.get(record.id)?.exports;
+    const before = outgoing.get(record.id);
     // Taken back meanwhile (its copy there couldn't be set up, or it took too long): nothing more.
     if (!still()) return;
-    if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name), await packSessionNotes(record.sessions)) !== before) {
+    if (!before || fingerprint(
+      again, await queuesOf(target, record.sessions, record.name), await packSessionNotes(record.sessions),
+      packForwardEvidence(followedSetup(readLink())?.id, before.evidenceScope),
+    ) !== before.exports) {
       if (record.tries >= 2) throw new Refused(say.busy(record.name));
       // (Getting it ready again from now: what `keepMoving` counts its half hour from.)
       changeMove(record.id, each => { each.tries += 1; each.stage = "holding"; each.step = undefined; each.holdSince = Date.now(); });

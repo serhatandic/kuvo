@@ -2,8 +2,9 @@
 
 use std::{
     ffi::OsString,
+    fs,
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::Path,
     process::ExitCode,
 };
 
@@ -67,13 +68,30 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         })
         .into());
     }
-    let home = Home::new(PathBuf::from(target))?;
+    let home = Home::new(target)?;
     let app = profile.join("Library/Application Support").join(&app_id);
     let before = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
+    let verified = || -> io::Result<(SignedRelease, Vec<u8>)> {
+        let key = (!real)
+            .then(|| std::env::var("KUVO_TEST_RELEASE_KEY").ok())
+            .flatten();
+        let envelope = staging::read_release(&source.join("boxes.json"), MAX_ENVELOPE)?;
+        let signed = SignedRelease::verify(&envelope, &[key.as_deref().unwrap_or(UPDATE_KEY)])?;
+        Ok((signed, envelope))
+    };
     if restart && before.verdict == kuvo_move::install::Verdict::Ours {
+        files::create_private_dirs(&home.updates())?;
+        let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
+        if fs::symlink_metadata(home.bin()).is_ok_and(|entry| entry.is_dir())
+            && home.bin().join("kuvo-box").is_file()
+        {
+            let (signed, envelope) = verified()?;
+            staging::select_install(&home, &signed, source, &envelope)?;
+        }
         let launched = LaunchAgent::for_account(&profile, real)
             .map(|agent| agent.start(&home, &app_id))
             .transpose()?;
+        files::remove_tree_synced(&home.updates().join("install"))?;
         println!(
             "{}",
             json!({"result":"nothing", "verdict":before.verdict, "status":before.status,
@@ -82,11 +100,11 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         );
         return Ok(0);
     }
-    if restart {
+    if restart && before.verdict != kuvo_move::install::Verdict::Fresh {
         println!("{}", json!({"result":"refused","verdict":before.verdict}));
         return Ok(1);
     }
-    if before.verb != Some(kuvo_move::install::Verb::Move) {
+    if !restart && before.verb != Some(kuvo_move::install::Verb::Move) {
         let ours = before.verdict == kuvo_move::install::Verdict::Ours;
         println!(
             "{}",
@@ -94,16 +112,43 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         );
         return Ok(u8::from(!ours));
     }
-    let test_key = (!real)
-        .then(|| std::env::var("KUVO_TEST_RELEASE_KEY").ok())
-        .flatten();
-    let signed = SignedRelease::verify(
-        &staging::read_release(&source.join("boxes.json"), MAX_ENVELOPE)?,
-        &[test_key.as_deref().unwrap_or(UPDATE_KEY)],
-    )?;
+    let (signed, envelope) = verified()?;
     files::create_private_dirs(&home.updates())?;
     let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
     let media = staging::prepare_install(&home, &signed, source)?;
+    if restart {
+        let result = kuvo_move::mac::new_home_from_media(&home, &app.join("box"), &system, &media);
+        let mut value = serde_json::to_value(&result)?;
+        let code = result.exit_code();
+        let after = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
+        value["verdict"] = serde_json::to_value(after.verdict)?;
+        if code == 0 {
+            staging::select_install(&home, &signed, source, &envelope)?;
+            match LaunchAgent::for_account(&profile, real) {
+                Some(agent) => match agent.start(&home, &app_id) {
+                    Ok(started) => {
+                        value["started"] = true.into();
+                        value["message"] = started.message().into();
+                    }
+                    Err(error) => {
+                        value["result"] = "failed".into();
+                        value["started"] = false.into();
+                        value["message"] = error.to_string().into();
+                        println!("{value}");
+                        return Ok(1);
+                    }
+                },
+                None => {
+                    value["started"] = false.into();
+                    value["message"] =
+                        "It's made, and starts by itself only in ~/.kuvo-code.".into();
+                }
+            }
+            files::remove_tree_synced(&home.updates().join("install"))?;
+        }
+        println!("{value}");
+        return Ok(code);
+    }
     let mut shown = 0;
     let mut progress = |step: &serde_json::Value| {
         if let Some(index) = step["index"].as_u64().filter(|index| *index > shown) {
@@ -123,17 +168,17 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     }
     .execute(|_| progress(&kuvo_move::rehome_status(&home)["progress"]));
     let mut value = serde_json::to_value(&move_result)?;
-    if move_result.exit_code() == 0
-        && value["result"] == "done"
-        && let Some(agent) = LaunchAgent::for_account(&profile, real)
-    {
-        progress(&kuvo_move::rehome_progress("settle"));
-        match agent.start(&home, &app_id) {
-            Ok(message) => {
-                value["started"] = true.into();
-                value["message"] = message.message().into();
+    if move_result.exit_code() == 0 && value["result"] == "done" {
+        staging::select_install(&home, &signed, source, &envelope)?;
+        if let Some(agent) = LaunchAgent::for_account(&profile, real) {
+            progress(&kuvo_move::rehome_progress("settle"));
+            match agent.start(&home, &app_id) {
+                Ok(message) => {
+                    value["started"] = true.into();
+                    value["message"] = message.message().into();
+                }
+                Err(error) => eprintln!("helper start: {error}"),
             }
-            Err(error) => eprintln!("helper start: {error}"),
         }
     }
     value["verdict"] = serde_json::to_value(

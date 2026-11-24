@@ -720,7 +720,12 @@ export async function noteListEvent(name: string, target: Target, event: { type?
   const id = event.data?.sessionID ?? event.data?.info?.id;
   const finishes = ENDS.has(event.type) || (name === "bridge" && event.type === "session.idle");
   if (typeof id !== "string" || !id.startsWith("ses")) return;
-  if (event.type === "session.created") noteSessionCreated(id, name === "bridge" ? "agents" : "engine");
+  if (event.type === "session.created") {
+    // A move can bring the same session ID back after this engine deleted it.
+    // That fresh creation supersedes the deletion fence for a whole-list read.
+    if (sameTarget(placeTargets.get(name), target)) deleted.get(name)?.delete(id);
+    noteSessionCreated(id, name === "bridge" ? "agents" : "engine");
+  }
   if (event.type === "session.deleted") justCreated.delete(id);
   if (event.type === "session.viewed") {
     // (Read whole now: it's read again once that's in, so the look isn't lost.)

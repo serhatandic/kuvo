@@ -23,7 +23,7 @@ use crate::{
 };
 
 const FEATURE: &str = "typed.submission-recovery";
-const PAGE: usize = 40;
+pub(crate) const PAGE: usize = 40;
 
 #[derive(Clone)]
 struct Handle {
@@ -455,9 +455,23 @@ async fn local_reports(
             complete: true,
         }
     } else {
+        let mut issuers = authority
+            .receipt_issuers()
+            .into_iter()
+            .filter_map(|(origin, issuer)| (Some(issuer) == scope.here).then_some(origin))
+            .collect::<std::collections::BTreeSet<_>>();
+        issuers.extend(scope.here);
         match engine
             .receipt_index
-            .keys(scope.setup.as_deref().unwrap_or_default(), session, after)
+            .keys(crate::receipt_index::PageScope {
+                setup: scope.setup.clone().unwrap_or_default(),
+                session: session.into(),
+                after: after.into(),
+                viewer: reader.author.clone(),
+                through: reader.through,
+                issuers,
+                include_listing: reader.include_listing,
+            })
             .await
         {
             Ok(keys) => keys,
@@ -492,20 +506,27 @@ async fn local_reports(
             || want_digest.is_some_and(|digest| claim.digest != digest)
             || !claim.belongs(session, &handle, reader.author, &through)
         {
+            complete &= requested.is_some();
             continue;
         }
         let current = authority.scope(session, Some(handle.origin))?;
         if current.here.is_some() && current.here == current.receipt_issuer {
             outcomes.push(claim.report(requested.is_some()));
+        } else {
+            complete &= requested.is_some();
         }
     }
     if reader.include_listing
         && let Some(setup) = &scope.setup
     {
+        let expected = keys.listing.len();
         match crate::delivery::listing(engine, session, setup, reader.author, query, keys.listing)
             .await
         {
-            Ok(listing) => outcomes.extend(listing),
+            Ok(listing) => {
+                complete &= requested.is_some() || listing.len() == expected;
+                outcomes.extend(listing);
+            }
             Err(_) => complete = false,
         }
     }
@@ -572,8 +593,7 @@ fn page(
 }
 
 fn valid_report(
-    authority: &dyn SessionOwnership,
-    session: &str,
+    issuers: &BTreeMap<ComputerKey, ComputerKey>,
     setup: &str,
     peer: ComputerKey,
     viewer: &Submitter,
@@ -596,9 +616,7 @@ fn valid_report(
             .is_ok_and(|author| author.author_matches(viewer))
         && (report["evidence"] == "listing" && *viewer != Submitter::Computer
             || report["evidence"] == "owner"
-                && authority
-                    .scope(session, Some(id.origin))
-                    .is_ok_and(|scope| scope.receipt_issuer == Some(peer)))
+                && *issuers.get(&id.origin).unwrap_or(&id.origin) == peer)
 }
 
 async fn query_report(
@@ -642,6 +660,7 @@ async fn query_report(
         query =
             json!({"submission":handle.text,"digest":crate::query(&call.request.path, "digest")});
     }
+    let issuer_view = authority.receipt_issuers();
     let mut result = local_reports(
         engine,
         authority.as_ref(),
@@ -658,7 +677,13 @@ async fn query_report(
     if query["digest"].is_string()
         && result["outcomes"][0]["evidence"] == "owner"
         && result["outcomes"][0]["status"] == "committed"
+        && authority.receipt_issuers() == issuer_view
+        && authority
+            .scope(&session, handle.as_ref().map(|handle| handle.origin))?
+            .setup
+            == scope.setup
     {
+        viewer.authorize(authority.as_ref())?;
         return sessions::typed(result);
     }
     let setup = scope.setup.as_deref().expect("checked setup");
@@ -706,6 +731,7 @@ async fn query_report(
         ));
     }
     viewer.authorize(authority.as_ref())?;
+    let issuers = authority.receipt_issuers();
     let after = authority
         .members()
         .into_iter()
@@ -713,6 +739,7 @@ async fn query_report(
         .collect::<std::collections::BTreeSet<_>>();
     let mut complete = result["complete"] == true
         && before == after
+        && issuer_view == issuers
         && current.receipt_issuer == scope.receipt_issuer
         && current
             .receipt_issuer
@@ -722,6 +749,12 @@ async fn query_report(
         .as_array_mut()
         .map(std::mem::take)
         .unwrap_or_default();
+    outcomes.retain(|row| {
+        let still_issued_here = row["evidence"] == "listing"
+            || valid_report(&issuers, setup, through, &viewer, &query, row);
+        complete &= still_issued_here;
+        still_issued_here
+    });
     for (peer, reply) in replies {
         let Some(reply) = reply.filter(|reply| reply.status == 200 && after.contains(&peer)) else {
             complete = false;
@@ -738,15 +771,7 @@ async fn query_report(
         complete &= legacy || reply.body["complete"] == true;
         more |= reply.body["next"].is_string() || legacy && rows.len() == PAGE;
         for row in rows {
-            if valid_report(
-                authority.as_ref(),
-                &session,
-                setup,
-                peer,
-                &viewer,
-                &query,
-                row,
-            ) {
+            if valid_report(&issuers, setup, peer, &viewer, &query, row) {
                 outcomes.push(row.clone());
             } else {
                 complete = false;

@@ -1,6 +1,6 @@
 //! Adapt authenticated peer mail to the engine's own receipt and send handlers.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use http::StatusCode;
 use kuvo_engine::{
@@ -50,6 +50,10 @@ impl SessionOwnership for OwnerPort {
 
     fn members(&self) -> Vec<SessionOwner> {
         self.0.members().into_iter().map(owner).collect()
+    }
+
+    fn receipt_issuers(&self) -> BTreeMap<ComputerKey, ComputerKey> {
+        self.0.receipt_issuers()
     }
 
     fn current_pairing(&self, key: &ComputerKey, pairing: &str) -> DeviceAccess {

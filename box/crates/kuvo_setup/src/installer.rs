@@ -27,24 +27,31 @@ pub fn enrolled_ssh_identity(home: &Home) -> Result<(String, String), Error> {
         return Err(Error::Conflict);
     }
     let own = crate::model::Identity::read(&link)?.public;
+    Ok((own, machine_id(&files)?))
+}
+
+/// Ensure a newly installed computer has the identifier used by saved SSH connections.
+#[cfg(target_os = "linux")]
+pub fn ensure_machine_id(home: &Home) -> Result<(), Error> {
+    machine_id(&crate::storage::Files::new(home.root().to_owned())).map(drop)
+}
+
+fn machine_id(files: &crate::storage::Files) -> Result<String, Error> {
     let path = files.path("machine-id");
-    let machine = match std::fs::read_to_string(&path) {
-        Ok(text) if text.len() == 32 && text.bytes().all(|b| b.is_ascii_hexdigit()) => text,
-        Ok(_) => return Err(Error::Invalid("machine identity")),
+    match std::fs::read_to_string(&path) {
+        Ok(text) if text.len() == 32 && text.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(text),
+        Ok(_) => Err(Error::Invalid("machine identity")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let identity = hex::encode(crate::random::<16>()?);
             files.write_bytes("machine-id", identity.as_bytes())?;
-            identity
+            Ok(identity)
         }
-        Err(source) => {
-            return Err(Error::File {
-                action: "reading",
-                path,
-                source,
-            });
-        }
-    };
-    Ok((own, machine))
+        Err(source) => Err(Error::File {
+            action: "reading",
+            path,
+            source,
+        }),
+    }
 }
 
 pub(super) const INVITE_LIFETIME: u64 = 15 * 60_000;

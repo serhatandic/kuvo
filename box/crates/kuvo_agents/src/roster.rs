@@ -5,6 +5,7 @@ use crate::{
     accounts::{Account, Accounts, AgentKind, Provider},
     catalog::{ModelCache, Models},
     runtime::{AdapterCall, Adoption},
+    session::{SessionContext, Thread},
     sign_in::{Attempt, Request},
 };
 use futures_util::future::BoxFuture;
@@ -14,6 +15,17 @@ use tokio::sync::Mutex;
 pub trait Agent: Adoption {
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>>;
     fn models(&self, refresh: bool) -> AdapterCall<'_, Models>;
+
+    /// Open or resume the conversation identified by this Kuvo session. After
+    /// adoption this returns the thread associated with any recovered holder.
+    fn open_thread(&self, _context: SessionContext) -> AdapterCall<'_, Arc<dyn Thread>> {
+        Box::pin(async {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This agent doesn't run sessions here.",
+            ))
+        })
+    }
 
     fn keep_account(&self) -> Duration {
         Duration::ZERO

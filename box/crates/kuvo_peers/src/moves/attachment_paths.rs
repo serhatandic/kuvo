@@ -18,6 +18,18 @@ const PHONE: &str = "The user sent this from Kuvo Code on their iPhone.";
 
 type Map<'a> = dyn FnMut(&str, bool) -> io::Result<Option<PathBuf>> + 'a;
 
+pub(super) fn note_paths(text: &str, mut name: impl FnMut(&str, bool)) {
+    let _ = note(
+        &mut Value::from(text),
+        None,
+        &mut HashMap::new(),
+        &mut |path, stayed| {
+            name(path, stayed);
+            Ok(None)
+        },
+    );
+}
+
 pub(super) fn visit(
     exports: &mut [Value],
     queues: &mut BTreeMap<String, Value>,
@@ -229,17 +241,16 @@ fn note(
             continue;
         }
         let path = row.strip_suffix(UNSENT).unwrap_or(row);
-        if absolute(path) {
-            if let Some(to) = map(path, stayed || path != row)?
-                && !stayed
-                && path == row
-            {
-                let to = to.to_str().ok_or_else(invalid)?.to_owned();
-                notes.insert(path.into(), to.clone());
-                lines.push(to);
-                changed = true;
-                continue;
-            }
+        if absolute(path)
+            && let Some(to) = map(path, stayed || path != row)?
+            && !stayed
+            && path == row
+        {
+            let to = to.to_str().ok_or_else(invalid)?.to_owned();
+            notes.insert(path.into(), to.clone());
+            lines.push(to);
+            changed = true;
+            continue;
         }
         lines.push(row.to_owned());
     }

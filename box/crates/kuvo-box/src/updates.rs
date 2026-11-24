@@ -1,6 +1,8 @@
 //! Connect the keeper's update preparation to live setup and peer facts.
 
 mod mail;
+mod released_machines;
+mod retry;
 
 use std::{
     io,
@@ -54,6 +56,10 @@ impl Drop for Worker {
 enum Check {
     Local(oneshot::Sender<io::Result<CheckReply>>),
     Peer,
+    Retry(
+        retry::Request,
+        oneshot::Sender<Result<retry::Answer, kuvo_server::Refusal>>,
+    ),
 }
 
 enum CheckReply {
@@ -104,6 +110,7 @@ pub fn start(
         checking: None,
         bridge_fetch: None,
         next_bridge: Instant::now(),
+        released_machines: released_machines::Checks::new(scratch),
         last_sent: None,
         attempted: None,
         pending: None,
@@ -119,6 +126,7 @@ pub fn start(
                 request = requests.recv() => match request {
                     Some(Check::Local(answer)) => { let _ = answer.send(fleet.request_check(true)); }
                     Some(Check::Peer) => { let _ = fleet.request_check(false); }
+                    Some(Check::Retry(given, answer)) => { let _ = answer.send(fleet.retry(given)); }
                     None => return,
                 }
             }
@@ -140,6 +148,7 @@ pub fn register_check(
     use kuvo_server::{Access, Refusal, RouteReply};
 
     let checks = worker.map(|worker| worker.checks.clone());
+    retry::register(routes, checks.clone());
     routes.register_decoded::<update::Spec, _, _, _>(
         Access::Any,
         |body| {
@@ -222,9 +231,10 @@ struct Fleet {
     checking: Option<FeedCheck>,
     bridge_fetch: Option<JoinHandle<io::Result<()>>>,
     next_bridge: Instant,
+    released_machines: released_machines::Checks,
     last_sent: Option<(UpdateFacts, Option<BridgeUpdate>)>,
     attempted: Option<PreparedRelease>,
-    pending: Option<JoinHandle<io::Result<()>>>,
+    pending: Option<JoinHandle<Result<(), retry::Failure>>>,
     mail: Option<mail::Mail>,
     pack_server: Option<JoinHandle<()>>,
 }
@@ -269,14 +279,13 @@ impl Fleet {
                 .map(|member| member.name.as_str())
                 .filter(|name| !name.is_empty());
             let name = named.unwrap_or("your main computer");
-            let (away, _) = view.peer_updates(&main, now);
-            let message = if away {
+            let message = if view.kept_peer_is_away(&self.home.run(), &main, now) {
                 let place = named.map_or_else(
                     || name.to_owned(),
                     |name| format!("{name} (your main computer)"),
                 );
                 let (installed, _) = fleet::installed(&self.home)?;
-                match Candidate::kept(&self.home, &self.key)?
+                match Candidate::kept(&self.home, &self.key)
                     .filter(|held| held.newer_than(installed.as_deref()))
                 {
                     Some(held) => {
@@ -320,8 +329,7 @@ impl Fleet {
                 .filter(|main| Some(*main) != view.roster.here),
         ) && now.saturating_sub(kept) <= CHECK_KEPT
         {
-            let (away, _) = view.peer_updates(&main, now);
-            if away {
+            if view.kept_peer_is_away(&self.home.run(), &main, now) {
                 return Ok(());
             }
             let Some((mail, host)) = self
@@ -341,7 +349,8 @@ impl Fleet {
             && let Some(pending) = self.pending.take()
             && let Err(error) = pending.await.map_err(io::Error::other)?
         {
-            eprintln!("Preparing Kuvo's release: {error}");
+            eprintln!("Preparing Kuvo's release: {}", error.reason);
+            error.save(&self.home)?;
         }
         let (version, working) = fleet::installed(&self.home)?;
         let Some(version) = version else {
@@ -357,7 +366,7 @@ impl Fleet {
             eprintln!("Asking the main to check Kuvo's release: {error}");
         }
         let mut candidate =
-            Candidate::kept(&self.home, &self.key)?.filter(|next| next.newer_than(Some(&version)));
+            Candidate::kept(&self.home, &self.key).filter(|next| next.newer_than(Some(&version)));
         let mut committed = false;
         if standalone || local_main {
             for peer in &view.roster.members {
@@ -440,6 +449,18 @@ impl Fleet {
         let running = running_manifest
             .as_ref()
             .and_then(|body| Candidate::verify(body.clone(), &self.key).ok());
+        let held_for_released = running
+            .as_ref()
+            .filter(|_| (local_main || standalone) && candidate.is_none());
+        self.released_machines
+            .tick(
+                &self.home,
+                held_for_released,
+                &self.fetcher,
+                &self.setup,
+                standalone,
+            )
+            .await;
         let installed_sha256 = running
             .as_ref()
             .and_then(|running| running.local().ok())
@@ -455,18 +476,20 @@ impl Fleet {
             let local = candidate.local()?;
             candidate.keep(&self.home)?;
             let prepared = PreparedRelease {
-                version: local.version,
-                sha256: local.sha256,
+                version: local.version.clone(),
+                sha256: local.sha256.clone(),
             };
             facts.candidate = Some(candidate.version().into());
             facts.release_manifest = Some(candidate.envelope().into());
-            if candidate.is_prepared(&self.home)? {
+            let failed = retry::Failure::for_release(&self.home, &prepared)?.is_some();
+            if !failed && candidate.is_prepared(&self.home)? {
                 facts.staged = Some(prepared.clone());
-            } else if self.pending.is_none()
+            } else if !failed
+                && self.pending.is_none()
                 && self.attempted.as_ref() != Some(&prepared)
                 && !fleet::stopped(&self.home)
             {
-                self.attempted = Some(prepared);
+                self.attempted = Some(prepared.clone());
                 let candidate = candidate.clone();
                 let home = self.home.clone();
                 let fetcher = self.fetcher.clone();
@@ -477,15 +500,26 @@ impl Fleet {
                         Ok(pack) => pack,
                         Err(error) => {
                             let Some(mail) = mail else {
-                                return Err(error);
+                                return Err(retry::Failure::download(prepared, error));
                             };
-                            mail.pull(&candidate.local()?).await.map_err(|_| error)?
+                            mail.pull(&local)
+                                .await
+                                .map_err(|_| retry::Failure::download(prepared.clone(), error))?
                         }
                     };
-                    if let Some(bridge) = candidate.bridge(&key)? {
-                        bridge.retain_bridge(&home, &fetcher).await?;
+                    if let Some(bridge) = candidate
+                        .bridge(&key)
+                        .map_err(|error| retry::Failure::prepare(prepared.clone(), error))?
+                    {
+                        bridge
+                            .retain_bridge(&home, &fetcher)
+                            .await
+                            .map_err(|error| retry::Failure::download(prepared.clone(), error))?;
                     }
-                    candidate.prepare(home, pack).await
+                    candidate
+                        .prepare(home, pack)
+                        .await
+                        .map_err(|error| retry::Failure::prepare(prepared, error))
                 }));
             }
         }
@@ -507,6 +541,7 @@ impl Fleet {
             if standalone || local_main {
                 let (ready, reachable) = barrier(&view, now, &candidate);
                 if candidate.primary_may_switch(&self.home, now, ready, reachable)?
+                    && prepared
                     && (standalone || self.setup.may_switch_fleet().await)
                 {
                     candidate.activate(&self.home).await?;
