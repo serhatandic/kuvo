@@ -22,6 +22,7 @@ use std::{
     io::{self, ErrorKind},
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
+    time::Duration,
 };
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch},
@@ -125,8 +126,13 @@ struct Conversation {
     checking: bool,
 }
 
+/// How long a turn asked to stop is waited for before its conversation goes
+/// without it.
+const STOP_GRACE: Duration = Duration::from_secs(8);
+
 #[derive(Clone)]
 pub struct SessionRuns {
+    stop_grace: Duration,
     asks: LiveAsks,
     store: SessionStore,
     commands: mpsc::Sender<Command>,
@@ -156,12 +162,20 @@ impl SessionRuns {
         };
         tokio::spawn(service.run(requests));
         Self {
+            stop_grace: STOP_GRACE,
             asks,
             store,
             commands,
             running,
             events,
         }
+    }
+
+    /// Wait this long for a turn asked to stop, rather than the usual eight
+    /// seconds.
+    pub fn with_stop_grace(mut self, grace: Duration) -> Self {
+        self.stop_grace = grace;
+        self
     }
 
     pub fn asks(&self) -> &LiveAsks {
@@ -293,6 +307,21 @@ impl SessionRuns {
         .await
     }
 
+    /// Whether the conversation's transcript has this message.
+    pub async fn has_message(&self, session: &str, id: &str) -> io::Result<bool> {
+        self.store.has_message(session, id).await
+    }
+
+    /// The conversation's last `limit` rows, newest first.
+    pub async fn recent(&self, session: &str, limit: u32) -> io::Result<Vec<Value>> {
+        Ok(self
+            .store
+            .message_page(session, None, limit, crate::session_store::MessageOrder::NewestFirst)
+            .await?
+            .map(|page| page.messages)
+            .unwrap_or_default())
+    }
+
     /// What waits in the conversation's line, as clients list it.
     pub async fn inbox(&self, session: &str) -> io::Result<Option<Vec<Input>>> {
         self.store.line(session).await
@@ -399,9 +428,13 @@ impl SessionRuns {
             .await?;
         let deleted = async {
             if let Some(live) = live {
-                // A turn that can't be interrupted still ends when its record goes.
-                let _ = live.turn.interrupt().await;
-                let _ = live.turn.finished().await;
+                // One that doesn't stop is given up on: what it says after
+                // can't bring the conversation back.
+                let stopping = async {
+                    let _ = live.turn.interrupt().await;
+                    let _ = live.turn.finished().await;
+                };
+                let _ = tokio::time::timeout(self.stop_grace, stopping).await;
             }
             let headers = self.store.headers().await?;
             let children = headers
@@ -634,6 +667,9 @@ impl Service {
                     .turns
                     .spawn(async move { (ended, turn.finished().await) });
                 self.publish(state);
+                let _ = self.events.send(InboxEvent::Started {
+                    session: session.clone(),
+                });
             }
             Err(_) => {
                 // A turn that never started ends as a failed one.
@@ -666,6 +702,11 @@ impl Service {
                 None
             }
         };
+        let _ = self.events.send(InboxEvent::Ended {
+            session: session.to_owned(),
+            outcome: outcome.clone(),
+            stopped,
+        });
         let exited = !stopped && matches!(outcome, Some(Outcome::AgentExited(_)));
         let succeeded = !stopped && matches!(outcome, Some(Outcome::Succeeded));
         let conversation = state.conversation(session);

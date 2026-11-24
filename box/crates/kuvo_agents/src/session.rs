@@ -209,6 +209,27 @@ pub struct TurnError {
     pub limit: Option<Limit>,
 }
 
+impl TurnError {
+    /// As clients read it: `{type, message, status?, limit?}`.
+    pub fn reason(&self) -> Value {
+        let mut reason = serde_json::json!({"type":self.kind,"message":self.message});
+        if let Some(status) = self.status {
+            reason["status"] = serde_json::json!(status);
+        }
+        if let Some(limit) = &self.limit {
+            let scope = match limit.scope {
+                LimitScope::Provider => "provider",
+                LimitScope::Model => "model",
+            };
+            reason["limit"] = serde_json::json!({"scope":scope});
+            if let Some(at) = limit.resets_at {
+                reason["limit"]["resetsAt"] = serde_json::json!(at);
+            }
+        }
+        reason
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LimitScope {
     Provider,

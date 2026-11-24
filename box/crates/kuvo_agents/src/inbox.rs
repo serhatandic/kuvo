@@ -202,10 +202,92 @@ pub enum InboxEvent {
         id: String,
         delivery: Delivery,
     },
+    /// A turn started.
+    Started {
+        session: String,
+    },
+    /// A turn ended: as its agent said, unless you stopped it (`stopped`).
+    Ended {
+        session: String,
+        outcome: Option<crate::session::Outcome>,
+        stopped: bool,
+    },
     /// Nothing runs, and what was to go has gone.
     Idle {
         session: String,
     },
+}
+
+impl InboxEvent {
+    /// The event in the engine's words: its session, kind and data, as the
+    /// box's queue follows the engine's.
+    pub fn engine_words(&self) -> (&str, &'static str, Value) {
+        use crate::session::Outcome;
+        use serde_json::json;
+        match self {
+            Self::Enqueued { session, input } => {
+                let (kind, payload) = input.item();
+                let item =
+                    json!({"type": kind, "payload": payload, "delivery": input.delivery.as_str()});
+                (
+                    session,
+                    "session.inbox.enqueued",
+                    json!({"sessionID": session, "inboxID": input.id, "item": item}),
+                )
+            }
+            Self::Delivered { session, id, row } => (
+                session,
+                "session.inbox.delivered",
+                json!({"sessionID": session, "inboxID": id, "message": row}),
+            ),
+            Self::Cancelled { session, id } => (
+                session,
+                "session.inbox.cancelled",
+                json!({"sessionID": session, "inboxID": id}),
+            ),
+            Self::DeliveryChanged {
+                session,
+                id,
+                delivery,
+            } => (
+                session,
+                "session.inbox.delivery.changed",
+                json!({"sessionID": session, "inboxID": id, "delivery": delivery.as_str()}),
+            ),
+            Self::Started { session } => (
+                session,
+                "session.execution.started",
+                json!({"sessionID": session}),
+            ),
+            Self::Ended {
+                session,
+                outcome,
+                stopped,
+            } => match outcome {
+                Some(Outcome::Succeeded) if !stopped => (
+                    session,
+                    "session.execution.succeeded",
+                    json!({"sessionID": session}),
+                ),
+                Some(Outcome::Failed(error)) if !stopped => (
+                    session,
+                    "session.execution.failed",
+                    json!({"sessionID": session, "error": error.reason()}),
+                ),
+                Some(Outcome::AgentExited(_)) if !stopped => (
+                    session,
+                    "session.execution.interrupted",
+                    json!({"sessionID": session, "reason": "agent-exit"}),
+                ),
+                _ => (
+                    session,
+                    "session.execution.interrupted",
+                    json!({"sessionID": session}),
+                ),
+            },
+            Self::Idle { session } => (session, "session.idle", json!({"sessionID": session})),
+        }
+    }
 }
 
 /// What the line does next once nothing runs. `ended` is how the turn that

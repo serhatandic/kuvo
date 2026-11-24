@@ -563,21 +563,7 @@ fn model(model: &ModelRef) -> Value {
 }
 
 fn reason(error: &TurnError) -> Value {
-    let mut reason = json!({"type":error.kind,"message":error.message});
-    if let Some(status) = error.status {
-        reason["status"] = json!(status);
-    }
-    if let Some(limit) = &error.limit {
-        let scope = match limit.scope {
-            crate::session::LimitScope::Provider => "provider",
-            crate::session::LimitScope::Model => "model",
-        };
-        reason["limit"] = json!({"scope":scope});
-        if let Some(at) = limit.resets_at {
-            reason["limit"]["resetsAt"] = json!(at);
-        }
-    }
-    reason
+    error.reason()
 }
 
 pub(crate) fn now() -> u64 {

@@ -193,10 +193,29 @@ it again, also by the next resident. A message whose agent can't start is
 kept, failed. A handoff token the box cancelled refuses its late message.
 Twenty Rust scenarios with a scripted agent (`kuvo_agents/tests/inbox.rs`)
 port `sessions.test.ts` cases 3–7, 10, 11, 13–17, 48 and 54–58 and 61, and
-Codex's uncertain-handoff rule; they passed on macOS, Linux (lokum), WSL2
+Codex's uncertain-handoff rule. A twenty-first case ports case 18 and
+bab62eb80: deleting waits eight seconds for a turn that won't stop, and its
+late finish can't write the conversation again. They passed on macOS, Linux (lokum), WSL2
 and native Windows with the agent conformance areas. The compatibility prompt route now puts the
 message in the line (`delivery`, `metadata`, `handoffToken`) and interrupt
 takes `resume`.
+
+The shared conversation routes reach that line too. The box's queue
+(`kuvo/sessions/<id>/send`, `queue`, `queue/<item>/steer|now`, `reorder`,
+removal, `stop` and `queue/resume`) asks one typed target for a
+conversation, the engine's inbox or the coding agents' line, the same
+questions: what waits, steer or queue one, take one back, stop with or
+without resuming, whether it runs, its recent rows and its transcript. The
+agents' line and turn events reach the queue in the engine's words
+(`session.inbox.*`, `session.execution.*`, `session.idle`), so Stop holds
+and a turn's end drains as for the engine's conversations. A handoff to the
+agents waits on the resident's own process. The binary case (the stand-in
+agent, Rust only) sends through `send`, queues behind a running turn, sees
+the item in the queue, stops, finds it held, resumes, and sees it go as the
+next turn; it passed on macOS, Linux (lokum), WSL2 and native Windows. The
+engine conformance areas give the same results as before. Moves and
+wake-ups into a coding agent's conversation still go through the engine and
+remain open, as do Auto and summaries.
 
 The following integration work remains open:
 
@@ -276,7 +295,7 @@ Case numbers use the order in the cited source file.
 | [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. |
 | [toolrelay](../../box/test/agents/toolrelay.test.ts), 9, and [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 4.1c owns persisted address and keys, session attribution, reconnect and cancel, and engine tool registration. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
-| [sessions](../../box/test/agents/sessions.test.ts), 158 | Shared agent session store, queue, and event projection → 4.1b. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
+| [sessions](../../box/test/agents/sessions.test.ts), 158 | 20 ported to `kuvo_agents/tests/inbox.rs`: 3–7, 10, 11, 13–18, 48, 54–58, 61. Still 4.1b: 8 (held marking as the resident stops), 9 and 12 (program drains, signed-out models), 59–60 and 127–139 (turns an agent starts itself, Stop and Send Now while a message is handed). Shared agent session store, queue, and event projection → 4.1b. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
 | [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 134, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |
 | [agent-tools.test.js](../../box/bridge-tests/agent-tools.test.js), [artifacts](../../box/test/artifacts.test.ts), [subagents](../../box/test/agents/subagents.test.ts), [carry-agents](../../box/test/agents/carry-agents.test.ts), [to-agents](../../box/bridge-tests/to-agents.test.js) and [agents-handover](../../box/bridge-tests/agents-handover.test.js) | Agent registration and tools dispatch share 4.1b/c. Tool handler semantics span 2.4 ownership and messages, 4.6 subagents and transfers, 5.1 starts and bot work, 5.5 artifacts, and 6.1 permissions. |
 | Agent account imports in [usage tests](../../box/test/usage), and [settings-agents-live](../../box/bridge-tests/settings-agents-live.test.js) | 5.4 owns usage and limits. 6.1 owns the engine Agents settings file and the live engine settings page. Both consume 4.1b account state. |
