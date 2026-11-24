@@ -1,4 +1,4 @@
-use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
+use std::{fs, path::Path, sync::Arc, time::UNIX_EPOCH};
 
 use kuvo_engine::{Engine, State, Timing};
 use kuvo_peers::{
@@ -37,11 +37,10 @@ pub async fn run(
         std::env::vars_os().collect(),
         Timing::default(),
     )?;
-    let kind = match fs::read_to_string(home.join("box/kind")) {
-        Ok(kind) if kind.trim() == "mac" => ComputerKind::Mac,
-        Ok(_) => ComputerKind::Machine,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => ComputerKind::Machine,
-        Err(error) => return Err(error.into()),
+    let kind = if kuvo_setup::is_mac_home(home)? {
+        ComputerKind::Mac
+    } else {
+        ComputerKind::Machine
     };
     let name = hostname::get()?.to_string_lossy().into_owned();
     let relay = std::env::var("KUVO_TEST_RELAY").ok().or_else(|| {

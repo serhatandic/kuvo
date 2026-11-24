@@ -56,6 +56,12 @@ impl Overlay {
     }
 }
 
+pub(crate) fn device_connections_disabled(files: &Files) -> Result<bool, Error> {
+    Ok(files
+        .read::<Configuration>("run/mac-link.json")?
+        .is_some_and(|config| !config.phones))
+}
+
 fn version(response: Response) -> Result<Response, Error> {
     if response
         .headers()

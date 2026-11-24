@@ -1,11 +1,112 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { addSshStandIn } from "../../box/bridge-tests/add-ssh-stand-in.js";
-import { boxBinary, launch, readJSON, request, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, launch, privateHome, readJSON, request, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
+
+const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+
+test("a transient addressed SSH Add refuses start, answer and cancel after authenticating", {
+  skip: process.platform !== "darwin" || !fs.existsSync(wireFixture) && "Build the reference Noise fixture",
+  timeout: 100_000,
+}, async t => {
+  const binary = boxBinary();
+  const root = fs.realpathSync(scratch());
+  const env = isolatedEnv(root);
+  const home = path.join(root, "box");
+  privateHome(home);
+  const children = [];
+  const helper = http.createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const send = (status, value) => res.writeHead(status, { "content-type": "application/json", "x-kuvo-host-version": "1" }).end(JSON.stringify(value));
+    if (req.url === "/hello") {
+      const { nonce } = JSON.parse(Buffer.concat(chunks));
+      return send(200, { proof: createHmac("sha256", password).update(`kuvo-host-hello\0${nonce}\0${req.headers.host}`).digest("hex") });
+    }
+    if (req.url === "/link/identity" && req.headers.authorization === `Bearer ${password}`) return send(200, identity);
+    return send(403, {});
+  });
+  t.after(async () => {
+    await Promise.all(children.map(child => child.stop()));
+    helper.closeAllConnections();
+    await new Promise(resolve => helper.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const relay = { url: "ws://127.0.0.1:1" };
+  const fixtureEnv = { ...env, KUVO_HOME: home };
+  const previous = Object.fromEntries(Object.keys(fixtureEnv).map(key => [key, process.env[key]]));
+  Object.assign(process.env, fixtureEnv);
+  let wire;
+  try {
+    wire = await import(pathToFileURL(wireFixture).href);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  const device = Buffer.alloc(32, 81);
+  const pairedDevice = { key: wire.publicOf(device).toString("base64url"), name: "Paired desktop", kind: "desktop", pairing: "fixture" };
+  const { main } = seedPeerSetup(home, relay.url, 1, 2, roster => {
+    roster.boxes[0].kind = "mac";
+    roster.devices.phones.push(pairedDevice);
+  });
+  const linkFile = path.join(home, "run", "link.json");
+  const { key, secret, sign, ...link } = readJSON(linkFile);
+  link.phones = [{ ...pairedDevice, from: "pair", added: 1 }];
+  const identity = { key, secret, sign };
+  write(linkFile, JSON.stringify(link), { mode: 0o600 });
+  write(path.join(home, "box", "kind"), "mac\n");
+  write(path.join(home, "run", "mac-link.json"), JSON.stringify({ phones: true, relay: relay.url }));
+  const password = "transient-helper";
+  await new Promise(resolve => helper.listen(0, "127.0.0.1", resolve));
+  write(path.join(home, "run", "host.json"), JSON.stringify({ formatVersion: 1, password, url: `http://127.0.0.1:${helper.address().port}` }), { mode: 0o600 });
+
+  const overSsh = async (given, sender = device) => {
+    const command = binary.typescript ? ["box", "route-to"] : ["route-to"];
+    const process = boxCommand(binary, home, { ...env, KUVO_KEYS_ON_HOST: "1" }, relay, command, {}, "pipe");
+    children.push(process);
+    const lines = createInterface({ input: process.child.stdout })[Symbol.asyncIterator]();
+    const reply = async () => {
+      const { value } = await lines.next();
+      assert.ok(value, `SSH closed without a reply: ${process.log()}`);
+      return JSON.parse(value);
+    };
+    const noise = new wire.IKInitiator(sender, Buffer.from(main.key, "base64url"), Buffer.from("kuvo-ssh v1"));
+    const hello = noise.writeMessage1(Buffer.from('{"v":1,"client":"desktop"}')).toString("base64url");
+    process.child.stdin.write(JSON.stringify({ computer: main.key, hello }) + "\n");
+    const first = await reply();
+    if (!first.hello) {
+      process.child.stdin.end();
+      return first;
+    }
+    const secure = noise.readMessage2(Buffer.from(first.hello, "base64url"));
+    const allowed = JSON.parse(secure.payload).allowed;
+    assert.equal(allowed, sender === device);
+    process.child.stdin.end(allowed ? JSON.stringify({ request: secure.transport.seal(Buffer.from(JSON.stringify(given))).toString("base64url") }) + "\n" : undefined);
+    return reply();
+  };
+  const routes = [
+    { method: "POST", path: "kuvo/computers/add", body: { destination: "lab" } },
+    { method: "POST", path: "kuvo/computers/add/add_fixture/answer", body: { answer: "trust", at: 1 } },
+    { method: "DELETE", path: "kuvo/computers/add/add_fixture" },
+  ];
+  const [unpaired, ...paired] = await Promise.all([overSsh(routes[0], Buffer.alloc(32, 82)), ...routes.map(route => overSsh(route))]);
+  assert.equal(unpaired.status, binary.typescript ? 403 : 503, unpaired.body);
+  for (const answer of paired) assert.deepEqual(answer, {
+    status: 409, routeVersion: "1", type: "application/json", computer: main.key,
+    body: '{"message":"Ask this through Kuvo running on this computer: a single request can’t stay to do it."}',
+  });
+  assert.deepEqual(readJSON(linkFile), link, "The transient request must leave the setup unchanged.");
+});
 
 test("SSH Add trusts the selected host, copies the running Rust release and starts an enrolled resident", {
   skip: boxBinary().typescript || process.platform === "win32",

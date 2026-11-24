@@ -80,7 +80,7 @@ fn random<const N: usize>() -> Result<[u8; N], Error> {
 
 pub use actor::{
     ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, PreparedSetup, SetupHandle,
-    SetupRuntime,
+    SetupRuntime, is_mac_home, transient_ssh_pairings,
 };
 pub use discovery::locate;
 pub use model::{Receipt, SharedKind};

@@ -111,20 +111,90 @@ struct PairedAccess {
 
 impl Pairings for SetupHandle {
     fn identity(&self, computer: &str) -> Result<[u8; 32], IdentityRefusal> {
-        let view = self.views.borrow();
-        let access = &view.access;
-        if access.public.as_deref() != Some(computer) {
-            return Err(IdentityRefusal::WrongComputer);
-        }
-        if access.disabled {
-            return Err(IdentityRefusal::Disabled);
-        }
-        access.key.ok_or(IdentityRefusal::Unavailable)
+        self.views.borrow().access.identity(computer)
     }
 
     fn paired(&self, key: &[u8; 32]) -> Option<Grant> {
-        self.views.borrow().access.grants.get(key).cloned()
+        self.views.borrow().access.paired(key)
     }
+}
+
+impl Pairings for PairedAccess {
+    fn identity(&self, computer: &str) -> Result<[u8; 32], IdentityRefusal> {
+        if self.public.as_deref() != Some(computer) {
+            return Err(IdentityRefusal::WrongComputer);
+        }
+        if self.disabled {
+            return Err(IdentityRefusal::Disabled);
+        }
+        self.key.ok_or(IdentityRefusal::Unavailable)
+    }
+
+    fn paired(&self, key: &[u8; 32]) -> Option<Grant> {
+        self.grants.get(key).cloned()
+    }
+}
+
+struct SavedPairings {
+    files: Files,
+    home: kuvo_store::home::Home,
+    overlay: mac_host::Overlay,
+}
+
+impl SavedPairings {
+    fn accepted(&self) -> Result<PairedAccess, Error> {
+        if kuvo_store::layout::inspect(&self.home)? != kuvo_store::layout::Layout::Current {
+            return Err(Error::SetupUnavailable);
+        }
+        validate_disk(&self.files)?;
+        let mut link = self
+            .files
+            .read::<Link>(LINK)?
+            .ok_or(Error::SetupUnavailable)?;
+        self.overlay.apply(&mut link);
+        link.devices_disabled = mac_host::device_connections_disabled(&self.files)?;
+        let identity = established_identity(&self.files, &link, ComputerKind::Mac, true)?;
+        paired_access(&link, identity.as_ref())
+    }
+}
+
+impl Pairings for SavedPairings {
+    fn identity(&self, computer: &str) -> Result<[u8; 32], IdentityRefusal> {
+        self.accepted()
+            .map_err(|_| IdentityRefusal::Unavailable)?
+            .identity(computer)
+    }
+
+    fn paired(&self, key: &[u8; 32]) -> Option<Grant> {
+        self.accepted().ok()?.paired(key)
+    }
+}
+
+pub fn is_mac_home(home: &Path) -> std::io::Result<bool> {
+    match std::fs::read_to_string(home.join("box/kind")) {
+        Ok(kind) => Ok(kind.trim() == "mac"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Read the Mac's established setup without starting an actor or changing its home.
+pub async fn transient_ssh_pairings(home: &Path) -> Option<Arc<dyn Pairings>> {
+    if !is_mac_home(home).ok()? {
+        return None;
+    }
+    let checked = kuvo_store::home::Home::new(home.to_owned()).ok()?;
+    if kuvo_store::layout::inspect(&checked).ok()? != kuvo_store::layout::Layout::Current {
+        return None;
+    }
+    let files = Files::new(home.to_owned());
+    validate_disk(&files).ok()?;
+    let overlay = mac_host::read(&files, "", None).await.ok()??;
+    Some(Arc::new(SavedPairings {
+        files,
+        home: checked,
+        overlay,
+    }))
 }
 
 #[derive(Clone)]
@@ -433,6 +503,49 @@ pub(crate) fn validate_disk(files: &Files) -> Result<(), Error> {
     Ok(())
 }
 
+fn established_identity(
+    files: &Files,
+    link: &Link,
+    kind: ComputerKind,
+    native: bool,
+) -> Result<Option<Identity>, Error> {
+    let Some(setup) = &link.setup else {
+        return Ok(None);
+    };
+    validate_position(&setup.position)?;
+    if kind == ComputerKind::Mac && !native {
+        return Ok(None);
+    }
+    let identity = Identity::read(link)?;
+    if !setup.aside {
+        validate_shared(&link.shared)?;
+        let members = link.member_list()?;
+        if !members.boxes.iter().any(|peer| {
+            peer.key == identity.public && peer.sign.as_deref() == Some(&identity.sign)
+        }) || (setup.role == Role::Primary) != (setup.position.primary == identity.public)
+        {
+            return Err(Error::Invalid("local setup membership"));
+        }
+        if let Some(envelope) = link.leadership.get(&setup.position.epoch) {
+            let doc = documents::verify(envelope.clone())?;
+            let cert = checkpoint::certificate(&doc)?;
+            if cert.setup != setup.position || encode(&doc.origin) != setup.sign {
+                return Err(Error::Invalid("stored leadership"));
+            }
+            checkpoint::resolve(files, &doc, &cert)?;
+        } else if setup.role == Role::Primary
+            || !setup
+                .extra
+                .get("leadershipHash")
+                .and_then(Value::as_str)
+                .is_some_and(|h| safe_token(h, 11, 11))
+        {
+            return Err(Error::Invalid("missing stored leadership"));
+        }
+    }
+    Ok(Some(identity))
+}
+
 fn open(
     home: &Path,
     files: &Files,
@@ -459,42 +572,14 @@ fn open(
                 value
             });
     }
-    if let Some(setup) = &link.setup {
-        validate_position(&setup.position)?;
-        if kind == ComputerKind::Mac && !native {
-            return Ok((link, None));
-        }
-        let identity = Identity::read(&link)?;
-        if !setup.aside {
-            validate_shared(&link.shared)?;
-            let members = link.member_list()?;
-            if !members.boxes.iter().any(|peer| {
-                peer.key == identity.public && peer.sign.as_deref() == Some(&identity.sign)
-            }) || (setup.role == Role::Primary) != (setup.position.primary == identity.public)
-            {
-                return Err(Error::Invalid("local setup membership"));
-            }
-            if let Some(envelope) = link.leadership.get(&setup.position.epoch) {
-                let doc = documents::verify(envelope.clone())?;
-                let cert = checkpoint::certificate(&doc)?;
-                if cert.setup != setup.position || encode(&doc.origin) != setup.sign {
-                    return Err(Error::Invalid("stored leadership"));
-                }
-                checkpoint::resolve(files, &doc, &cert)?;
-            } else if setup.role == Role::Primary
-                || !setup
-                    .extra
-                    .get("leadershipHash")
-                    .and_then(Value::as_str)
-                    .is_some_and(|h| safe_token(h, 11, 11))
-            {
-                return Err(Error::Invalid("missing stored leadership"));
-            }
-        }
-        if remember_link_key(&mut link, &identity, kind) {
+    if link.setup.is_some() {
+        let identity = established_identity(files, &link, kind, native)?;
+        if let Some(identity) = &identity
+            && remember_link_key(&mut link, identity, kind)
+        {
             write_link(files, &link, kind)?;
         }
-        return Ok((link, Some(identity)));
+        return Ok((link, identity));
     }
 
     if (kind == ComputerKind::Mac && !native)
@@ -739,6 +824,49 @@ fn installer_pending(link: &Link) -> bool {
     })
 }
 
+fn paired_access(link: &Link, own: Option<&Identity>) -> Result<PairedAccess, Error> {
+    Ok(match (link.setup().ok(), own) {
+        (Some(_), Some(own)) => {
+            let roster = link.member_list()?;
+            let disabled = link.devices_disabled || link.disabled(&roster, &own.public);
+            PairedAccess {
+                key: Some(own.key),
+                public: Some(own.public.clone()),
+                disabled,
+                permits_pairing: !disabled && link.relay.is_some(),
+                aside_main: None,
+                devices: Arc::new(device_access::device_roster(link, &roster, &own.public)),
+                grants: if link.devices_disabled {
+                    HashMap::new()
+                } else {
+                    link.grants(&roster, &own.public)
+                },
+            }
+        }
+        _ => PairedAccess {
+            key: None,
+            public: None,
+            disabled: true,
+            permits_pairing: false,
+            aside_main: link
+                .setup
+                .as_ref()
+                .filter(|setup| setup.aside && setup.role == Role::Member && !link.devices_disabled)
+                .map(|setup| {
+                    let saved = link
+                        .extra
+                        .get("macNames")
+                        .and_then(|names| names.get(setup.position.primary.as_str()))
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.is_empty());
+                    preferences::truncate(saved.unwrap_or("your main computer"), 100)
+                }),
+            devices: Arc::default(),
+            grants: HashMap::new(),
+        },
+    })
+}
+
 fn make_view(
     files: &Files,
     link: &Link,
@@ -802,46 +930,7 @@ fn make_view(
             }
         }
     }
-    let access = match (setup, own) {
-        (Some(_), Some(own)) => {
-            let roster = link.member_list()?;
-            let disabled = link.devices_disabled || link.disabled(&roster, &own.public);
-            PairedAccess {
-                key: Some(own.key),
-                public: Some(own.public.clone()),
-                disabled,
-                permits_pairing: !disabled && link.relay.is_some(),
-                aside_main: None,
-                devices: Arc::new(device_access::device_roster(link, &roster, &own.public)),
-                grants: if link.devices_disabled {
-                    HashMap::new()
-                } else {
-                    link.grants(&roster, &own.public)
-                },
-            }
-        }
-        _ => PairedAccess {
-            key: None,
-            public: None,
-            disabled: true,
-            permits_pairing: false,
-            aside_main: link
-                .setup
-                .as_ref()
-                .filter(|setup| setup.aside && setup.role == Role::Member && !link.devices_disabled)
-                .map(|setup| {
-                    let saved = link
-                        .extra
-                        .get("macNames")
-                        .and_then(|names| names.get(setup.position.primary.as_str()))
-                        .and_then(Value::as_str)
-                        .filter(|name| !name.is_empty());
-                    preferences::truncate(saved.unwrap_or("your main computer"), 100)
-                }),
-            devices: Arc::default(),
-            grants: HashMap::new(),
-        },
-    };
+    let access = paired_access(link, own)?;
     let ownership = if let Some(setup) = setup {
         let roster = link.member_list()?;
         let mut replacements = std::collections::BTreeMap::new();

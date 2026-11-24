@@ -34,6 +34,7 @@ the races that span removal, backup, moves, and an authority change.
 | C24 | [SSH Add preserves an independent installation that appeared after the probe](../../protocol/conformance/ssh-adding.test.mjs) | An already started Add sees the independent setup before enrollment. Its refusal leaves the saved membership and existing credential intact. The TypeScript reference reproduces the same race. |
 | C25 | [The existing SSH address cannot restore a member removed while Add was checking it](../../protocol/conformance/ssh-adding.test.mjs) | The alias starts under the old membership revision. A live main unlinks the member while the probe waits. The stale Add refuses the old key after the signed revision advances, and the saved address stays removed. |
 | C26 | [SSH Add asks a Mac to update when it still has older Kuvo Code data](../../protocol/conformance/ssh-adding.test.mjs) | Both implementations refuse before placing a release or enrolling a new computer when they find the earlier database or keeper marker. Rust also verifies that cache files alone allow enrollment and that an enrolled member with separate older work can still be found at another SSH address. |
+| C27 | [A transient addressed SSH Add refuses start, answer and cancel after authenticating](../../protocol/conformance/ssh-adding.test.mjs) | Both binaries give the same 409 through the real Noise exchange. An unpaired device gets the implementation's existing refusal. Rust also rejects an unsealed request and a grant revoked during the exchange, and passes an ordinary request to a resident that starts during the wait. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -213,13 +214,13 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 37 have coverage and 157 still have open or partial work. Of those, 112 list 2.3 as an owner (83 open, 29 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 38 have coverage and 156 still have open or partial work. Of those, 111 list 2.3 as an owner (82 open, 29 partial).
 
 ### computers-add
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [addressed SSH cannot start, answer, or cancel an Add in its transient process](../../box/bridge-tests/computers-add.test.js#L14) | Open | 2.3 |
+| [addressed SSH cannot start, answer, or cancel an Add in its transient process](../../box/bridge-tests/computers-add.test.js#L14) | C27 proves all three authenticated refusals through `route-to` and keeps normal requests on the resident path. Rust observes the existing 80-second startup window before it can authenticate a transient request. | — |
 | [a Darwin fixture keeper with an empty environment reaches only its fake launchctl](../../box/bridge-tests/computers-add.test.js#L30) | Keeper launchctl isolation belongs to the keeper and Helper. | 7.1, 6.2 |
 | [a box says whether it adds computers, and suggests the hosts in ~/.ssh/config that aren't patterns](../../box/bridge-tests/computers-add.test.js#L47) | C9 and C13 verify availability with an installed release, its absence, the main’s forwarded page and ordered SSH suggestions. | — |
 | [adding a computer: the box shows a host key it doesn't know, and on Trust copies itself there, starts it and signs it in](../../box/bridge-tests/computers-add.test.js#L60) | C9 checks first-use trust, binary copy, signed enrollment and the saved SSH address. Selected sign-ins and installed release, engine and keeper handling remain open. | 2.3, 7.1 |

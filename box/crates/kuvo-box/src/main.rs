@@ -271,7 +271,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(())
         } else if let Some(command) = command {
             tokio::select! {
-                result = ssh::pipe(home.root(), command, tokio::io::stdin(), tokio::io::stdout()) => result?,
+                result = ssh::pipe_with_transient_add(
+                    home.root(), command, tokio::io::stdin(), tokio::io::stdout(),
+                    kuvo_setup::transient_ssh_pairings(home.root()),
+                ) => result?,
                 () = shutdown() => {},
             }
             Ok(())
