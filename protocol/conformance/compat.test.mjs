@@ -130,6 +130,34 @@ for (const tag of tags) {
     });
 }
 
+test("the current TypeScript beta's setup records survive opening at layout 23", { timeout: 30000 }, async () => {
+  const root = scratch();
+  const relay = await localRelay();
+  let proc;
+  try {
+    const binary = boxBinary();
+    const { home, env } = generateCurrent(root, binary.typescript ? binary : undefined);
+    const linkFile = path.join(home, "run/link.json");
+    const original = readJSON(linkFile);
+    proc = startBox({ binary, home, env, relay });
+    const reply = await request(await proc.ready(), "GET", "kuvo/setup");
+    assert.equal(reply.status, 200, reply.text);
+    assert.equal(reply.json.setup, "set_8gOLfHXdUhmcVfSh9NOsAQ");
+    assert.deepEqual(reply.json.computers.map(({ name, role }) => [name, role]), [["Golden Computer", "primary"]]);
+    await proc.stop();
+    assert.equal(layout(home), 23);
+    const link = readJSON(linkFile);
+    for (const key of ["key", "computerHistory", "memberRemovals", "releasedSetup", "releasedWork",
+      "releasedDatabaseWork", "releasedScopedWork"]) {
+      assert.deepEqual(link[key], original[key], key);
+    }
+  } finally {
+    await proc?.stop();
+    await relay.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the current TypeScript beta's durable records survive opening at layout 23", { timeout: 30000 }, async () => {
   const root = scratch();
   const relay = await localRelay();

@@ -43,7 +43,7 @@ the races that span removal, backup, moves, and an authority change.
 | C33 | [An SSH-enrolled member follows the next primary after reconnecting](../../protocol/conformance/ssh-adding.test.mjs) | Two Rust computers move the main role twice before adding a third via SSH. The new resident starts at the accepted epoch. After another handover while it is offline, it reconnects and accepts the new signed authority while keeping its own identity. The TypeScript reference gives the current signed roster as SSH does before testing the same catch-up. |
 | C34 | [Ordinary installer and SSH enrollment leave a used independent setup intact](../../protocol/conformance/adding.test.mjs) | Both implementations give the deployed installer a valid code for a different setup, then exercise the SSH enrollment command. A saved session makes both attempts refuse. The original setup keys and session bytes stay intact, and the issuing computer's roster stays unchanged. Rust passed on Mac, WSL and native Windows. |
 | C35 | [SSH Add recovers a selected integration after the target saved its settings](../../protocol/conformance/ssh-adding.test.mjs) | A matching interrupted copy already has its own model, settings and key. Recovery applies the missing integration from the receiving computer's trusted catalog, preserves the existing key and settings, and sends no sign-ins. The reference's key-only retry case passes. |
-| C36 | [SSH Add keeps sessions written while the pinned engine is staged](../../protocol/conformance/ssh-adding.test.mjs) | The installer checks the legacy `session` and current `session_v2` tables, matching TypeScript. Rust tests exercise both database versions through the guarded copy and retry. A new session written during staging blocks enrollment and survives credential rollback. A guarded installer over real Windows OpenSSH also joins using the retained OpenCode 2.2.6 database that the earlier build refused. |
+| C36 | [SSH Add keeps sessions written while the pinned engine is staged](../../protocol/conformance/ssh-adding.test.mjs) | The installer checks the legacy `session` and current `session_v2` tables, matching TypeScript. Rust tests exercise both database versions through the guarded copy and retry. A new session written during staging blocks enrollment and survives credential rollback. One live Windows OpenSSH Add enrolled a disposable WSL Ubuntu account with the pinned OpenCode 2.2.6 engine, persisted only the selected key and synthetic sign-in, and released its staging markers. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -183,6 +183,11 @@ The beta.1 fixture retains that behavior on TypeScript. Rust's case stalls
 when it waits for the updated beta.1 peers mail. Receiving that released
 mail belongs to 7.3. Earlier released Macs still need adding and removal proof.
 
+The current TypeScript beta golden home has a scoped setup check on both boxes.
+It verifies the layout, setup and computer identity, signed removal records and
+retained-work baselines. The full golden check reaches a missing Work Queue item
+route on Rust, owned by 5.2.
+
 The differential runner compared stopped TypeScript homes without a file
 allowlist. Installer validation refusals and unlink receipt replay, including
 a conflicting request, gave equal answers. The positive code issuance differed
@@ -290,7 +295,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 52 have coverage and 142 still have open or partial work. Of those, 93 list 2.3 as an owner (70 open, 23 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 52 have coverage and 142 still have open or partial work. Of those, 92 list 2.3 as an owner (69 open, 23 partial).
 
 ### computers-add
 
@@ -299,7 +304,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 52 h
 | [addressed SSH cannot start, answer, or cancel an Add in its transient process](../../box/bridge-tests/computers-add.test.js#L14) | C27 proves all three authenticated refusals through `route-to` and keeps normal requests on the resident path. Rust observes the existing 80-second startup window before it can authenticate a transient request. | — |
 | [a Darwin fixture keeper with an empty environment reaches only its fake launchctl](../../box/bridge-tests/computers-add.test.js#L30) | Keeper launchctl isolation belongs to the keeper and Helper. | 7.1, 6.2 |
 | [a box says whether it adds computers, and suggests the hosts in ~/.ssh/config that aren't patterns](../../box/bridge-tests/computers-add.test.js#L47) | C9 and C13 verify availability with an installed release, its absence, the main’s forwarded page and ordered SSH suggestions. | — |
-| [adding a computer: the box shows a host key it doesn't know, and on Trust copies itself there, starts it and signs it in](../../box/bridge-tests/computers-add.test.js#L60) | C9 checks first-use trust, binary copy, selected sign-ins and settings, signed enrollment and the saved SSH address. The real signed pinned-engine run and keeper packaging remain open. | 2.3, 7.1 |
+| [adding a computer: the box shows a host key it doesn't know, and on Trust copies itself there, starts it and signs it in](../../box/bridge-tests/computers-add.test.js#L60) | C9 checks first-use trust, binary copy, selected sign-ins and settings, signed enrollment and the saved SSH address. C36 verifies the pinned engine over live Windows OpenSSH into WSL. Keeper packaging remains open. | 7.1 |
 | [adding a Windows PC with only WSL 1 tells you how to get WSL 2 before copying Kuvo Code](../../box/bridge-tests/computers-add.test.js#L173) | C9 proves the refusal verbatim and that the WSL 1 account is untouched. | — |
 | [the same computer under another address is the one already here, not a second one](../../box/bridge-tests/computers-add.test.js#L211) | C9 checks the known reply, preserved membership and saved alias. | — |
 | [a host that can't be reached, one that refuses your keys, and one whose key changed are each said in words, and nothing is trusted](../../box/bridge-tests/computers-add.test.js#L224) | C12 verifies unreachable hosts, keys changed in the account’s known hosts and a failed sign-in after explicit trust. | — |
