@@ -144,10 +144,18 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
         let engine = local.clone();
         async move {
             let id = id(&call)?;
-            let lease = api::start(&engine).await?;
-            let session: Session = typed(read(&engine, &lease, &path(&id)).await?)?;
-            session.check_independent()?;
-            let confirm = confirmation::one(&engine, &lease, &session).await?;
+            let (session, confirm) = if let Some((_, header)) = engine.agent_session(&id).await? {
+                let session: Session = typed(Value::Object(header))?;
+                session.check_independent()?;
+                let confirm = confirmation::one(&engine, None, &session).await?;
+                (session, confirm)
+            } else {
+                let lease = api::start(&engine).await?;
+                let session: Session = typed(read(&engine, &lease, &path(&id)).await?)?;
+                session.check_independent()?;
+                let confirm = confirmation::one(&engine, Some(&lease), &session).await?;
+                (session, confirm)
+            };
             let mut menu = Vec::new();
             if session.archived() {
                 if !session.archived_by_engine() {
@@ -217,6 +225,25 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
                 .run_until_cancelled(engine.note_turn(&id))
                 .await
                 .ok_or_else(|| cancelled("deleted"))?;
+            if let Some((source, header)) = engine.agent_session(&id).await? {
+                let session: Session = typed(Value::Object(header))?;
+                session.check_independent()?;
+                if given.contains_key("was") {
+                    let confirm = confirmation::one(&engine, None, &session).await?;
+                    check_was(&given, &session, Some(confirm))?;
+                }
+                let deleted = source.delete(&id).await.map_err(|error| {
+                    Refusal::new(
+                        StatusCode::BAD_GATEWAY,
+                        format!("It couldn't be deleted: {error}"),
+                    )
+                })?;
+                if !deleted && given.contains_key("was") {
+                    return Err(stale());
+                }
+                forget(&engine, &id).await;
+                return Ok(RouteReply::json::<200>(typed(json!({ "session": id }))?));
+            }
             let lease = api::start(&engine).await?;
             let path = path(&id);
             match engine
@@ -226,7 +253,7 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
                 Ok(session) => {
                     session.check_independent()?;
                     if given.contains_key("was") {
-                        let confirm = confirmation::one(&engine, &lease, &session).await?;
+                        let confirm = confirmation::one(&engine, Some(&lease), &session).await?;
                         check_was(&given, &session, Some(confirm))?;
                     }
                     match engine
@@ -353,11 +380,14 @@ where
     };
     let prepare = async {
         let turn = engine.note_turn(&id).await;
+        if let Some((source, header)) = engine.agent_session(&id).await? {
+            return Ok((turn, Keeper::Agents(source), Value::Object(header)));
+        }
         let lease = api::start(&engine).await?;
         let info = read(&engine, &lease, &path).await?;
-        Ok::<_, Refusal>((turn, lease, info))
+        Ok::<_, Refusal>((turn, Keeper::Engine(lease), info))
     };
-    let (_turn, lease, mut info) = call
+    let (_turn, keeper, mut info) = call
         .cancel
         .run_until_cancelled(prepare)
         .await
@@ -395,15 +425,34 @@ where
         }
     };
     if let Some(patch) = patch {
-        let updated = engine
-            .call::<Value>(&lease, Method::PATCH, &path, Some(&patch))
-            .await
-            .map_err(|error| {
-                Refusal::new(
-                    StatusCode::BAD_GATEWAY,
-                    format!("It couldn't be {action}: {error}"),
-                )
-            })?;
+        let failed = |error: &dyn std::fmt::Display| {
+            Refusal::new(
+                StatusCode::BAD_GATEWAY,
+                format!("It couldn't be {action}: {error}"),
+            )
+        };
+        let updated = match &keeper {
+            Keeper::Engine(lease) => engine
+                .call::<Value>(lease, Method::PATCH, &path, Some(&patch))
+                .await
+                .map_err(|error| failed(&error))?,
+            Keeper::Agents(source) => {
+                let header = source
+                    .update(&id, agent_patch(patch.clone()))
+                    .await
+                    .map_err(|error| failed(&error))?
+                    .ok_or_else(|| {
+                        Refusal::new(StatusCode::NOT_FOUND, "That conversation isn't here.")
+                    })?;
+                // The bridge answers a rename with the saved header; notes
+                // are written onto the conversation as it was read.
+                if matches!(change, Change::Rename) {
+                    Value::Object(header)
+                } else {
+                    Value::Null
+                }
+            }
+        };
         if updated.is_object() {
             info = updated;
         } else if let Some(patch) = patch.as_object() {
@@ -412,12 +461,52 @@ where
             }
         }
         if matches!(change, Change::Archive) {
-            after_archive(&engine, &lease, &id, value == true).await;
+            match &keeper {
+                Keeper::Engine(lease) => after_archive(&engine, lease, &id, value == true).await,
+                Keeper::Agents(source) => {
+                    hold_wakes(&engine, &id, value == true).await;
+                    if value == true {
+                        let _ = source.stop_if_waiting(&id).await;
+                    }
+                }
+            }
         }
     }
     Ok(RouteReply::json::<200>(typed(
         json!({ "session": id, "info": info }),
     )?))
+}
+
+/// Where a conversation is kept: the engine, or the coding agents.
+enum Keeper {
+    Engine(Lease),
+    Agents(std::sync::Arc<dyn crate::AgentSessionSource>),
+}
+
+fn agent_patch(patch: Value) -> crate::AgentSessionPatch {
+    let Value::Object(mut patch) = patch else {
+        return crate::AgentSessionPatch::default();
+    };
+    crate::AgentSessionPatch {
+        title: patch
+            .remove("title")
+            .and_then(|title| title.as_str().map(str::to_owned)),
+        permissions: patch.remove("permissions"),
+        metadata: patch.remove("metadata").and_then(|notes| match notes {
+            Value::Object(notes) => Some(notes),
+            _ => None,
+        }),
+    }
+}
+
+/// A deleted conversation's wake-ups and saved queue go with it.
+async fn forget(engine: &Engine, id: &str) {
+    if let Some(folder) = wakes(engine, id) {
+        let _ = tokio::fs::remove_dir_all(folder).await;
+    }
+    if let Err(error) = engine.queues.discard(id).await {
+        eprintln!("Removing the deleted conversation's saved queue: {error}");
+    }
 }
 
 fn wakes(engine: &Engine, id: &str) -> Option<std::path::PathBuf> {

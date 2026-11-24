@@ -33,6 +33,15 @@ enum Command {
         session: String,
         reply: Reply<Option<Live>>,
     },
+    /// Refuse new turns while the conversation is deleted, and hand back the
+    /// turn to stop first.
+    Retire {
+        session: String,
+        reply: Reply<Option<Live>>,
+    },
+    Release {
+        session: String,
+    },
 }
 
 struct Start {
@@ -212,6 +221,57 @@ impl SessionRuns {
         Ok(reply)
     }
 
+    /// Delete a conversation as the bridge does: no turn starts meanwhile, the
+    /// running one stops first, and its subagents' conversations go with it
+    /// unless a fork's steps still show them. False when it wasn't here.
+    pub async fn delete(&self, session: String) -> io::Result<bool> {
+        Box::pin(self.delete_retired(session)).await
+    }
+
+    async fn delete_retired(&self, session: String) -> io::Result<bool> {
+        let live = self
+            .call(|reply| Command::Retire {
+                session: session.clone(),
+                reply,
+            })
+            .await?;
+        let deleted = async {
+            if let Some(live) = live {
+                // A turn that can't be interrupted still ends when its record goes.
+                let _ = live.turn.interrupt().await;
+                let _ = live.turn.finished().await;
+            }
+            let headers = self.store.headers().await?;
+            let children = headers
+                .iter()
+                .filter(|header| header.parent() == Some(session.as_str()))
+                .map(|header| header.id().to_owned())
+                .collect::<Vec<_>>();
+            for child in children {
+                let mut shown = false;
+                for other in &headers {
+                    if other.id() != session
+                        && other.id() != child
+                        && self.store.shows_subagent(other.id(), &child).await?
+                    {
+                        shown = true;
+                        break;
+                    }
+                }
+                if !shown {
+                    self.delete(child).await?;
+                }
+            }
+            self.store.delete(&session).await
+        }
+        .await;
+        let _ = self
+            .commands
+            .send(Command::Release { session })
+            .await;
+        deleted
+    }
+
     async fn find(&self, session: String) -> io::Result<Option<Live>> {
         self.call(|reply| Command::Find { session, reply }).await
     }
@@ -242,12 +302,19 @@ impl Service {
         let mut preparations = JoinSet::new();
         let mut by_session = JoinSet::new();
         let mut approvals = BTreeMap::<String, watch::Sender<Vec<Allowance>>>::new();
+        let mut retired = BTreeSet::new();
         loop {
             tokio::select! {
                 next = commands.recv() => {
                     match next {
                         Some(Command::Start(request)) => {
                             let Start { session, input, policy, reply } = *request;
+                            if retired.contains(&session) {
+                                let _ = reply.send(Err(io::Error::new(
+                                    ErrorKind::NotFound, "That conversation is being deleted.",
+                                )));
+                                continue;
+                            }
                             if sessions.contains_key(&session) || !starting.insert(session.clone()) {
                                 let _ = reply.send(Err(io::Error::new(
                                     ErrorKind::AlreadyExists, "That conversation is already working.",
@@ -265,12 +332,30 @@ impl Service {
                         Some(Command::Find { session, reply }) => {
                             let _ = reply.send(Ok(sessions.get(&session).cloned()));
                         }
+                        Some(Command::Retire { session, reply }) => {
+                            retired.insert(session.clone());
+                            approvals.remove(&session);
+                            let _ = reply.send(Ok(sessions.get(&session).cloned()));
+                        }
+                        Some(Command::Release { session }) => {
+                            retired.remove(&session);
+                        }
                         None => break,
                     }
                 }
                 prepared = preparations.join_next(), if !preparations.is_empty() => {
-                    if let Some(Ok((session, outcome, reply))) = prepared {
+                    if let Some(Ok((session, mut outcome, reply))) = prepared {
                         starting.remove(&session);
+                        if retired.contains(&session)
+                            && let Ok(live) = &outcome
+                        {
+                            // Deleted while it started: stop it rather than run it.
+                            let turn = live.turn.clone();
+                            tokio::spawn(async move { let _ = turn.interrupt().await; });
+                            outcome = Err(io::Error::new(
+                                ErrorKind::NotFound, "That conversation is being deleted.",
+                            ));
+                        }
                         if let Ok(turn) = &outcome {
                             sessions.insert(session.clone(), turn.clone());
                             self.publish(&sessions);

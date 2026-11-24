@@ -60,7 +60,9 @@ pub const FEATURES: &[&str] = &[
 pub use agent_models::{
     AgentCatalog, AgentModel, AgentModelSource, AutoModel, CatalogRead, ModelAccount,
 };
-pub use agent_sessions::{AgentSessionRead, AgentSessionRow, AgentSessionSource};
+pub use agent_sessions::{
+    AgentCall, AgentSessionPatch, AgentSessionRead, AgentSessionRow, AgentSessionSource,
+};
 pub use attachment_retention::{AttachmentConversation, AttachmentRead, AttachmentSource};
 pub use external_asks::{
     AskResult, ExternalAsk, ExternalAskKind, ExternalAsks, ExternalCard, ExternalDecision,

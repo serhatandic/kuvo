@@ -8,6 +8,44 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+/// What a client may change on a saved conversation's header.
+#[derive(Debug, Default)]
+pub struct SessionPatch {
+    pub title: Option<String>,
+    pub permissions: Option<Value>,
+    pub metadata: Option<Map<String, Value>>,
+}
+
+/// A replacement for the header's metadata that keeps the bridge's own notes.
+fn kept_notes(before: Option<&Value>, mut given: Map<String, Value>) -> Value {
+    let agent = before.and_then(|notes| notes.get("kuvoAgent")).cloned();
+    let messages = before
+        .and_then(|notes| notes.get("kuvo"))
+        .and_then(|kuvo| kuvo.get("messages"))
+        .cloned();
+    match agent {
+        Some(agent) => {
+            given.insert("kuvoAgent".into(), agent);
+        }
+        None => {
+            given.shift_remove("kuvoAgent");
+        }
+    }
+    if let Some(messages) = messages {
+        // Replaced in place, so the key keeps the position the client gave it.
+        let kuvo = given
+            .entry("kuvo")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !kuvo.is_object() {
+            *kuvo = Value::Object(Map::new());
+        }
+        if let Some(kuvo) = kuvo.as_object_mut() {
+            kuvo.insert("messages".into(), messages);
+        }
+    }
+    Value::Object(given)
+}
+
 impl SessionStore {
     pub fn make_id(prefix: &str) -> io::Result<String> {
         let millis = SystemTime::UNIX_EPOCH
@@ -55,6 +93,44 @@ impl SessionStore {
         .await
     }
 
+    /// Apply a client's change to a saved conversation, as the bridge does: its
+    /// own notes (whose agent it is, how a subagent is written to) survive a
+    /// metadata replacement. `None` when the conversation isn't here.
+    pub async fn update(
+        &self,
+        id: &str,
+        patch: SessionPatch,
+    ) -> io::Result<Option<Map<String, Value>>> {
+        let now = crate::turn_projection::now();
+        let (send, updated) = std::sync::mpsc::channel();
+        let changed = self
+            .change_header(id, move |header| {
+                let SessionPatch {
+                    title,
+                    permissions,
+                    metadata,
+                } = patch;
+                if let Some(title) = title {
+                    header.insert("title".into(), title.into());
+                }
+                if let Some(permissions) = permissions {
+                    header.insert("permissions".into(), permissions);
+                }
+                if let Some(given) = metadata {
+                    header.insert("metadata".into(), kept_notes(header.get("metadata"), given));
+                }
+                let time = header
+                    .entry("time")
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if let Some(time) = time.as_object_mut() {
+                    time.insert("updated".into(), now.into());
+                }
+                let _ = send.send(header.clone());
+            })
+            .await?;
+        Ok(changed.then(|| updated.try_recv().ok()).flatten())
+    }
+
     pub async fn has_message(&self, id: &str, message: &str) -> io::Result<bool> {
         let Some(folder) = self.folder(id) else {
             return Ok(false);
@@ -82,6 +158,49 @@ impl SessionStore {
             };
             let rows: Vec<Value> = serde_json::from_slice(&raw)?;
             Ok(rows.iter().any(|row| row["id"] == message))
+        })
+        .await?
+    }
+
+    /// Whether a step of `id`'s conversation names `child`'s session, as a
+    /// fork's copied steps do.
+    pub(crate) async fn shows_subagent(&self, id: &str, child: &str) -> io::Result<bool> {
+        let Some(folder) = self.folder(id) else {
+            return Ok(false);
+        };
+        let child = child.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let names = |body: &Value| {
+                body["type"] == "assistant"
+                    && body["content"].as_array().is_some_and(|content| {
+                        content.iter().any(|part| {
+                            part["type"] == "tool"
+                                && part["state"]["metadata"]["sessionID"] == child.as_str()
+                        })
+                    })
+            };
+            let transcript = folder.join(TRANSCRIPT);
+            if transcript.try_exists()? {
+                let db = sqlite::open_index(&transcript, Duration::from_secs(1))
+                    .map_err(io::Error::other)?;
+                let mut statement = db
+                    .prepare("SELECT body FROM message WHERE instr(body, ?1) > 0")
+                    .map_err(io::Error::other)?;
+                let rows = statement
+                    .query_map([&child], |row| row.get::<_, String>(0))
+                    .map_err(io::Error::other)?;
+                for body in rows {
+                    if names(&serde_json::from_str(&body.map_err(io::Error::other)?)?) {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            let Some(raw) = files::read(&folder.join("messages.json"))? else {
+                return Ok(false);
+            };
+            let rows: Vec<Value> = serde_json::from_slice(&raw)?;
+            Ok(rows.iter().any(names))
         })
         .await?
     }

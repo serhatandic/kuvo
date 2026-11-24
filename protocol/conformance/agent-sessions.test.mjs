@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -57,5 +57,63 @@ test("saved agent transcript pages honor order and cursor without reopening the 
       assert.deepEqual(file, original);
       assert.equal(readFileSync(path.join(folderOf(home), "messages.json"), "utf8"), "[]");
       if (trace) write(trace, JSON.stringify({ log, database: file.toString("base64") }) + "\n", { flag: "wx" });
+    });
+  });
+
+test("a saved agent conversation's menu, rename, pin, archive and delete",
+  { timeout: 60000 }, t => {
+    const id = "ses_golden_actions";
+    const folderOf = home => path.join(home, "agents", "sessions", id);
+    const trace = process.env.KUVO_CONFORMANCE_SESSION_ACTIONS;
+    return withAgentFixture(t, home => {
+      const folder = folderOf(home);
+      mkdirSync(folder, { recursive: true });
+      write(path.join(folder, "session.json"), JSON.stringify({
+        id, projectID: "golden", agent: "build", model: { providerID: "codex-cli", id: "stand-in" },
+        location: { directory: home }, time: { created: 10, updated: 13, activity: 13, idle: 13 },
+        outcome: "succeeded", title: "Golden conversation", cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        metadata: { kuvoAgent: "codex", kuvo: { messages: "kept", approval: "askFirst" } },
+      }));
+      write(path.join(folder, "messages.json"), "[]");
+    }, async (listener, home) => {
+      const app = { "x-kuvo-from": "app" };
+      const log = [];
+      const call = async (method, route, body) => {
+        let answer;
+        for (let tries = 0; tries < 50; tries++) {
+          answer = await request(listener, method, route, body, app);
+          if (answer.status !== 503) break;
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        log.push({ method, route, status: answer.status, json: answer.json ?? answer.text });
+        return answer;
+      };
+      const saved = () => JSON.parse(readFileSync(path.join(folderOf(home), "session.json"), "utf8"));
+      await call("GET", `kuvo/sessions/${id}/actions`);
+      await call("POST", `kuvo/sessions/${id}/rename`, { title: "  Renamed  " });
+      await call("POST", `kuvo/sessions/${id}/pin`, { pinned: true });
+      await call("POST", `kuvo/sessions/${id}/archive`, { archived: true, was: { updated: 1, archived: false } });
+      const before = saved();
+      await call("POST", `kuvo/sessions/${id}/archive`, { archived: true, was: { updated: before.time.updated, archived: false } });
+      await call("GET", `kuvo/sessions/${id}/actions`);
+      await call("POST", `kuvo/sessions/${id}/archive`, { archived: false });
+      const kept = saved();
+      await call("DELETE", `kuvo/sessions/${id}`, {});
+      log.push({ kept });
+      assert.deepEqual(log.slice(0, -1).map(entry => entry.status), [200, 200, 200, 409, 200, 200, 200, 200]);
+      assert.deepEqual(log[0].json.actions.map(action => action.id), ["pin", "rename", "archive", "delete"]);
+      assert.deepEqual(log[0].json.actions[3].confirm,
+        { title: "Delete “Golden conversation”?", message: "This can’t be undone.", label: "Delete" });
+      assert.equal(log[1].json.info.title, "Renamed");
+      assert.equal(log[1].json.info.summarize, undefined);
+      assert.equal(log[2].json.info.summarize.value, "400000");
+      assert.deepEqual(log[5].json.actions.map(action => action.id), ["unarchive", "delete"]);
+      // The bridge's own notes survive every metadata replacement.
+      assert.deepEqual(kept.metadata, { kuvoAgent: "codex", kuvo: { messages: "kept", approval: "askFirst" },
+        "kuvo.pinned": true, "kuvo.archived": false });
+      assert.equal(kept.title, "Renamed");
+      assert.equal(existsSync(folderOf(home)), false);
+      if (trace) write(trace, JSON.stringify(log) + "\n", { flag: "wx" });
     });
   });

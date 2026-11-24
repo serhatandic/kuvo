@@ -137,6 +137,21 @@ verifies that an attempted approval cannot release the action. It then
 rejects the ask and checks that a delayed reply cannot answer it again.
 Unified ask cards and delivery routes remain open.
 
+The shared session actions work on coding-agent conversations too.
+`kuvo/sessions/<id>` with its `actions`, `rename`, `pin` and `archive`
+finds the conversation with the agents before asking the engine. The
+saved header keeps the bridge's own notes (`kuvoAgent` and a subagent's
+`kuvo.messages`) when a client replaces the metadata, and reads carry the
+computer's Summarize setting for Claude Code, Codex and Grok. Delete stops
+a running turn first, refuses new turns meanwhile, and removes the
+subagents' conversations unless a fork's steps still show them. Archive
+stops a turn that waits on an approval or a question. The binary case
+(`agent-sessions`) passes on both boxes and their normalized replies
+match. Delete's confirmation now counts the coding agents' rows in a
+worktree, as the TypeScript list does. Holding the box queue on Archive
+and Stop belongs with the delivery work below. The engine's `Auto` run
+that a session forgets on delete stays with Auto.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.

@@ -289,13 +289,13 @@ impl Projection {
             .change_header(&self.session, move |header| match event {
                 TurnEvent::Context { used, window } => {
                     if let Some(window) =
-                        window.filter(|&window| window > 0 && window <= (1 << 53) - 1)
+                        window.filter(|&window| window > 0 && window < (1 << 53))
                     {
                         header.insert("contextWindow".into(), json!(window));
                     }
                     let window = header.get("contextWindow").cloned();
                     let context = object(header, "context");
-                    if let Some(used) = used.filter(|&used| used <= (1 << 53) - 1) {
+                    if let Some(used) = used.filter(|&used| used < (1 << 53)) {
                         context.insert("used".into(), json!(used));
                     }
                     if let Some(window) = window {
@@ -540,7 +540,7 @@ fn reason(error: &TurnError) -> Value {
     reason
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::UNIX_EPOCH
         .elapsed()
         .unwrap_or_default()

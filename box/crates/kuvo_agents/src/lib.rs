@@ -12,6 +12,7 @@ pub mod runtime;
 pub mod session;
 pub mod session_runs;
 pub mod session_store;
+pub mod session_view;
 pub mod sign_in;
 mod turn_projection;
 pub mod turn_runtime;

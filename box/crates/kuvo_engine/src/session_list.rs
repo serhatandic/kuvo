@@ -177,10 +177,9 @@ impl LocalSessions {
             last.started = Some(format!("{:x}-{:x}", crate::disk::now(), std::process::id()));
             if existed {
                 let mut cached = last.clone();
+                // The coding agents' rows are in-process and come with the
+                // first read; only the engine's may still be starting.
                 cached.pending = vec!["engine".to_owned()];
-                if engine.agent_sessions.is_some() {
-                    cached.pending.push("bridge".to_owned());
-                }
                 updates.send_replace(Some(Arc::new(cached)));
             }
             let mut first = true;
@@ -895,21 +894,7 @@ impl Inventory {
             let lease = engine.acquire(Demand::Passive).await?;
             read_inventory(engine, &lease).await.ok()
         };
-        let bridge_rows = async {
-            let source = engine.agent_sessions.as_ref()?;
-            let rows = source.inventory().await.ok()?;
-            Some(
-                rows.into_iter()
-                    .filter_map(|row| {
-                        let session = serde_json::from_value(Value::Object(row.header)).ok()?;
-                        Some(Observed {
-                            session,
-                            running: row.running,
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        };
+        let bridge_rows = agent_rows(engine);
         let (engine_rows, bridge_rows) = tokio::join!(engine_rows, bridge_rows);
         if engine_rows.is_none() && bridge_rows.is_none() {
             return None;
@@ -970,6 +955,23 @@ impl Inventory {
             "engine"
         }
     }
+}
+
+/// The coding agents' conversations, or `None` when they can't be read.
+pub(crate) async fn agent_rows(engine: &Engine) -> Option<Vec<Observed>> {
+    let source = engine.agent_sessions.as_ref()?;
+    let rows = source.inventory().await.ok()?;
+    Some(
+        rows.into_iter()
+            .filter_map(|row| {
+                let session = serde_json::from_value(Value::Object(row.header)).ok()?;
+                Some(Observed {
+                    session,
+                    running: row.running,
+                })
+            })
+            .collect(),
+    )
 }
 
 pub(crate) async fn read_inventory(

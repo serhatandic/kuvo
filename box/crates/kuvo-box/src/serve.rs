@@ -168,6 +168,7 @@ pub async fn run(
         let inventory = agents::sessions::Inventory {
             store: sessions.clone(),
             running: Some(runs.clone()),
+            home: home.to_owned(),
         };
         agents::turns::register(runs, sessions, home.to_owned(), &mut routes);
         engine
@@ -180,6 +181,7 @@ pub async fn run(
         engine.with_agent_sessions(Arc::new(agents::sessions::Inventory {
             store: sessions,
             running: None,
+            home: home.to_owned(),
         }))
     };
     if kind == ComputerKind::Machine {

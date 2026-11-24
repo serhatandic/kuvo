@@ -5,7 +5,11 @@ use kuvo_agents::{
     session_runs::SessionRuns,
     session_store::{MessageOrder, SessionStore},
 };
-use kuvo_engine::{AgentSessionRead, AgentSessionRow, AgentSessionSource};
+use kuvo_agents::{live_asks::AskKey, session_store::SessionPatch, session_view};
+use kuvo_engine::{
+    AgentCall, AgentSessionPatch, AgentSessionRead, AgentSessionRow, AgentSessionSource,
+};
+use serde_json::{Map, Value};
 use kuvo_protocol::routes::{
     get_kuvo_agents_api_session_id_message as transcript,
     types::GetKuvoAgentsApiSessionIdMessageStatus200Cursor as Cursor,
@@ -18,6 +22,7 @@ use tokio::sync::watch;
 pub(crate) struct Inventory {
     pub store: SessionStore,
     pub running: Option<SessionRuns>,
+    pub home: std::path::PathBuf,
 }
 
 impl AgentSessionSource for Inventory {
@@ -44,6 +49,67 @@ impl AgentSessionSource for Inventory {
 
     fn running_changes(&self) -> Option<watch::Receiver<Arc<BTreeSet<String>>>> {
         self.running.as_ref().map(SessionRuns::changes)
+    }
+
+    fn session<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Map<String, Value>>> {
+        Box::pin(async move {
+            Ok(self
+                .store
+                .read(id)
+                .await?
+                .map(|saved| session_view::for_clients(saved.into_fields(), &self.home)))
+        })
+    }
+
+    fn update<'a>(
+        &'a self,
+        id: &'a str,
+        patch: AgentSessionPatch,
+    ) -> AgentCall<'a, Option<Map<String, Value>>> {
+        Box::pin(async move {
+            let AgentSessionPatch {
+                title,
+                permissions,
+                metadata,
+            } = patch;
+            self.store
+                .update(
+                    id,
+                    SessionPatch {
+                        title,
+                        permissions,
+                        metadata,
+                    },
+                )
+                .await
+        })
+    }
+
+    fn delete<'a>(&'a self, id: &'a str) -> AgentCall<'a, bool> {
+        Box::pin(async move {
+            match &self.running {
+                Some(runs) => runs.delete(id.to_owned()).await,
+                None => self.store.delete(id).await,
+            }
+        })
+    }
+
+    fn stop_if_waiting<'a>(&'a self, id: &'a str) -> AgentCall<'a, bool> {
+        Box::pin(async move {
+            let Some(runs) = &self.running else {
+                return Ok(false);
+            };
+            let waiting = runs
+                .asks()
+                .pending()
+                .borrow()
+                .keys()
+                .any(|AskKey { session, .. }| session == id);
+            if waiting {
+                runs.interrupt(id.to_owned()).await?;
+            }
+            Ok(waiting)
+        })
     }
 }
 
