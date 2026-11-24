@@ -532,21 +532,34 @@ fn auth(password: &str) -> String {
 async fn attachment_retention() {
     struct AgentInventory {
         available: std::sync::atomic::AtomicBool,
+        carried: std::sync::atomic::AtomicBool,
     }
 
     impl AttachmentSource for AgentInventory {
         fn conversations(&self) -> AttachmentRead<'_, Vec<AttachmentConversation>> {
             Box::pin(async {
                 if self.available.load(std::sync::atomic::Ordering::Relaxed) {
-                    Ok(Vec::new())
+                    Ok(if self.carried.load(std::sync::atomic::Ordering::Relaxed) {
+                        vec![AttachmentConversation {
+                            id: "ses_carried".into(),
+                            ancestors: vec!["ses_carriedFrom".into()],
+                        }]
+                    } else {
+                        Vec::new()
+                    })
                 } else {
                     Err(io::Error::other("The coding-agent roster is unavailable."))
                 }
             })
         }
 
-        fn transcript<'a>(&'a self, _: &'a str) -> AttachmentRead<'a, Vec<Value>> {
-            Box::pin(async { Ok(Vec::new()) })
+        fn transcript<'a>(&'a self, session: &'a str) -> AttachmentRead<'a, Vec<Value>> {
+            Box::pin(async move {
+                assert_eq!(session, "ses_carried");
+                Ok(vec![
+                    json!({"type":"file","url":"file:///scratch/attachments/ses_carriedFrom/notes.txt"}),
+                ])
+            })
         }
 
         fn protected(&self, session: &str) -> bool {
@@ -563,6 +576,7 @@ async fn attachment_retention() {
     };
     let inventory = Arc::new(AgentInventory {
         available: false.into(),
+        carried: true.into(),
     });
     let files = home.join("attachments");
     for session in [
@@ -571,13 +585,17 @@ async fn attachment_retention() {
         "ses_branch",
         "ses_inMove",
         "ses_gone",
+        "ses_carriedFrom",
     ] {
         let folder = files.join(session);
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("notes.txt"), session).unwrap();
     }
+    let legacy = home.join("mac-attachment-copies");
+    fs::create_dir_all(legacy.join("ses_gone")).unwrap();
+    fs::write(legacy.join("ses_gone/notes.txt"), "Legacy copy.").unwrap();
     let server = Server::start_with(home, |engine| {
-        engine.with_attachment_source(inventory.clone(), None)
+        engine.with_attachment_source(inventory.clone(), Some(legacy.clone()))
     })
     .await;
     assert_eq!(server.get("api/echo").await.status(), 207);
@@ -606,17 +624,27 @@ async fn attachment_retention() {
     inventory
         .available
         .store(true, std::sync::atomic::Ordering::Relaxed);
+    fs::write(work.join("attachment-inventory-unavailable"), []).unwrap();
+    assert!(server.engine.reconcile_attachments().await.is_err());
+    assert!(files.join("ses_gone/notes.txt").exists());
+    fs::remove_file(work.join("attachment-inventory-unavailable")).unwrap();
     server.engine.reconcile_attachments().await.unwrap();
     assert!(!files.join("ses_gone").exists());
+    assert!(legacy.join("ses_gone/notes.txt").exists());
+    assert!(files.join("ses_carriedFrom/notes.txt").exists());
     assert!(files.join("ses_source/notes.txt").exists());
     assert!(files.join("ses_sourceWin/notes.txt").exists());
     assert!(files.join("ses_branch/notes.txt").exists());
     assert!(files.join("ses_inMove/notes.txt").exists());
     fs::write(&show, b"[]").unwrap();
+    inventory
+        .carried
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     server.engine.reconcile_attachments().await.unwrap();
     assert!(!files.join("ses_source").exists());
     assert!(!files.join("ses_sourceWin").exists());
     assert!(!files.join("ses_branch").exists());
+    assert!(!files.join("ses_carriedFrom").exists());
     assert!(files.join("ses_inMove/notes.txt").exists());
     server.stop().await;
 }
@@ -1464,6 +1492,9 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
                 let rows: Value =
                     serde_json::from_slice(&fs::read("active-sessions.json").unwrap()).unwrap();
                 answer = Reply::json(StatusCode::OK, json!({"data":rows}));
+            }
+            "/api/session" if Path::new("attachment-inventory-unavailable").exists() => {
+                answer = Reply::json(StatusCode::SERVICE_UNAVAILABLE, json!({}));
             }
             "/api/session" if Path::new("attachments-list.json").exists() => {
                 let mut rows: Vec<Value> =
