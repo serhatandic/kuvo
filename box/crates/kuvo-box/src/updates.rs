@@ -2,6 +2,7 @@
 
 mod mail;
 mod released_machines;
+mod retry;
 
 use std::{
     io,
@@ -55,6 +56,10 @@ impl Drop for Worker {
 enum Check {
     Local(oneshot::Sender<io::Result<CheckReply>>),
     Peer,
+    Retry(
+        retry::Request,
+        oneshot::Sender<Result<retry::Answer, kuvo_server::Refusal>>,
+    ),
 }
 
 enum CheckReply {
@@ -121,6 +126,7 @@ pub fn start(
                 request = requests.recv() => match request {
                     Some(Check::Local(answer)) => { let _ = answer.send(fleet.request_check(true)); }
                     Some(Check::Peer) => { let _ = fleet.request_check(false); }
+                    Some(Check::Retry(given, answer)) => { let _ = answer.send(fleet.retry(given)); }
                     None => return,
                 }
             }
@@ -142,6 +148,7 @@ pub fn register_check(
     use kuvo_server::{Access, Refusal, RouteReply};
 
     let checks = worker.map(|worker| worker.checks.clone());
+    retry::register(routes, checks.clone());
     routes.register_decoded::<update::Spec, _, _, _>(
         Access::Any,
         |body| {
@@ -227,7 +234,7 @@ struct Fleet {
     released_machines: released_machines::Checks,
     last_sent: Option<(UpdateFacts, Option<BridgeUpdate>)>,
     attempted: Option<PreparedRelease>,
-    pending: Option<JoinHandle<io::Result<()>>>,
+    pending: Option<JoinHandle<Result<(), retry::Failure>>>,
     mail: Option<mail::Mail>,
     pack_server: Option<JoinHandle<()>>,
 }
@@ -342,7 +349,8 @@ impl Fleet {
             && let Some(pending) = self.pending.take()
             && let Err(error) = pending.await.map_err(io::Error::other)?
         {
-            eprintln!("Preparing Kuvo's release: {error}");
+            eprintln!("Preparing Kuvo's release: {}", error.reason);
+            error.save(&self.home)?;
         }
         let (version, working) = fleet::installed(&self.home)?;
         let Some(version) = version else {
@@ -468,18 +476,20 @@ impl Fleet {
             let local = candidate.local()?;
             candidate.keep(&self.home)?;
             let prepared = PreparedRelease {
-                version: local.version,
-                sha256: local.sha256,
+                version: local.version.clone(),
+                sha256: local.sha256.clone(),
             };
             facts.candidate = Some(candidate.version().into());
             facts.release_manifest = Some(candidate.envelope().into());
-            if candidate.is_prepared(&self.home)? {
+            let failed = retry::Failure::for_release(&self.home, &prepared)?.is_some();
+            if !failed && candidate.is_prepared(&self.home)? {
                 facts.staged = Some(prepared.clone());
-            } else if self.pending.is_none()
+            } else if !failed
+                && self.pending.is_none()
                 && self.attempted.as_ref() != Some(&prepared)
                 && !fleet::stopped(&self.home)
             {
-                self.attempted = Some(prepared);
+                self.attempted = Some(prepared.clone());
                 let candidate = candidate.clone();
                 let home = self.home.clone();
                 let fetcher = self.fetcher.clone();
@@ -490,15 +500,26 @@ impl Fleet {
                         Ok(pack) => pack,
                         Err(error) => {
                             let Some(mail) = mail else {
-                                return Err(error);
+                                return Err(retry::Failure::download(prepared, error));
                             };
-                            mail.pull(&candidate.local()?).await.map_err(|_| error)?
+                            mail.pull(&local)
+                                .await
+                                .map_err(|_| retry::Failure::download(prepared.clone(), error))?
                         }
                     };
-                    if let Some(bridge) = candidate.bridge(&key)? {
-                        bridge.retain_bridge(&home, &fetcher).await?;
+                    if let Some(bridge) = candidate
+                        .bridge(&key)
+                        .map_err(|error| retry::Failure::prepare(prepared.clone(), error))?
+                    {
+                        bridge
+                            .retain_bridge(&home, &fetcher)
+                            .await
+                            .map_err(|error| retry::Failure::download(prepared.clone(), error))?;
                     }
-                    candidate.prepare(home, pack).await
+                    candidate
+                        .prepare(home, pack)
+                        .await
+                        .map_err(|error| retry::Failure::prepare(prepared, error))
                 }));
             }
         }
@@ -520,6 +541,7 @@ impl Fleet {
             if standalone || local_main {
                 let (ready, reachable) = barrier(&view, now, &candidate);
                 if candidate.primary_may_switch(&self.home, now, ready, reachable)?
+                    && prepared
                     && (standalone || self.setup.may_switch_fleet().await)
                 {
                     candidate.activate(&self.home).await?;
