@@ -808,7 +808,6 @@ fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
         "run/work-queue",
         "run/owned-data/outbox",
         "run/owned-data/edit-outbox",
-        "run/outbox",
         "data/opencode/storage/session",
     ] {
         if files
@@ -816,6 +815,15 @@ fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
             .iter()
             .any(|name| name != ".DS_Store")
         {
+            return Ok(true);
+        }
+    }
+    // Starting the letter worker creates these folders and a writer lock.
+    // Only queued records keep an otherwise unused setup from joining.
+    for (directory, failed) in [("run/outbox", false), ("run/outbox/sending", true)] {
+        if files.names(directory)?.iter().any(|name| {
+            name.ends_with(".json") || (failed && name.ends_with(".failed"))
+        }) {
             return Ok(true);
         }
     }
