@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Rust box checks Claude Code sign-in and lists the models available to each account.
+
 - Stop still works while a conversation waits for its current turn to finish before moving.
 - Rust computers answer conversation reads from your other computers.
 - A move carries forwarding decisions saved while the conversation is on its way.
