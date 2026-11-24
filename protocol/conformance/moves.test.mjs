@@ -807,6 +807,51 @@ test("incoming bundles keep independent conversations and import a repeated part
   assert.ok(!(await request(resident, "GET", "kuvo/moves")).json.away.includes(moved));
 });
 
+test("a source can replace its partial offer but must explicitly drop a complete copy", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("replaced-offer");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const session = "ses_replacedOffer", thing = session, name = "Offered conversation";
+  const hash = "A".repeat(43), generation = 1;
+  const movement = id => ({ id, hash, generation });
+  const offer = (id, size = 60000, bound = hash) => ({ ...movement(id), hash: bound, op: "offer", from: member.key,
+    kind: "chat", thing, name, size, safeSwitch: true, twoComputers: true });
+  const resident = await here.start().ready();
+  await until(async () => (await request(resident, "GET", "api/session")).status === 200,
+    "The destination engine did not become ready");
+
+  const initial = "mov_partialOriginal", newer = "mov_newOffer";
+  assert.equal((await ask(offer(initial))).op, "ready");
+  assert.equal((await ask({ ...movement(initial), op: "part", i: 0, of: 2,
+    d: Buffer.alloc(30000).toString("base64url") }, "got")).op, "got");
+  const next = await ask(offer(newer));
+  assert.equal(next.op, "ready", JSON.stringify(next));
+  assert.equal((await ask({ ...movement(initial), op: "drop" }, "dropped")).neverSwitched, true);
+  assert.equal((await ask({ ...movement(newer), op: "drop" }, "dropped")).op, "dropped");
+
+  const files = scratch();
+  t.after(() => fs.rmSync(files, { recursive: true, force: true }));
+  write(path.join(files, "move.json"), JSON.stringify({ formatVersion: 1, kind: "chat", thing, name,
+    exports: [{ info: sessionOf({ id: session, directory: path.join(here.home, "chats") }), messages: [] }] }));
+  const tgz = path.join(files, "copy.tgz");
+  const built = spawnSync("tar", ["-czf", tgz, "-C", files, "move.json"], { encoding: "utf8", timeout: 5000 });
+  assert.equal(built.status, 0, built.stderr);
+  const data = fs.readFileSync(tgz), verified = createHash("sha256").update(data).digest("base64url");
+  const complete = "mov_completeOriginal", replacement = "mov_completeReplacement";
+  const current = { id: complete, generation, hash: verified };
+  assert.equal((await ask(offer(complete, data.length, verified))).op, "ready");
+  assert.equal((await ask({ ...current, op: "part", i: 0, of: 1, d: data.toString("base64url") }, "got")).op, "got");
+  assert.equal((await ask({ ...current, op: "arrive" }, "arrived")).op, "arrived");
+  assert.equal((await ask(offer(replacement))).op, "refused");
+  assert.ok(here.engine.sessions.some(row => row.id === session));
+  assert.equal((await ask({ ...current, op: "drop" }, "dropped")).neverSwitched, true);
+  assert.equal((await ask(offer(replacement))).op, "ready");
+  assert.ok(!here.engine.sessions.some(row => row.id === session));
+});
+
 test("incoming archive links cannot touch files outside the move", {
   timeout: 55000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

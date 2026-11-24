@@ -1436,7 +1436,6 @@ impl Driver {
                 .find(|row| row.live() && row.covers(thing));
             if let Some(mut earlier) = earlier {
                 if earlier.thing == thing
-                    && earlier.dropping
                     && earlier.role == Role::To
                     && earlier.peer == sender
                     && let Err(error) = self.drop_copy(view, key, &mut earlier, false).await
@@ -1895,7 +1894,9 @@ impl Driver {
             && row.set_up_since.is_none()
             && !row.dropping
             && (row.extra.get("safeSwitch") != Some(&Value::Bool(true))
-                || !explicit && row.extra.get("twoComputers") == Some(&Value::Bool(true)))
+                || !explicit
+                    && (row.extra.get("twoComputers") == Some(&Value::Bool(true))
+                        || listing::checkpointed(self.run_dir())))
         {
             return Ok(());
         }
