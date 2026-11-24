@@ -2024,9 +2024,11 @@ test("move choices say which delegated work and unanswered questions stay home",
   const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
   await readyToMove(source, id, member);
   const pathFor = session => "kuvo/moves/places?kind=chat&id=" + session;
-  const choices = await request(source, "GET", pathFor(id));
-  assert.equal(choices.status, 200, choices.text);
-  assert.deepEqual(choices.json.stays, { asks: 1, sessions: 2 }, choices.text);
+  let observed;
+  const choices = await until(async () => {
+    observed = await request(source, "GET", pathFor(id));
+    return observed.status === 200 && observed.json.stays?.asks === 1 && observed.json.stays?.sessions === 2 && observed;
+  }, () => "The source did not publish its delegated sessions and one unanswered question\n" + observed?.text);
   const message = choices.json.places.find(place => place.key === member.key).confirm.message;
   assert.ok(message.includes(`Sessions it started stay on ${main.name}. It can still reach them from ${member.name}. Its unanswered questions stay on ${main.name}.`));
   assert.equal((await request(source, "GET", pathFor(unrelated))).json.stays, undefined);
@@ -3112,6 +3114,54 @@ test("a paused queue moves with its messages in order and resumes the first one"
   assert.deepEqual(after.json?.waiting?.map(item => item.id), [second]);
 });
 
+test("a paused engine inbox moves in delivery order with its file", { timeout: 65000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("held-inbox-source"), there = await computer("held-inbox-destination");
+  const { member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_heldInboxMove", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, title: "Held work", directory }));
+  const steer = "msg_inboxSteer", queued = "msg_inboxQueued", waiting = "msg_waitBehindInbox";
+  const letter = "[Message from Ada · ses_ada] (To answer, use send_message to ses_ada.)\n\nThe build is green.";
+  const data = "data:text/plain;base64,b2s=";
+  here.engine.inboxes.set(session, [
+    { id: queued, sessionID: session, type: "user", delivery: "queue", payload: {
+      text: "Also run the tests.", files: [{ data: "b2s=", mime: "text/plain", source: { type: "uri", uri: "file:///gone/log.txt" }, name: "log.txt" }],
+    } },
+    { id: steer, sessionID: session, type: "user", delivery: "steer", payload: { text: letter } },
+  ]);
+  const source = here.start(), destination = there.start();
+  const [a, b] = await Promise.all([source.ready(), destination.ready()]);
+  await readyToMove(a, session, member);
+  const base = `kuvo/sessions/${session}`, queue = base + "/queue";
+  assert.equal((await request(a, "POST", base + "/stop")).json?.paused, true);
+  assert.equal((await request(a, "POST", queue + "/add", { id: waiting, text: "Then the docs." })).json?.waits, true);
+  const moved = await request(a, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(moved.status, 202, moved.text);
+  await moveRetired(here, moved.json.move.id, () => source.log() + "\n" + destination.log());
+  const arrived = await request(b, "GET", queue);
+  assert.equal(arrived.json?.paused, true, arrived.text);
+  assert.deepEqual(arrived.json.waiting.map(item => [item.id, item.from ?? null, item.text, item.files ?? []]), [
+    [steer, "Ada", "The build is green.", []],
+    [queued, null, "Also run the tests.", ["log.txt"]],
+    [waiting, null, "Then the docs.", []],
+  ]);
+  assert.ok(!there.engine.messages.get(session)?.length);
+  const copied = readJSON(path.join(there.home, "run/waiting", queued + ".json"));
+  assert.deepEqual(copied.files, [{ name: "log.txt", uri: data }]);
+  const added = readJSON(path.join(there.home, "run/waiting", waiting + ".json"));
+  for (const [index, id] of [steer, queued, waiting].entries()) {
+    const resumed = await request(b, "POST", queue + "/resume", {});
+    assert.equal(resumed.status, 200, resumed.text);
+    await until(() => there.engine.messages.get(session)?.[index]?.id === id,
+      () => "The moved inbox did not resume " + id + "\n" + JSON.stringify(there.engine.messages.get(session)), 15000);
+  }
+  const prompts = there.engine.messages.get(session);
+  assert.deepEqual(prompts.map(prompt => [prompt.id, prompt.text]), [[steer, letter], [queued, "Also run the tests."], [waiting, added.text]]);
+  assert.deepEqual(prompts[1].files, [{ name: "log.txt", uri: data }]);
+});
+
 test("a missing or unreadable queued payload leaves the conversation on its source", {
   timeout: 125000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
@@ -3219,24 +3269,27 @@ test("a managed attachment moves with both its typed references and its receipt"
   source.engine.sessions.push(sessionOf({ id: session, directory: chats }));
   source.engine.sessions.push(sessionOf({ id: child, directory: chats, parent: session }));
   const original = path.join(source.home, "attachments", session, "proof space.txt");
+  const duplicate = path.join(source.home, "attachments", session, "second", "proof space.txt");
+  const macAttachments = path.join(path.dirname(source.home), "Mac Attachments");
+  const macOnly = path.join(macAttachments, child, "uploads", "child.lock");
   const outside = path.join(source.home, "export only.txt");
   const heading = "Open these attached files with your tools if you need them:";
-  const block = file => `Here is the file.\n<attached-files>\n${heading}\n${file}\n</attached-files>`;
+  const block = (...files) => `Here is the file.\n<attached-files>\n${heading}\n${files.join("\n")}\n</attached-files>`;
   const fileUrl = file => pathToFileURL(file).href + "?version=1#page";
-  const seedReference = file => {
+  const seedReference = (paths, childFile = paths[0]) => {
     source.engine.messages.set(session, [
-      { id: "msg_quotedAttachment", type: "assistant", content: [{ type: "text", text: block(file) }] },
+      { id: "msg_quotedAttachment", type: "assistant", content: [{ type: "text", text: block(...paths) }] },
       { id: message, type: "user", content: [
-      { type: "text", text: block(file) },
-      { type: "file", mime: "text/plain", filename: "proof space.txt", url: fileUrl(file) },
+      { type: "text", text: block(...paths) },
+      ...paths.map(file => ({ type: "file", mime: "text/plain", filename: path.basename(file), url: fileUrl(file) })),
     ] }]);
     source.engine.messages.set(child, [{ id: "msg_childAttachment", type: "user", content: [
-      { type: "file", mime: "text/plain", filename: "proof space.txt", url: fileUrl(file) },
+      { type: "file", mime: "text/plain", filename: path.basename(childFile), url: fileUrl(childFile) },
     ] }]);
   };
   write(outside, "This file stays with the source.");
-  seedReference(outside);
-  const sourceProcess = source.start(), targetProcess = target.start();
+  seedReference([outside]);
+  const sourceProcess = source.start(undefined, { KUVO_MAC_ATTACHMENTS: macAttachments }), targetProcess = target.start();
   const [here] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
   await until(() => {
     try { return readJSON(path.join(source.home, "run/peer-agents.json"))[member.key]?.features?.includes("moves.two-computers"); }
@@ -3259,52 +3312,59 @@ test("a managed attachment moves with both its typed references and its receipt"
   const bytes = "These are the managed bytes.\n";
   write(original, bytes);
   fs.unlinkSync(original);
-  seedReference(original);
+  seedReference([original]);
   const refused = await outcome(await begin("expired attachment"));
   assert.equal(refused.state, "failed");
   assert.match(refused.message, /attachment.*missing|attachment.*unreadable/i);
   assert.ok(source.engine.sessions.some(each => each.id === session));
   assert.equal(target.engine.sessions.length, 0);
 
-  write(original, bytes);
+  const payloads = [[original, bytes, session], [duplicate, "Same name, different contents.\n", session],
+    [macOnly, "Keep the child's separate attachment.\n", child]];
+  for (const [file, contents] of payloads) write(file, contents);
+  seedReference([original, duplicate], macOnly);
   const waiting = "msg_attachmentWaiting";
   write(path.join(source.home, "run/queues.json"), JSON.stringify({
     [session]: { formatVersion: 1, paused: true, held: [], userPaused: true, waiting: [{ id: waiting, text: "Here is the file.", at: 1 }] },
   }));
   write(path.join(source.home, "run/waiting", waiting + ".json"), JSON.stringify({
-    formatVersion: 1, id: waiting, delivery: "queue", text: block(original),
-    metadata: { kuvo: { parts: { words: "Here is the file.", paths: [original] } } },
-    files: [{ name: "proof space.txt", uri: fileUrl(original) }],
+    formatVersion: 1, id: waiting, delivery: "queue", text: block(original, duplicate),
+    metadata: { kuvo: { parts: { words: "Here is the file.", paths: [original, duplicate] } } },
+    files: [original, duplicate].map(file => ({ name: path.basename(file), uri: fileUrl(file) })),
   }));
   const move = await begin("available attachment");
   const completed = await outcome(move);
   assert.equal(completed.state, "done", JSON.stringify(completed));
   const receipt = readJSON(path.join(target.home, "run/moves/decisions", move + ".json"));
-  const slot = createHash("sha256").update(original).digest("hex");
-  const relative = `${session}/move-${move}/${slot}/proof space.txt`;
-  const installed = path.join(target.home, "attachments", ...relative.split("/"));
-  assert.deepEqual(receipt.payloads.sessions, [{
-    from: original, relative, size: Buffer.byteLength(bytes), sha256: createHash("sha256").update(bytes).digest("base64url"),
-  }]);
+  const relativeOf = (from, owner) => `${owner}/move-${move}/${createHash("sha256").update(from).digest("hex")}/${path.basename(from)}`;
+  assert.deepEqual(new Map(receipt.payloads.sessions.map(row => [row.from, row])), new Map(payloads.map(([from, contents, owner]) => [from, {
+    from, relative: relativeOf(from, owner), size: Buffer.byteLength(contents), sha256: createHash("sha256").update(contents).digest("base64url"),
+  }])));
+  const installed = payloads.map(([from, , owner]) => path.join(target.home, "attachments", ...relativeOf(from, owner).split("/")));
+  const [first, second, third] = installed;
+  assert.notEqual(first, second);
   await sourceProcess.stop();
-  fs.unlinkSync(original);
+  for (const [from] of payloads) fs.unlinkSync(from);
   await targetProcess.stop();
   const reopened = await target.start().ready();
-  const file = await request(reopened, "GET", `kuvo/file?withMode=1&uri=${encodeURIComponent(fileUrl(installed))}`);
-  assert.equal(file.status, 200, file.text);
-  assert.equal(file.text, bytes);
+  for (const [index, file] of installed.entries()) {
+    const opened = await request(reopened, "GET", `kuvo/file?withMode=1&uri=${encodeURIComponent(fileUrl(file))}`);
+    assert.equal(opened.status, 200, opened.text);
+    assert.equal(opened.text, payloads[index][1]);
+  }
   const copied = target.engine.messages.get(session).find(entry => entry.id === message);
-  assert.equal(copied.content[0].text, block(installed));
-  assert.equal(copied.content[1].url, fileUrl(installed));
-  assert.equal(target.engine.messages.get(session)[0].content[0].text, block(original));
-  assert.equal(target.engine.messages.get(child)[0].content[0].url, fileUrl(installed));
+  assert.equal(copied.content[0].text, block(first, second));
+  assert.deepEqual(copied.content.slice(1).map(part => part.url), [fileUrl(first), fileUrl(second)]);
+  assert.equal(target.engine.messages.get(session)[0].content[0].text, block(original, duplicate));
+  assert.equal(target.engine.messages.get(child)[0].content[0].url, fileUrl(third));
   const saved = readJSON(path.join(target.home, "run/waiting", waiting + ".json"));
-  assert.equal(saved.text, block(installed));
-  assert.equal(saved.files[0].uri, "data:text/plain;base64," + Buffer.from(bytes).toString("base64"));
-  assert.deepEqual(saved.metadata.kuvo.parts.paths, [installed]);
+  assert.equal(saved.text, block(first, second));
+  assert.deepEqual(saved.files.map(file => file.uri), payloads.slice(0, 2).map(([, contents]) =>
+    "data:text/plain;base64," + Buffer.from(contents).toString("base64")));
+  assert.deepEqual(saved.metadata.kuvo.parts.paths, [first, second]);
   assert.ok(target.engine.asked.some(call => call.method === "PUT"
     && call.path.endsWith("/instructions/entries/kuvo.moved")
-    && call.json?.value.includes(`The attachment at ${original} is at ${installed} now.`)));
+    && call.json?.value.includes(`The attachment at ${original} is at ${first} now.`)));
 });
 
 test("both residents create and clear the same peer reach files", {

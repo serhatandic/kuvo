@@ -138,7 +138,7 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Ninety-three have full scenario coverage, 14 have partial proof,
+below counts 212 declarations. Ninety-four have full scenario coverage, 13 have partial proof,
 and 105 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
@@ -149,7 +149,8 @@ separately where they appear.
 | | 2 | Partial, both residents move a wake-up folder round trip under the journal's hold with separate chats and wake-up roots. The installed Mac and its Trash are 9.3. |
 | | 7–8 | Covered by the live transfer of a tree with more children than one engine page and by two simultaneous requests competing for the same chat. |
 | | 11 | Covered by the live move of a paused letter and an attached-file prompt, checking their order, shown words, and first delivery after resume. |
-| | 12, 14 | Partial, typed managed files travel with the root, its child and a held prompt. Engine-held order with multiple attachments, duplicate basenames, and the Mac app's separate attachment root are still 2.4 and 3.2. |
+| | 12 | Partial, engine-held steer and queue items move in delivery order ahead of locally queued work. Resume restores each prompt and its bytes. The exact unreadable-queue refusal needs the typed failure from 3.2. |
+| | 14 | Covered by two different files with the same basename plus a child file in the Mac attachment root. The destination verifies each receipt, keeps the order and quoted paths, and opens every file after restart and source loss. |
 | | 15–16 | Covered by a live source refusing an expired attachment and a file path outside its managed roots. |
 | | 4, 9 | Bot moves and wake-up state owned by 5.1. |
 | | 6 | Group placement owned by 5.3. |
