@@ -213,6 +213,19 @@ an interruption never leaves a folder whose versions look installed. Two
 scenarios run it with a stand-in installer. The bridge has no tests of
 its own for this.
 
+`kuvo-box mcp` is the stdio MCP forwarder an agent starts in its sandbox
+(`kuvo_agents::tool_forwarder`). It sends each message to the tools
+relay with the session's key, never through a proxy, keeps the relay's
+MCP session, and forwards a cancel only for a call still open. While the
+relay restarts it waits up to 80 seconds and sends a call again with the
+same `kuvo.operation`; a browser call is never sent twice. Three
+scenarios against a stand-in relay cover these rules, including
+[toolrelay](../../box/test/agents/toolrelay.test.ts) case 1. When the
+tool's time runs out it answers "Kuvo Code's tools didn't answer."
+where the bridge's script passed on its timer's abort message. The
+relay itself (keys, programs, the computer's MCP servers and stand-ins,
+cases 2–9) and the browser's MCP mode remain open.
+
 The agent-slot store, the JSON-RPC connection (with its real-holder
 process test) and the runtime package installer passed on macOS, Linux
 (lokum), WSL2 and native Windows.

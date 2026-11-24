@@ -32,6 +32,19 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         kuvo_agents::hold::run(&args[1..])?;
         return Ok(ExitCode::SUCCESS);
     }
+    // The stdio MCP forwarder an agent starts in its sandbox.
+    if (word(0), args.len()) == (Some("mcp"), 1) {
+        let relay = kuvo_agents::tool_forwarder::Relay::from_env()?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(kuvo_agents::tool_forwarder::forward(
+                relay,
+                tokio::io::BufReader::new(tokio::io::stdin()),
+                tokio::io::stdout(),
+            ))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     #[cfg(target_os = "macos")]
     if word(0) == Some("install-media") {
         return Ok(install_media::run(&args[1..]));
