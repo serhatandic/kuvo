@@ -18,6 +18,7 @@ mod worker;
 #[cfg(windows)]
 pub mod windows;
 
+pub use engine_pack::provision_pinned_engine;
 pub use readiness::resident_info;
 pub use release::Release;
 pub use worker::wait_for_stop;

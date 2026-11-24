@@ -3,13 +3,16 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     time::{Duration, Instant},
 };
 
 use flate2::read::GzDecoder;
-use kuvo_os::{platform::Environment, process::Spawn};
+use kuvo_os::{
+    platform::Environment,
+    process::{Spawn, Stdio},
+};
 use kuvo_store::{files, format::ObjectFormat, home::Home, locks};
 use serde::Deserialize;
 use serde_json::json;
@@ -259,6 +262,26 @@ fn check_downgrade(home: &Home, next: &Contents) -> io::Result<()> {
 }
 
 fn check_program(program: &Path, args: &[&str], folder: &Path, failure: &str) -> io::Result<()> {
+    probe_program(program, args, folder, failure, None)
+}
+
+pub(crate) fn check_engine_version(program: &Path, folder: &Path, version: &str) -> io::Result<()> {
+    probe_program(
+        program,
+        &["--version"],
+        folder,
+        "The engine doesn't report the pinned version.",
+        Some(version),
+    )
+}
+
+fn probe_program(
+    program: &Path,
+    args: &[&str],
+    folder: &Path,
+    failure: &str,
+    version: Option<&str>,
+) -> io::Result<()> {
     let mut env: Environment = std::env::vars_os()
         .filter(|(key, _)| {
             ["PATH", "SystemRoot", "WINDIR"]
@@ -285,17 +308,31 @@ fn check_program(program: &Path, args: &[&str], folder: &Path, failure: &str) ->
     let mut command = Spawn::new(program, env);
     command.cwd = Some(folder.into());
     command.args = args.iter().map(|arg| (*arg).into()).collect();
+    let capture = if let Some(version) = version {
+        let output = tempfile::tempfile_in(folder)?;
+        command.stdout = Stdio::File(output.try_clone()?);
+        Some((output, version))
+    } else {
+        None
+    };
     let mut child = command
         .spawn()
         .map_err(|error| io::Error::other(format!("{failure} {error}")))?;
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         if child.has_exited()? {
-            return child
-                .wait()?
-                .success()
-                .then_some(())
-                .ok_or_else(|| io::Error::other(failure));
+            if !child.wait()?.success() {
+                return Err(io::Error::other(failure));
+            }
+            if let Some((mut output, version)) = capture {
+                output.seek(SeekFrom::Start(0))?;
+                let mut bytes = Vec::new();
+                output.take(129).read_to_end(&mut bytes)?;
+                if bytes.len() > 128 || std::str::from_utf8(&bytes).map(str::trim) != Ok(version) {
+                    return Err(io::Error::other(failure));
+                }
+            }
+            return Ok(());
         }
         if Instant::now() >= until {
             child.stop(Duration::from_millis(100), |_| {})?;

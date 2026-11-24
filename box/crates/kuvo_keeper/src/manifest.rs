@@ -65,6 +65,12 @@ struct Manifest {
     pack: Pack,
     #[serde(default)]
     packs: BTreeMap<String, Pack>,
+    #[serde(flatten)]
+    engines: EngineCatalogue,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct EngineCatalogue {
     darwin: Option<Value>,
     linux: Option<Value>,
     windows: Option<Value>,
@@ -198,11 +204,17 @@ impl SignedRelease {
     }
 
     pub(crate) fn engine_build(&self, target: &str) -> Option<EngineBuild> {
+        self.manifest.engines.build_for(target)
+    }
+}
+
+impl EngineCatalogue {
+    pub(crate) fn build_for(&self, target: &str) -> Option<EngineBuild> {
         let (arch, system) = target.split_once('-')?;
         let catalogue = match system {
-            "apple-darwin" => self.manifest.darwin.as_ref(),
-            "unknown-linux-musl" => self.manifest.linux.as_ref(),
-            "pc-windows-gnullvm" => self.manifest.windows.as_ref(),
+            "apple-darwin" => self.darwin.as_ref(),
+            "unknown-linux-musl" => self.linux.as_ref(),
+            "pc-windows-gnullvm" => self.windows.as_ref(),
             _ => None,
         }?;
         serde_json::from_value(catalogue.get(arch)?.clone()).ok()
