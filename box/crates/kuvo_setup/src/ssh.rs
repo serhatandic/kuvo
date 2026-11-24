@@ -5,6 +5,7 @@ mod address;
 mod connect;
 mod fresh;
 mod local_reservation;
+mod saved_machine;
 mod transport;
 mod uninstall;
 
@@ -12,6 +13,7 @@ mod uninstall;
 pub(crate) use connect::is_reservation_token;
 pub(crate) use fresh::finish as finish_seed_for_member;
 pub(crate) use local_reservation::LocalReservation;
+pub use saved_machine::{SavedMachine, SavedOutput, with_saved_machine};
 
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
