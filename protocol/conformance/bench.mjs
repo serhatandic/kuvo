@@ -6,12 +6,12 @@ import { relayLeaseStandIn } from "../../box/bridge-tests/relay-lease-stand-in.j
 import { boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { standInEngine } from "./engine.mjs";
 
-export async function bench(t) {
+export async function bench(t, { handover = false } = {}) {
   const binary = boxBinary();
   const root = fs.realpathSync(scratch());
   const children = [];
   const engines = [];
-  const leases = relayLeaseStandIn();
+  const leases = relayLeaseStandIn({ transferStartsNow: handover });
   const relay = await localRelay({ request: leases.request });
   t.after(async () => {
     for (const child of children.reverse()) await child.stop();

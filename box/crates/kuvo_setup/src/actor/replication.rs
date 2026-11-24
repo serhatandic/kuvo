@@ -208,11 +208,11 @@ impl Owner {
         let mut next = self.link.clone();
         if next.setup()?.position != cert.setup {
             let roster = membership(&shared, &cert.setup, &sign)?;
-            if !roster
+            let current = roster
                 .boxes
                 .iter()
-                .any(|peer| peer.key == own.public && peer.sign.as_deref() == Some(&own.sign))
-            {
+                .any(|peer| peer.key == own.public && peer.sign.as_deref() == Some(&own.sign));
+            if !current && !super::removal::retired_member(&roster, own) {
                 return Err(Error::Conflict);
             }
             let role = if cert.setup.primary == own.public {
@@ -481,7 +481,7 @@ impl Owner {
         Ok(())
     }
 
-    async fn take_doc(&mut self, from: &str, doc: Document) -> Result<(), Error> {
+    pub(super) async fn take_doc(&mut self, from: &str, doc: Document) -> Result<(), Error> {
         match doc.kind {
             Kind::SetupShared => self.take_replica(doc).await,
             Kind::SetupCheckpoint => {

@@ -21,11 +21,11 @@ use serde_json::{Map, Value, json};
 
 use super::{Owner, Response, with_receipt};
 use crate::{
-    Error,
+    Error, checkpoint,
     edits::Submitter,
     installer,
     model::{
-        ComputerKind, Link, Membership, Peer, Position, Role, Setup, SharedKind, receipt,
+        ComputerKind, Identity, Link, Membership, Peer, Position, Role, Setup, SharedKind, receipt,
         safe_token,
     },
     object, random, wipe,
@@ -570,7 +570,7 @@ impl Owner {
                 .setup()
                 .is_ok_and(|setup| setup.role == Role::Member)
         {
-            return self.take_member_unlink(sender, envelope).await;
+            return self.take_member_unlink(sender, from, envelope).await;
         }
         if self.can_write().is_err() {
             return Ok(());
@@ -588,7 +588,22 @@ impl Owner {
         if message.get("setup").and_then(Value::as_str) != Some(&setup.id) {
             return Ok(());
         }
-        if record.asks_erase()
+        if !record.delivered
+            && let Some(epoch) = message.get("sync").and_then(Value::as_u64)
+            && (1..setup.epoch).contains(&epoch)
+            && let Some(signed) = self.link.leadership.get(&(epoch + 1))
+        {
+            for doc in checkpoint::packet(&self.files, signed)? {
+                if doc.d.len() + doc.s.len() + 16 > 48_000 {
+                    for part in documents::split(&doc)? {
+                        self.send_removal(&peer, json!({"authorityPart": part}))
+                            .await;
+                    }
+                } else {
+                    self.send_removal(&peer, json!({"authority": doc})).await;
+                }
+            }
+        } else if record.asks_erase()
             && !record.delivered
             && message.get("review").and_then(Value::as_str) == Some(UNSUPPORTED_REVIEW)
             && message.get("operation").and_then(Value::as_str) == Some(&record.operation)
@@ -671,6 +686,7 @@ impl Owner {
     async fn take_member_unlink(
         &mut self,
         sender: [u8; 32],
+        from: Address,
         envelope: &Envelope,
     ) -> Result<(), Error> {
         let message = &envelope.0;
@@ -690,20 +706,35 @@ impl Owner {
         }
         let setup = self.link.setup()?.clone();
         if setup.role != Role::Member
-            || setup.position.primary != source
             || ["localWipe", "setupMerge"]
                 .iter()
                 .any(|field| self.link.extra.contains_key(*field))
         {
             return Ok(());
         }
-        let roster = self.roster()?;
-        let Some(primary) = roster.boxes.into_iter().find(|peer| peer.key == source) else {
-            return Ok(());
-        };
-        let Some(host) = Host::from_text(&primary.key, &primary.address) else {
-            return Ok(());
-        };
+        if self
+            .lease
+            .seen
+            .as_ref()
+            .is_some_and(|lease| lease.holder == source)
+        {
+            let authority = if let Some(part) = message.get("authorityPart") {
+                serde_json::from_value(part.clone())
+                    .ok()
+                    .and_then(|part| self.parts.receive(sender, part).ok().flatten())
+            } else {
+                message
+                    .get("authority")
+                    .and_then(|doc| serde_json::from_value(doc.clone()).ok())
+                    .and_then(|doc| documents::verify(doc).ok())
+            };
+            if let Some(doc) =
+                authority.filter(|doc| matches!(doc.kind, Kind::SetupCheckpoint | Kind::Leadership))
+            {
+                self.take_doc(&source, doc).await?;
+                return Ok(());
+            }
+        }
         let key = self.own()?.public.clone();
         let Some((kind, signed)) = message
             .get("offer")
@@ -725,11 +756,10 @@ impl Owner {
         let position = &setup.position;
         let body = &doc.body;
         if doc.kind != Kind::SetupShared
-            || encode(&doc.origin) != setup.sign
-            || doc.n != position.epoch
+            || doc.n < position.epoch
             || body.get("removal").and_then(Value::as_str) != Some(kind)
             || body.get("setup").and_then(Value::as_str) != Some(&position.id)
-            || body.get("primary").and_then(Value::as_str) != Some(&position.primary)
+            || body.get("primary").and_then(Value::as_str) != Some(&source)
             || body.get("key").and_then(Value::as_str) != Some(&key)
         {
             return Ok(());
@@ -739,6 +769,33 @@ impl Owner {
             .and_then(Value::as_str)
             .filter(|op| safe_token(op, 22, 43))
         else {
+            return Ok(());
+        };
+        if kind == "offer" && doc.n > position.epoch {
+            self.next = Instant::now();
+            let host = self.host(&source).unwrap_or(Host {
+                key: sender,
+                address: from,
+            });
+            self.send_removal(&host, json!({"sync": position.epoch, "setup": position.id}))
+                .await;
+            return Ok(());
+        }
+        if source != position.primary
+            || doc.n != position.epoch
+            || encode(&doc.origin) != setup.sign
+        {
+            return Ok(());
+        }
+        let Some(primary) = self
+            .roster()?
+            .boxes
+            .into_iter()
+            .find(|peer| peer.key == source)
+        else {
+            return Ok(());
+        };
+        let Some(host) = Host::from_text(&primary.key, &primary.address) else {
             return Ok(());
         };
         let held = self.link.extra.get("removalSource");
@@ -1050,6 +1107,13 @@ fn read_removal(key: &str, value: &Value) -> Option<Removal> {
 
 fn removal_for(roster: &Membership, key: &str) -> Option<Removal> {
     read_removal(key, roster.extra.get("removals")?.get(key)?)
+}
+
+pub(super) fn retired_member(roster: &Membership, identity: &Identity) -> bool {
+    roster.left.contains(&identity.public)
+        && removal_for(roster, &identity.public).is_some_and(|record| {
+            record.exchanges_mail() && record.peer.sign.as_deref() == Some(&identity.sign)
+        })
 }
 
 pub(crate) enum WipeProgress {

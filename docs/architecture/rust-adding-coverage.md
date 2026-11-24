@@ -58,6 +58,7 @@ the races that span removal, backup, moves, and an authority change.
 | U21 | [A live Unix member uninstalls after its main revokes the local desktop](../../protocol/conformance/removal.test.mjs) | The local CLI waits for the main's signed revocation before stopping the member, removes the local desktop identity and keeps its work. A live Noise session open on the Mac main closes and the revoked identity cannot reconnect. |
 | U22 | [Uninstall from a saved SSH address commits and waits for a signed wipe](../../protocol/conformance/ssh-adding.test.mjs) | Both current setups require an address bound to the member’s key. They revoke the offline member, clear its saved address, report the signed commit, and finish when the member erases and acknowledges. Stop after the commit leaves the attempt active. Recording a lost disk ends the attempt with an unconfirmed erase and preserves its receipt. |
 | U23 | [Unlink keeps its signed revocation when forgetting the SSH address fails](../../protocol/conformance/ssh-adding.test.mjs) | Both boxes commit access revocation before editing the address list. An unwritable list produces an error with the saved proof. After restart, repeating the operation clears the address and its pending cleanup record without advancing membership again. |
+| U24 | [A removed Unix member completes a pending wipe after the main computer hands over](../../protocol/conformance/removal.test.mjs) | Both boxes carry the same pending operation to the successor. The original source comes online in the old epoch, gets the successor’s signed checkpoint over removal mail, and wipes. The successor records the signed completion, and the former main sees the pending row disappear. |
 
 ## Stored and inherited cases
 
@@ -214,7 +215,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 38 have coverage and 156 still have open or partial work. Of those, 111 list 2.3 as an owner (82 open, 29 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 39 have coverage and 155 still have open or partial work. Of those, 110 list 2.3 as an owner (81 open, 29 partial).
 
 ### computers-add
 
@@ -485,7 +486,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 38 h
 | [a lost disk closes a pending wipe and preserves the key revocations](../../box/bridge-tests/setup-handover-removal.test.js#L309) | U14 verifies replay, preservation of the revoked key and signing key, and removal of the pending row. | — |
 | [unlinking the only computer wipes its local setup](../../box/bridge-tests/setup-handover-removal.test.js#L327) | U7 verifies the signed receipt and directory retirement on a sole Unix resident without a keeper or configured backup. U10 verifies the reinstall gate. The full three-computer prelude, action list, keeper, and native Windows remain open. | 2.3, 7.1, 8.1 |
 | [a sole primary can supersede and cancel a prepared removal](../../box/bridge-tests/setup-handover-removal.test.js#L366) | Open | 2.3 |
-| [a pending wipe follows the setup through handover](../../box/bridge-tests/setup-handover-removal.test.js#L395) | Open | 2.3 |
+| [a pending wipe follows the setup through handover](../../box/bridge-tests/setup-handover-removal.test.js#L395) | U24 verifies the signed pending operation on the successor, catch-up over removal mail, the source’s wipe and completion, and the update on the former main. | — |
 | [a failed pre-wipe backup leaves the removed computer’s data in place](../../box/bridge-tests/setup-handover-removal.test.js#L412) | U20 verifies the missing disk diagnostic in the local log, the unprepared signed wipe, untouched local work, and the pending row until the backup can be verified. | — |
 | [move all verifies accepted ownership before wiping the source](../../box/bridge-tests/setup-handover-export.test.js#L14) | Open | 2.3, 2.4 |
 | [an offline Relay source completes its accepted moves and export on reconnect](../../box/bridge-tests/setup-handover-export.test.js#L56) | Open | 2.3, 2.4, 2.5 |

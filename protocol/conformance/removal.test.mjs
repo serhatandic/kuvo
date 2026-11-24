@@ -96,26 +96,31 @@ test("an offline wipe stays pending across a restart until a lost disk is record
 
 test("a removed Unix member wipes on reconnect and retries the sealed completion from a fresh reply identity", {
   skip: process.platform === "win32", timeout: 60000,
-}, t => unixMemberWipe(t, false));
+}, t => unixMemberWipe(t));
 
 test("an offline member keeps its data until its configured pre-wipe backup can be verified", {
   skip: process.platform === "win32", timeout: 110000,
-}, t => unixMemberWipe(t, true));
+}, t => unixMemberWipe(t, { makesBackup: true }));
 
-async function unixMemberWipe(t, makesBackup) {
-  const { computer, relay, leases } = await bench(t);
+test("a removed Unix member completes a pending wipe after the main computer hands over", {
+  skip: process.platform === "win32", timeout: 90000,
+}, t => unixMemberWipe(t, { handover: true }));
+
+async function unixMemberWipe(t, { makesBackup = false, handover = false } = {}) {
+  const { computer, relay, leases } = await bench(t, { handover });
   const studio = await computer("Studio");
+  let leader = studio;
   const lab = await computer("Lab", undefined, undefined, { canonical: true });
-  const primary = studio.connect(await studio.start().ready());
+  let primary = studio.connect(await studio.start().ready());
   const accepted = (await primary("GET", "kuvo/setup")).json;
   await until(() => leases.leaseFor(accepted.setup), "Studio did not obtain the relay lease.");
   const offer = await primary("POST", "kuvo/computers/add/code", {}, fromMac);
   assert.equal(offer.status, 201, offer.text);
   const joined = await lab.join(offer.json.code);
   assert.equal(joined.code, 0, joined.log);
-  let observer;
-  if (makesBackup) {
-    const workshop = await computer("Workshop");
+  let observer, workshop;
+  if (makesBackup || handover) {
+    workshop = await computer("Workshop");
     const invite = await primary("POST", "kuvo/computers/add/code", {}, fromMac);
     assert.equal(invite.status, 201, invite.text);
     const admitted = await workshop.join(invite.json.code);
@@ -136,9 +141,8 @@ async function unixMemberWipe(t, makesBackup) {
       disk: fs.statSync(path.dirname(disk)).dev, projects: [],
     }), { mode: 0o600 });
   }
-  const state = () => readJSON(path.join(studio.home, "run", "link.json"));
+  const state = () => readJSON(path.join(leader.home, "run", "link.json"));
   const roster = () => state().shared.membershipAndAccess.value;
-  const studioAddress = Buffer.from(roster().boxes.find(peer => peer.key === accepted.you.key).address, "base64url");
   const target = roster().boxes.find(peer => peer.name === "Lab");
   const original = readJSON(path.join(lab.home, "run", "link.json"));
   const oldAddress = Buffer.from(target.address, "base64url");
@@ -152,12 +156,26 @@ async function unixMemberWipe(t, makesBackup) {
     await until(async () => (await pending(observer))?.some(each => each.operation === operation),
       "The observing member did not receive the pending wipe.");
   }
+  if (handover) {
+    const next = (await observer("GET", "kuvo/setup")).json.you.key;
+    const sent = await primary("POST", "kuvo/setup/handover", { primary: next, epoch: accepted.epoch }, fromMac, 30000);
+    assert.equal(sent.status, 202, sent.text);
+    for (const ask of [primary, observer]) {
+      await until(async () => (await ask("GET", "kuvo/setup")).json.epoch === accepted.epoch + 1,
+        "The new main did not take over.", 15000);
+    }
+    [primary, observer] = [observer, primary];
+    leader = workshop;
+    assert.deepEqual(await pending(primary), [{ key: target.key, name: "Lab", operation }]);
+    assert.notEqual(roster().removals[target.key].delivered, true);
+  }
+  const mainAddress = Buffer.from(roster().boxes.find(peer => peer.key === state().setup.primary).address, "base64url");
   assert.ok(fs.existsSync(lab.home));
   const receipts = path.join(path.dirname(lab.home), ".kuvo-code-removal-receipts");
   const file = path.join(receipts, `${operation}.json`);
   const proof = path.join(receipts, `${operation}.ack`);
   const packets = [];
-  const stopIntercepting = relay.intercept(null, studioAddress, packet => {
+  const stopIntercepting = relay.intercept(null, mainAddress, packet => {
     if (packet.from.equals(oldAddress) || packet.payload[0] !== 5 || fs.existsSync(lab.home)) return false;
     if (!packet.payload.subarray(5).subarray(0, 16).equals(Buffer.from("kuvo-removal-v1\0"))) return false;
     packets.push(packet);
@@ -198,7 +216,7 @@ async function unixMemberWipe(t, makesBackup) {
   assert.ok(!packets[0].from.equals(oldAddress));
   assert.deepEqual(packets[0].from, relayAddress(Buffer.from(kept.secret, "base64url")));
   assert.deepEqual(packets[1].payload, packets[0].payload);
-  assert.deepEqual(Buffer.concat([Buffer.from([2]), studioAddress, packets[0].payload]), Buffer.from(kept.done, "base64url"));
+  assert.deepEqual(Buffer.concat([Buffer.from([2]), mainAddress, packets[0].payload]), Buffer.from(kept.done, "base64url"));
   assert.deepEqual(packets[0].payload.subarray(0, 5), Buffer.from([5, 0, 0, 0, 0]));
   assert.deepEqual(packets[0].payload.subarray(21, 53), Buffer.from(target.key, "base64url"));
   const reconnect = relay.disconnect(packets[0].from);

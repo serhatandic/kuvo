@@ -520,9 +520,13 @@ fn established_identity(
     if !setup.aside {
         validate_shared(&link.shared)?;
         let members = link.member_list()?;
-        if !members.boxes.iter().any(|peer| {
+        let current = members.boxes.iter().any(|peer| {
             peer.key == identity.public && peer.sign.as_deref() == Some(&identity.sign)
-        }) || (setup.role == Role::Primary) != (setup.position.primary == identity.public)
+        });
+        let retired =
+            !current && setup.role == Role::Member && removal::retired_member(&members, &identity);
+        if (!current && !retired)
+            || (setup.role == Role::Primary) != (setup.position.primary == identity.public)
         {
             return Err(Error::Invalid("local setup membership"));
         }
@@ -532,8 +536,17 @@ fn established_identity(
             if cert.setup != setup.position || encode(&doc.origin) != setup.sign {
                 return Err(Error::Invalid("stored leadership"));
             }
-            checkpoint::resolve(files, &doc, &cert)?;
-        } else if setup.role == Role::Primary
+            let (shared, _) = checkpoint::resolve(files, &doc, &cert)?;
+            if retired
+                && !removal::retired_member(
+                    &crate::model::membership(&shared, &cert.setup, &setup.sign)?,
+                    &identity,
+                )
+            {
+                return Err(Error::Invalid("stored leadership has no local removal"));
+            }
+        } else if retired
+            || setup.role == Role::Primary
             || !setup
                 .extra
                 .get("leadershipHash")
@@ -726,10 +739,11 @@ fn peer_roster(link: &Link, identity: Option<&Identity>) -> Option<Roster> {
     let own = identity?;
     let setup = link.setup().ok()?;
     let roster = link.member_list().ok()?;
+    let listed = roster.boxes.iter().any(|peer| peer.key == own.public);
     let named = link.value(SharedKind::SetupNames);
     let mut name = link.name.clone().unwrap_or_default();
     let mut members = Vec::new();
-    for peer in roster.boxes {
+    for peer in roster.boxes.into_iter().filter(|_| listed) {
         let title = named
             .and_then(|names| names.get(&peer.key))
             .and_then(Value::as_str)
@@ -766,6 +780,7 @@ fn relay_config(
     kind: ComputerKind,
 ) -> Result<relay::Config, Error> {
     let roster = link.member_list()?;
+    let listed = roster.boxes.iter().any(|peer| peer.key == identity.public);
     let grants = if link.devices_disabled {
         HashMap::new()
     } else {
@@ -775,7 +790,7 @@ fn relay_config(
         url: url.into(),
         secret: identity.secret,
         key: identity.key,
-        peers: roster.hosts(&identity.public).collect(),
+        peers: roster.hosts(&identity.public).filter(|_| listed).collect(),
         grants: grants
             .into_iter()
             .map(|(key, grant)| (key, grant.id))
