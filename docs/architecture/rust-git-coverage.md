@@ -15,12 +15,18 @@ never by running git, looked for again off the request path each 15 seconds as `
   `box/dist/kuvo-link.js` and `box/target/debug/kuvo-box` (macOS): none kept; kept projects with
   their other folders, the box's worktree records and a linked worktree made with `git worktree
   add`; a list from a newer box refused (409, its words).
-- Differential: `GET kuvo/projects` on a seeded home (projects, records, odd fields) answers the
-  same from both boxes.
+- Differential: `GET kuvo/projects` on a seeded home (projects, records, fields the route doesn't
+  name, `removed` written other ways) answers the same from both boxes.
+- OSes: the conformance area passes on macOS (both boxes), native Windows (the cross-built
+  `kuvo-box.exe`, run directly over SSH) and Linux (a static musl build under WSL), 4 of 4 each.
 - A TS bug fixed (the conformance case fails on the old TS): a project marked removed by hand with
   something other than `true` (`0`, `"yes"`) was answered as it was written, against the route's
   shape (`removed?: bool`); both boxes now say `removed: true` where it reads as removed and leave it
   out where it doesn't, as it's filed.
+- Fields the route doesn't name are answered as they're kept, as TS answers them
+  (`RouteReply::json_as_kept` in `kuvo_server`; the route's typed answer refuses unknown fields).
+- On Windows a folder that starts at a drive's top (`/work`, `\\work`) is a full path, as Node's
+  `path.isAbsolute` reads it there.
 - Unit tests in `kuvo_services`: reading the list (versions, filtering), filing other folders and
   worktrees, a project's linked worktrees naming it back.
 
@@ -53,9 +59,6 @@ worktrees and branch-backups not started.
   is ported first, whole and tested, then the reads on it.
 - `kuvo/projects/events`, `PUT kuvo/projects`, `DELETE kuvo/projects` (Remove Project, with the
   engine). The `projects` feature isn't advertised until they're there.
-- Unknown fields of a project record: the TS box answers them as written; the Rust box answers the
-  route's own fields (its answer is typed by the route's shape).
 - The 6.3 cases of the other maps: golden-home projects (`protocol/conformance/compat.test.mjs`),
   project removal from 5.1, `projects-worktrees` and `start-cancelled-worktree` in
   [rust-engine-coverage.md](rust-engine-coverage.md).
-- OSes: macOS. Windows and Linux are left.
