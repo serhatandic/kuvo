@@ -30,9 +30,8 @@ impl EngineApi for EnginePort {
 /// The resident's relay, its address and keys kept in its run folder. On a
 /// computer, Kuvo Code's tools are the program the engine's settings name,
 /// and agents reach them through the box's forwarder, which waits for the
-/// relay through an update; on a desktop, its box's own tools go to its
-/// routes. (A command's server runs as it is until the sandbox has a
-/// launcher for it.)
+/// relay through an update. (A command's server runs as it is until the
+/// sandbox has a launcher for it.)
 pub(in crate::serve) fn relay(home: &Path, machine: bool, engine: Engine) -> io::Result<ToolRelay> {
     let places = Arc::new(ToolPlaces::default());
     if machine {
@@ -40,10 +39,9 @@ pub(in crate::serve) fn relay(home: &Path, machine: bool, engine: Engine) -> io:
     }
     let host = Arc::new(EngineServers::new(Arc::new(EnginePort(engine)), None));
     let relay = ToolRelay::with_host(Some(home.join("run/agents/relay.json")), places, host)?;
-    if !machine {
-        relay.set_compatibility_run(Some(home.join("run")));
+    if machine {
+        relay.set_forwarder(std::env::current_exe().ok());
     }
-    relay.set_forwarder(std::env::current_exe().ok());
     Ok(relay)
 }
 
