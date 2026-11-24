@@ -45,6 +45,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The Mac installer recognizes the selected home even when its name is written with different capitalization.
 - The Mac installer reports that it is waiting when another move is already running.
 - When the Mac installer resumes an interrupted setup, it says where it saved the earlier files.
+- When an earlier Mac app still has sessions, the installer explains why it offers a move.
 - The Linux installer can set up a computer from a signed Rust release and retry a failed first start while keeping earlier work.
 - After a successful Linux install, earlier unfinished installer staging no longer makes the computer look uninstalled.
 - A Linux installation stays complete if its old staging files cannot be deleted.
