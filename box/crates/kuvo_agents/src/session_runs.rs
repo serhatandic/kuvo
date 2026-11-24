@@ -446,6 +446,11 @@ impl SessionRuns {
         .await
     }
 
+    /// The conversation's mode from its next message on.
+    pub async fn select_agent(&self, session: &str, agent: &str) -> io::Result<bool> {
+        self.store.select_agent(session, agent).await
+    }
+
     /// Summarize the conversation with the agent that holds it: now, or once
     /// the turn under way ends. Refused, in a sentence, when it can't be.
     pub async fn compact(&self, session: String) -> io::Result<Compacting> {

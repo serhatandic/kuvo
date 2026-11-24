@@ -1,5 +1,6 @@
 // Keep the reference bridge and both resident binaries on the same private, local CLI fixture.
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +24,7 @@ export function claudeEnvironment(binary, home, env, fixture) {
   return { ...env, KUVO_TEST_PATH_ONLY: "1", PATH: [bin, system].join(path.delimiter) };
 }
 
-export async function startClaudeBridge(binary, home, env) {
+export async function startClaudeBridge(binary, home, env, { engine } = {}) {
   if (!binary.typescript) return undefined;
   fs.rmSync(path.join(home, "run", "bridge.json"), { force: true });
   const bundle = fileURLToPath(new URL("../../box/dist/kuvo-agents.js", import.meta.url));
@@ -31,6 +32,7 @@ export async function startClaudeBridge(binary, home, env) {
     ...env, KUVO_HOME: home, KUVO_AGENTS_REMOTE: "1", KUVO_AGENTS_PORT: String(await freePort()),
     KUVO_AGENTS_HOME: path.join(home, "agents"), KUVO_AGENTS_PASSWORD: "fixture",
     KUVO_SANDBOX: "off", BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+    ...(engine && { KUVO_ENGINE_PORT: String(engine.port), OPENCODE_PASSWORD: "fixture-engine" }),
   }, home);
   try {
     await until(() => fs.existsSync(path.join(home, "run", "bridge.json")),
@@ -96,9 +98,9 @@ export async function stopPids(pids) {
   while (pids.some(alive) && Date.now() < deadline) await new Promise(done => setTimeout(done, 50));
 }
 
-export function seedSession(home, id, { directory = home, model = "opus", permissions } = {}) {
+export function seedSession(home, id, { directory = home, model = "opus", permissions, agent = "build" } = {}) {
   write(path.join(home, "agents/sessions", id, "session.json"), JSON.stringify({
-    id, title: "Claude fixture", projectID: "fixture", agent: "build", ...(permissions && { permissions }),
+    id, title: "Claude fixture", projectID: "fixture", agent, ...(permissions && { permissions }),
     location: { directory }, model: { providerID: provider, id: model },
     time: { created: 1, updated: 1 }, cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -123,6 +125,28 @@ export function twoReleases(binary, home, env, relay) {
   return { old, next, control };
 }
 
+/**
+ * The engine as far as the reference bridge asks it here: the computer's settings (`/api/config`),
+ * with the policies (Settings › Permissions' Blocks) the Rust resident reads from the same
+ * `box/opencode.json`. Nothing else.
+ */
+export async function settingsEngine(home) {
+  const server = http.createServer((incoming, reply) => {
+    const url = new URL(incoming.url, "http://engine");
+    if (incoming.method === "GET" && url.pathname === "/api/config") {
+      let settings = {};
+      try { settings = readJSON(path.join(home, "box", "opencode.json")); } catch {}
+      reply.writeHead(200, { "content-type": "application/json" });
+      reply.end(JSON.stringify({ data: settings }));
+      return;
+    }
+    reply.writeHead(404, { "content-type": "application/json" });
+    reply.end("{}");
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  return { port: server.address().port, close: () => new Promise(resolve => server.close(resolve)) };
+}
+
 async function freePort() {
   const server = net.createServer();
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -141,6 +165,8 @@ export async function scriptedClaude(fixture = {}) {
   privateHome(home);
   const env = { ...claudeEnvironment(binary, home, isolatedEnv(root), { turns: true, ...fixture }), KUVO_SANDBOX: "off" };
   write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "box", "opencode.json"), "{}\n");
+  const engine = binary.typescript ? await settingsEngine(home) : undefined;
   let bridge, resident, listener;
   const scripts = {};
   const heardFile = path.join(env.HOME, "claude-heard.jsonl");
@@ -148,7 +174,7 @@ export async function scriptedClaude(fixture = {}) {
     binary, home, env,
     get listener() { return listener; },
     async start() {
-      bridge = await startClaudeBridge(binary, home, env);
+      bridge = await startClaudeBridge(binary, home, env, { engine });
       resident = startBox({ binary, home, env, relay });
       listener = await resident.ready();
       return listener;
@@ -162,6 +188,7 @@ export async function scriptedClaude(fixture = {}) {
       await claude.stop();
       await stopFixtureHolders(home);
       await relay.close();
+      await engine?.close();
       fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
     },
     log: () => [resident?.log(), bridge?.log()].filter(Boolean).join("\n"),
@@ -202,6 +229,14 @@ export async function scriptedClaude(fixture = {}) {
       assert.equal(answer.status, 200, answer.text);
       return answer.json;
     },
+    /** The box's answer to `request`, from the Claude Code that took the session's first message. */
+    answered: (session, request_) => until(() => {
+      const heard = claude.heard();
+      const pid = heard.find(line => line.type === "user" && line.message?.content?.some?.(part =>
+        part.type === "text" && part.text.startsWith(`go ${session}`)))?.pid;
+      return heard.find(line => line.pid === pid && line.type === "control_response"
+        && line.response?.request_id === request_)?.response;
+    }, `The box never answered ${request_} in ${session}.`),
     async permissions(id) {
       const answer = await request(listener, "GET", claude.route(id) + "/permission", undefined, headers);
       assert.equal(answer.status, 200, answer.text);
@@ -215,6 +250,16 @@ export async function scriptedClaude(fixture = {}) {
       const answer = await request(listener, "GET", claude.route(id) + "/form", undefined, headers);
       assert.equal(answer.status, 200, answer.text);
       return answer.json.data ?? answer.json;
+    },
+    async replyForm(id, form, answers) {
+      return request(listener, "POST", `${claude.route(id)}/form/${form}/reply`, { answer: answers }, headers);
+    },
+    async dismissForm(id, form, message) {
+      const words = message === undefined ? "" : `?message=${encodeURIComponent(message)}`;
+      return request(listener, "DELETE", `${claude.route(id)}/form/${form}${words}`, undefined, headers);
+    },
+    async selectAgent(id, agent) {
+      return request(listener, "POST", `${claude.route(id)}/agent`, { agent }, headers);
     },
     async session(id) {
       const answer = await request(listener, "GET", `kuvo/agents/api/session/${id}`, undefined, headers);
@@ -258,6 +303,11 @@ export function result(uuids, subtype = "success", more = {}) {
 /** Claude Code asking whether it may use a tool, as `request` (the box answers it). */
 export function canUse(request_id, tool_name, input, tool_use_id, more = {}) {
   return { type: "control_request", request_id, request: { subtype: "can_use_tool", tool_name, input, tool_use_id, ...more } };
+}
+
+/** Claude Code running the box's PreToolUse hook before a tool, as `request` (the box answers it). */
+export function hook(request_id, tool_name, tool_input, tool_use_id) {
+  return { type: "control_request", request_id, request: { subtype: "hook_callback", callback_id: "$HOOK", tool_use_id, input: { hook_event_name: "PreToolUse", tool_name, tool_input, tool_use_id } } };
 }
 
 /** Like Bun's `toMatchObject`: objects in part, lists whole. */

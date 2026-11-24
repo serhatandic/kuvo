@@ -127,6 +127,36 @@ impl SessionStore {
         Ok(header)
     }
 
+    /// The conversation's mode (`build`, `plan`, or an agent of yours) from its
+    /// next message on, with a row that says it changed. False when it isn't here.
+    pub async fn select_agent(&self, id: &str, agent: &str) -> io::Result<bool> {
+        let mode = if agent.is_empty() { "build" } else { agent }.to_owned();
+        let Some(header) = self.read(id).await? else {
+            return Ok(false);
+        };
+        let previous = header.into_fields().get("agent").cloned();
+        if previous.as_ref().and_then(Value::as_str) == Some(mode.as_str()) {
+            return Ok(true);
+        }
+        let chosen = mode.clone();
+        if !self
+            .change_header(id, move |header| {
+                header.insert("agent".into(), Value::String(chosen));
+            })
+            .await?
+        {
+            return Ok(false);
+        }
+        let mut row = serde_json::json!({
+            "type":"agent-switched", "id":Self::make_id("msg")?,
+            "time":{"created":crate::turn_projection::now()}, "agent":mode,
+        });
+        if let Some(previous) = previous {
+            row["previous"] = previous;
+        }
+        self.write_messages(id, vec![row]).await
+    }
+
     pub(crate) async fn change_header(
         &self,
         id: &str,

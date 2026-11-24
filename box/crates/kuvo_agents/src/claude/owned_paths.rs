@@ -12,6 +12,9 @@ pub(super) fn owns_path(config: &Path, directory: &Path, given: &Path) -> bool {
     } else {
         directory.join(given)
     };
+    if background_output(&path) {
+        return true;
+    }
     let (Some(config), Some(path)) = (resolve(config), resolve(&path)) else {
         return false;
     };
@@ -65,4 +68,23 @@ fn resolve(path: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// A background command's output, in /tmp's `claude-<uid>` where Claude Code has no temporary
+/// folder of its own (in the sandbox): `<project>/<session>/tasks/<file>`.
+fn background_output(path: &Path) -> bool {
+    let Some(uid) = kuvo_os::platform::user_id() else {
+        return false;
+    };
+    let Some(text) = path.to_str() else {
+        return false;
+    };
+    ["/tmp", "/private/tmp"].into_iter().any(|tmp| {
+        text.strip_prefix(&format!("{tmp}/claude-{uid}/"))
+            .is_some_and(|rest| {
+                let parts = rest.split('/').collect::<Vec<_>>();
+                matches!(parts.as_slice(), [project, session, "tasks", file]
+                    if ![project, session, file].iter().any(|part| part.is_empty() || **part == ".."))
+            })
+    })
 }

@@ -29,9 +29,11 @@ pub(crate) fn register(runs: SessionRuns, store: SessionStore, routes: &mut Regi
             let id = read_session(&store, call.param("id")).await?;
             // After an update, a turn taken up shows again what it asked:
             // an ordinary read waits for that rather than show none.
-            let live = call.request.path.split_once('?').is_some_and(|(_, query)| {
-                query.split('&').any(|pair| pair == "live=1")
-            });
+            let live = call
+                .request
+                .path
+                .split_once('?')
+                .is_some_and(|(_, query)| query.split('&').any(|pair| pair == "live=1"));
             if !live {
                 tokio::select! {
                     () = runs.asks_restored(&id) => {}
@@ -43,7 +45,8 @@ pub(crate) fn register(runs: SessionRuns, store: SessionStore, routes: &mut Regi
                     }
                 }
             }
-            let cards = cards(&runs, &id, false);
+            let mut cards = cards(&runs, &id, false);
+            with_sources(&store, &id, &mut cards).await;
             Ok(RouteReply::json::<200>(permission::Status200 {
                 data: cards,
             }))
@@ -99,8 +102,18 @@ pub(crate) fn register(runs: SessionRuns, store: SessionStore, routes: &mut Regi
         let runs = runs.clone();
         async move {
             let (key, _) = pending(&runs, call.param("id"), call.param("request"), true)?;
+            // Turned down by its box with words (Autopilot): those are what the agent hears.
+            let reason = call.request.path.split_once('?').and_then(|(_, query)| {
+                query.split('&').find_map(|pair| {
+                    let words = pair.strip_prefix("message=")?.replace('+', " ");
+                    percent_encoding::percent_decode_str(&words)
+                        .decode_utf8()
+                        .ok()
+                        .map(|words| words.into_owned())
+                })
+            });
             runs.asks()
-                .reply(key, Reply::Question(Answer::Dismissed { reason: None }))
+                .reply(key, Reply::Question(Answer::Dismissed { reason }))
                 .await
                 .map_err(refuse)?;
             Ok(RouteReply::json::<200>(dismiss::Status200 {}))
@@ -114,6 +127,41 @@ async fn read_session(store: &SessionStore, given: Option<&str>) -> Result<Strin
         return Err(super::sessions::missing(&id));
     }
     Ok(id)
+}
+
+/// Where each card's tool call is in the conversation: its step and call.
+async fn with_sources(store: &SessionStore, session: &str, cards: &mut [Value]) {
+    if !cards.iter().any(|card| card.get("tool").is_some()) {
+        return;
+    }
+    let steps = store
+        .message_page(
+            session,
+            None,
+            200,
+            kuvo_agents::session_store::MessageOrder::NewestFirst,
+        )
+        .await
+        .ok()
+        .flatten()
+        .map(|page| page.messages)
+        .unwrap_or_default();
+    for card in cards.iter_mut() {
+        let Some(tool) = card.as_object_mut().and_then(|card| card.remove("tool")) else {
+            continue;
+        };
+        let step = steps.iter().find(|row| {
+            row["type"] == "assistant"
+                && row["content"].as_array().is_some_and(|parts| {
+                    parts
+                        .iter()
+                        .any(|part| part["type"] == "tool" && part["id"] == tool)
+                })
+        });
+        if let Some(step) = step.and_then(|step| step["id"].as_str()) {
+            card["source"] = json!({"type":"tool","messageID":step,"id":tool});
+        }
+    }
 }
 
 fn cards(runs: &SessionRuns, session: &str, questions: bool) -> Vec<Value> {
@@ -138,6 +186,10 @@ fn cards(runs: &SessionRuns, session: &str, questions: bool) -> Vec<Value> {
                     }
                     if ask.sandboxed == Some(true) {
                         card["sandboxed"] = true.into();
+                    }
+                    // (Its place in the conversation, filled in by `with_sources`.)
+                    if let Some(tool) = &ask.tool_call_id {
+                        card["tool"] = json!(tool);
                     }
                     Some(card)
                 }

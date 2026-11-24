@@ -18,6 +18,12 @@ pub trait TurnPolicy: Send + Sync {
     /// Leave the decision to the person when the current policy calls for
     /// interaction. A caller can also apply a previous decision here.
     fn permission(&self, ask: &PermissionAsk) -> AdapterCall<'_, Option<Decision>>;
+
+    /// The card you're shown for an ask the policy leaves to you: the ask as
+    /// it is, unless the policy asks it as something else.
+    fn card(&self, ask: PermissionAsk) -> AdapterCall<'_, PermissionAsk> {
+        Box::pin(async move { Ok(ask) })
+    }
 }
 
 pub struct EventWrite {
@@ -119,6 +125,7 @@ impl TurnSink for ResidentSink {
                     decision
                 });
             }
+            let ask = self.policy.card(ask).await?;
             self.asks.permission(ask).await
         })
     }

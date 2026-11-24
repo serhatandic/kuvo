@@ -573,7 +573,7 @@ impl Actor {
             let _ = pipe.stop().await;
         }
         if self.pipe.is_none() {
-            self.pipe = Some(self.launch(&input.instructions, compact_at).await?);
+            self.pipe = Some(self.launch(&input.instructions, compact_at, plan).await?);
             self.instructions = Some(input.instructions.clone());
             self.configured = None;
         }
@@ -655,7 +655,12 @@ impl Actor {
         })
     }
 
-    async fn launch(&mut self, instructions: &str, compact_at: Option<u64>) -> io::Result<Pipe> {
+    async fn launch(
+        &mut self,
+        instructions: &str,
+        compact_at: Option<u64>,
+        plan: bool,
+    ) -> io::Result<Pipe> {
         let program = self.program.clone();
         let session = self.session.clone();
         let directory = self.directory.clone();
@@ -671,7 +676,7 @@ impl Actor {
         let native = native.map_or_else(unique_id, Ok)?;
         let start = tokio::task::spawn_blocking(move || {
             turn_launch(
-                program, session, directory, provider, native, resume, compact_at,
+                program, session, directory, provider, native, resume, compact_at, plan,
             )
         })
         .await??;
@@ -1159,6 +1164,7 @@ fn turn_note(note: Option<&TurnNote>) -> io::Result<Metadata> {
     )]))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn turn_launch(
     program: Program,
     session: String,
@@ -1167,6 +1173,7 @@ fn turn_launch(
     native: String,
     resume: bool,
     compact_at: Option<u64>,
+    plan: bool,
 ) -> io::Result<Start> {
     let mut env = program.environment(true);
     let platform = Platform::current();
@@ -1195,6 +1202,12 @@ fn turn_launch(
             "stream-json",
             "--include-partial-messages",
             "--permission-prompt-tool=stdio",
+            // The mode it starts in; a later one is set over its pipe.
+            if plan {
+                "--permission-mode=plan"
+            } else {
+                "--permission-mode=default"
+            },
             "--strict-mcp-config",
             if resume { "--resume" } else { "--session-id" },
             &native,
