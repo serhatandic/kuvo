@@ -779,7 +779,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
     }
     let mut reply = serde_json::to_value(judge)?;
     if reply["verdict"] == "two" {
-        reply["message"] = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.".into();
+        reply["message"] = kuvo_move::install::TWO_HOMES_MOVE.into();
     }
     println!("{reply}");
     Ok(ExitCode::SUCCESS)

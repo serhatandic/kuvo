@@ -6,6 +6,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{io, path::Path};
 
+pub const TWO_HOMES_MOVE: &str = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verdict {

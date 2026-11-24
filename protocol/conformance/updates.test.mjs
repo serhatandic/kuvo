@@ -2271,6 +2271,45 @@ exec /bin/sh -c "$command"
   }
 });
 
+test("the Mac installer preserves a machine and the earlier app's home", t => {
+  if (boxBinary().typescript || process.platform !== "darwin") return t.skip("Uses the native Mac installer.");
+  const { binary, env, key, release, body } = box(t);
+  const identifier = "run.kuvo.code.installer-fixture";
+  const bundle = path.join(env.HOME, "Fixture.app");
+  const home = path.join(env.HOME, ".kuvo-code");
+  const legacy = path.join(env.HOME, "Library/Application Support", identifier);
+  write(path.join(bundle, "Contents/Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string></dict></plist>`);
+  write(path.join(home, "box/kind"), "machine\n");
+  write(path.join(home, "bin/kuvo-start"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  write(path.join(home, `engine/${body.engine}/opencode`), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  write(path.join(home, "workspace/notes"), "machine's own work");
+  write(path.join(legacy, "Chats/c1/notes.md"), "the earlier app's work");
+  write(path.join(release, "box.tar.gz"), "pack");
+  write(path.join(release, "boxes.json"), encode(envelope({
+    ...body, launch: "rust", packs: { [target]: body.pack },
+  }, key)));
+  const entry = path.join(release, "kuvo-install");
+  fs.copyFileSync(new URL("../../box/src/install/kuvo-install", import.meta.url), entry);
+  fs.copyFileSync(binary.file, path.join(release, "kuvo-install-bin"));
+  const replies = ["status", "move", "new"].map(verb => {
+    const run = spawnSync("/bin/sh", [entry, verb, "--app", bundle], {
+      cwd: env.HOME, env: { ...env, KUVO_TEST_RELEASE_KEY: key.key }, encoding: "utf8", timeout: 15000,
+    });
+    assert.ifError(run.error);
+    const { verdict, verb: offered, message, result } = JSON.parse(run.stdout);
+    return [run.status, verdict, offered ?? result, message];
+  });
+  assert.deepEqual(replies, [
+    [0, "two", undefined, "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet."],
+    [1, "two", "refused", "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet."],
+    [1, "two", "refused", "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are."],
+  ]);
+  assert.equal(fs.readFileSync(path.join(home, "workspace/notes"), "utf8"), "machine's own work");
+  assert.equal(fs.readFileSync(path.join(legacy, "Chats/c1/notes.md"), "utf8"), "the earlier app's work");
+  assert.deepEqual(fs.readdirSync(home).sort(), ["bin", "box", "engine", "workspace"]);
+});
+
 test("kuvo-install creates a new Mac home and moves the released homes", { timeout: 420000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "darwin") {
