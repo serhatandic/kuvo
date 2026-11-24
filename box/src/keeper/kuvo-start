@@ -58,8 +58,7 @@ pick() {
 pick
 # Read the top-level launch field of the selected pack without requiring its engine or executable.
 # A failed Rust executable still needs the keeper and guard to be able to roll it back.
-rust_release() {
-  [ -f "$K/bin/../box.json" ] || return 1
+rust_manifest() {
   LC_ALL=C awk '
     {
       rest = $0
@@ -82,8 +81,24 @@ rust_release() {
       }
     }
     END { exit !rust }
-  ' "$K/bin/../box.json"
+  ' "$1"
 }
+rust_release() (
+  manifest="$K/bin/../box.json"
+  if [ -f "$manifest" ]; then rust_manifest "$manifest"; exit $?; fi
+  # Older stagers move only bin. The signed file list carries a second copy of
+  # the launch identity inside bin, so the first start can restore the sidecar.
+  target=$(readlink "$K/bin") || exit 1
+  printf '%s\n' "$target" | grep -Eq '^versions/[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?-[0-9a-f]{12}/bin$' || exit 1
+  manifest="$K/${target%/bin}/box.json"
+  marker="$K/$target/.kuvo-release.json"
+  [ -f "$marker" ] && [ ! -L "$marker" ] && rust_manifest "$marker" || exit 1
+  copy=$(umask 077; mktemp "${manifest}.new.XXXXXX") || exit 1
+  trap 'rm -f "$copy"' EXIT
+  cat "$marker" >"$copy" || exit 1
+  ln "$copy" "$manifest" 2>/dev/null || [ -f "$manifest" ] || exit 1
+  rust_manifest "$manifest"
+)
 # A committed checkpoint exactly matches the layout declared by the installed link.
 # Anything older, newer or interrupted must go through the folder runner.
 folder_current() {

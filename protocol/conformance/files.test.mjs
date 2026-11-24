@@ -1,6 +1,7 @@
 // Files and folders (rust-box.md row 6.3a): a file's info, text and bytes, the same from both boxes.
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
@@ -10,6 +11,9 @@ import { sessionOf } from "./engine.mjs";
 import { bench } from "./bench.mjs";
 
 const FILE_LIMIT = 25 * 1024 * 1024;
+const windows = process.platform === "win32";
+// Windows keeps no execute bits: every file's bytes say it can't be run, as Node's `stat` says there.
+const executableBit = bit => windows ? "0" : bit;
 const at = (file, resource = "info") =>
   `kuvo/file${resource ? `/${resource}` : ""}?uri=${encodeURIComponent(pathToFileURL(file).href)}`;
 const text64 = file => `kuvo/file/text?path64=${Buffer.from(file).toString("base64url")}`;
@@ -25,7 +29,9 @@ test("a file's info, text and bytes", async t => {
     for (const [name, kind, mime] of [
       ["a #ş.PNG", "picture", "image/png"], ["a.pdf", "pdf", "application/pdf"],
       ["a.json", "text", "application/json"], ["a.constructor", "other", "application/octet-stream"],
-      [".bashrc", "other", "application/octet-stream"], ["a%20 #ş\\.txt", "text", "text/plain"],
+      [".bashrc", "other", "application/octet-stream"],
+      // (A backslash is a separator on Windows, never part of a name.)
+      ...(windows ? [] : [["a%20 #ş\\.txt", "text", "text/plain"]]),
     ]) {
       const file = path.join(root, name);
       writeFileSync(file, "ş");
@@ -51,7 +57,7 @@ test("a file's info, text and bytes", async t => {
         assert.deepEqual([missing.status, missing.json], [404, { message: "That file isn’t there anymore.", reason: "fileNotFound" }]);
       }
     }
-    for (const route of ["kuvo/file/info?uri=https://example.com", "kuvo/file/info", "kuvo/file?uri=", "kuvo/file/info?uri=file://host/x",
+    for (const route of ["kuvo/file/info?uri=https://example.com", "kuvo/file/info", "kuvo/file?uri=", ...(windows ? [] : ["kuvo/file/info?uri=file://host/x"]),
       "kuvo/file/info?uri=file:///a%252Fb", "kuvo/file/text?uri=x&path64=L3RtcA", `kuvo/file/info?path64=${Buffer.from("/tmp").toString("base64url")}`]) {
       const refused = await ask("GET", route);
       assert.deepEqual([refused.status, refused.json], [400, { message: "That isn’t a file:// address." }], route);
@@ -59,6 +65,11 @@ test("a file's info, text and bytes", async t => {
     for (const route of ["kuvo/file/text?path64=cmVsYXRpdmU", "kuvo/file/text?path64=", "kuvo/file/text?path64=L3RtcA=", "kuvo/file/text?path64=_w"]) {
       const refused = await ask("GET", route);
       assert.deepEqual([refused.status, refused.json], [400, { message: "Name the file by its full path." }], route);
+    }
+    if (windows) {
+      // On Windows a host names a network share, as Node reads it: `\\host\x`, not there.
+      const share = await ask("GET", "kuvo/file/info?uri=file://host/x");
+      assert.deepEqual([share.status, share.json], [200, { exists: false, name: "x", size: null, kind: null, mime: null }]);
     }
     const post = await ask("POST", at(root));
     assert.deepEqual([post.status, post.json], [405, {}]);
@@ -96,7 +107,7 @@ test("a file's info, text and bytes", async t => {
     assert.deepEqual([plain.status, plain.type, plain.text], [200, "text/plain", "normal text"]);
     for (const [file, executable, body] of [[launch, "1", "echo extensionless"], [report, "0", "normal text"]]) {
       const reply = await ask("GET", at(file, "") + "&withMode=1");
-      assert.deepEqual([reply.status, reply.type, reply.text], [200, `application/vnd.kuvo.file; executable=${executable}`, body]);
+      assert.deepEqual([reply.status, reply.type, reply.text], [200, `application/vnd.kuvo.file; executable=${executableBit(executable)}`, body]);
     }
     const capped = await ask("GET", at(report, "") + "&max=3");
     assert.deepEqual([capped.status, capped.json], [413, { message: "That file is too big to show here." }]);
@@ -111,15 +122,16 @@ test("a file's info, text and bytes", async t => {
     assert.ok(vectors.addresses.length > 0);
     const folder = path.join(realpathSync(root), "addresses");
     mkdirSync(folder);
-    assert.match(folder, /^[A-Za-z0-9/._-]+$/);
-    for (const { name, encoded } of vectors.addresses) {
+    assert.match(windows ? pathToFileURL(folder).pathname : folder, /^[A-Za-z0-9/._:-]+$/);
+    // (Windows can't name a file with these: they stay a Mac's and Linux's.)
+    for (const { name, encoded } of vectors.addresses.filter(({ name }) => !windows || !/[<>:"\\|?*]/.test(name))) {
       writeFileSync(path.join(folder, name), `the file ${name}`);
-      const reply = await ask("GET", `kuvo/file?uri=file://${folder}/${encoded}`);
+      const reply = await ask("GET", `kuvo/file?uri=${pathToFileURL(folder).href}/${encoded}`);
       assert.deepEqual({ name, status: reply.status, body: reply.text }, { name, status: 200, body: `the file ${name}` });
     }
   });
 
-  await t.test("unreadable files are refused", { skip: process.getuid?.() === 0 }, async () => {
+  await t.test("unreadable files are refused", { skip: process.getuid?.() === 0 ? "root reads every file" : windows ? "Windows has no mode bits that stop the owner reading" : false }, async () => {
     const file = path.join(root, "unreadable.txt");
     writeFileSync(file, "private");
     chmodSync(file, 0);
@@ -137,7 +149,7 @@ test("a file's info, text and bytes", async t => {
     return top;
   };
   const git = (folder, ...args) => {
-    const ran = spawnSync("git", ["-c", "init.defaultBranch=main", ...args], { cwd: folder, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+    const ran = spawnSync("git", ["-c", "init.defaultBranch=main", ...args], { cwd: folder, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1" } });
     assert.equal(ran.status, 0, ran.stderr);
   };
   const repository = (name, names) => {
@@ -166,7 +178,7 @@ test("a file's info, text and bytes", async t => {
     assert.deepEqual(panel.json.fileEntries, panel.json.files.map(name => ({ name, path: path.join(top, name) })));
     const hidden = await ask("GET", `kuvo/folders?path=${encodeURIComponent(top)}&hidden=1`);
     assert.deepEqual(hidden.json.folders.map(each => each.name), [".git", ".hg", "9", "10", "A", "a b", "b", "repo"]);
-    const top2 = await ask("GET", "kuvo/folders?path=/");
+    const top2 = await ask("GET", `kuvo/folders?path=${encodeURIComponent(path.parse(top).root)}`);
     assert.equal(top2.json.parent, null);
     // (The server refuses a `..` in a query; a doubled or trailing separator is resolved.)
     const dotted = await ask("GET", `kuvo/folders?path=${encodeURIComponent(top + "//b/./")}`);
@@ -178,6 +190,19 @@ test("a file's info, text and bytes", async t => {
     ]) {
       const reply = await ask("GET", route);
       assert.deepEqual([reply.status, reply.json], [status, json], route);
+    }
+    // A folder may be named with backslashes (a Windows path), but `..` between either separator
+    // is refused before the route, encoded or not.
+    for (const given of [`${top}\\..\\x`, `${top}/../x`, `${top}\\..`]) {
+      for (const route of ["kuvo/folders?path=", "kuvo/folders/tree?path=", `kuvo/files/find?q=a&directory=`]) {
+        const refused = await ask("GET", route + encodeURIComponent(given));
+        assert.ok(refused.status >= 400 && refused.status < 500 && refused.status !== 404, `${route}${given}: ${refused.status}`);
+      }
+    }
+    if (!windows) {
+      const slashed = make(path.join(top, "back\\slash"), ["x"]);
+      const listed = await ask("GET", `kuvo/folders?path=${encodeURIComponent(slashed)}&files=1`);
+      assert.deepEqual(listed.json?.files, ["x"], listed.text);
     }
     const home = await ask("GET", "kuvo/folders?path=~");
     assert.equal(home.json.path, home.json.home);
@@ -196,12 +221,25 @@ test("a file's info, text and bytes", async t => {
     const top = path.join(realpathSync(root), "unreadable");
     mkdirSync(top);
     const loop = path.join(top, "loop");
-    symlinkSync(loop, loop);
+    let linked = true;
+    try {
+      symlinkSync(loop, loop);
+    } catch (error) {
+      // (Windows makes links only with Developer Mode or as an administrator.)
+      if (!windows || error.code !== "EPERM") throw error;
+      linked = false;
+    }
     const long = path.join(top, "x".repeat(300));
-    for (const [at, reason] of [[loop, "Too many symbolic links encountered"], [long, "Name too long"]]) {
+    const cases = [
+      ...(linked ? [[loop, 500, { message: `${loop} can't be read here.`, reason: "Too many symbolic links encountered" }]] : []),
+      // Windows calls a name too long an invalid one, which Node reads as one that isn't there.
+      windows ? [long, 404, { message: `There's no folder ${long} here.`, reason: "No such folder" }]
+        : [long, 500, { message: `${long} can't be read here.`, reason: "Name too long" }],
+    ];
+    for (const [at, status, json] of cases) {
       for (const route of [`kuvo/folders?path=${encodeURIComponent(at)}`, `kuvo/folders/tree?path=${encodeURIComponent(at)}`]) {
         const reply = await ask("GET", route);
-        assert.deepEqual([reply.status, reply.json], [500, { message: `${at} can't be read here.`, reason }], route);
+        assert.deepEqual([reply.status, reply.json], [status, json], route);
       }
     }
   });
@@ -356,7 +394,7 @@ test("a file through the computer's own route command, its mode with its bytes w
   for (const [file, executable, body] of [[launchFile, "1", "echo extensionless"], [report, "0", "normal text"]]) {
     const answer = await routed(at(file, "") + "&withMode=1");
     assert.equal(answer.status, 200);
-    assert.equal(answer.type, `application/vnd.kuvo.file; executable=${executable}`);
+    assert.equal(answer.type, `application/vnd.kuvo.file; executable=${executableBit(executable)}`);
     assert.equal(Buffer.from(answer.bodyBase64, "base64").toString(), body);
   }
 });

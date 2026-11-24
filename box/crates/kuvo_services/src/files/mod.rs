@@ -163,10 +163,20 @@ fn file_named(query: &Query, accepts_path: bool) -> Result<PathBuf, Refusal> {
         .map_err(|why| Refusal::new(StatusCode::BAD_REQUEST, why.message()))
 }
 
+/// A file's name, as Node's `basename` gives it: on Windows, a network path's share where nothing
+/// follows it (`\\host\x`: `x`).
 fn name_of(file: &Path) -> String {
-    file.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()
+    if let Some(name) = file.file_name() {
+        return name.to_string_lossy().into_owned();
+    }
+    #[cfg(windows)]
+    if let Some(std::path::Component::Prefix(prefix)) = file.components().next_back()
+        && let std::path::Prefix::UNC(_, share) | std::path::Prefix::VerbatimUNC(_, share) =
+            prefix.kind()
+    {
+        return share.to_string_lossy().into_owned();
+    }
+    String::new()
 }
 
 /// A file that isn't there (or isn't a file), or can't be opened here, as the bytes and text
@@ -449,6 +459,14 @@ mod tests {
             assert!(js_number(given).is_nan(), "{given}");
         }
         assert!(js_number("Infinity").is_infinite());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_network_paths_name_is_its_share_where_nothing_follows() {
+        assert_eq!(name_of(Path::new(r"\\host\x")), "x");
+        assert_eq!(name_of(Path::new(r"\\host\x\a.txt")), "a.txt");
+        assert_eq!(name_of(Path::new(r"C:\")), "");
     }
 
     #[test]

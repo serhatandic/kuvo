@@ -52,6 +52,10 @@ impl fmt::Display for Release {
 }
 
 impl Release {
+    pub(crate) fn version(&self) -> &str {
+        &self.version
+    }
+
     pub(crate) fn read(path: &Path) -> io::Result<Option<Self>> {
         files::read(path)?
             .map(|bytes| {

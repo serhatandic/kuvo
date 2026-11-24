@@ -23,11 +23,16 @@ export const canonicalPath = (path: string): string | null => {
       parts.push(encodeURIComponent(part).replace(/%(24|26|2B|2C|3B|3D|3A|40)/g, plainly));
     }
     const fields: string[] = [];
+    const route = parts.join("/");
     for (const raw of at < 0 ? [] : path.slice(at + 1).split("&").filter(Boolean)) {
       // Its name and value, a "+" in them a space, as a query is read.
       const spaced = raw.replaceAll("+", " "), equals = spaced.indexOf("=");
-      const halves = (equals < 0 ? [spaced] : [spaced.slice(0, equals), spaced.slice(equals + 1)]).map(decodedPart);
-      if (halves.some(half => half === null || half.split("/").some(piece => ascii(piece) === ".."))) return null;
+      const name = decodedPart(equals < 0 ? spaced : spaced.slice(0, equals));
+      // A folder on this computer may be a Windows path, backslashes and all: `..` between either
+      // separator is still refused.
+      const folder = name !== null && FOLDER_PATHS.has(`${route}?${name}`);
+      const halves = equals < 0 ? [name] : [name, decodedPart(spaced.slice(equals + 1), folder)];
+      if (halves.some((half, index) => half === null || half.split(index === 1 && folder ? /[/\\]/ : "/").some(piece => ascii(piece) === ".."))) return null;
       fields.push(halves.map(half => encodeURIComponent(half!).replace(/%(24|2C|3B|3A|40|2F|3F)/g, plainly).replaceAll("'", "%27")).join("="));
     }
     return parts.join("/") + (fields.length ? `?${fields.join("&")}` : "");
@@ -36,15 +41,18 @@ export const canonicalPath = (path: string): string | null => {
     return null;
   }
 };
-// Percent-decoded once, or null when it doesn't decode or holds a backslash or a control character.
-const decodedPart = (raw: string): string | null => {
+// The query values that name a folder on this computer, by route.
+const FOLDER_PATHS = new Set(["kuvo/folders?path", "kuvo/folders/tree?path", "kuvo/files/find?directory"]);
+// Percent-decoded once, or null when it doesn't decode or holds a control character, or a
+// backslash where it can't be part of a folder's path.
+const decodedPart = (raw: string, folder = false): string | null => {
   let text: string;
   try {
     text = decodeURIComponent(raw);
   } catch {
     return null;
   }
-  return /[\u0000-\u001f\u007f\\]/.test(text) ? null : text;
+  return /[\u0000-\u001f\u007f]/.test(text) || (!folder && text.includes("\\")) ? null : text;
 };
 const ascii = (text: string) => text.replace(/[^\u0000-\u007f]/g, "");
 // What's written as it is beyond what encodeURIComponent leaves (letters, digits, `-_.!~*'()`):

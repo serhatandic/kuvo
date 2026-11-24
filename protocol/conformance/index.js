@@ -23,6 +23,7 @@ const areas = new Map([
   ["backups", "./backups.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
   ["files", "./files.test.mjs"],
+  ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
 ]);
 const area = process.env.KUVO_CONFORMANCE_AREA;

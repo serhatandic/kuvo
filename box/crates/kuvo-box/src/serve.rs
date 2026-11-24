@@ -140,6 +140,17 @@ pub async fn run(
     } else {
         (None, None)
     };
+    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let update_profile = account.clone();
+    routes.register::<kuvo_protocol::routes::get_kuvo_update::Spec, _, _>(Access::Any, move |_| {
+        let answer = kuvo_keeper::update_status::read(&update_home, &update_profile);
+        async move {
+            let result = answer.and_then(|body| Ok(serde_json::from_value(body)?));
+            result.map(RouteReply::json::<200>).map_err(|error| {
+                Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })
+        }
+    });
     let vault = kuvo_services::vault::Resident::new(
         home,
         kind == ComputerKind::Mac,
