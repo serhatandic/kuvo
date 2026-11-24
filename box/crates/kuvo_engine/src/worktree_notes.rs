@@ -13,11 +13,12 @@ use crate::{Engine, api, disk, lifetime::Demand, sessions};
 pub(crate) const FILE: &str = "worktrees.json";
 
 #[derive(Deserialize)]
-struct Worktree {
-    root: String,
+pub(crate) struct Worktree {
+    pub(crate) root: String,
     project: String,
     folder: Option<String>,
     branch: Option<String>,
+    pub(crate) snapshot: Option<String>,
 }
 
 impl Worktree {
@@ -29,7 +30,32 @@ impl Worktree {
 #[derive(Default)]
 pub(crate) struct Records {
     active: Vec<Worktree>,
+    restorable: Vec<Worktree>,
     pub(crate) filed: BTreeMap<String, String>,
+}
+
+pub(crate) enum Location {
+    Live,
+    Removed,
+}
+
+impl Records {
+    pub(crate) fn at(&self, folder: &str) -> Option<(&Worktree, Location)> {
+        if folder.is_empty() {
+            return None;
+        }
+        let inside = |tree: &&Worktree| Path::new(folder).starts_with(&tree.root);
+        self.active
+            .iter()
+            .find(inside)
+            .map(|tree| (tree, Location::Live))
+            .or_else(|| {
+                self.restorable
+                    .iter()
+                    .find(inside)
+                    .map(|tree| (tree, Location::Removed))
+            })
+    }
 }
 
 pub(crate) async fn read(home: &Path) -> io::Result<Records> {
@@ -49,6 +75,7 @@ pub(crate) async fn read(home: &Path) -> io::Result<Records> {
             .filter_map(|row| Worktree::deserialize(row).ok())
     };
     let active = rows("worktrees").collect::<Vec<_>>();
+    let restorable = rows("restorable").collect::<Vec<_>>();
     let mut filed = BTreeMap::new();
     for field in ["handedOver", "removed"] {
         if let Some(entries) = value[field].as_object() {
@@ -57,14 +84,18 @@ pub(crate) async fn read(home: &Path) -> io::Result<Records> {
             }));
         }
     }
-    for saved in rows("restorable") {
-        filed.insert(saved.folder().to_owned(), saved.project);
+    for saved in &restorable {
+        filed.insert(saved.folder().to_owned(), saved.project.clone());
     }
     for saved in &active {
         filed.insert(saved.root.clone(), saved.project.clone());
         filed.insert(saved.folder().to_owned(), saved.project.clone());
     }
-    Ok(Records { active, filed })
+    Ok(Records {
+        active,
+        restorable,
+        filed,
+    })
 }
 
 pub(crate) fn watch(engine: Engine, stop: CancellationToken) -> mpsc::UnboundedSender<String> {

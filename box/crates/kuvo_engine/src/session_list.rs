@@ -810,12 +810,12 @@ async fn read_projects(home: &Path) -> Vec<Project> {
         .map_or_else(Vec::new, |file| file.projects)
 }
 
-struct Observed {
-    session: Session,
-    running: bool,
+pub(crate) struct Observed {
+    pub(crate) session: Session,
+    pub(crate) running: bool,
 }
 
-async fn read_inventory(
+pub(crate) async fn read_inventory(
     engine: &Engine,
     lease: &Lease,
 ) -> Result<Vec<Observed>, Box<dyn std::error::Error + Send + Sync>> {

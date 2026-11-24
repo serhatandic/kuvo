@@ -1,10 +1,14 @@
 //! Resident-owned actions on engine sessions.
 
+mod confirmation;
+
+use std::collections::BTreeSet;
+
 use http::{Method, StatusCode};
 use kuvo_protocol::routes::{
     delete_kuvo_sessions_id as delete, get_kuvo_sessions_id_actions as actions,
-    post_kuvo_sessions_id_archive as archive, post_kuvo_sessions_id_pin as pin,
-    post_kuvo_sessions_id_rename as rename,
+    post_kuvo_sessions_deletes as deletes, post_kuvo_sessions_id_archive as archive,
+    post_kuvo_sessions_id_pin as pin, post_kuvo_sessions_id_rename as rename,
 };
 use kuvo_server::{Access, Refusal, Registry, RouteCall, RouteReply};
 use percent_encoding::percent_decode_str;
@@ -143,18 +147,48 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
             let lease = api::start(&engine).await?;
             let session: Session = typed(read(&engine, &lease, &path(&id)).await?)?;
             session.check_independent()?;
+            let confirm = confirmation::one(&engine, &lease, &session).await?;
             let mut menu = Vec::new();
             if session.archived() {
                 if !session.archived_by_engine() {
                     menu.push(json!({"id":"unarchive","label":"Unarchive"}));
                 }
             } else {
-                menu.push(if session.pinned() { json!({"id":"unpin","label":"Unpin"}) } else { json!({"id":"pin","label":"Pin"}) });
+                menu.push(if session.pinned() {
+                    json!({"id":"unpin","label":"Unpin"})
+                } else {
+                    json!({"id":"pin","label":"Pin"})
+                });
                 menu.push(json!({"id":"rename","label":"Rename"}));
                 menu.push(json!({"id":"archive","label":"Archive"}));
             }
-            menu.push(json!({"id":"delete","label":"Delete","destructive":true,"confirm":confirmation(&session)}));
-            Ok(RouteReply::json::<200>(typed(json!({"session":id,"actions":menu}))?))
+            menu.push(json!({"id":"delete","label":"Delete","destructive":true,"confirm":confirm}));
+            Ok(RouteReply::json::<200>(typed(
+                json!({"session":id,"actions":menu}),
+            )?))
+        }
+    });
+    let local = engine.clone();
+    routes.register::<deletes::Spec, _, _>(Access::Any, move |call| {
+        let engine = local.clone();
+        async move {
+            let given = body(&call).unwrap_or_default();
+            let ids = given
+                .get("sessions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>();
+            if ids.is_empty() {
+                return Err(Refusal::new(
+                    StatusCode::BAD_REQUEST,
+                    "Say which sessions (sessions, their ids).",
+                ));
+            }
+            let lease = api::start(&engine).await?;
+            let confirm = confirmation::many(&engine, &lease, ids).await?;
+            Ok(RouteReply::json::<200>(typed(json!(confirm))?))
         }
     });
     let local = engine.clone();
@@ -191,7 +225,10 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
             {
                 Ok(session) => {
                     session.check_independent()?;
-                    check_was(&given, &session, true)?;
+                    if given.contains_key("was") {
+                        let confirm = confirmation::one(&engine, &lease, &session).await?;
+                        check_was(&given, &session, Some(confirm))?;
+                    }
                     match engine
                         .call::<Value>(&lease, Method::DELETE, &path, None)
                         .await
@@ -229,15 +266,6 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
     });
 }
 
-fn confirmation(session: &Session) -> Value {
-    let title = if session.title.is_empty() {
-        "New Session"
-    } else {
-        &session.title
-    };
-    json!({ "title": format!("Delete “{title}”?"), "message": "This can’t be undone.", "label": "Delete" })
-}
-
 fn stale() -> Refusal {
     Refusal::new(StatusCode::CONFLICT, "It changed since you read it.")
 }
@@ -249,7 +277,11 @@ fn cancelled(action: &str) -> Refusal {
     )
 }
 
-fn check_was(given: &Map<String, Value>, session: &Session, delete: bool) -> Result<(), Refusal> {
+fn check_was(
+    given: &Map<String, Value>,
+    session: &Session,
+    confirm: Option<confirmation::Confirmation>,
+) -> Result<(), Refusal> {
     let Some(was) = given.get("was") else {
         return Ok(());
     };
@@ -257,8 +289,8 @@ fn check_was(given: &Map<String, Value>, session: &Session, delete: bool) -> Res
     if let Some(updated) = session.time.updated {
         expected["updated"] = json!(updated);
     }
-    if delete {
-        expected["confirm"] = confirmation(session);
+    if let Some(confirm) = confirm {
+        expected["confirm"] = json!(confirm);
         if *was == expected {
             return Ok(());
         }
@@ -343,7 +375,7 @@ where
                     "It was archived by the engine, which keeps it so. Start a new session to carry on.",
                 ));
             }
-            check_was(&given, &session, false)?;
+            check_was(&given, &session, None)?;
             let previous = if archive {
                 session.archived()
             } else {

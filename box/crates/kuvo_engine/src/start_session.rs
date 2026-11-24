@@ -704,7 +704,7 @@ async fn touched_project<'a>(
     best
 }
 
-async fn git(folder: &Path, args: &[&str]) -> Option<String> {
+pub(crate) async fn git(folder: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new("git");
     command
         .kill_on_drop(true)

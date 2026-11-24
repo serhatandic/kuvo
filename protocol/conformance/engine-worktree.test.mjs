@@ -23,14 +23,15 @@ test("a session started by a subagent is filed under the project of its linked w
   write(path.join(home, "box", "projects.json"), JSON.stringify({ version: 1, projects: [{ directory: project, name: "Fixture" }] }));
   const root = { ...sessionOf({ id: "ses_lead", directory: project }), agent: "plan" };
   const child = sessionOf({ id: "ses_child", directory: project, parent: root.id });
-  engine.sessions.push(root, child);
+  const run = { ...sessionOf({ id: "ses_engineRun", directory: project }), metadata: { kuvo: { engineFor: root.id } } };
+  engine.sessions.push(root, child, run);
   const record = await start().ready();
   const given = { task: "Inspect this worktree", title: "Worktree", project: "Fixture", startedBy: child.id };
   const refused = await request(record, "POST", "kuvo/sessions", { ...given, folder: other });
   assert.equal(refused.status, 400);
   assert.match(refused.json.message, /isn't in Fixture/);
-  for (const folder of [tree, path.join(tree, "nested"), path.join(project, "nested")]) {
-    const accepted = await request(record, "POST", "kuvo/sessions", { ...given, folder });
+  for (const [folder, startedBy] of [[tree, root.id], [path.join(tree, "nested"), child.id], [path.join(project, "nested"), run.id]]) {
+    const accepted = await request(record, "POST", "kuvo/sessions", { ...given, folder, startedBy });
     assert.equal(accepted.status, 200, accepted.text);
     assert.equal(accepted.json.project, "Fixture");
     const made = engine.sessions.find(row => row.id === accepted.json.session);
@@ -119,6 +120,60 @@ test("a session made through OpenCode is told its recorded worktree and branch",
   assert.equal(plain.status, 200, plain.text);
   await until(async () => (await request(record, "GET", "kuvo/sessions/list")).json?.sessions?.[plain.json.data.id], "the regular project session to be observed");
   assert.equal(engine.asked.some(row => row.method === "PUT" && row.path.includes(`/${plain.json.data.id}/instructions/`)), false);
+});
+
+test("session Delete and Delete All confirm which worktrees and saved changes go with them", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("session-delete-worktrees");
+  const project = path.join(here.home, "project");
+  const live = path.join(here.home, "current-tree");
+  const gone = path.join(here.home, "removed-tree");
+  for (const folder of [project, live]) fs.mkdirSync(folder);
+  const env = isolatedEnv(path.dirname(here.home));
+  git(env, live, "init", "-q");
+  git(env, live, "commit", "--allow-empty", "-qm", "Fixture");
+  write(path.join(here.home, "box", "worktrees.json"), JSON.stringify({
+    worktrees: [{ root: live, folder: live, project, branch: "current" }],
+    restorable: [{ root: gone, folder: gone, project, branch: "old", head: "fixture", snapshot: "saved-changes" }],
+  }));
+  const current = sessionOf({ id: "ses_live", title: "Keep the launch", directory: live });
+  const removed = sessionOf({ id: "ses_goneTree", title: "Earlier work", directory: gone, archived: true });
+  const helper = { ...sessionOf({ id: "ses_hiddenRun", directory: live }), metadata: { kuvo: { engineFor: current.id } } };
+  here.engine.sessions.push(current, removed, helper);
+  const record = await here.start().ready();
+  const confirm = async id => {
+    const reply = await request(record, "GET", `kuvo/sessions/${id}/actions`);
+    assert.equal(reply.status, 200, reply.text);
+    return reply.json.actions.find(row => row.id === "delete").confirm;
+  };
+  const clean = await confirm(current.id);
+  assert.deepEqual(clean, { title: "Delete “Keep the launch”?", message: "Its worktree is deleted too.", label: "Delete" });
+  assert.equal((await confirm(removed.id)).message, "The changes kept to restore its worktree are deleted too.");
+  write(path.join(live, "draft.md"), "Hasn't been committed.");
+  assert.equal((await confirm(current.id)).message, "Its worktree and changes that weren’t committed are deleted too.");
+  const stale = await request(record, "DELETE", `kuvo/sessions/${current.id}`, {
+    was: { archived: false, updated: current.time.updated, confirm: clean },
+  });
+  assert.equal(stale.status, 409, stale.text);
+  assert.ok(here.engine.sessions.some(row => row.id === current.id));
+
+  const both = await request(record, "POST", "kuvo/sessions/deletes",
+    { sessions: [current.id, current.id, removed.id, helper.id, "ses_missing"] });
+  assert.equal(both.status, 200, both.text);
+  assert.deepEqual(both.json, {
+    title: "Delete 3 sessions?",
+    message: "Their messages and undo snapshots go too. The worktree they were in is deleted too, with changes that weren’t committed. The changes kept to restore their worktree go too. This can’t be undone.",
+    label: "Delete",
+  });
+  assert.equal((await request(record, "POST", "kuvo/sessions/deletes", { sessions: [] })).status, 400);
+  assert.equal((await request(record, "POST", "kuvo/sessions/deletes", { sessions: ["ses_missing", helper.id] })).status, 404);
+  assert.equal(here.engine.sessions.length, 3);
+
+  const extra = sessionOf({ id: "ses_otherOpen", directory: live });
+  here.engine.sessions.push(extra);
+  here.engine.emit({ type: "session.created", data: { sessionID: extra.id, info: extra } });
+  await until(async () => (await confirm(current.id)).message === "This can’t be undone.",
+    "the still-open conversation to keep its worktree");
 });
 
 test("an interrupted start removes an unused worktree and keeps the one an OpenCode session took", { timeout: 45000 }, async t => {
