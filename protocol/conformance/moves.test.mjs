@@ -1383,6 +1383,37 @@ test("move destinations show the other computer and wait for a running turn", { 
     why: `${member.name} isn’t connected. Connect to it, then try again.`, note: "Can’t be reached" }] });
 });
 
+test("move choices say which delegated work and unanswered questions stay home", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("stays-source"), there = await computer("stays-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const id = "ses_staysLead", first = "ses_staysWork", second = "ses_staysGrandchild", unrelated = "ses_staysOther";
+  const directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  const work = (job, startedBy) => ({
+    ...sessionOf({ id: job, title: "Delegated work", directory }),
+    metadata: { kuvo: { startedBy } },
+  });
+  here.engine.sessions.push(sessionOf({ id, title: "Trip plans", directory }),
+    work(first, id), work(second, first), sessionOf({ id: unrelated, title: "Other plans", directory }),
+    { ...work("ses_archivedWork", id), metadata: { "kuvo.archived": true, kuvo: { startedBy: id } } });
+  const ask = { id: "ask_stays", action: "makeProject", session: id, name: "Trip plans",
+    project: "trip", folderName: "trip", folder: null, at: Date.now(), given: { name: "trip" } };
+  write(path.join(here.home, "run/work/asks.json"), JSON.stringify({ asks: [ask, {
+    ...ask, id: "ask_alreadyAnswered", answered: { answer: "allow", text: "Done.", isError: false, at: Date.now() },
+  }] }));
+  const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await readyToMove(source, id, member);
+  const pathFor = session => "kuvo/moves/places?kind=chat&id=" + session;
+  const choices = await request(source, "GET", pathFor(id));
+  assert.equal(choices.status, 200, choices.text);
+  assert.deepEqual(choices.json.stays, { asks: 1, sessions: 2 }, choices.text);
+  const message = choices.json.places.find(place => place.key === member.key).confirm.message;
+  assert.ok(message.includes(`Sessions it started stay on ${main.name}. It can still reach them from ${member.name}. Its unanswered questions stay on ${main.name}.`));
+  assert.equal((await request(source, "GET", pathFor(unrelated))).json.stays, undefined);
+});
+
 test("a waiting move reports an unanswered destination as unavailable", {
   timeout: 110000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
