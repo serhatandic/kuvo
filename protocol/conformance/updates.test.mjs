@@ -713,6 +713,7 @@ Buffer.from = function (value, encoding, ...args) {
     }).join("\n") + keepers.get(peer).log();
   }).join("\n");
   const turnId = "feeda1234567";
+  const sessionId = "ses_update_turn";
   const holder = path.join(member.home, "run/agents", `kuvo-hold-${turnId}.js`);
   write(holder, "process.stdin.pipe(process.stdout)\n");
   const turn = launch(process.execPath, [holder, "release-fixture", turnId, "raw"], env(member), member.home, "pipe");
@@ -722,6 +723,14 @@ Buffer.from = function (value, encoding, ...args) {
     const [chunk] = await answer;
     assert.equal(chunk.toString(), text + "\n");
   };
+  const runningTurn = () => until(async () => {
+    try {
+      const resident = readJSON(path.join(member.home, "run/serve.json"));
+      const answer = await request(resident, "GET", "api/session/active");
+      return answer.status === 200 && answer.json?.data?.[sessionId]?.type === "busy";
+    } catch { return false; }
+  }, "the resident must still see the stand-in engine's running turn");
+  if (shellKeepers) member.engine.running.add(sessionId);
   write(path.join(member.home, "run/agents/hold", `${turnId}.json`), encode({
     proto: "hold/1", holder: "release-fixture", id: turnId, kind: "codex", pid: turn.child.pid, fixture: true,
   }));
@@ -737,6 +746,7 @@ Buffer.from = function (value, encoding, ...args) {
     t.diagnostic(`first preparation in ${Math.round(performance.now() - began)} ms`);
 
     await reply("turn before release switch");
+    if (shellKeepers) await runningTurn();
     let leader = main;
     if (failover) {
       holdChecks = true;
@@ -768,6 +778,7 @@ Buffer.from = function (value, encoding, ...args) {
     t.diagnostic(`main confirmed ${Math.round(performance.now() - released)} ms after member download resumed`);
     await until(() => confirmed(member), diagnose, 75000);
     await reply("same turn after release switch");
+    if (shellKeepers) await runningTurn();
     assert.equal(active(away), initial(away));
     t.diagnostic(`online member confirmed ${Math.round(performance.now() - released)} ms after its download resumed`);
 

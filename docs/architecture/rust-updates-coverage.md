@@ -21,7 +21,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U5 | The shell keeper answers an SSH request using Rust after the previous stager's bin-only move. It restores `box.json` on disk. |
 | U6 | `GET kuvo/update` reports the installed version, running engine, latest known version, and the keeper's failed trial. `POST` refuses to update a borrowed home. |
 | U7 | The prepared-pack scenario stops its keeper and uninstalls the standalone computer. It retains the home, clears the desktop identity, and leaves the scratch account and its temporary directory unchanged. |
-| U8 | Two Rust computers prepare while a third is offline. Holding the second download leaves both on the old selection. A recorded stand-in turn answers across the switch. The returning computer retries a transient download error, then switches and serves. |
+| U8 | Two Rust computers prepare while a third is offline. Holding the second download leaves both on the old selection. A recorded stand-in holder answers across the switch, and the replacement resident still sees the same active engine session. The returning computer retries a transient download error, then switches and serves. |
 | U9 | The old main goes down while its member's pack download is held. Advancing the relay and computer test clocks expires the lease. The new main completes the release even while its manifest request hangs. A returning computer pulls the retained pack from the new main. |
 | U10 | A returning TypeScript beta reads the Rust main's signed offer, stages its own target, and starts Rust through the shell keeper. The old home is copied before selection. |
 | U11 | The published v0.7.2 and v0.8.0-beta.1 Mac golden homes take signed Rust installer media through `kuvo-install` into the actual move. The resulting home retains the original notes and the Rust launch manifest. The installer starts the Helper through a scratch launchctl stand-in and recovers a missing registration through `status` and `new`. |
@@ -151,6 +151,16 @@ over 6.1 seconds after boot with the test clock advanced, confirmed 5.9 seconds
 after the held download resumed, and served the returning computer in 14.0
 seconds. The deployed-beta and Mac fixtures ran on macOS.
 
+With the bridge and manual-check cases enabled, macOS passed 25 Rust checks
+and all seven applicable TypeScript checks. The exact deployed beta confirmed
+the bridge in 22.0 seconds and Rust 33.8 seconds later. Its direct attempt
+refused the Rust pack after 62.0 seconds with the old release still selected.
+The released Mac installer moves took 37.7 seconds for v0.7.2 and 59.2 seconds
+for beta.1. Their Helper restarts took 1.1 and 1.0 seconds. A focused rerun
+of U8 checked an active engine turn across confirmation. Preparation took
+48.1 seconds, the main and member confirmed in 23.7 and 25.9 seconds after
+the held download resumed, and the returning computer took 33.2 seconds.
+
 ## TypeScript reference cases
 
 `Covered` means the exposed behaviour is checked. `Partial` records which
@@ -178,7 +188,7 @@ or desktop updater, and 20 are open. The inherited and live-proof table has
 | Same, holder keeps running across engine change | Open. | 3.2, 4.1, 7.2 |
 | Same, failed new bridge resumes a held turn | Partial. The 7.1 shell test covers the Rust keeper's rollback with a stand-in holder. Fleet failure announcement and retry remain open. | 7.2 |
 | Same, one-time pre-holder bridge restart | TypeScript bridge-specific. The one-time TypeScript-to-Rust interruption follows section 4. | 9.1 |
-| [update-engine-turn](../../box/bridge-tests/update-engine-turn.test.js), same engine | Partial. 3.2 covers resident restart. Full release activation with a turn still running remains open. | 7.2 |
+| [update-engine-turn](../../box/bridge-tests/update-engine-turn.test.js), same engine | Partial. 3.2 covers resident restart. U8 checks the replacement resident can still see an active turn in the same engine stand-in. The actual native engine proof remains open. | 7.2 |
 | Same, background shell delays engine restart | Open. | 3.2, 7.2 |
 | Same, engine-model bridge turn ends once before switch | Open. | 4.1, 7.2 |
 | [update-from-before](../../box/bridge-tests/update-from-before.test.js), earlier updater through keeper | Partial. U5 proves the bin-only layout, and M5 in 2.6 covers opening older data. A real predecessor performing the update and entering Rust remains open. | 7.2, 9.3 |

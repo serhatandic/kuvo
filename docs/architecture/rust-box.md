@@ -311,7 +311,8 @@ resident's own version.
   `box/1` manifest gains, additively, one pack per target (`aarch64` and
   `x86_64` macOS, `x86_64` and `aarch64` Linux built with musl, `x86_64` Windows) and a `launch`
   field; `kuvo-start` launches `bin/kuvo-box serve` and no separate bridge when `launch` says so.
-  Engine pins don't change. The feed holds no TypeScript build after 0.8.0-beta.1.
+  Engine pins don't change. Once 0.8 ships, the feed points to Rust. Returning TypeScript beta
+  computers can still take the signed bridge beta described below.
 - **Keeper.** On Mac and Linux the shell keeper stays for the first Rust releases: its tested
   switch-and-judge path (rename `bin`, wait for `kuvo/info`, rename back) keeps Rust-to-Rust
   rollback safe. `kuvo-box keep` is native Windows' keeper from the start, with a plain selector
