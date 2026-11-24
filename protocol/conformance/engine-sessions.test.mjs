@@ -445,9 +445,12 @@ test("a busy conversation can steer, edit and remove messages in its queue", { t
   const removed = await request(resident, "DELETE", path + "/queue/msg_edit?receipt=msg_undo");
   assert.equal(removed.status, 200);
   assert.equal(removed.json.removed.words, "edit me");
+  assert.equal(removed.json.removed.delivery, "queue");
+  assert.equal(removed.json.removed.id, "msg_edit");
   assert.equal(removed.json.removed.before, "msg_drop");
   assert.equal(removed.json.removed.receipt, "msg_undo");
   assert.equal((await request(resident, "DELETE", path + "/queue/msg_drop")).status, 200);
+  assert.equal((await request(resident, "DELETE", path + "/queue/msg_missing")).status, 404);
   assert.equal((await send("msg_changed", "edited words")).status, 200);
   assert.deepEqual(here.engine.inboxes.get(session).map(row => [row.id, row.payload.metadata.kuvo.parts.words]),
     [["msg_first", "first"], ["msg_changed", "edited words"]]);
@@ -977,6 +980,66 @@ test("a restart beside the same engine scans its queues and preserves an explici
   }, "Known engine work did not resume or the explicit stop was forgotten.", 20000, 50);
   assert.equal(here.engine.inboxes.get(stopped)[0].delivery, "queue");
   assert.deepEqual(readJSON(scanned), { formatVersion: 1, [here.engine.record.port]: here.engine.record.pid });
+});
+
+test("a process exit releases its queue live and again after a resident restart", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-after-process-exit");
+  const session = "ses_processExit";
+  const item = id => ({ id, type: "user", delivery: "queue", payload: { text: id } });
+  const first = item("msg_beforeRestart");
+  const second = item("msg_afterRestart");
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home, updated: Date.now() }));
+  here.engine.inboxes.set(session, [first]);
+  here.engine.running.add(session);
+  const child = here.start();
+  const record = await child.ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow process exits");
+  const exit = { outcome: "interrupted", reason: "agent-exit", time: { created: Date.now() } };
+  here.engine.messages.set(session, [{ type: "idle", ...exit }]);
+  here.engine.emit({ type: "session.execution.interrupted", data: { sessionID: session, ...exit } });
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal(first.delivery, "queue", "the engine has yet to report that the turn is free");
+  here.engine.running.delete(session);
+  here.engine.emit({ type: "session.idle", data: { sessionID: session } });
+  await until(() => first.delivery === "steer", "the queue head to advance after the process exit");
+  const read = active => request(active, "GET", `kuvo/sessions/${session}/queue`);
+  assert.equal((await read(record)).json.paused, false);
+  await child.stop();
+  here.engine.inboxes.set(session, [second]);
+  const resumed = await here.start().ready();
+  await until(() => second.delivery === "steer", "the next queue head to advance after reconnect");
+  assert.deepEqual((await read(resumed)).json, { paused: false, held: [] });
+});
+
+test("queue recovery leaves an unknown turn alone and resumes an open turn on a replacement engine", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-engine-unknown");
+  const replacement = await computer("queue-engine-replacement");
+  const session = "ses_engineReplacement";
+  const original = { id: "msg_original", type: "user", delivery: "steer", payload: { text: "Maybe in use." } };
+  const waiting = { id: "msg_recovered", type: "user", delivery: "queue", payload: { text: "Carry on." } };
+  const conversation = sessionOf({ id: session, directory: here.home, updated: Date.now() });
+  here.engine.sessions.push(conversation);
+  here.engine.inboxes.set(session, [original]);
+  here.engine.activeUnavailable = true;
+  const child = here.start();
+  let record = await child.ready();
+  await until(() => here.engine.asked.some(row => row.method === "GET" && row.path.endsWith(`/${session}/inbox`)),
+    "queue recovery to inspect the old inbox");
+  assert.equal(original.delivery, "steer");
+  const read = () => request(record, "GET", `kuvo/sessions/${session}/queue`);
+  assert.deepEqual((await read()).json, { paused: false, held: [] });
+  await child.stop();
+
+  replacement.engine.sessions.push(conversation);
+  replacement.engine.inboxes.set(session, [waiting]);
+  replacement.engine.messages.set(session, [{ id: "msg_openTurn", type: "assistant", time: { created: Date.now() } }]);
+  write(path.join(here.home, "run", "engine.json"), JSON.stringify(replacement.engine.record));
+  record = await here.start().ready();
+  await until(() => waiting.delivery === "steer", "the replacement engine to resume its queued prompt");
+  assert.deepEqual((await read()).json, { paused: false, held: [] });
+  assert.deepEqual(replacement.engine.interrupted, []);
 });
 
 test("an external Stop holds the queue unless the conversation started again", { timeout: 45000 }, async t => {
@@ -2069,6 +2132,40 @@ test("Undo restores a message between its engine neighbors when the queue is pau
   here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
   await until(() => here.engine.messages.get(session)?.some(row => row.id === "msg_b"), "The restored message did not go second.");
   assert.equal(here.engine.inboxes.get(session)[0].delivery, "queue");
+});
+
+test("Undo keeps a held draft first with its full text, author and display words", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("undo-first-held");
+  const session = "ses_undoFirstHeld";
+  const id = "msg_mine";
+  const text = "The build is green.\n\n[Attached: /tmp/report.png]";
+  const words = "The build is green.";
+  const later = { id: "msg_later", type: "user", delivery: "queue", payload: { text: "Later." } };
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.inboxes.set(session, [{ id, type: "user", delivery: "steer", payload: { text,
+    metadata: { kuvo: { parts: { words, mail: { name: "Ada", session: "ses_ada" } } } },
+  } }, later]);
+  here.engine.running.add(session);
+  const record = await here.start().ready();
+  const base = `kuvo/sessions/${session}`;
+  const route = base + "/queue";
+  assert.deepEqual((await request(record, "POST", base + "/stop")).json, { paused: true, held: [id] });
+  here.engine.running.delete(session);
+  const taken = await request(record, "DELETE", route + "/" + id + "?receipt=msg_undoHeld");
+  assert.equal(taken.status, 200, taken.text);
+  const { removed } = taken.json;
+  assert.deepEqual([removed.id, removed.before, removed.text, removed.from], [id, later.id, text, "Ada"]);
+  const back = await request(record, "POST", route + "/add", { ...removed, words, kept: true });
+  assert.equal(back.status, 200, back.text);
+  assert.deepEqual(back.json.held, [id]);
+  assert.deepEqual(back.json.waiting.map(row => [row.id, row.text, row.from]), [[id, words, "Ada"]]);
+  assert.equal((await request(record, "POST", route + "/resume")).status, 200);
+  const prompt = here.engine.asked.find(row => row.method === "POST" && row.path.endsWith("/prompt")).json;
+  assert.deepEqual([prompt.id, prompt.text, prompt.delivery], [id, text, "steer"]);
+  assert.equal(later.delivery, "queue");
+  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+  await until(() => later.delivery === "steer", "the second message to follow the restored draft");
 });
 
 test("a message removed while on its way can be taken back when it arrives", { timeout: 45000 }, async t => {

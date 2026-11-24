@@ -58,6 +58,7 @@ export async function standInEngine(root, env) {
         return send(page);
       }
       if (route === "GET /api/session/active") {
+        if (engine.activeUnavailable) return send({}, 503);
         const data = Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }]));
         engine.activeRead?.();
         return send({ data });
