@@ -28,6 +28,10 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    if word(0) == Some("hold") {
+        kuvo_agents::hold::run(&args[1..])?;
+        return Ok(ExitCode::SUCCESS);
+    }
     #[cfg(target_os = "macos")]
     if word(0) == Some("install-media") {
         return Ok(install_media::run(&args[1..]));
