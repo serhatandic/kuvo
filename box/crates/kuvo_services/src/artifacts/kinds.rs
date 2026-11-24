@@ -6,28 +6,15 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Kind {
-    Memory,
-    Skill,
-    Image,
-    Page,
-    Document,
-    Download,
-    Code,
-    File,
-}
+pub enum Kind { Memory, Skill, Image, Page, Document, Download, Code, File }
 
 impl Kind {
     pub fn parse(word: &str) -> Option<Self> {
         match word {
-            "memory" => Some(Self::Memory),
-            "skill" => Some(Self::Skill),
-            "image" => Some(Self::Image),
-            "page" => Some(Self::Page),
-            "document" => Some(Self::Document),
-            "download" => Some(Self::Download),
-            "code" => Some(Self::Code),
-            "file" => Some(Self::File),
+            "memory" => Some(Self::Memory), "skill" => Some(Self::Skill),
+            "image" => Some(Self::Image), "page" => Some(Self::Page),
+            "document" => Some(Self::Document), "download" => Some(Self::Download),
+            "code" => Some(Self::Code), "file" => Some(Self::File),
             _ => None,
         }
     }
@@ -35,91 +22,28 @@ impl Kind {
 
 fn extension(path: &str) -> String {
     let name = basename(path);
-    // Match Node's `path.extname`: leading dot with no other dot has no extension.
-    let Some(dot) = name.rfind('.') else {
-        return String::new();
-    };
-    if dot == 0 {
-        return String::new();
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => name[dot + 1..].to_ascii_lowercase(),
+        _ => String::new(),
     }
-    name[dot + 1..].to_ascii_lowercase()
 }
 
 pub(crate) fn basename(path: &str) -> &str {
     let trimmed = path.trim_end_matches(['/', '\\']);
-    trimmed
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(trimmed)
-}
-
-fn is_image_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "svg" | "bmp" | "tiff"
-    )
-}
-
-fn is_document_ext(ext: &str) -> bool {
-    matches!(
-        ext,
-        "md" | "markdown"
-            | "txt"
-            | "pdf"
-            | "docx"
-            | "doc"
-            | "rtf"
-            | "pages"
-            | "csv"
-            | "tsv"
-            | "xlsx"
-            | "xls"
-            | "numbers"
-            | "pptx"
-            | "key"
-            | "odt"
-            | "ods"
-    )
-}
-
-fn is_page_ext(ext: &str) -> bool {
-    matches!(ext, "html" | "htm")
+    trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed)
 }
 
 fn is_binary_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "zip" | "gz"
-            | "tgz"
-            | "tar"
-            | "dmg"
-            | "pkg"
-            | "mp4"
-            | "mov"
-            | "mp3"
-            | "wav"
-            | "m4a"
-            | "woff"
-            | "woff2"
-            | "ttf"
-            | "otf"
-            | "sqlite"
-            | "db"
-            | "bin"
-            | "exe"
-            | "dylib"
-            | "so"
-            | "o"
-            | "a"
-            | "class"
-            | "jar"
-            | "wasm"
+        "zip" | "gz" | "tgz" | "tar" | "dmg" | "pkg" | "mp4" | "mov" | "mp3" | "wav" | "m4a"
+            | "woff" | "woff2" | "ttf" | "otf" | "sqlite" | "db" | "bin" | "exe" | "dylib"
+            | "so" | "o" | "a" | "class" | "jar" | "wasm"
     )
 }
 
 pub fn type_of(path: &str, binary: bool) -> &'static str {
-    let ext = extension(path);
-    match ext.as_str() {
+    match extension(path).as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -152,78 +76,49 @@ pub fn type_of(path: &str, binary: bool) -> &'static str {
         "numbers" => "application/vnd.apple.numbers",
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
-        other => {
-            if is_binary_ext(other) || binary {
-                "application/octet-stream"
-            } else {
-                "text/plain"
-            }
-        }
+        other if is_binary_ext(other) || binary => "application/octet-stream",
+        _ => "text/plain",
     }
 }
 
-pub fn is_binary(bytes: &[u8]) -> bool {
-    bytes[..bytes.len().min(8192)].contains(&0)
-}
+pub fn is_binary(bytes: &[u8]) -> bool { bytes[..bytes.len().min(8192)].contains(&0) }
 
 pub fn is_prose(path: &str) -> bool {
-    let ext = extension(path);
-    ext == "md" || ext == "markdown" || ext == "txt" || basename(path) == "job.json"
+    matches!(extension(path).as_str(), "md" | "markdown" | "txt") || basename(path) == "job.json"
 }
 
 pub fn is_text(mime: &str) -> bool {
-    mime.starts_with("text/")
-        || mime == "application/rtf"
-        || mime == "application/json"
-        || mime == "image/svg+xml"
-}
-
-pub(crate) fn path_segments(path: &str) -> Vec<&str> {
-    path.split(std::path::MAIN_SEPARATOR).collect()
+    mime.starts_with("text/") || matches!(mime, "application/rtf" | "application/json" | "image/svg+xml")
 }
 
 pub(crate) fn strip_folder_prefix<'a>(path: &'a str, folder: &str) -> Option<&'a str> {
-    let trimmed = folder.trim_end_matches(std::path::MAIN_SEPARATOR);
-    let rest = path.strip_prefix(trimmed)?;
-    rest.strip_prefix(std::path::MAIN_SEPARATOR)
+    path.strip_prefix(folder.trim_end_matches(std::path::MAIN_SEPARATOR))?
+        .strip_prefix(std::path::MAIN_SEPARATOR)
 }
 
 pub fn kind_of(path: &str, bots: Option<&Path>, download: bool) -> Kind {
-    if download {
-        return Kind::Download;
-    }
-    let parts = path_segments(path);
-    if let Some(at) = parts.iter().rposition(|&part| part == "skills")
-        && at > 0
-        && at + 2 < parts.len()
+    if download { return Kind::Download; }
+    let parts: Vec<&str> = path.split(std::path::MAIN_SEPARATOR).collect();
+    if let Some(at) = parts.iter().rposition(|&p| p == "skills")
+        && at > 0 && at + 2 < parts.len()
         && matches!(parts[at - 1], ".opencode" | ".claude" | "opencode")
     {
         return Kind::Skill;
     }
-    if let Some(bots) = bots
-        && let Some(inside) = strip_folder_prefix(path, &bots.to_string_lossy())
-    {
+    if let Some(bots) = bots && let Some(inside) = strip_folder_prefix(path, &bots.to_string_lossy()) {
         let segs: Vec<&str> = inside.split(std::path::MAIN_SEPARATOR).collect();
-        if segs.len() == 2 && matches!(segs[1], "MEMORY.md" | "job.json") {
+        if (segs.len() == 2 && matches!(segs[1], "MEMORY.md" | "job.json"))
+            || (segs.len() == 3 && segs[1] == "groups" && segs[2].ends_with(".md"))
+        {
             return Kind::Memory;
         }
-        if segs.len() == 3 && segs[1] == "groups" && segs[2].ends_with(".md") {
-            return Kind::Memory;
-        }
     }
-    let ext = extension(path);
-    if is_image_ext(&ext) {
-        return Kind::Image;
-    }
-    if is_page_ext(&ext) {
-        return Kind::Page;
-    }
-    if is_document_ext(&ext) {
-        return Kind::Document;
-    }
-    if is_binary_ext(&ext) {
-        Kind::File
-    } else {
-        Kind::Code
+    match extension(path).as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "svg" | "bmp" | "tiff" => Kind::Image,
+        "html" | "htm" => Kind::Page,
+        "md" | "markdown" | "txt" | "pdf" | "docx" | "doc" | "rtf" | "pages" | "csv" | "tsv"
+            | "xlsx" | "xls" | "numbers" | "pptx" | "key" | "odt" | "ods" => Kind::Document,
+        ext if is_binary_ext(ext) => Kind::File,
+        _ => Kind::Code,
     }
 }
