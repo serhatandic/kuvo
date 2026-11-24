@@ -22,8 +22,8 @@ export const canonicalPath = (path: string): string | null => {
       if (part === null || part.includes("/") || [".", ".."].includes(ascii(part))) return null;
       parts.push(encodeURIComponent(part).replace(/%(24|26|2B|2C|3B|3D|3A|40)/g, plainly));
     }
-    const sessionsPage = parts.join("/") === "kuvo/sessions/page";
     const fields: string[] = [];
+    const route = parts.join("/");
     for (const raw of at < 0 ? [] : path.slice(at + 1).split("&").filter(Boolean)) {
       // Its name and value, a "+" in them a space, as a query is read.
       const spaced = raw.replaceAll("+", " "), equals = spaced.indexOf("=");
@@ -32,9 +32,10 @@ export const canonicalPath = (path: string): string | null => {
       const halves = [name];
       if (equals >= 0) {
         // The session page validates its key as it looks up the inventory.
-        const projectKey = sessionsPage && name === "project";
-        const value = decodedPart(spaced.slice(equals + 1), projectKey);
-        if (value === null || (!projectKey && value.split("/").some(piece => ascii(piece) === ".."))) return null;
+        const projectKey = route === "kuvo/sessions/page" && name === "project";
+        const folder = FOLDER_PATHS.has(`${route}?${name}`);
+        const value = decodedPart(spaced.slice(equals + 1), projectKey || folder);
+        if (value === null || (!projectKey && value.split(folder ? /[/\\]/ : "/").some(piece => ascii(piece) === ".."))) return null;
         halves.push(value);
       }
       fields.push(halves.map(half => encodeURIComponent(half!).replace(/%(24|2C|3B|3A|40|2F|3F)/g, plainly).replaceAll("'", "%27")).join("="));
@@ -45,15 +46,18 @@ export const canonicalPath = (path: string): string | null => {
     return null;
   }
 };
-// Percent-decoded once. Only a project key allows backslashes.
-const decodedPart = (raw: string, projectKey = false): string | null => {
+// The query values that name a folder on this computer, by route.
+const FOLDER_PATHS = new Set(["kuvo/folders?path", "kuvo/folders/tree?path", "kuvo/files/find?directory"]);
+// Percent-decoded once, or null when it doesn't decode or holds a control character, or a
+// backslash where it can't be part of a query path or project key.
+const decodedPart = (raw: string, allowBackslashes = false): string | null => {
   let text: string;
   try {
     text = decodeURIComponent(raw);
   } catch {
     return null;
   }
-  return /[\u0000-\u001f\u007f]/.test(text) || (!projectKey && text.includes("\\")) ? null : text;
+  return /[\u0000-\u001f\u007f]/.test(text) || (!allowBackslashes && text.includes("\\")) ? null : text;
 };
 const ascii = (text: string) => text.replace(/[^\u0000-\u007f]/g, "");
 // What's written as it is beyond what encodeURIComponent leaves (letters, digits, `-_.!~*'()`):

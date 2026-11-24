@@ -22,6 +22,16 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    if word(0) == Some("update") {
+        return Ok(kuvo_keeper::prepare_command::run(&args[1..])?);
+    }
+    if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
+        if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
+            return Err("The release names a different engine.".into());
+        }
+        println!("ok");
+        return Ok(ExitCode::SUCCESS);
+    }
     if word(0) == Some("rehome") {
         return rehome(&args[1..]);
     }
@@ -39,8 +49,17 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let seed = (word(0), word(1), args.len()) == (Some("box"), Some("seed"), 2);
     let wipe = (word(0), args.len()) == (Some("wipe-member"), 1);
-    let serve = (word(0), args.len()) == (Some("serve"), 1);
-    let uninstall = if word(0) == Some("uninstall") {
+    let helper_resident = (word(0), word(1), args.len()) == (Some("serve"), Some("--resident"), 2);
+    let serve = (word(0), args.len()) == (Some("serve"), 1) || helper_resident;
+    #[cfg(windows)]
+    let startup = match (word(0), word(1), args.len()) {
+        (Some("install"), Some("--startup"), 2) => Some(true),
+        (Some("uninstall"), Some("--startup"), 2) => Some(false),
+        _ => None,
+    };
+    #[cfg(not(windows))]
+    let startup: Option<bool> = None;
+    let uninstall = if word(0) == Some("uninstall") && startup.is_none() {
         if args[1..].iter().any(|word| word != "--check") {
             eprintln!("Usage: kuvo-box uninstall [--check]");
             return Ok(ExitCode::from(2));
@@ -78,6 +97,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             || recovery.is_some()
             || identity
             || uninstall.is_some()
+            || startup.is_some()
             || keeper.is_some()
             || probe.is_some()
             || supervised =>
@@ -100,10 +120,25 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             );
         }
     };
+    #[cfg(windows)]
+    let home = {
+        let account = Account::current()?;
+        let mut environment: kuvo_os::platform::Environment = env::vars_os().collect();
+        // The system profile and SID belong to the token, not an environment override.
+        environment.retain(|key, _| !key.eq_ignore_ascii_case("USERPROFILE"));
+        Home::resolve(&account, Platform::Windows, &environment)?
+    };
+    #[cfg(windows)]
+    kuvo_os::windows::private_home(
+        home.root(),
+        !wipe && uninstall.is_none() && startup != Some(false),
+    )?;
+    #[cfg(not(windows))]
     let home = env::var_os("KUVO_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
+    #[cfg(not(windows))]
     let home = Home::new(home)?;
     if wipe || serve {
         match kuvo_setup::wipe::finish(home.root())? {
@@ -114,6 +149,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     if let Some(check) = uninstall {
         let outcome = kuvo_setup::uninstall::run(&home, check);
+        #[cfg(windows)]
+        if !check && outcome.status == 0 {
+            kuvo_keeper::windows::StartupTask::for_home(home.root())?.remove()?;
+        }
         println!("{}", outcome.value);
         if let Some(note) = outcome.note {
             eprintln!("{note}");
@@ -124,7 +163,14 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         println!("{}", kuvo_setup::backup::ssh_identity(home.root())?);
         return Ok(ExitCode::SUCCESS);
     }
-    if !join && ssh_enroll.is_none() && !seed && recovery.is_none() && keeper.is_none() && probe.is_none() {
+    if !join
+        && ssh_enroll.is_none()
+        && !seed
+        && recovery.is_none()
+        && keeper.is_none()
+        && probe.is_none()
+        && startup.is_none()
+    {
         let platform = Platform::current();
         let account_home = Account::current()?.home_folder(platform, &env::vars_os().collect())?;
         kuvo_move::open(&home, platform, Some(&account_home), |_| {})?;
@@ -134,6 +180,20 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
+        #[cfg(windows)]
+        if let Some(install) = startup {
+            if install {
+                kuvo_keeper::windows::stage_local_release(home.root(), &env::current_exe()?)?;
+                kuvo_setup::installer::open_staged_home(&home)?;
+                let task = start_windows(&home).await?;
+                println!("{}", task.name());
+            } else {
+                kuvo_keeper::windows::StartupTask::for_home(home.root())?
+                    .disable(&home)
+                    .await?;
+            }
+            return Ok(());
+        }
         if let Some(keeper) = keeper {
             kuvo_keeper::execute(&home, env::vars_os().collect(), keeper, shutdown()).await?;
             Ok(())
@@ -170,10 +230,21 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             if ssh_enroll.is_some() {
                 let joined = kuvo_setup::installer::join_ssh(&home, name, &code).await?;
                 let (key, identity) = kuvo_setup::installer::enrolled_ssh_identity(&home)?;
+                #[cfg(not(windows))]
                 start_ssh_resident(&home, &identity).await?;
+                #[cfg(windows)]
+                start_windows(&home).await?;
                 println!("{}", serde_json::json!({"setup": joined.setup, "primary": joined.primary, "key": key, "identity": identity}));
             } else {
+                #[cfg(not(windows))]
                 let joined = kuvo_setup::installer::join(&home, name, &code).await?;
+                #[cfg(windows)]
+                let joined = {
+                    kuvo_keeper::windows::stage_local_release(home.root(), &env::current_exe()?)?;
+                    let joined = kuvo_setup::installer::join_ssh(&home, name, &code).await?;
+                    start_windows(&home).await?;
+                    joined
+                };
                 println!("{}", serde_json::to_string(&joined)?);
             }
             Ok(())
@@ -184,7 +255,27 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(())
         } else {
-            serve::run(home.root(), resident_shutdown(home.root(), supervised)).await
+            let (launch, helper_ended) = if helper_resident
+                && std::fs::read_to_string(home.root().join("box/kind"))
+                    .is_ok_and(|kind| kind.trim() == "mac")
+            {
+                let (input, received) = tokio::sync::oneshot::channel();
+                let (ended, helper_ended) = tokio::sync::oneshot::channel();
+                // Helper keeps stdin open while it supervises the resident. This read
+                // must finish independently of the runtime that drains a local wipe.
+                std::thread::Builder::new().name("mac-helper-stdin".into()).spawn(move || {
+                    let mut stdin = io::stdin().lock();
+                    let launch = kuvo_services::vault::Launch::read(&mut stdin);
+                    if launch.is_ok() && input.send(launch).is_ok() {
+                        let _ = io::copy(&mut stdin, &mut io::sink());
+                    }
+                    let _ = ended.send(());
+                })?;
+                (received.await.map_err(|_| io::Error::other("The Mac Helper's launch message is unreadable."))??, Some(helper_ended))
+            } else {
+                (kuvo_services::vault::Launch::default(), None)
+            };
+            serve::run(home.root(), launch, helper_ended, resident_shutdown(home.root(), supervised)).await
         }
     });
     if serve && result.is_ok() && kuvo_setup::wipe::pending(home.root())? {
@@ -200,6 +291,26 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     result.map(|()| ExitCode::SUCCESS)
 }
 
+#[cfg(windows)]
+async fn start_windows(home: &Home) -> io::Result<kuvo_keeper::windows::StartupTask> {
+    let task = kuvo_keeper::windows::StartupTask::for_home(home.root())?;
+    kuvo_keeper::windows::prepare_first_release(home.root(), env!("CARGO_PKG_VERSION"))?;
+    for marker in ["off", "paused"] {
+        kuvo_store::files::remove_file_synced(&home.run().join(marker))?;
+    }
+    let registered = task.register()?;
+    if let Err(error) = task.start_and_wait(home.root()).await {
+        if registered && let Err(cleanup) = task.disable(home).await {
+            return Err(io::Error::other(format!(
+                "{error}. Kuvo couldn't remove the new task: {cleanup}"
+            )));
+        }
+        return Err(error);
+    }
+    Ok(task)
+}
+
+#[cfg(not(windows))]
 async fn start_ssh_resident(home: &Home, identity: &str) -> io::Result<()> {
     use kuvo_os::process::Spawn;
     use std::{fs, time::Duration};

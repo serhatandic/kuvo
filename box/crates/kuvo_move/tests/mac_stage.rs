@@ -446,12 +446,16 @@ fn cut_child(root: &Path, world: Option<&Path>, test: &str, boundary: &str) {
 fn publish(app: &App, complete: impl FnMut(CutoverStep)) -> kuvo_move::mac::Outcome {
     let path = app.home.join("generic-keychain");
     let keychain = path.is_dir().then(|| FileKeychain::new(path));
-    publish_using(app, keychain.as_ref(), complete)
+    publish_using(
+        app,
+        keychain.as_ref().map(|items| items as &dyn KeychainItems),
+        complete,
+    )
 }
 
 fn publish_using(
     app: &App,
-    keychain: Option<&FileKeychain>,
+    keychain: Option<&dyn KeychainItems>,
     complete: impl FnMut(CutoverStep),
 ) -> kuvo_move::mac::Outcome {
     let home = Home::new(app.destination.clone()).unwrap();
@@ -1417,4 +1421,66 @@ fn a_claude_accounts_chat_history_is_carried_into_staging() {
         .join("thread.jsonl");
     assert_eq!(fs::read(next).unwrap(), b"history\n");
     assert_eq!(fs::read(old).unwrap(), b"history\n");
+}
+
+#[test]
+fn released_move_keeps_a_custom_claude_sign_in_in_a_disposable_keychain() {
+    use kuvo_move::mac::ClaudeKeychain;
+
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("move.keychain-db");
+    let result = Command::new("/usr/bin/security")
+        .args(["create-keychain", "-p", "move-fixture"])
+        .arg(&file)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(result.success(), "create disposable Keychain");
+    struct RemoveKeychain(PathBuf);
+    impl Drop for RemoveKeychain {
+        fn drop(&mut self) {
+            let _ = Command::new("/usr/bin/security")
+                .arg("delete-keychain")
+                .arg(&self.0)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+    let _remove = RemoveKeychain(file.clone());
+    let items = ClaudeKeychain::for_test_file(file).unwrap();
+    let app = staged_release(root.path());
+    let folder = Path::new("agents/claude/accounts/custom");
+    let source = app.source.join(folder);
+    let target = app.destination.join(folder);
+    put(&source.join("profile.json"), b"settings");
+    let source_name = claude_service(&source);
+    let target_name = claude_service(&target);
+    let mut random = [0; 24];
+    getrandom::fill(&mut random).unwrap();
+    let expected = GenericPassword {
+        account: "custom account".into(),
+        value: hex::encode(random).into_bytes(),
+    };
+    items.write(&source_name, &expected).unwrap();
+    let outcome = publish_using(&app, Some(&items), |_| {});
+    assert_eq!(outcome.exit_code(), 0, "move didn't finish");
+    assert!(
+        items.read(&source_name).unwrap().is_none(),
+        "old service retired"
+    );
+    assert!(
+        items.read(&target_name).unwrap().as_ref() == Some(&expected),
+        "new service holds the same credential"
+    );
+    assert!(target.join("profile.json").is_file());
+    for name in ["updates/rehome/state.json", "updates/rehome/actions.jsonl"] {
+        if let Ok(text) = fs::read_to_string(app.destination.join(name)) {
+            assert!(
+                !text.contains(std::str::from_utf8(&expected.value).unwrap()),
+                "move records omit credentials"
+            );
+        }
+    }
 }

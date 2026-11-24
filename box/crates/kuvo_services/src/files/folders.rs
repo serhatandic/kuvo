@@ -72,7 +72,7 @@ impl Places {
 /// for one this box isn't let into, 500 for anything else, each with the system's reason.
 pub(crate) fn refusal(at: &Path, error: &io::Error) -> Refusal {
     let at = at.display();
-    let (status, message, reason) = match error.kind() {
+    let (status, message, reason) = match platform::kind(error) {
         io::ErrorKind::NotFound => (
             StatusCode::NOT_FOUND,
             format!("There's no folder {at} here."),
@@ -124,6 +124,10 @@ fn said(error: &io::Error) -> String {
 
 #[cfg(unix)]
 mod platform {
+    pub(super) fn kind(error: &std::io::Error) -> std::io::ErrorKind {
+        error.kind()
+    }
+
     /// libuv's message for an error number (`uv_strerror`), as Node's errors carry it.
     pub(super) fn libuv_words(error: &std::io::Error) -> Option<&'static str> {
         Some(match error.raw_os_error()? {
@@ -165,12 +169,22 @@ mod platform {
 
 #[cfg(not(unix))]
 mod platform {
+    /// As Node reads it: libuv takes ERROR_INVALID_NAME (a name too long, a bad character) for one
+    /// that isn't there.
+    pub(super) fn kind(error: &std::io::Error) -> std::io::ErrorKind {
+        if error.raw_os_error() == Some(123) {
+            std::io::ErrorKind::NotFound
+        } else {
+            error.kind()
+        }
+    }
+
     /// libuv's message for the error libuv maps a Windows error code to (`uv_translate_sys_error`).
     pub(super) fn libuv_words(error: &std::io::Error) -> Option<&'static str> {
         Some(match error.raw_os_error()? {
             1921 => "too many symbolic links encountered", // ERROR_CANT_RESOLVE_FILENAME
-            206 => "name too long",                         // ERROR_FILENAME_EXCED_RANGE
-            32 | 33 | 170 => "resource busy or locked",     // sharing, lock, busy
+            206 => "name too long",                        // ERROR_FILENAME_EXCED_RANGE
+            32 | 33 | 170 => "resource busy or locked",    // sharing, lock, busy
             8 | 14 => "not enough memory",
             4 => "too many open files",
             121 => "connection timed out", // ERROR_SEM_TIMEOUT

@@ -59,6 +59,9 @@ impl BundleSize {
         let file = File::open(path)?;
         let mut digest = Sha256::new();
         let len = io::copy(&mut file.take(MAX_BUNDLE_BYTES + 1), &mut digest)?;
+        if len > MAX_BUNDLE_BYTES {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
         let hash = encode(&digest.finalize());
         Self::new(len, &hash)?;
         Ok((len, hash))

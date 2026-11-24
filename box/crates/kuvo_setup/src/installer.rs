@@ -18,7 +18,7 @@ use crate::{
     model::{ComputerKind, Entry, Link, Membership, Peer, SharedKind, safe_token},
 };
 
-pub use join::{Joined, cancellation_receipts, join, join_ssh};
+pub use join::{Joined, cancellation_receipts, join, join_ssh, open_staged_home};
 
 pub fn enrolled_ssh_identity(home: &Home) -> Result<(String, String), Error> {
     let files = crate::storage::Files::new(home.root().to_owned());

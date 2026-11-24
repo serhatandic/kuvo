@@ -12,7 +12,10 @@ fn decode(raw: &str, allow_backslashes: bool) -> Option<String> {
         }
     }
     let part = percent_decode_str(raw).decode_utf8().ok()?;
-    if part.bytes().any(|b| b.is_ascii_control() || (!allow_backslashes && b == b'\\')) {
+    if part
+        .bytes()
+        .any(|b| b.is_ascii_control() || (!allow_backslashes && b == b'\\'))
+    {
         return None;
     }
     Some(part.into_owned())
@@ -38,6 +41,13 @@ fn ascii(part: &str) -> String {
     part.chars().filter(char::is_ascii).collect()
 }
 
+/// The query values that name a folder on this computer, by route.
+const FOLDER_PATHS: &[(&str, &str)] = &[
+    ("kuvo/folders", "path"),
+    ("kuvo/folders/tree", "path"),
+    ("kuvo/files/find", "directory"),
+];
+
 pub(crate) fn canonical(path: &str) -> Option<String> {
     if path.contains('#') || path.starts_with(' ') || path.ends_with(' ') {
         return None;
@@ -52,21 +62,26 @@ pub(crate) fn canonical(path: &str) -> Option<String> {
         result.push(encode(&part, b"'$&+,;=:@"));
     }
     let mut path = result.join("/");
-    let sessions_page = path == "kuvo/sessions/page";
+    let route = path.clone();
     for (index, raw) in query.split('&').filter(|raw| !raw.is_empty()).enumerate() {
         path.push(if index == 0 { '?' } else { '&' });
+        let mut folder = false;
         let mut project_key = false;
         for (index, raw) in raw.splitn(2, '=').enumerate() {
+            let folder_value = index == 1 && folder;
             let project_value = index == 1 && project_key;
-            let part = decode(&raw.replace('+', " "), project_value)?;
-            if !project_value && part.split('/').any(|piece| ascii(piece) == "..") {
+            let part = decode(&raw.replace('+', " "), folder_value || project_value)?;
+            // A folder may be a Windows path: `..` between either separator is still refused.
+            let separators: &[char] = if folder_value { &['/', '\\'] } else { &['/'] };
+            if !project_value && part.split(separators).any(|piece| ascii(piece) == "..") {
                 return None;
             }
             if index == 1 {
                 path.push('=');
             } else {
                 // The project page validates this inventory key itself.
-                project_key = sessions_page && part == "project";
+                project_key = route == "kuvo/sessions/page" && part == "project";
+                folder = FOLDER_PATHS.contains(&(route.as_str(), part.as_str()));
             }
             path.push_str(&encode(&part, b"$,;:@/?"));
         }

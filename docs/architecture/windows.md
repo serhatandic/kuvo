@@ -53,7 +53,7 @@ WSL reuses the Linux workers, installer and update. Its cost is distro lifecycle
 
 **115–171 hours total.**
 
-Sessions 4–11 are replaced by [the box in Rust](rust-box.md): native Windows comes with the Rust box. WSL2 on the TypeScript box is done.
+Sessions 4–11 are replaced by [the box in Rust](rust-box.md): native Windows comes with the Rust box. [Native trial coverage](rust-windows-coverage.md) tracks what the Rust box has proved. WSL2 on the TypeScript box is done.
 
 **The 26 trial checks** (record OS, architecture, versions and pass/fail). Use smoke probes for session 1 and run the full target-area tests once session 2 has isolated them.
 

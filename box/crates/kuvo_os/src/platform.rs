@@ -273,6 +273,16 @@ pub fn windows_native_path(wire: &str) -> Option<String> {
     (windows_wire_path(wire)?.as_str() == wire).then(|| wire.replace('/', "\\"))
 }
 
+/// Extend a validated wire path for Win32 calls that still enforce MAX_PATH.
+pub fn windows_extended_path(wire: &str) -> Option<String> {
+    let native = windows_native_path(wire)?;
+    if let Some(share) = native.strip_prefix(r"\\") {
+        Some(format!(r"\\?\UNC\{share}"))
+    } else {
+        Some(format!(r"\\?\{native}"))
+    }
+}
+
 /// A Win32 spelling to check when canonicalization returned an extended path.
 pub fn windows_conventional_path(path: &Path) -> Option<PathBuf> {
     let tail = path.to_str()?.strip_prefix(r"\\?\")?;
@@ -318,7 +328,12 @@ pub fn file_uri_path(platform: Platform, uri: &str) -> Option<PathBuf> {
         } else {
             format!("//{authority}{path}")
         };
-        return windows_native_path(&wire).map(PathBuf::from);
+        return if wire.encode_utf16().count() >= 260 {
+            windows_extended_path(&wire)
+        } else {
+            windows_native_path(&wire)
+        }
+        .map(PathBuf::from);
     }
     local.then(|| PathBuf::from(path.as_ref()))
 }
@@ -510,6 +525,52 @@ pub fn git_bash(env: &Environment) -> io::Result<PathBuf> {
                 "Git for Windows is required for Kuvo shell commands",
             )
         })
+}
+
+/// Run shell source through Git for Windows. Git Bash takes its working
+/// directory from the process, so a Windows path never becomes shell source.
+#[cfg(windows)]
+pub fn git_bash_command(
+    env: &Environment,
+    folder: &Path,
+    source: &str,
+) -> io::Result<std::process::Command> {
+    use std::os::windows::process::CommandExt as _;
+    let folder = folder.canonicalize()?;
+    let folder = windows_conventional_path(&folder)
+        .and_then(|path| windows_wire_path(path.to_str()?))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Kuvo needs an absolute Windows shell folder",
+            )
+        })?;
+    let configs = env_value(Platform::Windows, env, "GIT_CONFIG_COUNT")
+        .and_then(OsStr::to_str)
+        .and_then(|count| count.parse::<u16>().ok())
+        .unwrap_or(0);
+    let mut command = std::process::Command::new(git_bash(env)?);
+    command
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+        .env_clear()
+        .envs(
+            env.iter()
+                .filter(|(name, _)| !name.as_encoded_bytes().starts_with(b"=")),
+        )
+        .env_remove("BASH_ENV")
+        .env("MSYS", "winsymlinks:nativestrict")
+        .env("GIT_CONFIG_COUNT", (u32::from(configs) + 1).to_string())
+        .env(format!("GIT_CONFIG_KEY_{configs}"), "core.longpaths")
+        .env(format!("GIT_CONFIG_VALUE_{configs}"), "true")
+        .args(["--noprofile", "--norc", "-c"])
+        // CreateProcess cannot take every working directory that Bash supports.
+        // Keep the Windows path separate from the shell source.
+        .arg(format!(
+            "cd -- \"$1\" || exit\nshift\n{}",
+            source.replace("\r\n", "\n")
+        ))
+        .args(["kuvo", &folder]);
+    Ok(command)
 }
 
 /// Capture the environment of a terminal's login shell, then try a non-interactive login.

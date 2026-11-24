@@ -71,3 +71,23 @@ test("the selected release manifest gives SSH and the Mac helper to the Rust box
   assert.equal(served.status, 0, served.stderr);
   assert.equal(fs.readFileSync(path.join(K, "run", "serve.log"), "utf8"), "serve the request\n");
 });
+
+test("the launcher restores the Rust manifest after a TypeScript stager moves only bin", { skip: process.platform === "win32" }, () => {
+  const { K, route } = box();
+  const target = "versions/0.8.0-000000000000/bin";
+  const packed = path.join(K, "updates", "unpacked");
+  fs.mkdirSync(packed, { recursive: true });
+  fs.renameSync(path.join(K, "bin"), path.join(packed, "bin"));
+  const marker = '{"kuvo":"box/1","version":"0.8.0","engine":"1.1.0","launch":"rust"}\n';
+  write(path.join(packed, "bin", ".kuvo-release.json"), marker);
+  write(path.join(packed, "bin", "box-version"), "0.8.0\n");
+  write(path.join(packed, "bin", "kuvo-box"), '#!/bin/sh\nprintf "%s %s\\n" "$*" "$(cat)"\n', 0o700);
+  fs.mkdirSync(path.dirname(path.join(K, target)), { recursive: true });
+  fs.renameSync(path.join(packed, "bin"), path.join(K, target));
+  fs.symlinkSync(target, path.join(K, "bin"));
+
+  const answered = route("route");
+  assert.equal(answered.status, 0, answered.stderr);
+  assert.equal(answered.stdout, "route the request\n");
+  assert.equal(fs.readFileSync(path.join(K, target, "..", "box.json"), "utf8"), marker);
+});

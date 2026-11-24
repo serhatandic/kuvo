@@ -41,6 +41,13 @@ impl Resident {
     /// A resident claims the home before binding. Discovery is published only once both
     /// listeners can accept traffic. A paused or off home never publishes a new record.
     pub async fn bind(home: &Path) -> io::Result<Option<Self>> {
+        Self::bind_with_password(home, None).await
+    }
+
+    pub async fn bind_with_password(
+        home: &Path,
+        password: Option<String>,
+    ) -> io::Result<Option<Self>> {
         let started_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
@@ -74,7 +81,10 @@ impl Resident {
             format_version: SERVE_RECORD_VERSION,
             pid: std::process::id(),
             port,
-            password: hex::encode(random::<24>()?),
+            password: match password {
+                Some(password) => password,
+                None => hex::encode(random::<24>()?),
+            },
             kept: false,
             started_at,
             generation: uuid::Uuid::new_v4(),

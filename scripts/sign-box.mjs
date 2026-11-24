@@ -2,6 +2,8 @@
 // "Updates"), and prints boxes.json: the manifest and its signature, in one file, so the two
 // can't come from different releases.
 //   KUVO_BOX_SIGNING_KEY=<PEM> node scripts/sign-box.mjs <version> <pack> <pack's URL> <box.json>
+// For a Rust release, add one --target <triple> <pack> <URL> for each target.
+// The first pack remains the compatibility pack read by TypeScript computers.
 //   KUVO_BOX_SPREADS=1   a release for everyone (the release workflow) or the user's private feed:
 //                        marked `spreads`, so a computer holding it hands it to the user's other
 //                        computers. Without it (a build made for trying an update), no computer
@@ -14,7 +16,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const [version, pack, url, boxFile] = process.argv.slice(2);
+const [version, pack, url, boxFile, ...targets] = process.argv.slice(2);
 if (!version || !pack || !url || !boxFile || !process.env.KUVO_BOX_SIGNING_KEY) {
   console.error("Usage: KUVO_BOX_SIGNING_KEY=<PEM> node scripts/sign-box.mjs <version> <pack> <pack's URL> <box.json>");
   process.exit(2);
@@ -30,9 +32,30 @@ if (box.version !== version) {
   process.exit(1);
 }
 // The built link's header is also used by the keeper before starting the code.
-const link = fs.readFileSync(path.join(path.dirname(boxFile), "bin", "kuvo-link.js"), "utf8");
+const linkFile = path.join(path.dirname(boxFile), "bin", "kuvo-link.js");
+const link = targets.length && !fs.existsSync(linkFile) ? "" : fs.readFileSync(linkFile, "utf8");
 const layout = /^\/\/ Kuvo folder layout ([1-9][0-9]*) [0-9a-f]{12}\n/.exec(link);
-const data = fs.readFileSync(pack);
+function packed(file, address) {
+  const data = fs.readFileSync(file);
+  return { url: address, sha256: crypto.createHash("sha256").update(data).digest("hex"), size: data.length };
+}
+const required = new Set([
+  "aarch64-apple-darwin", "x86_64-apple-darwin",
+  "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-gnullvm",
+]);
+const packs = {};
+if (targets.length) {
+  for (let i = 0; i < targets.length; i += 4) {
+    const [flag, target, file, address] = targets.slice(i, i + 4);
+    if (flag !== "--target" || !required.delete(target) || !file || !address) {
+      throw new Error("Give one --target <triple> <pack> <URL> for each supported Rust target.");
+    }
+    packs[target] = packed(file, address);
+  }
+  if (required.size || box.launch !== "rust") {
+    throw new Error("A Rust release needs launch: rust and a pack for every supported target.");
+  }
+}
 // (box/src/install/kuvo-install reads this with `sed`, on a computer with nothing to parse JSON
 // yet: one line, with `version`, `engine` and `sha256` each named once, and each system's builds
 // as objects of `url` and `integrity`. Keep it so, or change that script with it.)
@@ -44,7 +67,8 @@ const manifest = Buffer.from(JSON.stringify({
   ...(layout ? { layout: Number(layout[1]) } : {}),
   linux: box.linux,
   darwin: box.darwin,
-  pack: { url, sha256: crypto.createHash("sha256").update(data).digest("hex"), size: data.length },
+  ...(targets.length ? { launch: "rust", packs, windows: box.windows } : {}),
+  pack: packed(pack, url),
   ...(process.env.KUVO_BOX_SPREADS === "1" ? { spreads: true } : {}),
 }));
 const signature = crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), key);

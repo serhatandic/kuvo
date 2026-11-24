@@ -26,8 +26,8 @@ use crate::{
     activity,
     devices::Devices,
     directory::{
-        AgentKind, AnnouncedAgent, Announcement, Announcements, ComputerKey, Owner, RecordScope,
-        Roster, owned_digest,
+        AgentKind, AnnouncedAgent, Announcement, Announcements, ComputerKey, Owner, Ownership,
+        RecordScope, Roster, owned_digest,
     },
     kept,
     lists::{self, Computer, Lists, Local},
@@ -209,21 +209,39 @@ impl View {
     }
 
     pub(crate) fn moved(&self, id: &str, now: Millis) -> Option<String> {
-        let ownership = &self.local.ownership;
-        if let Some(key) = ownership.journal.get(&(RecordScope::Session, id.into())) {
-            return Some(encode(ownership.replacements.get(key).unwrap_or(key)));
+        self.moved_with(id, now, &self.local.ownership)
+    }
+
+    pub(crate) fn moved_with(
+        &self,
+        id: &str,
+        now: Millis,
+        ownership: &Ownership,
+    ) -> Option<String> {
+        let recorded = ownership.journal.get(&(RecordScope::Session, id.into()));
+        let recorded_key = || {
+            recorded.map(|location| {
+                let key = &location.key;
+                encode(ownership.replacements.get(key).unwrap_or(key))
+            })
+        };
+        if self.local.holds(id) || recorded.is_some_and(|location| location.departed_at.is_none()) {
+            return recorded_key();
         }
-        if self.local.holds(id) {
-            return None;
-        }
+        let since = recorded.and_then(|location| location.departed_at);
         self.roster
             .members
             .iter()
             .filter_map(|peer| self.announced.get(&encode(&peer.key)))
             .flat_map(|entry| &entry.moved)
-            .filter(|hint| hint.session == id && now.saturating_sub(hint.at) < 2 * 24 * 60 * 60_000)
+            .filter(|hint| {
+                hint.session == id
+                    && since.is_none_or(|at| hint.at >= at)
+                    && now.saturating_sub(hint.at) < crate::moves::ROUTING_FOR
+            })
             .max_by_key(|hint| hint.at)
             .map(|hint| hint.key.clone())
+            .or_else(recorded_key)
     }
 
     pub(crate) fn lists_owner(&self, id: &str, computer: &str, now: Millis) -> bool {
