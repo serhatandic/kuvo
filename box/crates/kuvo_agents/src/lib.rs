@@ -8,6 +8,7 @@ pub mod live_asks;
 pub mod permissions;
 pub mod resident;
 pub mod roster;
+pub mod rpc;
 pub mod runtime;
 pub mod session;
 pub mod session_runs;

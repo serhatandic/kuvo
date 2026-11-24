@@ -555,3 +555,106 @@ fn fixture_until<T>(what: &str, mut read: impl FnMut() -> Option<T>) -> T {
 fn fixture_checkpoint(root: &Path, name: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&fs::read(root.join("run").join(name)).ok()?).ok()
 }
+
+#[test]
+#[ignore = "agent process launched by the scenario"]
+fn rpc_agent_probe() {
+    let mut lines = std::io::stdin().lock().lines();
+    let first: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(first["jsonrpc"], "2.0");
+    assert_eq!(first["method"], "initialize");
+    println!(r#"{{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{{"tool":"edit"}}}}"#);
+    println!(r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"step":1}}}}"#);
+    let answer: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(answer["id"], "p1");
+    println!(
+        "{}",
+        json!({"jsonrpc":"2.0","id":first["id"],"result":{"saw":answer["result"]["outcome"]}})
+    );
+}
+
+async fn wait(incoming: &mut tokio::sync::mpsc::Receiver<kuvo_agents::rpc::Incoming>) -> kuvo_agents::rpc::Incoming {
+    tokio::time::timeout(Duration::from_secs(20), incoming.recv())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// The shared JSON-RPC connection over a real holder: a request, the agent's
+/// own request answered in between, a notification, and the agent's exit.
+#[test]
+fn json_rpc_runs_through_a_real_holder() {
+    use kuvo_agents::rpc::{Framing, Incoming, Options, Rpc};
+
+    let root = scratch();
+    #[cfg(windows)]
+    kuvo_store::files::write_atomic(
+        &root.path().join("run/socket.key"),
+        "ab".repeat(32).as_bytes(),
+    )
+    .unwrap();
+    let binary = env::var_os("KUVO_HOLDER_TEST_BOX").map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_kuvo-box")),
+        PathBuf::from,
+    );
+    let home = root.path().to_owned();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async move {
+            let runtime = Runtime::for_home(&Home::new(home.clone()).unwrap());
+            let controller = runtime
+                .holders()
+                .start(
+                    &binary,
+                    Start {
+                        command: vec![
+                            env::current_exe().unwrap(),
+                            "--exact".into(),
+                            "rpc_agent_probe".into(),
+                            "--ignored".into(),
+                            "--nocapture".into(),
+                            "--quiet".into(),
+                        ],
+                        cwd: Some(home.clone()),
+                        env: environment(&home),
+                        kind: HoldKind::JsonRpc,
+                        meta: json!({"kind":"grok","provider":"grok-cli","turns":{}})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        portable_requests: None,
+                        limits: Limits::default(),
+                    },
+                )
+                .await
+                .unwrap();
+            let (rpc, mut incoming) = Rpc::over(
+                controller,
+                Options {
+                    framing: Framing::JsonRpc2,
+                    filter: Some(Box::new(|line: &str| line.starts_with('{'))),
+                    ..Options::default()
+                },
+            );
+            let asking = tokio::spawn({
+                let rpc = rpc.clone();
+                async move { rpc.request("initialize", None, Some(Duration::from_secs(20))).await }
+            });
+            let Incoming::Request { id, method, .. } = wait(&mut incoming).await else {
+                panic!("the agent's request came first");
+            };
+            assert_eq!(method, "session/request_permission");
+            rpc.respond(id, Ok(json!({"outcome":"allow"}))).await;
+            assert!(matches!(
+                wait(&mut incoming).await,
+                Incoming::Notification { method, .. } if method == "session/update"
+            ));
+            assert_eq!(asking.await.unwrap().unwrap(), json!({"saw":"allow"}));
+            assert!(matches!(
+                wait(&mut incoming).await,
+                Incoming::Exited { code: 0, .. }
+            ));
+        });
+}

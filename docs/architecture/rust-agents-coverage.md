@@ -183,6 +183,25 @@ The following integration work remains open:
 - Unified sign-in and account status, default-home migration, and shared session, queue and approval routing.
 - Differential and golden-home runs for the remaining routes, with platform verification.
 
+## Tools, shared RPC and sidecar progress (4.1c)
+
+`kuvo_agents::rpc` is the agent-neutral JSON-RPC connection over a held
+agent's lines: bare messages for Codex's app-server and `jsonrpc: "2.0"`
+for ACP agents. One task owns the holder's input and output, numbers
+requests from a chosen first ID, and hands the agent's own requests and
+notifications to the adapter, which answers by ID. It reads each journal
+line once unless the holder sends an unanswered request again,
+acknowledges what it took in every 200 ms and before it lets go, and
+keeps the last 8,000 characters of stderr. An answer after a timeout, or
+to an earlier resident's request, reaches the adapter as a stray. An
+exit ends open requests with the last three stderr lines or the exit
+code. A lost holder connection ends them as exit -1 (`lost`); a fenced
+one hands the agent over quietly. Six scenarios cover these rules and a
+process test runs a request, the agent's own request and its exit
+through a real holder. The holder suite's first two TypeScript cases
+(offset first IDs, a fenced connection, a successor answering) map to
+them.
+
 ## TypeScript scenario inventory
 
 ### Holders, reload and repair
