@@ -267,6 +267,55 @@ test("a discarded release signature does not stop the next signed feed check", a
   assert.equal(fs.existsSync(path.join(here.home, "run/fleet-ready.json")), false);
 });
 
+test("a failed fleet download can be retried for the same signed target", { timeout: 30000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { computer } = await bench(t);
+  const here = await computer("Standalone", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const key = keypair();
+  const version = "0.8.0";
+  const installed = "0.8.0-beta.1";
+  const hash = digest("signed target");
+  let downloads = 0;
+  write(path.join(here.home, "bin/box-version"), installed + "\n");
+  const feed = createServer((req, res) => {
+    if (req.url !== "/boxes.json") {
+      downloads += 1;
+      return res.writeHead(404).end();
+    }
+    const pack = { url: `http://127.0.0.1:${feed.address().port}/target.tar.gz`, sha256: hash };
+    res.end(encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true,
+      launch: "rust", pack, packs: { [target]: pack } }, key)));
+  });
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const updateEnv = {
+    KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`,
+    KUVO_TEST_RELEASE_KEY: key.key,
+  };
+  const child = here.start(binary, updateEnv);
+  await child.ready();
+  await until(() => downloads === 1, "the updater must try its signed target");
+  const failed = path.join(here.home, "run/fleet-cannot.json");
+  await until(() => fs.existsSync(failed), () => `the fleet failure must be available for retry\n${child.log()}`);
+  assert.deepEqual([readJSON(failed).version, readJSON(failed).sha256, readJSON(failed).fixable], [version, hash, true]);
+  await child.stop();
+  const restarted = here.start(binary, updateEnv);
+  const resident = await restarted.ready();
+  const stale = await request(resident, "POST", "kuvo/update/retry", { target: version, targetSha256: digest("older offer") });
+  assert.equal(stale.status, 409, stale.text);
+  assert.equal(downloads, 1);
+  const retry = await request(resident, "POST", "kuvo/update/retry", { target: version, targetSha256: hash });
+  assert.equal(retry.status, 202, retry.text);
+  assert.deepEqual([retry.json.target, retry.json.targetSha256, retry.json.state, retry.json.canRetry], [version, hash, "cannot", false]);
+  await until(() => downloads === 2 && fs.existsSync(failed), "the updater must try the same signed target once more");
+  assert.equal((await request(resident, "GET", "kuvo/update")).json.version, installed);
+});
+
 test("a machine refuses the Mac Helper's Stop request", async t => {
   const { computer } = await bench(t);
   const here = await computer("stop-machine", undefined, folder => {
