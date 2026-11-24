@@ -5,11 +5,14 @@ mod address;
 mod connect;
 mod transport;
 
+#[cfg(unix)]
+pub(crate) use connect::is_reservation_token;
+
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -68,6 +71,21 @@ struct Failure {
 struct AddError {
     title: Option<String>,
     message: String,
+    outcome: FailureOutcome,
+}
+
+enum FailureOutcome {
+    Operation,
+    ReservationCleanup(Option<Completed>),
+}
+
+impl AddError {
+    fn titled(title: String, message: String) -> Self {
+        Self {
+            title: Some(title),
+            ..Self::from(message)
+        }
+    }
 }
 
 impl From<String> for AddError {
@@ -75,6 +93,7 @@ impl From<String> for AddError {
         Self {
             title: None,
             message,
+            outcome: FailureOutcome::Operation,
         }
     }
 }
@@ -94,6 +113,14 @@ struct Computer {
 enum Completed {
     New(Computer),
     Known(Computer),
+}
+
+impl Completed {
+    fn computer(self) -> Computer {
+        match self {
+            Self::New(computer) | Self::Known(computer) => computer,
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -158,6 +185,10 @@ impl Attempt {
             message: error.message,
             again: true,
         });
+        if let FailureOutcome::ReservationCleanup(Some(completed)) = error.outcome {
+            self.known = matches!(completed, Completed::Known(_));
+            self.computer = Some(completed.computer());
+        }
         for step in &mut self.steps {
             if step.state == StepState::Now {
                 step.state = StepState::Failed;
@@ -248,6 +279,7 @@ enum Progress {
     Step(&'static str, StepState, String),
     Name(String),
     HostKey(Vec<HostKey>, oneshot::Sender<()>),
+    RecoverAccount(String, oneshot::Sender<()>),
     Done(Result<Completed, AddError>),
 }
 
@@ -370,6 +402,7 @@ impl Adding {
             files: files.clone(),
             changed,
             asks: 0,
+            reservations: Arc::default(),
         };
         for attempt in &mut owner.finished {
             if matches!(
@@ -515,6 +548,7 @@ struct Owner {
     setup: SetupHandle,
     changed: watch::Sender<Vec<Attempt>>,
     asks: u64,
+    reservations: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Owner {
@@ -581,6 +615,7 @@ impl Owner {
                     setup: self.setup.clone(),
                     by,
                     windows,
+                    reservations: self.reservations.clone(),
                 };
                 tokio::spawn(async move {
                     let result = job.add(destination).await;
@@ -598,12 +633,16 @@ impl Owner {
                             && now.seen.question.as_ref().is_some_and(|question| {
                                 question["at"].as_u64().is_some()
                                     && question["at"].as_u64() == input["at"].as_u64()
+                                    && input["answer"].as_str().is_some_and(|id| {
+                                        question["answers"].as_array().is_some_and(|answers| {
+                                            answers.iter().any(|answer| answer["id"] == id)
+                                        })
+                                    })
                             })
-                            && matches!(input["answer"].as_str(), Some("trust" | "cancel"))
                     })
                     .ok_or_else(|| refuse(409, "It isn’t asking that now."))?;
                 now.seen.question = None;
-                if input["answer"] == "trust" {
+                if input["answer"] != "cancel" {
                     if let Some(answer) = now.answer.take() {
                         let _ = answer.send(());
                     }
@@ -677,9 +716,24 @@ impl Owner {
                 now.seen.state = State::Asking;
                 now.answer = Some(answer);
             }
+            Progress::RecoverAccount(name, answer) => {
+                self.asks += 1;
+                now.seen.question = Some(json!({
+                    "id": "recoverAccount", "title": format!("Continue adding {name}?"),
+                    "message": format!("An earlier attempt to add {name} didn't finish, and it's no longer running. Kuvo can clear it and start again."),
+                    "at": self.asks, "facts": [],
+                    "answers": [{"id":"cancel","label":"Cancel","kind":"plain"},{"id":"recover","label":"Clear and Continue","kind":"primary"}],
+                }));
+                now.seen.state = State::Asking;
+                now.answer = Some(answer);
+            }
             Progress::Done(result) => {
                 let mut now = self.active.remove(index);
-                if now.stop.load(Ordering::Acquire) && result.is_err() {
+                if now.stop.load(Ordering::Acquire)
+                    && result
+                        .as_ref()
+                        .is_err_and(|error| matches!(error.outcome, FailureOutcome::Operation))
+                {
                     return;
                 }
                 match result {
@@ -727,6 +781,7 @@ struct Job {
     files: Files,
     by: Submitter,
     windows: WindowsMode,
+    reservations: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Job {
@@ -776,8 +831,28 @@ impl Job {
             .await?;
         let remote = Destination::inspect(self, destination.clone(), &name).await?;
         self.admit().await?;
+        let mut account = remote.reserve(self).await?;
+        let result = self.add_at(&remote, &destination, account.as_mut()).await;
+        if let Some(account) = account
+            && let Err(message) = account.release(result.as_ref().err()).await
+        {
+            return Err(AddError {
+                title: None,
+                message,
+                outcome: FailureOutcome::ReservationCleanup(result.ok()),
+            });
+        }
+        result
+    }
+
+    async fn add_at(
+        &self,
+        remote: &Destination,
+        destination: &Address,
+        mut account: Option<&mut connect::Reservation<'_>>,
+    ) -> Result<Completed, AddError> {
         let name = remote.name();
-        if let Some(existing) = remote.existing() {
+        if let Some(existing) = remote.inspect_existing(account.as_deref_mut()).await? {
             if let Some(identity) = &existing.identity {
                 let result = self
                     .setup
@@ -812,8 +887,9 @@ impl Job {
         if name != preferences::truncate(destination.as_str(), 100) {
             self.send(Progress::Name(name.to_owned())).await?;
         }
+        self.admit().await?;
         self.step("files", StepState::Now, "").await?;
-        remote.install(self).await?;
+        remote.install(self, account.as_deref_mut()).await?;
         self.admit().await?;
         self.step("engine", StepState::Done, "").await?;
         self.step("starting", StepState::Done, "").await?;
@@ -835,7 +911,7 @@ impl Job {
             .map(|(code, _)| crate::installer::hash(&code.token))
             .ok_or("Your main computer could not issue an installer code.")?;
         self.admit().await?;
-        let (computer, identity) = remote.enroll(self, name, code).await?;
+        let (computer, identity) = remote.enroll(self, account, name, code).await?;
         let done = self
             .setup
             .request_command(Command::SshAddress {

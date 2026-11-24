@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -18,11 +19,16 @@ use super::{
     transport::{self, Connection, Ran},
 };
 
+mod reservation;
+mod windows;
+
+pub(super) use reservation::Reservation;
+#[cfg(unix)]
+pub(crate) use reservation::valid_token as is_reservation_token;
+
 const WINDOWS: &str = "cmd.exe /d /c echo KUVO-WINDOWS-%COMPUTERNAME%";
 const LIST_WSL: &str = "wsl.exe --list --verbose";
 const WSL_READ: &str = "import base64,os,sys; script=base64.b64decode(sys.stdin.buffer.raw.readline(262144)); os.execv('/bin/sh',['sh','-c','kuvo_script=1; '+script.decode()])";
-
-mod windows;
 
 pub(super) struct Destination {
     ssh: Connection,
@@ -33,6 +39,7 @@ pub(super) struct Destination {
     existing: Option<Existing>,
 }
 
+#[derive(Clone)]
 pub(super) struct Existing {
     pub(super) identity: Option<String>,
     pub(super) key: Option<String>,
@@ -134,59 +141,15 @@ impl Destination {
             target: Target { os: "", cpu: "" },
             existing: None,
         };
-        let probe = format!(
-            r#"uname -sm
-K="$HOME/{root}"
-A="$HOME/{reservation}"
-if [ -e "$A" ] || [ -L "$A" ]; then
-  previous=$(readlink "$A") || {{ echo account-error; exit 0; }}
-  case "$previous" in
-    guarded-*) ;;
-    *)
-      if [ -L "$A.lock" ] || {{ [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }}; then
-        echo account-error
-      elif (umask 077; : >>"$A.lock"); then
-        (
-          case "$(uname -s)" in
-            Darwin) /usr/bin/lockf -t 0 9 ;;
-            *) flock -n -E 75 9 ;;
-          esac
-          case "$?" in
-            0)
-              if [ "$(readlink "$A")" = "$previous" ]; then echo account-old; else echo account-busy; fi
-              ;;
-            75) echo account-busy ;;
-            *) echo account-error ;;
-          esac
-        ) 9<>"$A.lock" || echo account-error
-      else
-        echo account-error
-      fi
-      exit 0
-      ;;
-  esac
-fi
+        let probe = r#"uname -sm
 if [ "$(uname -s)" = Darwin ]; then
   echo "macos $(sw_vers -productVersion 2>/dev/null)"
   if ! xcode-select -p >/dev/null 2>&1 || ! /usr/bin/git --version >/dev/null 2>&1; then echo no-tools; fi
 elif ldd --version 2>&1 | grep -qi musl; then
   echo musl
 fi
-if [ -e "$K/run/setup-card.json" ] || [ -e "$K/run/link.json" ] || [ -e "$K/bin/kuvo-link.js" ]; then
-  echo installed
-  if [ -f "$K/machine-id" ] && [ ! -L "$K/machine-id" ]; then printf 'kuvo id %s\n' "$(head -c 34 "$K/machine-id")"; fi
-  if [ -f "$K/run/setup-card.json" ] && [ ! -L "$K/run/setup-card.json" ]; then printf 'card %s\n' "$(head -c 200000 "$K/run/setup-card.json")"; fi
-fi
-if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuvo.code" ]; then echo older; fi
-"#,
-            root = candidate.root,
-            reservation = if candidate.root == ".kuvo-code" {
-                ".kuvo-code-adding".to_owned()
-            } else {
-                format!("{}/run/ssh-adding", candidate.root)
-            }
-        );
-        let mut checked = candidate.shell(job, &probe, Vec::new(), 30).await?;
+"#;
+        let mut checked = candidate.shell(job, probe, Vec::new(), 30).await?;
         if !checked.status.success() {
             let win = run(job, &candidate.ssh, WINDOWS.into(), Vec::new(), 30).await?;
             let hostname = String::from_utf8_lossy(&win.stdout)
@@ -213,7 +176,7 @@ if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuv
                 )
             })?;
             candidate.distro = Some(distro);
-            checked = candidate.shell(job, &probe, Vec::new(), 60).await?;
+            checked = candidate.shell(job, probe, Vec::new(), 60).await?;
         }
         let data = String::from_utf8_lossy(&checked.stdout);
         let mut lines = data.lines();
@@ -236,17 +199,6 @@ if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuv
             ));
         }
         let found: Vec<_> = lines.collect();
-        if found.contains(&"account-error") {
-            eprintln!("Kuvo couldn't prepare the SSH account on {}: {}", candidate.name, checked.stderr.trim());
-            return Err(format!("Kuvo Code couldn’t prepare the OS account on {}. Check that you can write to your home folder there, then try again.", candidate.name));
-        }
-        if found.contains(&"account-busy") {
-            return Err(format!("Another Kuvo Code change is in progress on {}. Try again once it finishes.", candidate.name));
-        }
-        if found.contains(&"account-old") {
-            let name = &candidate.name;
-            return Err(format!("An older version of Kuvo Code left an unfinished change on {name}. Restart {name} to end that change, then sign in to the same OS account and run rm -f ~/.kuvo-code-adding before trying again."));
-        }
         if found.contains(&"musl") {
             return Err(format!(
                 "Kuvo Code runs on macOS, and on Linux with glibc, on x86-64 or ARM64; this computer is {} (musl).",
@@ -268,17 +220,50 @@ if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuv
         if found.contains(&"no-tools") {
             return Err("That Mac needs a working git first. Run xcode-select --install on it (with Xcode, accept its license), then try again.".into());
         }
-        candidate.existing = Existing::read(&found);
-        if candidate.existing.is_none() && found.contains(&"older") {
-            return Err(format!(
-                "{name} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again."
-            ));
-        }
         candidate.target = Target { os, cpu };
         Ok(candidate)
     }
 
-    pub(super) async fn install(&self, job: &Job) -> Result<(), String> {
+    pub(super) async fn inspect_existing(
+        &self,
+        account: Option<&mut Reservation<'_>>,
+    ) -> Result<Option<Existing>, String> {
+        let Some(account) = account else {
+            return Ok(self.existing.clone());
+        };
+        let probe = format!(
+            r#"
+K="$HOME/{root}"
+if [ -e "$K/run/setup-card.json" ] || [ -e "$K/run/link.json" ] || [ -e "$K/bin/kuvo-link.js" ]; then
+  echo installed
+  if [ -f "$K/machine-id" ] && [ ! -L "$K/machine-id" ]; then printf 'kuvo id %s\n' "$(head -c 34 "$K/machine-id")"; fi
+  if [ -f "$K/run/setup-card.json" ] && [ ! -L "$K/run/setup-card.json" ]; then printf 'card %s\n' "$(head -c 200000 "$K/run/setup-card.json")"; fi
+fi
+if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuvo.code" ]; then echo older; fi
+"#,
+            root = self.root
+        );
+        let ran = account.run(&probe, Vec::new(), 30).await?;
+        if !ran.status.success() {
+            return Err(unreachable(&self.name));
+        }
+        let data = String::from_utf8_lossy(&ran.stdout);
+        let lines: Vec<_> = data.lines().collect();
+        let existing = Existing::read(&lines);
+        if existing.is_none() && lines.contains(&"older") {
+            return Err(format!(
+                "{} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.",
+                self.name
+            ));
+        }
+        Ok(existing)
+    }
+
+    pub(super) async fn install(
+        &self,
+        job: &Job,
+        account: Option<&mut Reservation<'_>>,
+    ) -> Result<(), String> {
         let root = job.files.root().to_owned();
         let target = self.target;
         let path = binary(&root, target)
@@ -297,7 +282,7 @@ K="$HOME/{root}"
 [ ! -e "$K/run/setup-card.json" ] && [ ! -e "$K/run/link.json" ] && [ ! -e "$K/bin/kuvo-link.js" ] || exit 78
 mkdir -p "$K/bin" "$K/run"
 T=$(mktemp "$K/bin/.ssh-box.XXXXXXXX") || exit 1
-trap 'rm -f -- "$T"' EXIT HUP INT TERM
+trap 'rm -f -- "$T"' EXIT INT TERM
 cat >"$T"
 if command -v sha256sum >/dev/null 2>&1; then sum=$(sha256sum <"$T"); else sum=$(shasum -a 256 <"$T"); fi
 [ "${{sum%% *}}" = '{digest}' ] || exit 1
@@ -307,7 +292,10 @@ ln "$T" "$K/bin/kuvo-box"
 "#,
             root = self.root
         );
-        let placed = self.shell(job, &script, binary, 180).await?;
+        let placed = account
+            .ok_or("The SSH account is no longer reserved.")?
+            .run(&script, binary, 180)
+            .await?;
         if !placed.status.success() {
             return Err(format!(
                 "Kuvo Code’s files couldn’t be put on {}.",
@@ -320,6 +308,7 @@ ln "$T" "$K/bin/kuvo-box"
     pub(super) async fn enroll(
         &self,
         job: &Job,
+        account: Option<&mut Reservation<'_>>,
         name: &str,
         code: &str,
     ) -> Result<(Computer, String), String> {
@@ -327,13 +316,15 @@ ln "$T" "$K/bin/kuvo-box"
             return self.enroll_native(job, name, code).await;
         }
         let quoted_name = name.replace('\'', "'\"'\"'");
+        let account = account.ok_or("The SSH account is no longer reserved.")?;
         let script = format!(
-            "K=\"$HOME/{}\"\nKUVO_HOME=\"$K\" exec \"$K/bin/kuvo-box\" ssh-enroll '{quoted_name}'\n",
-            self.root
+            "K=\"$HOME/{}\"\nKUVO_HOME=\"$K\" KUVO_SSH_ACCOUNT_TOKEN='{}' exec \"$K/bin/kuvo-box\" ssh-enroll '{quoted_name}'\n",
+            self.root,
+            account.token()
         );
         let mut input = code.as_bytes().to_vec();
         input.push(b'\n');
-        let ran = self.shell(job, &script, input, 90).await?;
+        let ran = account.run(&script, input, 90).await?;
         enrollment(ran, name)
     }
 
@@ -345,13 +336,20 @@ ln "$T" "$K/bin/kuvo-box"
         &self.name
     }
 
-    pub(super) fn existing(&self) -> Option<&Existing> {
-        self.existing.as_ref()
-    }
-
     async fn shell(
         &self,
         job: &Job,
+        script: &str,
+        input: Vec<u8>,
+        seconds: u64,
+    ) -> Result<Ran, String> {
+        self.shell_with_stop(job.stop.clone(), script, input, seconds)
+            .await
+    }
+
+    async fn shell_with_stop(
+        &self,
+        stop: Arc<AtomicBool>,
         script: &str,
         mut input: Vec<u8>,
         seconds: u64,
@@ -365,7 +363,7 @@ ln "$T" "$K/bin/kuvo-box"
         } else {
             transport::sh(script)
         };
-        run(job, &self.ssh, command, input, seconds).await
+        run_with_stop(&self.ssh, stop, command, input, seconds).await
     }
 }
 
@@ -376,8 +374,17 @@ async fn run(
     input: Vec<u8>,
     seconds: u64,
 ) -> Result<Ran, String> {
+    run_with_stop(ssh, job.stop.clone(), command, input, seconds).await
+}
+
+async fn run_with_stop(
+    ssh: &Connection,
+    stop: Arc<AtomicBool>,
+    command: String,
+    input: Vec<u8>,
+    seconds: u64,
+) -> Result<Ran, String> {
     let ssh = ssh.clone();
-    let stop = job.stop.clone();
     tokio::task::spawn_blocking(move || {
         ssh.run(&command, input, Duration::from_secs(seconds), &stop)
     })
@@ -502,21 +509,21 @@ fn check_connection(ran: &Ran, name: &str, here: &str) -> Result<(), AddError> {
             .then_some(host)
         });
         let host = host.map_or_else(|| "and its address".into(), |host| format!("'{host}'"));
-        return Err(AddError {
-            title: Some(format!("{name}’s host key changed")),
-            message: format!(
+        return Err(AddError::titled(
+            format!("{name}’s host key changed"),
+            format!(
                 "{name}’s host key has changed since {here} last connected. If you expect that (it was reinstalled, say), remove the old key in a terminal on {here} with ssh-keygen -R {host}, then try again. If not, someone may be intercepting the connection."
             ),
-        });
+        ));
     }
     let lower = said.to_ascii_lowercase();
     if lower.contains("permission denied") || lower.contains("too many authentication failures") {
-        return Err(AddError {
-            title: Some(format!("{name} refused the connection")),
-            message: format!(
+        return Err(AddError::titled(
+            format!("{name} refused the connection"),
+            format!(
                 "{name} didn’t accept {here}’s SSH keys. Kuvo Code connects with the keys and SSH agent of {here}, and the SSH keys in its vault, without a password. If your key is in an app like 1Password or Secretive, or on a security key, unlock it, then try again."
             ),
-        });
+        ));
     }
     Ok(())
 }

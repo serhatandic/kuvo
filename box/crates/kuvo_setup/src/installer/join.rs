@@ -252,10 +252,15 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
     if let Some(message) = prior.as_ref().and_then(wipe::InstallState::pending_message) {
         return Err(refused(message));
     }
+    let ssh_account = if staged {
+        SshAccount::inherited(home.root())?
+    } else {
+        None
+    };
     // Opening for enrollment never starts a move. A fresh applicant can
     // initialize its layout here, after the code is validated.
     if staged {
-        open_staged_home(home)?;
+        open_staged_home_at(home, ssh_account.as_ref())?;
     } else {
         layout::open(home)?;
     }
@@ -321,7 +326,14 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             held.cancel_pending || (held.recovery.is_some() && held.until <= lease::wall())
         }) {
             cancellation = Some(refused("This computer could not join."));
-        } else if let Err(problem) = check_join(&files, &link, &code, &id, claim.as_ref()) {
+        } else if let Err(problem) = check_join(
+            &files,
+            &link,
+            &code,
+            &id,
+            claim.as_ref(),
+            ssh_account.as_ref(),
+        ) {
             if pending_claim.is_none() {
                 return Err(problem);
             }
@@ -437,7 +449,14 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             &mut given,
             Exchange::Enroll,
             |recovery_capable| {
-                check_join(&files, &link, &code, &id, claim.as_ref())?;
+                check_join(
+                    &files,
+                    &link,
+                    &code,
+                    &id,
+                    claim.as_ref(),
+                    ssh_account.as_ref(),
+                )?;
                 if !claim.as_ref().is_some_and(|claim| claim.invite == id) {
                     let recovery = if recovery_capable {
                         Some(Recovery {
@@ -471,7 +490,8 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         )
         .await;
         if let Some(held) = claim.as_mut()
-            && let Err(problem) = check_join(&files, &link, &code, &id, Some(held))
+            && let Err(problem) =
+                check_join(&files, &link, &code, &id, Some(held), ssh_account.as_ref())
         {
             return cancel_join(
                 &mut saved_link,
@@ -622,6 +642,10 @@ async fn cancel_join(
 }
 
 pub fn open_staged_home(home: &Home) -> Result<(), Error> {
+    open_staged_home_at(home, None)
+}
+
+fn open_staged_home_at(home: &Home, ssh_account: Option<&SshAccount>) -> Result<(), Error> {
     use std::fs;
 
     if layout::inspect(home)? != layout::Layout::Unmarked {
@@ -640,7 +664,18 @@ pub fn open_staged_home(home: &Home) -> Result<(), Error> {
             }
             match entry.file_name().to_str()? {
                 ".folder-upgrade.lock" => (),
-                "run" if fs::read_dir(entry.path()).ok()?.next().is_none() => (),
+                "run"
+                    if fs::read_dir(entry.path()).ok()?.all(|file| {
+                        file.is_ok_and(|file| {
+                            ssh_account.is_some_and(|account| {
+                                let path = file.path();
+                                path == account.marker || path == account.lock
+                            })
+                        })
+                    }) =>
+                {
+                    ()
+                }
                 "bin"
                     if fs::read_dir(entry.path()).ok()?.all(|file| {
                         file.is_ok_and(|file| {
@@ -698,12 +733,97 @@ impl SavedLink<'_> {
     }
 }
 
+struct SshAccount {
+    marker: std::path::PathBuf,
+    lock: std::path::PathBuf,
+    token: String,
+}
+
+impl SshAccount {
+    #[cfg(unix)]
+    fn inherited(root: &std::path::Path) -> Result<Option<Self>, Error> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let Some(token) = std::env::var_os("KUVO_SSH_ACCOUNT_TOKEN") else {
+            return Ok(None);
+        };
+        let token = token
+            .into_string()
+            .ok()
+            .filter(|value| crate::ssh::is_reservation_token(value))
+            .ok_or(Error::Invalid("SSH account reservation"))?;
+        let (marker, lock) = if root.file_name().is_some_and(|name| name == ".kuvo-code") {
+            (
+                root.with_file_name(".kuvo-code-adding"),
+                root.with_file_name(".kuvo-code-adding.lock"),
+            )
+        } else {
+            (
+                root.join("run/ssh-adding"),
+                root.join("run/ssh-adding.lock"),
+            )
+        };
+        let meta = std::fs::symlink_metadata(&lock).map_err(|source| Error::File {
+            action: "checking the SSH account lock at",
+            path: lock.clone(),
+            source,
+        })?;
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // The reservation shell passes FD 9. Verify its inode before marking
+        // it close-on-exec so a detached resident can't keep the writer lock.
+        let matches_lock = meta.is_file()
+            && unsafe {
+                if libc::fstat(9, stat.as_mut_ptr()) == 0 {
+                    let stat = stat.assume_init();
+                    stat.st_dev as u64 == meta.dev() && stat.st_ino as u64 == meta.ino()
+                } else {
+                    false
+                }
+            };
+        if !matches_lock {
+            return Err(Error::Invalid("SSH account reservation lock"));
+        }
+        if unsafe { libc::fcntl(9, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return Err(Error::File {
+                action: "keeping the SSH account lock private at",
+                path: marker,
+                source: std::io::Error::last_os_error(),
+            });
+        }
+        let account = Self {
+            marker,
+            lock,
+            token,
+        };
+        account.check()?;
+        Ok(Some(account))
+    }
+
+    #[cfg(not(unix))]
+    fn inherited(_: &std::path::Path) -> Result<Option<Self>, Error> {
+        Ok(None)
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        if std::fs::read_link(&self.marker)
+            .is_ok_and(|token| token.as_os_str() == self.token.as_str())
+        {
+            Ok(())
+        } else {
+            Err(refused(
+                "The SSH account was cleared for another attempt. Try again.",
+            ))
+        }
+    }
+}
+
 fn check_join(
     files: &Files,
     link: &Link,
     code: &Code,
     id: &str,
     claim: Option<&LocalClaim>,
+    ssh_account: Option<&SshAccount>,
 ) -> Result<(), Error> {
     if link
         .setup
@@ -732,20 +852,24 @@ fn check_join(
     if has_work(files, link).unwrap_or(true) {
         return Err(refused(HAS_WORK));
     }
-    let adding = files.path("../.kuvo-code-adding");
-    match adding.symlink_metadata() {
-        Ok(_) => {
-            return Err(refused(
-                "An SSH setup is already in progress on this computer.",
-            ));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-        Err(source) => {
-            return Err(Error::File {
-                action: "reading",
-                path: adding,
-                source,
-            });
+    if let Some(ssh_account) = ssh_account {
+        ssh_account.check()?;
+    } else {
+        let adding = files.path("../.kuvo-code-adding");
+        match adding.symlink_metadata() {
+            Ok(_) => {
+                return Err(refused(
+                    "An SSH setup is already in progress on this computer.",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(source) => {
+                return Err(Error::File {
+                    action: "reading",
+                    path: adding,
+                    source,
+                });
+            }
         }
     }
     let now = lease::wall();
@@ -821,9 +945,11 @@ fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
     // Starting the letter worker creates these folders and a writer lock.
     // Only queued records keep an otherwise unused setup from joining.
     for (directory, failed) in [("run/outbox", false), ("run/outbox/sending", true)] {
-        if files.names(directory)?.iter().any(|name| {
-            name.ends_with(".json") || (failed && name.ends_with(".failed"))
-        }) {
+        if files
+            .names(directory)?
+            .iter()
+            .any(|name| name.ends_with(".json") || (failed && name.ends_with(".failed")))
+        {
             return Ok(true);
         }
     }

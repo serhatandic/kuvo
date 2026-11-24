@@ -347,6 +347,7 @@ async fn start_ssh_resident(home: &Home, identity: &str) -> io::Result<()> {
     // They are not process environment variables and the child gets an explicit cwd.
     let environment = env::vars_os()
         .filter(|(name, _)| !name.as_encoded_bytes().starts_with(b"="))
+        .filter(|(name, _)| name != "KUVO_SSH_ACCOUNT_TOKEN")
         .collect();
     let mut spawn = Spawn::new(env::current_exe()?, environment);
     spawn.args.push("serve".into());

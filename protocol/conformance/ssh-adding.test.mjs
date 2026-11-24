@@ -3,12 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { addSshStandIn } from "../../box/bridge-tests/add-ssh-stand-in.js";
-import { boxBinary, readJSON, request, until, write } from "./adapter.mjs";
+import { boxBinary, launch, readJSON, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 test("SSH Add trusts the selected host, copies the running Rust release and starts an enrolled resident", {
   skip: boxBinary().typescript || process.platform === "win32",
-  timeout: 45000,
+  timeout: 65000,
 }, async t => {
   let remote;
   t.after(() => {
@@ -62,7 +62,28 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   const answer = at => ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at }, headers);
   assert.equal((await answer(found.question.at + 1)).status, 409);
   assert.equal(fs.existsSync(path.join(main.home, "ssh", "known_hosts")), false);
+  const fake = path.join(path.dirname(remote), "ssh");
+  const hold = path.join(fake, "hold-lab");
+  const marker = path.join(remote, "box", "run", "ssh-adding");
+  write(hold, "Publish a new executable");
+  t.after(() => fs.rmSync(hold, { force: true }));
   assert.equal((await answer(found.question.at)).status, 200);
+  const claimed = await until(() => {
+    try { return fs.readlinkSync(marker); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  }, "The first Add did not reserve the remote account.");
+  fs.appendFileSync(path.join(main.home, "ssh", "known_hosts"), `busy-alias ssh-ed25519 ${key}\n`);
+  const busy = await ask("POST", "kuvo/computers/add", { destination: "busy-alias" }, headers);
+  assert.equal(busy.status, 202, busy.text);
+  const other = await until(async () => {
+    const attempt = (await page()).json.tries.find(attempt => attempt.id === busy.json.try.id);
+    return attempt?.state === "failed" && attempt;
+  }, "The second Add did not honor the first account reservation.");
+  assert.match(other.failure.message, /^Another Kuvo Code change is in progress/);
+  assert.equal(fs.readlinkSync(marker), claimed);
+  assert.equal(fs.existsSync(path.join(remote, "box", "bin", "kuvo-box")), false);
+  const known = path.join(main.home, "ssh", "known_hosts");
+  fs.writeFileSync(known, fs.readFileSync(known, "utf8").split("\n").filter(line => !line.startsWith("busy-alias ")).join("\n"));
+  fs.unlinkSync(hold);
   const done = await until(async () => {
     const attempt = await readTry();
     if (attempt?.state === "failed") throw new Error(attempt.failure.message);
@@ -86,9 +107,42 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
     : undefined;
   if (oldWork) write(oldWork, "separate earlier work");
   fs.appendFileSync(path.join(main.home, "ssh", "known_hosts"), `second ssh-ed25519 ${key}\n`);
-  const alias = await ask("POST", "kuvo/computers/add", { destination: "second" }, headers);
-  assert.equal(alias.status, 202, alias.text);
-  const aliasID = alias.json.try.id;
+  const trace = path.join(fake, "trace");
+  const failRelease = path.join(fake, "fail-release-second");
+  write(trace, "");
+  write(failRelease, "");
+  const pending = await ask("POST", "kuvo/computers/add", { destination: "second" }, headers);
+  assert.equal(pending.status, 202, pending.text);
+  const failure = await until(async () => {
+    const attempt = (await page()).json.tries.find(attempt => attempt.id === pending.json.try.id);
+    return attempt?.state === "failed" && attempt;
+  }, "The committed alias did not report the failed release.");
+  assert.match(failure.failure.message, /finished the change but couldn’t clear the account/);
+  assert.deepEqual(failure.computer, done.computer);
+  const originalReservation = fs.readlinkSync(marker);
+  assert.match(originalReservation, /^guarded-[0-9a-f]{48}$/);
+  fs.unlinkSync(failRelease);
+
+  const recoverAlias = async () => {
+    const started = await ask("POST", "kuvo/computers/add", { destination: "second" }, headers);
+    assert.equal(started.status, 202, started.text);
+    const id = started.json.try.id;
+    const waiting = await until(async () => {
+      const attempt = (await page()).json.tries.find(attempt => attempt.id === id);
+      if (attempt?.state === "failed") throw new Error(attempt.failure.message);
+      return attempt?.state === "asking" && attempt;
+    }, "The alias did not offer to recover its reservation.");
+    assert.equal(waiting.question.id, "recoverAccount");
+    return waiting;
+  };
+  const cancel = await recoverAlias();
+  assert.equal((await ask("POST", `kuvo/computers/add/${cancel.id}/answer`, { answer: "cancel", at: cancel.question.at }, headers)).status, 200);
+  await until(async () => !(await page()).json.tries.some(attempt => attempt.id === cancel.id), "The recovery attempt was not cancelled.");
+  assert.equal(fs.readlinkSync(marker), originalReservation);
+  const recover = await recoverAlias();
+  assert.equal((await ask("POST", `kuvo/computers/add/${recover.id}/answer`, { answer: "recover", at: recover.question.at }, headers)).status, 200);
+  fs.unlinkSync(trace);
+  const aliasID = recover.id;
   const remembered = await until(async () => {
     const attempt = (await page()).json.tries.find(attempt => attempt.id === aliasID);
     if (attempt?.state === "failed") throw new Error(attempt.failure.message);
@@ -97,11 +151,11 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.equal(remembered.known, true);
   assert.equal(remembered.title, "second is lab, already one of your computers");
   assert.deepEqual(remembered.computer, done.computer);
+  assert.equal(fs.lstatSync(marker, { throwIfNoEntry: false }), undefined);
   assert.deepEqual(readJSON(path.join(main.home, "machines.json")), [{ destination: "lab", identity, otherAddresses: ["second"] }]);
   assert.equal((await ask("GET", "kuvo/setup")).json.computers.length, 2);
   if (oldWork) assert.equal(fs.readFileSync(oldWork, "utf8"), "separate earlier work");
 
-  const fake = path.join(path.dirname(remote), "ssh");
   const copied = path.join(path.dirname(remote), "copied");
   write(path.join(fake, "home-copied"), copied);
   fs.appendFileSync(path.join(main.home, "ssh", "known_hosts"), `copied ssh-ed25519 ${key}\n`);
@@ -340,5 +394,104 @@ test("SSH Add leaves an older account reservation in place", {
   }, "SSH Add did not report the older reservation.");
   assert.equal(failed.failure.message, "An older version of Kuvo Code left an unfinished change on old-reservation. Restart old-reservation to end that change, then sign in to the same OS account and run rm -f ~/.kuvo-code-adding before trying again.");
   assert.equal(fs.readlinkSync(marker), previous);
+  assert.equal(fs.existsSync(path.join(remote, ".kuvo-code")), false);
+});
+
+test("SSH Add waits for an active account writer and leaves its reservation alone", {
+  skip: process.platform === "win32", timeout: 35000,
+}, async t => {
+  const { main, ask, remote, headers, page } = await addBench(t);
+  const destination = "busy-account";
+  const marker = path.join(remote, ".kuvo-code-adding");
+  const token = `guarded-${"51".repeat(24)}`;
+  fs.symlinkSync(token, marker);
+  const lock = `${marker}.lock`;
+  write(lock, "", { mode: 0o600 });
+  const entered = path.join(remote, "writer-entered");
+  const release = path.join(remote, "release-writer");
+  const child = launch("/bin/sh", ["-c", `
+    (
+      case "$(uname -s)" in
+        Darwin) /usr/bin/lockf -t 0 9 ;;
+        *) flock -n 9 ;;
+      esac || exit 1
+      : >"$2"
+      while [ ! -f "$3" ]; do sleep 0.1; done
+    ) 9<>"$1"
+  `, "kuvo-test-writer", lock, entered, release], { PATH: process.env.PATH }, remote);
+  t.after(async () => {
+    write(release, "");
+    await child.stop();
+  });
+  await until(() => fs.existsSync(entered), child.log);
+  write(path.join(main.home, "ssh", "known_hosts"), `${destination} ssh-ed25519 ${key(8)}\n`);
+  const started = await ask("POST", "kuvo/computers/add", { destination }, headers);
+  assert.equal(started.status, 202, started.text);
+  const failed = await until(async () => {
+    const attempt = (await page()).tries.find(attempt => attempt.id === started.json.try.id);
+    return attempt?.state === "failed" && attempt;
+  }, "SSH Add did not report the account writer.");
+  assert.equal(failed.failure.message, "Another Kuvo Code change is in progress on busy-account. Try again once it finishes.");
+  assert.equal(fs.readlinkSync(marker), token);
+  assert.equal(fs.existsSync(path.join(remote, ".kuvo-code")), false);
+});
+
+test("SSH Add recovery can only replace the reservation shown when asked", {
+  skip: process.platform === "win32", timeout: 35000,
+}, async t => {
+  const { main, ask, remote, headers, page } = await addBench(t);
+  const destination = "interrupted-account";
+  const marker = path.join(remote, ".kuvo-code-adding");
+  const previous = `guarded-${"53".repeat(24)}`;
+  const next = `guarded-${"71".repeat(24)}`;
+  fs.symlinkSync(previous, marker);
+  write(path.join(main.home, "ssh", "known_hosts"), `${destination} ssh-ed25519 ${key(8)}\n`);
+  const started = await ask("POST", "kuvo/computers/add", { destination }, headers);
+  assert.equal(started.status, 202, started.text);
+  const id = started.json.try.id;
+  const readTry = async () => (await page()).tries.find(attempt => attempt.id === id);
+  const waiting = await until(async () => {
+    const attempt = await readTry();
+    if (attempt?.state === "failed") throw new Error(attempt.failure.message);
+    return attempt?.state === "asking" && attempt;
+  }, "SSH Add did not offer recovery.");
+  assert.equal(waiting.question.id, "recoverAccount");
+  assert.deepEqual(waiting.question.answers.map(answer => answer.id), ["cancel", "recover"]);
+  assert.equal(fs.readlinkSync(marker), previous);
+  const answer = input => ask("POST", `kuvo/computers/add/${id}/answer`, input, headers);
+  assert.equal((await answer({ answer: "recover", at: waiting.question.at + 1 })).status, 409);
+  const replacement = `${marker}.replacement`;
+  fs.symlinkSync(next, replacement);
+  fs.renameSync(replacement, marker);
+  assert.equal((await answer({ answer: "recover", at: waiting.question.at })).status, 200);
+  const failed = await until(async () => {
+    const attempt = await readTry();
+    return attempt?.state === "failed" && attempt;
+  }, "SSH Add did not refuse the replaced reservation.");
+  assert.equal(failed.failure.message, "Another Kuvo Code change is in progress on interrupted-account. Try again once it finishes.");
+  assert.equal(fs.readlinkSync(marker), next);
+  assert.equal(fs.existsSync(path.join(remote, ".kuvo-code")), false);
+});
+
+test("SSH Add reports that it cannot prepare an invalid account lock", {
+  skip: process.platform === "win32", timeout: 30000,
+}, async t => {
+  const { main, ask, remote, headers, page } = await addBench(t);
+  const destination = "invalid-account-lock";
+  const marker = path.join(remote, ".kuvo-code-adding");
+  const sentinel = path.join(remote, "fixture-file");
+  write(sentinel, "do not change this file");
+  fs.symlinkSync(sentinel, `${marker}.lock`);
+  write(path.join(main.home, "ssh", "known_hosts"), `${destination} ssh-ed25519 ${key(8)}\n`);
+  const started = await ask("POST", "kuvo/computers/add", { destination }, headers);
+  assert.equal(started.status, 202, started.text);
+  const failed = await until(async () => {
+    const attempt = (await page()).tries.find(attempt => attempt.id === started.json.try.id);
+    return attempt?.state === "failed" && attempt;
+  }, "SSH Add did not report the failed account reservation.");
+  assert.equal(failed.failure.message, "Kuvo Code couldn’t prepare the OS account on invalid-account-lock. Check that you can write to your home folder there, then try again.");
+  assert.equal(fs.readlinkSync(`${marker}.lock`), sentinel);
+  assert.equal(fs.readFileSync(sentinel, "utf8"), "do not change this file");
+  assert.equal(fs.existsSync(marker), false);
   assert.equal(fs.existsSync(path.join(remote, ".kuvo-code")), false);
 });

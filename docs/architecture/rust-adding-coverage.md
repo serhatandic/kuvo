@@ -28,6 +28,9 @@ the races that span removal, backup, moves, and an authority change.
 | C18 | [A new main retires a provisional installer computer from its replicated claim](../../protocol/conformance/adding.test.mjs) | The successor takes over while the issuer is offline, refuses a receipt naming the observer, and commits and replays the exact retirement. The observer and former issuer follow it, the old confirmation cannot restore the entry, and a clean copy enrolls with fresh keys while the applicant’s saved work stays independent. |
 | C19 | [Installer status distinguishes a fresh account, a machine, and an interrupted installation](../../protocol/conformance/setup-judge.test.mjs) | The deployed status command handles an empty home, disposable files, a machine with or without older app data, a removed machine, and an interrupted Linux making with leftover keys. When both installations exist, it gives the released explanation and preserves both sets of data. |
 | C20 | [SSH Add leaves an older account reservation in place](../../protocol/conformance/ssh-adding.test.mjs) | The two implementations preserve the older marker and stop before reading or changing the existing installation. The failure gives the same manual recovery instructions. |
+| C21 | [SSH Add excludes another attempt and reports a failed reservation release](../../protocol/conformance/ssh-adding.test.mjs) | A second Rust Add to the same account through another address cannot reach installation. The first finishes. A failed release leaves the committed computer visible, cancel preserves the abandoned marker, and confirmed recovery replaces it while keeping the same member. |
+| C22 | [SSH Add cannot replace a recovery marker changed while it was asking](../../protocol/conformance/ssh-adding.test.mjs) | Both boxes reject a stale question number and preserve a different marker installed while waiting for confirmation. Real OpenSSH into WSL also verifies that a live writer keeps its lock and the changed marker survives. |
+| C23 | [SSH Add reports a failed account reservation](../../protocol/conformance/ssh-adding.test.mjs) | Both boxes preserve the target of an invalid lock symlink and report the same refusal. In real WSL, a read-only scratch directory rejects marker creation. The SSH diagnostic goes to the log and remains out of the reply. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -75,10 +78,9 @@ the races that span removal, backup, moves, and an authority change.
 
 ## Verification
 
-In the five selected process areas through U19, Rust passes 38 tests on macOS
-and TypeScript passes 35 with three Rust-specific skips. Both also pass the
-targeted configured disk scenario on macOS. The Rust workspace compile check
-passes. The static x86-64 musl build through the configured disk scenario passes
+In the five selected process areas through U21 and C23, Rust passes 43 tests
+on macOS and TypeScript passes 40 with three Rust-specific skips. An earlier
+Rust workspace compile check also passes. The static x86-64 musl build through the configured disk scenario passes
 37 in WSL 2 and 37 in one lokum container capped at one CPU and 1 GB. Both
 Linux runs skip two Mac cases. TypeScript passes 34 in WSL 2 with five skips.
 The native Windows run after 8.1c passes 27 with thirteen platform skips,
@@ -130,6 +132,9 @@ After merging `12a4054f9`, the same SSH run agreed on both replies and had
 54 differing leaves. Every one already has a verdict in the inventory table.
 After the pending-wipe projection, the same SSH run again agreed on both replies
 and had 52 differing leaves, all already listed in the inventory table.
+The run after live Unix uninstall agreed on every reply and had 55 differing
+leaves. The three additional paths were the Insights database and its two
+journal files, already listed under 5.4 below.
 
 Re-enrollment after a TypeScript member's unlink originally failed against
 either main. The released baseline hashed the inode and change time for
@@ -200,7 +205,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 33 have coverage and 161 still have open or partial work. Of those, 117 list 2.3 as an owner (89 open, 28 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 36 have coverage and 158 still have open or partial work. Of those, 114 list 2.3 as an owner (85 open, 29 partial).
 
 ### computers-add
 
@@ -233,16 +238,16 @@ This map lists 194 reference cases, including expanded parameterized cases. 33 h
 | [a member of a setup, and a request that can't stay, are told where to add from](../../box/bridge-tests/computers-add.test.js#L751) | Open | 2.3 |
 | [a missing or unreadable list of machines isn't overwritten when this box still keeps machines' links (#753)](../../box/bridge-tests/computers-add.test.js#L773) | C14 verifies the Add page and submission, preserves the list, and never runs SSH. The released machines route stays with 7.3. | 7.3 |
 | [an account enrolled after the probe keeps its data when the second setup is refused](../../box/bridge-tests/computers-add-recovery.test.js#L12) | Open | 2.3 |
-| [a second SSH add cannot install or seed an account reserved by the first](../../box/bridge-tests/computers-add-recovery.test.js#L35) | Open | 2.3 |
+| [a second SSH add cannot install or seed an account reserved by the first](../../box/bridge-tests/computers-add-recovery.test.js#L35) | C21 and real OpenSSH into WSL verify exclusion before copying files. The first attempt's SSH credential transfer and remote uninstall remain open. | 2.3 |
 | [a saved offline computer reconnects over SSH after its Mac rotates keys](../../box/src/link/add/flow.ts#L149) | Open. The original fixture is in the parent of `1336dc3cc`. | 2.3 |
 | [a credential write interrupted by SSH SIGTERM stops Add and recovery waits for the remote writer](../../box/bridge-tests/computers-add-recovery.test.js#L72) | Open | 2.3 |
 | [a credential write interrupted by SSH 255 stops Add and recovery waits for the remote writer](../../box/bridge-tests/computers-add-recovery.test.js#L72) | Open | 2.3 |
-| [a failed final release is reported and an abandoned reservation can be cleared explicitly](../../box/bridge-tests/computers-add-recovery.test.js#L127) | Open | 2.3 |
-| [a recovery answer only clears the reservation shown to the user](../../box/bridge-tests/computers-add-recovery.test.js#L170) | Open | 2.3 |
+| [a failed final release is reported and an abandoned reservation can be cleared explicitly](../../box/bridge-tests/computers-add-recovery.test.js#L127) | C21 verifies failure after the address has been saved, preserving the committed computer and marker. The current resident keeps the same peer through cancellation and recovery. | — |
+| [a recovery answer only clears the reservation shown to the user](../../box/bridge-tests/computers-add-recovery.test.js#L170) | C22 verifies the exact marker and question, including a real OpenSSH connection to WSL. | — |
 | [an old reservation is kept and Add explains how to clear it after a restart](../../box/bridge-tests/computers-add-recovery.test.js#L189) | C20 and real OpenSSH into WSL 2 verify that Add leaves the older marker in place, keeps membership separate and tells the user how to clear the marker. | — |
 | [SSH uninstall cannot probe ownership while Add holds the account](../../box/bridge-tests/computers-add-recovery.test.js#L199) | Open | 2.3 |
 | [SSH Add is blocked from the time uninstall probes ownership through deletion](../../box/bridge-tests/computers-add-recovery.test.js#L225) | Open | 2.3 |
-| [a reservation creation error says the account couldn't be prepared and logs the SSH detail](../../box/bridge-tests/computers-add-recovery.test.js#L259) | Open | 2.3 |
+| [a reservation creation error says the account couldn't be prepared and logs the SSH detail](../../box/bridge-tests/computers-add-recovery.test.js#L259) | C23 verifies the reply, separate SSH diagnostic and absence of a new marker. | — |
 | [an alias Add honours only its original pairing and cannot restore a key removed during the Add](../../box/bridge-tests/computers-add-recovery.test.js#L298) | Open | 2.3 |
 | [uninstall revokes the computer even when its desktop identity folder cleanup fails](../../box/bridge-tests/computers-add-recovery.test.js#L335) | Open | 2.3 |
 | [uninstall logs a link-write failure without putting the local path in its result](../../box/bridge-tests/computers-add-recovery.test.js#L369) | Open | 2.3 |
