@@ -17,7 +17,7 @@ use serde_json::Number;
 use crate::{
     attention, conversation,
     devices::{self, Devices},
-    directory::RecordScope,
+    directory::{PreparedRelease, RecordScope},
     lists::{self, Origin, Place, SessionAction},
     reach::{Millis, Standing},
     setup_lists::{Reader, View},
@@ -52,7 +52,7 @@ pub fn register(
     registry: &mut Registry,
     peers: Reader,
     devices: Devices,
-    bridge_version: Option<String>,
+    bridge: Option<PreparedRelease>,
 ) {
     crate::moves::register(registry, &peers);
     follow::<get_kuvo_setup_sessions_events::Spec>(
@@ -82,7 +82,7 @@ pub fn register(
     follow::<get_kuvo_setup_runs_on_events::Spec>(
         registry,
         &peers,
-        move |view, now| Some(view.runs_on(now, bridge_version.as_deref())),
+        move |view, now| Some(view.runs_on(now, bridge.as_ref())),
         None,
     );
     follow::<get_kuvo_setup_waiting_counts_events::Spec>(

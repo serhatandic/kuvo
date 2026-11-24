@@ -92,14 +92,18 @@ fn feed(home: &Home, profile: &Path) -> Option<(String, String, bool)> {
     }
 }
 
-pub fn bridge_version(home: &Home, profile: &Path) -> Option<String> {
+pub fn installed_bridge(home: &Home, profile: &Path) -> Option<PreparedRelease> {
     let (_, key, _) = feed(home, profile)?;
     let selected = fleet::selected(home).ok()??;
     let running = Candidate::verify(fleet::installed_envelope(home, &selected)?, &key).ok()?;
     if running.local().ok()?.target().ok()? != selected {
         return None;
     }
-    Some(running.bridge(&key).ok()??.version().into())
+    let bridge = running.bridge(&key).ok()??.local().ok()?;
+    Some(PreparedRelease {
+        version: bridge.version,
+        sha256: bridge.sha256,
+    })
 }
 
 pub fn start(

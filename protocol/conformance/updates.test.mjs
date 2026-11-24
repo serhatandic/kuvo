@@ -350,6 +350,64 @@ async function pairedUpdateComputers(t) {
   return { main, member };
 }
 
+async function runsOn(record) {
+  const line = await openLine(record, "", "kuvo/setup/runs-on/events");
+  try {
+    assert.equal(line.status, 200);
+    for await (const frame of line.frames()) return frame;
+  } finally {
+    line.close();
+  }
+  assert.fail("Runs on returned no snapshot");
+}
+
+test("the returning bridge stays out of work placement during its Rust trial", { timeout: 60000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust resident's trial announcement.");
+  const { main, member } = await pairedUpdateComputers(t);
+  const { body, key } = box(t);
+  const feed = createServer((_request, response) => response.writeHead(404).end());
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const pack = { url: `${url}/rust.tar.gz`, sha256: digest("Rust pack") };
+  const bridgePack = { url: `${url}/bridge.tar.gz`, sha256: digest("bridge pack") };
+  const bridgeVersion = "0.8.0-beta.49";
+  const bridge = encode(envelope({ ...body, version: bridgeVersion, pack: bridgePack }, key)).toString();
+  const signed = encode(envelope({ ...body, pack, bridge, launch: "rust", packs: { [target]: pack } }, key));
+  const selected = `versions/${body.version}-${pack.sha256.slice(0, 12)}`;
+  const previous = `versions/${bridgeVersion}-${bridgePack.sha256.slice(0, 12)}`;
+  const trial = path.join(member.home, "run/previous");
+  for (const peer of [main, member]) {
+    write(path.join(peer.home, "active-release"), selected + "/bin");
+    write(path.join(peer.home, selected, "boxes.json"), signed);
+  }
+  write(path.join(member.home, previous, "boxes.json"), bridge);
+  write(trial, previous + "/bin");
+  const updateEnv = { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
+  const [observer, returning] = await Promise.all([main.start(binary, updateEnv).ready(), member.start(binary, updateEnv).ready()]);
+  const peerKey = (await request(returning, "GET", "kuvo/setup")).json.you.key;
+  const announced = path.join(main.home, "run/peer-agents.json");
+  const facts = () => fs.existsSync(announced) && readJSON(announced)[peerKey]?.computer;
+  await until(() => {
+    const said = facts();
+    return said?.kuvo === bridgeVersion && said.releaseTarget === target &&
+      said.installedSha256 === bridgePack.sha256 && said.switching?.sha256 === pack.sha256;
+  }, "the Rust resident should announce its trial while the bridge remains current");
+  const row = async () => (await runsOn(observer)).computers.find(item => item.computer.id === peerKey);
+  const waiting = await until(row, "the returning computer should have a placement row");
+  assert.deepEqual([waiting.away, waiting.updating], [true, true]);
+
+  // The keeper owns confirmation. Publish its saved result and let the resident observe it.
+  fs.unlinkSync(trial);
+  await until(() => facts()?.kuvo === body.version && !facts()?.switching, "the main should hear the confirmed Rust release");
+  await until(async () => {
+    const ready = await row();
+    return ready && !ready.away && !ready.updating;
+  }, "the confirmed Rust resident should be available for work");
+});
+
 test("the main can ask a reachable member to retry its failed fleet download", { timeout: 60000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
@@ -1565,16 +1623,7 @@ Buffer.from = function (value, encoding, ...args) {
     retryDownload = Boolean(shellKeepers);
     peerOnly = Boolean(failover || returningTypescript);
     const bridgeBin = bridgeBeta ? `versions/${bridgeVersion}-${bridgeHash.slice(0, 12)}/bin` : undefined;
-    const placement = async () => {
-      const resident = readJSON(path.join(leader.home, "run/serve.json"));
-      const line = await openLine(resident, "", "kuvo/setup/runs-on/events");
-      try {
-        assert.equal(line.status, 200);
-        for await (const frame of line.frames()) return frame;
-      } finally {
-        line.close();
-      }
-    };
+    const placement = () => runsOn(readJSON(path.join(leader.home, "run/serve.json")));
     if (bridgeBin) {
       const source = path.join(leader.home, "run/peer-agents.json");
       const to = readJSON(path.join(away.home, "run/link.json"));
