@@ -27,6 +27,22 @@ pub(crate) fn register(runs: SessionRuns, store: SessionStore, routes: &mut Regi
         let store = ask_store.clone();
         async move {
             let id = read_session(&store, call.param("id")).await?;
+            // After an update, a turn taken up shows again what it asked:
+            // an ordinary read waits for that rather than show none.
+            let live = call.request.path.split_once('?').is_some_and(|(_, query)| {
+                query.split('&').any(|pair| pair == "live=1")
+            });
+            if !live {
+                tokio::select! {
+                    () = runs.asks_restored(&id) => {}
+                    () = call.cancel.cancelled() => {
+                        return Err(Refusal::new(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "Kuvo is restoring this session’s approvals. Try again in a moment.",
+                        ));
+                    }
+                }
+            }
             let cards = cards(&runs, &id, false);
             Ok(RouteReply::json::<200>(permission::Status200 {
                 data: cards,

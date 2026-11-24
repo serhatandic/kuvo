@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
+import { existsSync, readdirSync } from "node:fs";
 import { boxBinary, readJSON, request, until, write } from "./adapter.mjs";
 import { withAgentFixture } from "./agent-fixture.mjs";
 
@@ -161,5 +162,65 @@ test("the shared send, queue, Stop and Resume routes work on a coding agent's co
         return answer.items?.length === 0 && answer;
       }, "The sent message stayed in the queue.");
       assert.equal(empty.paused, false);
+    });
+  });
+
+test("a resident replaced while its agent asks: the next shows the ask once, refuses stale answers, and sends what waited once",
+  { timeout: 60000 }, t => {
+    if (boxBinary().typescript) {
+      t.skip("The stand-in implements the Rust adapter contract.");
+      return;
+    }
+    const id = "ses_held_update";
+    const route = `kuvo/agents/api/session/${id}`;
+    const headers = { "x-kuvo-from": "app" };
+    return withAgentFixture(t, home => {
+      write(path.join(home, "agents", "sessions", id, "session.json"), JSON.stringify({
+        id, projectID: "fixture", agent: "build", location: { directory: home },
+        model: { providerID: "codex-cli", id: "stand-in" },
+        time: { created: 1, updated: 1 },
+        permissions: [{ action: "edit", resource: "*", effect: "ask" }],
+      }));
+    }, async (first, home, { restart }) => {
+      let listener = first;
+      const call = (method, tail, body) => request(listener, method, route + tail, body, headers);
+      const rows = async () => (await call("GET", "/message?order=asc")).json.data;
+      const said = all => all.filter(row => row.type === "assistant").map(row => row.content.map(part => part.text ?? "").join(""));
+      assert.equal((await call("POST", "/prompt", { id: "msg_held_update_1", text: "edit" })).status, 200);
+      const asked = await until(async () => (await call("GET", "/permission")).json.data[0],
+        "The held stand-in did not ask.");
+      assert.deepEqual(asked.resources, ["held.txt"]);
+      const queued = await call("POST", "/prompt", { id: "msg_held_update_2", text: "next", delivery: "queue" });
+      assert.equal(queued.status, 200, queued.text);
+      // The update: this resident makes way, the next takes the turn up. (Its
+      // agent's lines come a second late: the first read waits for the ask.)
+      write(path.join(home, "run", "agent-fixture-slow-replay"), "");
+      listener = await restart();
+      const shown = process.platform === "win32"
+        // (A forced stop hands nothing over: the ask still comes again.)
+        ? await until(async () => (await call("GET", "/permission")).json.data.length && (await call("GET", "/permission")).json.data,
+          "The ask did not come again.")
+        : (await call("GET", "/permission")).json.data;
+      assert.deepEqual(shown.map(ask => ask.id), [asked.id]);
+      assert.equal((await call("POST", "/permission/per_00_00/reply", { decision: "once" })).status, 404);
+      const answered = await call("POST", `/permission/${asked.id}/reply`, { decision: "once" });
+      assert.equal(answered.status, 200, answered.text);
+      const second = await until(async () => (await call("GET", "/permission")).json.data[0],
+        "The message that waited did not start its turn after the one taken up.");
+      assert.notEqual(second.id, asked.id);
+      assert.equal((await call("POST", `/permission/${second.id}/reply`, { decision: "reject" })).status, 200);
+      const done = await until(async () => {
+        const all = await rows();
+        return all.filter(row => row.type === "idle").length === 2 && all;
+      }, "The two turns did not end.");
+      assert.deepEqual(done.map(row => row.type), ["user", "assistant", "idle", "user", "assistant", "idle"]);
+      assert.deepEqual(said(done), ["Asked to edit; approved", "Asked to next; refused"]);
+      assert.deepEqual(done.filter(row => row.type === "idle").map(row => row.outcome), ["succeeded", "succeeded"]);
+      assert.deepEqual(readJSON(path.join(home, "agents", "sessions", id, "agent.json")).inbox, []);
+      assert.equal((await call("POST", `/permission/${asked.id}/reply`, { decision: "once" })).status, 404);
+      // Both turns' held agents end with them: their holders leave nothing behind.
+      const holders = path.join(home, "run", "agents", "hold");
+      const left = () => existsSync(holders) ? readdirSync(holders).filter(name => name !== "lifecycle.log") : [];
+      await until(() => left().length === 0, () => "Holders were left: " + left().join(", "), 30000);
     });
   });

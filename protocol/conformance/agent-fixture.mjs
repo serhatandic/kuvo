@@ -42,12 +42,19 @@ export async function withAgentFixture(t, seed, run) {
       write(path.join(home, "run", "agent-fixture-program"), process.execPath);
     }
     resident = startBox({ binary, home, env, relay });
-    await run(await resident.ready(), home);
+    // The resident replaced on the same computer, as an update replaces it.
+    const restart = async () => {
+      await resident.stop();
+      resident = startBox({ binary, home, env, relay });
+      return resident.ready();
+    };
+    await run(await resident.ready(), home, { restart });
   } finally {
     await resident?.stop();
     await bridge?.stop();
     await relay.close();
-    rmSync(root, { recursive: true, force: true });
+    // (A holder whose agent just ended can keep its folder open on Windows for a moment.)
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }
 
