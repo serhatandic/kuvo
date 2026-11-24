@@ -46,6 +46,9 @@ test("the projects list: as kept, other folders and worktrees filed under their 
       { directory: "relative", folders: [] },
       { directory: "/gone", folders: ["/gone-web"], removed: true },
       { directory: "/made", folders: [], addedByBox: true, madeBy: { bot: "b1", name: "Bot", at: 5 } },
+      // Marked removed by hand some other way: as it's filed, removed or not.
+      { directory: "/zero", folders: ["/zero-web"], removed: 0 },
+      { directory: "/yes", folders: ["/yes-web"], removed: "yes" },
     ] }));
     write(path.join(box.home, "box", "worktrees.json"), JSON.stringify({ formatVersion: 1,
       worktrees: [{ root: "/trees/app-1", folder: "/trees/app-1/web", project: app }, { root: 3 }],
@@ -64,9 +67,12 @@ test("the projects list: as kept, other folders and worktrees filed under their 
       { directory: path.join(app, "web"), folders: [] },
       { directory: "/gone", folders: ["/gone-web"], removed: true },
       { directory: "/made", folders: [], addedByBox: true, madeBy: { bot: "b1", name: "Bot", at: 5 } },
+      { directory: "/zero", folders: ["/zero-web"] },
+      { directory: "/yes", folders: ["/yes-web"], removed: true },
     ]);
     assert.deepEqual(reply.json.worktrees, {
       "/shared": app,
+      "/zero-web": "/zero",
       [tried]: app,
       [path.join(tried, "web")]: path.join(app, "web"),
       "/trees/app-1": app,

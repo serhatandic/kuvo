@@ -46,6 +46,12 @@ pub(crate) fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, 
         .map(|each| {
             let mut project = each.clone();
             project.remove("terminal");
+            // Removed or not, as the route says it: one marked any other way by hand reads as it's filed.
+            if removed(&project) {
+                project.insert("removed".into(), Value::Bool(true));
+            } else {
+                project.remove("removed");
+            }
             let folders = match each.get("folders") {
                 Some(Value::Array(folders)) => folders
                     .iter()
