@@ -821,6 +821,503 @@
      }
     }
    ]
+  },
+  {
+   "name": "a session's starter hears it finished, failed or asks",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "models": [
+       {
+        "id": "opus",
+        "providerID": "opencode",
+        "name": "Opus",
+        "cost": [
+         {
+          "input": 5,
+          "output": 25
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_step",
+       "title": "Build the app",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_step",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "## Built it\n- with tests"
+          }
+         ],
+         "time": {
+          "created": 20
+         }
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "outcome": "succeeded",
+         "time": {
+          "created": 21
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_step"
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[Session finished] \"Build the app\" in app (address ses_step), after "
+       },
+       "delivery": "queue",
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "from": "Its sessions",
+          "line": "“Build the app” finished"
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": ":\nBuilt it with tests"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_pick",
+       "title": "Pick",
+       "directory": "{{work}}/app",
+       "model": {
+        "providerID": "opencode",
+        "id": "opus"
+       },
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_pick",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_4",
+         "type": "idle",
+         "outcome": "failed",
+         "error": {
+          "type": "provider.quota",
+          "message": "Insufficient account funds"
+         },
+         "time": {
+          "created": 30
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.failed",
+       "data": {
+        "sessionID": "ses_pick",
+        "error": {
+         "type": "provider.quota",
+         "message": "Insufficient account funds"
+        }
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[Session failed] \"Pick\" in app (address ses_pick) stopped: No paid opencode model can answer now: Insufficient account funds (since "
+       },
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "line": "“Pick” stopped with an error"
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "The account that failed is held back.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": [
+        {
+         "provider": "opencode",
+         "only": "paid",
+         "models": [
+          "opus"
+         ],
+         "why": "Insufficient account funds"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "permission.asked",
+       "data": {
+        "id": "per_1",
+        "sessionID": "ses_step",
+        "action": "edit",
+        "resources": [
+         "a.txt"
+        ]
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": "[Session asks] \"Build the app\" in app (address ses_step) asks to edit files: a.txt (ask per_1). Answer with answer_ask if it's yours to allow, or tell the user in a line and carry on.",
+       "delivery": "steer",
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "line": "“Build the app” asks something"
+         }
+        }
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a session you stopped, or one you wrote to yourself, tells its starter nothing",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_mine",
+       "title": "Mine",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_mine",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "Fix the header",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Fixed."
+          }
+         ]
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_mine"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_held",
+       "title": "Held",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_held",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_5",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Half done."
+          }
+         ]
+        },
+        {
+         "id": "msg_6",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{home}}/run/work/stopped.json",
+       "text": "{\"ses_held\": 99999999999999}"
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_held"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_told",
+       "title": "Told",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_told",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_7",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Done here."
+          }
+         ]
+        },
+        {
+         "id": "msg_8",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_told"
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "why": "Only the one asked for by its lead is told: the user's own turn and the stopped one say nothing.",
+      "json": {
+       "text": {
+        "<contains>": "[Session finished] \"Told\""
+       },
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "line": "“Told” finished"
+         }
+        }
+       }
+      }
+     }
+    }
+   ]
   }
  ]
 }

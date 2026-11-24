@@ -1,5 +1,6 @@
 mod agents;
 mod library_artifacts;
+mod marketplace;
 
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -326,6 +327,22 @@ pub async fn run(
         },
     );
     kuvo_services::git::register(&mut routes, home.to_owned());
+    kuvo_services::programs::register(&mut routes, account.clone());
+    let _integration_keys = kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
+    let skills = kuvo_services::skills::ResidentSkills::start(&mut routes, home, &account);
+    let resident_marketplace = kuvo_services::marketplace::ResidentMarketplace::start(
+        &mut routes,
+        home,
+        &account,
+        kind == ComputerKind::Mac,
+        peers.reader().view().roster.local().name,
+        Some(setup.handle()),
+        vault.clone(),
+        skills.store.clone(),
+        skills.library.clone(),
+        Arc::new(marketplace::PeerBridge::new(peers.reader())),
+    )
+    .await;
     let wakes = kuvo_work::wakes::Wakes::new(home, engine.clone());
     wakes.register(&mut routes);
     let bots = kuvo_work::bots::Bots::new(
@@ -394,7 +411,7 @@ pub async fn run(
         kind == ComputerKind::Mac,
     );
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
-    let bridge_version = crate::updates::bridge_version(&update_home, &account);
+    let bridge = crate::updates::installed_bridge(&update_home, &account);
     let updates = crate::updates::start(update_home, &account, peers.clone(), setup.handle());
     crate::updates::register_check(
         &mut routes,
@@ -415,7 +432,7 @@ pub async fn run(
         backup_mail,
         Some(vault.clone()),
     );
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), bridge_version);
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), bridge);
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
@@ -533,6 +550,8 @@ pub async fn run(
     if let Ok(library_artifacts) = Arc::try_unwrap(library_artifacts) {
         library_artifacts.stop().await;
     }
+    skills.stop();
+    resident_marketplace.stop().await;
     let _ = session_source.await;
     drop(daily_backups);
     drop(backup_receiver);
@@ -595,6 +614,10 @@ fn info(
     features.extend_from_slice(kuvo_services::files::FEATURES);
     features.extend_from_slice(kuvo_services::artifacts::FEATURES);
     features.extend_from_slice(kuvo_services::library::FEATURES);
+    features.extend_from_slice(kuvo_services::programs::FEATURES);
+    features.extend_from_slice(kuvo_services::integrations::FEATURES);
+    features.extend_from_slice(kuvo_services::skills::FEATURES);
+    features.extend_from_slice(kuvo_services::marketplace::FEATURES);
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
     if permits_pairing {
         features.push("devices.pair");

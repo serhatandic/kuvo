@@ -405,3 +405,46 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 | | list_models and start_session leaving out or warning of held models (163, 264) | the work tools, 5.1e (`hold_of`) |
 | [model-aliases](../../box/test/model-aliases.test.ts) | a hold kept on `claude-code/default` marks the model it stands for | `work::unanswering::tests` |
 
+## 5.1c-6a — the work watcher's live path
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::work::watch` (`Watcher`: `heard`, `finish`, `failed`, `written_to`, `tell`, `soon`, `send_now`, `stays_stopped`); `Work::tell_starters`, `Work::forget_wakes` | `work/wakes.ts` `workWatcher` (its event handler, `finish`, `tell`, `send`/`sendNow`, `putBack`, `staysStopped`), `tellStarters`, `forgetWakes` |
+| `watch::lines` (the `[Session …]` lines, `wake_line_shown`, `describe_permission`, `describe_form`) | `wakeLine`, `namedOf`, `notSummarizedLine`, `stoppedLine`, `wakeLineShown`; `notices/news.ts` `describePermission`, `describeForm`, `projectNameOf`; `tree.ts` `placeWords` |
+| `watch::turns` (summaries, `turn_in`, `last_reply`, began-by, `is_news`, `reply_in`) | `shared/summaries.ts`; `wakes.ts` `latestMessages`, `lastReply`, `beganBy`, `isNews`; `tree.ts` `replyIn`, `replyLine`; `engine/queue.ts` `writtenByYou`, `isBoxsOwnWord` |
+| `watch::told` (`run/work/wakes.json`, `told.json`, `stopped.json`, each under TS's lock) | `readWaiting`/`changeWaiting`, `readTold`/`changeTold`, `background.ts` `readStopped`, `noteStopped`, `forgetStopped` |
+| `kuvo_engine::BoxMessage`, `WakeEngine::{tell, message_id}`: steer or queue, and a resend under the same id | `engine/queue.ts` `sendInto` with `boxNote` |
+
+### Proof
+
+- `work` scenarios (2 new, 11 in all): a finish told to its starter, with its reply as a line and the
+  mark its card shows; a failure at an account told with which models can't answer, and held
+  (`kuvo/work/unanswering`); an ask sent to be read at the starter's next step; the user's own turn
+  and a stopped session tell nothing. 11/11 against both boxes on macOS (three Rust runs); against the
+  Rust box on native Windows (twice) and Linux (WSL, static musl). `bots` 40/40 on all three;
+  `engine-sessions` 81/81, `engine-delivery`, `engine-asks` and `moves` against the Rust box on macOS.
+- `work::watch` unit tests (5): a summary asked for at rest is no turn of its work; what began a
+  turn; a reply as a line, cut outside code; what a conversation shows for its sessions' news; a
+  permission and a question as a notice says them.
+- Side by side, lines left waiting for a conversation the engine doesn't have, and a box with nothing
+  told: `wakes.json` and `told.json` match.
+- Size: about 53,500 characters of Rust for about 48,900 of TypeScript, without indentation: 1.10×
+  (the TypeScript counted includes the event handler's Autopilot branches, left to 5.3).
+- The route runner's `engineGot` waits up to 15 seconds for what the box sends on its own; givens
+  `messages` (read newest first) and a session's `metadata` were added.
+
+### Gaps and owners
+
+- **Catching up as the box starts** (what finished, failed or asked while it was down; `told.json`'s
+  `held` and `unread`), **finishes held while what a session left running goes on** (the engine's
+  place in `run/work/background.json`, its commands' output, `servicesWords`, "still serving") and
+  **late answers told again** (`tellLateAnswers`, every five minutes): 5.1c-6b.
+- **Autopilot** going ahead on what's asked, and declining what an MCP server asks: 5.3.
+- **A starter waiting with send_message** (`awaitedBy`) and **a report sent already** (`saidAlready`),
+  and **a starter that moved to another computer** (a letter, `tellMovedAway`): 5.1e, with the tools
+  that write them.
+- **A starter the coding agents run**: kept and tried again, as TypeScript does with their bridge
+  stopped, until the coding agents' sessions take the box's own messages (4.4).
+

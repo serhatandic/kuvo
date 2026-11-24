@@ -43,7 +43,7 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
       // The resident starts services itself.
     },
     session(given) {
-      engine.sessions.push({ ...sessionOf(given), ...(given.model ? { model: given.model } : {}) });
+      engine.sessions.push({ ...sessionOf(given), ...(given.model ? { model: given.model } : {}), ...(given.metadata ? { metadata: given.metadata } : {}) });
       if (given.running) engine.running.add(given.id);
       engine.emit({ type: "session.created", data: { sessionID: given.id } });
       if (given.running) engine.emit({ type: "session.execution.started", data: { sessionID: given.id } });
@@ -122,6 +122,11 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
     // The engine's models, as `api/model` lists them.
     models(given) {
       engine.models = given;
+    },
+    // A session's messages, oldest first, as its conversation has them (read newest first).
+    messages(given) {
+      engine.orderedMessages = true;
+      engine.messages.set(given.session, given.rows);
     },
     // One of the engine's events, as its feed tells it.
     engineEvent(given) {
