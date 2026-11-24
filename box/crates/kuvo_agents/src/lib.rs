@@ -3,6 +3,7 @@
 pub mod account_check;
 pub mod accounts;
 pub mod catalog;
+pub mod file_change;
 pub mod claude;
 pub mod hold;
 pub mod inbox;

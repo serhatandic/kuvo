@@ -666,6 +666,11 @@ fn claude_wire_fixture() {
                     }
                 }
             }
+            // Stopped while it asked: it's told no.
+            Some("control_response") if message["response"]["response"]["behavior"] == "deny" => {
+                assert!(!open);
+                assert_eq!(message["response"]["request_id"], "approval");
+            }
             Some("control_response") => {
                 assert!(open);
                 assert_eq!(message["response"]["request_id"], "approval");

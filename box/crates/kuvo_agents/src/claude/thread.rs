@@ -246,6 +246,7 @@ impl Conversation {
                 instructions,
                 configured: None,
                 closing: false,
+                noticed: HashSet::new(),
             }
             .run(receiver),
         );
@@ -348,11 +349,15 @@ struct Actor {
     instructions: Option<String>,
     configured: Option<(ModelRef, bool)>,
     closing: bool,
+    /// What this Claude Code has said once already (a retry, a limit's warning).
+    noticed: HashSet<String>,
 }
 
 struct Ask {
     stable: String,
     task: tokio::task::AbortHandle,
+    /// What Claude Code is told if the turn is stopped while it asks.
+    stopped: Option<Value>,
 }
 
 struct Running {
@@ -481,7 +486,7 @@ impl Actor {
             TurnKind::Compact => true,
             _ => false,
         };
-        let projection = Projection::new(explicit_compaction);
+        let projection = Projection::new(explicit_compaction, self.program.uses_key().await);
         if let TurnKind::Recover { note } = input.kind {
             let saved = self.recovery.take().ok_or_else(stopped)?;
             if saved.session != note.session || saved.turn != note.turn {
@@ -780,7 +785,17 @@ impl Actor {
             if let Some(pipe) = &mut self.pipe {
                 pipe.send(json!({ "subtype":"interrupt" })).await?;
             }
-            self.cancel_all().await?;
+            // What it asks goes, and it's told no.
+            for (id, ask) in self.asks.drain().collect::<Vec<_>>() {
+                ask.task.abort();
+                self.answered.insert(id.clone());
+                if let Some(turn) = &self.running {
+                    turn.sink.cancel_ask(&ask.stable).await?;
+                }
+                if let (Some(body), Some(pipe)) = (ask.stopped, &mut self.pipe) {
+                    wire::reply(&mut pipe.input, &id, Ok::<_, &str>(body)).await?;
+                }
+            }
         }
         Ok(())
     }
@@ -906,7 +921,9 @@ impl Actor {
             Delivery::Live
         };
         let prior_state = self.state.clone();
-        let events = turn.projection.frame(message, &turn.model, &mut self.state);
+        let events =
+            turn.projection
+                .frame(message, &turn.model, &mut self.state, &mut self.noticed);
         if self.state != prior_state {
             turn.sink.save_state(self.state.clone()).await?;
         }
@@ -972,6 +989,7 @@ impl Actor {
         }
         let request = serde_json::from_value::<Request>(data)?;
         let stable = request.stable_id(&request_id).to_owned();
+        let stopped = request.stopped();
         let (sink, plan) = self
             .running
             .as_ref()
@@ -982,7 +1000,14 @@ impl Actor {
             let stable = stable.clone();
             async move { (request_id, request.answer(sink, stable, plan).await) }
         });
-        self.asks.insert(request_id, Ask { stable, task });
+        self.asks.insert(
+            request_id,
+            Ask {
+                stable,
+                task,
+                stopped,
+            },
+        );
         Ok(())
     }
 
