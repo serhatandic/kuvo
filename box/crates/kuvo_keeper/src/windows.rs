@@ -99,13 +99,24 @@ impl StartupTask {
                 .map_err(|error| {
                     io::Error::other(format!("Open Windows Task Scheduler: {error}"))
                 })?;
+        let reply = String::from_utf8_lossy(&output.stdout);
         if !output.status.success() {
+            // The script reports failures as UTF-8 on stdout. Windows PowerShell
+            // can serialize its own diagnostics and progress on stderr as CLIXML.
+            let detail = reply.trim();
+            let detail = if detail.is_empty() {
+                format!(
+                    "Windows Task Scheduler could not be reached ({})",
+                    output.status
+                )
+            } else {
+                detail.to_owned()
+            };
             return Err(io::Error::other(format!(
-                "Kuvo couldn't {operation} its Windows sign-in task: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "Kuvo couldn't {operation} its Windows sign-in task: {detail}"
             )));
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(reply.into_owned())
     }
 
     /// Wait for the real resident's authenticated reply, even over an SSH pipe.

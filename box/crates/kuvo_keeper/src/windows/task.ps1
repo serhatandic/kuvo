@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 try {
     $scheduler = New-Object -ComObject 'Schedule.Service'
     $scheduler.Connect()
@@ -10,7 +12,7 @@ try {
     try {
         $task = $folder.GetTask($name)
     } catch {
-        if ($_.Exception.HResult -ne -2147024894) { throw }
+        if ($_.Exception.GetBaseException().HResult -ne -2147024894) { throw }
     }
     if ($null -ne $task) {
         $current = $task.Definition
@@ -65,11 +67,20 @@ try {
             }
         }
         'remove' {
-            if ($null -ne $task) { $folder.DeleteTask($name, 0) }
+            if ($null -ne $task) {
+                try {
+                    $folder.DeleteTask($name, 0)
+                } catch {
+                    # Another removal can win between GetTask and DeleteTask.
+                    if ($_.Exception.GetBaseException().HResult -ne -2147024894) { throw }
+                }
+            }
         }
         default { throw 'Unknown task operation.' }
     }
+    # A handled missing-task HRESULT can leave PowerShell's implicit exit status at 1.
+    exit 0
 } catch {
-    [Console]::Error.WriteLine($_.Exception.Message)
+    [Console]::WriteLine($_.Exception.GetBaseException().Message)
     exit 1
 }
