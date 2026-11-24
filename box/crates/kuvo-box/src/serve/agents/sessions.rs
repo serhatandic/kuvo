@@ -103,6 +103,12 @@ impl AgentSessionSource for Inventory {
             if !fields.contains_key("contextWindow")
                 && let Some(window) = self.listed_window(&fields).await
             {
+                // Kept, as the bridge keeps it: a turn that doesn't say reads it from there.
+                if let Some(model) = fields.get("contextModel").or_else(|| fields.get("model")) {
+                    self.store
+                        .keep_listed_window(id, model.clone(), window)
+                        .await?;
+                }
                 fields.insert("contextWindow".into(), window.into());
                 if let Some(context) = fields.get_mut("context").and_then(Value::as_object_mut) {
                     context.entry("window").or_insert(window.into());

@@ -11,6 +11,8 @@ use std::{
 
 use http::StatusCode;
 use kuvo_agents::background::{AT_WORK_LIMIT, Background, Helper, now};
+use kuvo_engine::LocalSessions;
+use kuvo_peers::setup_lists::Reader;
 use kuvo_protocol::routes::{
     get_kuvo_work_background as list, get_kuvo_work_background_events as list_events,
     get_kuvo_work_background_session as one,
@@ -150,6 +152,45 @@ fn read_session(file: &Path, session: &str) -> (Vec<Value>, Vec<Value>) {
     )
 }
 
+/// What the session lists say of the sessions a session's bars name: each subagent's title and
+/// whether it waits on you, and what's at work under the session (its bot's, when it's one).
+#[derive(Clone)]
+pub(in crate::serve) struct Listed {
+    pub sessions: LocalSessions,
+    pub peers: Reader,
+    pub bots: PathBuf,
+}
+
+impl Listed {
+    fn session(&self, file: &Path, session: &str) -> Value {
+        let (commands, subagents) = read_session(file, session);
+        let list = self.sessions.latest_record().unwrap_or_default();
+        let facts = |id: &str| &list["sessions"][id]["facts"];
+        let bot = facts(session)["bot"].as_str().filter(|bot| {
+            kuvo_work::bots::here::BotHere::read(&self.bots, bot)
+                .is_some_and(|here| here.session == session)
+        });
+        let activity = self
+            .peers
+            .view()
+            .activity(Some(session), bot, true, self.peers.now());
+        let subagents: Vec<Value> = subagents
+            .into_iter()
+            .map(|mut row| {
+                let facts = facts(row["session"].as_str().unwrap_or_default());
+                if let Some(title) = facts["title"].as_str().filter(|title| !title.is_empty()) {
+                    row["title"] = json!(title);
+                }
+                if facts.get("asked").is_some() {
+                    row["asking"] = json!(true);
+                }
+                row
+            })
+            .collect();
+        json!({ "commands": commands, "activity": activity, "subagents": subagents })
+    }
+}
+
 /// What's shown of a stretch read from `cut` into the output: from its first whole line (with none,
 /// all but a character the cut left half of), without newlines at either end.
 fn end_of(output: &str, cut: bool) -> String {
@@ -260,7 +301,12 @@ where
     }
 }
 
-pub(in crate::serve) fn register(home: &Path, background: Background, routes: &mut Registry) {
+pub(in crate::serve) fn register(
+    home: &Path,
+    background: Background,
+    listed: Listed,
+    routes: &mut Registry,
+) {
     let file: PathBuf = home.join("run/work/background.json");
     let here = file.clone();
     routes.register::<list::Spec, _, _>(Access::Any, move |_| {
@@ -283,28 +329,24 @@ pub(in crate::serve) fn register(home: &Path, background: Background, routes: &m
             }))
         }
     });
-    let session_now = |file: &Path, session: &str| {
-        let (commands, subagents) = read_session(file, session);
-        json!({ "commands": commands, "subagents": subagents })
-    };
-    let here = file.clone();
+    let (here, lists) = (file.clone(), listed.clone());
     routes.register::<one::Spec, _, _>(Access::Any, move |call| {
-        let file = here.clone();
+        let (file, listed) = (here.clone(), lists.clone());
         async move {
             let session = decoded(call.param("session"));
-            Ok(RouteReply::json::<200>(typed(session_now(
-                &file, &session,
-            ))?))
+            Ok(RouteReply::json::<200>(typed(
+                listed.session(&file, &session),
+            )?))
         }
     });
     let (here, agents) = (file.clone(), background.clone());
     routes.register::<one_events::Spec, _, _>(Access::Any, move |call| {
-        let (file, agents) = (here.clone(), agents.clone());
+        let (file, agents, listed) = (here.clone(), agents.clone(), listed.clone());
         async move {
             let session = decoded(call.param("session"));
             let lines = followed(
                 &agents,
-                move || session_now(&file, &session),
+                move || listed.session(&file, &session),
                 call.cancel.clone(),
             );
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {

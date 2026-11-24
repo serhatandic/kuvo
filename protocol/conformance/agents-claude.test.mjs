@@ -4,8 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  claudeEnvironment, headers, heldClaude, keptListener, provider, seedSession, startClaudeBridge,
-  stopFixtureHolders, stopPids, transcript, twoReleases,
+  claudeEnvironment, headers, heldClaude, keptListener, provider, result, seedSession, startClaudeBridge,
+  stopFixtureHolders, stopPids, streams, transcript, twoReleases,
 } from "./claude.mjs";
 import {
   boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, readJSON, request, scratch,
@@ -110,6 +110,39 @@ test("each model holds what Claude Code says it does on your plan, which its lis
   await withClaude(t, { turns: true }, async (listener, _home, env) => {
     assert.deepEqual(await heldBy(listener, env, windowSessions), { opus: "never", "claude-haiku-4-5": "433000", "opus[1m]": "never" });
   }, seedWindows({ models: listedModels, windows: { default: 1_000_000, "claude-haiku-4-5": 200_000, "opus[1m]": 1_000_000 } }));
+});
+
+test("what Claude Code said a model holds as a turn ended counts for the next conversation on it", { timeout: 90000 }, async t => {
+  await withClaude(t, { turns: true }, async (listener, home, env) => {
+    await until(async () => {
+      const answer = await request(listener, "GET", picker, undefined, headers, 45000);
+      return answer.json?.models?.some(model => model.providerID === provider && model.id === "claude-haiku-4-5" && !model.provisional);
+    }, "Claude Code never listed its models.", 45000);
+    // The first turn's end says how much Haiku holds; the second's says nothing of it.
+    const reply = more => [
+      ...streams("$UUID", [{ type: "text", text: "Hi." }], { input: 100, read: 9_000, write: 0, output: 5 }),
+      result(["$UUID"], "success", more),
+    ];
+    write(path.join(env.HOME, "claude-script.json"), JSON.stringify({
+      "go ses_window_haiku": reply({ modelUsage: { "claude-haiku-4-5": { contextWindow: 444_000 } } }),
+      "go ses_window_haiku_two": reply(),
+    }));
+    const kept = async session => {
+      const route = `kuvo/agents/api/session/${session}`;
+      const sent = await request(listener, "POST", route + "/prompt", { id: `msg_${session.slice(4)}`, text: `go ${session}` }, headers, 45000);
+      assert.equal(sent.status, 200, sent.text);
+      await until(async () => (await transcript(listener, route)).some(row => row.type === "idle"), "The turn never ended.");
+      return until(() => {
+        const saved = readJSON(path.join(home, "agents/sessions", session, "session.json"));
+        return saved.context?.used && saved.context;
+      }, "The turn's context was never kept.");
+    };
+    assert.equal((await kept("ses_window_haiku")).window, 444_000);
+    assert.equal((await kept("ses_window_haiku_two")).window, 444_000);
+  }, (home, env) => {
+    seedWindows({ models: listedModels })(home, env);
+    seedSession(home, "ses_window_haiku_two", { model: "claude-haiku-4-5" });
+  });
 });
 
 test("an older Claude Code that doesn't say how much each holds: as its list says", { timeout: 90000 }, async t => {
