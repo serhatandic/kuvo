@@ -1079,3 +1079,59 @@ test("a carried session moves with a previously handed-off tombstone", async () 
     fs.rmSync(LINK_FILE, { force: true })
   }
 })
+
+test("an offline step send stays unsent until reconnect, while an accepted send suppresses duplicates", async () => {
+  const { link, pc4, pc5 } = checkpointed()
+  writeLink(link)
+  let online = false
+  const sent: Record<string, unknown>[] = []
+  sendMovesWith((_to, move) => {
+    if (!online) return false
+    sent.push(move)
+    return true
+  })
+  try {
+    const base = Date.now()
+    const ticks = performance.now()
+    const swId = "mov_offlineSwitch01"
+    saveMove({
+      ...preparedGroup(pc4.peer.key, pc5.peer.key),
+      id: swId,
+      stage: "switching",
+      step: "switch",
+      sentAt: base - 120_000,
+    })
+    keepMoving(base, ticks)
+    expect(sent).toHaveLength(0)
+
+    // Reconnecting 2 seconds later must send the switch once without waiting STEP_AGAIN (60s).
+    online = true
+    keepMoving(base + 2_000, ticks + 2_000)
+    expect(sent.filter(m => m.id === swId && m.op === "switch")).toHaveLength(1)
+
+    // Another round 2 seconds after an accepted send must not send a duplicate.
+    keepMoving(base + 4_000, ticks + 4_000)
+    expect(sent.filter(m => m.id === swId && m.op === "switch")).toHaveLength(1)
+
+    // Same for switchSource() when arrived triggers a switch while offline:
+    online = false
+    const sw2 = "mov_offlineSwitch02"
+    saveMove({ ...preparedGroup(pc4.peer.key, pc5.peer.key), id: sw2 })
+    await takeMoveMail(pc5.peer, { op: "arrived", id: sw2, ...bundle })
+    expect(readMove(sw2)?.stage).toBe("switching")
+    expect(sent.filter(m => m.id === sw2)).toHaveLength(0)
+
+    online = true
+    keepMoving(base + 6_000, ticks + 6_000)
+    expect(sent.filter(m => m.id === sw2 && m.op === "switch")).toHaveLength(1)
+    keepMoving(base + 8_000, ticks + 8_000)
+    expect(sent.filter(m => m.id === sw2 && m.op === "switch")).toHaveLength(1)
+
+    forgetMove(swId)
+    forgetMove(sw2)
+  } finally {
+    sendMovesWith((_to, move) => { mail.push(move); return true })
+    fs.rmSync(PEER_AGENTS_FILE, { force: true })
+    fs.rmSync(LINK_FILE, { force: true })
+  }
+})

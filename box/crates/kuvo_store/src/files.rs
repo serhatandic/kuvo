@@ -217,7 +217,7 @@ pub fn exchange_entries(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Retire a file or link without following it. Missing entries are already retired.
 pub fn remove_file_synced(path: &Path) -> io::Result<()> {
-    remove_synced(path, |path| fs::remove_file(path))
+    remove_synced(path, platform::remove_file)
 }
 
 /// Retire a directory tree without following its links.

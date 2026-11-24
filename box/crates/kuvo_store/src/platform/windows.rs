@@ -168,6 +168,10 @@ pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     retry(None, || move_file(&from, &to, 0))
 }
 
+pub fn remove_file(path: &Path) -> io::Result<()> {
+    retry(None, || fs::remove_file(path))
+}
+
 pub fn launcher_runs(pid: u32) -> io::Result<bool> {
     // Legacy shell owners never ran natively. Leave any live PID alone.
     Ok(kuvo_os::process::ProcessIdentity::read(pid)?.is_some())

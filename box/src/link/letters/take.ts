@@ -172,6 +172,20 @@ const BRIDGE_AWAY = "Its coding agents aren't running here now: it comes again o
 // aren't coming back by themselves (stopped for good), and it's refused as one for no conversation.
 export const BRIDGE_WAIT = 30 * 60_000;
 const bridgeWaits = new Map<string, number>();
+// Per-recipient delivery chain so concurrent incoming letters reach the engine in arrival order
+// without blocking subsequent deliveries while a waiting letter awaits its reply.
+const recipientDeliveries = new Map<string, Promise<void>>();
+
+function inRecipientOrder<T>(session: string, run: () => Promise<T>): Promise<T> {
+  const previous = recipientDeliveries.get(session) ?? Promise.resolve();
+  const next = previous.then(run, run);
+  const settled = next.then(() => undefined, () => undefined);
+  recipientDeliveries.set(session, settled);
+  void settled.finally(() => {
+    if (recipientDeliveries.get(session) === settled) recipientDeliveries.delete(session);
+  });
+  return next;
+}
 
 // What a letter for a conversation this box doesn't have is told: to come again while the bridge
 // may be starting (`bridge`: it runs), else that there's none. A note always comes again while the
@@ -221,92 +235,109 @@ export async function takeLetter(sender: LetterSender, letter: unknown, { send, 
   if (typeof letter.at !== "number" || Math.abs(now - letter.at) > LETTER_LIFE) return no("It's too old to deliver.", noteOf(letter.note) !== null);
   if (typeof letter.to !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(letter.to) || typeof letter.text !== "string" || !letter.text.trim()) return no("That isn't a letter.");
   if (delivering.has(id)) return;
-  if (seenAlready(id, now)) return send(sender, { delivered: { id, ok: true } });
-  // An answer a tool here waits for (from the box its letter went to): to it. A conversation read
-  // that nothing waits for now just goes: it isn't a message.
-  if (typeof letter.answers === "string" && LETTER_ID.test(letter.answers) && (answered(sender, letter as AnswerLetter, now) || isObject(letter.read))) {
-    // (A call's answer, the box's own word, as long as a note's: it may come again weeks on.)
-    noteSeen(noteOf(letter.note) ? `note:${id}` : id, now);
-    return send(sender, { delivered: { id, ok: true } });
-  }
-  if (isObject(letter.read)) return readFor(sender, letter as ReadLetter, { send, currentPlaces, answer, now, moved, moving });
-  // The sending box's own word for a conversation that moved here from it (`note`): delivered as
-  // it would have been there, and never answered. Only a box sends one: its agents' letters are
-  // never notes.
-  const note = noteOf(letter.note);
-  // Letters from each peer lately, a few at a time, as a conversation's messages are counted: not
-  // one that can't be delivered yet, so one tried again and again leaves room for the rest; and its
-  // notes apart, so days of them kept for this box don't hold up its messages.
-  const countedAs = `${note ? "note" : "peer"}:${sender.key}`;
-  let counted: number | null = allowed("messages", countedAs, now);
-  if (counted === null) return no("It's sent a lot of messages in the last few minutes.", true);
-  const notDelivered = (why: string, again = false, lives?: string) => {
-    if (again && counted !== null) takeBack("messages", countedAs, counted);
-    counted = null;
-    return no(why, again, lives);
-  };
-  delivering.add(id);
-  let place: SessionPlace | null, prompt = "", fromAgent: ListedAgent | null = null, went: "sent" | "waits";
-  try {
-    const own = ownKey(readLink() ?? {});
-    const lives = moved.get(letter.to);
-    if (lives && lives !== own) return notDelivered("It's moving to another computer: it comes again once it's there.", true, note ? lives : undefined);
-    if (await moving(letter.to)) return notDelivered("It's moving to another computer: it comes again once it's there.", true);
-    const found = await locateLetter(letter.to, currentPlaces);
-    place = found.place;
-    if (!place) {
-      // The box's word for one that moved on from here, however long ago: it goes there.
-      const home = note ? homesOf(readLink()).get(letter.to) : undefined;
-      if (home && home !== own) return notDelivered("It lives on another computer now: it comes again there.", true, home);
-      return notDelivered(...noConversation(id, found.complete, now, Boolean(note)));
+  const recipient = letter.to;
+  const delivered = await inRecipientOrder(recipient, async () => {
+    if (delivering.has(id)) return null;
+    if (seenAlready(id, now)) { send(sender, { delivered: { id, ok: true } }); return null; }
+    // An answer a tool here waits for (from the box its letter went to): to it. A conversation read
+    // that nothing waits for now just goes: it isn't a message.
+    if (typeof letter.answers === "string" && LETTER_ID.test(letter.answers) && (answered(sender, letter as AnswerLetter, now) || isObject(letter.read))) {
+      // (A call's answer, the box's own word, as long as a note's: it may come again weeks on.)
+      noteSeen(noteOf(letter.note) ? `note:${id}` : id, now);
+      send(sender, { delivered: { id, ok: true } });
+      return null;
     }
-    bridgeWaits.delete(id);
-    const kuvo = place.data?.metadata?.kuvo ?? {};
-    // The sending box's word for one put away here comes again, as it would wait there until it's brought back.
-    if (note && isPutAway(place.data) && !place.data?.parentID && !kuvo.seat) return notDelivered("It's archived: it comes again once it's brought back.", true);
-    if (place.data?.parentID || kuvo.seat || isPutAway(place.data)) return notDelivered("That conversation doesn't take messages.");
-    if (note) went = await deliverNote(place.target, letter.to, promptForLetter(`note:${id}`, now), cutText(letter.text), note);
-    // One this box doesn't list (older than the latest it tells of) only from the conversation it's
-    // under: a lead following up the sessions it started, found by address (bridge 0.9.204).
-    else if (!(await listedOrUnder(letter.from, letter.to, found.targets, now))) return notDelivered("That conversation isn't one this computer lists, nor one you started: write to one that list_agents names.");
-    else {
-      // Its sender: that box's own agent, as it named it; one of this box's own claimed from there isn't.
-      // (`from` isn't checked: one that's no session finds no agent.) One that moved from here to
-      // the box sending it, switched to there, lives there, though its original here is still
-      // going: by that box's name for it, or, before that box lists it, the name it moved with.
-      const switched = typeof letter.from === "string" ? switchedMove(letter.from) : null;
-      const arrived = switched?.peer === sender.key ? switched : null;
-      const listed = arrived || peerOf(letter.from as string, peers, told, moved)?.key === sender.key ? (told[sender.key]?.list ?? []).find(agent => agent.session === letter.from) : null;
-      if (listed && (arrived || !(await placeOfSession(letter.from as string, found.targets)))) fromAgent = listed;
-      else if (arrived && arrived.kind !== "group" && arrived.sessions[0] === letter.from) fromAgent = { session: letter.from as string, name: arrived.name, ...(arrived.kind === "bot" ? { kind: "bot", id: arrived.thing } : { kind: "session" }) };
-      const name = fromAgent?.name ?? `an agent on ${plainName(sender.name) || "another computer"}`;
-      prompt = promptForLetter(id, now);
-      const waits = letter.wait === true && Boolean(fromAgent);
-      const by = fromAgent ? letter.from as string : "unknown";
-      went = await sendInto(place.target, letter.to, { id: prompt, text: composeLetter(name, by, cutText(letter.text), waits), delivery: "steer" },
-        { from: name, words: cutText(letter.text), kept: composeLetter(name, by, cutText(letter.text), false) });
+    if (isObject(letter.read)) {
+      await readFor(sender, letter as ReadLetter, { send, currentPlaces, answer, now, moved, moving });
+      return null;
     }
-  } catch (error) {
-    return notDelivered(`It didn't reach it: ${lookupProblem(error)}`, true);
-  } finally {
-    delivering.delete(id);
-  }
-  noteSeen(note ? `note:${id}` : id, now);
-  if (note) {
-    // The sessions it speaks of live on the box it came from, as of when it was made.
-    noteHomes(note.about ?? [], sender.key, typeof letter.made === "number" ? Math.min(letter.made, now) : now);
-    return send(sender, { delivered: { id, ok: true } });
-  }
-  // Waiting for an answer it can't have (its sender couldn't be told): it hears no answer's coming.
-  if (letter.wait === true && !fromAgent) return send(sender, { delivered: { id, ok: true, answer: false, why: "Its answer can't come back to you: it doesn't know who you are." } });
-  // Its message waits on the box; its answer comes as a message.
-  if (went === "waits") return send(sender, { delivered: { id, ok: true, ...(letter.wait === true ? { answer: false, why: waitingNote(letter.to) } : {}) } });
-  send(sender, { delivered: { id, ok: true } });
-  if (letter.wait !== true) return;
+    // The sending box's own word for a conversation that moved here from it (`note`): delivered as
+    // it would have been there, and never answered. Only a box sends one: its agents' letters are
+    // never notes.
+    const note = noteOf(letter.note);
+    // Letters from each peer lately, a few at a time, as a conversation's messages are counted: not
+    // one that can't be delivered yet, so one tried again and again leaves room for the rest; and its
+    // notes apart, so days of them kept for this box don't hold up its messages.
+    const countedAs = `${note ? "note" : "peer"}:${sender.key}`;
+    let counted: number | null = allowed("messages", countedAs, now);
+    if (counted === null) { no("It's sent a lot of messages in the last few minutes.", true); return null; }
+    const notDelivered = (why: string, again = false, lives?: string) => {
+      if (again && counted !== null) takeBack("messages", countedAs, counted);
+      counted = null;
+      no(why, again, lives);
+      return null;
+    };
+    delivering.add(id);
+    let place: SessionPlace | null, prompt = "", fromAgent: ListedAgent | null = null, went: "sent" | "waits";
+    try {
+      const own = ownKey(readLink() ?? {});
+      const lives = moved.get(recipient);
+      if (lives && lives !== own) return notDelivered("It's moving to another computer: it comes again once it's there.", true, note ? lives : undefined);
+      if (await moving(recipient)) return notDelivered("It's moving to another computer: it comes again once it's there.", true);
+      const found = await locateLetter(recipient, currentPlaces);
+      place = found.place;
+      if (!place) {
+        // The box's word for one that moved on from here, however long ago: it goes there.
+        const home = note ? homesOf(readLink()).get(recipient) : undefined;
+        if (home && home !== own) return notDelivered("It lives on another computer now: it comes again there.", true, home);
+        return notDelivered(...noConversation(id, found.complete, now, Boolean(note)));
+      }
+      bridgeWaits.delete(id);
+      const kuvo = place.data?.metadata?.kuvo ?? {};
+      // The sending box's word for one put away here comes again, as it would wait there until it's brought back.
+      if (note && isPutAway(place.data) && !place.data?.parentID && !kuvo.seat) return notDelivered("It's archived: it comes again once it's brought back.", true);
+      if (place.data?.parentID || kuvo.seat || isPutAway(place.data)) return notDelivered("That conversation doesn't take messages.");
+      if (note) went = await deliverNote(place.target, recipient, promptForLetter(`note:${id}`, now), cutText(letter.text), note);
+      // One this box doesn't list (older than the latest it tells of) only from the conversation it's
+      // under: a lead following up the sessions it started, found by address (bridge 0.9.204).
+      else if (!(await listedOrUnder(letter.from, recipient, found.targets, now))) return notDelivered("That conversation isn't one this computer lists, nor one you started: write to one that list_agents names.");
+      else {
+        // Its sender: that box's own agent, as it named it; one of this box's own claimed from there isn't.
+        // (`from` isn't checked: one that's no session finds no agent.) One that moved from here to
+        // the box sending it, switched to there, lives there, though its original here is still
+        // going: by that box's name for it, or, before that box lists it, the name it moved with.
+        const switched = typeof letter.from === "string" ? switchedMove(letter.from) : null;
+        const arrived = switched?.peer === sender.key ? switched : null;
+        const listed = arrived || peerOf(letter.from as string, peers, told, moved)?.key === sender.key ? (told[sender.key]?.list ?? []).find(agent => agent.session === letter.from) : null;
+        if (listed && (arrived || !(await placeOfSession(letter.from as string, found.targets)))) fromAgent = listed;
+        else if (arrived && arrived.kind !== "group" && arrived.sessions[0] === letter.from) fromAgent = { session: letter.from as string, name: arrived.name, ...(arrived.kind === "bot" ? { kind: "bot", id: arrived.thing } : { kind: "session" }) };
+        const name = fromAgent?.name ?? `an agent on ${plainName(sender.name) || "another computer"}`;
+        prompt = promptForLetter(id, now);
+        const waits = letter.wait === true && Boolean(fromAgent);
+        const by = fromAgent ? letter.from as string : "unknown";
+        went = await sendInto(place.target, recipient, { id: prompt, text: composeLetter(name, by, cutText(letter.text), waits), delivery: "steer" },
+          { from: name, words: cutText(letter.text), kept: composeLetter(name, by, cutText(letter.text), false) });
+      }
+    } catch (error) {
+      return notDelivered(`It didn't reach it: ${lookupProblem(error)}`, true);
+    } finally {
+      delivering.delete(id);
+    }
+    noteSeen(note ? `note:${id}` : id, now);
+    if (note) {
+      // The sessions it speaks of live on the box it came from, as of when it was made.
+      noteHomes(note.about ?? [], sender.key, typeof letter.made === "number" ? Math.min(letter.made, now) : now);
+      send(sender, { delivered: { id, ok: true } });
+      return null;
+    }
+    // Waiting for an answer it can't have (its sender couldn't be told): it hears no answer's coming.
+    if (letter.wait === true && !fromAgent) {
+      send(sender, { delivered: { id, ok: true, answer: false, why: "Its answer can't come back to you: it doesn't know who you are." } });
+      return null;
+    }
+    // Its message waits on the box; its answer comes as a message.
+    if (went === "waits") {
+      send(sender, { delivered: { id, ok: true, ...(letter.wait === true ? { answer: false, why: waitingNote(recipient) } : {}) } });
+      return null;
+    }
+    send(sender, { delivered: { id, ok: true } });
+    return letter.wait === true ? { target: place.target, prompt } : null;
+  });
+  if (!delivered) return;
   // Older peers can still send a waiting letter. Its starter hears the answer once, through that
   // letter. Only a sender this box knows waits, so `from` is theirs.
-  const text = await answerTo(place.target, letter.to, prompt, { wait, by: letter.from as string });
-  if (text) answer({ from: letter.to, to: letter.from as string, text, answers: id, peer: sender.key });
+  const text = await answerTo(delivered.target, recipient, delivered.prompt, { wait, by: letter.from as string });
+  if (text) answer({ from: recipient, to: letter.from as string, text, answers: id, peer: sender.key });
 }
 // Whether a conversation here may be written to by another computer's agent `from`: one this box
 // lists to its peers (its bots, its latest sessions), one switched to here lately (`switchedHere`:
