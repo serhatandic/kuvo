@@ -1337,8 +1337,71 @@ async fn paired_delivery() {
             .contains("no longer has access")
     );
     assert!(!home.path().join("run/engine.json").exists());
+    let installed = install(home.path());
+    let _cleanup = Cleanup {
+        home: home.path().to_owned(),
+        installed,
+    };
+    let work = home.path().join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    let permission = "api/session/ses_paired/permission/per_live/reply";
+    let permission_for = |pairing| {
+        call(
+            Method::POST,
+            permission.into(),
+            [17; 32],
+            pairing,
+            json!({"decision":"once"}),
+        )
+    };
+    assert_eq!(
+        server
+            .dispatcher
+            .dispatch(permission_for("old"), cancel.clone())
+            .await
+            .status,
+        403
+    );
+    let started = work.join("consent-reading");
+    let proceed = work.join("consent-continue");
+    for (status, revoke_pairing) in [(403, true), (409, false)] {
+        let dispatch = server.dispatcher.clone();
+        let request = permission_for("new");
+        let waiting = tokio::spawn(async move {
+            dispatch
+                .dispatch(request, CancellationToken::new())
+                .await
+                .status
+        });
+        until(|| started.exists(), "the live permission read").await;
+        if revoke_pairing {
+            authority.replaced.store(false, Ordering::Relaxed);
+        } else {
+            authority.held.store(true, Ordering::Relaxed);
+        }
+        fs::write(&proceed, []).unwrap();
+        assert_eq!(waiting.await.unwrap(), status);
+        assert!(!work.join("consent-replied").exists());
+        fs::remove_file(&started).unwrap();
+        fs::remove_file(&proceed).unwrap();
+        authority.replaced.store(true, Ordering::Relaxed);
+        authority.held.store(false, Ordering::Relaxed);
+    }
+    fs::write(&proceed, []).unwrap();
+    assert_eq!(
+        server
+            .dispatcher
+            .dispatch(permission_for("new"), cancel)
+            .await
+            .status,
+        200
+    );
+    assert!(work.join("consent-replied").exists());
     server.stop().await;
-    println!("revoked delivery was fenced and the new pairing could read its receipt");
+    println!(
+        "revoked delivery and permissions were fenced, including during a live permission read"
+    );
 }
 
 // The old inbox is only on the fixture engine; the saved prefix uses the resident's real files.
@@ -1443,6 +1506,22 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             return response;
         }
         match req.uri().path() {
+            "/api/session/ses_paired/permission" if route.ends_with("?live=1") => {
+                fs::write("consent-reading", []).unwrap();
+                until(
+                    || Path::new("consent-continue").exists(),
+                    "the test to finish the live permission read",
+                )
+                .await;
+                answer = Reply::json(
+                    StatusCode::OK,
+                    json!({"data":[{"id":"per_live","action":"edit","resources":["notes.txt"]}]}),
+                );
+            }
+            "/api/session/ses_paired/permission/per_live/reply" if req.method() == Method::POST => {
+                fs::write("consent-replied", []).unwrap();
+                answer = Reply::json(StatusCode::OK, json!({}));
+            }
             "/api/session/ses_writers" => {
                 let file = "session-writers.json";
                 let mut saved: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
