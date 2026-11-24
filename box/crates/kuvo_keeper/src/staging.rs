@@ -3,16 +3,13 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     path::Path,
     time::{Duration, Instant},
 };
 
 use flate2::read::GzDecoder;
-use kuvo_os::{
-    platform::Environment,
-    process::{Spawn, Stdio},
-};
+use kuvo_os::{platform::Environment, process::Spawn};
 use kuvo_store::{files, format::ObjectFormat, home::Home, locks};
 use serde::Deserialize;
 use serde_json::json;
@@ -262,16 +259,17 @@ fn check_downgrade(home: &Home, next: &Contents) -> io::Result<()> {
 }
 
 fn check_program(program: &Path, args: &[&str], folder: &Path, failure: &str) -> io::Result<()> {
-    probe_program(program, args, folder, failure, None)
+    probe_program(program, args, folder, failure, Duration::from_secs(10))
 }
 
-pub(crate) fn check_engine_version(program: &Path, folder: &Path, version: &str) -> io::Result<()> {
+pub(crate) fn check_engine(program: &Path, folder: &Path) -> io::Result<()> {
+    // The signed SHA-512 pins the download. The probe only checks that it runs.
     probe_program(
         program,
         &["--version"],
         folder,
-        "The engine doesn't report the pinned version.",
-        Some(version),
+        "The engine doesn't run on this computer.",
+        Duration::from_secs(120),
     )
 }
 
@@ -280,7 +278,7 @@ fn probe_program(
     args: &[&str],
     folder: &Path,
     failure: &str,
-    version: Option<&str>,
+    timeout: Duration,
 ) -> io::Result<()> {
     let mut env: Environment = std::env::vars_os()
         .filter(|(key, _)| {
@@ -308,29 +306,14 @@ fn probe_program(
     let mut command = Spawn::new(program, env);
     command.cwd = Some(folder.into());
     command.args = args.iter().map(|arg| (*arg).into()).collect();
-    let capture = if let Some(version) = version {
-        let output = tempfile::tempfile_in(folder)?;
-        command.stdout = Stdio::File(output.try_clone()?);
-        Some((output, version))
-    } else {
-        None
-    };
     let mut child = command
         .spawn()
         .map_err(|error| io::Error::other(format!("{failure} {error}")))?;
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = Instant::now() + timeout;
     loop {
         if child.has_exited()? {
             if !child.wait()?.success() {
                 return Err(io::Error::other(failure));
-            }
-            if let Some((mut output, version)) = capture {
-                output.seek(SeekFrom::Start(0))?;
-                let mut bytes = Vec::new();
-                output.take(129).read_to_end(&mut bytes)?;
-                if bytes.len() > 128 || std::str::from_utf8(&bytes).map(str::trim) != Ok(version) {
-                    return Err(io::Error::other(failure));
-                }
             }
             return Ok(());
         }
