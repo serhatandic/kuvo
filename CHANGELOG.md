@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Stop still works while a conversation waits for its current turn to finish before moving.
 - Rust computers answer conversation reads from your other computers.
 - A move carries forwarding decisions saved while the conversation is on its way.
 - Messages can still reach another computer after the sending tool stops waiting for a reply.

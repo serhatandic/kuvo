@@ -38,6 +38,11 @@ import { attachmentRoots } from "../home";
 
 export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer|ack))?))$/;
 
+export function queueHoldWhileSettling(session: string): boolean {
+  return liveMoves().some(move => move.role === "from" && move.stage === "holding"
+    && (move.thing === session || move.sessions.includes(session)));
+}
+
 // Give the session lookup and inbox read time to answer while the bridge saves a long transcript.
 // An incomplete read leaves the last complete queue in place.
 const ITEMS_WAIT = 10_000;
@@ -142,8 +147,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
   // One moving to or from another computer: what waits for it goes as it was read for the move. A
   // Stop still stops it while the box it leaves waits for its turn to end, before it's read.
   const stopping = action === "stop" || step === "hold";
-  const settling = () => liveMoves().some(move => move.role === "from" && move.stage === "holding" && (move.thing === session || move.sessions.includes(session)));
-  if (frozen().has(session) && !(stopping && settling())) return yield* json(409, { message: MOVING });
+  if (frozen().has(session) && !(stopping && queueHoldWhileSettling(session))) return yield* json(409, { message: MOVING });
   if (item && now === "ack") {
     if (method !== "POST") return yield* json(405, {});
     const given = parsed(request.body);

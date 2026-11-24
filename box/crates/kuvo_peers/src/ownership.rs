@@ -281,6 +281,10 @@ impl Handle {
             .forwarded_pairing(key, pairing, accepted.grants_current)
     }
 
+    pub fn receipt_issuers(&self) -> BTreeMap<ComputerKey, ComputerKey> {
+        resolved_replacements(&self.reader.view(), &(self.accepted)())
+    }
+
     /// Known remote members in setup order, including computers that are offline.
     pub fn members(&self) -> Vec<PeerOwner> {
         if (self.accepted)().id.is_none() {

@@ -10,6 +10,7 @@ use std::{
 };
 
 use kuvo_protocol::routes::types::GetKuvoComputersStatus200ComputersItemAtWorkItem;
+use kuvo_store::files::{FileStamp, file_stamp};
 use kuvo_wire::{
     keys::{Host, encode},
     mail::{Envelope, MAX_PLAINTEXT},
@@ -172,6 +173,7 @@ impl View {
             features.extend([
                 crate::memory_read::FEATURE,
                 crate::memory_read::SEARCH_FEATURE,
+                crate::owner_read::FEATURE,
             ]);
         }
         if self
@@ -404,7 +406,7 @@ struct SentAgents {
 }
 
 enum Change {
-    Update(UpdateFacts, Option<BridgeUpdate>),
+    Update(Box<(UpdateFacts, Option<BridgeUpdate>)>),
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
@@ -414,6 +416,11 @@ enum Change {
     ConversationSearch,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
+}
+
+struct PublishedViews {
+    views: watch::Sender<Arc<View>>,
+    sent_agents: watch::Sender<AgentMail>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -472,11 +479,13 @@ impl ResidentPeers {
         let task = tokio::spawn(resident.run(
             relay,
             devices,
-            publish,
+            PublishedViews {
+                views: publish,
+                sent_agents,
+            },
             change_rx,
             waiting_updates,
             clock.clone(),
-            sent_agents,
         ));
         Ok(Self {
             reader: Reader {
@@ -606,12 +615,16 @@ impl ResidentPeers {
     }
 
     pub async fn announce_update(&self, facts: UpdateFacts, bridge: Option<BridgeUpdate>) {
-        let _ = self.changes.send(Change::Update(facts, bridge)).await;
+        let _ = self
+            .changes
+            .send(Change::Update(Box::new((facts, bridge))))
+            .await;
     }
 }
 
 struct Resident {
     run: PathBuf,
+    move_files: Option<FileStamp>,
     view: View,
     list_parts: BTreeMap<ComputerKey, Parts>,
     notice_parts: BTreeMap<ComputerKey, Parts>,
@@ -659,6 +672,7 @@ impl Resident {
         };
         Self {
             run,
+            move_files: None,
             view,
             list_parts: BTreeMap::new(),
             notice_parts: BTreeMap::new(),
@@ -671,12 +685,15 @@ impl Resident {
         mut self,
         mut relay: Option<Relay>,
         mut devices: Option<Devices>,
-        publish: watch::Sender<Arc<View>>,
+        publication: PublishedViews,
         mut changes: mpsc::Receiver<Change>,
         mut waiting_updates: watch::Receiver<Arc<BTreeSet<String>>>,
         clock: Clock,
-        sent_agents: watch::Sender<AgentMail>,
     ) {
+        let PublishedViews {
+            views: publish,
+            sent_agents,
+        } = publication;
         let mut paired = relay_routes::Routes::default();
         let mut dispatch = None;
         let mut round = tokio::time::interval(PEER_ROUND);
@@ -696,14 +713,18 @@ impl Resident {
                     }
                 }
                 change = changes.recv() => match change {
-                    Some(Change::Update(update, bridge)) => {
+                    Some(Change::Update(update)) => {
+                        let (update, bridge) = *update;
                         self.view.update = update;
                         self.view.bridge_update = bridge;
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::None);
                         }
                     }
-                    Some(Change::Local(local)) => {
+                    Some(Change::Local(mut local)) => {
+                        let incoming = Arc::make_mut(&mut local);
+                        incoming.ownership.frozen.clone_from(&self.view.local.ownership.frozen);
+                        incoming.ownership.journal.clone_from(&self.view.local.ownership.journal);
                         self.view.local_lists = local.publication().map(Arc::new);
                         self.view.local = local;
                     }
@@ -821,6 +842,9 @@ impl Resident {
                 },
                 _ = round.tick() => {
                     let now = clock();
+                    if let Err(error) = self.refresh_move_ownership().await {
+                        eprintln!("Refreshing move ownership: {error}");
+                    }
                     if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, now) {
                         eprintln!("Keeping moves on other computers: {error}");
                     }
@@ -831,6 +855,31 @@ impl Resident {
             }
             publish.send_replace(Arc::new(self.view.clone()));
         }
+    }
+
+    /// A move can activate after OpenCode already published the imported row.
+    /// Use the durable ownership change to publish it even if that row stays the same.
+    async fn refresh_move_ownership(&mut self) -> io::Result<()> {
+        let run = self.run.clone();
+        let last = self.move_files.clone();
+        let refreshed = tokio::task::spawn_blocking(move || {
+            let stamp = file_stamp(&run.join("moves"))?;
+            if stamp == last {
+                return Ok(None);
+            }
+            let mut ownership = Ownership::default();
+            crate::moves::locate_checked(&run, &mut ownership)?;
+            Ok::<_, io::Error>(Some((stamp, ownership)))
+        })
+        .await??;
+        if let Some((stamp, ownership)) = refreshed {
+            self.move_files = stamp;
+            let local = Arc::make_mut(&mut self.view.local);
+            local.ownership.frozen = ownership.frozen;
+            local.ownership.journal = ownership.journal;
+            self.view.local_lists = local.publication().map(Arc::new);
+        }
+        Ok(())
     }
 
     fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Received> {
@@ -1133,15 +1182,21 @@ async fn publish_round(
     let activity_digest: [u8; 32] =
         Sha256::digest(serde_json::to_vec(&activity).expect("activity serializes")).into();
     let notice = serde_json::to_value(view.notices(now)).expect("notice history serializes");
+    let owns_here = |record: &(RecordScope, String)| {
+        !view.local.ownership.frozen.contains(&record.1)
+            && view
+                .local
+                .ownership
+                .journal
+                .get(record)
+                .is_none_or(|owner| view.roster.here == Some(owner.key))
+    };
     let mut owned: Vec<_> = view
         .local
         .ownership
         .held
         .iter()
-        .filter(|record| {
-            !view.local.ownership.frozen.contains(&record.1)
-                && !view.local.ownership.journal.contains_key(*record)
-        })
+        .filter(|record| owns_here(record))
         .map(|(_, id)| id.as_str())
         .collect();
     if let Some(lists) = lists {
@@ -1151,11 +1206,7 @@ async fn publish_round(
             .filter(|row| {
                 row.facts.parent.is_none()
                     && !row.actions.is_empty()
-                    && !view
-                        .local
-                        .ownership
-                        .journal
-                        .contains_key(&(RecordScope::Session, row.id.clone()))
+                    && owns_here(&(RecordScope::Session, row.id.clone()))
             })
             .collect();
         sessions.sort_by(|a, b| {

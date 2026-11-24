@@ -273,9 +273,8 @@ impl Driver {
             .get(peer)
             .and_then(|entry| entry.features.as_ref())
             .is_some_and(|features| features.iter().any(|feature| feature == "moves.check"));
-        let mut row = new_journal(
+        let mut row = new_chat_journal(
             id,
-            Kind::Chat,
             request.id,
             name,
             encode(&here),
@@ -794,6 +793,14 @@ impl Driver {
         if discovered {
             self.check_background(row)?;
         }
+        // Stop and Hold can settle a working source. Close that admission
+        // before packing and wait for any request that already entered.
+        row.extra.insert("queueSettled".into(), true.into());
+        row.save(self.run_dir())?;
+        session
+            .settle(&row.sessions)
+            .await
+            .map_err(io::Error::other)?;
         let (exports, queues) = snapshot(&session, row).await?;
         self.check_payloads(row)?;
         let notes = session_notes::pack(self.run_dir(), &row.sessions)?;
@@ -1466,9 +1473,8 @@ impl Driver {
         };
         let now = self.reader.now();
         let started = before.as_ref().map_or(now, |row| row.started);
-        let mut row = new_journal(
+        let mut row = new_chat_journal(
             id.to_owned(),
-            Kind::Chat,
             thing.into(),
             name.to_owned(),
             encode(&key),
@@ -2180,7 +2186,15 @@ async fn snapshot(
     let queues = engine
         .queue_snapshot(&row.sessions)
         .await
-        .map_err(io::Error::other)?;
+        .map_err(|error| match error {
+            kuvo_engine::MoveEngineError::UnreadableQueue(_) => io::Error::other(format!(
+                "A message waiting for {} couldn’t be read. The move stopped. Check the queue before trying again.", row.display_name(),
+            )),
+            kuvo_engine::MoveEngineError::WaitingQueue => io::Error::other(format!(
+                "{} still has messages on their way. Try again in a moment.", row.display_name(),
+            )),
+            other => io::Error::other(other),
+        })?;
     Ok((exports, queues))
 }
 
@@ -2282,10 +2296,10 @@ fn chats_dir(home: &Path) -> PathBuf {
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            if std::env::var("KUVO_BOX").as_deref() == Ok("mac") {
-                if let Some(support) = home.parent() {
-                    return support.join("Chats");
-                }
+            if std::env::var("KUVO_BOX").as_deref() == Ok("mac")
+                && let Some(support) = home.parent()
+            {
+                return support.join("Chats");
             }
             home.join("chats")
         })
@@ -2371,9 +2385,8 @@ fn waiting_on_peer(row: &Journal, now: Millis, sent: Option<Duration>, heard: Du
         })
 }
 
-fn new_journal(
+fn new_chat_journal(
     id: String,
-    kind: Kind,
     thing: String,
     name: String,
     from: String,
@@ -2385,7 +2398,7 @@ fn new_journal(
         id,
         thing,
         name: Some(name),
-        kind: Some(kind),
+        kind: Some(Kind::Chat),
         peer: match role {
             Role::From => to.clone(),
             Role::To => from.clone(),

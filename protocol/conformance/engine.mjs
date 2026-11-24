@@ -288,7 +288,10 @@ export async function standInEngine(root, env) {
       }
       const interrupt = url.pathname.match(/^\/api\/session\/([^/]+)\/interrupt$/);
       if (interrupt && request.method === "POST") {
-        engine.interrupted.push({ session: decodeURIComponent(interrupt[1]), resume: url.searchParams.get("resume") === "true" });
+        const session = decodeURIComponent(interrupt[1]);
+        const resume = url.searchParams.get("resume") === "true";
+        engine.interrupted.push({ session, resume });
+        if (!resume && engine.running.delete(session)) publish({ type: "session.idle", data: { sessionID: session } });
         return send({});
       }
       const view = url.pathname.match(/^\/api\/session\/([^/]+)\/view$/);

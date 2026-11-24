@@ -11,7 +11,10 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use kuvo_engine::{Engine, MoveEngineError, SessionMove, TranscriptError, TranscriptScope};
+use kuvo_engine::{
+    Engine, LetterDelivery, LetterPrompt, LetterText, MoveEngineError, SessionMove,
+    TranscriptError, TranscriptScope,
+};
 use kuvo_store::{
     files,
     locks::{OnBusy, StaleLock},
@@ -677,18 +680,18 @@ impl Letters {
         }
         let text = cut(&letter.text, 32_000).to_owned();
         let mut sender = None;
-        let (prompt, from, words, steer, metadata) = if let Some(ref note) = note {
+        let (immediate, when_queued, from, words, steer) = if let Some(ref note) = note {
             let from = cut(&note.from, 200).to_owned();
             let metadata = note
                 .line
                 .as_ref()
                 .map(|line| json!({"kuvo":{"note":{"from":from,"line":cut(line,32_000)}}}));
             (
-                text,
+                LetterText { text, metadata },
+                None,
                 from,
                 cut(&note.words, 32_000).to_owned(),
                 note.delivery == NoteDelivery::Steer,
-                metadata,
             )
         } else {
             sender = self.sender(view, key, letter.from.as_deref());
@@ -697,10 +700,23 @@ impl Letters {
                 .map(|(_, name)| name.to_string())
                 .unwrap_or_else(|| unknown_sender(view, &key));
             let address = sender.as_ref().map_or("unknown", |(from, _)| *from);
-            let hint = letter_hint(address, letter.wait);
-            let prompt = format!("[Message from {name} · {address}] ({hint})\n\n{text}");
-            let metadata = json!({"kuvo":{"parts":{"words":text,"mail":{"name":name,"session":address,"hint":hint}}}});
-            (prompt, name, text, true, Some(metadata))
+            let compose = |waiting| {
+                let hint = letter_hint(address, waiting);
+                LetterText {
+                    text: format!("[Message from {name} · {address}] ({hint})\n\n{text}"),
+                    metadata: Some(
+                        json!({"kuvo":{"parts":{"words":text,"mail":{"name":name,"session":address,"hint":hint}}}}),
+                    ),
+                }
+            };
+            let waiting = sender.is_some() && letter.wait;
+            (
+                compose(waiting),
+                waiting.then(|| compose(false)),
+                name,
+                text,
+                true,
+            )
         };
         let Delivery::Submit { prompt: prompt_id } = self
             .receipts()?
@@ -712,16 +728,18 @@ impl Letters {
         match engine
             .deliver_letter(
                 &letter.to,
-                prompt_id.clone(),
-                prompt,
-                from,
-                words,
-                steer,
-                metadata,
+                LetterPrompt {
+                    id: prompt_id.clone(),
+                    immediate,
+                    when_queued,
+                    from,
+                    words,
+                    steer,
+                },
             )
             .await
         {
-            Ok(kept) => {
+            Ok(delivered_letter) => {
                 self.receipts()?
                     .accepted(&id, note.is_some(), now)
                     .map_err(io::Error::other)?;
@@ -749,7 +767,9 @@ impl Letters {
                 }
                 let mut receipt = delivered(id.clone());
                 if note.is_none() && letter.wait {
-                    if let Some((from, _)) = sender.as_ref().filter(|_| !kept) {
+                    if let (Some((from, _)), LetterDelivery::Accepted) =
+                        (&sender, &delivered_letter)
+                    {
                         self.answers.spawn(wait_for_answer(
                             engine,
                             letter.to.clone(),
@@ -760,11 +780,11 @@ impl Letters {
                         ));
                     } else {
                         receipt.answer = Some(false);
-                        receipt.why = Some(if sender.is_some() {
-                            "That conversation has a paused queue. Your message waits for the conversation to resume. Its answer, if it writes one, comes to you as a message."
-                        } else {
-                            "Its answer can't come back to you: it doesn't know who you are."
-                        }.into());
+                        receipt.why = Some(match (sender, delivered_letter) {
+                            (Some(_), LetterDelivery::Queued(reason)) => reason,
+                            _ => "Its answer can't come back to you: it doesn't know who you are."
+                                .into(),
+                        });
                     }
                 }
                 Ok(Some(receipt))

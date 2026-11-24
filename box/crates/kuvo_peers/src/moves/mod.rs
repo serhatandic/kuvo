@@ -33,6 +33,7 @@ pub(crate) use driver::Handle;
 pub(crate) use driver::start;
 pub(crate) use listing::{is_mac, plain_name, register, register_start};
 pub(crate) use notices::{Announcer, Notices};
+pub(crate) use session_files::owner_attachment_files;
 
 const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
 const DEPARTURE: ObjectFormat = ObjectFormat::additive("Moved conversation");

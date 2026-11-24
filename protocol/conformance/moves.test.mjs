@@ -308,6 +308,330 @@ test("a held move fences prompt, command, and queue writes after a restart", { t
 const binary = boxBinary();
 const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
 
+function receiptPeer(t, relay, observer, seed, { sealOneWay, openOneWay, readFrame, frame, Frame }) {
+  const wire = relay.device(Buffer.alloc(32, 50 + seed));
+  t.after(() => wire.leave());
+  const address = Buffer.from(observer.address, "base64url"), key = Buffer.from(observer.key, "base64url");
+  const secret = Buffer.alloc(32, seed);
+  return {
+    async receive() {
+      const packet = readFrame((await wire.next(12000)).subarray(17));
+      return packet?.kind === Frame.mail && JSON.parse(openOneWay(packet.body, secret, key).payload);
+    },
+    send(workQueue) {
+      const bytes = Buffer.from(JSON.stringify({ at: Date.now(), workQueue }));
+      wire.send(address, frame(Frame.mail, 0, sealOneWay(bytes, secret, key).message));
+    },
+  };
+}
+
+test("receipt pages keep the same cursor while the setup assigns a replacement issuer", {
+  timeout: 55000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, leases, relay } = await bench(t);
+  const reader = await computer("receipt-replacement-reader");
+  const retired = Buffer.alloc(32, 44).toString("base64url");
+  const { main, member, spare, save } = seedPeerSetup(reader.home, relay.url, 1, 3, retired);
+  const { setup: { id: setup } } = readJSON(path.join(reader.home, "run/link.json"));
+  const session = "ses_pagesAcrossIssuers";
+  const route = `kuvo/sessions/${session}/submissions`;
+  const headers = { "x-kuvo-from": "app" };
+  const digest = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("base64url");
+  const submissions = Array.from({ length: 81 }, (_, n) => `${setup}.${main.key}.msg_${String(n).padStart(3, "0")}`);
+  for (const [n, id] of submissions.entries()) {
+    const key = digest("draft-submission", setup, session, id);
+    save(`run/owned-data/submissions/${key}.json`, {
+      formatVersion: 1, digest: digest("draft", id), at: n + 1,
+      submission: { id, setup, session, origin: main.key, submittedThrough: main.key, submitter: { kind: "computer" } },
+      answer: { status: 200, value: { message: id.split(".").at(-1), answer: { send: {} } } },
+    });
+  }
+  save("run/peer-agents.json", Object.fromEntries([member, spare].map(peer => [peer.key, {
+    at: Date.now(), heard: Date.now(), list: [], features: ["data.ownership", "typed.submission-recovery", "work-queue.forward.memory"],
+  }])));
+  const mail = await testMail(t, boxBinary(wireFixture));
+  const peers = [receiptPeer(t, relay, main, 2, mail), receiptPeer(t, relay, main, 3, mail)];
+  const process = reader.start(), resident = await process.ready();
+  await Promise.all(peers.map(peer => until(async () => (await peer.receive())?.agents, "The peer did not see the receipt reader")));
+  await until(() => leases.leaseFor(setup), "The receipt reader did not lease the setup");
+  const begin = async (cursor = "") => {
+    const path = route + (cursor ? `?after=${encodeURIComponent(cursor)}` : "");
+    const answer = request(resident, "GET", path, undefined, headers);
+    const sent = await Promise.all(peers.map(peer => until(async () => {
+      const mail = (await peer.receive())?.workQueue;
+      return (mail?.act?.item === "draft-submissions" || mail?.ownerRequest?.request?.session === session) && mail;
+    }, "The receipt reader did not ask a peer for its page")));
+    for (const mail of sent) assert.equal(mail.act?.body.after ?? mail.ownerRequest?.request.action.query.after ?? "", cursor);
+    return async ({ silent = false } = {}) => {
+      const body = { complete: true, outcomes: [] };
+      sent.forEach((mail, index) => {
+        if (silent && index === 1) return;
+        const { act, ownerRequest: owner } = mail;
+        peers[index].send(act
+          ? { acted: { id: act.id, status: 200, value: body }, ...(mail.memory ? { memory: true } : {}) }
+          : { ownerReply: { nonce: owner.nonce, to: main.key, setup, operation: owner.request.operation, reply: { status: 200, body } } });
+      });
+      const result = await answer;
+      assert.equal(result.status, 200, result.text);
+      return result.json;
+    };
+  };
+  const missing = await (await begin())({ silent: true });
+  assert.equal(missing.complete, false);
+  assert.equal(missing.next, undefined);
+  assert.deepEqual(missing.outcomes.map(row => row.submission), submissions.slice(0, 40));
+  const first = await (await begin())();
+  assert.equal(first.complete, true);
+  assert.equal(first.next, submissions[39]);
+  assert.deepEqual(first.outcomes.map(row => row.submission), submissions.slice(0, 40));
+  const finish = await begin(first.next);
+  const assigned = await request(resident, "POST", "kuvo/box/backups/match", {
+    source: `b_${Buffer.alloc(16, 2).toString("base64url")}`, previous: retired, replacement: spare.key,
+  }, headers);
+  assert.equal(assigned.status, 200, assigned.text);
+  const interrupted = await finish();
+  assert.equal(interrupted.complete, false);
+  assert.equal(interrupted.next, undefined);
+  assert.deepEqual(interrupted.outcomes.map(row => row.submission), submissions.slice(40, 80));
+  const retried = await (await begin(first.next))();
+  assert.equal(retried.complete, true);
+  assert.equal(retried.next, submissions[79]);
+  assert.deepEqual(retried.outcomes, interrupted.outcomes);
+  const last = await (await begin(retried.next))();
+  assert.equal(last.complete, true);
+  assert.equal(last.next, undefined);
+  assert.deepEqual(last.outcomes.map(row => row.submission), submissions.slice(80));
+});
+
+test("a moved conversation's authoritative absence retires cached pages in reply order", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const observer = await computer("owner-read-observer");
+  const { main, member, save } = seedPeerSetup(observer.home, relay.url);
+  const session = "ses_ownerPages";
+  save("run/moves/moved.json", [{ session, key: member.key, at: Date.now(), formatVersion: 0 }]);
+  save("run/peer-agents.json", { [member.key]: {
+    at: Date.now(), list: [], features: ["data.ownership", "work-queue.forward.memory"], heard: Date.now(),
+  } });
+  const peer = receiptPeer(t, relay, main, 2, await testMail(t, boxBinary(wireFixture)));
+  const child = observer.start();
+  let resident = await child.ready();
+  await until(async () => (await peer.receive())?.agents, "The member did not see the observer");
+  const route = `kuvo/data/owner?kind=conversations&id=${session}&computer=${member.key}`;
+  const begin = async (offset = "") => {
+    const path = route + (offset ? `&offset=${offset}` : "");
+    const answer = request(resident, "GET", path, undefined, { "x-kuvo-from": "app" });
+    const sent = await Promise.race([
+      until(async () => {
+        const queue = (await peer.receive())?.workQueue;
+        return queue?.act?.area === "ownership" && queue.act.item === session && queue;
+      }, "The observer did not ask the owner"),
+      answer.then(reply => assert.fail(`The read ended before contacting the owner: ${reply.status} ${reply.text}`)),
+    ]);
+    assert.equal(sent.act.body.kind, "conversations");
+    assert.equal(sent.act.body.offset, offset || undefined);
+    return { answer, sent };
+  };
+  const reply = async ({ answer, sent }, status, value = null) => {
+    const workQueue = { acted: { id: sent.act.id, status, value }, ...(sent.memory ? { memory: true } : {}) };
+    peer.send(workQueue);
+    const result = await answer;
+    assert.equal(result.status, 200, result.text);
+    assert.deepEqual(result.json.owner, { key: member.key, name: member.name, scope: "session computer", local: false, reachable: true });
+    return result.json;
+  };
+  const page = id => ({ messages: [{ id }], cursor: null });
+  const oldAbsence = await begin();
+  const newerPage = await reply(await begin(), 200, page("msg_newer"));
+  assert.equal(newerPage.refresh, "live");
+  const superseded = await reply(oldAbsence, 404);
+  assert.deepEqual(superseded.data, newerPage.data);
+  assert.equal(superseded.lastReceivedAt, newerPage.lastReceivedAt);
+
+  const earlier = await begin("older");
+  const gone = await reply(await begin(), 404);
+  assert.equal(gone.state, "absent");
+  assert.equal(gone.refresh, "live");
+  const late = await reply(earlier, 200, page("msg_older"));
+  assert.equal(late.state, "absent");
+  assert.equal(late.data, undefined);
+  assert.equal(late.lastReceivedAt, gone.lastReceivedAt);
+  const failed = await reply(await begin("older"), 503);
+  assert.equal(failed.refresh, "failed");
+  assert.equal(failed.state, "absent");
+  assert.equal(failed.lastReceivedAt, gone.lastReceivedAt);
+  await child.stop();
+  resident = await observer.start().ready();
+  await until(async () => (await peer.receive())?.agents, "The member did not see the restarted observer");
+  const afterRestart = await reply(await begin("older"), 503);
+  assert.equal(afterRestart.state, "absent");
+  assert.equal(afterRestart.lastReceivedAt, gone.lastReceivedAt);
+  assert.equal((await reply(await begin(), 200, page("msg_returned"))).state, "received");
+  assert.equal((await reply(await begin("older"), 503)).state, "neverReceived");
+});
+
+test("a conversation read follows a completed move and names the files the owner keeps", { timeout: 90000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const source = await computer("owner-read-source"), destination = await computer("owner-read-destination");
+  const { main, member } = seedPeerSetup(source.home, relay.url);
+  seedPeerSetup(destination.home, relay.url, 2);
+  const id = "ses_readAfterMoving";
+  const message = "msg_ownerFile";
+  const headers = { "x-kuvo-from": "app" };
+  const chats = path.join(source.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  source.engine.sessions.push(sessionOf({ id, title: "Owner read while moving", directory: chats }));
+  const managed = path.join(source.home, "attachments", id, "kept.txt");
+  write(managed, "Owner keeps these bytes.");
+  source.engine.messages.set(id, [{ id: message, role: "user", text: "Here is the document.",
+    content: [{ type: "file", filename: "kept.txt", url: pathToFileURL(managed).href }],
+  }]);
+  const words = Array.from({ length: 601 }, (_, index) => String(index));
+  const text = words.join(" "), edited = words.with(0, "first").with(600, "last").join(" ");
+  const revision = "R".repeat(43);
+  const note = { version: 1, notes: { carried: {
+    versions: [
+      { revision, deleted: false, fields: { text } },
+      { revision: "S".repeat(43), deleted: false, fields: { text: edited },
+        passages: { base: revision, fields: { text: [{ start: 0, end: 1201, text: edited.split(/( )/) }] } } },
+    ], choices: [], receipts: [], additions: {},
+  } } };
+  const notePath = path.join("run/work/notes", id + ".ordinary.json");
+  write(path.join(source.home, notePath), JSON.stringify(note));
+  const origin = await source.start().ready(), target = await destination.start().ready();
+  const read = async (box, computer, kind = "conversations") => {
+    const route = `kuvo/data/owner?kind=${kind}&id=${id}&computer=${computer}&file=kept.txt&message=msg_missing`;
+    const reply = await request(box, "GET", route, undefined, headers);
+    assert.equal(reply.status, 200, reply.text);
+    return reply.json;
+  };
+  await until(async () => (await request(origin, "GET", `kuvo/sessions/${id}/location`)).json?.place === "engine",
+    "The source did not list the conversation");
+  await readyToMove(origin, id, member);
+  const before = await read(origin, main.key);
+  assert.equal(before.owner.key, main.key);
+  assert.equal(before.owner.local, true);
+  assert.equal(before.refresh, "live");
+  assert.deepEqual(before.unavailable, { files: [], messages: ["msg_missing"] });
+  const moved = await request(origin, "POST", "kuvo/moves", { kind: "chat", id, to: member.key, receipt: true });
+  assert.equal(moved.status, 202, moved.text);
+  await moveRetired(source, moved.json.move.id, () => "The source still holds the move", 45000);
+  const remote = await read(origin, main.key);
+  assert.equal(remote.owner.key, member.key);
+  assert.equal(remote.owner.local, false);
+  assert.equal(remote.refresh, "live");
+  assert.equal(remote.data.messages[0].id, message);
+  assert.deepEqual(remote.unavailable, { files: ["kept.txt"], messages: ["msg_missing"] });
+  const local = await read(target, member.key);
+  assert.equal(local.owner.local, true);
+  assert.deepEqual(local.data, remote.data);
+  assert.deepEqual(local.unavailable, before.unavailable);
+  const inventory = await read(origin, main.key, "sessionFiles");
+  assert.equal(inventory.refresh, "live");
+  assert.deepEqual(inventory.data, ["kept.txt"]);
+  assert.deepEqual(inventory.unavailable.files, ["kept.txt"]);
+  assert.deepEqual(readJSON(path.join(destination.home, notePath)).notes, note.notes);
+});
+
+test("Stop settles a running conversation so its move preserves the paused queue", { timeout: 90000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const source = await computer("move-stop-source"), destination = await computer("move-stop-destination");
+  const { main, member } = seedPeerSetup(source.home, relay.url);
+  seedPeerSetup(destination.home, relay.url, 2);
+  const id = "ses_stopDuringMove", session = `kuvo/sessions/${id}`;
+  const chats = path.join(source.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  source.engine.sessions.push(sessionOf({ id, title: "Already working", directory: chats }));
+  source.engine.running.add(id);
+  source.engine.inboxes.set(id, [{ id: "msg_waitingTurn", sessionID: id, type: "user", delivery: "queue",
+    payload: { text: "Keep the old names." } }]);
+  const sourceProcess = source.start(), destinationProcess = destination.start();
+  const [from, to] = await Promise.all([sourceProcess.ready(), destinationProcess.ready()]);
+  await until(async () => (await request(from, "GET", session + "/location")).json?.place === "engine",
+    "The source did not list the conversation");
+  await readyToMove(from, id, member);
+  const begun = await request(from, "POST", "kuvo/moves", { kind: "chat", id, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const held = begun.json.move;
+  assert.equal(held.stage, "holding");
+  await until(() => {
+    const file = path.join(source.home, "run/moves", held.id + ".json");
+    return fs.existsSync(file) && readJSON(file).step !== "check";
+  }, "The destination did not accept the check and begin settling the turn");
+  const stopped = await request(from, "POST", session + "/stop", {});
+  assert.equal(stopped.status, 200, stopped.text);
+  assert.equal(stopped.json.paused, true);
+  assert.deepEqual(source.engine.interrupted, [{ session: id, resume: false }]);
+  await moveRetired(source, begun.json.move.id, () => sourceProcess.log(), 45000);
+  const queue = await request(to, "GET", session + "/queue");
+  assert.equal(queue.status, 200, queue.text);
+  assert.equal(queue.json.paused, true);
+  assert.deepEqual(queue.json.waiting?.map(message => [message.id, message.text]), [["msg_waitingTurn", "Keep the old names."]]);
+  assert.equal(destination.engine.messages.get(id)?.length ?? 0, 0);
+  const read = await request(from, "GET", `kuvo/data/owner?kind=sessionQueue&id=${id}`, undefined, { "x-kuvo-from": "app" });
+  assert.equal(read.status, 200, read.text);
+  assert.equal(read.json.refresh, "live");
+  assert.equal(read.json.owner.key, member.key);
+  assert.deepEqual(read.json.data, queue.json);
+});
+
+test("unlinking a destination with an unheard switch receipt leaves the source held", {
+  timeout: 90000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, leases, relay } = await bench(t);
+  const source = await computer("move-removal-source"), destination = await computer("move-removal-destination");
+  const { main, member } = seedPeerSetup(source.home, relay.url);
+  seedPeerSetup(destination.home, relay.url, 2);
+  const { setup: { id: setup } } = readJSON(path.join(source.home, "run/link.json"));
+  const directory = path.join(source.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  const session = "ses_removedDestination";
+  source.engine.sessions.push(sessionOf({ id: session, title: "A held source", directory }));
+  source.engine.messages.set(session, [{ id: "msg_original", role: "user", text: "Keep the original until it is safe." }]);
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  let acknowledgement;
+  t.after(relay.intercept(Buffer.from(member.address, "base64url"), Buffer.from(main.address, "base64url"), packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    let payload;
+    try { ({ payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 1), Buffer.from(member.key, "base64url"))); }
+    catch { return false; }
+    if (JSON.parse(payload).move?.op !== "switched") return false;
+    acknowledgement = packet;
+    return true;
+  }));
+  const sourceProcess = source.start(), targetProcess = destination.start();
+  const [origin] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  await until(() => leases.leaseFor(setup), "The move source did not lease the setup");
+  await until(async () => (await request(origin, "GET", `kuvo/sessions/${session}/location`)).json?.place === "engine",
+    "The source did not see its conversation");
+  await readyToMove(origin, session, member);
+  const move = await request(origin, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(move.status, 202, move.text);
+  const id = move.json.move.id;
+  await until(() => acknowledgement, "The destination did not confirm it had activated the conversation", 25000);
+  const unlink = await request(origin, "DELETE", `kuvo/computers/${member.key}`, undefined, { "x-kuvo-from": "app" });
+  assert.ok([200, 202].includes(unlink.status), unlink.text);
+  await until(async () => {
+    const setup = await request(origin, "GET", "kuvo/setup");
+    return setup.status === 200 && !setup.json.computers.some(computer => computer.key === member.key);
+  }, "The destination is still a member of the source's setup");
+  relay.replay(acknowledgement);
+  await sourceProcess.stop();
+  const restarted = await source.start().ready();
+  const listing = await request(restarted, "GET", "kuvo/moves");
+  assert.equal(listing.json.moves.find(move => move.id === id)?.stage, "switching");
+  assert.ok(listing.json.away.includes(session));
+  const receipt = await request(restarted, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(receipt.status, 200, receipt.text);
+  assert.equal(receipt.json.state, "moving");
+  assert.equal(receipt.json.move.stage, "switching");
+  const blocked = await request(restarted, "POST", `api/session/${session}/prompt`, { text: "Do not run a second copy." });
+  assert.equal(blocked.status, 409, blocked.text);
+  assert.deepEqual(source.engine.messages.get(session).map(row => row.id), ["msg_original"]);
+  assert.deepEqual(destination.engine.messages.get(session).map(row => row.id), ["msg_original"]);
+});
+
 async function readyToMove(resident, session, peer) {
   await until(async () => {
     const reply = await request(resident, "GET", "kuvo/moves/places?kind=chat&id=" + session);
@@ -750,7 +1074,7 @@ test("retiring a source after a failed deletion keeps its complete backup", {
   assert.equal(begun.status, 202, begun.text);
   const id = begun.json.move.id, route = "kuvo/moves/receipt?id=" + id;
   await until(() => fs.existsSync(path.join(here.home, "run/moves", id + ".outcome.json")),
-    "The source did not save its failed cleanup");
+    () => "The source did not save its failed cleanup\n" + source.log() + "\n" + target.log(), 30000);
   const cleanup = await request(resident, "GET", route);
   assert.match(cleanup.json?.note, /original is retired/i);
   assert.ok(here.engine.sessions.some(row => row.id === root));
@@ -2221,7 +2545,7 @@ test("a conversation stays home while its background work is running", { timeout
 });
 
 test("an unavailable destination or missing sign-in refuses before work is held", {
-  timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 85000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("account-source"), there = await computer("account-target");
@@ -2280,7 +2604,7 @@ test("an unavailable destination or missing sign-in refuses before work is held"
   there.engine.providers.push({ id: "needs-sign-in" });
   const retry = await move();
   assert.equal(retry.status, 202, retry.text);
-  await moveRetired(here, retry.json.move.id, () => "The provider check warned: " + note);
+  await moveRetired(here, retry.json.move.id, () => "The provider check warned: " + note, 45000);
   const moved = await status(retry.json.move.id);
   assert.equal(moved.json?.state, "done", moved.text);
   assert.equal(moved.json.note, note);
@@ -2675,6 +2999,28 @@ test("a letter that waits hears the authenticated answer after the sender restar
   assert.deepEqual(notAnswerable, { note: "Its answer can't come back to you: it doesn't know who you are." });
   assert.equal(conversation.length, 3, "Replaying the first letter does not start another turn");
   assert.equal(conversation.at(-1).text, `[Message from an agent on ${main.name} · unknown] (It can't be answered: who sent it isn't known.)\n\nIs lunch booked?`);
+
+  const route = `kuvo/sessions/${recipient}`;
+  const stopped = await request(dst, "POST", route + "/stop", {});
+  assert.equal(stopped.status, 200, stopped.text);
+  assert.equal(stopped.json.paused, true);
+  const waitingID = "ltr_stoppedRecipient";
+  const waitingReply = path.join(here.home, "run/replies", waitingID + ".json");
+  write(waitingReply.replace(/\.json$/, ".alive"), "");
+  write(path.join(here.home, "run/outbox/sending", waitingID + ".json"), JSON.stringify({
+    from: sender, to: recipient, text: "Tell me when dinner is booked.", peer: member.key, wait: true, at: Date.now(),
+  }));
+  const paused = await until(() => fs.existsSync(waitingReply) && readJSON(waitingReply),
+    "The sender did not hear that the recipient's conversation is stopped", 15000);
+  assert.deepEqual(paused, { note: "That conversation is stopped: the user paused it. Your message waits there and goes once they resume it; its answer, if it writes one, comes to you as a message." });
+  assert.equal(conversation.length, 3, "The stopped conversation did not start another turn");
+  const queue = await request(dst, "GET", route + "/queue");
+  assert.deepEqual(queue.json.waiting.map(row => [row.from, row.text]), [["Trip plans", "Tell me when dinner is booked."]]);
+  const resume = await request(dst, "POST", route + "/queue/resume", {});
+  assert.equal(resume.status, 200, resume.text);
+  const received = await until(() => conversation.find(row => row.text?.endsWith("Tell me when dinner is booked.")),
+    "The recipient did not receive the saved letter after resuming");
+  assert.equal(received.text, `[Message from Trip plans · ${sender}] (To answer, use send_message to ${sender}.)\n\nTell me when dinner is booked.`);
 });
 
 test("pending letters reach a peer in creation order", { timeout: 40000 }, async t => {
@@ -3425,7 +3771,8 @@ test("a missing or unreadable queued payload leaves the conversation on its sour
         const reply = await request(resident, "GET", "kuvo/moves/receipt?id=" + begun.json.move.id);
         return reply.json?.state === "failed" && reply.json;
       }, "The conversation was allowed to move with an unreadable queued payload", 15000);
-      assert.ok(outcome.message);
+      if (early) assert.equal(outcome.message, "A message waiting for “Queued move” couldn’t be read. The move stopped. Check the queue before trying again.");
+      else assert.ok(outcome.message);
       assert.deepEqual([frames.includes("offer"), frames.includes("switch")], [!early, false]);
       assert.ok(here.engine.sessions.some(session => session.id === id));
       assert.deepEqual((await request(resident, "GET", base + "/queue")).json.waiting.map(item => item.id), [item]);

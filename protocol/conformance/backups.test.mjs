@@ -6,9 +6,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { readJSON, until, write } from "./adapter.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { readJSON, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { at, id, key, oldPoint, source, unpackPoint } from "./backup-fixture.mjs";
+import { sessionOf } from "./engine.mjs";
+import { seedPeerSetup } from "./peer-fixture.mjs";
 
 const app = { "x-kuvo-from": "app" };
 const prefix = "kuvo/box/backups";
@@ -300,6 +303,115 @@ test("a relay point survives the source and restores through its replacement mem
       fs.readFileSync(path.join(original.home + "-gone", name)), name);
   }
   checkProject(replacement.home, point.id, result);
+});
+
+test("restoring a removed issuer recovers its receipt without bringing back a moved conversation's fence", {
+  timeout: 110000,
+}, async t => {
+  const { computer, relay, leases } = await bench(t, { orderedMessages: true });
+  const main = await computer("live-owner"), source = await computer("original-issuer"), replacement = await computer("replacement-issuer");
+  const { main: owner, member: retired, spare: fresh } = seedPeerSetup(main.home, relay.url, 1, 3);
+  seedPeerSetup(source.home, relay.url, 2, 3);
+  seedPeerSetup(replacement.home, relay.url, 3, 3);
+  const setup = readJSON(path.join(main.home, "run/link.json")).setup.id;
+  const directory = path.join(source.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  const session = "ses_restoreReceipt", id = "msg_keptReceipt";
+  const route = `kuvo/sessions/${session}`;
+  source.engine.sessions.push(sessionOf({ id: session, directory, title: "Kept conversation", updated: Date.now() }));
+  const managed = path.join(source.home, "attachments", session, "proof.txt");
+  write(managed, "Move these bytes once.");
+  const sourceProcess = source.start(), mainProcess = main.start(), replacementProcess = replacement.start();
+  const [original, primary, restoreTo] = await Promise.all([sourceProcess.ready(), mainProcess.ready(), replacementProcess.ready()]);
+  const ask = (computer, method, route, body) => request(computer, method, route, body, app, 30000);
+  await until(() => leases.leaseFor(setup), "The receiving computer did not lease the setup");
+  await until(async () => {
+    const scope = await ask(primary, "GET", route + "/submissions?scope=1");
+    return scope.status === 200 && scope.json.currentOwner === retired.key && scope.json.canSubmit === true;
+  }, "The main computer did not see the issuer's conversation");
+  const submission = `${setup}.${retired.key}.${id}`;
+  const draft = { id, submission, text: "Keep this submission once.", message: {} };
+  const logged = await ask(primary, "POST", route + "/submit", draft);
+  assert.ok([200, 202].includes(logged.status), logged.text);
+  const digest = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("base64url");
+  const issuer = `run/owned-data/submissions/${digest("draft-submission", setup, session, submission)}.json`;
+  const fence = `run/owned-data/mutations/${digest("typed-draft", setup, session, id)}.json`;
+  const originalFile = path.join(source.home, issuer);
+  await until(() => fs.existsSync(originalFile) && readJSON(originalFile).answer?.status === 200,
+    () => "The original computer did not commit the submission\n" + sourceProcess.log(), 16000);
+  const messages = source.engine.messages.get(session);
+  assert.deepEqual(messages.map(row => row.id), [id]);
+  messages[0].content = [{ type: "file", filename: "proof.txt", url: pathToFileURL(managed).href }];
+
+  const destination = { kind: "computer", computer: owner.key };
+  await until(async () => {
+    const status = await ask(original, "GET", prefix);
+    return status.json?.computers?.some(computer => computer.key === owner.key && computer.relay);
+  }, "The receiving computer did not advertise relay backups", 20000);
+  const keep = await ask(original, "POST", prefix + "/destination", { destination, confirm: true });
+  assert.equal(keep.status, 200, keep.text);
+  const saved = await ask(original, "POST", prefix + "/now", {});
+  assert.equal(saved.status, 200, saved.text);
+  const point = saved.json.point.id;
+  const archive = { destination, source: keep.json.source, id: point, recoveryKey: keep.json.recoveryKey, confirm: true };
+  const archivePath = path.join(path.dirname(main.home), "account", ".kuvo-backups", "relay", setup, retired.key,
+    archive.source, point + ".kuvo");
+  const entries = unpackPoint(fs.readFileSync(archivePath), archive.source, point, Buffer.from(archive.recoveryKey, "base64url"));
+  assert.ok(entries.has("home/" + issuer));
+  assert.ok(entries.has("home/" + fence));
+
+  await until(async () => {
+    const places = await ask(original, "GET", `kuvo/moves/places?kind=chat&id=${session}`);
+    return places.json?.places?.some(place => place.key === owner.key && place.ok);
+  }, "The original computer could not move to the main computer");
+  const moving = await ask(original, "POST", "kuvo/moves", { kind: "chat", id: session, to: owner.key, receipt: true });
+  assert.equal(moving.status, 202, moving.text);
+  const active = path.join(source.home, "run/moves", moving.json.move.id + ".json");
+  await until(async () => {
+    const outcome = await ask(original, "GET", "kuvo/moves/receipt?id=" + moving.json.move.id);
+    if (outcome.json?.state === "failed") assert.fail(outcome.text);
+    return outcome.json?.state === "done" && !fs.existsSync(active);
+  }, () => "The move did not retire its source\n" + sourceProcess.log(), 45000);
+  assert.equal(fs.existsSync(path.join(main.home, fence)), true);
+  assert.equal(fs.existsSync(path.join(main.home, issuer)), false);
+  assert.equal(fs.existsSync(originalFile), true);
+  assert.equal(main.engine.messages.get(session).filter(row => row.id === id).length, 1);
+
+  await sourceProcess.stop();
+  fs.renameSync(source.home, source.home + "-lost");
+  const removed = await ask(primary, "DELETE", "kuvo/computers/" + retired.key);
+  assert.ok([200, 202].includes(removed.status), removed.text);
+  const matched = await ask(primary, "POST", prefix + "/match", { source: archive.source, previous: retired.key, replacement: fresh.key });
+  assert.equal(matched.status, 200, matched.text);
+  await until(() => {
+    const link = readJSON(path.join(replacement.home, "run/link.json"));
+    return link.shared?.ownershipRecovery?.value?.["replacement:" + retired.key]?.computer === fresh.key;
+  }, "The replacement did not accept the backup match", 20000);
+  const owned = createHash("sha256").update(session).digest("base64url").slice(0, 6);
+  await until(() => {
+    const told = readJSON(path.join(replacement.home, "run/peer-agents.json"))[owner.key];
+    return told?.owns?.match(/.{6}/g)?.includes(owned) ?? told?.list?.some(agent => agent.session === session);
+  }, "The current owner did not announce the moved conversation to the replacement", 20000);
+  const restored = await ask(restoreTo, "POST", prefix + "/restore", archive);
+  assert.equal(restored.status, 200, restored.text);
+  assert.ok(restored.json.held.includes("home/" + fence), JSON.stringify(restored.json.held));
+  const kept = path.join(replacement.home, issuer);
+  assert.equal(fs.readFileSync(kept, "utf8"), fs.readFileSync(path.join(source.home + "-lost", issuer), "utf8"));
+  assert.equal(fs.existsSync(path.join(replacement.home, fence)), false);
+  assert.equal(replacement.engine.sessions.some(row => row.id === session), false);
+  const receiptPath = `${route}/submissions/${submission}`;
+  const receipt = await until(async () => {
+    const reply = await ask(primary, "GET", receiptPath);
+    return reply.status === 200 && reply.json.outcomes.find(row => row.evidence === "owner") && reply.json;
+  }, "The live owner did not recover the old issuer's receipt", 20000);
+  assert.equal(receipt.currentOwner, owner.key);
+  assert.equal(receipt.outcomes[0].status, "committed");
+  assert.equal(receipt.outcomes[0].originalOwner, retired.key);
+  const replay = await ask(primary, "POST", route + "/draft", { ...draft, submission: undefined });
+  assert.equal(replay.status, 409, replay.text);
+  assert.equal(main.engine.messages.get(session).filter(row => row.id === id).length, 1);
+  const attachment = main.engine.messages.get(session).find(row => row.id === id).content[0].url;
+  assert.equal(fs.readFileSync(fileURLToPath(attachment), "utf8"), "Move these bytes once.");
 });
 
 const projectScript = "#!/bin/sh\nexit 0\n";

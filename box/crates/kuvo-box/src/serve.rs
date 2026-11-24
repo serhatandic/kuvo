@@ -142,7 +142,7 @@ pub async fn run(
     let owner_requests = if let Ok(requests) = owners.incoming() {
         peers.advertise_engine_submissions().await?;
         Some(tokio::spawn(super::session_ownership::serve(
-            owners,
+            owners.clone(),
             requests,
             engine.clone(),
             sessions.clone(),
@@ -156,8 +156,24 @@ pub async fn run(
             accepted.ownership_state().id
         });
     let search_engine = engine.clone();
-    let memory_reads =
-        memory.serve(move |_, read| super::setup_search::answer(search_engine.clone(), read));
+    let read_owner = kuvo_peers::owner_read::Service::new(
+        peers.reader(),
+        owners,
+        memory.clone(),
+        engine.clone(),
+    );
+    read_owner.register(&mut routes);
+    let memory_reads = memory.serve(move |_, read| {
+        let owner = read_owner.clone();
+        let engine = search_engine.clone();
+        async move {
+            if read.area.as_deref() == Some("ownership") {
+                owner.answer(read).await
+            } else {
+                super::setup_search::answer(engine, read).await
+            }
+        }
+    });
     engine.register_setup_search(
         Arc::new(super::setup_search::SetupSearch {
             peers: peers.reader(),
@@ -361,6 +377,7 @@ fn info(
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
     features.push(kuvo_peers::memory_read::FEATURE);
+    features.push(kuvo_peers::owner_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
