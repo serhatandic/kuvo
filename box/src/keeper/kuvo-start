@@ -1090,7 +1090,19 @@ stop)
         exit 1
       fi
     fi
-    stop_for_switch "$target" "$mode" && select_bin "$target" || exit 1
+    if ! rust_release && rust_manifest "$K/${target%/bin}/box.json" 2>/dev/null; then
+      # Stop the beta's writers while bin still points at the beta. The saved
+      # home stays available for manual restoration if the Rust launch fails.
+      owners=$(held_owners)
+      if ! switch_workers restart || ! halt_held "$owners" ||
+        ! KUVO_HOME="$K" "$K/$target/kuvo-box" preserve-before-rust; then
+        rm -f "$R/previous"
+        exit 1
+      fi
+    else
+      stop_for_switch "$target" "$mode" || exit 1
+    fi
+    select_bin "$target" || exit 1
     unlock
     exec sh "$K/bin/kuvo-start" start --switch
   fi
@@ -1218,13 +1230,20 @@ start-guard)
   trap 'trap "" HUP INT TERM; unlock' EXIT
   trap 'exit 1' HUP INT TERM
   still_selected || exit 0
-  stop_for_switch "$old" || exit 1
+  crossing=
+  if rust_release && ! rust_manifest "$K/${old%/bin}/box.json" 2>/dev/null &&
+     ! rust_manifest "$K/$old/.kuvo-release.json" 2>/dev/null; then
+    crossing=1
+  else
+    stop_for_switch "$old" || exit 1
+  fi
   (umask 077; printf '%s %s %s\n' "$(date +%s)" "$version" "$digest" >"$R/update-cannot.new") &&
-    mv -f "$R/update-cannot.new" "$R/update-cannot" &&
-    select_bin "$old" || exit 1
+    mv -f "$R/update-cannot.new" "$R/update-cannot" || exit 1
+  [ -n "$crossing" ] || select_bin "$old" || exit 1
   sync
   rm -f "$R/previous" "$R/update-engine-hold.json"
   unlock
+  [ -z "$crossing" ] || exit 1
   # A keeper busy starting the failed release also sees the link change at its next round.
   exec sh "$K/bin/kuvo-start" start --switch
   ;;

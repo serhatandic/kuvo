@@ -21,7 +21,7 @@ import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import {
   type BoxRelease, UPDATE_KEYS, boxVersion, installedPack, isUpdating, newerVersion,
-  packName, releaseDrainDeferred, startUpdate, switchPending, updateOnTrial, updatesBlocked, verifyBoxes,
+  localPack, namesPack, packName, releaseDrainDeferred, startUpdate, switchPending, updateOnTrial, updatesBlocked, verifyBoxes,
 } from "./update";
 
 /** The newest shareable release held here. */
@@ -163,7 +163,7 @@ export function keepRelease(boxes: Buffer | string, pack: Buffer): boolean {
 
 // The envelope is verified before use.
 function manifestIn(boxes: string): BoxRelease | null {
-  try { return JSON.parse(Buffer.from(JSON.parse(boxes).manifest, "base64").toString("utf8")); } catch { return null; }
+  try { return localPack(JSON.parse(Buffer.from(JSON.parse(boxes).manifest, "base64").toString("utf8"))); } catch { return null; }
 }
 
 /** `changed` told as soon as the release this box holds changes (another process may have kept it:
@@ -202,7 +202,7 @@ function matchingPack(target: FleetTarget, keys = heldKeys()): Held | undefined 
 function signedCandidate(version: string, peer: string, boxes?: string, sha256?: string): Candidate {
   if (boxes) try {
     const manifest = verifyBoxes(boxes, heldKeys());
-    if (manifest.spreads && manifest.version === version && (!sha256 || sha256 === manifest.pack.sha256))
+    if (manifest.spreads && manifest.version === version && (!sha256 || namesPack(manifest, sha256)))
       return { version, peer, boxes, sha256: manifest.pack.sha256 };
   } catch {}
   return { version, peer, sha256 };
@@ -315,7 +315,8 @@ export function activationAllowed(ref: ReleaseRef, now = Date.now()): boolean {
   const setup = followedSetup(readLink());
   if (setup?.role !== "member") return mainCanSwitch(ref, now);
   const main = readPeerAgents()[setup.primary]?.computer;
-  return main?.kuvo === ref.version && (!main.installedSha256 || main.installedSha256 === ref.sha256);
+  if (main?.kuvo !== ref.version) return false;
+  return !main.installedSha256 || signedCandidate(main.kuvo, setup.primary, main.runningManifest, main.installedSha256).sha256 === ref.sha256;
 }
 
 // ---- Acquiring a pack ----
@@ -369,7 +370,8 @@ export interface FleetOptions {
 
 let hostOf: () => Pick<LinkHost, "send"> | null | undefined = () => null;
 // A test's own ways (its keys only in a test's folder), as the mail it takes uses them.
-let ways: FleetOptions = {};
+const fixtureKey = !REAL_BOX ? process.env.KUVO_TEST_RELEASE_KEY : undefined;
+let ways: FleetOptions = fixtureKey ? { keys: [fixtureKey] } : {};
 const ownWays = (): FleetOptions => ways;
 /** The keys a held release is checked with: Kuvo Code's own (a test's in a test's folder). */
 export const heldKeys = (): string[] => ownWays().keys ?? UPDATE_KEYS;

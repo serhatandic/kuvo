@@ -27,7 +27,7 @@ use crate::{
     devices::Devices,
     directory::{
         AgentKind, AnnouncedAgent, Announcement, Announcements, ComputerKey, Owner, RecordScope,
-        Roster, owned_digest,
+        Roster, UpdateFacts, owned_digest,
     },
     kept,
     lists::{self, Computer, Lists, Local},
@@ -65,6 +65,7 @@ pub struct View {
     pub(crate) move_waiting: Arc<BTreeSet<String>>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
+    update: UpdateFacts,
     work_calls: bool,
     transfers: bool,
     submission_recovery: bool,
@@ -74,6 +75,18 @@ pub struct View {
 }
 
 impl View {
+    pub fn peer_updates(&self, key: &ComputerKey, now: Millis) -> (bool, UpdateFacts) {
+        let key = encode(key);
+        let announcement = self.announced.get(&key);
+        let away = self
+            .reach
+            .peer_is_away(&key, announcement.and_then(|entry| entry.heard), now);
+        let facts = announcement
+            .and_then(|entry| entry.computer.as_ref())
+            .map_or_else(UpdateFacts::default, |computer| computer.updates());
+        (away, facts)
+    }
+
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
         self.roster
             .pending(&self.reach, &self.announced, feature, kept)
@@ -293,6 +306,7 @@ impl Reader {
 }
 
 enum Change {
+    Update(UpdateFacts),
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
@@ -475,6 +489,10 @@ impl ResidentPeers {
     pub async fn notices(&self, notices: History) {
         let _ = self.changes.send(Change::Notices(Arc::new(notices))).await;
     }
+
+    pub async fn announce_update(&self, facts: UpdateFacts) {
+        let _ = self.changes.send(Change::Update(facts)).await;
+    }
 }
 
 struct Resident {
@@ -514,6 +532,7 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             move_waiting: Arc::default(),
             relay_connected: false,
+            update: UpdateFacts::default(),
             work_calls: false,
             transfers: false,
             submission_recovery: false,
@@ -559,6 +578,12 @@ impl Resident {
                     }
                 }
                 change = changes.recv() => match change {
+                    Some(Change::Update(update)) => {
+                        self.view.update = update;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::None);
+                        }
+                    }
                     Some(Change::Local(local)) => {
                         self.view.local_lists = local.publication().map(Arc::new);
                         self.view.local = local;
@@ -1058,6 +1083,12 @@ async fn publish_round(
     let mut state = json!({"list": agents, "owns": owns, "features": features, "computer": {
         "working":working, "atWork":active,
     }});
+    if let (Some(computer), Ok(serde_json::Value::Object(update))) = (
+        state["computer"].as_object_mut(),
+        serde_json::to_value(&view.update),
+    ) {
+        computer.extend(update);
+    }
     if let Some(system) = view.system.as_deref() {
         state["computer"]["system"] = json!(system);
     }

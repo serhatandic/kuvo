@@ -1085,6 +1085,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "hex",
+ "jiff",
  "kuvo_os",
  "kuvo_server",
  "kuvo_store",

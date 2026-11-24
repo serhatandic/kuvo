@@ -150,6 +150,54 @@ pub struct ComputerFacts {
     extra: BTreeMap<String, Value>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UpdateFacts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kuvo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_manifest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running_manifest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staged: Option<PreparedRelease>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct PreparedRelease {
+    pub version: String,
+    pub sha256: String,
+}
+
+impl ComputerFacts {
+    pub(crate) fn updates(&self) -> UpdateFacts {
+        let text = |field| {
+            self.extra
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        };
+        UpdateFacts {
+            kuvo: self.kuvo.clone(),
+            installed_sha256: text("installedSha256"),
+            release_target: text("releaseTarget"),
+            candidate: text("candidate"),
+            release_manifest: text("releaseManifest"),
+            running_manifest: text("runningManifest"),
+            staged: self
+                .extra
+                .get("staged")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for ComputerFacts {
     fn deserialize<D: Deserializer<'de>>(value: D) -> Result<Self, D::Error> {
         let mut given = serde_json::Map::<String, Value>::deserialize(value)?;
@@ -213,6 +261,7 @@ impl<'de> Deserialize<'de> for ComputerFacts {
                         | "cannot"
                         | "candidate"
                         | "releaseManifest"
+                        | "releaseTarget"
                         | "runningManifest"
                         | "waiting"
                         | "asking"

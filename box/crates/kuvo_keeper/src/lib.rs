@@ -4,6 +4,7 @@
 //! only switches executable code and records the trial. It never restores a data snapshot.
 
 mod engine_pack;
+pub mod fleet;
 pub mod manifest;
 pub mod prepare_command;
 mod readiness;

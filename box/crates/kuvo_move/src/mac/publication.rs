@@ -700,6 +700,10 @@ impl Plan {
                 names.insert(name);
             }
         }
+        let release_manifest = super::rust_release_manifest(run.release)?;
+        if release_manifest.is_some() {
+            names.remove("box.json");
+        }
         let root = run.home.root();
         let mut placements = Vec::new();
         let mut push = |from, name: &str, installed| {
@@ -721,6 +725,9 @@ impl Plan {
         }
         push(run.engine.into(), "engine", true);
         push(run.release.join("bin"), "bin", true);
+        if let Some(release_manifest) = release_manifest {
+            push(release_manifest, "box.json", true);
+        }
         let database_dir = source.join("opencode/data/opencode");
         let databases = entries(&database_dir)?
             .into_iter()

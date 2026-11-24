@@ -117,7 +117,7 @@ export async function convertBin(root: string, version: string, sha256?: string)
   return target;
 }
 
-export async function stageVersion(root: string, unpacked: string, target: string, receipt: string): Promise<void> {
+export async function stageVersion(root: string, unpacked: string, target: string, receipt: string, rust = false): Promise<void> {
   const bin = path.join(unpacked, "bin");
   const plugins = path.join(unpacked, pluginPath);
   const local = path.join(bin, "opencode-plugins");
@@ -130,10 +130,12 @@ export async function stageVersion(root: string, unpacked: string, target: strin
   const saved = path.join(root, target);
   fs.mkdirSync(path.dirname(saved), { mode: 0o700, recursive: true });
   if (activeBin(root) === target) throw new Error("That release is already selected.");
-  fs.rmSync(saved, { recursive: true, force: true });
-  syncDurableTree(bin, unpacked);
-  fs.renameSync(bin, saved);
-  syncDurableFile(path.dirname(saved), root);
+  const from = rust ? unpacked : bin;
+  const destination = rust ? path.dirname(saved) : saved;
+  fs.rmSync(destination, { recursive: true, force: true });
+  syncDurableTree(from, rust ? path.dirname(unpacked) : unpacked);
+  fs.renameSync(from, destination);
+  syncDurableFile(path.dirname(destination), root);
 }
 
 export function pruneVersions(root: string, keep: string[]): void {

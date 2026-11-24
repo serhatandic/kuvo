@@ -59,6 +59,7 @@ struct Manifest {
     version: String,
     engine: String,
     spreads: Option<Value>,
+    released: Option<Value>,
     launch: Option<Value>,
     pack: Pack,
     #[serde(default)]
@@ -157,6 +158,10 @@ impl SignedRelease {
 
     pub fn spreads(&self) -> bool {
         self.manifest.spreads == Some(Value::Bool(true))
+    }
+
+    pub(crate) fn released(&self) -> Option<jiff::Timestamp> {
+        self.manifest.released.as_ref()?.as_str()?.parse().ok()
     }
 
     pub fn pack_for(&self, target: &str) -> io::Result<&Pack> {

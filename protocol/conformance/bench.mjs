@@ -75,7 +75,7 @@ export async function bench(t) {
         child.child.stdin.end(input);
         return { ...await child.exited, text, log: child.log() };
       };
-      return { home, engine, start, join, connect, command };
+      return { home, env, engine, start, join, connect, command };
     },
   };
 }

@@ -1,4 +1,7 @@
+#[cfg(target_os = "macos")]
+mod install_media;
 mod serve;
+mod updates;
 
 use std::{env, io, path::PathBuf, process::ExitCode};
 
@@ -19,8 +22,20 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    #[cfg(target_os = "macos")]
+    if word(0) == Some("install-media") {
+        return Ok(install_media::run(&args[1..]));
+    }
     if word(0) == Some("update") {
         return Ok(kuvo_keeper::prepare_command::run(&args[1..])?);
+    }
+    #[cfg(unix)]
+    if (word(0), args.len()) == (Some("preserve-before-rust"), 1) {
+        let home = Home::new(PathBuf::from(
+            env::var_os("KUVO_HOME").ok_or("Expected KUVO_HOME")?,
+        ))?;
+        kuvo_setup::backup::Backups::new(home).preserve_before_rust()?;
+        return Ok(ExitCode::SUCCESS);
     }
     if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
         if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
@@ -146,7 +161,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if let Some(check) = uninstall {
         let outcome = kuvo_setup::uninstall::run(&home, check);
         #[cfg(windows)]
-        if !check && outcome.status == 0 {
+        if !check && outcome.status == 0 && home.bin().join(kuvo_keeper::windows::STARTER).is_file()
+        {
             kuvo_keeper::windows::StartupTask::for_home(home.root())?.remove()?;
         }
         println!("{}", outcome.value);

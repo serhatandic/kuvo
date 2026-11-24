@@ -95,7 +95,7 @@ fn prepare_update(home: &Home, folder: &Path, test_key: Option<&str>) -> io::Res
 
 // A fixture key is accepted only against an existing scratch home. Compare the
 // filesystem's resolved objects so a second spelling cannot stand in for a real home.
-fn is_scratch(home: &Home) -> io::Result<bool> {
+pub fn is_scratch(home: &Home) -> io::Result<bool> {
     let root = fs::canonicalize(home.root())?;
     let real = Account::current()?.home.join(".kuvo-code");
     let real = fs::canonicalize(&real).unwrap_or(real);

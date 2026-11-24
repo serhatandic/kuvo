@@ -147,6 +147,12 @@ pub async fn run(
             })
         }
     });
+    let updates = crate::updates::start(
+        kuvo_store::home::Home::new(home.to_owned())?,
+        &account,
+        peers.clone(),
+        setup.handle(),
+    );
     let daily_backups = kuvo_setup::backup::routes::register(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
@@ -201,6 +207,10 @@ pub async fn run(
             }
         })
         .await;
+    if let Some(updates) = updates {
+        updates.abort();
+        let _ = updates.await;
+    }
     session_source.abort();
     let _ = session_source.await;
     drop(daily_backups);

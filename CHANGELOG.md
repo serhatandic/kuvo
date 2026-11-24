@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.
 - A computer verifies the signed pack for its platform before preparing a Rust update.
+- The main computer waits for reachable computers to prepare a Rust update before switching. A computer that was offline can catch up when it returns.
 
 - A computer goes back to its previous Rust release if the new one fails to start. Work written during the attempt stays.
 - Searching files for a web address with a “?” in it, or in a folder whose name has one, finds what you typed.

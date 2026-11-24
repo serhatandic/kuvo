@@ -12,6 +12,7 @@ workspace = true
 base64 = "0.22"
 ed25519-dalek = "2"
 flate2 = "1"
+jiff = "0.2"
 percent-encoding = "2"
 kuvo_os = { path = "../kuvo_os" }
 kuvo_server = { path = "../kuvo_server" }

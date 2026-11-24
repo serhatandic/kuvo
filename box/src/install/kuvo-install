@@ -110,6 +110,21 @@ DAMAGED="This copy of Kuvo is damaged. Download it again, then try again."
 D=$(cd "$(dirname "$0")" && pwd -P) || fail "$DAMAGED"
 [ -f "$D/boxes.json" ] || fail "$DAMAGED"
 
+# What it was started with never reaches the box's own commands (an older app's, a shell's), but a
+# test's own stand-ins.
+for name in $(env | sed -n 's/^\(KUVO_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    case "$name" in KUVO_TEST_*) ;; *) unset "$name" ;; esac
+done
+
+# The native bootstrap is part of the installer media. It validates the signed
+# per-target pack before passing its prepared files to the released-app move.
+if [ "$SYSTEM" = darwin ] && [ -x "$D/kuvo-install-bin" ]; then
+    case "$VERB" in
+        status) KUVO_HOME="$HOME/$ROOT" exec "$D/kuvo-install-bin" install --status --root "$ROOT" --app "$APP" ;;
+        move) exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" ;;
+    esac
+fi
+
 sum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 sum512_of() { if command -v sha512sum >/dev/null 2>&1; then sha512sum "$1" | cut -d' ' -f1; else shasum -a 512 "$1" | cut -d' ' -f1; fi; }
 # Base64 read, by whichever tool is there (a Mac's and Linux's name the option their own ways).
@@ -132,12 +147,6 @@ K="$HOME/$ROOT"
 I="$K/updates/install"
 R="$I/release"
 (umask 077 && mkdir -p "$I") || fail "Kuvo couldn't write in your home folder ($ROOT)."
-
-# What it was started with never reaches the box's own commands (an older app's, a shell's), but a
-# test's own stand-ins.
-for name in $(env | sed -n 's/^\(KUVO_[A-Za-z0-9_]*\)=.*/\1/p'); do
-    case "$name" in KUVO_TEST_*) ;; *) unset "$name" ;; esac
-done
 
 # What an earlier run of this left when it was cut short (its own scratch copies, named for its
 # process): gone, once that process is. Another run's, still at work, is never touched.
