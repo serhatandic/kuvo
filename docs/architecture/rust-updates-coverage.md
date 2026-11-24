@@ -360,3 +360,32 @@ U15 took 5.8 seconds. U16 measured 0.3 seconds from replacement to exit.
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L447), restart after Stop | U15 checks launchctl waiting for the old PID before kickstart. | — |
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L470), Darwin machine's Files permission | Open. | 6.1, 7.1, 7.2 |
 | [helper-running](../../box/test/helper-running.test.ts), load or kickstart when necessary and leave a running Helper | Partial. U11 loads a missing registration and U15 starts an existing job. Actual process state under launchd remains open. | 9.3 |
+
+## Update and Stop home inventory
+
+After `GET kuvo/update` and `POST kuvo/box/stop` on copies of the same
+offline seed, both replies matched. The seed contains the installed version,
+the failed update record and the folder layout marker. It has no setup
+identity. The two residents create their own identities, sign their own first
+checkpoints and write their startup records independently. The inventory also
+includes files each resident creates while idle. Counts below are comparison
+entries, including directory entries and individual JSON fields.
+
+| Owning row | Entries | Difference and follow-up |
+| --- | ---: | --- |
+| 1.4 | 1 | `run/route/ssh`: local SSH IPC endpoint inventory. The server row owns the endpoint lifecycle. |
+| 2.1 | 23 | `run/docs.changed`; `run/link.json` fields `key`, `keyNow`, `leadership/1/{d,s}`, `name`, `secret`, `setup/{id,primary,sign}`, `shared/membershipAndAccess/value/boxes/0/{address,key,name,sign}`, `sharedSetup`, and `sign`; `run/setup-card.json` fields `primary/{key,name}`, `self/{key,name}`, and `setup`; two files under `run/setup-checkpoints/`. Fresh key and setup generation accounts for the different signatures and checkpoint names. Setup owns comparison with a common saved identity. |
+| 2.2 | 2 | `run/notices` and `run/notices/teller`: peer notice startup directories. |
+| 2.3 | 4 | `run/link.json` fields `left`, `removalRevisions`, `removed`, and `removedHere`: removal defaults and receipts. This row also owns the existing `kuvo_setup` Clippy findings. |
+| 3.1 | 4 | `config`, `config/opencode`, `config/opencode/plugins`, and `config/opencode/plugins/kuvo-defaults.js`: generated OpenCode defaults. |
+| 3.2 | 2 | `chats` and `run/glance-source.json`: session storage and the ask checkpoint source. |
+| 4.1b | 1 | `run/agents.json`: bridge startup record. Resident agent adoption owns any readers that still depend on it. |
+| 4.1c | 1 | `run/socket.key`: independently generated local tool authentication key. |
+| 5.1 | 7 | `bots`, `box/approval.json`, `run/bots-seen`, `run/work`, `run/work/{background,told}.json`, and `wakes`: bot and wake folders, approval defaults, and background work records. |
+| 5.2 | 2 | `run/work-queue/{model,numbers}.json`: queue startup model and number allocation records. |
+| 5.4 | 12 | `agents`, `agents/limits.json`, `agents/usage`, its `{claude,grok,codex}-files` directories, `insights.sqlite` and its `-shm` and `-wal` files, `settings.json`, and `usage.json`; also `run/usage-attribution.json`. These are usage scanners, limits, settings and SQLite startup state. |
+| 5.5 | 10 | `artifacts` and its `citations-v1.json`, `copies`, `index-v1.sqlite`, `key`, and `log`; `box/marketplace` and its `mcp-relay-v1.json`; `library` and its `backfill.json`. |
+| 6.1 | 2 | `run/fence` and `run/fence/agents.md`: generated sandbox instructions. |
+| 7.2 | 1 | `run/link.version`: build marker differs because the two binaries have different build IDs. U24 verifies that the released-machine move answers from the selected Rust release. |
+| 7.3 | 2 | `run/link.json` fields `macMoved` and `macPeers`: legacy Mac coordination defaults. |
+| **Total** | **74** | |
