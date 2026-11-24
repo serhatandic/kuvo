@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { standInEngine } from "./engine.mjs";
 import { routeFixtures, seed } from "./fixtures.mjs";
 import { filled, mismatch, offShape, pathIn, unnamed } from "./match.mjs";
@@ -50,6 +50,7 @@ async function run(t, scenario, kind) {
     await Promise.all([engine.close(), relay.close()]);
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
   });
+  privateHome(home);
   seed(home, root, mac, engine.record);
   // The source scenarios started with a machine's folder before enrollment.
   // Reserve it from auto-setup except when a scenario brings peer records.

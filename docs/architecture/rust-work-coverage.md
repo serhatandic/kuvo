@@ -36,6 +36,19 @@ runs.
 archived holds and watch refusals). `KUVO_CONFORMANCE_AREA=bots`: the three list scenarios pass
 against both boxes on the machine and Mac variants; the other twelve are 5.1b's.
 
+### Platforms
+
+`KUVO_CONFORMANCE_AREA=bots` (both fixtures) with the Rust box: 15 pass on macOS, on native
+Windows (the cross-built `kuvo-box.exe` run directly) and on Linux (the static musl build under WSL
+Ubuntu 24.04), the same 15 on each; the other 25 are 5.1b's routes. The TypeScript box passes all 40
+on macOS. The `kuvo_work` unit tests (18, including a watch's checks through `/bin/sh`) ran on
+macOS. The shared route runner now makes each home private before seeding it, which the Rust box
+requires on Windows. No live model run was made for this part: Wake Up Now and the round reach the
+engine through the stand-in.
+
+Clippy with warnings denied passes for `kuvo_work`. `kuvo_engine`, `kuvo_peers` and `kuvo-box` have
+warnings on `main` in files this part doesn't touch.
+
 ### Side by side
 
 A home with a bot (a repeating wake-up) and a conversation (two wake-ups, a summary and a watch),
