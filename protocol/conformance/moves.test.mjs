@@ -1969,6 +1969,76 @@ test("a one-part move waits for the acknowledgement of part zero", {
   assert.ok(there.engine.sessions.some(record => record.id === session));
 });
 
+test("a brief relay drop during a move neither marks the peer away nor sends a duplicate offer", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("brief-drop-source"), there = await computer("brief-drop-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_briefDrop", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const [from, to] = [main, member].map(peer => Buffer.from(peer.address, "base64url"));
+  const [sourceKey] = [main, member].map(peer => Buffer.from(peer.key, "base64url"));
+  const [, targetSecret] = [here, there].map(peer =>
+    Buffer.from(readJSON(path.join(peer.home, "run/link.json")).key, "base64url"));
+  let offers = 0;
+  let heldOffer = null;
+  const release = relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    try {
+      const { payload } = openOneWay(packet.payload.subarray(5), targetSecret, sourceKey);
+      const move = JSON.parse(payload).move;
+      if (move?.op === "offer") {
+        offers += 1;
+        heldOffer ??= packet;
+        return true;
+      }
+    } catch {}
+    return false;
+  });
+  t.after(release);
+  const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const { id } = begun.json.move;
+  await until(() => offers === 1, "The source did not send its initial move offer");
+
+  // Drop and reconnect only the source's relay link while the first offer is in flight.
+  const reconnect = relay.disconnect(from);
+  try {
+    await until(() => !relay.has(from), "The source relay connection did not close");
+  } finally {
+    reconnect();
+  }
+  await until(() => relay.has(from), "The source did not reconnect to the relay", 12000);
+  // Let the reconnect round and a driver tick settle before checking for duplicate offers.
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  assert.equal(offers, 1, "Reconnecting after a brief transport drop must not send a duplicate offer");
+  const reachFile = path.join(here.home, "run/peer-reach.json");
+  const reach = fs.existsSync(reachFile) ? readJSON(reachFile) : {};
+  assert.equal(reach[member.key], undefined, "A local transport drop must not mark the peer unreachable");
+  const computers = await request(source, "GET", "kuvo/computers");
+  assert.equal(computers.status, 200, computers.text);
+  const peerRow = computers.json.computers.find(row => row.key === member.key);
+  assert.ok(peerRow && peerRow.reach === "connected", computers.text);
+  const mid = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(mid.status, 200, mid.text);
+  assert.equal(mid.json.state, "moving", mid.text);
+
+  release();
+  relay.replay(heldOffer);
+  await until(async () => {
+    const reply = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+    assert.notEqual(reply.json?.state, "failed", reply.text);
+    return reply.json?.state === "done";
+  }, "The move did not finish after releasing the held offer");
+  assert.ok(there.engine.sessions.some(record => record.id === session));
+});
+
 test("a destination resumes a partial move after restarting", {
   timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

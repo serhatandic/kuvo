@@ -174,3 +174,56 @@ fn read_times(path: &Path) -> BTreeMap<String, Number> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn brief_unreachable_drop_stays_live_and_clears_on_hearing_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = dir.path();
+        let mut reach = Reach::default();
+        let seen = 1_000_000;
+        let dropped = seen + 10_000;
+
+        reach.unreachable(run, "peerA", dropped).unwrap();
+        assert_eq!(reach.away_since("peerA"), Some(dropped));
+        assert_eq!(reach.last_found_away("peerA"), Some(dropped));
+
+        // Under the live grace window, copied rows remain live rather than flapping to away.
+        assert_eq!(
+            reach.copy_standing("peerA", Some(seen), None, dropped + LIVE_FOR - 1),
+            Standing::Live
+        );
+        // Updating peers keep their updating standing across the longer switch grace window.
+        assert_eq!(
+            reach.copy_standing(
+                "peerA",
+                Some(seen),
+                Some(ReleaseState::Updating),
+                dropped + SWITCH_GRACE - 1,
+            ),
+            Standing::Updating
+        );
+        // Once the grace period elapses without hearing back, standing transitions to away.
+        assert_eq!(
+            reach.copy_standing("peerA", Some(seen), None, dropped + LIVE_FOR),
+            Standing::Away {
+                last_seen: Some(seen)
+            }
+        );
+
+        // Hearing from the peer clears both persisted reach files and restores live standing.
+        assert!(reach.heard(run, "peerA").unwrap());
+        assert_eq!(reach.away_since("peerA"), None);
+        assert_eq!(reach.last_found_away("peerA"), None);
+        assert_eq!(
+            reach.copy_standing("peerA", Some(dropped), None, dropped + LIVE_FOR + 10_000),
+            Standing::Live
+        );
+        let reloaded = Reach::load(run);
+        assert_eq!(reloaded.away_since("peerA"), None);
+        assert_eq!(reloaded.last_found_away("peerA"), None);
+    }
+}
