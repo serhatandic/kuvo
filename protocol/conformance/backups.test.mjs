@@ -1,13 +1,16 @@
 // The selected resident answers the desktop routes with a real backup directory.
 // The only external components are the common bench's engine and relay.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs";
+import { createServer } from "node:net";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readJSON, request, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, readJSON, request, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { at, id, key, oldPoint, source, unpackPoint } from "./backup-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
@@ -15,6 +18,36 @@ import { seedPeerSetup } from "./peer-fixture.mjs";
 
 const app = { "x-kuvo-from": "app" };
 const prefix = "kuvo/box/backups";
+
+test("the before-Rust backup preserves work beside a Unix route socket", async t => {
+  const binary = boxBinary();
+  if (process.platform === "win32" || binary.typescript) return t.skip("Uses the Rust Unix switch backup.");
+  const root = fs.realpathSync(scratch());
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const route = path.join(home, "run/route");
+  const socket = path.join(route, "ssh");
+  const kept = path.join(home, "backups/before-rust");
+  const notes = "work saved before the switch";
+  write(path.join(home, "workspace/notes.txt"), notes);
+  write(path.join(route, "receipt.json"), '{"saved":true}');
+  const server = createServer();
+  try {
+    server.listen(socket);
+    await once(server, "listening");
+    const result = spawnSync(binary.file, ["preserve-before-rust"], {
+      cwd: home, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+    });
+    assert.equal(result.status, 0, result.error?.message ?? result.stdout + result.stderr);
+    assert.equal(fs.readFileSync(path.join(kept, "workspace/notes.txt"), "utf8"), notes);
+    assert.deepEqual(readJSON(path.join(kept, "run/route/receipt.json")), { saved: true });
+    assert.equal(fs.existsSync(path.join(kept, "run/route/ssh")), false);
+    assert.equal(fs.lstatSync(socket).isSocket(), true);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("backup health and private backup operations require the local app", async t => {
   const { computer } = await bench(t);
