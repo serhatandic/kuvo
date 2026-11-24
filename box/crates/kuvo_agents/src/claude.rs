@@ -6,6 +6,8 @@ mod owned_paths;
 mod permissions;
 mod program;
 mod projection;
+mod results;
+mod tools;
 mod thread;
 mod wire;
 

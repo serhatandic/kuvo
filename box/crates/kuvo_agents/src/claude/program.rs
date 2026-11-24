@@ -3,7 +3,10 @@ use std::{
     fs, io,
     io::Read,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -33,12 +36,21 @@ pub(super) struct Program {
     /// signed in: when its credentials had last been written then. Until they're written again,
     /// the account needs a sign-in.
     turned_away: Arc<Mutex<Option<SystemTime>>>,
+    /// Signed in with a key, paid by the token (not a Claude plan), as it last said: unknown
+    /// until it's asked.
+    uses_key: Arc<AtomicU8>,
 }
+
+const UNKNOWN: u8 = 0;
+const PLAN: u8 = 1;
+const KEY: u8 = 2;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Status {
     logged_in: bool,
+    #[serde(default)]
+    auth_method: String,
     email: Option<String>,
     api_provider: Option<String>,
     subscription_type: Option<String>,
@@ -62,7 +74,17 @@ impl Program {
             account,
             managed,
             turned_away: Arc::default(),
+            uses_key: Arc::default(),
         }
+    }
+
+    /// Signed in with an API key: what Claude Code says a turn cost is what it costs. Asked
+    /// first if it never has been.
+    pub async fn uses_key(&self) -> bool {
+        if self.uses_key.load(Ordering::Relaxed) == UNKNOWN {
+            let _ = self.probe().await;
+        }
+        self.uses_key.load(Ordering::Relaxed) == KEY
     }
 
     /// Claude turned the sign-in away in a run: the account needs one until it's written again.
@@ -221,6 +243,9 @@ impl Program {
         let status = native_status(executable, env, self.home.root())?;
         answer.installed = true;
         answer.signed_in = status.logged_in;
+        let key = !status.auth_method.is_empty() && status.auth_method != "claude.ai";
+        self.uses_key
+            .store(if key { KEY } else { PLAN }, Ordering::Relaxed);
         let legacy = self.token().is_some();
         if status.logged_in {
             let mut label = status.email.clone().or_else(|| {

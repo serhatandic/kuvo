@@ -23,9 +23,15 @@ pub(crate) struct Projection {
     steps: Vec<Step>,
     calls: BTreeMap<String, (usize, usize)>,
     compact: Option<Value>,
+    /// A summary just ended, before the model's next step: a second word of it is the same one.
+    just_compacted: bool,
+    /// The note written last, when nothing has come since: the same again isn't written twice.
+    last_notice: Option<String>,
     /// A recovered turn's rows as an earlier resident wrote them. Its
     /// replay writes them again, by the same IDs.
     prior: BTreeMap<String, Value>,
+    /// What this turn used and cost, added to the session's as it ends.
+    spent: Usage,
 }
 
 impl Projection {
@@ -58,7 +64,10 @@ impl Projection {
             steps: Vec::new(),
             calls: BTreeMap::new(),
             compact: None,
+            just_compacted: false,
+            last_notice: None,
             prior,
+            spent: Usage::default(),
         };
         if let TurnKind::Prompt(prompt) = &input.kind {
             let mut row = user(shown.unwrap_or(prompt));
@@ -175,6 +184,56 @@ impl Projection {
         step.render(&self.agent)
     }
 
+    fn add(&mut self, usage: &Usage) {
+        let spent = &mut self.spent;
+        spent.input = spent.input.saturating_add(usage.input);
+        spent.output = spent.output.saturating_add(usage.output);
+        spent.reasoning = spent.reasoning.saturating_add(usage.reasoning);
+        spent.cache_read = spent.cache_read.saturating_add(usage.cache_read);
+        spent.cache_write = spent.cache_write.saturating_add(usage.cache_write);
+        if let Some(cost) = usage.cost.filter(|cost| cost.is_finite() && *cost > 0.0) {
+            spent.cost = Some(spent.cost.unwrap_or_default() + cost);
+        }
+    }
+
+    /// Tools still running as the turn ends are stopped (`aborted`, when it was) or failed.
+    fn stop_tools(&mut self, interrupted: bool) -> Vec<Value> {
+        let (kind, message) = if interrupted {
+            ("aborted", "Stopped.")
+        } else {
+            ("tool", "")
+        };
+        let mut touched = std::collections::BTreeSet::new();
+        for &(step, part) in self.calls.values() {
+            let Part::Tool { body } = &mut self.steps[step].parts[part] else {
+                continue;
+            };
+            let state = &body["state"];
+            let input = match state["status"].as_str() {
+                Some("running") => state["input"].clone(),
+                Some("streaming") => state["input"]
+                    .as_str()
+                    .and_then(|input| serde_json::from_str(input).ok())
+                    .unwrap_or_else(|| json!({})),
+                _ => continue,
+            };
+            let mut stopped = json!({
+                "status":"error", "input":input, "error":{"type":kind,"message":message},
+                "content": if message.is_empty() { json!([]) } else { json!([{"type":"text","text":message}]) },
+            });
+            if let Some(metadata) = state.get("metadata").filter(|value| value.is_object()) {
+                stopped["metadata"] = metadata.clone();
+            }
+            body["state"] = stopped;
+            body["time"]["completed"] = json!(now());
+            touched.insert(step);
+        }
+        touched
+            .into_iter()
+            .map(|step| self.steps[step].render(&self.agent))
+            .collect()
+    }
+
     fn finish_compaction(&mut self, success: bool) -> Option<Value> {
         let mut row = self.compact.take()?;
         row["status"] = json!(if success { "completed" } else { "failed" });
@@ -183,12 +242,33 @@ impl Projection {
     }
 
     fn rows(&mut self, event: &TurnEvent) -> Vec<Value> {
+        let rows = self.event_rows(event);
+        if !rows.is_empty() && !matches!(event, TurnEvent::Notice(_)) {
+            self.last_notice = None;
+        }
+        rows
+    }
+
+    fn compaction_row(&mut self) -> Value {
+        let row = json!({
+            "type":"compaction", "id":self.id(), "reason":"auto",
+            "status":"running", "time":{"created":now()}
+        });
+        self.compact = Some(row.clone());
+        row
+    }
+
+    fn event_rows(&mut self, event: &TurnEvent) -> Vec<Value> {
         match event {
             TurnEvent::StepStarted { model } => {
                 let mut rows = self
                     .finish_step(None, None, None)
                     .into_iter()
                     .collect::<Vec<_>>();
+                // A summary still under way as the model answers again: it's over, and it wasn't
+                // said to have gone through, so it doesn't stay running.
+                rows.extend(self.finish_compaction(false));
+                self.just_compacted = false;
                 let step = self.start_step(model.clone());
                 rows.push(self.steps[step].render(&self.agent));
                 rows
@@ -206,11 +286,25 @@ impl Projection {
                 usage,
                 finish,
                 error,
-            } => self
-                .finish_step(usage.clone(), finish.clone(), error.clone())
-                .into_iter()
-                .collect(),
+            } => {
+                if let Some(usage) = usage {
+                    self.add(usage);
+                }
+                self.finish_step(usage.clone(), finish.clone(), error.clone())
+                    .into_iter()
+                    .collect()
+            }
+            TurnEvent::Cost(cost) => {
+                if cost.is_finite() && *cost > 0.0 {
+                    self.spent.cost = Some(self.spent.cost.unwrap_or_default() + cost);
+                }
+                Vec::new()
+            }
             TurnEvent::Notice(text) => {
+                // Said again with nothing since (each hook failing the same way): once is enough.
+                if self.last_notice.as_deref() == Some(text.as_str()) {
+                    return Vec::new();
+                }
                 let mut rows = self
                     .finish_step(None, None, None)
                     .into_iter()
@@ -219,34 +313,49 @@ impl Projection {
                     "type":"synthetic", "id":self.id(), "text":text, "time":{"created":now()},
                     "metadata":{"kuvo":{"notice":true}}
                 }));
+                self.last_notice = Some(text.clone());
                 rows
             }
             TurnEvent::CompactionStarted => {
+                // Said again while it runs, it's the same one.
+                if self.compact.is_some() {
+                    return Vec::new();
+                }
+                self.just_compacted = false;
                 let mut rows = self
                     .finish_step(None, None, None)
                     .into_iter()
                     .collect::<Vec<_>>();
-                let row = json!({
-                    "type":"compaction", "id":self.id(), "reason":"auto",
-                    "status":"running", "time":{"created":now()}
-                });
-                self.compact = Some(row.clone());
-                rows.push(row);
+                rows.push(self.compaction_row());
                 rows
             }
             TurnEvent::CompactionEnded { succeeded } => {
-                self.finish_compaction(*succeeded).into_iter().collect()
+                let mut rows = Vec::new();
+                // One told only once it's done gets its row then; a second word about the one
+                // just ended is the same one.
+                if self.compact.is_none() {
+                    if self.just_compacted {
+                        return rows;
+                    }
+                    rows.extend(self.finish_step(None, None, None));
+                    self.compaction_row();
+                }
+                self.just_compacted = true;
+                rows.extend(self.finish_compaction(*succeeded));
+                rows
             }
             TurnEvent::Finished(result) => {
                 let error = match &result.outcome {
                     Outcome::Failed(error) => Some(error.clone()),
                     _ => None,
                 };
-                let mut rows = self
-                    .finish_step(None, None, error)
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                rows.extend(self.finish_compaction(false));
+                let interrupted = matches!(
+                    result.outcome,
+                    Outcome::Interrupted | Outcome::AgentExited(_)
+                );
+                let mut rows = self.finish_compaction(false).into_iter().collect::<Vec<_>>();
+                rows.extend(self.finish_step(None, None, error));
+                rows.extend(self.stop_tools(interrupted));
                 let id = self.id();
                 let at = saved_time(self.prior.get(&id), "created");
                 rows.push(idle(id, at, result));
@@ -374,6 +483,7 @@ impl Projection {
         }
         let event = event.clone();
         let model = model(&self.model);
+        let spent = self.spent.clone();
         let kept = self
             .store
             .change_header(&self.session, move |header| match event {
@@ -412,6 +522,22 @@ impl Projection {
                     for key in ["activity", "updated", "idle"] {
                         time.insert(key.into(), json!(at));
                     }
+                    let tokens = object(header, "tokens");
+                    for (key, value) in [
+                        ("input", spent.input),
+                        ("output", spent.output),
+                        ("reasoning", spent.reasoning),
+                    ] {
+                        let total = tokens.get(key).and_then(Value::as_u64).unwrap_or_default();
+                        tokens.insert(key.into(), json!(total.saturating_add(value)));
+                    }
+                    let cache = object(tokens, "cache");
+                    for (key, value) in [("read", spent.cache_read), ("write", spent.cache_write)] {
+                        let total = cache.get(key).and_then(Value::as_u64).unwrap_or_default();
+                        cache.insert(key.into(), json!(total.saturating_add(value)));
+                    }
+                    let cost = header.get("cost").and_then(Value::as_f64).unwrap_or_default();
+                    header.insert("cost".into(), json!(cost + spent.cost.unwrap_or_default()));
                 }
                 _ => {}
             })

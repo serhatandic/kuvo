@@ -48,6 +48,25 @@ impl Request {
         }
     }
 
+    /// What Claude Code is told when the turn asking this is stopped: no.
+    pub fn stopped(&self) -> Option<Value> {
+        match self {
+            Self::CanUseTool {
+                tool_name,
+                tool_use_id,
+                ..
+            } => Some(deny(
+                if tool_name == "AskUserQuestion" {
+                    "The user dismissed the question."
+                } else {
+                    "The user declined this."
+                },
+                tool_use_id.clone(),
+            )),
+            _ => None,
+        }
+    }
+
     pub async fn answer(
         self,
         sink: Option<Arc<dyn TurnSink>>,
