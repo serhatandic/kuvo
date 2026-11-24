@@ -49,6 +49,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U33 | The main's computers list reports the reachable member's failure with the version and digest of the signed pack for that member's platform. The row shows the member's current release and offers a retry for the matching target. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U34 | The computers list shows getting ready and ready from the live preparation, then up to date for a confirmed computer and off for one awaiting return. The selected signed release on trial shows switching while the previous release remains current. Once the keeper clears the trial, the row shows the installed version and digest. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U35 | The computers list counts the setup's preparing, ready, confirmed, and offline computers. It shows the failed computer's warning, keeps the summary visible through switching, and retains the settled result for ten minutes across a restart. A computer that first sees the release after confirmation has no visible completion. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U36 | A signed Linux install starts an answering keeper with earlier staging that cannot be deleted. The installer moves the staging out of the active path, reports success, and a later status check identifies the installed machine. The Rust cases passed on native Linux and WSL2, and the matching TypeScript case passed on WSL2. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -338,7 +339,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same 750, two installations preserved | Partial. 2.6 covers the verdict and fence. Installer invocation remains open. | 7.2 |
 | Same 766, Linux move refusal | Covered by U26. | — |
 | Same 774 and 793, Mac app copy and case spelling | Partial. 2.6 checks the Mac command's matching home. The installer entry remains open. | 7.2 |
-| Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. U27 covers interruption after publication and retiring earlier incomplete staging. Interruptions during file publication remain open. | 7.2 |
+| Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. U27 covers interruption after publication and retiring earlier incomplete staging. U36 covers a cleanup failure after startup. Interruptions during file publication remain open. | 7.2 |
 | [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 checks missing Helper registration and restart with a stand-in. Live readiness (45, 57, 128), restarted fresh making (74), and Linux starter admission (169) remain open. | 6.2, 7.2 |
 
 ## Inherited cases and system proof
