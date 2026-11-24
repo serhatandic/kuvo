@@ -2195,16 +2195,36 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.equal(fs.readFileSync(path.join(target, "paused"), "utf8"), savedPause);
   if (process.platform !== "win32") assert.equal(fs.readlinkSync(path.join(target, "current")), "wake.txt");
 
-  const asked = "[The user answered] Yes.";
-  write(path.join(here.home, "run/outbox/sending/ltr_noteAtNewOwner.json"), JSON.stringify({
-    to: session, text: asked, at: Date.now(), peer: main.key, wait: false,
-    note: { from: "Your answer", words: "Yes.", line: "You answered: Yes.", delivery: "queue" },
+  const noteId = "ltr_noteAtNewOwner", words = "😀".repeat(30000);
+  const asked = "[The user answered] " + words, line = "You answered: " + words;
+  let sentNote;
+  const stopWatchingNote = relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), remote);
+    const letter = JSON.parse(payload).letter;
+    if (letter?.id === noteId) sentNote = letter;
+    return false;
+  });
+  t.after(stopWatchingNote);
+  write(path.join(here.home, "run/outbox/sending", noteId + ".json"), JSON.stringify({
+    from: null, to: session, text: asked, at: Date.now(), peer: main.key, wait: false,
+    note: { from: "Your answer", words, line, delivery: "queue" },
   }));
-  const savedNote = await until(() => there.engine.messages.get(session)?.find(row => row.text === asked),
+  const savedNote = await until(() => there.engine.messages.get(session)?.find(row => row.text === sentNote?.text),
     "The former computer's note did not reach the new owner", 15000);
+  assert.equal(sentNote.note.from, "Your answer");
+  assert.equal(sentNote.note.delivery, "queue");
+  for (const [whole, part, prefix] of [
+    [asked, sentNote.text, "[The user answered] 😀"], [words, sentNote.note.words, "😀"],
+    [line, sentNote.note.line, "You answered: 😀"],
+  ]) {
+    assert.ok(part.startsWith(prefix) && part.endsWith("😀") && whole.startsWith(part));
+    assert.ok(Buffer.byteLength(part) <= 24000);
+  }
   assert.equal(savedNote.delivery, "queue");
-  assert.deepEqual(savedNote.metadata.kuvo.note, { from: "Your answer", line: "You answered: Yes." });
+  assert.deepEqual(savedNote.metadata.kuvo.note, { from: "Your answer", line: sentNote.note.line });
   assert.equal(here.engine.messages.has(session), false);
+  stopWatchingNote();
 
   // The original computer must learn the imported session from its event
   // even while it cannot refresh the full engine list.

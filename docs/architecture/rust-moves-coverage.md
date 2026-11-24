@@ -138,8 +138,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Eighty-four have full scenario coverage, 18 have partial proof,
-and 110 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Eighty-five have full scenario coverage, 18 have partial proof,
+and 109 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -233,10 +233,11 @@ separately where they appear.
 | | 9 | Covered by a failed lookup followed by a restart after engine acceptance, replaying the same prompt ID. |
 | | 12 | Covered by retrying delivery to both a held conversation and an unavailable engine, then delivering twenty messages before the peer reaches its rate limit. |
 | | 26 | Covered by pending letters arriving oldest first and a letter following a newer move announcement in spite of its older saved address. |
+| | 27 | Covered by a note with a stale address reaching the live new owner, with its prompt, display text and attribution shortened at whole characters. |
 | | 28 | Covered by a letter with a stale remote address reaching the conversation after it moves home and its awaited reply returning without relay mail. |
 | | 29 | Covered by a live move followed by a letter whose engine acceptance went unheard. Replaying it after restart acknowledges the original prompt without a second submission. |
 | | 31, 33 | Covered by late replies recovered through the resident and by abandoned transcript replies being discarded during the same hold. |
-| | 6, 8, 10–11, 13–14, 27, 32 | Open, 2.4 letter handling through the resident. [2.2](rust-peers-coverage.md) proves parts of mail and outbox storage. |
+| | 6, 8, 10–11, 13–14, 32 | Open, 2.4 letter handling through the resident. [2.2](rust-peers-coverage.md) proves parts of mail and outbox storage. |
 | [mac-peers](../../box/bridge-tests/mac-peers.test.js) | 11 | Partial, transcript mail has a live two-computer scenario. The calling tool’s route and name lookup remain 2.4. |
 | | 2–3, 6, 8, 10, 12 | Open, 2.4 letter handling and Mac peer policy. The linked peer map also covers wire pieces. |
 | [setup-lists](../../box/test/setup-lists.test.ts) | 16 | Typed drafts, remote queue ordering and lost-effect receipts belong to 3.2, with authenticated transport from 2.2. |
