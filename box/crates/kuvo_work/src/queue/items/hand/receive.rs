@@ -303,12 +303,10 @@ impl Writer {
             row["owner"] = owner.clone().into();
             row["updated"] = json!({"at":now,"by":who});
             note_hand(&mut row, &from, &owner, &who, now);
+            let mut docs = std::collections::BTreeMap::new();
             if !status::closed(status) {
-                let mut sessions = store::array(row.get("sessions")).to_vec();
-                if !sessions.iter().any(|link| link["session"] == owner) {
-                    sessions.push(json!({"session":owner,"since":now}));
-                }
-                row["sessions"] = sessions.into();
+                self.link_session(&all, &mut docs, &mut row, &owner, &who, now)
+                    .map_err(hand_error)?;
             }
             self.observe_known(&mut row, &item.id);
             attachments::place_handoff(&self.store, &item.id, &carried)?;
@@ -322,13 +320,20 @@ impl Writer {
                     true,
                 )?;
             }
-            let mut destination = self.read_owner(&owner, now).map_err(hand_error)?;
+            let destination = self.document(&mut docs, &owner, now).map_err(hand_error)?;
             destination.items.retain(|row| row["id"] != item.id);
             destination.items.push(row);
-            destination.save(&self.store)?;
             if let Some(old) = existing.filter(|old| old.owner != owner) {
-                self.retire_owner_row(&old.owner, &old.id, now)
+                let former = self
+                    .document(&mut docs, &old.owner, now)
                     .map_err(hand_error)?;
+                former.items.retain(|row| row["id"] != old.id);
+            }
+            docs.remove(&owner)
+                .expect("new item's queue")
+                .save(&self.store)?;
+            for document in docs.into_values() {
+                document.save(&self.store)?;
             }
         }
         compaction.finish(self, now).map_err(hand_error)?;

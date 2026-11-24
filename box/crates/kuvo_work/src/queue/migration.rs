@@ -325,6 +325,25 @@ fn label(id: &str, name: String) -> Value {
     json!({"id": id, "name": name, "color": color})
 }
 
+pub(super) fn read_started(root: &Path) -> Result<BTreeSet<String>, Error> {
+    let model = store::read(&root.join("model.json"), MODEL)?.unwrap_or_default();
+    Ok(array(model.get("started"))
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect())
+}
+
+pub(super) fn forget_started(root: &Path) -> Result<(), Error> {
+    let path = root.join("model.json");
+    if let Some(mut model) = store::read(&path, MODEL)?
+        && model.remove("started").is_some()
+    {
+        store::write(&path, MODEL, model)?;
+    }
+    Ok(())
+}
+
 fn finish(root: &Path, started: Vec<String>) -> Result<(), Error> {
     let mut fields = Fields::from_iter([
         ("model".into(), 2.into()),

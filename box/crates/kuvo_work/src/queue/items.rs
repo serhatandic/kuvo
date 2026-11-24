@@ -7,6 +7,8 @@ mod hand;
 mod importing;
 mod offline;
 mod peer_actions;
+mod session_links;
+mod started;
 mod tools;
 
 use super::{
@@ -211,6 +213,15 @@ impl Drop for Runtime {
     }
 }
 
+#[derive(Default)]
+struct Exchange {
+    label_revision: Option<(String, u64)>,
+    snapshots: told::Delivery,
+    offline: std::collections::HashMap<String, i64>,
+    handings: hand::Delivery,
+    settled_migration: bool,
+}
+
 impl Writer {
     fn start(self, relay: Option<RelayHandle>) -> Runtime {
         let mut incoming = relay.as_ref().and_then(RelayHandle::subscribe);
@@ -218,17 +229,14 @@ impl Writer {
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let edits = Arc::new(offline::Routes(self.clone()));
         let task = tokio::spawn(async move {
-            let mut retry = std::collections::HashMap::new();
-            let mut label_revision = None;
-            let mut snapshots = told::Delivery::default();
-            let mut handings = hand::Delivery::default();
+            let mut exchange = Exchange::default();
             loop {
                 let result = tokio::select! {
-                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut label_revision, &mut snapshots, &mut retry, &mut handings).await,
+                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut exchange).await,
                     message = next_mail(&mut incoming) => {
                         match (relay.as_ref(), message.as_deref()) {
                             (Some(relay), Some(RelayEvent::Mail { key, envelope, .. })) => {
-                                self.received(relay, key, &Value::Object(envelope.0.clone()), &mut snapshots, &mut handings).await
+                                self.received(relay, key, &Value::Object(envelope.0.clone()), &mut exchange).await
                             }
                             _ => Ok(()),
                         }
@@ -245,33 +253,35 @@ impl Writer {
     async fn upkeep(
         &self,
         relay: Option<&RelayHandle>,
-        label_revision: &mut Option<(String, u64)>,
-        snapshots: &mut told::Delivery,
-        retry: &mut std::collections::HashMap<String, i64>,
-        handings: &mut hand::Delivery,
+        exchange: &mut Exchange,
     ) -> Result<(), Error> {
         if let Some(setup) = self.setup.queue_setup()
             && let Some(accepted) = setup.labels
         {
             let revision = (setup.id, accepted.sequence);
-            if label_revision.as_ref() != Some(&revision) {
+            if exchange.label_revision.as_ref() != Some(&revision) {
                 let store = self.store.clone();
                 tokio::task::spawn_blocking(move || {
                     labels::strip(&store, &accepted.library.removed)
                 })
                 .await
                 .map_err(io::Error::other)??;
-                *label_revision = Some(revision);
+                exchange.label_revision = Some(revision);
             }
         }
         let now = Timestamp::now().as_millisecond();
+        if !exchange.settled_migration {
+            exchange.settled_migration = self.settle_migration(now).await?;
+        }
         let local_max = self.local_max().await?;
         let grants = self.numbers.answer_own(local_max, now).await?;
         if grants.is_some() || self.waiting().await? {
             self.number_waiting(grants).await?;
         }
-        self.retry_offline(relay, now, retry).await?;
-        self.send_handings(relay, handings, now).await?;
+        self.retry_offline(relay, now, &mut exchange.offline)
+            .await?;
+        self.send_handings(relay, &mut exchange.handings, now)
+            .await?;
         if let Some(relay) = relay {
             let local_max = self.local_max().await?;
             if let Some((main, ask)) = self.numbers.ask_to_send(local_max, now).await?
@@ -285,7 +295,8 @@ impl Writer {
             {
                 send(relay, peer, json!({"ask":ask}), now).await;
             }
-            snapshots
+            exchange
+                .snapshots
                 .publish(
                     &self.store,
                     &self.peers,
@@ -305,8 +316,7 @@ impl Writer {
         relay: &RelayHandle,
         key: &[u8; 32],
         envelope: &Value,
-        snapshots: &mut told::Delivery,
-        handings: &mut hand::Delivery,
+        exchange: &mut Exchange,
     ) -> Result<(), Error> {
         let queue = &envelope["workQueue"];
         if !queue.is_object()
@@ -337,7 +347,8 @@ impl Writer {
             send(relay, peer.clone(), json!({"handed":answer}), now).await;
         }
         if let Some(answer) = queue.get("handed") {
-            self.handed_back(*key, answer, handings, now).await?;
+            self.handed_back(*key, answer, &mut exchange.handings, now)
+                .await?;
         }
         if queue.get("scopedAct").is_none()
             && self.forward.admits(*key)
@@ -364,7 +375,7 @@ impl Writer {
             }
         }
         if let Some(had) = queue["had"].as_str() {
-            snapshots.acknowledge(key, had);
+            exchange.snapshots.acknowledge(key, had);
         }
         if let Some(told) = queue.get("told").filter(|told| told.is_object()) {
             let store = self.store.clone();

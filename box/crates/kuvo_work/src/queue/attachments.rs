@@ -82,6 +82,30 @@ pub(super) fn place_handoff(
     Ok(())
 }
 
+pub(super) fn remove(store: &Store, id: &str, names: &[String]) -> io::Result<()> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let run = store
+        .root
+        .parent()
+        .expect("Work Queue under run")
+        .canonicalize()?;
+    let queue = run.join("work-queue");
+    let files_dir = queue.join("files");
+    let item = files_dir.join(id);
+    let paths = [run, queue, files_dir, item.clone()];
+    if super::store::item_id(id) && folders(&paths).is_some() {
+        for name in names.iter().filter(|name| file_name(name)) {
+            let path = item.join(name);
+            if path.parent() == Some(item.as_path()) {
+                files::remove_file_synced(&path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn folders(paths: &[PathBuf; 4]) -> Option<Vec<FileStamp>> {
     paths
         .iter()

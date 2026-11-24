@@ -352,6 +352,16 @@ impl Writer {
         self.admit(&owner)?;
         let issue = self.issue_for(&args["issue"], &owner, None).await?;
         let writer = self.clone();
+        let folder = caller.directory.clone();
+        let files = args.get("files").cloned();
+        let staged = tokio::task::spawn_blocking(move || {
+            writer
+                .files
+                .stage_agent(&writer.store, files.as_ref(), folder.as_deref())
+        })
+        .await
+        .map_err(internal)??;
+        let writer = self.clone();
         let guard = self.lock().await?;
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
@@ -395,12 +405,14 @@ impl Writer {
             if let Some(assignee) = assignee(&args, &Assignees::read(&writer.store))? {
                 row["assignee"] = assignee;
             }
+            let mut docs = std::collections::BTreeMap::new();
             if working {
-                row["sessions"] = json!([{"session":caller.root, "since":now}]);
+                writer.link_session(&all, &mut docs, &mut row, &caller.root, &who, now)?;
                 append_event(&mut row, json!({"at":now,"by":who,"kind":"started"}));
             }
             let seen_words = seen_words(&issue.state);
             mutate::fields(&mut row, &args, now, &who)?;
+            let published = writer.files.publish(&writer.store, &mut row, &staged, false, now)?;
             let where_ = status_name(status);
             let working_words = if working { ", linked to you" } else { "" };
             let merged = if issue.source["kind"] == "github-pr" { " or merged" } else { "" };
@@ -416,9 +428,12 @@ impl Writer {
             }
             let item = Item::read(&owner, &row).expect("new GitHub queue item");
             row["mentionIndex"] = json!(Index::rebuild(&writer.refs.mentions, &item, &all, None));
-            let mut document = writer.read_owner(&owner, now)?;
-            document.items.push(row);
-            document.save(&writer.store).map_err(storage_refusal)?;
+            writer.document(&mut docs, &owner, now)?.items.push(row);
+            docs.remove(&owner).expect("new item's queue").save(&writer.store).map_err(storage_refusal)?;
+            published.commit();
+            for document in docs.into_values() {
+                document.save(&writer.store).map_err(storage_refusal)?;
+            }
             compaction.finish(&writer, now)?;
             Ok(answer)
         }).await.map_err(internal)?

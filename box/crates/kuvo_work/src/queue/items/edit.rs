@@ -197,7 +197,7 @@ impl Writer {
             people,
             who,
             Value::Object(item.saved.clone()),
-            revise,
+            |row, _| revise(row),
         )
     }
 
@@ -211,7 +211,10 @@ impl Writer {
         people: &Assignees,
         who: &Value,
         mut row: Value,
-        revise: impl FnOnce(&mut Value) -> Result<(), Refusal>,
+        revise: impl FnOnce(
+            &mut Value,
+            &mut std::collections::BTreeMap<String, Document>,
+        ) -> Result<(), Refusal>,
     ) -> Result<Value, Refusal> {
         let mut documents = std::collections::BTreeMap::<String, Document>::new();
         let previous = item.status.as_str();
@@ -235,7 +238,7 @@ impl Writer {
                     "{name} takes its title and description from GitHub: change them there."
                 )));
             }
-            if !staged.is_empty() {
+            if !staged.is_empty() && who["user"] == true {
                 return Err(bad(format!(
                     "{name} takes its description from GitHub: attach files there."
                 )));
@@ -428,6 +431,10 @@ impl Writer {
             append_event(&mut row, moved);
         }
         row["updated"] = stamp;
+        let removed = take_files(
+            &mut row,
+            fields.get("remove").filter(|_| who["user"] != true),
+        );
         let published = self.files.publish(
             &self.store,
             &mut row,
@@ -435,7 +442,8 @@ impl Writer {
             fields.get("body").is_some(),
             now,
         )?;
-        revise(&mut row)?;
+        revise(&mut row, &mut documents)?;
+        super::super::attachments::remove(&self.store, &item.id, &removed).map_err(internal)?;
         let parsed = Item::read(&item.owner, &row).expect("changed queue item");
         let before = Index::read(item);
         if parsed.body != item.body || parsed.notes != item.notes || before.is_none() {
@@ -467,7 +475,7 @@ impl Writer {
         Ok(answer)
     }
 
-    fn document<'a>(
+    pub(super) fn document<'a>(
         &self,
         documents: &'a mut std::collections::BTreeMap<String, Document>,
         owner: &str,
@@ -479,6 +487,29 @@ impl Writer {
             Entry::Vacant(entry) => entry.insert(self.read_owner(owner, now)?),
         })
     }
+}
+
+fn take_files(row: &mut Value, given: Option<&Value>) -> Vec<String> {
+    let Some(given) = given else {
+        return Vec::new();
+    };
+    let names = given
+        .as_array()
+        .map_or(std::slice::from_ref(given), Vec::as_slice);
+    let mut removed = Vec::new();
+    let mut kept = store::array(row.get("files")).to_vec();
+    kept.retain(|file| {
+        if names.contains(&file["name"])
+            && let Some(name) = file["name"].as_str()
+        {
+            removed.push(name.to_owned());
+            false
+        } else {
+            true
+        }
+    });
+    row["files"] = kept.into();
+    removed
 }
 
 fn item_name(item: &Item) -> String {

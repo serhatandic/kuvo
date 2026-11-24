@@ -1,5 +1,7 @@
 //! Create ordinary queue items and apply the fields that agents can submit.
 use super::*;
+use crate::queue::items::session_links::{last_word, unlink_session};
+use std::collections::BTreeMap;
 
 impl Writer {
     pub(super) async fn remove_words(
@@ -135,47 +137,30 @@ impl Writer {
                 writer.attach_issue(item, issue, &actor, now)?
             } else { Value::Object(item.saved.clone()) };
             let mut result = None;
-            writer.edit_row(&all, item, &args, &staged, now, &people, &actor, initial, |row| {
+            writer.edit_row(&all, item, &args, &staged, now, &people, &actor, initial, |row, docs| {
                 fields(row, &args, now, &actor)?;
-                let status = row["status"].as_str().unwrap_or_default();
-                if !status::closed(status) {
-                    let mut sessions = store::array(row.get("sessions")).to_vec();
+                let status = row["status"].as_str().unwrap_or_default().to_owned();
+                if !status::closed(&status) {
                     if args["working"] == true && !caller.seat {
-                        let last = last_word(row, &caller.root) == Some("started");
-                        if !sessions.iter().any(|entry| entry["session"] == caller.root) {
-                            sessions.push(json!({"session":caller.root,"since":now}));
-                        }
-                        if args.get("status").is_none() && matches!(status, "todo" | "backlog" | "waiting") {
-                            let previous = status.to_owned();
+                        let joined = writer.link_session(&all, docs, row, &caller.root, &actor, now)?;
+                        if args.get("status").is_none() && matches!(status.as_str(), "todo" | "backlog" | "waiting") {
                             row["status"] = "in-progress".into();
                             row["order"] = json!(place(&all, Some(&id), "in-progress", false));
-                            append_event(row, json!({"at":now,"by":actor,"kind":"moved","from":previous,"to":"in-progress"}));
+                            append_event(row, json!({"at":now,"by":actor,"kind":"moved","from":status,"to":"in-progress"}));
                         }
-                        if !last {
+                        if joined || last_word(row, &caller.root) != Some("started") {
                             append_event(row, json!({"at":now,"by":actor,"kind":"started"}));
                         }
                     }
                     for session in named(&args["sessions"]) {
-                        if !sessions.iter().any(|link| link["session"] == session) {
-                            sessions.push(json!({"session":session,"since":now}));
-                        }
+                        writer.link_session(&all, docs, row, session, &actor, now)?;
                     }
-                    let mut unlink = named(&args["unlink"]);
-                    if args["working"] == false {
-                        unlink.push(&caller.root);
-                    }
-                    for session in unlink {
-                        let before = sessions.len();
-                        sessions.retain(|entry| entry["session"] != session);
-                        if sessions.len() != before && last_word(row, session) == Some("started") {
-                            let mut stop = json!({"at":now,"by":actor,"kind":"stopped"});
-                            if actor["session"] != session {
-                                stop["session"] = session.into();
-                            }
-                            append_event(row, stop);
-                        }
-                    }
-                    row["sessions"] = sessions.into();
+                }
+                if args["working"] == false {
+                    unlink_session(row, &caller.root, &actor, now);
+                }
+                for session in named(&args["unlink"]) {
+                    unlink_session(row, session, &actor, now);
                 }
                 let changes = ["title", "body", "priority", "labels", "assignee", "due", "progress", "source", "files", "links", "sessions"]
                     .into_iter()
@@ -371,12 +356,9 @@ impl Writer {
             row["owner"] = owner.clone().into();
             row["updated"] = json!({"at":now,"by":who});
             hand::note_hand(&mut row, &item.owner, &owner, &who, now);
+            let mut docs = BTreeMap::new();
             if owner.starts_with("ses_") && !status::closed(&item.status) {
-                let mut sessions = item.sessions.clone();
-                if !sessions.iter().any(|link| link["session"] == owner) {
-                    sessions.push(json!({"session":owner,"since":now}));
-                }
-                row["sessions"] = sessions.into();
+                writer.link_session(&all, &mut docs, &mut row, &owner, &who, now)?;
             }
             writer.observe_known(&mut row, &item.id);
             let display = read::item_name(&row);
@@ -389,11 +371,15 @@ impl Writer {
                 "Handed {display} to {name}: it's in its queue now{linked}, and stays in your view."
             ));
             keep_reply(&mut row, operation, &answer);
-            let mut destination = writer.read_owner(&owner, now)?;
+            let destination = writer.document(&mut docs, &owner, now)?;
             destination.items.retain(|row| row["id"] != item.id);
             destination.items.push(row);
+            let destination = docs.remove(&owner).expect("queued destination");
             destination.save(&writer.store).map_err(storage_refusal)?;
-            let mut source = writer.read_owner(&item.owner, now)?;
+            let mut source = match docs.remove(&item.owner) {
+                Some(source) => source,
+                None => writer.read_owner(&item.owner, now)?,
+            };
             source.items.retain(|row| row["id"] != item.id);
             if source.items.is_empty() {
                 files::remove_file_synced(&source.path)
@@ -401,6 +387,9 @@ impl Writer {
                     .map_err(storage_refusal)?;
             } else {
                 source.save(&writer.store).map_err(storage_refusal)?;
+            }
+            for document in docs.into_values() {
+                document.save(&writer.store).map_err(storage_refusal)?;
             }
             compaction.finish(&writer, now)?;
             Ok(answer)
@@ -450,15 +439,17 @@ impl Writer {
             writer.admit(&owner)?;
             let people = Assignees::read(&writer.store);
             let mut row = writer.new_row(&id, &owner, &args, &all, &people, now, &who)?;
+            let mut docs = BTreeMap::new();
             if working && !status::closed(row["status"].as_str().expect("item status")) {
-                row["sessions"] = json!([{"session":caller.root,"since":now}]);
+                writer.link_session(&all, &mut docs, &mut row, &caller.root, &who, now)?;
                 append_event(&mut row, json!({"at":now,"by":who,"kind":"started"}));
             }
             fields(&mut row, &args, now, &who)?;
-            let document = writer.read_owner(&owner, now)?;
+            writer.document(&mut docs, &owner, now)?;
             Ok::<_, Refusal>(AgentAdd::New {
                 all,
-                document,
+                owner,
+                docs,
                 row,
                 staged,
                 compaction,
@@ -469,7 +460,8 @@ impl Writer {
         .map_err(internal)??;
         let AgentAdd::New {
             all,
-            mut document,
+            owner,
+            mut docs,
             mut row,
             staged,
             compaction,
@@ -492,9 +484,8 @@ impl Writer {
         let writer = self.clone();
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
-            let owner = &document.owner;
             let published = writer.files.publish(&writer.store, &mut row, &staged, true, now)?;
-            let item = Item::read(owner, &row).expect("new Work Queue item");
+            let item = Item::read(&owner, &row).expect("new Work Queue item");
             row["mentionIndex"] = json!(Index::rebuild(&writer.refs.mentions, &item, &all, None));
             let where_ = status_name(&item.status);
             let answer = said(if let Some(number) = item.number {
@@ -507,9 +498,13 @@ impl Writer {
             if let Some(operation) = operation {
                 row["toolReplies"] = json!({operation:answer});
             }
+            let mut document = docs.remove(&owner).expect("new item's queue");
             document.items.push(row);
             document.save(&writer.store).map_err(storage_refusal)?;
             published.commit();
+            for document in docs.into_values() {
+                document.save(&writer.store).map_err(storage_refusal)?;
+            }
             compaction.finish(&writer, now)?;
             Ok(answer)
         }).await.map_err(internal)?
@@ -520,7 +515,8 @@ enum AgentAdd {
     Replay(Value),
     New {
         all: Vec<Item>,
-        document: Document,
+        owner: String,
+        docs: BTreeMap<String, Document>,
         row: Value,
         staged: Staged,
         compaction: Compaction,
@@ -624,24 +620,6 @@ pub(super) fn fields(
     }
     row["links"] = links.into();
     Ok(())
-}
-
-fn last_word<'a>(row: &'a Value, session: &str) -> Option<&'a str> {
-    for event in store::array(row.get("events")).iter().rev() {
-        let kind = event["kind"].as_str();
-        if kind == Some("done") {
-            break;
-        }
-        if matches!(kind, Some("started" | "stopped"))
-            && event["session"]
-                .as_str()
-                .or_else(|| event["by"]["session"].as_str())
-                == Some(session)
-        {
-            return kind;
-        }
-    }
-    None
 }
 
 fn named(value: &Value) -> Vec<&str> {

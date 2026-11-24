@@ -1652,3 +1652,115 @@ test("a Work Queue handoff keeps its files and relays only one live item", { tim
   const filesHere = path.join(studio.home, "run", "work-queue", "files", item);
   assert.equal(existsSync(filesHere), false);
 });
+
+test("migrated work waits for an authoritative active-session list and settles once", { timeout: 60000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const root = path.join(studio.home, "run", "work-queue");
+  const model = path.join(root, "model.json");
+  const author = "ses_MigratedAuthor";
+  const observer = "ses_MigratedObserver";
+  const working = "wqi_abcdefghijklmnopqrst";
+  const later = "wqi_ABCDEFGHIJKLMNOPQRST";
+  const item = (id, title, session) => ({
+    id, title, status: "todo",
+    sessions: [{ session, since: 200 }],
+    events: [{ at: 200, by: { session, name: title }, kind: "started" }],
+    created: { at: 100, by: { user: true } },
+    updated: { at: 200, by: { session, name: title } },
+  });
+  write(model, JSON.stringify({ formatVersion: 1, model: 2, started: [working, later] }));
+  write(path.join(root, "queues", "usr_you.json"), JSON.stringify({
+    formatVersion: 1, owner: "usr_you", items: [item(working, "Review", author), item(later, "Check", observer)],
+  }));
+  studio.engine.sessions.push(...[author, observer].map(id => ({ id, title: id, location: { directory: studio.home }, time: { created: 1, updated: 2 } })));
+  studio.engine.activeUnavailable = true;
+  studio.engine.running.add(author);
+  const ask = studio.connect(await studio.start().ready());
+  const find = async id => (await ask("GET", "kuvo/work-queue/items/" + id)).json.item;
+  assert.equal((await find(working)).status, "todo");
+  assert.equal((await find(later)).status, "todo");
+  assert.deepEqual(JSON.parse(readFileSync(model)).started, [working, later]);
+  studio.engine.activeUnavailable = false;
+  const settled = await until(async () => {
+    const change = await find(working);
+    return change.status === "in-progress" && JSON.parse(readFileSync(model)).started === undefined && change;
+  }, "The resident did not settle the migrated statuses.", 26000, 150);
+  assert.equal((await find(later)).status, "todo");
+  const event = settled.events.at(-1);
+  assert.deepEqual({ kind: event.kind, from: event.from, to: event.to, by: event.by },
+    { kind: "moved", from: "todo", to: "in-progress", by: { source: "kuvo", name: "Kuvo Code" } });
+  assert.equal(settled.updated.at, 200);
+  const client = { "x-kuvo-from": "app" };
+  const moved = await ask("PATCH", "kuvo/work-queue/items/" + working, { status: "todo" }, client);
+  assert.equal(moved.status, 200, moved.text);
+  assert.equal((await find(working)).status, "todo");
+});
+
+test("an agent removes a kept file and a web link from an item", { timeout: 45000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const folder = path.join(studio.home, "..", "project");
+  const attachment = path.join(folder, "review.txt");
+  write(attachment, "Review notes");
+  const session = { id: "ses_RemoveFiles", title: "Review", location: { directory: folder }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(session);
+  const ask = studio.connect(await studio.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const apply = (name, args, operation) => {
+    studio.engine.messages.set(session.id, [{ id: "msg_remove_files", type: "assistant", content: [{
+      type: "tool", name: "kuvo-browser_" + name, state: { status: "running", input: args },
+    }] }]);
+    return ask("POST", "kuvo/work-queue/tools", { name, arguments: args, session: session.id, operation });
+  };
+  const address = "https://example.com/review";
+  const create = await apply("queue_add", { title: "Review the plan", files: [attachment], links: [address] }, "remove-files-add");
+  assert.equal(create.json.isError, false, create.text);
+  const all = await ask("GET", "kuvo/work-queue?owner=all&glance=1");
+  const id = all.json.items.find(row => row.title === "Review the plan").id;
+  const route = "kuvo/work-queue/items/" + id;
+  const saved = path.join(studio.home, "run", "work-queue", "files", id, "review.txt");
+  assert.equal(readFileSync(saved, "utf8"), "Review notes");
+  const changed = await apply("queue_update", { item: id, remove: ["review.txt", address] }, "remove-kept-file");
+  assert.equal(changed.json.isError, false, changed.text);
+  const detail = (await ask("GET", route)).json.item;
+  assert.deepEqual(detail.files, []);
+  assert.deepEqual(detail.links, []);
+  assert.deepEqual(detail.events.at(-1).fields, ["files", "links"]);
+  assert.equal((await ask("GET", route + "/files/review.txt")).status, 404);
+  assert.equal(existsSync(saved), false);
+});
+
+test("starting fourth item work drops the oldest session link with a stop event", { timeout: 60000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const session = { id: "ses_FourthWorkLink", title: "Cap links", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(session);
+  const ask = studio.connect(await studio.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const call = (name, args, index) => {
+    studio.engine.messages.set(session.id, [{ id: "msg_fourth_link", type: "assistant", content: [{
+      type: "tool", name: "kuvo-browser_" + name, state: { status: "running", input: args },
+    }] }]);
+    return ask("POST", "kuvo/work-queue/tools", { name, arguments: args, session: session.id, operation: "work-link-" + index });
+  };
+  for (let index = 0; index < 4; index++) {
+    const answer = await call("queue_add", { title: "Work item " + index, working: index < 3 }, index);
+    assert.equal(answer.status, 200, answer.text);
+    assert.equal(answer.json.isError, false, answer.text);
+  }
+  const listed = await ask("GET", "kuvo/work-queue?owner=all&glance=1");
+  const find = index => listed.json.items.find(row => row.title === "Work item " + index).id;
+  const last = await call("queue_update", { item: find(3), working: true }, 4);
+  assert.equal(last.json.isError, false, last.text);
+  const details = await Promise.all([0, 1, 2, 3].map(async index =>
+    (await ask("GET", "kuvo/work-queue/items/" + find(index))).json.item));
+  assert.deepEqual(details.map(item => item.sessions.map(each => each.session)), [[], [session.id], [session.id], [session.id]]);
+  const stopped = details[0].events.at(-1);
+  assert.equal(stopped.kind, "stopped");
+  assert.deepEqual(stopped.by, { session: session.id, name: session.title });
+  assert.equal(details[0].status, "in-progress");
+  assert.equal(details[3].status, "in-progress");
+});
