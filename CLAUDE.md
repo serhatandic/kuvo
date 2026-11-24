@@ -35,7 +35,6 @@ Every session reads this file first (`AGENTS.md` and `GEMINI.md` link here). Rul
 - `docs/architecture/agent-accounts.md`: coding-agent sign-ins and accounts.
 - `docs/architecture/windows.md`: the Windows plan (WSL2 and native).
 - `docs/architecture/rust-box.md`: the box rewritten in Rust: shape, contract, switch-over and phase plan.
-- `docs/architecture/zed-lessons.md`: lessons from Zed for the open Rust box rows (agents/ACP, SSH/remote, sandbox, safe git, updates, Windows).
 - `docs/working-here.md`: how sessions work (reporting, the user away, subagents, handovers), designing UI, GitHub.
 - `docs/testing.md`: read before writing a test; how to run them, Linux (lokum) and Windows checks.
 - `docs/your-settings-pages.md`: adding a page to the desktop app's Your settings.
