@@ -12,7 +12,7 @@ async fn saved_session_headers_keep_vendor_state_and_ignore_incomplete_folders()
     .unwrap();
     std::fs::write(
         saved.join("agent.json"),
-        br#"{"thread":"native-id","generation":2}"#,
+        br#"{"threads":{"codex-cli":{"state":{"thread":"native-id","generation":2},"seen":"msg_1"}},"inbox":[{"id":"msg_2"}]}"#,
     )
     .unwrap();
     std::fs::create_dir(temp.path().join("ses_empty")).unwrap();
@@ -29,32 +29,92 @@ async fn saved_session_headers_keep_vendor_state_and_ignore_incomplete_folders()
         headers.into_iter().next().unwrap().into_fields()["vendorExtension"],
         true
     );
-    let context = store.context("ses_legacy").await.unwrap().unwrap();
+    let context = store
+        .context("ses_legacy", "codex-cli")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(context.session_id, "ses_legacy");
     assert_eq!(context.directory, std::path::Path::new("project"));
     assert_eq!(context.state["thread"], "native-id");
     assert_eq!(context.state["generation"], 2);
+    // Another agent's turn in the same conversation starts with nothing of its own.
+    let other = store.context("ses_legacy", "claude-code").await.unwrap().unwrap();
+    assert!(other.state.is_empty());
     assert!(
         store
-            .save_state("ses_legacy", Default::default())
+            .save_state("ses_legacy", "codex-cli", Default::default())
             .await
             .unwrap()
     );
     assert!(
         store
-            .context("ses_legacy")
+            .context("ses_legacy", "codex-cli")
             .await
             .unwrap()
             .unwrap()
             .state
             .is_empty()
     );
+    // The inbox and the slot's other notes stay where the bridge keeps them.
+    assert_eq!(
+        std::fs::read_to_string(saved.join("agent.json")).unwrap(),
+        r#"{"threads":{"codex-cli":{"state":{},"seen":"msg_1"}},"inbox":[{"id":"msg_2"}]}"#
+    );
     assert!(store.delete("ses_legacy").await.unwrap());
-    assert!(!store.save_state("ses_legacy", context.state).await.unwrap());
+    assert!(
+        !store
+            .save_state("ses_legacy", "codex-cli", context.state)
+            .await
+            .unwrap()
+    );
     assert!(!saved.exists());
     assert!(store.read("ses_../../ses_legacy").await.unwrap().is_none());
     assert!(store.read("ses_future").await.is_err());
     assert_eq!(std::fs::read(future.join("session.json")).unwrap(), unknown);
+}
+
+#[tokio::test]
+async fn a_single_agents_older_state_becomes_the_slot_of_the_agent_that_replied() {
+    use kuvo_agents::session_store::SessionStore;
+    use serde_json::json;
+
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("ses_old");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(
+        folder.join("session.json"),
+        json!({"id":"ses_old","location":{"directory":"p"},"model":{"providerID":"claude-code","id":"opus"}})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("messages.json"),
+        json!([{"id":"msg_a","type":"assistant","model":{"providerID":"codex-cli","id":"gpt"},"content":[]}])
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("agent.json"),
+        br#"{"inbox":[],"codexThread":"thr_1","snapshots":{}}"#,
+    )
+    .unwrap();
+    let store = SessionStore::new(temp.path().to_path_buf());
+    // Codex replied last, so the old single state is its own.
+    let codex = store.context("ses_old", "codex-cli").await.unwrap().unwrap();
+    assert_eq!(codex.state, *json!({"codexThread":"thr_1"}).as_object().unwrap());
+    let claude = store.context("ses_old", "claude-code").await.unwrap().unwrap();
+    assert!(claude.state.is_empty());
+    let mut state = codex.state;
+    state.insert("codexThread".into(), json!("thr_2"));
+    assert!(store.save_state("ses_old", "claude-code", Default::default()).await.unwrap());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("agent.json")).unwrap(),
+        r#"{"inbox":[],"snapshots":{},"threads":{"codex-cli":{"state":{"codexThread":"thr_1"}},"claude-code":{"state":{}}}}"#
+    );
+    assert!(store.save_state("ses_old", "codex-cli", state).await.unwrap());
+    let reread = store.context("ses_old", "codex-cli").await.unwrap().unwrap();
+    assert_eq!(reread.state["codexThread"], "thr_2");
 }
 
 #[tokio::test]
@@ -209,4 +269,104 @@ async fn transcript_updates_preserve_order_and_cannot_return_after_deletion() {
             .unwrap()
     );
     assert!(!folder.exists());
+}
+
+#[tokio::test]
+async fn a_client_change_keeps_the_bridges_own_notes_in_place() {
+    use kuvo_agents::session_store::{SessionPatch, SessionStore};
+    use serde_json::{Value, json};
+
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("ses_notes");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(
+        folder.join("session.json"),
+        serde_json::to_vec(&json!({"id":"ses_notes","title":"Before","time":{"created":1,"updated":2},
+            "metadata":{"kuvoAgent":"claude","kuvo":{"messages":"subagent","old":true}}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let store = SessionStore::new(temp.path().to_path_buf());
+    let given = json!({"kuvo":{"approval":"auto"},"kuvoAgent":"codex","kuvo.pinned":true});
+    let Value::Object(given) = given else { unreachable!() };
+    let saved = store
+        .update(
+            "ses_notes",
+            SessionPatch {
+                title: Some("After".into()),
+                metadata: Some(given),
+                ..SessionPatch::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved["title"], "After");
+    assert!(saved["time"]["updated"].as_u64().unwrap() > 2);
+    // The client's order stays; the agent and the subagent's address are the bridge's.
+    assert_eq!(
+        serde_json::to_string(&saved["metadata"]).unwrap(),
+        r#"{"kuvo":{"approval":"auto","messages":"subagent"},"kuvoAgent":"claude","kuvo.pinned":true}"#
+    );
+    let reread = store.read("ses_notes").await.unwrap().unwrap().into_fields();
+    assert_eq!(reread["metadata"], saved["metadata"]);
+    assert!(
+        store
+            .update("ses_gone", SessionPatch::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn deleting_a_conversation_takes_its_subagents_unless_a_fork_shows_them() {
+    use kuvo_agents::{
+        permissions::ConfigLocation, resident::ResidentAgents, runtime::Runtime,
+        session_runs::SessionRuns, session_store::SessionStore,
+    };
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let home = kuvo_store::home::Home::new(scratch.path().to_owned()).unwrap();
+    let root = scratch.path().join("agents/sessions");
+    let header = |id: &str, parent: Option<&str>| {
+        let folder = root.join(id);
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut fields = json!({"id": id, "location": {"directory": "project"}});
+        if let Some(parent) = parent {
+            fields["parentID"] = json!(parent);
+        }
+        std::fs::write(folder.join("session.json"), fields.to_string()).unwrap();
+    };
+    header("ses_lead", None);
+    header("ses_helper", Some("ses_lead"));
+    header("ses_shared", Some("ses_lead"));
+    header("ses_fork", None);
+    header("ses_other", None);
+    let store = SessionStore::new(root.clone());
+    let step = json!({"id":"msg_step","type":"assistant","content":[
+        {"type":"tool","state":{"metadata":{"sessionID":"ses_shared"}}}]});
+    assert!(store.write_messages("ses_fork", vec![step]).await.unwrap());
+
+    let (agents, _) = ResidentAgents::start(Runtime::for_home(&home), HashMap::new())
+        .await
+        .unwrap();
+    let runs = SessionRuns::start(
+        agents,
+        store.clone(),
+        scratch.path().to_owned(),
+        ConfigLocation::Machine,
+    );
+    assert!(runs.delete("ses_lead".into()).await.unwrap());
+    let left = store
+        .headers()
+        .await
+        .unwrap()
+        .iter()
+        .map(|header| header.id().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(left, ["ses_fork", "ses_other", "ses_shared"]);
+    assert!(!runs.delete("ses_lead".into()).await.unwrap());
 }

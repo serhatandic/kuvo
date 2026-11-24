@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod install_linux;
 #[cfg(target_os = "macos")]
 mod install_media;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -34,6 +36,19 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         kuvo_agents::hold::run(&args[1..])?;
         return Ok(ExitCode::SUCCESS);
     }
+    // The stdio MCP forwarder an agent starts in its sandbox.
+    if (word(0), args.len()) == (Some("mcp"), 1) {
+        let relay = kuvo_agents::tool_forwarder::Relay::from_env()?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(kuvo_agents::tool_forwarder::forward(
+                relay,
+                tokio::io::BufReader::new(tokio::io::stdin()),
+                tokio::io::stdout(),
+            ))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     #[cfg(target_os = "macos")]
     if word(0) == Some("install-media") {
         return Ok(install_media::run(&args[1..]));
@@ -41,6 +56,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     if word(0) == Some("install-released-machine") {
         return Ok(install_released::run(&args[1..]));
+    }
+    #[cfg(target_os = "linux")]
+    if word(0) == Some("install-linux") {
+        return Ok(install_linux::run(&args[1..]));
     }
     #[cfg(target_os = "macos")]
     if (word(0), args.len()) == (Some("helper-hand-over"), 1) {

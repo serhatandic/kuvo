@@ -13,6 +13,7 @@ const areas = new Map([
   ["agents", "./holder.test.mjs"],
   ["agent-accounts", "./agent-accounts.test.mjs"],
   ["agent-sessions", "./agent-sessions.test.mjs"],
+  ["agent-turn-fixture", "./agent-turn-fixture.test.mjs"],
   ["compat", "./compat.test.mjs"],
   ["clock", "./clock.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],
@@ -30,6 +31,8 @@ const areas = new Map([
   ["git", "./git.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
+  // Bots, wake-ups and work: their route scenarios (`bots.json` and `wakes.json`).
+  ["bots", "./routes.test.mjs"],
 ]);
 const area = process.env.KUVO_CONFORMANCE_AREA;
 if (!area) {

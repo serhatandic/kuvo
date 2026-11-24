@@ -2,15 +2,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use kuvo_protocol::json::{Null, Nullable};
 use kuvo_protocol::routes::types::{
     GetKuvoComputersStatus200ComputersItemAgents as ComputerAgents,
     GetKuvoComputersStatus200ComputersItemAgentsState4 as AgentState,
     GetKuvoComputersStatus200ComputersItemAtWorkItem as AtWork,
     GetKuvoSetupOutputsStatus200PendingComputersItem as Computer,
+    PostKuvoUpdateRetryStatus202 as FleetRow, PostKuvoUpdateRetryStatus202Cannot as CannotRow,
+    PostKuvoUpdateRetryStatus202CannotState as CannotState,
+    PostKuvoUpdateRetryStatus202UpToDateLine as FleetLine,
+    PostKuvoUpdateRetryStatus202UpToDateLineTone2 as FleetTone,
 };
 use kuvo_wire::keys::{Address, Host, encode};
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde_json::{Number, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -54,6 +59,17 @@ pub struct Roster {
 }
 
 impl Roster {
+    pub fn members_by_name(&self) -> Vec<&Member> {
+        let mut peers: Vec<_> = self.members.iter().collect();
+        peers.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then(a.key.cmp(&b.key))
+        });
+        peers
+    }
+
     pub fn local(&self) -> Computer {
         Computer {
             id: self
@@ -167,12 +183,79 @@ pub struct UpdateFacts {
     pub running_manifest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub staged: Option<PreparedRelease>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub switching: Option<PreparedRelease>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receiving: Option<ReleaseProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cannot: Option<CannotUpdate>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PreparedRelease {
     pub version: String,
     pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ReleaseProgress {
+    #[serde(flatten)]
+    pub release: PreparedRelease,
+    pub fill: Number,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CannotUpdate {
+    #[serde(flatten)]
+    pub release: PreparedRelease,
+    pub reason: String,
+    pub fixable: bool,
+}
+
+impl CannotUpdate {
+    pub fn row(
+        &self,
+        current: Option<String>,
+        current_sha256: Option<String>,
+        can_retry: bool,
+    ) -> FleetRow {
+        let mut words = match &current {
+            Some(version) => {
+                let short = version
+                    .split_once('-')
+                    .map_or(version.as_str(), |(_, short)| short);
+                format!("{short} · {}", self.reason)
+            }
+            None => self.reason.clone(),
+        };
+        let (tone, short) = if self.fixable {
+            (FleetTone::Warning, Some("Can’t update".into()))
+        } else {
+            words.push_str(" · Updates with the next release");
+            (FleetTone::Blocked, None)
+        };
+        FleetRow::Cannot(CannotRow {
+            can_retry: self.fixable && can_retry,
+            current: current.map_or(Nullable::Null(Null), Nullable::Value),
+            current_sha256,
+            fill: None,
+            fixable: self.fixable,
+            last_failure_at: None,
+            line: Some(FleetLine {
+                words,
+                tone,
+                short,
+                phase: None,
+                fill: None,
+            }),
+            reason: self.reason.clone(),
+            requires_update: None,
+            seen: None,
+            state: CannotState::Cannot,
+            target: self.release.version.clone(),
+            target_sha256: Some(self.release.sha256.clone()),
+        })
+    }
 }
 
 impl ComputerFacts {
@@ -193,6 +276,18 @@ impl ComputerFacts {
             staged: self
                 .extra
                 .get("staged")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            switching: self
+                .extra
+                .get("switching")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            receiving: self
+                .extra
+                .get("receiving")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            cannot: self
+                .extra
+                .get("cannot")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
         }
     }
@@ -258,6 +353,8 @@ impl<'de> Deserialize<'de> for ComputerFacts {
                         | "layout"
                         | "installedSha256"
                         | "staged"
+                        | "switching"
+                        | "receiving"
                         | "cannot"
                         | "candidate"
                         | "releaseManifest"

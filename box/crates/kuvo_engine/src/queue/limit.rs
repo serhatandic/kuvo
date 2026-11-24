@@ -200,10 +200,10 @@ async fn release(engine: &Engine, session: &str, reset: u64) -> io::Result<()> {
     if !saved.limit_stop.as_ref().is_some_and(is_ours) {
         return Ok(());
     }
-    let rows = inbox(engine, &lease, session)
+    let rows = inbox(engine, super::Target::Engine(&lease), session)
         .await
         .map_err(io::Error::other)?;
-    if drain(engine, &lease, session, &saved, &rows).await? {
+    if drain(engine, super::Target::Engine(&lease), session, &saved, &rows).await? {
         engine
             .queues
             .put(session, |state| {

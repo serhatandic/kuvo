@@ -139,6 +139,7 @@ async fn the_turn_sink_waits_for_a_checkpoint_and_saves_the_native_conversation(
     let asks = LiveAsks::start();
     let (sink, mut writes) = ResidentSink::channel(
         "ses_saved".into(),
+        "codex-cli".into(),
         store.clone(),
         asks.for_turn("ses_saved".into(), "turn_1".into()),
         Arc::new(Policy),
@@ -181,7 +182,11 @@ async fn the_turn_sink_waits_for_a_checkpoint_and_saves_the_native_conversation(
     .await
     .unwrap()
     .unwrap();
-    let context = store.context("ses_saved").await.unwrap().unwrap();
+    let context = store
+        .context("ses_saved", "codex-cli")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(context.state["nativeID"], "saved");
     let ask = pending.borrow().keys().next().unwrap().clone();
     asks.reply(ask, Reply::Permission(Decision::Once))

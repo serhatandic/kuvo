@@ -25,7 +25,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Your other computer learns a newly created conversation’s name before its message arrives.
 - Notes for a moving conversation wait for its new computer to confirm the move, then reach it while the original is being cleaned up.
 - A conversation stays on its current computer while Kuvo indexes the receipts required for its move.
+- Undo and worktree snapshots no longer run a project's own git filters or hooks while saving its files.
 - The Rust box can reopen Work Queue items and attachments, recover an interrupted status migration, and use the main computer’s signed labels and number grants.
+- Undo and worktree snapshots no longer run a project's own git filters or hooks while saving its files.
 - Deleting a conversation while its agent is stopping no longer causes a transcript write error.
 - Undo waits for file recovery when it is the first action after a restart.
 
@@ -36,6 +38,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.
 - The Mac installer can set up a new computer directly from the signed Rust release and start Kuvo Helper.
+- The Linux installer can set up a computer from a signed Rust release and retry a failed first start while keeping earlier work.
+- After a successful Linux install, earlier unfinished installer staging no longer makes the computer look uninstalled.
+- A Linux installation stays complete if its old staging files cannot be deleted.
 - Uninstall on a stopped Mac removes Kuvo Helper’s login job and retains your saved work.
 - Uninstall removes Kuvo’s reboot entry from a stopped computer’s crontab and preserves the other jobs.
 
@@ -46,6 +51,15 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The main computer waits for reachable computers to prepare a Rust update before switching. A computer that was offline can catch up when it returns.
 - A returning computer can get a signed update from another computer when the release feed no longer serves it. On a Mac, Kuvo restarts an older Helper when the update is ready.
 - A computer keeps a manual update check until its main computer can receive it, even if the computer restarts first.
+- A failed fleet download can be retried for the same signed release after the computer restarts.
+- A reachable computer can retry a failed fleet download when another computer in its setup asks.
+- The computers list reports failed release downloads across the setup and whether they can be retried.
+- The computers list shows when each computer is preparing, ready, switching, up to date, or out of reach during a signed release update.
+- The computers list shows the setup’s release progress and keeps the completion visible for ten minutes.
+- A computer reports how much of a release it has received from its peers.
+- The computers list keeps showing a signed release switch during the computer’s restart.
+- A computer reports when it must wait for the next release after it receives an unusable update.
+- If a release fails to start and Kuvo switches back, the computer shows why it is waiting for the next release.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
 - A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
 

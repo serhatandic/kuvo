@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    Engine, api, disk,
-    lifetime::Lease,
-    parts,
+    Engine, api, disk, parts,
     queue::{self, Delivery, Prompt},
     sessions,
 };
@@ -30,6 +28,11 @@ pub(crate) fn valid_id(id: &str) -> bool {
 }
 
 pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
+    new_id_with(engine, "msg")
+}
+
+/// An ID in the engine's ascending format, so it sorts among the engine's own.
+pub(crate) fn new_id_with(engine: &Engine, prefix: &str) -> Result<String, Refusal> {
     let now = disk::now() << 12;
     let tick = engine
         .message_clock
@@ -41,7 +44,7 @@ pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
     getrandom::fill(&mut random).map_err(|_| {
         Refusal::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "The computer couldn’t make a message ID.",
+            "The computer couldn’t make an ID.",
         )
     })?;
     const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -50,7 +53,7 @@ pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
         .map(|byte| char::from(ALPHABET[usize::from(byte) % ALPHABET.len()]))
         .collect::<String>();
     Ok(format!(
-        "msg_{:012x}{random}",
+        "{prefix}_{:012x}{random}",
         now.max(tick + 1) & 0xffff_ffff_ffff
     ))
 }
@@ -335,10 +338,21 @@ async fn compose(
 
 pub(crate) async fn post(
     engine: &Engine,
-    lease: &Lease,
+    target: queue::Target<'_>,
     session: &str,
     prompt: &Prompt,
 ) -> Result<Value, Refusal> {
+    let queue::Target::Engine(lease) = target else {
+        return target
+            .prompt(engine, session, prompt, Duration::from_secs(120))
+            .await
+            .map_err(|error| match error {
+                api::Error::Status(status, message) => {
+                    Refusal::json(status, json!({ "message": message }))
+                }
+                _ => engine_busy(),
+            });
+    };
     let path = format!("{}/prompt", sessions::path(session));
     let response = engine
         .upstream
@@ -419,7 +433,7 @@ async fn deliver(
             None => delivery_target(engine, session, request.form).await?,
         };
         if interrupted {
-            delivered = queue::reached(engine, &lease, session, id)
+            delivered = queue::reached(engine, lease.target(), session, id)
                 .await
                 .map_err(|_| engine_busy())?;
         } else {
@@ -429,7 +443,7 @@ async fn deliver(
         }
         if !delivered {
             let inbox = if request.before.is_some() {
-                queue::inbox(engine, &lease, session)
+                queue::inbox(engine, lease.target(), session)
                     .await
                     .unwrap_or_default()
             } else {
@@ -452,7 +466,7 @@ async fn deliver(
                 if arriving {
                     prompt.delivery = Delivery::Queue;
                 }
-                answer = post(engine, &lease, session, &prompt).await?;
+                answer = post(engine, lease.target(), session, &prompt).await?;
                 delivered = true;
                 engine.queues.notify();
                 if request.immediate
@@ -463,7 +477,7 @@ async fn deliver(
                         .map_err(disk_failure)?
                         .arriving(id)
                 {
-                    let _ = queue::advance(engine, &lease, session, id, queue::Advance::Now).await;
+                    let _ = queue::advance(engine, lease.target(), session, id, queue::Advance::Now).await;
                 }
             }
         }
@@ -476,7 +490,7 @@ async fn deliver(
                     .map_err(disk_failure)?
                     .arriving(id))
         {
-            queue::hold_arrival(engine, &lease, session, id)
+            queue::hold_arrival(engine, lease.target(), session, id)
                 .await
                 .map_err(|_| engine_busy())?;
         }
@@ -508,10 +522,17 @@ async fn deliver(
     Ok(answer)
 }
 
-async fn delivery_target(engine: &Engine, session: &str, form: Form) -> Result<Lease, Refusal> {
+async fn delivery_target(
+    engine: &Engine,
+    session: &str,
+    form: Form,
+) -> Result<queue::Place, Refusal> {
+    if let Some(place) = queue::Place::agents(engine, session).await? {
+        return Ok(place);
+    }
     let lease = api::start(engine).await?;
     if form == Form::Add {
-        queue::check_add_target(engine, &lease, session).await?;
+        queue::check_add_target(engine, queue::Target::Engine(&lease), session).await?;
     } else {
         match engine
             .call::<Value>(&lease, Method::GET, &sessions::path(session), None)
@@ -527,7 +548,7 @@ async fn delivery_target(engine: &Engine, session: &str, form: Form) -> Result<L
             Err(_) => return Err(engine_busy()),
         }
     }
-    Ok(lease)
+    Ok(queue::Place::Engine(lease))
 }
 
 async fn apply(

@@ -149,6 +149,8 @@ export const listedWake = ({ id, due, note, every, summary, cancelKey }: Pending
 /** A conversation's wake-ups, watches and pause, with its session, as `kuvo/wakes/events` tells them. */
 export interface SessionWakes extends Wakes {
   session: string;
+  next?: number;
+  watching: boolean;
 }
 
 // Every conversation here with wake-ups, watches or a pause, a bot's or its own, whole: what a
@@ -160,7 +162,8 @@ export function allWakes(): SessionWakes[] {
     const session = (textOf(path.join(folder, "session")) ?? "").trim();
     if (!session || away.has(session)) return;
     const { wakes, watches, paused } = readWakes(folder, { whole: true });
-    if (wakes.length || watches.length || paused) sessions.push({ session, wakes: wakes.map(listedWake), watches, paused });
+    // (Its soonest and whether it watches too, as `kuvo/wakes` says them: the route's shape.)
+    if (wakes.length || watches.length || paused) sessions.push({ session, ...(wakes.length ? { next: wakes[0].due } : {}), watching: watches.length > 0, wakes: wakes.map(listedWake), watches, paused });
   };
   for (const id of listOf(BOTS)) add(path.join(BOTS, id));
   for (const name of listOf(SESSION_WAKES)) add(path.join(SESSION_WAKES, name));

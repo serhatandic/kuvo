@@ -4,6 +4,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    sync::LazyLock,
     time::Duration,
 };
 
@@ -14,11 +15,31 @@ use crate::{
     Command, Release, SELECTOR, execute,
     manifest::{ReleaseRef, SignedRelease, local_target, sha256},
     prepare_command::version_order,
-    read_record, staging,
+    read_record, staging, update_status,
 };
 
 const STAGE_WAIT: i64 = 300_000;
 const MAX_BRIDGE_ENVELOPE: usize = 8192;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Timing {
+    peer_transfer_ms: u64,
+    keeper_trial_ms: u64,
+}
+
+static TIMING: LazyLock<Timing> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../../src/shared/fleet-timing.json"))
+        .expect("valid fleet timing")
+});
+
+pub fn peer_transfer_limit() -> Duration {
+    Duration::from_millis(TIMING.peer_transfer_ms)
+}
+
+pub(crate) fn keeper_trial_limit() -> Duration {
+    Duration::from_millis(TIMING.keeper_trial_ms)
+}
 
 #[derive(Clone)]
 pub struct Candidate {
@@ -65,9 +86,11 @@ impl Candidate {
     }
 
     pub fn matches_pack(&self, target: &str, digest: &str) -> bool {
-        self.signed
-            .pack_for(target)
-            .is_ok_and(|pack| pack.sha256 == digest)
+        self.pack_digest(target) == Some(digest)
+    }
+
+    pub fn pack_digest(&self, target: &str) -> Option<&str> {
+        Some(self.signed.pack_for(target).ok()?.sha256.as_str())
     }
 
     pub fn local(&self) -> io::Result<ReleaseRef> {
@@ -161,13 +184,7 @@ impl Candidate {
         {
             return Ok(false);
         }
-        if files::text_of(&home.run().join("update-cannot")).is_some_and(|text| {
-            let mut words = text.split_whitespace().skip(1);
-            words.next() == Some(&release.version)
-                && words
-                    .next()
-                    .is_some_and(|digest| release.sha256.starts_with(digest))
-        }) {
+        if update_status::trial_failure(home, &release.version, &release.sha256).is_some() {
             return Ok(false);
         }
         match target.validate(home.root()) {
@@ -445,9 +462,20 @@ pub fn stopped(home: &Home) -> bool {
         .any(|name| home.run().join(name).exists())
 }
 
+fn selected(home: &Home) -> io::Result<Option<Release>> {
+    Ok(Release::read(&home.root().join(SELECTOR))?
+        .or_else(|| fs::read_link(home.bin()).ok()?.to_str()?.parse().ok()))
+}
+
+pub fn trial_release(home: &Home) -> io::Result<Option<Release>> {
+    let Some(previous) = Release::read(&home.run().join("previous"))? else {
+        return Ok(None);
+    };
+    Ok(selected(home)?.filter(|next| next != &previous))
+}
+
 pub fn installed(home: &Home) -> io::Result<(Option<String>, Option<Release>)> {
-    let selected = Release::read(&home.root().join(SELECTOR))?
-        .or_else(|| fs::read_link(home.bin()).ok()?.to_str()?.parse().ok());
+    let selected = selected(home)?;
     let working = Release::read(&home.run().join("previous"))?.or(selected);
     let version = working
         .as_ref()

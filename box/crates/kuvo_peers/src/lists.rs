@@ -410,6 +410,15 @@ impl View {
         self.pending(FEATURE, |key| self.lists.contains_key(key))
     }
 
+    /// Your other computers whose bots this box hasn't heard yet (`kuvo/bots`).
+    pub fn pending_bots(&self) -> Vec<Computer> {
+        self.pending(BOT_FEATURE, |key| {
+            self.lists
+                .get(key)
+                .is_some_and(|copy| copy.value.bots.is_some())
+        })
+    }
+
     pub fn sessions(&self, now: Millis) -> routes::get_kuvo_setup_sessions_events::Status200 {
         let local = &self.local_lists;
         let mut sessions = Vec::new();

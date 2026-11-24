@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 use crate::files::{real, resolved};
 
+pub(super) use platform::open_plain;
+
 /// The most of a file git keeps that's read.
 const MOST_READ: u64 = 4096;
 /// How long the linked worktrees found stand before they're looked for again.
@@ -258,7 +260,7 @@ mod platform {
     use std::fs::{File, OpenOptions};
     use std::os::unix::fs::OpenOptionsExt;
 
-    pub(super) fn open_plain(file: &std::path::Path) -> std::io::Result<File> {
+    pub(in crate::git) fn open_plain(file: &std::path::Path) -> std::io::Result<File> {
         OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
@@ -271,7 +273,7 @@ mod platform {
     use std::fs::File;
 
     /// Windows has no FIFOs to hold a reader; a link is refused by looking first.
-    pub(super) fn open_plain(file: &std::path::Path) -> std::io::Result<File> {
+    pub(in crate::git) fn open_plain(file: &std::path::Path) -> std::io::Result<File> {
         if std::fs::symlink_metadata(file)?.file_type().is_symlink() {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }

@@ -473,6 +473,7 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
         }
     }
     local.system = view.system.as_deref().map(str::to_owned);
+    local.fleet_update = view.local_update_row().cloned();
     let features = view.features();
     local.compatibility = computer_compatibility(&features);
     local.features = Some(features.into_iter().map(str::to_owned).collect());
@@ -482,14 +483,7 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
     active.truncate(100);
     local.at_work = Some(active);
     let mut rows = vec![local];
-    let mut peers: Vec<_> = view.roster.members.iter().collect();
-    peers.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then(a.key.cmp(&b.key))
-    });
-    for peer in peers {
+    for peer in view.roster.members_by_name() {
         let id = encode(&peer.key);
         let said = view.announced.get(&id);
         let heard = said.and_then(|said| said.heard);
@@ -501,6 +495,7 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
             Reach::Connected
         };
         let mut row = computer_row(id, peer.name.clone(), reach, Via::Relay, false, &here.name);
+        row.fleet_update = view.peer_update_row(&peer.key).cloned();
         row.address = peer.address.as_ref().map(|address| encode(address));
         row.relay = view.endpoint.as_ref().map(|endpoint| endpoint.url.clone());
         if peer.kind == crate::session::ComputerKind::Mac {
@@ -543,7 +538,7 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
     }
     get_kuvo_computers::Status200 {
         computers: rows,
-        fleet_update: None,
+        fleet_update: view.fleet_summary().cloned(),
         wipe_pending: None,
     }
 }

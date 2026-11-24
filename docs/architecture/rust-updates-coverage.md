@@ -39,6 +39,31 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U23 | A stopped Unix home with an installed keeper removes only Kuvo's tagged reboot entry. An unreadable crontab leaves the original table and the installation intact. The retry keeps the other jobs and saved work and writes nothing to the scratch account's temporary folder. The Mac run with a disposable crontab took 2.5 seconds. |
 | U24 | The signed installer admits the stopped released-machine homes by their saved machine identity. It rejects the wrong identity and waits if a recorded old process is still alive. The v0.7.2 and beta.1 fixtures moved, kept their keys and saved work, and answered through the selected Rust keeper in 17.2 and 21.1 seconds on Mac and 4.7 and 4.7 seconds on Linux musl under WSL2. |
 | U25 | A Rust main tries the saved SSH address while its v0.7.2 machine is offline. When the address answers, it checks the saved machine identity, sends the retained signed target pack, and starts `kuvo-install`. If the first keeper launch fails after selection, the next round resumes it. The Rust keeper answers and the SSH reservation and installer staging clear. The old key, secret and work remain in place. |
+| U26 | The signed Linux installer judges a fresh home and refuses a move without creating the home. It installs its target pack, preserves earlier work and the desktop identity, adds one tagged reboot job, and waits for the new resident to answer. A failed startup leaves the fresh verdict available. A retry preserves the partial identity and link alongside the earlier work and makes a new setup. If an earlier keeper is still running, the installer leaves the home and crontab untouched. |
+| U27 | A Linux installer stopped after publication and before keeper startup resumes with the same selected release, saved SSH identity and work archive. A successful install retires earlier incomplete installer staging and preserves its partial launcher in the work archive. Both cases passed on native Linux and WSL2. |
+| U28 | The main takes a signed release from a reachable member already running it. Both the manifest feed and the pack URL return 404. The main gets the retained pack over peer mail, switches and reports the installed version. The offline computer retains its old selection until it returns. Passed on Mac, WSL2, and native Windows. |
+| U29 | A slow member stays on its release while the main passes the five-minute preparation deadline. The main switches from its saved preparation clock while the member's download is held. The member confirms once its download resumes, and the offline computer catches up when it returns. Passed through the shell keeper on Mac. |
+| U30 | A failed fleet download records the signed version and full pack digest. Restarting the resident keeps the failure available for retry. The local retry route rejects a stale digest and requests the matching pack again while the previous release keeps serving. |
+| U31 | The main receives a member's fixable failure and rejects a retry for a stale digest. After the main has switched, it can still request a retry for the member's signed target over authenticated mail. The member retries and the main's own failure record stays untouched. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U32 | The computers list reports the local failure with its signed target version and digest, the current release, and whether retry is available. The list and retry replies use the same row shape and wording. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U33 | The main's computers list reports the reachable member's failure with the version and digest of the signed pack for that member's platform. The row shows the member's current release and offers a retry for the matching target. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U34 | The computers list shows getting ready and ready from the live preparation, then up to date for a confirmed computer and off for one awaiting return. The selected signed release on trial shows switching while the previous release remains current. Once the keeper clears the trial, the row shows the installed version and digest. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U35 | The computers list counts the setup's preparing, ready, confirmed, and offline computers. It shows the failed computer's warning, keeps the summary visible through switching, and retains the settled result for ten minutes across a restart. A computer that first sees the release after confirmation has no visible completion. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U36 | A signed Linux install starts an answering keeper with earlier staging that cannot be deleted. The installer moves the staging out of the active path, reports success, and a later status check identifies the installed machine. The Rust cases passed on native Linux and WSL2, and the matching TypeScript case passed on WSL2. |
+| U37 | The Linux installer reopens its saved journal at each publication boundary. Recovery keeps earlier work and conversations in one archive, keeps the already staged engine, publishes the selected signed release, and starts the keeper. Native Linux and WSL2 passed after archival began, after the engine moved, and after publication before startup. |
+| U38 | With the feed unavailable, the main pulls a known signed release from an ahead member. The relay holds parts while both computers report the same accepted fraction and wording. Replaying already accepted parts leaves the count unchanged. The main confirms the release after the remaining parts arrive. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U39 | A member reports the signed release it is trying while its previous release remains current. Neither computer accepts a retry for that trial. A three-minute relay gap keeps the switching row, and the saved last-heard time appears when the ten-minute restart window expires. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U40 | A verified pack that cannot unpack leaves a blocked row tied to its signed digest. The current release keeps serving, the row survives restart, and manual retry is refused. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U41 | A brief relay gap preserves a member's preparing row. If the member last reported the signed pack ready, its row shows switching during the restart grace before a trial is reported. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U42 | The first holder of a verified pack stops sending after five accepted parts. Its incomplete transfer times out. A second holder starts, the fraction stays at five parts until the second transfer exceeds that count, and the recipient confirms the release. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U43 | A saved keeper trial refusal blocks only its matching signed pack and reports the same reason in both update reads. It refuses retry and skips the download. A refusal for a different digest leaves the current pack eligible. Passed on Mac, native Linux, WSL2, and native Windows. |
+
+U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
+TypeScript installer scenarios passed under the same WSL2 distribution.
+The Rust updates area passed 17 applicable cases on WSL2 and seven on
+native Windows, including the signed update and stopped uninstall.
+On Mac, the signed fresh install and released-home moves, stopped Helper
+uninstall, and tagged reboot cleanup passed against the release binary.
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -127,6 +152,14 @@ took over in 27.1 seconds from boot with the lease clock advanced, and it
 confirmed 22.9 seconds after its download resumed. The returning computer
 confirmed in 90.1 seconds via the new main. The check includes lease and
 stage records in its failure output.
+
+A native Linux run capped at one CPU reached the returning computer's
+120-second fixture deadline during the relay transfer. A trace counted 936
+of 1,005 full-size relay frames at that point. The remaining frames arrived
+by 140 seconds, and the keeper selected and confirmed the release after
+160.7 seconds. The same Linux musl binary returned in 18.1 seconds under
+WSL2. The fixture now budgets both the box's peer-transfer limit and its
+keeper trial limit.
 
 The following macOS run passed 22 checks and skipped the TypeScript-only
 prepare check. First preparation took 27.8 seconds in the shell-keeper
@@ -244,10 +277,9 @@ status from the child it owns.
 underlying Rust path is proven and what the update or installer still owes.
 Bridge-specific checks only for unpublished TypeScript betas and desktop app
 update prompts follow the switch-over scope in [the design](rust-box.md#4-switch-over).
-The reference table groups related TypeScript cases into 58 rows. Four rows
-are covered, 32 have partial proof, three are specific to the TypeScript bridge
-or desktop updater, and 19 are open. The inherited and live-proof table has
-11 rows, nine with partial proof and two open.
+The reference table groups related TypeScript cases and names the owner of
+each remaining check. The inherited and live-proof table tracks cross-row
+dependencies.
 
 | Source and case | Status | Remaining owner |
 | --- | --- | --- |
@@ -274,13 +306,19 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, interrupted pre-marker updater restores baseline | Partial. 7.1 checks Rust rollback and U13 checks that the first Rust launch does not revert to TypeScript. The old rollback fixture still needs the released-predecessor run. | 7.2, 9.3 |
 | [resident-update-pilot](../../box/bridge-tests/resident-update-pilot.test.js), sandboxed live turn survives both outcomes | Open. | 7.2, 9.3 |
 | [fleet-switch](../../box/bridge-tests/fleet-switch.test.js), T1 prepare, commit, and offline catch-up | Partial. U8–U10 pass through the relay stand-in and keeper. U9 falls back to authenticated release mail when the feed returns 404. Before-rejoin work admission and the fleet status routes remain open. | 7.2 |
-| Same, T3 retry and five-minute limit | Partial. The keeper stores a five-minute barrier from first preparation. U8 retries a transient download and U9 pulls a retained pack from its new main. The elapsed deadline, mixed-target fallback and manual retry remain open. | 7.2 |
-| Same, ahead member offers its version | Partial. The main accepts signed newer offers from reachable members. The ahead member scenario remains open. | 7.2 |
+| Same, T3 retry and five-minute limit | Partial. U29 covers the elapsed deadline and the waiting member's catch-up. U30 covers local retry across a restart and U31 covers authenticated peer retry after the main has switched. U32–U33 cover retry availability in the computer rows. U8 retries a transient download and U9 pulls a retained pack from its new main. Mixed-target fallback remains open. | 7.2 |
+| Same, ahead member offers its version | U28 covers receiving the signed offer, pulling the member's retained pack and switching. The member's up-to-date row is part of the row-progress work below. | 7.2 |
 | Same, Update Now chooses the immediate candidate | Partial. An explicit check bypasses the automatic release age rule. U20 verifies that an authenticated member request starts the check. A newly published release still needs a full switch scenario. | 7.2 |
-| Same, progress summary remains while switching and after settlement | Open. | 7.2 |
-| Same, row progress and retry | Open. | 7.2 |
-| Same, pull progress never moves back | Open. | 7.2 |
+| Same, progress summary remains while switching and after settlement | Covered by U35. | — |
+| Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover retryable failure rows. U34 covers getting ready, ready, switching, off and up to date. U40 covers a preparation failure that must wait for the next release. | — |
+| Same, pull progress never moves back | U38 checks local and peer progress and duplicate delivery. U42 checks replacing a stalled holder with a second one while retaining progress on both computers. | — |
 | Same, member asks main to check | Covered by U20. | — |
+| [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | U34 checks preparation through confirmation. U39 checks a signed trial reported over relay and expiry past the restart window. U41 checks a brief gap during preparation and a ready computer that goes quiet before reporting a trial. | — |
+| Same, local box says it is switching and ready reads separately from done | Covered by U34. | — |
+| Same, preparation fraction is visible in local and peer rows | Covered by U38. | — |
+| Same, off row reports when it was last heard from | Partial. U34 checks one never heard from, and U39 checks the timestamp and minutes-ago wording after the quiet restart window. The remaining time ranges still need binary proof. | 7.2 |
+| Same, notifier stays while restarting, phases and words, ten-minute settled display | U35 covers the live summary and saved settlement across restart. The exact peer restart grace remains part of the reach cases above. | 7.2 |
+| Same, verified kept pack is announced | Partial. U8–U9 cover signed manifest selection, prepared facts, and authenticated delivery from a new main. The kept-pack announcement boundary remains open. | 7.2 |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |
 | Same, Helper starts the new code after the resident exits | Partial. 7.1 dispatches Helper `serve` to a Rust pack. Live Helper update remains open. | 6.2, 7.2, 9.3 |
 | [update-switch](../../box/test/update-switch.test.ts), broken route probe and beta.35 switch | Covered in scope. U4 rejects a signed pack whose Rust program fails the self-test. U10 checks a live switch with the transition-capable beta. The historical beta.35 switch is outside the scope of section 4. | — |
@@ -296,7 +334,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, failed departure keeps identity | Open. | 2.3 |
 | [install-offer](../../box/test/install-offer.test.ts), last wipe approval follows old identity | Partial. 2.3 U8 covers detachment identity. Installer re-entry remains open. | 2.3, 6.2, 7.2 |
 | Same, app member wipe and receipt | Open. | 2.3, 7.2 |
-| [install](../../box/bridge-tests/install.test.js) 124, signed pack, engine, and fresh verdict | Partial. U1–U4 cover update admission, 2.6 C1 covers the read-only verdict, and U11 checks signed media and engine for a Mac install and move. Fresh Linux installer proof remains open. | 7.2 |
+| [install](../../box/bridge-tests/install.test.js) 124, signed pack, engine, and fresh verdict | Covered by U11 on Mac and U26 on Linux. | — |
 | Same 148, 204, 267, installer after last wipe, stop without Helper, and completion outside App Support | Open as installer scenarios. See 2.3 U7–U8 for wipe and receipt checks. | 2.3, 6.2, 7.2 |
 | Same 361, two installers prepare together | Open. | 7.2 |
 | Same 379 and 387, refuse local-file engine and damaged pack or engine | Partial. U2 and U4 cover update pack and engine integrity. The installer entry remains open. | 7.2 |
@@ -305,16 +343,16 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same 564, 594, 645, existing app's data moves, progress order, and legacy app kept | Partial. U11 covers the move, ordered progress, and both the retained source and published home. The live Helper readiness check remains open. | 6.2, 7.2 |
 | Same 700, 725, launch retry after move and deferred key settlement | Partial. U11 checks installer restart after a missing Helper registration. 2.6 covers resumable settlement with stand-ins. Actual launchd and authenticated Keychain settlement remain open. | 6.2, 7.2 |
 | Same 750, two installations preserved | Partial. 2.6 covers the verdict and fence. Installer invocation remains open. | 7.2 |
-| Same 766, Linux move refusal | Partial. Existing Rust move command refuses. The installer entry remains open. | 7.2 |
+| Same 766, Linux move refusal | Covered by U26. | — |
 | Same 774 and 793, Mac app copy and case spelling | Partial. 2.6 checks the Mac command's matching home. The installer entry remains open. | 7.2 |
-| Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | Partial. U24 checks the live-process fence and signed installation on the stopped released Linux homes. Fresh Linux making and restart after startup failure remain open. | 2.3, 7.2 |
+| Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. U27 covers interruption after publication and retiring earlier incomplete staging. U36 covers a cleanup failure after startup. U37 replays interruption during archival and between the engine and release moves. | — |
 | [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 checks missing Helper registration and restart with a stand-in. Live readiness (45, 57, 128), restarted fresh making (74), and Linux starter admission (169) remain open. | 6.2, 7.2 |
 
 ## Inherited cases and system proof
 
 | Source | Status | Remaining owner |
 | --- | --- | --- |
-| [Keeper](rust-keeper-coverage.md) route, future update record, rollback status, and former release | U5 covers bin-only manifest recovery and U6 covers the failed-trial status. Future pack file-list versions are refused by the Rust reader. Former-release integration remains open. | 7.2 |
+| [Keeper](rust-keeper-coverage.md) route, future update record, rollback status, and former release | U5 covers bin-only manifest recovery. U6 and U43 cover a keeper's trial refusal in update status and the fleet row. Future pack file-list versions are refused by the Rust reader. Former-release integration remains open. | 7.2 |
 | [Store](rust-store-coverage.md) authority-format cases | Installer stdin/prefix before making, making marker, repair records, and former-release rollback still need full installer and updater proofs. | 2.3, 7.2 |
 | [Adding](rust-adding-coverage.md) `computers-add.test.js` 302, 360, 397, 445, 2038, 2069 | Open. Cover update discovery, missing version, fallback address, retired app, and interrupted Helper reinstall. | 2.3, 2.4, 2.6, 6.2, 7.2 |
 | [Move](rust-move-coverage.md) `rehome`, `rehome-run`, `folder-version` 287, 301, 326, and own-home Mac | Partial. 2.6 has released data and cutover tests with stand-ins and U11 covers the installer entry for moves. The release trial and Helper launch remain open. | 4.1, 6.2, 7.2 |
@@ -352,3 +390,32 @@ U15 took 5.8 seconds. U16 measured 0.3 seconds from replacement to exit.
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L447), restart after Stop | U15 checks launchctl waiting for the old PID before kickstart. | — |
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L470), Darwin machine's Files permission | Open. | 6.1, 7.1, 7.2 |
 | [helper-running](../../box/test/helper-running.test.ts), load or kickstart when necessary and leave a running Helper | Partial. U11 loads a missing registration and U15 starts an existing job. Actual process state under launchd remains open. | 9.3 |
+
+## Update and Stop home inventory
+
+After `GET kuvo/update` and `POST kuvo/box/stop` on copies of the same
+offline seed, both replies matched. The seed contains the installed version,
+the failed update record and the folder layout marker. It has no setup
+identity. The two residents create their own identities, sign their own first
+checkpoints and write their startup records independently. The inventory also
+includes files each resident creates while idle. Counts below are comparison
+entries, including directory entries and individual JSON fields.
+
+| Owning row | Entries | Difference and follow-up |
+| --- | ---: | --- |
+| 1.4 | 1 | `run/route/ssh`: local SSH IPC endpoint inventory. The server row owns the endpoint lifecycle. |
+| 2.1 | 23 | `run/docs.changed`; `run/link.json` fields `key`, `keyNow`, `leadership/1/{d,s}`, `name`, `secret`, `setup/{id,primary,sign}`, `shared/membershipAndAccess/value/boxes/0/{address,key,name,sign}`, `sharedSetup`, and `sign`; `run/setup-card.json` fields `primary/{key,name}`, `self/{key,name}`, and `setup`; two files under `run/setup-checkpoints/`. Fresh key and setup generation accounts for the different signatures and checkpoint names. Setup owns comparison with a common saved identity. |
+| 2.2 | 2 | `run/notices` and `run/notices/teller`: peer notice startup directories. |
+| 2.3 | 4 | `run/link.json` fields `left`, `removalRevisions`, `removed`, and `removedHere`: removal defaults and receipts. This row also owns the existing `kuvo_setup` Clippy findings. |
+| 3.1 | 4 | `config`, `config/opencode`, `config/opencode/plugins`, and `config/opencode/plugins/kuvo-defaults.js`: generated OpenCode defaults. |
+| 3.2 | 2 | `chats` and `run/glance-source.json`: session storage and the ask checkpoint source. |
+| 4.1b | 1 | `run/agents.json`: bridge startup record. Resident agent adoption owns any readers that still depend on it. |
+| 4.1c | 1 | `run/socket.key`: independently generated local tool authentication key. |
+| 5.1 | 7 | `bots`, `box/approval.json`, `run/bots-seen`, `run/work`, `run/work/{background,told}.json`, and `wakes`: bot and wake folders, approval defaults, and background work records. |
+| 5.2 | 2 | `run/work-queue/{model,numbers}.json`: queue startup model and number allocation records. |
+| 5.4 | 12 | `agents`, `agents/limits.json`, `agents/usage`, its `{claude,grok,codex}-files` directories, `insights.sqlite` and its `-shm` and `-wal` files, `settings.json`, and `usage.json`; also `run/usage-attribution.json`. These are usage scanners, limits, settings and SQLite startup state. |
+| 5.5 | 10 | `artifacts` and its `citations-v1.json`, `copies`, `index-v1.sqlite`, `key`, and `log`; `box/marketplace` and its `mcp-relay-v1.json`; `library` and its `backfill.json`. |
+| 6.1 | 2 | `run/fence` and `run/fence/agents.md`: generated sandbox instructions. |
+| 7.2 | 1 | `run/link.version`: build marker differs because the two binaries have different build IDs. U24 verifies that the released-machine move answers from the selected Rust release. |
+| 7.3 | 2 | `run/link.json` fields `macMoved` and `macPeers`: legacy Mac coordination defaults. |
+| **Total** | **74** | |

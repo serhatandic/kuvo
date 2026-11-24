@@ -16,11 +16,29 @@ use kuvo_os::{
 use kuvo_store::home::Home;
 
 const TAG: &[u8] = b"# kuvo-code: starts its engine again after a restart";
+#[cfg(target_os = "linux")]
+const START: &[u8] = b"@reboot sh \"$HOME/.kuvo-code/bin/kuvo-start\" >/dev/null 2>&1 # kuvo-code: starts its engine again after a restart\n";
 const MAX_TABLE: u64 = 2_000_000;
+
+enum Change {
+    Check,
+    Remove,
+    #[cfg(target_os = "linux")]
+    Install,
+}
 
 /// A scratch home can use a local stand-in. The real crontab belongs only to
 /// the canonical installation in the system account.
 pub fn uninstall(home: &Home, check: bool) -> io::Result<Option<bool>> {
+    edit(home, if check { Change::Check } else { Change::Remove })
+}
+
+#[cfg(target_os = "linux")]
+pub fn install(home: &Home) -> io::Result<Option<bool>> {
+    edit(home, Change::Install)
+}
+
+fn edit(home: &Home, change: Change) -> io::Result<Option<bool>> {
     let account = Account::current()?;
     let mut env: Environment = std::env::vars_os().collect();
     let profile = account
@@ -50,17 +68,17 @@ pub fn uninstall(home: &Home, check: bool) -> io::Result<Option<bool>> {
     task.cwd = Some(profile);
     task.stdout = Stdio::Pipe;
     task.stderr = Stdio::Pipe;
-    let listed = run(&mut task, "-l", None)?;
+    let mut listed = run(&mut task, "-l", None)?;
     if !listed.status.success() {
-        if String::from_utf8_lossy(&listed.stderr)
+        if !String::from_utf8_lossy(&listed.stderr)
             .to_ascii_lowercase()
             .contains("no crontab")
         {
-            return Ok(Some(false));
+            return Err(io::Error::other(
+                "Kuvo couldn’t read the account's crontab.",
+            ));
         }
-        return Err(io::Error::other(
-            "Kuvo couldn’t read the account's crontab.",
-        ));
+        listed.stdout.clear();
     }
     let mut kept = Vec::with_capacity(listed.stdout.len());
     let mut found = false;
@@ -71,17 +89,33 @@ pub fn uninstall(home: &Home, check: bool) -> io::Result<Option<bool>> {
             kept.extend_from_slice(line);
         }
     }
-    if found && !check {
-        if !kept.is_empty() && !kept.ends_with(b"\n") {
-            kept.push(b'\n');
+    match change {
+        Change::Remove if found => write_table(&mut task, kept, "remove its line in")?,
+        #[cfg(target_os = "linux")]
+        Change::Install if !found => {
+            end_line(&mut kept);
+            kept.extend_from_slice(START);
+            write_table(&mut task, kept, "add its line to")?;
         }
-        if !run(&mut task, "-", Some(kept))?.status.success() {
-            return Err(io::Error::other(
-                "Kuvo couldn’t remove its line in the crontab.",
-            ));
-        }
+        _ => {}
     }
     Ok(Some(found))
+}
+
+fn end_line(table: &mut Vec<u8>) {
+    if !table.is_empty() && !table.ends_with(b"\n") {
+        table.push(b'\n');
+    }
+}
+
+fn write_table(task: &mut Spawn, mut table: Vec<u8>, action: &str) -> io::Result<()> {
+    end_line(&mut table);
+    if !run(task, "-", Some(table))?.status.success() {
+        return Err(io::Error::other(format!(
+            "Kuvo couldn’t {action} the crontab."
+        )));
+    }
+    Ok(())
 }
 
 fn run(task: &mut Spawn, arg: &str, input: Option<Vec<u8>>) -> io::Result<Output> {

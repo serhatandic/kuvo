@@ -36,7 +36,10 @@ const ARRIVING_FOR: u64 = 120_000;
 
 mod handoff;
 mod limit;
+mod target;
 mod views;
+
+pub(crate) use target::{Place, Target};
 #[cfg(windows)]
 mod windows_socket;
 
@@ -145,6 +148,10 @@ impl Inbox {
             .as_ref()
             .and_then(|payload| payload.text.as_deref())
             .or(self.text.as_deref())
+    }
+
+    pub(crate) fn text_is(&self, text: &str) -> bool {
+        self.text() == Some(text)
     }
 
     fn is_message(&self) -> bool {
@@ -395,6 +402,10 @@ impl QueueStore {
 }
 
 impl Queue {
+    pub(crate) fn is_paused(&self) -> bool {
+        self.paused
+    }
+
     pub(crate) fn letter_wait_reason(&self, home: &Path) -> String {
         let returns = "Its answer, if it writes one, comes to you as a message.";
         if !self.paused {
@@ -446,6 +457,13 @@ impl Queue {
 
     pub(crate) fn contains(&self, id: &str) -> bool {
         self.waiting.iter().any(|item| item.id == id)
+    }
+
+    /// Whether something from `from` waits here on the box with these words.
+    pub(crate) fn waits_from(&self, from: &str, words: &str) -> bool {
+        self.waiting
+            .iter()
+            .any(|item| item.from.as_deref() == Some(from) && item.text == words)
     }
 
     fn keep_held(&mut self, mut moved: Vec<String>, inbox: &[Inbox]) {
@@ -609,12 +627,12 @@ fn file_names(files: &[Value]) -> Vec<String> {
 
 async fn with_items(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     queue: Queue,
     inbox: &[Inbox],
 ) -> Result<Value, Refusal> {
-    let queue = handoff::pending(engine, lease, session, queue, inbox).await?;
+    let queue = handoff::pending(engine, target, session, queue, inbox).await?;
     let mut shown = queue.shown(&engine.home);
     let mut items = Vec::new();
     for id in queue.order(inbox) {
@@ -723,64 +741,55 @@ fn save_failed(error: io::Error) -> Refusal {
 
 pub(crate) async fn inbox(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
 ) -> Result<Vec<Inbox>, api::Error> {
-    engine
-        .call(
-            lease,
-            Method::GET,
-            &format!("{}/inbox", sessions::path(session)),
-            None,
-        )
-        .await
+    target.inbox(engine, session).await
 }
 
 pub(crate) async fn reached(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     id: &str,
 ) -> Result<bool, api::Error> {
-    if inbox(engine, lease, session)
+    if inbox(engine, target, session)
         .await?
         .iter()
         .any(|item| item.id == id)
     {
         return Ok(true);
     }
-    transcript_has(engine, lease, session, id).await
+    transcript_has(engine, target, session, id).await
 }
 
 async fn transcript_has(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     id: &str,
 ) -> Result<bool, api::Error> {
-    let path = format!("{}/message/{}", sessions::path(session), api::segment(id));
-    match engine.call::<Value>(lease, Method::GET, &path, None).await {
-        Ok(message) if message["id"] == id || message["info"]["id"] == id => Ok(true),
-        Err(error) if error.missing() => Ok(false),
-        Err(error) => Err(error),
-        Ok(_) => Err(api::Error::Status(
-            StatusCode::BAD_GATEWAY,
-            "The engine did not confirm the message by ID.".into(),
-        )),
-    }
+    target.has_message(engine, session, id).await
 }
 
-async fn command_target(engine: &Engine, session: &str) -> Result<Lease, Refusal> {
+async fn command_target(engine: &Engine, session: &str) -> Result<Place, Refusal> {
+    if let Some(place) = Place::agents(engine, session).await? {
+        return Ok(place);
+    }
     let lease = api::start(engine).await?;
     sessions::read(engine, &lease, &sessions::path(session)).await?;
-    Ok(lease)
+    Ok(Place::Engine(lease))
 }
 
 pub(crate) async fn check_add_target(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
 ) -> Result<(), Refusal> {
+    // The coding agents' conversation was found where its place was.
+    let Target::Engine(lease) = target else {
+        return Ok(());
+    };
     match engine
         .call_raw(
             lease,
@@ -835,10 +844,10 @@ pub(crate) async fn snapshot(
     if !items {
         return Ok(queue.shown(&engine.home));
     }
-    if let Some(lease) = engine.acquire(Demand::Passive).await
-        && let Ok(inbox) = inbox(engine, &lease, session).await
+    if let Some(place) = Place::passive(engine, session).await
+        && let Ok(inbox) = inbox(engine, place.target(), session).await
     {
-        with_items(engine, &lease, session, queue, &inbox).await
+        with_items(engine, place.target(), session, queue, &inbox).await
     } else {
         let mut shown = queue.shown(&engine.home);
         shown["items"] = Value::Null;
@@ -863,16 +872,16 @@ fn queue_failed(error: api::Error) -> Refusal {
 
 pub(crate) async fn hold_arrival(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     id: &str,
 ) -> io::Result<()> {
-    let rows = inbox(engine, lease, session)
+    let rows = inbox(engine, target, session)
         .await
         .map_err(io::Error::other)?;
     let found = match rows.iter().find(|row| row.id == id && row.is_message()) {
         Some(row) if row.delivery == Delivery::Steer => {
-            set_delivery(engine, lease, session, id, Delivery::Queue)
+            set_delivery(engine, target, session, id, Delivery::Queue)
                 .await
                 .is_ok()
         }
@@ -886,7 +895,7 @@ pub(crate) async fn hold_arrival(
             .iter()
             .filter(|row| row.id != id && row.is_message() && row.delivery == Delivery::Steer)
         {
-            if set_delivery(engine, lease, session, &row.id, Delivery::Queue)
+            if set_delivery(engine, target, session, &row.id, Delivery::Queue)
                 .await
                 .is_ok()
             {
@@ -912,38 +921,21 @@ pub(crate) async fn hold_arrival(
 
 async fn set_delivery(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     id: &str,
     delivery: Delivery,
 ) -> Result<(), api::Error> {
-    let path = format!("{}/inbox/{}", sessions::path(session), api::segment(id));
-    engine
-        .call::<Value>(
-            lease,
-            Method::PATCH,
-            &path,
-            Some(&json!({ "delivery": delivery })),
-        )
-        .await?;
-    Ok(())
+    target.set_delivery(engine, session, id, delivery).await
 }
 
 pub(crate) async fn interrupt(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     resume: bool,
 ) -> Result<(), api::Error> {
-    let path = format!(
-        "{}/interrupt{}",
-        sessions::path(session),
-        if resume { "?resume=true" } else { "" }
-    );
-    engine
-        .call::<Value>(lease, Method::POST, &path, None)
-        .await?;
-    Ok(())
+    target.interrupt(engine, session, resume).await
 }
 
 async fn holding(
@@ -975,10 +967,10 @@ async fn holding(
         let _turn = tokio::time::timeout(std::time::Duration::from_secs(10), engine.turn(session))
             .await
             .ok();
-        return hold_admitted(engine, &lease, session, given, Hold::UserStop).await;
+        return hold_admitted(engine, lease.target(), session, given, Hold::UserStop).await;
     }
     let _turn = engine.turn(session).await;
-    hold_admitted(engine, &lease, session, given, Hold::Queue).await
+    hold_admitted(engine, lease.target(), session, given, Hold::Queue).await
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -990,18 +982,18 @@ pub(crate) enum Hold {
 
 pub(crate) async fn hold_on(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     given: Vec<String>,
     how: Hold,
 ) -> Result<Value, Refusal> {
     let _admitted = crate::session_move::admit(engine, session, None).await?;
-    hold_admitted(engine, lease, session, given, how).await
+    hold_admitted(engine, target, session, given, how).await
 }
 
 async fn hold_admitted(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     given: Vec<String>,
     how: Hold,
@@ -1023,7 +1015,7 @@ async fn hold_admitted(
             .await
             .map_err(save_failed)?;
     }
-    let initial = inbox(engine, lease, session).await.map_err(queue_failed)?;
+    let initial = inbox(engine, target, session).await.map_err(queue_failed)?;
     let mut held = Vec::new();
     for id in given.iter().chain(
         initial
@@ -1036,26 +1028,19 @@ async fn hold_admitted(
         }
         if let Some(item) = initial.iter().find(|row| &row.id == id && row.is_message())
             && (item.delivery == Delivery::Queue
-                || set_delivery(engine, lease, session, id, Delivery::Queue)
+                || set_delivery(engine, target, session, id, Delivery::Queue)
                     .await
                     .is_ok())
         {
             held.push(id.clone());
         }
     }
-    let remaining = inbox(engine, lease, session).await.unwrap_or(initial);
+    let remaining = inbox(engine, target, session).await.unwrap_or(initial);
     for summary in remaining
         .iter()
         .filter(|row| !row.is_message() && how == Hold::UserStop)
     {
-        let path = format!(
-            "{}/inbox/{}",
-            sessions::path(session),
-            api::segment(&summary.id)
-        );
-        let _ = engine
-            .call::<Value>(lease, Method::DELETE, &path, None)
-            .await;
+        let _ = target.take_back(engine, session, &summary.id).await;
     }
     let queue = engine
         .queues
@@ -1063,7 +1048,7 @@ async fn hold_admitted(
         .await
         .map_err(save_failed)?;
     if how != Hold::Queue {
-        interrupt(engine, lease, session, false)
+        interrupt(engine, target, session, false)
             .await
             .map_err(queue_failed)?;
     }
@@ -1079,20 +1064,20 @@ pub(crate) enum Advance {
 
 pub(crate) async fn advance(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     id: &str,
     how: Advance,
 ) -> Result<bool, Refusal> {
     let current = engine.queues.get(session).await.map_err(save_failed)?;
-    let running = is_running(engine, lease, session)
+    let running = is_running(engine, target, session)
         .await
         .map_err(queue_failed)?;
     if how == Advance::AfterTurn && running {
         return Ok(true);
     }
     if current.contains(id) {
-        if !handoff::send(engine, lease, session, id, true).await? {
+        if !handoff::send(engine, target, session, id, true).await? {
             return Ok(false);
         }
         if how != Advance::AfterTurn {
@@ -1103,7 +1088,7 @@ pub(crate) async fn advance(
                 .map_err(save_failed)?;
         }
         if running {
-            interrupt(engine, lease, session, true)
+            interrupt(engine, target, session, true)
                 .await
                 .map_err(queue_failed)?;
         }
@@ -1116,13 +1101,13 @@ pub(crate) async fn advance(
     {
         return Ok(false);
     }
-    let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
+    let inbox = inbox(engine, target, session).await.map_err(queue_failed)?;
     let Some(item) = inbox.iter().find(|item| item.id == id && item.is_message()) else {
         return Ok(false);
     };
     let now = how == Advance::Now || !running;
     if item.delivery == Delivery::Queue
-        && let Err(error) = set_delivery(engine, lease, session, id, Delivery::Steer).await
+        && let Err(error) = set_delivery(engine, target, session, id, Delivery::Steer).await
     {
         if error.missing() {
             return Ok(false);
@@ -1142,42 +1127,36 @@ pub(crate) async fn advance(
         .await
         .map_err(save_failed)?;
     if now && (running || item.delivery == Delivery::Steer) {
-        interrupt(engine, lease, session, true)
+        interrupt(engine, target, session, true)
             .await
             .map_err(queue_failed)?;
     }
     Ok(true)
 }
 
-async fn is_running(engine: &Engine, lease: &Lease, session: &str) -> Result<bool, api::Error> {
-    let active = engine
-        .call::<Value>(lease, Method::GET, "api/session/active", None)
-        .await?;
-    Ok(active
-        .as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row == session))
-        || active.get(session).is_some_and(|value| !value.is_null()))
+async fn is_running(engine: &Engine, target: Target<'_>, session: &str) -> Result<bool, api::Error> {
+    target.is_running(engine, session).await
 }
 
 async fn resume_queue(engine: &Engine, session: &str) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
     let _admitted = crate::session_move::admit(engine, session, None).await?;
     let lease = command_target(engine, session).await?;
-    resume_on(engine, &lease, session).await
+    resume_on(engine, lease.target(), session).await
 }
 
 pub(crate) async fn resume_move(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     movement: &str,
 ) -> Result<(), Refusal> {
     let _turn = engine.turn(session).await;
     let _admitted = crate::session_move::admit(engine, session, Some(movement)).await?;
-    resume_on(engine, lease, session).await.map(|_| ())
+    resume_on(engine, target, session).await.map(|_| ())
 }
 
-async fn resume_on(engine: &Engine, lease: &Lease, session: &str) -> Result<Value, Refusal> {
+async fn resume_on(engine: &Engine, target: Target<'_>, session: &str) -> Result<Value, Refusal> {
     let current = engine.queues.get(session).await.map_err(save_failed)?;
     engine
         .queues
@@ -1189,13 +1168,13 @@ async fn resume_on(engine: &Engine, lease: &Lease, session: &str) -> Result<Valu
         .put(session, Queue::release)
         .await
         .map_err(save_failed)?;
-    if !is_running(engine, lease, session)
+    if !is_running(engine, target, session)
         .await
         .map_err(queue_failed)?
     {
-        let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
+        let inbox = inbox(engine, target, session).await.map_err(queue_failed)?;
         if let Some(id) = saved.order(&inbox).first() {
-            advance(engine, lease, session, id, Advance::AfterTurn).await?;
+            advance(engine, target, session, id, Advance::AfterTurn).await?;
         }
     }
     Ok(engine
@@ -1238,7 +1217,7 @@ pub(crate) async fn pack_move(
             .get(session)
             .await
             .map_err(MoveEngineError::Storage)?;
-        let entries = inbox(engine, lease, session).await?;
+        let entries = inbox(engine, Target::Engine(lease), session).await?;
         if !state.paused && !entries.is_empty() {
             return Err(MoveEngineError::WaitingQueue);
         }
@@ -1688,7 +1667,7 @@ where
         let _turn = engine.turn(&session).await;
         let _admitted = crate::session_move::admit(&engine, &session, None).await?;
         let lease = command_target(&engine, &session).await?;
-        if !advance(&engine, &lease, &session, &id, how).await? {
+        if !advance(&engine, lease.target(), &session, &id, how).await? {
             return Err(not_waiting());
         }
         Ok::<_, Refusal>(
@@ -1745,7 +1724,7 @@ async fn reorder_reply(
     })?;
     let _admitted = crate::session_move::admit(engine, &session, None).await?;
     let lease = command_target(engine, &session).await?;
-    let inbox = inbox(engine, &lease, &session)
+    let inbox = inbox(engine, lease.target(), &session)
         .await
         .map_err(queue_failed)?;
     // Read the inbox before taking the writer's turn. An Add or a confirmed
@@ -1789,7 +1768,7 @@ async fn reorder_reply(
         .await
         .map_err(save_failed)?;
     Ok(RouteReply::json::<200>(sessions::typed(
-        with_items(engine, &lease, &session, queue, &inbox).await?,
+        with_items(engine, lease.target(), &session, queue, &inbox).await?,
     )?))
 }
 
@@ -1923,9 +1902,9 @@ async fn remove_reply(
             .map_err(save_failed)?;
         return Err(not_waiting());
     }
-    let mut lease = engine.acquire(Demand::Passive).await;
+    let mut lease = Place::passive(engine, &session).await;
     let items = match &lease {
-        Some(lease) => inbox(engine, lease, &session).await.ok(),
+        Some(lease) => inbox(engine, lease.target(), &session).await.ok(),
         None => None,
     };
     let mut removal = if let Some(existing) = existing {
@@ -1942,7 +1921,7 @@ async fn remove_reply(
         {
             if !handoff::removable(
                 engine,
-                lease.as_ref(),
+                lease.as_ref().map(Place::target),
                 &session,
                 &id,
                 &current.handoffs,
@@ -1994,7 +1973,7 @@ async fn remove_reply(
             if crate::query(&call.request.path, "arriving").as_deref() == Some("1") {
                 if send::was_sent(engine, &session, &id).await?
                     || match lease.as_ref() {
-                        Some(lease) => reached(engine, lease, &session, &id).await.unwrap_or(false),
+                        Some(lease) => reached(engine, lease.target(), &session, &id).await.unwrap_or(false),
                         None => false,
                     }
                 {
@@ -2042,20 +2021,17 @@ async fn remove_reply(
             };
             let items = match items {
                 Some(items) => items,
-                None => inbox(engine, &lease, &session)
+                None => inbox(engine, lease.target(), &session)
                     .await
                     .map_err(queue_failed)?,
             };
             if items.iter().any(|row| row.id == id) {
-                let path = format!("{}/inbox/{}", sessions::path(&session), api::segment(&id));
-                if let Err(error) = engine
-                    .call::<Value>(&lease, Method::DELETE, &path, None)
-                    .await
+                if let Err(error) = lease.target().take_back(engine, &session, &id).await
                     && !error.missing()
                 {
                     return Err(queue_failed(error));
                 }
-                if inbox(engine, &lease, &session)
+                if inbox(engine, lease.target(), &session)
                     .await
                     .map_err(queue_failed)?
                     .iter()
@@ -2067,7 +2043,7 @@ async fn remove_reply(
                     ));
                 }
             }
-            if transcript_has(engine, &lease, &session, &id)
+            if transcript_has(engine, lease.target(), &session, &id)
                 .await
                 .map_err(queue_failed)?
             {
@@ -2165,7 +2141,7 @@ impl Engine {
         }
         let lease = command_target(self, session).await?;
         let _turn = self.turn(session).await;
-        hold_on(self, &lease, session, Vec::new(), Hold::LeadStop).await?;
+        hold_on(self, lease.target(), session, Vec::new(), Hold::LeadStop).await?;
         Ok(())
     }
 
@@ -2279,7 +2255,7 @@ async fn inbox_inventory(engine: &Engine, lease: &Lease) -> io::Result<Vec<Strin
 }
 
 async fn transfer(engine: &Engine, lease: &Lease, session: &str) -> io::Result<usize> {
-    let rows = inbox(engine, lease, session)
+    let rows = inbox(engine, Target::Engine(lease), session)
         .await
         .map_err(io::Error::other)?;
     let state = engine.queues.get(session).await?;
@@ -2366,7 +2342,7 @@ async fn transfer(engine: &Engine, lease: &Lease, session: &str) -> io::Result<u
             Err(error) => return Err(io::Error::other(error)),
         }
     }
-    if inbox(engine, lease, session)
+    if inbox(engine, Target::Engine(lease), session)
         .await
         .map_err(io::Error::other)?
         .iter()
@@ -2401,7 +2377,7 @@ fn sendable(files: &[Value]) -> Vec<Value> {
 }
 
 async fn drain_waiting(engine: &Engine, lease: &Lease, session: &str) -> io::Result<usize> {
-    let mut steer = !is_running(engine, lease, session)
+    let mut steer = !is_running(engine, Target::Engine(lease), session)
         .await
         .map_err(io::Error::other)?;
     let mut sent = 0;
@@ -2414,7 +2390,7 @@ async fn drain_waiting(engine: &Engine, lease: &Lease, session: &str) -> io::Res
         else {
             break;
         };
-        match handoff::send(engine, lease, session, id, steer).await {
+        match handoff::send(engine, Target::Engine(lease), session, id, steer).await {
             Ok(true) => {}
             Ok(false) => {
                 return Err(io::Error::other(
@@ -2449,6 +2425,27 @@ impl Drop for QueueEvents {
             token.cancel();
         }
     }
+}
+
+/// Follow the coding agents' conversations as the engine's: their line and
+/// turn events, in the engine's words, drive the same queue reactions.
+pub(crate) fn follow_agents(engine: Engine, mut events: tokio::sync::broadcast::Receiver<crate::AgentEvent>) {
+    tokio::spawn(async move {
+        let stop = tokio_util::sync::CancellationToken::new();
+        let _stop = stop.clone().drop_guard();
+        let mut queues = QueueEvents::default();
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    queues.hear(&engine, &event.session, event.kind, &event.data, stop.clone())
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    engine.queues.notify();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 impl QueueEvents {
@@ -2618,7 +2615,7 @@ pub(crate) async fn scan(engine: &Engine, lease: &Lease) -> io::Result<()> {
         let Some(session) = row["id"].as_str().filter(|id| sessions::valid_id(id)) else {
             continue;
         };
-        let Ok(entries) = inbox(engine, lease, session).await else {
+        let Ok(entries) = inbox(engine, Target::Engine(lease), session).await else {
             continue;
         };
         if entries.is_empty() && row["outcome"] != "failed" {
@@ -2736,9 +2733,10 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
             .await?;
         return Ok(());
     }
-    let Some(lease) = engine.acquire(Demand::Passive).await else {
+    let Some(place) = Place::passive(engine, session).await else {
         return Ok(());
     };
+    let lease = place.target();
     let saved = engine.queues.get(session).await?;
     if matches!(operation, QueueEvent::Prune) && saved.held.is_empty() {
         return Ok(());
@@ -2755,9 +2753,8 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
             return Ok(());
         }
         if matches!(operation, QueueEvent::Failed(_)) {
-            let path = format!("{}/message?limit=6&order=desc", sessions::path(session));
-            let page = engine
-                .call::<Vec<Value>>(&lease, Method::GET, &path, None)
+            let page = lease
+                .recent(engine, session, 6)
                 .await
                 .unwrap_or_default();
             if page
@@ -2765,10 +2762,10 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
                 .find(|row| row["type"] != "idle")
                 .is_some_and(|row| row["type"] == "compaction" && row["status"] == "failed")
             {
-                let entries = inbox(engine, &lease, session)
+                let entries = inbox(engine, lease, session)
                     .await
                     .map_err(io::Error::other)?;
-                drain(engine, &lease, session, &saved, &entries).await?;
+                drain(engine, lease, session, &saved, &entries).await?;
                 return Ok(());
             }
         }
@@ -2787,7 +2784,7 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
                 .await?;
         }
     }
-    let entries = inbox(engine, &lease, session)
+    let entries = inbox(engine, lease, session)
         .await
         .map_err(io::Error::other)?;
     let waiting = entries
@@ -2815,23 +2812,16 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
                 .iter()
                 .filter(|row| row.delivery == Delivery::Steer && !saved.held.contains(&row.id))
             {
-                if set_delivery(engine, &lease, session, &item.id, Delivery::Queue)
+                if set_delivery(engine, lease, session, &item.id, Delivery::Queue)
                     .await
                     .is_ok()
                 {
                     moved.push(item.id.clone());
                 }
             }
-            let remaining = inbox(engine, &lease, session).await.unwrap_or(entries);
+            let remaining = inbox(engine, lease, session).await.unwrap_or(entries);
             for summary in remaining.iter().filter(|row| !row.is_message()) {
-                let path = format!(
-                    "{}/inbox/{}",
-                    sessions::path(session),
-                    api::segment(&summary.id)
-                );
-                let _ = engine
-                    .call::<Value>(&lease, Method::DELETE, &path, None)
-                    .await;
+                let _ = lease.take_back(engine, session, &summary.id).await;
             }
             engine
                 .queues
@@ -2839,7 +2829,7 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
                 .await?;
         }
         QueueEvent::Drain => {
-            drain(engine, &lease, session, &saved, &entries).await?;
+            drain(engine, lease, session, &saved, &entries).await?;
         }
     }
     Ok(())
@@ -2849,7 +2839,7 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
 /// The caller owns the session turn while reading and advancing it.
 async fn drain(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     queue: &Queue,
     entries: &[Inbox],
@@ -2861,7 +2851,7 @@ async fn drain(
     let Some(id) = order.first() else {
         return Ok(true);
     };
-    advance(engine, lease, session, id, Advance::AfterTurn)
+    advance(engine, target, session, id, Advance::AfterTurn)
         .await
         .map_err(|_| io::Error::other("The next waiting message could not be sent."))
 }

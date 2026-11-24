@@ -6,7 +6,7 @@ use futures_util::future::{BoxFuture, FutureExt, Shared};
 use serde_json::Value;
 use tokio::sync::{oneshot, watch};
 
-use crate::{Engine, lifetime::Demand};
+use crate::Engine;
 
 type Reply = Option<Arc<Value>>;
 type Reading = Shared<BoxFuture<'static, Reply>>;
@@ -47,13 +47,16 @@ impl Views {
     }
 
     pub async fn refresh(&self, engine: &Engine, session: &str) -> Sample {
-        let Some(lease) = engine.acquire(Demand::Passive).await else {
+        let Some(place) = super::Place::passive(engine, session).await else {
             self.0.send_modify(|book| {
                 book.sessions.remove(session);
             });
             return Sample::default();
         };
-        let identity = (lease.record.pid, lease.record.port);
+        let identity = match &place {
+            super::Place::Engine(lease) => (lease.record.pid, lease.record.port),
+            super::Place::Agents(_) => (std::process::id(), 0),
+        };
         let mut sample = Sample::default();
         let mut start = None;
         self.0.send_modify(|book| {
@@ -92,8 +95,8 @@ impl Views {
             tokio::spawn(async move {
                 let result = async {
                     let queue = home.queues.get(&session).await.ok()?;
-                    let inbox = super::inbox(&home, &lease, &session).await.ok()?;
-                    super::with_items(&home, &lease, &session, queue, &inbox)
+                    let inbox = super::inbox(&home, place.target(), &session).await.ok()?;
+                    super::with_items(&home, place.target(), &session, queue, &inbox)
                         .await
                         .ok()
                         .map(Arc::new)

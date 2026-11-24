@@ -133,6 +133,11 @@ if [ "$SYSTEM" = darwin ] && [ -x "$D/kuvo-install-bin" ]; then
         new) exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" --start ;;
     esac
 fi
+if [ "$SYSTEM" = linux ] && [ -x "$D/kuvo-install-bin" ]; then
+    case "$VERB" in
+        status | new | move) exec "$D/kuvo-install-bin" install-linux "$VERB" "$D" "$ROOT" ;;
+    esac
+fi
 
 sum_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 sum512_of() { if command -v sha512sum >/dev/null 2>&1; then sha512sum "$1" | cut -d' ' -f1; else shasum -a 512 "$1" | cut -d' ' -f1; fi; }

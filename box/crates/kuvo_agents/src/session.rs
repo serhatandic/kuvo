@@ -2,10 +2,14 @@
 
 use crate::{hold::TurnNote, runtime::AdapterCall};
 use serde_json::{Map, Value};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-/// Stored as the vendor's additive `agent.json` object. Keys and values within
-/// this object belong to the adapter.
+/// Stored as the agent's own slot of the conversation's `agent.json`
+/// (`threads.<provider>.state`), beside the inbox and other agents' slots.
+/// Keys and values within this object belong to the adapter.
 pub type VendorState = Map<String, Value>;
 
 pub struct SessionContext {
@@ -82,6 +86,18 @@ pub trait Thread: Send + Sync {
         sink: Arc<dyn TurnSink>,
     ) -> AdapterCall<'_, Arc<dyn ActiveTurn>>;
 
+    /// The adapter's own conversation files, which count as part of its
+    /// working area when the resident checks tool permissions.
+    fn owns_path(&self, _path: &Path) -> bool {
+        false
+    }
+
+    /// Whether its turns take a message partway through. Messages sent to one
+    /// that doesn't wait for the turn's end.
+    fn takes_steers(&self) -> bool {
+        true
+    }
+
     /// Look for a previously uncertain delivery in the native conversation.
     /// Return `None` while it is still uncertain.
     fn resolve_steer(&self, _receipt: SteerReceipt) -> AdapterCall<'_, Option<bool>> {
@@ -90,6 +106,13 @@ pub trait Thread: Send + Sync {
 }
 
 pub trait ActiveTurn: Send + Sync {
+    /// The receipt a message handed to this turn will have, known before it
+    /// is sent. The resident saves it first, so after a crash it settles the
+    /// message through `Thread::resolve_steer` instead of sending it again.
+    fn steer_receipt(&self, _prompt: &Prompt) -> Option<SteerReceipt> {
+        None
+    }
+
     fn steer(&self, _prompt: Prompt) -> AdapterCall<'_, Steer> {
         Box::pin(async { Ok(Steer::Declined) })
     }
@@ -184,6 +207,27 @@ pub struct TurnError {
     pub message: String,
     pub status: Option<u16>,
     pub limit: Option<Limit>,
+}
+
+impl TurnError {
+    /// As clients read it: `{type, message, status?, limit?}`.
+    pub fn reason(&self) -> Value {
+        let mut reason = serde_json::json!({"type":self.kind,"message":self.message});
+        if let Some(status) = self.status {
+            reason["status"] = serde_json::json!(status);
+        }
+        if let Some(limit) = &self.limit {
+            let scope = match limit.scope {
+                LimitScope::Provider => "provider",
+                LimitScope::Model => "model",
+            };
+            reason["limit"] = serde_json::json!({"scope":scope});
+            if let Some(at) = limit.resets_at {
+                reason["limit"]["resetsAt"] = serde_json::json!(at);
+            }
+        }
+        reason
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
