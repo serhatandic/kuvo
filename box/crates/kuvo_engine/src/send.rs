@@ -379,6 +379,20 @@ async fn deliver(
         return Ok(answer.value.clone());
     }
     let interrupted = saved.is_some();
+    // Resolve a new send before inspecting its attachment capabilities. Those
+    // extra reads are optional and have their own shorter deadline.
+    let lease = if saved.is_none()
+        && !engine
+            .queues
+            .get(session)
+            .await
+            .map_err(disk_failure)?
+            .contains(&arrival.id)
+    {
+        Some(delivery_target(engine, session, arrival.form).await?)
+    } else {
+        None
+    };
     let mut receipt = match saved {
         Some(receipt) => receipt,
         None => Receipt {
@@ -400,25 +414,10 @@ async fn deliver(
     let mut delivered = false;
     let mut answer = json!({});
     if !admitted {
-        let lease = api::start(engine).await?;
-        if request.form == Form::Add {
-            queue::check_add_target(engine, &lease, session).await?;
-        } else {
-            let route = sessions::path(session);
-            match engine
-                .call::<Value>(&lease, Method::GET, &route, None)
-                .await
-            {
-                Ok(_) => {}
-                Err(error) if error.missing() => {
-                    return Err(Refusal::new(
-                        StatusCode::NOT_FOUND,
-                        "There's no such conversation here.",
-                    ));
-                }
-                Err(_) => return Err(engine_busy()),
-            }
-        }
+        let lease = match lease {
+            Some(lease) => lease,
+            None => delivery_target(engine, session, request.form).await?,
+        };
         if interrupted {
             delivered = queue::reached(engine, &lease, session, id)
                 .await
@@ -507,6 +506,28 @@ async fn deliver(
             .map_err(disk_failure)?;
     }
     Ok(answer)
+}
+
+async fn delivery_target(engine: &Engine, session: &str, form: Form) -> Result<Lease, Refusal> {
+    let lease = api::start(engine).await?;
+    if form == Form::Add {
+        queue::check_add_target(engine, &lease, session).await?;
+    } else {
+        match engine
+            .call::<Value>(&lease, Method::GET, &sessions::path(session), None)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if error.missing() => {
+                return Err(Refusal::new(
+                    StatusCode::NOT_FOUND,
+                    "There's no such conversation here.",
+                ));
+            }
+            Err(_) => return Err(engine_busy()),
+        }
+    }
+    Ok(lease)
 }
 
 async fn apply(

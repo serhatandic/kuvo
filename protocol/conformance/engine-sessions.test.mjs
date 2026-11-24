@@ -1749,15 +1749,14 @@ test("Stop holds a named send before its composed attachment reaches OpenCode", 
   const send = request(resident, "POST", route + "/send", {
     id: theId, words: "See the attachment.", delivery: "steer",
     files: [{ uri: "data:image/png;base64,UE5H", name: "evidence.png" }],
-  }, headers);
+  }, headers, 25000);
   await entered.promise;
-  const stopping = request(resident, "POST", route + "/stop", { items: [theId] }, headers);
+  const stopping = request(resident, "POST", route + "/stop", { items: [theId] }, headers, 25000);
   try {
     await until(() => {
       try { return readJSON(path.join(here.home, "run", "queues.json"))?.[session]?.arriving?.[theId]; }
       catch { return false; }
     }, "Stop records the named send");
-    release.resolve();
     const stopped = await stopping;
     assert.equal(stopped.status, 200, stopped.text);
     assert.equal(stopped.json.paused, true);
