@@ -23,7 +23,7 @@ use kuvo_keeper::{
 use kuvo_peers::{
     directory::{PreparedRelease, ReleaseProgress, UpdateFacts},
     reach::UpdatePresence,
-    setup_lists::{BridgeUpdate, ResidentPeers, UpdatePublication, View},
+    setup_lists::{BridgeAdmission, BridgeUpdate, ResidentPeers, UpdatePublication, View},
 };
 use kuvo_setup::SetupHandle;
 use kuvo_store::{files, home::Home};
@@ -92,14 +92,24 @@ fn feed(home: &Home, profile: &Path) -> Option<(String, String, bool)> {
     }
 }
 
-pub fn bridge_version(home: &Home, profile: &Path) -> Option<String> {
+pub fn installed_bridge(home: &Home, profile: &Path) -> Option<BridgeAdmission> {
     let (_, key, _) = feed(home, profile)?;
     let selected = fleet::selected(home).ok()??;
     let running = Candidate::verify(fleet::installed_envelope(home, &selected)?, &key).ok()?;
     if running.local().ok()?.target().ok()? != selected {
         return None;
     }
-    Some(running.bridge(&key).ok()??.version().into())
+    let bridge = running.bridge(&key).ok()??.local().ok()?;
+    let local_trial = fleet::installed(home).ok()?.1.is_some_and(|working| {
+        working != selected && bridge.target().is_ok_and(|target| target == working)
+    });
+    Some(BridgeAdmission {
+        release: PreparedRelease {
+            version: bridge.version,
+            sha256: bridge.sha256,
+        },
+        local_trial,
+    })
 }
 
 pub fn start(

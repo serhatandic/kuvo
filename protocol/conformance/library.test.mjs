@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "no
 import path from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { boxBinary, boxCommand, isolatedEnv, scratch, until } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, request, scratch, until } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 
@@ -495,4 +495,96 @@ test("merged Library and Outputs views include away peers' kept copies and pendi
   assert.equal(outFrame.d.artifacts[0].computer.id, member.key);
   assert.equal(outFrame.d.artifacts[0].away, true);
   assert.equal(typeof outFrame.d.artifacts[0].lastSeen, "number");
+});
+
+test("marketplace, programs and mcp catalog routes match across boxes", async t => {
+  const { computer } = await bench(t);
+  const box = await computer("MarketBox");
+  mkdirSync(path.join(box.home, "box"), { recursive: true });
+  mkdirSync(path.join(box.home, "bin"), { recursive: true });
+  writeFileSync(path.join(box.home, "box", "opencode.json"), "{}\n");
+  writeFileSync(path.join(box.home, "bin", "mcp-catalog.json"), JSON.stringify({
+    servers: [
+      { id: "context7", title: "Context7", summary: "Docs", access: "open", settings: { type: "remote", url: "https://c7.example/mcp" } },
+      { id: "linear", title: "Linear", summary: "Issues", access: "signIn", settings: { type: "remote", url: "https://linear.example/mcp" } },
+      { id: "later", title: "Future", summary: "Unknown access", access: "pairing" },
+    ],
+  }));
+
+  const ready = await box.start().ready();
+  const ask = box.connect(ready);
+  const appAsk = (method, route, body) => request(ready, method, route, body, { "x-kuvo-from": "app" });
+
+  await t.test("kuvo/programs reports missing, relative/variable unknown, and bad empty name", async () => {
+    assert.equal((await ask("GET", "kuvo/programs?name=")).status, 400);
+    const missing = await ask("GET", "kuvo/programs?name=kuvo-definitely-missing-bin-xyz");
+    assert.equal(missing.status, 200);
+    assert.equal(missing.json.path, null);
+    assert.equal(missing.json.unknown, undefined);
+    const unk = await ask("GET", "kuvo/programs?name=.%2Fserver");
+    assert.equal(unk.status, 200);
+    assert.deepEqual(unk.json, { name: "./server", path: null, unknown: true });
+  });
+
+  await t.test("kuvo/mcp/catalog lists known access words and adds a server with codemode false", async () => {
+    const cat = await ask("GET", "kuvo/mcp/catalog");
+    assert.equal(cat.status, 200);
+    assert.deepEqual(cat.json.servers.map(s => [s.id, s.access, s.added]), [
+      ["context7", "open", false],
+      ["linear", "signIn", false],
+    ]);
+    const added = await ask("POST", "kuvo/mcp/catalog/context7", {});
+    assert.equal(added.status, 200);
+    assert.equal(added.json.mcp.servers.context7.codemode, false);
+    assert.equal((await ask("POST", "kuvo/mcp/catalog/later", {})).status, 404);
+  });
+
+  await t.test("kuvo/marketplace serves bundled catalog, PNG logo, custom app projection, and skill lifecycle", async () => {
+    const listed = await appAsk("GET", "kuvo/marketplace");
+    assert.equal(listed.status, 200);
+    const [apps, agents, skills] = listed.json.areas;
+    assert.deepEqual([apps.count, agents.count, skills.count], [10, 6, 8]);
+    assert.ok(apps.items.some(a => a.id === "github" && a.logo === "kuvo/marketplace/apps/github/logo"));
+    assert.ok(!apps.items.some(a => a.id === "slack"));
+
+    const logo = await appAsk("GET", "kuvo/marketplace/apps/github/logo");
+    assert.equal(logo.status, 200);
+    assert.equal(logo.bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+
+    // Add custom open app -> projected to opencode.json -> remove -> cleaned from opencode.json
+    const cust = await appAsk("POST", "kuvo/marketplace/apps/custom", {
+      title: "Docs MCP", url: "https://docs.example.com/mcp", auth: "open",
+    });
+    assert.equal(cust.status, 200);
+    assert.equal(cust.json.id, "docs-mcp");
+    const cfg1 = JSON.parse(readFileSync(path.join(box.home, "box", "opencode.json"), "utf8"));
+    assert.equal(cfg1.mcp.servers["marketplace-docs-mcp"].url, "https://docs.example.com/mcp");
+    assert.equal((await appAsk("DELETE", "kuvo/marketplace/apps/docs-mcp")).status, 200);
+    const cfg2 = JSON.parse(readFileSync(path.join(box.home, "box", "opencode.json"), "utf8"));
+    assert.equal(cfg2.mcp?.servers?.["marketplace-docs-mcp"], undefined);
+
+    // Create -> toggle enabled -> edit -> delete -> restore skill
+    assert.equal((await appAsk("POST", "kuvo/marketplace/skills/create", {
+      name: "release-notes", description: "Write release notes", instructions: "Summarize commits.",
+    })).status, 200);
+    assert.equal((await appAsk("POST", "kuvo/marketplace/skills/release-notes/enabled", { on: false })).status, 200);
+    const det = await appAsk("GET", "kuvo/marketplace/skills/release-notes");
+    assert.equal(det.status, 200);
+    assert.equal((await appAsk("PATCH", "kuvo/marketplace/skills/release-notes", {
+      was: det.json.revision, description: "Write crisp release notes", instructions: "Group by area.",
+    })).status, 200);
+    const det2 = await appAsk("GET", "kuvo/marketplace/skills/release-notes");
+    assert.equal((await appAsk("DELETE", "kuvo/marketplace/skills/release-notes", { was: det2.json.revision })).status, 200);
+    const afterDel = await appAsk("GET", "kuvo/marketplace");
+    const delItem = afterDel.json.areas[2].here.deleted.items.find(i => i.title === "release-notes");
+    assert.ok(delItem, "deleted skill appears in Recently Deleted");
+    assert.equal((await appAsk("POST", "kuvo/marketplace/skills/restore", { id: delItem.id })).status, 200);
+    assert.equal((await appAsk("GET", "kuvo/marketplace/skills/release-notes")).json.installed, true);
+
+    // Other Places add & remove
+    assert.equal((await appAsk("POST", "kuvo/marketplace/skills/places", { place: "/tmp/extra-skills" })).status, 200);
+    const withPlace = await appAsk("GET", "kuvo/marketplace");
+    assert.deepEqual(withPlace.json.areas[2].here.places.items.map(i => i.title), ["/tmp/extra-skills"]);
+    assert.equal((await appAsk("DELETE", "kuvo/marketplace/skills/places", { index: 0 })).status, 200);
+  });
 });

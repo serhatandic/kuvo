@@ -31,7 +31,7 @@ use crate::{
     devices::Devices,
     directory::{
         AgentKind, AnnouncedAgent, Announcement, Announcements, ComputerKey, Owner, Ownership,
-        RecordScope, Roster, UpdateFacts, owned_digest,
+        PreparedRelease, RecordScope, Roster, UpdateFacts, owned_digest,
     },
     kept,
     lists::{self, Computer, Lists, Local},
@@ -69,6 +69,7 @@ pub struct View {
     pub(crate) move_waiting: Arc<BTreeSet<String>>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
+    bridge: Option<Arc<BridgeAdmission>>,
     update: Arc<UpdatePublication>,
     work_calls: bool,
     transfers: bool,
@@ -80,6 +81,31 @@ pub struct View {
 }
 
 impl View {
+    pub(crate) fn in_bridge_handoff(&self, peer: &str) -> bool {
+        self.bridge.as_ref().is_some_and(|bridge| {
+            self.announced
+                .get(peer)
+                .and_then(|entry| entry.computer.as_ref())
+                .is_some_and(|computer| computer.in_bridge_handoff(&bridge.release))
+        })
+    }
+
+    pub(crate) fn local_work_admitted(&self) -> bool {
+        self.bridge.as_ref().is_none_or(|bridge| {
+            !bridge.local_trial
+                || self
+                    .update
+                    .facts
+                    .kuvo
+                    .as_deref()
+                    .is_some_and(|version| version != bridge.release.version)
+        })
+    }
+
+    pub(crate) fn work_admitted(&self, peer: &str) -> bool {
+        self.local_work_admitted() && !self.in_bridge_handoff(peer)
+    }
+
     pub(crate) fn local_update_row(&self) -> Option<&FleetRow> {
         self.update.local_row.as_ref()
     }
@@ -494,6 +520,11 @@ pub struct BridgeUpdate {
     pub facts: UpdateFacts,
 }
 
+pub struct BridgeAdmission {
+    pub release: PreparedRelease,
+    pub local_trial: bool,
+}
+
 #[derive(Default, PartialEq)]
 pub struct UpdatePublication {
     pub facts: UpdateFacts,
@@ -539,12 +570,25 @@ impl ResidentPeers {
         telling: bool,
         clock: Clock,
     ) -> io::Result<Self> {
+        Self::start_with_bridge(home, roster, relay, devices, telling, clock, None).await
+    }
+
+    pub async fn start_with_bridge(
+        home: &Path,
+        roster: Roster,
+        relay: Option<Relay>,
+        devices: Option<Devices>,
+        telling: bool,
+        clock: Clock,
+        bridge: Option<BridgeAdmission>,
+    ) -> io::Result<Self> {
         let run = home.join("run");
         let files = Arc::new(run.clone());
         let endpoint = relay.as_ref().map(|relay| Arc::new(relay.endpoint.clone()));
-        let resident =
+        let mut resident =
             tokio::task::spawn_blocking(move || Resident::load(run, roster, telling, endpoint))
                 .await?;
+        resident.view.bridge = bridge.map(Arc::new);
         let (publish, views) = watch::channel(Arc::new(resident.view.clone()));
         let (sent_agents, agent_mail) = watch::channel(AgentMail::new());
         let (changes, change_rx) = mpsc::channel(16);
@@ -623,6 +667,15 @@ impl ResidentPeers {
         engine: kuvo_engine::Engine,
         ownership: crate::ownership::Handle,
     ) -> io::Result<()> {
+        self.attach_moves_with_queue(engine, ownership, None).await
+    }
+
+    pub async fn attach_moves_with_queue(
+        &mut self,
+        engine: kuvo_engine::Engine,
+        ownership: crate::ownership::Handle,
+        queue: Option<Arc<dyn crate::moves::work_queue::WorkQueueTransfer>>,
+    ) -> io::Result<()> {
         let Some(relay) = self.relay_handle() else {
             return Ok(());
         };
@@ -636,6 +689,7 @@ impl ResidentPeers {
             engine.clone(),
             ownership.clone(),
             self.move_waiting.clone(),
+            queue,
         )?);
         self.letters = Some(crate::letters::start(
             self.reader(),
@@ -731,6 +785,7 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             move_waiting: Arc::default(),
             relay_connected: false,
+            bridge: None,
             update: Arc::default(),
             work_calls: false,
             transfers: false,

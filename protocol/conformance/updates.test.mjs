@@ -14,6 +14,7 @@ import { gzipSync } from "node:zlib";
 
 import { boxBinary, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { sessionOf } from "./engine.mjs";
 import "./update-helper.mjs";
 
 const { peerTransferMs, keeperTrialMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
@@ -349,6 +350,107 @@ async function pairedUpdateComputers(t) {
   await old.stop();
   return { main, member };
 }
+
+async function runsOn(record) {
+  const line = await openLine(record, "", "kuvo/setup/runs-on/events");
+  try {
+    assert.equal(line.status, 200);
+    for await (const frame of line.frames()) return frame;
+  } finally {
+    line.close();
+  }
+  assert.fail("Runs on returned no snapshot");
+}
+
+test("the returning bridge stays out of work placement during its Rust trial", { timeout: 60000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust resident's trial announcement.");
+  const { main, member } = await pairedUpdateComputers(t);
+  const { body, key } = box(t);
+  const feed = createServer((_request, response) => response.writeHead(404).end());
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const pack = { url: `${url}/rust.tar.gz`, sha256: digest("Rust pack") };
+  const bridgePack = { url: `${url}/bridge.tar.gz`, sha256: digest("bridge pack") };
+  const bridgeVersion = "0.8.0-beta.49";
+  const bridge = encode(envelope({ ...body, version: bridgeVersion, pack: bridgePack }, key)).toString();
+  const signed = encode(envelope({ ...body, pack, bridge, launch: "rust", packs: { [target]: pack } }, key));
+  const selected = `versions/${body.version}-${pack.sha256.slice(0, 12)}`;
+  const previous = `versions/${bridgeVersion}-${bridgePack.sha256.slice(0, 12)}`;
+  const trial = path.join(member.home, "run/previous");
+  for (const peer of [main, member]) {
+    write(path.join(peer.home, "active-release"), selected + "/bin");
+    write(path.join(peer.home, selected, "boxes.json"), signed);
+  }
+  write(path.join(member.home, previous, "boxes.json"), bridge);
+  write(trial, previous + "/bin");
+  const sender = "ses_confirmedWork", recipient = "ses_returningWork";
+  for (const [computer, id] of [[main, sender], [member, recipient]]) {
+    const directory = path.join(computer.home, "chats");
+    fs.mkdirSync(directory, { recursive: true });
+    computer.engine.sessions.push(sessionOf({ id, title: id, directory }));
+  }
+  const updateEnv = { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
+  const [observer, returning] = await Promise.all([main.start(binary, updateEnv).ready(), member.start(binary, updateEnv).ready()]);
+  const peerKey = (await request(returning, "GET", "kuvo/setup")).json.you.key;
+  const announced = path.join(main.home, "run/peer-agents.json");
+  const facts = () => fs.existsSync(announced) && readJSON(announced)[peerKey]?.computer;
+  await until(() => {
+    const said = facts();
+    return said?.kuvo === bridgeVersion && said.releaseTarget === target &&
+      said.installedSha256 === bridgePack.sha256 && said.switching?.sha256 === pack.sha256;
+  }, "the Rust resident should announce its trial while the bridge remains current");
+  const row = async () => (await runsOn(observer)).computers.find(item => item.computer.id === peerKey);
+  const waiting = await until(row, "the returning computer should have a placement row");
+  assert.deepEqual([waiting.away, waiting.updating], [true, true]);
+  const mainKey = (await request(observer, "GET", "kuvo/setup")).json.you.key;
+  await until(() => {
+    try { return readJSON(path.join(member.home, "run/peer-agents.json"))[mainKey]?.features?.includes("moves.two-computers"); }
+    catch { return false; }
+  }, "the returning resident should know the confirmed main");
+  const pending = [];
+  for (const [computer, local, remote, here, there] of [
+    [main, sender, recipient, mainKey, peerKey], [member, recipient, sender, peerKey, mainKey],
+  ]) {
+    const outbox = path.join(computer.home, "run/outbox/sending");
+    const remoteFile = path.join(outbox, "ltr_trialWork.json");
+    const controlFile = path.join(outbox, "ltr_localWork.json");
+    const letter = (to, peer, words, at) => ({ to, peer, text: words, at, wait: false,
+      note: { from: "Your computers", words, delivery: "queue" } });
+    write(remoteFile, JSON.stringify(letter(remote, there, "Work after confirmation", Date.now() - 1000)));
+    write(controlFile, JSON.stringify(letter(local, here, "Local work", Date.now())));
+    await until(() => !fs.existsSync(controlFile), "the local letter should finish a real outbox round");
+    assert.equal(readJSON(remoteFile).sentTo, undefined, "the remote letter should not have been attempted");
+    pending.push(remoteFile);
+  }
+  for (const [resident, id, to] of [[observer, sender, peerKey], [returning, recipient, mainKey]]) {
+    await until(async () => (await request(resident, "GET", `api/session/${id}`)).status === 200,
+      "the saved conversation should be readable");
+    const direct = await request(resident, "POST", "kuvo/moves", { kind: "chat", id, to, receipt: true });
+    assert.equal(direct.status, 409, direct.text);
+    const places = await request(resident, "GET", `kuvo/moves/places?kind=chat&id=${id}`);
+    assert.equal(places.status, 200, places.text);
+    assert.equal(places.json.places.find(place => place.key === to)?.ok, false);
+  }
+
+  // The keeper owns confirmation. Publish its saved result and let the resident observe it.
+  fs.unlinkSync(trial);
+  await until(() => facts()?.kuvo === body.version && !facts()?.switching, "the main should hear the confirmed Rust release");
+  await until(async () => {
+    const ready = await row();
+    return ready && !ready.away && !ready.updating;
+  }, "the confirmed Rust resident should be available for work");
+  await until(() => pending.every(file => !fs.existsSync(file)), "both saved remote letters should settle after confirmation");
+  for (const [computer, session] of [[main, sender], [member, recipient]]) {
+    await until(() => computer.engine.messages.get(session)?.some(message => message.text?.includes("Work after confirmation")),
+      "the remote work should arrive in the conversation");
+    assert.equal(computer.engine.messages.get(session).filter(message => message.text?.includes("Work after confirmation")).length, 1);
+  }
+  const direct = await request(observer, "POST", "kuvo/moves", { kind: "chat", id: sender, to: peerKey, receipt: true });
+  assert.equal(direct.status, 202, direct.text);
+});
 
 test("the main can ask a reachable member to retry its failed fleet download", { timeout: 60000 }, async t => {
   const binary = boxBinary();
@@ -1565,16 +1667,7 @@ Buffer.from = function (value, encoding, ...args) {
     retryDownload = Boolean(shellKeepers);
     peerOnly = Boolean(failover || returningTypescript);
     const bridgeBin = bridgeBeta ? `versions/${bridgeVersion}-${bridgeHash.slice(0, 12)}/bin` : undefined;
-    const placement = async () => {
-      const resident = readJSON(path.join(leader.home, "run/serve.json"));
-      const line = await openLine(resident, "", "kuvo/setup/runs-on/events");
-      try {
-        assert.equal(line.status, 200);
-        for await (const frame of line.frames()) return frame;
-      } finally {
-        line.close();
-      }
-    };
+    const placement = () => runsOn(readJSON(path.join(leader.home, "run/serve.json")));
     if (bridgeBin) {
       const source = path.join(leader.home, "run/peer-agents.json");
       const to = readJSON(path.join(away.home, "run/link.json"));
@@ -1953,6 +2046,44 @@ async function concurrentInstallStatus(start, home) {
   }
 }
 
+test("Linux installer status distinguishes a machine launcher from an interrupted making", t => {
+  if (process.platform !== "linux") return t.skip("Uses the Linux machine installer verdict.");
+  const binary = boxBinary();
+  const root = scratch();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const starter = path.join(home, "bin/kuvo-start");
+  const making = path.join(home, "updates/install/making");
+  const link = path.join(home, "run/link.json");
+  const key = path.join(home, "box/keys/k");
+  const starterBody = "#!/bin/sh\nexit 0\n";
+  const linkBody = JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] });
+  const command = ["install", "--status", "--root", ".kuvo-code"];
+  const ask = (verdict, verb) => {
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file,
+      binary.typescript ? ["--config=/dev/null", "--no-env-file", binary.file, ...command] : command,
+      { cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const reply = JSON.parse(result.stdout);
+    assert.deepEqual([reply.verdict, reply.verb], [verdict, verb]);
+    return reply;
+  };
+  write(starter, starterBody, { mode: 0o700 });
+  const machine = ask("machine", null);
+  write(making, "1\n");
+  const fresh = ask("fresh", "new");
+  write(link, linkBody);
+  write(key, "saved key");
+  assert.deepEqual(ask("fresh", "new"), fresh);
+  assert.deepEqual(machine.status, fresh.status);
+  assert.deepEqual([starter, making, link, key].map(file => fs.readFileSync(file, "utf8")),
+    [starterBody, "1\n", linkBody, "saved key"]);
+  assert.equal(fs.existsSync(path.join(home, "active-release")), false);
+  t.diagnostic(JSON.stringify({ machine, fresh }));
+});
+
 test("signed Linux installer makes a fresh machine and keeps unrelated reboot jobs", { timeout: 120000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
@@ -2248,6 +2379,125 @@ test("signed Linux media moves the two released machines after they return", { t
   }
 });
 
+async function startReleasedWorkers({ account, home }, prior, environment) {
+  const executable = path.join(home, "engine/2.0.32/opencode");
+  fs.mkdirSync(path.dirname(executable), { recursive: true });
+  fs.copyFileSync(path.join(prior, "opencode"), executable);
+  fs.chmodSync(executable, 0o700);
+  for (const file of ["kuvo-link.js", "kuvo-agents.js"]) fs.copyFileSync(path.join(prior, file), path.join(home, "bin", file));
+  const env = { ...environment, HOME: account, TMPDIR: path.join(account, "tmp"), KUVO_HOME: home,
+    XDG_DATA_HOME: path.join(home, "data"), XDG_CONFIG_HOME: path.join(home, "config"),
+    XDG_STATE_HOME: path.join(home, "state"), XDG_CACHE_HOME: path.join(home, "cache"), OPENCODE_PASSWORD: "fixture-password" };
+  const engine = launch(executable, ["serve", "--port", "0", "--hostname", "127.0.0.1"], env, path.join(home, "workspace"), "pipe");
+  let output = "";
+  engine.child.stdout.on("data", chunk => { output += chunk; });
+  let oldLink, supervisor, bridgePid, bridgeStart;
+  const startIdentity = pid => {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  };
+  const stop = async () => {
+    await Promise.all([engine.stop(), oldLink?.stop(), supervisor?.stop()]);
+    if (bridgeStart && startIdentity(bridgePid) === bridgeStart) {
+      try { process.kill(bridgePid, "SIGTERM"); }
+      catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
+  };
+  try {
+    const listening = await until(() => /server listening[^\n]*127\.0\.0\.1:(\d+)/i.exec(output + engine.log()),
+      () => "the released engine did not answer\n" + output + engine.log(), 30000);
+    const port = Number(listening[1]);
+    write(path.join(home, "run/engine.json"), JSON.stringify({ pid: engine.child.pid, port, password: env.OPENCODE_PASSWORD, version: "2.0.32", notes: {} }));
+    oldLink = launch(executable, [path.join(home, "bin/kuvo-link.js"), "run"], { ...env, BUN_BE_BUN: "1" }, home);
+    await until(() => fs.existsSync(path.join(home, "run/link.pid")) && Number(fs.readFileSync(path.join(home, "run/link.pid"), "utf8")) === oldLink.child.pid,
+      () => "the released link did not start\n" + oldLink.log());
+    const reserve = createServer();
+    reserve.listen(0, "127.0.0.1");
+    await once(reserve, "listening");
+    const agentsPort = reserve.address().port;
+    await new Promise(resolve => reserve.close(resolve));
+    supervisor = launch("/bin/sh", ["-c", 'while kill -0 "$1" 2>/dev/null; do "$2" "$3" >>"$4" 2>&1; sleep 5; done',
+      "kuvo-agents", String(engine.child.pid), executable, path.join(home, "bin/kuvo-agents.js"), path.join(home, "run/agents.log")],
+      { ...env, BUN_BE_BUN: "1", KUVO_AGENTS_REMOTE: "1", KUVO_AGENTS_HOME: path.join(home, "agents"),
+        KUVO_AGENTS_PORT: String(agentsPort), KUVO_AGENTS_PASSWORD: "fixture-agents", KUVO_ENGINE_PORT: String(port), KUVO_ENGINE_PID: String(engine.child.pid) }, home);
+    write(path.join(home, "run/agents.pid"), String(supervisor.child.pid));
+    bridgePid = await until(() => {
+      try { return readJSON(path.join(home, "run/bridge.json")).pid; } catch { return undefined; }
+    }, "the released agents bridge did not start", 30000);
+    bridgeStart = startIdentity(bridgePid);
+    return { env, engine, oldLink, supervisor, bridgePid, stop };
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+}
+
+test("a signed installer takes over a live released 0.7.2 machine", { timeout: 240000 }, async t => {
+  const binary = boxBinary();
+  const cache = process.env.KUVO_CONFORMANCE_RELEASED_MACHINES;
+  const prior = process.env.KUVO_CONFORMANCE_RELEASED_ENGINE;
+  if (binary.typescript || process.platform !== "linux" || !cache || !prior) {
+    return t.skip("Supply the released 0.7.2 engine and programs.");
+  }
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const environment = isolatedEnv(root);
+  const key = keypair();
+  const { media, version, pack } = await linuxInstallMedia(t, binary, root, key);
+  const { account, home, identity, link, before, legacyBin } = seedReleasedMachine(root, "v0.7.2", path.join(cache, "v0.7.2"));
+  const workers = await startReleasedWorkers({ account, home }, prior, environment);
+  const { env, engine, oldLink, supervisor } = workers;
+  const install = () => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), "released-machine", "--identity", identity], {
+    cwd: account, env: { ...env, KUVO_TEST_RELEASE_KEY: key.key }, encoding: "utf8", timeout: 90000,
+  });
+  try {
+
+    const launching = path.join(home, "run/.launching");
+    fs.mkdirSync(launching);
+    const starting = install();
+    assert.equal(starting.status, 4, starting.stdout + starting.stderr);
+    assert.ok(fs.statSync(launching).isDirectory());
+    fs.rmdirSync(launching);
+    const unrelated = launch("/bin/sleep", ["60"], env, home);
+    try {
+      write(path.join(home, "run/box.pid"), String(unrelated.child.pid));
+      const refused = install();
+      assert.equal(refused.status, 4, refused.stdout + refused.stderr);
+      for (const pid of [unrelated.child.pid, engine.child.pid, oldLink.child.pid, supervisor.child.pid, workers.bridgePid]) {
+        assert.ok(fs.readFileSync(`/proc/${pid}/cmdline`).length > 0, "a refused handoff must leave each live writer alone");
+      }
+    } finally {
+      await unrelated.stop();
+      fs.rmSync(path.join(home, "run/box.pid"), { force: true });
+    }
+    write(path.join(launching, "released-install.json"), JSON.stringify({ pid: unrelated.child.pid, startIdentity: "an earlier start" }));
+    const upgraded = install();
+    assert.equal(upgraded.status, 0, upgraded.stdout + upgraded.stderr);
+    assert.deepEqual(JSON.parse(upgraded.stdout), { result: "done", started: true });
+    await Promise.all([engine.exited, oldLink.exited, supervisor.exited]);
+    assert.ok(!fs.existsSync(`/proc/${workers.bridgePid}/cmdline`) || !fs.readFileSync(`/proc/${workers.bridgePid}/cmdline`).length,
+      "the earlier agents bridge must stop as well");
+    const selected = fs.readlinkSync(path.join(home, "bin"));
+    assert.equal(selected, `versions/${version}-${pack.sha256.slice(0, 12)}/bin`);
+    const ready = readJSON(path.join(home, "run/serve.json"));
+    assert.equal((await request(ready, "GET", "kuvo/info")).status, 200);
+    assert.equal(readJSON(link).key, before.key);
+    assert.equal(readJSON(link).secret, before.secret);
+    assert.equal(fs.readFileSync(path.join(home, "workspace/notes"), "utf8"), "work kept on the released machine");
+    assert.equal(fs.existsSync(launching), false);
+  } finally {
+    await workers.stop();
+    if (fs.lstatSync(path.join(home, "bin")).isSymbolicLink()) {
+      const stopped = spawnSync("/bin/sh", [legacyBin, "off"], { cwd: home, env, encoding: "utf8", timeout: 15000 });
+      assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+    }
+  }
+});
+
 test("the main sends signed installer media to a returning 0.7.2 machine", { timeout: 150000 }, async t => {
   const binary = boxBinary();
   const cache = process.env.KUVO_CONFORMANCE_RELEASED_MACHINES;
@@ -2293,16 +2543,21 @@ exec /bin/sh -c "$command"
     KC_REACHED: reached, KC_REMOTE_HOME: returned.account, KUVO_TEST_RELEASE_KEY: key.key,
     KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${releaseFeed.address().port}/boxes.json` };
   const main = startBox({ binary, home, env, relay: { url: "ws://127.0.0.1:1" } });
+  let workers;
   try {
     assert.equal((await request(await main.ready(), "GET", "kuvo/info")).status, 200);
     await until(() => fs.existsSync(reached), () => `the main should try the saved SSH address\n${main.log()}`, 15000);
     assert.equal(fs.existsSync(path.join(returned.home, "folder-version.json")), false);
+    if (process.env.KUVO_CONFORMANCE_RELEASED_ENGINE) {
+      workers = await startReleasedWorkers(returned, process.env.KUVO_CONFORMANCE_RELEASED_ENGINE, environment);
+    }
     const started = performance.now();
     write(online, "");
     const ready = await until(() => {
       try { return readJSON(path.join(returned.home, "run/serve.json")); } catch { return undefined; }
     }, () => `the returning machine should answer from the Rust keeper\n${main.log()}`, 90000);
     assert.equal((await request(ready, "GET", "kuvo/info")).status, 200);
+    if (workers) await Promise.all([workers.engine.exited, workers.oldLink.exited, workers.supervisor.exited]);
     assert.equal(fs.readlinkSync(path.join(returned.home, "bin")), selected + "/bin");
     assert.equal(fs.existsSync(path.join(returned.home, "run/keeper-start-refused")), true);
     assert.equal(readJSON(returned.link).key, returned.before.key);
@@ -2319,6 +2574,7 @@ exec /bin/sh -c "$command"
     releaseFeed.close();
     releaseFeed.closeAllConnections();
     await main.stop();
+    await workers?.stop();
     if (fs.lstatSync(path.join(returned.home, "bin")).isSymbolicLink()) {
       const stopped = spawnSync("/bin/sh", [returned.legacyBin, "off"], {
         cwd: returned.home, env: { ...environment, HOME: returned.account, TMPDIR: path.join(returned.account, "tmp") },

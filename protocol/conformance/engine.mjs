@@ -328,7 +328,9 @@ export async function standInEngine(root, env) {
         return;
       }
       if (route === "GET /api/pty") return send({ data: engine.terminals.has(folderOf(request)) ? [{ id: "pty_here", status: "running" }] : [] });
-      if (["GET /api/form", "GET /api/permission/request", "GET /api/shell"].includes(route)) return send({ data: [] });
+      // The commands left running in the folder asked about.
+      if (route === "GET /api/shell") return send({ data: (engine.shells ?? []).filter(job => path.normalize(job.folder) === path.normalize(folderOf(request))).map(({ folder: _, ...job }) => job) });
+      if (["GET /api/form", "GET /api/permission/request"].includes(route)) return send({ data: [] });
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") {
         const session = decodeURIComponent(messages[1]);

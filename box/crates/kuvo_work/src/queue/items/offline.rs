@@ -149,10 +149,10 @@ impl Writer {
                     peer: Some(key), computer: json!({"key":kuvo_wire::keys::encode(&key),"name":computer.name,"kind":computer.kind}),
                 })
             };
-            if let Some(item) = all.iter().find(|item| item.id == target.id) {
-                if writer.owns_editor(&target, &here, Some(item)) {
-                    return Ok(Some(Location { key: here, peer: None, computer: Value::Null }));
-                }
+            if let Some(item) = all.iter().find(|item| item.id == target.id)
+                && writer.owns_editor(&target, &here, Some(item))
+            {
+                return Ok(Some(Location { key: here, peer: None, computer: Value::Null }));
             }
             if let Some(known) = writer.reads.known_owner(&all, &target.id)? {
                 return Ok(Some(Location { key: kuvo_wire::keys::encode(&known.key), peer: Some(known.key), computer: known.computer }));
@@ -337,12 +337,11 @@ impl Writer {
         if location.peer.is_none()
             && entry.owner == id.here
             && let Some(draft) = entry.queued_edit
+            && let Some(applied) = self.apply_draft(draft, id.here.clone()).await?
         {
-            if let Some(applied) = self.apply_draft(draft, id.here.clone()).await? {
-                let kept = applied.clone();
-                blocking(move || outbox.finish(&id.setup, &id.here, kept)).await?;
-                receipt = applied;
-            }
+            let kept = applied.clone();
+            blocking(move || outbox.finish(&id.setup, &id.here, kept)).await?;
+            receipt = applied;
         }
         Ok(RecordEditAnswer {
             status: types::status(&receipt),
@@ -527,20 +526,19 @@ impl Writer {
                 }
             }
         }
-        if let Some(answer) = queue.get("offlineEditReceipt") {
-            if let Some(setup) = answer["setup"]
+        if let Some(answer) = queue.get("offlineEditReceipt")
+            && let Some(setup) = answer["setup"]
                 .as_str()
                 .filter(|setup| self.accepts_editor(setup, sender))
-                && valid_receipt(&answer["receipt"])
-            {
-                let setup = setup.to_owned();
-                let sender = sender.to_owned();
-                let receipt = answer["receipt"].clone();
-                let outbox = OwnedOutbox::new(&self.store);
-                tokio::task::spawn_blocking(move || outbox.finish(&setup, &sender, receipt))
-                    .await
-                    .map_err(io::Error::other)??;
-            }
+            && valid_receipt(&answer["receipt"])
+        {
+            let setup = setup.to_owned();
+            let sender = sender.to_owned();
+            let receipt = answer["receipt"].clone();
+            let outbox = OwnedOutbox::new(&self.store);
+            tokio::task::spawn_blocking(move || outbox.finish(&setup, &sender, receipt))
+                .await
+                .map_err(io::Error::other)??;
         }
         Ok(())
     }

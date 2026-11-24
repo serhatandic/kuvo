@@ -101,7 +101,8 @@ pub(super) fn supports_moves(view: &View, key: &str, checkpointed: bool) -> bool
         .announced
         .get(key)
         .and_then(|entry| entry.features.as_ref());
-    features.is_none_or(|features| features.iter().any(|feature| feature == "moves"))
+    view.work_admitted(key)
+        && features.is_none_or(|features| features.iter().any(|feature| feature == "moves"))
         && (!checkpointed
             || features.is_some_and(|features| {
                 features
@@ -427,7 +428,7 @@ pub(crate) fn register_start(
                 let why = if moving { Some((super::driver::MOVING.into(), "Moving already")) }
                     else if let Some(reason) = &background { Some((reason.clone(), "Running something")) }
                     else if !supports_moves(&view, &key, accepted) {
-                        Some((needs_update(name), "Needs a newer Kuvo Code"))
+                        Some((needs_update(if view.local_work_admitted() { name } else { "This computer" }), "Needs a newer Kuvo Code"))
                     } else if view.reach.peer_is_away(&key, entry.and_then(|entry| entry.heard), look.now()) {
                         Some((format!("{name} isn’t connected. Connect to it, then try again."), "Can’t be reached"))
                     } else { None };

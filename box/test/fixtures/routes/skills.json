@@ -103,7 +103,7 @@
             { "id": "trailofbits/skills" }, { "id": "K-Dense-AI/scientific-agent-skills" }, { "id": "wshobson/agents" }
           ] } }
         },
-        { "send": "PUT kuvo/skill-library", "expect": { "status": 404, "json": {} } }
+        { "send": "PUT kuvo/skill-library", "expect": { "status": 405, "json": {} } }
       ]
     }
   ]

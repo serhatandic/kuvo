@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Moving a conversation to another computer carries its Work Queue, its attachments and saved decisions; a changed attachment keeps the move from switching.
+- Work Queue totals on Rust computers include older Done and Canceled items kept on other Rust computers, even when only recent items are listed.
 - The Rust box checks Claude Code sign-in and lists the models available to each account.
 - Allowing a coding agent's command works again after a while with only coding agents at work: it no longer fails with "Kuvo couldn't verify this computer's current permissions", and Full Access no longer asks about every command then.
 - When Claude Code stops before answering, the error shows its last complete line, including words it wrote just after it stopped, and never part of a line it was still writing.
@@ -52,7 +54,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The Mac installer explains when there is nothing to move or an earlier move needs to finish first.
 - The Mac installer reports an unreadable move journal before preparing a release.
 - The Mac installer offers to start Kuvo Helper when its launchd job is loaded but stopped.
-- A returning computer taking the TypeScript bridge stays out of Runs on until the Rust resident starts.
+- A returning computer taking the TypeScript bridge stays out of Runs on, conversation moves and cross-computer messages until the keeper confirms Rust.
 - On Linux, a route socket from the earlier program no longer blocks the backup before switching to Rust.
 - The Linux installer can set up a computer from a signed Rust release and retry a failed first start while keeping earlier work.
 - After a successful Linux install, earlier unfinished installer staging no longer makes the computer look uninstalled.
@@ -80,7 +82,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The computers list shows when it last heard from an unreachable computer even if that computer sent no update status.
 - The installer reports damaged release media, a local engine archive path, or a failed engine download during its status check, before it writes to the computer’s home.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
-- A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
+- A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address, including when its earlier engine and link are still running.
 
 - An acknowledgement for the wrong part no longer advances a move before that part arrives.
 - A moved conversation opens on its new computer while the original is still being cleaned up.

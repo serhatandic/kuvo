@@ -9,6 +9,7 @@ mod labels;
 mod mentions;
 
 mod migration;
+mod moves;
 mod numbers;
 mod peer_reads;
 mod refs;
@@ -20,4 +21,5 @@ mod store;
 mod told;
 mod view;
 
-pub use routes::{Runtime, register};
+pub use moves::transfer as move_transfer;
+pub use routes::{Network, Runtime, register};

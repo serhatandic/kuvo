@@ -8,7 +8,14 @@ status, order and fields, reads and writes manual relations, previews Markdown
 references, and stages client attachments with stable anchors and collision-safe
 names. Inline picture markers can be removed separately from their files. The
 peer snapshot capability exchanges combined views, retained deletions and
-reference chips. Whole items and attachments can be read quietly from their
+reference chips. Rust snapshots also carry optional per-status counts of
+unlisted items, so setup-wide status and computer totals include older
+closed work. The two-resident conformance case checks all 150 items across
+the 100-row limit, reopening an older record and closing it again. It is
+skipped on the frozen TypeScript box, which still caps remote counts.
+Text, source, label and individual-owner filtering still counts matching
+listed rows; the aggregate does not describe the omitted rows' contents.
+Whole items and attachments can be read quietly from their
 keeper through the same transport as setup search. A computer can send an item
 edit, delete or restore to its keeper through the tracked request and receipt
 exchange. Markdown imports read the backlog files and claim each number on the
@@ -46,7 +53,13 @@ item through a prepare and release exchange. The source retires it only after
 the destination saves the item and its receipt. The original number and the
 source conversation's view survive. An attachment that needs multiple relay
 frames travels with the moved item's saved decision. Other items' decisions
-stay on the source.
+stay on the source. A full conversation move also carries its queue items,
+original numbers, deletion fences, files and exactly the forwarding decisions
+addressed to those records. The two-resident scenario carries a file that
+had no saved digest, and verifies the destination's durable proof. If the
+source attachment changes before the switch, the original stays there and
+the destination rolls back its file, item and deletion fence. The ordinary
+conversation move passes with either Rust or TypeScript at each end.
 The private label restore command previews the main computer's accepted
 library over the quiet read transport. A member sends a restore to the main,
 which signs the save and publishes it to the setup. Migrated items settle after
@@ -101,7 +114,7 @@ checks the initial migration and future-format refusal through a real resident.
 | [setup-handover](../../box/bridge-tests/setup-handover.test.js) 1–5 | Open for 5.2 queue handoff, owner reads and independent queue work while the main computer is offline. Move evidence and transfers belong to 2.4. |
 | [setup-lists](../../box/test/setup-lists.test.ts) 16, 20 and 28 | Open, 5.2 and 2.4. Move placement, away deletions and the first copy in the combined view. |
 | [setup-handover-shared](../../box/bridge-tests/setup-handover-shared.test.js) 2–4, 6–7, 9–10 | Partial for member preview and restore. Large label restores, old and unreachable main, number blocks across takeover, paired grants, offline edits and deletion recoveries remain open in 5.2. |
-| [setup-handover-lease](../../box/bridge-tests/setup-handover-lease.test.js) number allocation following unlink and takeover | Open, 5.2. |
+| [setup-handover-lease](../../box/bridge-tests/setup-handover-lease.test.js) 4; 3 | Case 4 covered: after unlinking its last member, the sole remaining main allocates a number greater than its last one. Case 3's takeover number allocation remains open in 5.2. |
 | [setup-handover-access](../../box/bridge-tests/setup-handover-access.test.js) forwarded receipts across changes and revocation | Open for the queue scope, 5.2 and 2.3. |
 | [setup-handover-wipe](../../box/bridge-tests/setup-handover-wipe.test.js) queue slices of revised plan, retained payloads, revised export, generation changes, attachment revisions and completion | Open, 5.2 with 2.3, 2.4 and 2.5. The backup map records existing snapshot checks. |
 | [installer-enrollment](../../box/bridge-tests/installer-enrollment.test.js) reserve merge numbers | Open, 5.2 and 2.3. Reserve on the current relay lease and persist the grant before replying. |
@@ -110,10 +123,10 @@ checks the initial migration and future-format refusal through a real resident.
 | [resident-delivery](../../box/test/resident-delivery.test.ts) case 2 | Open, 5.2. Keep attachment disk work off the dispatch thread. |
 | [accounts-check](../../box/test/agents/accounts-check.test.ts) case 18 | Partial, 5.2. A stand-in `gh` verifies that the located device-code attempt stays pending for its original client and permits cancellation. Browser completion and account catalog refresh need scenarios. |
 | [message-words](../../box/test/message-words.test.ts) cases 3 and 7 | The published tool titles and the queue-add history words are covered by the Work Queue tools case and [engine conformance](../../protocol/conformance/engine-sessions.test.mjs). The remaining queue tool history variants stay with 5.2 and 3.2. |
-| [forward-evidence](../../box/test/forward-evidence.test.ts) cases 2 and 3 | Partial in 5.2 and 2.4. A handoff carries only the scoped decision for its item. Replaying it at the new keeper, retaining future or ambiguous records and full conversation moves need scenarios. |
-| [moves-safety](../../box/test/moves-safety.test.ts) queue handoff lock, attachment and index sync, and missing indexed payload | Open for the live queue, 5.2 and 2.4. A retry must leave a live owner's lock intact, and activation waits for a complete durable bundle. |
+| [forward-evidence](../../box/test/forward-evidence.test.ts) cases 2 and 3 | Partial in 5.2 and 2.4. The handoff and full conversation move carry exactly the scoped decisions for their item and carried deletion fence, leaving unrelated evidence behind. Replaying at the new keeper and retaining future or ambiguous records still need scenarios. |
+| [moves-safety](../../box/test/moves-safety.test.ts) queue handoff lock, attachment and index sync, and missing indexed payload | Partial, 5.2 and 2.4. A changed source attachment prevents switch and rolls back the destination's prepared item, bytes and deletion fence. A retry must leave a live owner's lock intact; remaining interrupted placement cases need scenarios. |
 | [Backup coverage](rust-backups-coverage.md) held queue records, replay fences and capture during handoff | Open for 5.2 live item claims, review writes, review receipts and handoff serialization. Backup bytes and capture are tracked in 2.5. |
-| [Move coverage](rust-moves-coverage.md) queue placement, handoff and attachment revisions | Open, 5.2 with 2.4. Preserve ownership evidence and original queue item and file placement. |
+| [Move coverage](rust-moves-coverage.md) queue placement, handoff and attachment revisions | Partial, 5.2 with 2.4. Carry an original item's number, file proof, deletion fence and scoped decisions with a conversation, also across mixed versions. Refuse switch and clear the destination's staging if a source attachment changed. |
 
 Open work in 5.2 includes the remaining peer-view and owner-read cases,
 forwarded writes and receipts, offline merge edge cases and handoff, import collision and
@@ -121,5 +134,6 @@ recovery cases and merge reservations, agent and forwarded attachments, mention 
 changes, bot reassignment and remaining status and order cases, GitHub read and
 sign-in variants, and the remaining agents' tools.
 Label restore recovery and setup seeding remain open. Signed ordinary label changes use the Rust
-setup authority request and reply. The TypeScript work-queue forwarding envelope
-still needs to be connected for mixed-version label saves.
+setup authority request and reply. A Rust member can also save an ordinary label through the
+TypeScript main's authenticated ownership route and both receive the signed library. The reverse
+direction needs the complete Rust ownership capability; it is not advertised just for labels.

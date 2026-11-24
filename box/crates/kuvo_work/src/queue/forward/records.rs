@@ -55,6 +55,7 @@ pub(in crate::queue) enum RequestKind<'a> {
     Read,
     OfflineRead,
     LabelRestore,
+    LabelEdit,
     Agent,
     File(&'a str),
     Edit,
@@ -82,6 +83,7 @@ impl Act {
             }
             return match (self.method, self.item.as_str()) {
                 (Method::Get, "offline-edit") => Some(RequestKind::OfflineRead),
+                (Method::Post, crate::queue::labels::EDIT_ROUTE) => Some(RequestKind::LabelEdit),
                 (Method::Post, crate::queue::labels::RESTORE_ROUTE) => {
                     Some(RequestKind::LabelRestore)
                 }
@@ -219,12 +221,12 @@ pub(in crate::queue) fn receipt(
         .unwrap_or_default();
     entries.retain(|_, entry| entry["until"].as_i64().is_some_and(|until| until >= now));
     let key = format!("{peer} {}", act.id);
-    if answer.is_none() {
-        if let Some(before) = entries.get(&key) {
-            return serde_json::from_value(before.clone())
-                .map(Some)
-                .map_err(|error| io::Error::other(error).into());
-        }
+    if answer.is_none()
+        && let Some(before) = entries.get(&key)
+    {
+        return serde_json::from_value(before.clone())
+            .map(Some)
+            .map_err(|error| io::Error::other(error).into());
     }
     let until = entries
         .remove(&key)

@@ -137,7 +137,7 @@ impl Writer {
                 writer.attach_issue(item, issue, &actor, now)?
             } else { Value::Object(item.saved.clone()) };
             let mut result = None;
-            writer.edit_row(&all, item, &args, &staged, now, &people, &actor, initial, |row, docs| {
+            writer.edit_row(item, &args, &staged, ChangeContext { all: &all, people: &people, now, who: &actor }, initial, |row, docs| {
                 fields(row, &args, now, &actor)?;
                 let status = row["status"].as_str().unwrap_or_default().to_owned();
                 if !status::closed(&status) {
@@ -328,9 +328,7 @@ impl Writer {
                 let answer = writer.hand_away(
                     item,
                     &all,
-                    peer,
-                    owner,
-                    name,
+                    hand::Destination { peer, owner, name },
                     actor(&caller),
                     operation,
                     now,
@@ -438,7 +436,17 @@ impl Writer {
             }
             writer.admit(&owner)?;
             let people = Assignees::read(&writer.store);
-            let mut row = writer.new_row(&id, &owner, &args, &all, &people, now, &who)?;
+            let mut row = writer.new_row(
+                &id,
+                &owner,
+                &args,
+                ChangeContext {
+                    all: &all,
+                    people: &people,
+                    now,
+                    who: &who,
+                },
+            )?;
             let mut docs = BTreeMap::new();
             if working && !status::closed(row["status"].as_str().expect("item status")) {
                 writer.link_session(&all, &mut docs, &mut row, &caller.root, &who, now)?;
@@ -452,7 +460,7 @@ impl Writer {
                 docs,
                 row,
                 staged,
-                compaction,
+                compaction: Box::new(compaction),
                 operation,
             })
         })
@@ -519,7 +527,7 @@ enum AgentAdd {
         docs: BTreeMap<String, Document>,
         row: Value,
         staged: Staged,
-        compaction: Compaction,
+        compaction: Box<Compaction>,
         operation: Option<String>,
     },
 }

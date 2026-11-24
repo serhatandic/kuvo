@@ -405,3 +405,82 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 | | list_models and start_session leaving out or warning of held models (163, 264) | the work tools, 5.1e (`hold_of`) |
 | [model-aliases](../../box/test/model-aliases.test.ts) | a hold kept on `claude-code/default` marks the model it stands for | `work::unanswering::tests` |
 
+## 5.1c-6a — the work watcher's live path
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::work::watch` (`Watcher`: `heard`, `finish`, `failed`, `written_to`, `tell`, `soon`, `send_now`, `stays_stopped`); `Work::tell_starters`, `Work::forget_wakes` | `work/wakes.ts` `workWatcher` (its event handler, `finish`, `tell`, `send`/`sendNow`, `putBack`, `staysStopped`), `tellStarters`, `forgetWakes` |
+| `watch::lines` (the `[Session …]` lines, `wake_line_shown`, `describe_permission`, `describe_form`) | `wakeLine`, `namedOf`, `notSummarizedLine`, `stoppedLine`, `wakeLineShown`; `notices/news.ts` `describePermission`, `describeForm`, `projectNameOf`; `tree.ts` `placeWords` |
+| `watch::turns` (summaries, `turn_in`, `last_reply`, began-by, `is_news`, `reply_in`) | `shared/summaries.ts`; `wakes.ts` `latestMessages`, `lastReply`, `beganBy`, `isNews`; `tree.ts` `replyIn`, `replyLine`; `engine/queue.ts` `writtenByYou`, `isBoxsOwnWord` |
+| `watch::told` (`run/work/wakes.json`, `told.json`, `stopped.json`, each under TS's lock) | `readWaiting`/`changeWaiting`, `readTold`/`changeTold`, `background.ts` `readStopped`, `noteStopped`, `forgetStopped` |
+| `kuvo_engine::BoxMessage`, `WakeEngine::{tell, message_id}`: steer or queue, and a resend under the same id | `engine/queue.ts` `sendInto` with `boxNote` |
+
+### Proof
+
+- `work` scenarios (2 new, 11 in all): a finish told to its starter, with its reply as a line and the
+  mark its card shows; a failure at an account told with which models can't answer, and held
+  (`kuvo/work/unanswering`); an ask sent to be read at the starter's next step; the user's own turn
+  and a stopped session tell nothing. 11/11 against both boxes on macOS (three Rust runs); against the
+  Rust box on native Windows (twice) and Linux (WSL, static musl). `bots` 40/40 on all three;
+  `engine-sessions` 81/81, `engine-delivery`, `engine-asks` and `moves` against the Rust box on macOS.
+- `work::watch` unit tests (5): a summary asked for at rest is no turn of its work; what began a
+  turn; a reply as a line, cut outside code; what a conversation shows for its sessions' news; a
+  permission and a question as a notice says them.
+- Side by side, lines left waiting for a conversation the engine doesn't have, and a box with nothing
+  told: `wakes.json` and `told.json` match.
+- Size: about 53,500 characters of Rust for about 48,900 of TypeScript, without indentation: 1.10×
+  (the TypeScript counted includes the event handler's Autopilot branches, left to 5.3).
+- The route runner's `engineGot` waits up to 15 seconds for what the box sends on its own; givens
+  `messages` (read newest first) and a session's `metadata` were added.
+
+### Gaps and owners
+
+- **Catching up as the box starts**, **finishes held while what a session left running goes on** and
+  **late answers told again**: 5.1c-6b, below.
+- **Autopilot** going ahead on what's asked, and declining what an MCP server asks: 5.3.
+- **A starter waiting with send_message** (`awaitedBy`) and **a report sent already** (`saidAlready`),
+  and **a starter that moved to another computer** (a letter, `tellMovedAway`): 5.1e, with the tools
+  that write them.
+- **A starter the coding agents run**: kept and tried again, as TypeScript does with their bridge
+  stopped, until the coding agents' sessions take the box's own messages (4.6, with moves and
+  wake-ups into agent conversations: the same inbox path for all five agents).
+
+## 5.1c-6b — the watcher's catch-up, held finishes and late answers
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `watch::background::EngineBackground` (the engine's place in `run/work/background.json`: commands left running a folder at a time, subagents at work, looked at as events say; `of`, `known`, `noted`, `start`, `gone`); `Running` (`counting`, `awaited`, `started_since`, `services_words`); `write_place` | `work/background.ts` `backgroundWatcher` (its engine side), `counting`, `awaited`, `startedSince`, `servicesWords`, `write` |
+| `watch::services::listening_ports` (`lsof` on macOS, `/proc` on Linux) | `work/services.ts` |
+| `watch::held` (`holds`, `wait_for`, `look_while_waiting`, `settle`, `background_ended`, `finished_quietly`) | `wakes.ts` `holds`, `waitFor`, `lookWhileWaiting`, `settle`, `backgroundEnded`, `markLater` |
+| `watch::catchup` (`catch_up`, `tell_what_happened`, `tell_if_finished`, `work_sessions`, `asks_in`; late answers at start and every five minutes) | `wakes.ts` `catchUp`, `tellWhatHappened`, `tellIfFinished`, `catchingUp`, `lateAgain`; `tree.ts` `workSessions` (whole); `answers.ts` `asksIn`, `askersOf`; `asks.ts` `tellLateAnswers` |
+| `Watcher::finish` held while what its session left running goes on; `done_since_line`, "Still serving" | `wakes.ts` `finish`, `doneSinceLine` |
+| `kuvo_engine::BotEngine::call_in` (a call about a folder); `EngineEvent::location` | `engine/client.ts` `call`'s `folder` |
+| `kuvo_agents::background::write_place` under `.background.lock`, as the engine's place is written beside the coding agents' | `background.ts` `write`'s lock |
+
+### Proof
+
+- `work` scenarios (2 new, 13 in all): a finish waits for the command its session left running
+  (`kuvo/work/background` lists it from the engine's place), then its starter hears it once that
+  ends; what finished while the box was down is told as it starts, and an answer given late is told
+  to its conversation then. 13/13 against both boxes on macOS; against the Rust box on native
+  Windows and Linux (WSL, static musl). `bots` 40/40 on all three; `engine-sessions` 81/81,
+  `engine-delivery`, `engine-asks` and `moves` against the Rust box on macOS.
+- Unit tests: what a finish waits on and what's still serving (`work::watch::background`); a process
+  group holding a listening socket is a service (`work::watch::services`, `/proc`).
+- The route runner's `engineGot` waits up to 30 seconds (a held finish settles ten seconds after
+  what it left running ends); the stand-in engine lists commands left running in a folder, with
+  givens `shell` and `shellEnded`; `workAsk` takes one answered; `kuvo/work/background` is waited for.
+- The background look reads a conversation's place from the session list where it has it, so it
+  asks the engine only about sessions the list doesn't know: an extra read of a conversation took
+  the place of one `engine-sessions` holds (Stop holds a named send).
+
+### Gaps and owners
+
+- **Services on Windows**: no process groups to read listening ports from; nothing there is a
+  service yet, so a dev server left up holds its finish until its limit. 8.1.
+- **Autopilot's catch-up** (questions its conversations asked meanwhile going ahead first): 5.3.
+

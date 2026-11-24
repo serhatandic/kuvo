@@ -175,7 +175,7 @@ fn parse_socket_key(text: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut key = [0; 32];
-    for (index, pair) in digits.chunks_exact(2).enumerate() {
+    for (index, pair) in digits.as_chunks::<2>().0.iter().enumerate() {
         let high = (pair[0] as char).to_digit(16)? as u8;
         let low = (pair[1] as char).to_digit(16)? as u8;
         key[index] = high * 16 + low;

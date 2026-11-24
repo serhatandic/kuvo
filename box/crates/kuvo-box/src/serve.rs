@@ -1,5 +1,6 @@
 mod agents;
 mod library_artifacts;
+mod marketplace;
 
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -114,13 +115,21 @@ pub async fn run(
     )?;
     let vault_machine = (kind != ComputerKind::Mac).then(|| roster.name.clone());
     let bot_name = roster.name.clone();
-    let mut peers = ResidentPeers::start(
+    let identity = kuvo_os::platform::Account::current()?;
+    let account = identity.home_folder(
+        kuvo_os::platform::Platform::current(),
+        &std::env::vars_os().collect(),
+    )?;
+    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let bridge = crate::updates::installed_bridge(&update_home, &account);
+    let mut peers = ResidentPeers::start_with_bridge(
         home,
         roster,
         relay,
         Some(devices.clone()),
         kind == ComputerKind::Mac,
         Arc::new(system_clock),
+        bridge,
     )
     .await?;
     let authority = setup.handle();
@@ -130,14 +139,15 @@ pub async fn run(
         devices.clone(),
         move || authority.ownership_state(),
     );
-    peers.attach_moves(engine.clone(), owners.clone()).await?;
+    peers
+        .attach_moves_with_queue(
+            engine.clone(),
+            owners.clone(),
+            Some(kuvo_work::queue::move_transfer(home, setup.handle())),
+        )
+        .await?;
     let peers = Arc::new(peers);
     peers.follow_setup_roster(setup.handle().rosters()).await;
-    let identity = kuvo_os::platform::Account::current()?;
-    let account = identity.home_folder(
-        kuvo_os::platform::Platform::current(),
-        &std::env::vars_os().collect(),
-    )?;
     let vault = kuvo_services::vault::Resident::new(
         home,
         kind == ComputerKind::Mac,
@@ -258,13 +268,15 @@ pub async fn run(
     let work_queue = kuvo_work::queue::register(
         &mut routes,
         home,
-        peers.reader(),
         sessions.clone(),
         engine.clone(),
         setup.handle(),
-        peers.relay_handle(),
-        memory.clone(),
-        owners.clone(),
+        kuvo_work::queue::Network {
+            peers: peers.reader(),
+            relay: peers.relay_handle(),
+            memory: memory.clone(),
+            owners: owners.clone(),
+        },
     )
     .await?;
     let queue_reads = work_queue.peer_reads();
@@ -295,6 +307,7 @@ pub async fn run(
         let library_reader = library_reader.clone();
         async move {
             match read.area.as_deref() {
+                Some("ownership") if queues.serves_ownership(&read) => queues.answer(read).await,
                 Some("ownership") => owner.answer(read).await,
                 Some("search") => super::setup_search::answer(engine, read).await,
                 Some("library") => library_reader.answer_library_read(read).await,
@@ -325,6 +338,23 @@ pub async fn run(
         },
     );
     kuvo_services::git::register(&mut routes, home.to_owned());
+    kuvo_services::programs::register(&mut routes, account.clone());
+    let _integration_keys =
+        kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
+    let skills = kuvo_services::skills::ResidentSkills::start(&mut routes, home, &account);
+    let resident_marketplace = kuvo_services::marketplace::ResidentMarketplace::start(
+        &mut routes,
+        home,
+        &account,
+        kind == ComputerKind::Mac,
+        peers.reader().view().roster.local().name,
+        Some(setup.handle()),
+        vault.clone(),
+        skills.store.clone(),
+        skills.library.clone(),
+        Arc::new(marketplace::PeerBridge::new(peers.reader())),
+    )
+    .await;
     let wakes = kuvo_work::wakes::Wakes::new(home, engine.clone());
     wakes.register(&mut routes);
     let bots = kuvo_work::bots::Bots::new(
@@ -350,7 +380,8 @@ pub async fn run(
     );
     approvals.register(&mut routes);
     let approvals_kept = approvals.keep();
-    let work_settings = kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
+    let work_settings =
+        kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
     let working = sessions.clone();
     let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
     let work = kuvo_work::work::Work::new(
@@ -393,7 +424,6 @@ pub async fn run(
         kind == ComputerKind::Mac,
     );
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
-    let bridge_version = crate::updates::bridge_version(&update_home, &account);
     let updates = crate::updates::start(update_home, &account, peers.clone(), setup.handle());
     crate::updates::register_check(
         &mut routes,
@@ -414,7 +444,7 @@ pub async fn run(
         backup_mail,
         Some(vault.clone()),
     );
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), bridge_version);
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
@@ -538,6 +568,8 @@ pub async fn run(
     if let Ok(library_artifacts) = Arc::try_unwrap(library_artifacts) {
         library_artifacts.stop().await;
     }
+    skills.stop();
+    resident_marketplace.stop().await;
     let _ = session_source.await;
     drop(daily_backups);
     drop(backup_receiver);
@@ -600,6 +632,10 @@ fn info(
     features.extend_from_slice(kuvo_services::files::FEATURES);
     features.extend_from_slice(kuvo_services::artifacts::FEATURES);
     features.extend_from_slice(kuvo_services::library::FEATURES);
+    features.extend_from_slice(kuvo_services::programs::FEATURES);
+    features.extend_from_slice(kuvo_services::integrations::FEATURES);
+    features.extend_from_slice(kuvo_services::skills::FEATURES);
+    features.extend_from_slice(kuvo_services::marketplace::FEATURES);
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
     if permits_pairing {
         features.push("devices.pair");

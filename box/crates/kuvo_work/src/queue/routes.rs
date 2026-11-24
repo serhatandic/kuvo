@@ -30,17 +30,27 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::{io, path::Path, sync::Arc, time::Duration};
 
+pub struct Network {
+    pub peers: Reader,
+    pub relay: Option<RelayHandle>,
+    pub memory: MemoryRead,
+    pub owners: ownership::Handle,
+}
+
 pub async fn register(
     registry: &mut Registry,
     home: &Path,
-    peers: Reader,
     sessions: LocalSessions,
     engine: Engine,
     setup: SetupHandle,
-    relay: Option<RelayHandle>,
-    memory: MemoryRead,
-    owners: ownership::Handle,
+    network: Network,
 ) -> Result<Runtime, Box<dyn std::error::Error>> {
+    let Network {
+        peers,
+        relay,
+        memory,
+        owners,
+    } = network;
     let store = Store::new(home);
     let startup = store.clone();
     tokio::task::spawn_blocking(move || {
@@ -105,19 +115,13 @@ pub async fn register(
         sessions: sessions.clone(),
         transport: memory,
     };
-    labels::register(registry, store.clone(), setup.clone());
-    let runtime = items::register(
+    labels::register(
         registry,
         store.clone(),
-        setup,
-        peers,
-        references.clone(),
-        sessions.clone(),
-        engine,
-        relay,
-        reads.clone(),
-        owners,
+        setup.clone(),
+        super::forward::Forward::new(store.clone(), owners.clone(), relay.clone()),
     );
+    let runtime = items::register(registry, setup, engine, relay, reads.clone(), owners);
 
     let here = lists.clone();
     registry.register::<get_kuvo_work_queue_refs::Spec, _, _>(Access::Any, move |call| {

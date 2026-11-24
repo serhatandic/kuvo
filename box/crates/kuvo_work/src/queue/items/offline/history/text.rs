@@ -339,8 +339,7 @@ fn anchored(base: &[&str], next: &[&str], span: Span) -> Vec<Span> {
     let mut spans = Vec::new();
     let mut start = span.start;
     let mut next_start = span.next_start;
-    for end in span.start..span.end {
-        let token = base[end];
+    for (end, &token) in base.iter().enumerate().take(span.end).skip(span.start) {
         if !a.get(token).is_some_and(|pos| pos.is_some()) {
             continue;
         }

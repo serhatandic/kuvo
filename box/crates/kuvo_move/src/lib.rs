@@ -78,6 +78,18 @@ pub fn open(
     home: &Home,
     platform: Platform,
     account_home: Option<&Path>,
+    completed: impl FnMut(Step),
+) -> Result<(), Error> {
+    open_with_released_launch(home, platform, account_home, None, completed)
+}
+
+/// The signed released-machine installer holds the old engine's launch lock
+/// until it has moved the stopped writers and selected the new release.
+pub fn open_with_released_launch(
+    home: &Home,
+    platform: Platform,
+    account_home: Option<&Path>,
+    launch: Option<&kuvo_store::locks::ReleasedLaunch>,
     mut completed: impl FnMut(Step),
 ) -> Result<(), Error> {
     #[cfg(target_os = "macos")]
@@ -125,7 +137,7 @@ pub fn open(
     }
     for relative in ["run/update-trial", "run/.rolling-back", "run/.launching"] {
         let path = disk.path(relative)?;
-        if metadata(&path)?.is_some() {
+        if metadata(&path)?.is_some() && !launch.is_some_and(|claim| claim.owns(&path)) {
             return Err(Error::Busy(path));
         }
     }

@@ -257,13 +257,15 @@ impl Writer {
             let baseline = Item::read(&item.owner, &row).expect("queue item");
             let mut decision = None;
             self.edit_fields(
-                all,
                 &baseline,
                 &fields,
                 &staged,
-                now,
-                &people,
-                &json!({"user":true}),
+                ChangeContext {
+                    all,
+                    people: &people,
+                    now,
+                    who: &json!({"user":true}),
+                },
                 |row| {
                     decision = Some(write(row)?);
                     Ok(())

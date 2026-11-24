@@ -121,8 +121,9 @@ impl Writer {
             let store = self.store.clone();
             let item = result["item"].clone();
             let key = target.key;
+            let previous = target.previous;
             let _ = tokio::task::spawn_blocking(move || {
-                told::apply_reply(&store, &key, &item, deleted)
+                told::apply_reply(&store, &key, &item, deleted, &previous)
             })
             .await;
         }
@@ -214,6 +215,14 @@ impl Writer {
                     .await
             }
             RequestKind::Agent => Ok(self.peer_tool(act).await),
+            RequestKind::LabelEdit => {
+                labels::peer_edit(
+                    &self.store,
+                    &self.setup,
+                    act.body.unwrap_or_default()["value"].clone(),
+                )
+                .await
+            }
             RequestKind::LabelRestore => {
                 let value = act.body.unwrap_or_default()["value"].clone();
                 if value.get("dryRun").is_some_and(|given| given != false) {
