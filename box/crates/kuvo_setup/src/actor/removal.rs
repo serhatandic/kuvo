@@ -1016,6 +1016,33 @@ fn removal_for(roster: &Membership, key: &str) -> Option<Removal> {
     read_removal(key, roster.extra.get("removals")?.get(key)?)
 }
 
+pub(crate) enum WipeProgress {
+    Pending,
+    Delivered,
+    Closed,
+    Review(String),
+}
+
+pub(crate) fn wipe_progress(link: &Link, key: &str, operation: &str) -> WipeProgress {
+    let Ok(roster) = link.member_list() else {
+        return WipeProgress::Pending;
+    };
+    let Some(record) =
+        removal_for(&roster, key).filter(|record| record.wipe && record.operation == operation)
+    else {
+        return WipeProgress::Pending;
+    };
+    if record.delivered && record.resolution().is_none() {
+        WipeProgress::Delivered
+    } else if let Some(error) = record.wipe_row().error {
+        WipeProgress::Review(error)
+    } else if record.resolution().is_some() {
+        WipeProgress::Closed
+    } else {
+        WipeProgress::Pending
+    }
+}
+
 pub(super) fn pending_wipes(link: &Link) -> Vec<PendingWipe> {
     let Ok(roster) = link.member_list() else {
         return Vec::new();

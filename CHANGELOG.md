@@ -11,6 +11,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A computer with a configured disk backup waits for a verified copy before it erases its work.
 - Uninstalling a running member removes its desktop’s access before stopping it and keeps its saved work.
 - Add over SSH keeps an active change in place and lets you recover an interrupted one.
+- Uninstalling a computer added over SSH keeps its wipe pending until that computer confirms its data was erased.
 - Windows uninstall completes when there is no sign-in task to remove.
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.

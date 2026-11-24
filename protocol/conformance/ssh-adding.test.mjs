@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { addSshStandIn } from "../../box/bridge-tests/add-ssh-stand-in.js";
 import { boxBinary, launch, readJSON, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { seedPeerSetup } from "./peer-fixture.mjs";
 
 test("SSH Add trusts the selected host, copies the running Rust release and starts an enrolled resident", {
   skip: boxBinary().typescript || process.platform === "win32",
@@ -95,6 +96,9 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   const identity = fs.readFileSync(path.join(remote, "box", "machine-id"), "utf8");
   assert.match(identity, /^[a-f0-9]{32}$/);
   assert.deepEqual(readJSON(path.join(main.home, "machines.json")), [{ destination: "lab", identity }]);
+  const host = readJSON(path.join(main.home, "phone-link.json")).machines.lab;
+  assert.equal(host.key, done.computer.key);
+  assert.equal(host.name, done.computer.name);
   const service = readJSON(path.join(remote, "box", "run", "serve.json"));
   const member = await request(service, "GET", "kuvo/setup");
   assert.equal(member.status, 200, member.text);
@@ -178,10 +182,10 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.equal(forwardedPage.json.can, true);
   assert.equal(forwardedPage.json.tries.find(attempt => attempt.id === aliasID).known, true);
   const roster = readJSON(path.join(main.home, "run", "link.json")).shared.membershipAndAccess.value.boxes;
-  const host = roster.find(each => each.key !== done.computer.key);
+  const source = roster.find(each => each.key !== done.computer.key);
   const lab = roster.find(each => each.key === done.computer.key);
   let lost = false;
-  const pause = relay.intercept(Buffer.from(host.address, "base64url"), Buffer.from(lab.address, "base64url"), () => {
+  const pause = relay.intercept(Buffer.from(source.address, "base64url"), Buffer.from(lab.address, "base64url"), () => {
     lost ||= readJSON(path.join(main.home, "run", "adding.json")).some(each => each.destination === "windows-no-wsl2");
     return true;
   });
@@ -217,6 +221,24 @@ const key = byte => Buffer.concat([
   Buffer.from("0000000b7373682d6564323535313900000020", "hex"), Buffer.alloc(32, byte),
 ]).toString("base64");
 
+function addRelease(installed, implementation) {
+  if (implementation.typescript) {
+    for (const file of ["bot-words.json", "integrations-mac.json", "integrations.json",
+      "kuvo-agents.js", "kuvo-browser.js", "kuvo-launch", "kuvo-link.js", "kuvo-npx",
+      "kuvo-setsid", "kuvo-start", "kuvo-wake", "mcp-catalog.json", "runtime/node", ".kuvo-boot"]) {
+      write(path.join(installed, "bin", file), "");
+    }
+    write(path.join(installed, "config", "opencode", "plugins", "kuvo-code.js"), "");
+    const release = path.join(installed, "bin", "box-version");
+    write(release, "1.2.3\n");
+    return release;
+  }
+  fs.mkdirSync(path.join(installed, "bin"), { recursive: true });
+  const release = path.join(installed, "bin", process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box");
+  fs.copyFileSync(implementation.file, release);
+  return release;
+}
+
 async function addBench(t) {
   const { computer, leases } = await bench(t);
   const implementation = boxBinary();
@@ -226,21 +248,7 @@ async function addBench(t) {
     remote = path.join(folder, "remote");
     account = path.join(folder, "account");
     fs.mkdirSync(remote);
-    const installed = path.join(folder, "box");
-    if (implementation.typescript) {
-      for (const file of ["bot-words.json", "integrations-mac.json", "integrations.json",
-        "kuvo-agents.js", "kuvo-browser.js", "kuvo-launch", "kuvo-link.js", "kuvo-npx",
-        "kuvo-setsid", "kuvo-start", "kuvo-wake", "mcp-catalog.json", "runtime/node", ".kuvo-boot"]) {
-        write(path.join(installed, "bin", file), "");
-      }
-      write(path.join(installed, "config", "opencode", "plugins", "kuvo-code.js"), "");
-      releaseMarker = path.join(installed, "bin", "box-version");
-      write(releaseMarker, "1.2.3\n");
-    } else {
-      fs.mkdirSync(path.join(installed, "bin"), { recursive: true });
-      releaseMarker = path.join(installed, "bin", process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box");
-      fs.copyFileSync(implementation.file, releaseMarker);
-    }
+    releaseMarker = addRelease(path.join(folder, "box"), implementation);
     const program = path.join(fake, "ssh");
     write(program, addSshStandIn, { mode: 0o700 });
     write(path.join(fake, "hostkey"), "ssh-ed25519 " + key(8));
@@ -307,6 +315,84 @@ test("SSH Add explains connection failures and leaves the account and host trust
   assert.deepEqual(fs.readdirSync(remote), []);
   assert.equal((await ask("DELETE", `kuvo/computers/add/${nowhere}`, undefined, headers)).status, 200);
   assert.equal((await page()).tries.some(item => item.id === nowhere), false);
+});
+
+test("uninstall from a saved SSH address commits a signed wipe and waits for confirmation", {
+  skip: process.platform === "win32", timeout: 60000,
+}, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const implementation = boxBinary();
+  const studio = await computer("Studio", implementation, folder => {
+    addRelease(path.join(folder, "box"), implementation);
+    return {};
+  });
+  const lab = await computer("Lab", implementation, undefined, { canonical: true });
+  const { member, spare, save } = seedPeerSetup(studio.home, relay.url, 1, 3);
+  seedPeerSetup(lab.home, relay.url, 2, 3);
+  const work = path.join(lab.home, "agents", "sessions", "ses_retired", "messages.json");
+  write(work, "saved work on the departing member");
+  const labAddress = { destination: "test-lab", identity: "4".repeat(32) };
+  const spareAddress = { destination: "test-spare", identity: "5".repeat(32) };
+  save("machines.json", [labAddress, spareAddress]);
+  const primary = studio.connect(await studio.start().ready());
+  const setup = (await primary("GET", "kuvo/setup")).json.setup;
+  await until(() => leases.leaseFor(setup), "The main computer did not claim its relay lease.");
+  const headers = { "x-kuvo-from": "mac" };
+  const route = `kuvo/computers/${member.key}/uninstall`;
+  const missing = await primary("POST", route, {}, headers);
+  assert.equal(missing.status, 404, missing.text);
+  save("phone-link.json", { machines: {
+    "test-lab": { key: member.key, name: member.name, address: member.address },
+    "test-spare": { key: spare.key, name: spare.name, address: spare.address },
+  } });
+  const result = await primary("POST", route, {}, headers);
+  assert.equal(result.status, 202, result.text);
+  const attempt = result.json.try;
+  assert.equal(attempt.kind, "uninstall");
+  assert.equal(attempt.destination, "test-lab");
+  const state = () => readJSON(path.join(studio.home, "run", "link.json")).shared.membershipAndAccess.value;
+  await until(() => state().removals?.[member.key]?.wipe, "The signed wipe was not saved.");
+  assert.ok(state().left.includes(member.key));
+  assert.equal(fs.readFileSync(work, "utf8"), "saved work on the departing member");
+  await until(async () => (await primary("GET", "kuvo/computers")).json.wipePending?.[0]?.key === member.key,
+    "The computers list did not show the committed pending wipe.");
+  const addresses = () => readJSON(path.join(studio.home, "machines.json"));
+  await until(() => addresses().length === 1,
+    "The saved SSH address was not cleared after revocation.");
+  assert.deepEqual(addresses(), [spareAddress]);
+  const tried = async () => (await primary("GET", "kuvo/computers/add")).json.tries.find(each => each.id === attempt.id);
+  await until(async () => (await tried())?.save?.proof?.s, "The uninstall did not expose the committed receipt.");
+  assert.equal((await primary("DELETE", `kuvo/computers/add/${attempt.id}`, undefined, headers)).status, 200);
+  assert.equal((await tried()).state, "working");
+  fs.rmSync(path.join(lab.home, "run", "engine.json"), { force: true });
+  lab.start();
+  const done = await until(async () => {
+    const found = await tried();
+    if (found?.state === "failed") assert.fail(found.failure.message);
+    return found?.state === "done" && found;
+  }, "The uninstall did not record a completed wipe.", 17000);
+  assert.equal(done.title, "Lab no longer has Kuvo Code running");
+  assert.equal(done.save.operation, state().removals[member.key].operation);
+  assert.equal(state().removals[member.key].delivered, true);
+  assert.equal(fs.existsSync(work), false);
+
+  const missingDisk = await primary("POST", `kuvo/computers/${spare.key}/uninstall`, {}, headers);
+  assert.equal(missingDisk.status, 202, missingDisk.text);
+  const lostAttempt = missingDisk.json.try.id;
+  const lostTry = async () => (await primary("GET", "kuvo/computers/add")).json.tries.find(each => each.id === lostAttempt);
+  const operation = await until(async () => (await lostTry())?.save?.operation,
+    "The offline computer was not revoked.");
+  const lost = await primary("POST", `kuvo/computers/${spare.key}/unlink-and-wipe`, { operation, resolve: "lost" }, headers);
+  assert.equal(lost.status, 200, lost.text);
+  const closed = await until(async () => {
+    const found = await lostTry();
+    return found?.state === "failed" && found;
+  }, "The unconfirmed erase was reported as complete.");
+  assert.equal(closed.failure.again, false);
+  assert.equal(closed.failure.message, "The removal was closed without confirmation that the data was erased.");
+  assert.equal(closed.save.operation, operation);
+  assert.ok(state().left.includes(spare.key));
+  assert.deepEqual(addresses(), []);
 });
 
 test("SSH Add suggests configured addresses and refuses input that cannot name a computer", {

@@ -4,6 +4,7 @@
 mod address;
 mod connect;
 mod transport;
+mod uninstall;
 
 #[cfg(unix)]
 pub(crate) use connect::is_reservation_token;
@@ -32,6 +33,8 @@ use crate::{
     routes::{response_refusal, submitter, typed},
     storage::Files,
 };
+
+const PHONE_LINK: &str = "phone-link.json";
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -72,6 +75,7 @@ struct AddError {
     title: Option<String>,
     message: String,
     outcome: FailureOutcome,
+    again: bool,
 }
 
 enum FailureOutcome {
@@ -94,6 +98,7 @@ impl From<String> for AddError {
             title: None,
             message,
             outcome: FailureOutcome::Operation,
+            again: true,
         }
     }
 }
@@ -113,12 +118,14 @@ struct Computer {
 enum Completed {
     New(Computer),
     Known(Computer),
+    Uninstalled,
 }
 
 impl Completed {
-    fn computer(self) -> Computer {
+    fn computer(self) -> Option<Computer> {
         match self {
-            Self::New(computer) | Self::Known(computer) => computer,
+            Self::New(computer) | Self::Known(computer) => Some(computer),
+            Self::Uninstalled => None,
         }
     }
 }
@@ -140,6 +147,8 @@ struct Attempt {
     computer: Option<Computer>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     known: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    save: Option<crate::Receipt>,
 }
 
 impl Attempt {
@@ -173,21 +182,55 @@ impl Attempt {
             failure: None,
             computer: None,
             known: false,
+            save: None,
+        }
+    }
+
+    fn uninstall(id: String, target: &uninstall::Target) -> Self {
+        Self {
+            id,
+            kind: "uninstall".into(),
+            destination: target.destination.as_str().into(),
+            name: target.name.clone(),
+            state: State::Working,
+            title: format!("Uninstalling Kuvo Code from {}…", target.name),
+            steps: [
+                ("checking", "Reaching it"),
+                ("removing", "Stopping and removing Kuvo Code"),
+                ("forgetting", "Taking it off your computers"),
+            ]
+            .into_iter()
+            .map(|(id, title)| Step {
+                id: id.into(),
+                title: title.into(),
+                state: StepState::Waiting,
+                detail: None,
+            })
+            .collect(),
+            question: None,
+            failure: None,
+            computer: None,
+            known: false,
+            save: None,
         }
     }
 
     fn fail(&mut self, error: AddError) {
         self.state = State::Failed;
         self.question = None;
-        self.title = format!("Couldn’t add {}", self.name);
+        self.title = if self.kind == "uninstall" {
+            format!("Couldn’t uninstall from {}", self.name)
+        } else {
+            format!("Couldn’t add {}", self.name)
+        };
         self.failure = Some(Failure {
             title: error.title.unwrap_or_else(|| self.title.clone()),
             message: error.message,
-            again: true,
+            again: error.again,
         });
         if let FailureOutcome::ReservationCleanup(Some(completed)) = error.outcome {
             self.known = matches!(completed, Completed::Known(_));
-            self.computer = Some(completed.computer());
+            self.computer = completed.computer();
         }
         for step in &mut self.steps {
             if step.state == StepState::Now {
@@ -201,6 +244,20 @@ struct Active {
     seen: Attempt,
     stop: Arc<AtomicBool>,
     answer: Option<oneshot::Sender<()>>,
+    done: watch::Receiver<()>,
+    committed: bool,
+}
+
+impl Active {
+    fn cancel(&mut self) {
+        if self.committed || self.stop.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.answer = None;
+        self.seen.question = None;
+        self.seen.state = State::Stopping;
+        self.seen.title = "Stopping…".into();
+    }
 }
 
 impl Drop for Active {
@@ -265,6 +322,7 @@ impl Action {
 
 enum Change {
     Start(Address, Submitter, WindowsMode),
+    Uninstall(uninstall::Target, Submitter),
     Answer(String, Value),
     Cancel(String),
 }
@@ -280,7 +338,13 @@ enum Progress {
     Name(String),
     HostKey(Vec<HostKey>, oneshot::Sender<()>),
     RecoverAccount(String, oneshot::Sender<()>),
+    UninstallCommitted(Option<crate::Receipt>),
     Done(Result<Completed, AddError>),
+}
+
+enum Work {
+    Add(Address),
+    Uninstall(uninstall::Target, Option<watch::Receiver<()>>),
 }
 
 enum Message {
@@ -339,6 +403,25 @@ impl SetupHandle {
                         typed::<post_kuvo_computers_add::Spec, 202>(response.value)
                     } else {
                         Err(response_refusal(response))
+                    }
+                }
+            },
+        );
+        let route = adding.clone();
+        routes.register::<post_kuvo_computers_key_uninstall::Spec, _, _>(
+            Access::DesktopOrPaired,
+            move |call| {
+                let route = route.clone();
+                async move {
+                    let key = call.param("key").unwrap_or_default();
+                    let by = submitter(&call.request.caller)?;
+                    let result = route.begin_uninstall(key, by).await;
+                    match result {
+                        Ok(value) => typed::<post_kuvo_computers_key_uninstall::Spec, 202>(value),
+                        Err(error) => Err(response_refusal(Response {
+                            status: error.status,
+                            value: error.value,
+                        })),
                     }
                 }
             },
@@ -539,6 +622,12 @@ impl Adding {
             .map_err(|_| unavailable())?;
         result.await.map_err(|_| unavailable())?
     }
+
+    async fn begin_uninstall(&self, key: &str, by: Submitter) -> Result<Value, Denied> {
+        let saved = self.allowed(by.clone()).await?;
+        let target = uninstall::Target::read(&self.files, &saved, key)?;
+        self.change(Change::Uninstall(target, by)).await
+    }
 }
 
 struct Owner {
@@ -585,42 +674,102 @@ impl Owner {
         self.changed.send_replace(next);
     }
 
+    fn spawn(
+        &mut self,
+        seen: Attempt,
+        by: Submitter,
+        windows: WindowsMode,
+        out: &mpsc::WeakSender<Message>,
+        work: Work,
+    ) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (ended, done) = watch::channel(());
+        self.active.push(Active {
+            seen: seen.clone(),
+            stop: stop.clone(),
+            answer: None,
+            done,
+            committed: false,
+        });
+        let job = Job {
+            id: seen.id,
+            messages: out.clone(),
+            stop,
+            files: self.files.clone(),
+            setup: self.setup.clone(),
+            by,
+            windows,
+            reservations: self.reservations.clone(),
+        };
+        tokio::spawn(async move {
+            let result = match work {
+                Work::Add(destination) => job.add(destination).await,
+                Work::Uninstall(target, after) => {
+                    if let Some(mut after) = after {
+                        let _ = after.changed().await;
+                    }
+                    uninstall::run(&job, target).await
+                }
+            };
+            let _ = job.send(Progress::Done(result)).await;
+            drop(ended);
+        });
+    }
+
     fn change(&mut self, change: Change, out: &mpsc::WeakSender<Message>) -> Result<Value, Denied> {
         match change {
             Change::Start(destination, by, windows) => {
                 if let Some(now) = self
                     .active
                     .iter()
+                    .rev()
                     .find(|now| now.seen.destination == destination.as_str())
                 {
+                    if now.seen.kind == "uninstall" {
+                        return Err(refuse(
+                            409,
+                            format!(
+                                "Kuvo Code is being uninstalled from {} now. Add it again once that’s done.",
+                                now.seen.name
+                            ),
+                        ));
+                    }
                     return Ok(json!({"try": now.seen}));
                 }
                 let id = format!(
                     "add_{}",
                     hex::encode(crate::random::<12>().map_err(|_| unavailable())?)
                 );
-                let seen = Attempt::new(id.clone(), &destination);
-                let stop = Arc::new(AtomicBool::new(false));
-                let active = Active {
-                    seen: seen.clone(),
-                    stop: stop.clone(),
-                    answer: None,
-                };
-                self.active.push(active);
-                let job = Job {
-                    id,
-                    messages: out.clone(),
-                    stop,
-                    files: self.files.clone(),
-                    setup: self.setup.clone(),
+                let seen = Attempt::new(id, &destination);
+                self.spawn(seen.clone(), by, windows, out, Work::Add(destination));
+                Ok(json!({"try": seen}))
+            }
+            Change::Uninstall(target, by) => {
+                let mut after = None;
+                if let Some(now) = self
+                    .active
+                    .iter_mut()
+                    .rev()
+                    .find(|now| now.seen.destination == target.destination.as_str())
+                {
+                    if now.seen.kind == "uninstall" {
+                        return Ok(json!({"try": now.seen}));
+                    }
+                    now.cancel();
+                    after = Some(now.done.clone());
+                }
+                let id = format!(
+                    "add_{}",
+                    hex::encode(crate::random::<12>().map_err(|_| unavailable())?)
+                );
+                let seen = Attempt::uninstall(id, &target);
+                self.spawn(
+                    seen.clone(),
                     by,
-                    windows,
-                    reservations: self.reservations.clone(),
-                };
-                tokio::spawn(async move {
-                    let result = job.add(destination).await;
-                    let _ = job.send(Progress::Done(result)).await;
-                });
+                    WindowsMode::Wsl,
+                    out,
+                    Work::Uninstall(target, after),
+                );
                 Ok(json!({"try": seen}))
             }
             Change::Answer(id, input) => {
@@ -648,18 +797,13 @@ impl Owner {
                     }
                     now.seen.state = State::Working;
                 } else {
-                    now.stop.store(true, Ordering::Release);
-                    now.answer = None;
-                    now.seen.state = State::Stopping;
+                    now.cancel();
                 }
                 Ok(json!({"try": now.seen}))
             }
             Change::Cancel(id) => {
                 if let Some(now) = self.active.iter_mut().find(|now| now.seen.id == id) {
-                    now.stop.store(true, Ordering::Release);
-                    now.answer = None;
-                    now.seen.question = None;
-                    now.seen.state = State::Stopping;
+                    now.cancel();
                 } else if let Some(index) = self.finished.iter().position(|seen| seen.id == id) {
                     self.finished.remove(index);
                 } else {
@@ -675,7 +819,12 @@ impl Owner {
             return;
         };
         let now = &mut self.active[index];
-        if now.stop.load(Ordering::Acquire) && !matches!(progress, Progress::Done(_)) {
+        if now.stop.load(Ordering::Acquire)
+            && !matches!(
+                progress,
+                Progress::Done(_) | Progress::UninstallCommitted(_)
+            )
+        {
             return;
         }
         match progress {
@@ -727,6 +876,13 @@ impl Owner {
                 now.seen.state = State::Asking;
                 now.answer = Some(answer);
             }
+            Progress::UninstallCommitted(save) => {
+                now.committed = true;
+                now.stop.store(false, Ordering::Release);
+                now.seen.save = save;
+                now.seen.state = State::Working;
+                now.seen.title = format!("Uninstalling Kuvo Code from {}…", now.seen.name);
+            }
             Progress::Done(result) => {
                 let mut now = self.active.remove(index);
                 if now.stop.load(Ordering::Acquire)
@@ -740,7 +896,7 @@ impl Owner {
                     Ok(completed) => {
                         now.seen.state = State::Done;
                         now.seen.question = None;
-                        let computer = match completed {
+                        now.seen.computer = match completed {
                             Completed::Known(computer) => {
                                 now.seen.known = true;
                                 now.seen.name.clone_from(&computer.name);
@@ -748,17 +904,23 @@ impl Owner {
                                     "{} is {}, already one of your computers",
                                     now.seen.destination, computer.name
                                 );
-                                computer
+                                Some(computer)
                             }
                             Completed::New(computer) => {
                                 now.seen.title =
                                     format!("{} is one of your computers", now.seen.name);
-                                computer
+                                Some(computer)
+                            }
+                            Completed::Uninstalled => {
+                                now.seen.title =
+                                    format!("{} no longer has Kuvo Code running", now.seen.name);
+                                None
                             }
                         };
-                        now.seen.computer = Some(computer);
                         for step in &mut now.seen.steps {
-                            step.state = StepState::Done;
+                            if step.state == StepState::Now || now.seen.kind == "add" {
+                                step.state = StepState::Done;
+                            }
                         }
                     }
                     Err(message) => now.seen.fail(message),
@@ -840,6 +1002,7 @@ impl Job {
                 title: None,
                 message,
                 outcome: FailureOutcome::ReservationCleanup(result.ok()),
+                again: true,
             });
         }
         result
@@ -954,13 +1117,59 @@ pub(crate) fn saved_machines(files: &Files) -> Result<Vec<Value>, crate::Error> 
         }
         return Err(unreadable());
     }
-    if let Some(links) = files.read::<serde_json::Map<String, Value>>("phone-link.json")?
+    if let Some(links) =
+        kept_hosts_files(files).read::<serde_json::Map<String, Value>>(PHONE_LINK)?
         && let Some(machines) = links.get("machines").filter(|value| !value.is_null())
         && !machines.as_object().is_some_and(|items| items.is_empty())
     {
         return Err(unreadable());
     }
     Ok(Vec::new())
+}
+
+fn kept_hosts_files(files: &Files) -> Files {
+    if cfg!(target_os = "macos")
+        && std::env::var_os("KUVO_BOX").is_some_and(|kind| kind == "mac")
+        && let Some(parent) = files.root().parent()
+    {
+        Files::new(parent.to_owned())
+    } else {
+        files.clone()
+    }
+}
+
+pub(crate) fn keep_ssh_host(
+    files: &Files,
+    destination: &str,
+    peer: &crate::model::Peer,
+) -> Result<(), crate::Error> {
+    let files = kept_hosts_files(files);
+    let path = files.path("phone-link.json.lock");
+    let _lock = kuvo_store::locks::OwnedLock::acquire(&path, std::time::Duration::from_secs(2))
+        .map_err(|source| crate::Error::File {
+            action: "locking the saved SSH hosts at",
+            path,
+            source,
+        })?;
+    let mut whole = files
+        .read::<serde_json::Map<String, Value>>(PHONE_LINK)?
+        .unwrap_or_default();
+    let mut machines = whole
+        .remove("machines")
+        .and_then(|value| match value {
+            Value::Object(machines) => Some(machines),
+            _ => None,
+        })
+        .unwrap_or_default();
+    machines.insert(
+        destination.into(),
+        json!({
+            "name": peer.name, "address": peer.address, "key": peer.key,
+            "sign": peer.sign, "anotherMac": false, "peers": true,
+        }),
+    );
+    whole.insert("machines".into(), Value::Object(machines));
+    files.write(PHONE_LINK, &whole)
 }
 
 struct Denied {

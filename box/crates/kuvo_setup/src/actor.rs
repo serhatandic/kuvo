@@ -41,7 +41,7 @@ mod handover;
 mod predecessor;
 mod removal;
 mod replication;
-pub(crate) use removal::Unlink;
+pub(crate) use removal::{Unlink, WipeProgress, wipe_progress};
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
 use handover::{Handover, HandoverReply};
@@ -149,6 +149,11 @@ pub(crate) enum Command {
     InstallerCode(Option<crate::seed::source::Prepared>, edits::Submitter),
     InstallerCancellation(installer::Cancellation),
     SshAdmission(edits::Submitter),
+    SshUninstall {
+        key: String,
+        position: Position,
+        by: edits::Submitter,
+    },
     SshAlias {
         identity: String,
         key: Option<String>,
@@ -1249,6 +1254,19 @@ impl Owner {
             }
             Command::InstallerCancellation(receipt) => self.cancel_installer(receipt).await,
             Command::SshAdmission(by) => self.ssh_admission(&by),
+            Command::SshUninstall { key, position, by } => {
+                if !self.link.setup().is_ok_and(|setup| {
+                    setup.role == Role::Primary && setup.checkpointed && setup.position == position
+                }) {
+                    return Ok(Response {
+                        status: 409,
+                        value: json!({"message": "The setup changed. Refresh it and try again."}),
+                    });
+                }
+                let mut request = Unlink::default();
+                request.on_route(Some(true));
+                self.unlink_computer(key, request, by).await
+            }
             Command::SshAlias {
                 identity,
                 key,

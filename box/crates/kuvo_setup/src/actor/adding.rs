@@ -103,6 +103,7 @@ impl Owner {
         } else {
             addresses.push(entry);
         }
+        crate::ssh::keep_ssh_host(&self.files, &destination, peer)?;
         let mut next = self.link.clone();
         next.put(
             self.own()?,
