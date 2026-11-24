@@ -2,6 +2,7 @@
 
 mod book;
 mod edit;
+mod fences;
 mod importing;
 mod offline;
 mod peer_actions;
@@ -22,6 +23,7 @@ use super::{
     store::{self, Error, Item, QUEUE, Store, limit, owner_id, plain_name, queue_files},
     told, view,
 };
+use fences::{Compaction, Fence};
 use http::{HeaderMap, StatusCode};
 use jiff::Timestamp;
 use kuvo_engine::{Engine, LocalSessions};
@@ -502,9 +504,10 @@ impl Writer {
         let guard = self.lock().await?;
         let writer = self.clone();
         let prepared = tokio::task::spawn_blocking(move || {
-            let all = writer.strict_items(now)?;
+            let (all, compaction) = writer.changes(now)?;
             if let Some(receipt) = writer.receipt(&all, &id)? {
                 if receipt["operation"].as_str() == Some(&operation) && receipt["digest"].as_str() == Some(&digest) {
+                    compaction.finish(&writer, now)?;
                     return Ok(Prepared::Replay(receipt["answer"]["value"].clone()));
                 }
                 return Err(reused());
@@ -561,7 +564,7 @@ impl Writer {
                 edit::pictures_to_remove(&parsed, images)?;
             }
             let document = writer.read_owner(&owner, now)?;
-            Ok(Prepared::New { item, document, assignees, all, operation, digest, staged, body_changed: body.get("body").is_some() })
+            Ok(Prepared::New { item, document, assignees, all, operation, digest, staged, compaction, body_changed: body.get("body").is_some() })
         }).await.map_err(internal)??;
         let Prepared::New {
             mut item,
@@ -571,6 +574,7 @@ impl Writer {
             operation,
             digest,
             staged,
+            compaction,
             body_changed,
         } = prepared
         else {
@@ -606,6 +610,7 @@ impl Writer {
             document.items.push(item);
             document.save(&writer.store).map_err(storage_refusal)?;
             published.commit();
+            compaction.finish(&writer, now)?;
             Ok(answer)
         })
         .await
@@ -621,7 +626,7 @@ impl Writer {
             let Some(reference) = writer.refs.parse(&name) else {
                 return Err(Refusal::new(StatusCode::NOT_FOUND, "There's no such item."));
             };
-            let all = writer.strict_items(now)?;
+            let (all, compaction) = writer.changes(now)?;
             let Some(item) = writer.refs.find(&all, &reference) else {
                 return Err(Refusal::new(
                     StatusCode::NOT_FOUND,
@@ -666,14 +671,6 @@ impl Writer {
                     if item.removed.is_none() {
                         return Err(bad("It isn't deleted."));
                     }
-                    if now as f64 - item.removed.as_ref().expect("removed stamp").at
-                        > 30.0 * 86_400_000.0
-                    {
-                        return Err(Refusal::new(
-                            StatusCode::NOT_FOUND,
-                            "There's no item like that.",
-                        ));
-                    }
                     if let Some(source) = item.source() {
                         let ref_of = |value: &Value| {
                             writer.refs.issue(value["ref"].as_str().unwrap_or_default())
@@ -708,6 +705,7 @@ impl Writer {
             let response = Item::read(&item.owner, saved).expect("saved queue item");
             let answer = view::mutation(&response, &Assignees::read(&writer.store));
             file.save(&writer.store).map_err(storage_refusal)?;
+            compaction.finish(&writer, now)?;
             Ok(answer)
         })
         .await
@@ -758,7 +756,8 @@ impl Writer {
         .await
     }
 
-    fn strict_items(&self, now: i64) -> Result<Vec<Item>, Refusal> {
+    fn strict_items(&self, now: i64) -> Result<(Vec<String>, Vec<Item>), Refusal> {
+        let mut owners = Vec::new();
         for file in queue_files(&self.store.root.join("queues")) {
             if let Some(owner) = file
                 .file_stem()
@@ -766,9 +765,10 @@ impl Writer {
                 .filter(|name| owner_id(name))
             {
                 self.read_owner(owner, now)?;
+                owners.push(owner.to_owned());
             }
         }
-        self.store.items().map_err(storage_refusal)
+        Ok((owners, self.store.items().map_err(storage_refusal)?))
     }
 
     fn read_owner(&self, owner: &str, now: i64) -> Result<Document, Refusal> {
@@ -811,23 +811,10 @@ impl Writer {
                     .unwrap_or(Value::Null),
             ));
         }
-        let Some(run) = self.store.root.parent() else {
-            return Ok(None);
-        };
-        let key = key(json!([id]));
-        for family in ["edit-deletions", "edit-departures"] {
-            let file = run
-                .join("owned-data")
-                .join(family)
-                .join(format!("{key}.json"));
-            if let Some(record) = RECEIPT
-                .read(&file)
-                .map_err(Error::from)
-                .map_err(storage_refusal)?
-            {
+        for family in [Fence::Deleted, Fence::Departed] {
+            if let Some(record) = self.fence(family, id)? {
                 return Ok(Some(
                     record
-                        .fields
                         .get("creationReceipt")
                         .cloned()
                         .unwrap_or(Value::Null),
@@ -881,6 +868,7 @@ enum Prepared {
         operation: String,
         digest: String,
         staged: Staged,
+        compaction: Compaction,
         body_changed: bool,
     },
 }

@@ -1,6 +1,6 @@
 // A real resident reads Work Queue files in an isolated home with a local relay.
 import assert from "node:assert/strict";
-import { verify } from "node:crypto";
+import { createHash, verify } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -1054,3 +1054,35 @@ test("GitHub device sign-in keeps the same located attempt for its client", { ti
   assert.equal((await ask("DELETE", oauth + "/" + attemptID, undefined, client)).status, 200);
   assert.equal((await ask("GET", oauth + "/" + attemptID, undefined, client)).json.data.status, "expired");
 });
+
+
+test("an expired deletion retains its fence and prunes the old item links", { timeout: 45000 }, () =>
+  withQueue(async (queue, start) => {
+    const dead = "wqi_dddddddddddddddddddd";
+    const live = "wqi_llllllllllllllllllll";
+    const old = { at: Date.now() - 31 * 86_400_000, by: { user: true } };
+    const fresh = { at: Date.now() - 1000, by: { user: true } };
+    const file = path.join(queue, "queues", "usr_you.json");
+    write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+    write(file, JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [
+      { id: dead, owner: "usr_you", title: "Old item", status: "todo", created: old, updated: old, removed: old, number: 11 },
+      { id: live, owner: "usr_you", title: "New item", status: "todo", created: fresh, updated: fresh, number: 12,
+        relations: [{ item: dead, kind: "blocks" }] },
+    ] }));
+    const app = { "x-kuvo-from": "app" };
+    const ask = await start();
+    const changed = await ask("kuvo/work-queue/items/" + live, "PATCH", { title: "Still here" }, app);
+    assert.equal(changed.status, 200, changed.text);
+    const saved = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(saved.items.map(item => item.id), [live]);
+    assert.equal(saved.items[0].relations, undefined);
+    const key = createHash("sha256").update(JSON.stringify([dead])).digest("base64url");
+    const fence = path.join(queue, "..", "owned-data", "edit-deletions", key + ".json");
+    assert.deepEqual(JSON.parse(readFileSync(fence, "utf8")), { formatVersion: 1, id: dead, queue: "usr_you", at: old.at });
+    const recover = await ask("kuvo/data/edits", "POST", {
+      ref: { kind: "queueItems", id: dead, queue: "usr_you" },
+      operation: "expired-delete-fence", baseRevision: null, create: true, fields: { title: "Do not recreate" },
+    }, app);
+    assert.equal(recover.status, 409, recover.text);
+    assert.equal(recover.json.status, "refresh");
+  }));

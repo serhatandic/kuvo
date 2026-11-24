@@ -15,6 +15,8 @@ exchange. Markdown imports read the backlog files and claim each number on the
 main's lease. Imports on a member wait for the main's reply. A member can save
 an edit against a revision and replay it to the keeper when it returns. The
 keeper merges independent passages and records competing values as choices.
+Expired deletions keep a fence that prevents an offline draft from recreating
+the item. Compaction prunes stored relations and retires its attachments.
 Visible GitHub issues are read through the configured `gh` account. The cache
 and lock use the TypeScript formats. An agent can add an issue through a
 verified tool call, and a second computer can read its full item. Device sign-in
@@ -45,11 +47,11 @@ assigned to the indicated row for the rest of the port.
 | | 6 | Covered. A Markdown import claims its numbers, opens the items by those numbers and skips the same items on replay. |
 | | 1–2 | Open, 5.2. Grant receipt replay and inherited counters. |
 | [work-queue-relations](../../box/test/work-queue-relations.test.ts) | 1, 4 | Covered. The preview route uses the shared exclusions and UTF-16 offsets for non-BMP text, fences, code spans, links, and bidirectional text. |
-| | 2–3, 5–8, 10 | Partial, 5.2. Saved note mentions preserve their ranges and backlinks. Local relation edits preserve mention bindings and show the inverse. Downloads refuse symlink replacements. Client staging keeps distinct names, bytes and anchors when both the metadata and disk have collisions. Inline marker removal preserves current text and attachment bytes. Missing indexes are reconstructed on reads. More staging cases, durable recovery and typed note writes still need coverage. |
-| | 9, 11 | Open, 5.2. Purge pruning and dispatch responsiveness with a held writer lock. |
+| | 2–3, 5–10 | Partial, 5.2. Saved note mentions preserve their ranges and backlinks. Local relation edits preserve mention bindings and show the inverse. Downloads refuse symlink replacements. Client staging keeps distinct names, bytes and anchors when both the metadata and disk have collisions. Inline marker removal preserves current text and attachment bytes. Missing indexes are reconstructed on reads. A write purges an expired row and its stored edges. More staging cases, durable recovery and typed note writes still need coverage. |
+| | 11 | Open, 5.2. Dispatch responsiveness with a held writer lock. |
 | [queue-live](../../box/bridge-tests/queue-live.test.js), [queue-stop](../../box/test/queue-stop.test.ts), [queue-items](../../box/test/queue-items.test.ts) | 1, 1–6, 1–25 respectively | Conversation message queues. See the case-by-case [engine map](rust-engine-coverage.md) for status and rows 3.2, 4.1 and 5.1. |
 
-Of the 182 directly named cases, 4 are covered, 41 are partial, 105 are open in
+Of the 182 directly named cases, 4 are covered, 42 are partial, 104 are open in
 Work Queue and 32 are tracked in the engine map. The Work Queue conformance area also
 checks the initial migration and future-format refusal through a real resident.
 
@@ -58,7 +60,7 @@ checks the initial migration and future-format refusal through a real resident.
 | [setup-shared](../../box/test/setup-shared.test.ts) label restore | Open, 5.2 and 2.5. Preview, acceptance and recovery. |
 | [setup-merge](../../box/test/setup-merge.test.ts) 2–6 | Open in 5.2 and 2.3 for the reservation, import and Markdown rewrite. Partial in case 6 for local alias lookup. |
 | [offline-merge](../../box/test/offline-merge.test.ts) 2, 7 | Partial, 5.2. A member saves a draft against an owner revision and the two residents merge independent passages when the keeper returns. Local conformance covers the deletion fence before and after restoration and recovery of refused text. Competing passages, retired revisions and legacy receipts still need scenarios. |
-| [offline-merge](../../box/test/offline-merge.test.ts) 3–6, 8–10 as applied to queue records | Open, 5.2, 2.4 and 5.5. Large and legacy passage layouts, transferred choices, compact tombstones, former-owner replay and attachment records. |
+| [offline-merge](../../box/test/offline-merge.test.ts) 3–6, 8–10 as applied to queue records | Partial for compact tombstones. Expired deletions retain their fence and a draft receives a refresh on attempted creation. Large and legacy passage layouts, transferred choices, former-owner replay and attachment records remain open in 5.2, 2.4 and 5.5. |
 | [setup-two-boxes](../../box/bridge-tests/setup-two-boxes.test.js) joined roster, cards and numbering | Open for 5.2 numbering and card input. Existing roster and card coverage belongs to 2.3. |
 | [documents](../../box/bridge-tests/documents.test.js) numbering precedent and independent edits in both orders | Open, 5.2. Existing preference merge belongs to 2.3. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) queue slices for creation, claim, revision edits, scopes, handoff and receipts | Partial, 5.2 and 2.4. Ordinary revision-aware creation and PATCH replay the same decision through the shared edit outbox. Claim failure, handoff and the authenticated forwarding boundaries still need coverage. |

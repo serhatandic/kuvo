@@ -70,7 +70,7 @@ impl Writer {
                 .refs
                 .parse(&reference)
                 .ok_or_else(|| Refusal::new(StatusCode::NOT_FOUND, "There's no such item."))?;
-            let all = writer.strict_items(now)?;
+            let (all, compaction) = writer.changes(now)?;
             let item = writer
                 .refs
                 .find(&all, &reference)
@@ -78,16 +78,19 @@ impl Writer {
             writer.admit(&item.owner)?;
             refuse_handing(item)?;
             let people = Assignees::read(&writer.store);
-            if let Some(relation) = fields.get("itemRelation") {
-                return writer.relate(&all, item, relation, now, &people);
-            }
-            if item.removed.is_some() {
-                return Err(bad("It's deleted: bring it back first."));
-            }
-            writer.edit_fields(&all, item, &fields, &staged, now, &people, |row| {
-                writer.observe_known(row, &item.id);
-                Ok(())
-            })
+            let answer = if let Some(relation) = fields.get("itemRelation") {
+                writer.relate(&all, item, relation, now, &people)?
+            } else {
+                if item.removed.is_some() {
+                    return Err(bad("It's deleted: bring it back first."));
+                }
+                writer.edit_fields(&all, item, &fields, &staged, now, &people, |row| {
+                    writer.observe_known(row, &item.id);
+                    Ok(())
+                })?
+            };
+            compaction.finish(&writer, now)?;
+            Ok(answer)
         })
         .await
         .map_err(internal)?

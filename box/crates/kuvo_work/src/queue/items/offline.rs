@@ -241,9 +241,16 @@ impl Writer {
         tokio::task::spawn_blocking(move || {
             let _guard = _guard;
             let now = Timestamp::now().as_millisecond();
-            let all = writer.strict_items(now)?;
+            let (all, compaction) = writer.changes(now)?;
             let item = all.iter().find(|item| item.id == target.id);
+            let deletion = if item.is_none() {
+                writer.fence(Fence::Deleted, &target.id)?
+            } else {
+                None
+            };
+            let target = fence_target(&target, deletion.as_ref());
             if !writer.owns_editor(&target, &id.here, item) {
+                compaction.finish(&writer, now)?;
                 return Ok(Reply {
                     status: 409,
                     value: json!({"message":"This computer could not confirm the current record."}),
@@ -258,8 +265,12 @@ impl Writer {
                 }
                 history.view()
             } else {
-                writer.revisions.absent(&target.id, false).view()
+                writer
+                    .revisions
+                    .absent(&target.id, deletion.is_some())
+                    .view()
             };
+            compaction.finish(&writer, now)?;
             Ok(Reply { status: 200, value })
         })
         .await
@@ -533,6 +544,18 @@ impl Writer {
         }
         Ok(())
     }
+}
+
+fn fence_target(target: &Target, deletion: Option<&Fields>) -> Target {
+    let mut target = target.clone();
+    if let Some(queue) = deletion
+        .and_then(|record| record.get("queue"))
+        .and_then(Value::as_str)
+        .filter(|queue| owner_id(queue))
+    {
+        target.queue = queue.to_owned();
+    }
+    target
 }
 
 pub(super) fn reply<R>(answer: RecordEditAnswer) -> Result<kuvo_server::RouteReply<R>, Refusal>

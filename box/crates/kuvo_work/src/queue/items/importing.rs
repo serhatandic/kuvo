@@ -51,8 +51,9 @@ impl Writer {
         let used = self.numbers.used().await.map_err(storage_refusal)?;
         let writer = self.clone();
         let who = json!({"user":true});
-        let (mut book, plan) = tokio::task::spawn_blocking(move || {
-            let mut book = Book::new(writer.strict_items(now)?);
+        let (mut book, plan, compaction) = tokio::task::spawn_blocking(move || {
+            let (items, compaction) = writer.changes(now)?;
+            let mut book = Book::new(items);
             let elsewhere = told::known_numbers(&writer.store).map_err(storage_refusal)?;
             let plan = Plan::prepare(
                 &mut book,
@@ -63,7 +64,7 @@ impl Writer {
                 now,
                 &who,
             )?;
-            Ok::<_, Refusal>((book, plan))
+            Ok::<_, Refusal>((book, plan, compaction))
         })
         .await
         .map_err(internal)??;
@@ -97,7 +98,8 @@ impl Writer {
         let writer = self.clone();
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
-            book.save(&writer, now)
+            book.save(&writer, now)?;
+            compaction.finish(&writer, now)
         })
         .await
         .map_err(internal)??;

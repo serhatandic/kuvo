@@ -126,8 +126,9 @@ impl Writer {
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
             let now = Timestamp::now().as_millisecond();
-            let all = writer.strict_items(now)?;
+            let (all, compaction) = writer.changes(now)?;
             if let Some(answer) = operation.as_deref().and_then(|operation| receipt::kept_answer(&all, operation)) {
+                compaction.finish(&writer, now)?;
                 return Ok(answer);
             }
             writer.admit(&owner)?;
@@ -194,6 +195,7 @@ impl Writer {
             let mut document = writer.read_owner(&owner, now)?;
             document.items.push(row);
             document.save(&writer.store).map_err(storage_refusal)?;
+            compaction.finish(&writer, now)?;
             Ok(answer)
         }).await.map_err(internal)?
     }

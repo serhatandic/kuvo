@@ -54,15 +54,34 @@ impl Writer {
         else {
             return Ok(None);
         };
+        let now = Timestamp::now().as_millisecond();
+        let (all, compaction) = self.changes(now)?;
+        let decision = self.decide_change(draft, sender, &id, now, &all)?;
+        compaction.finish(self, now)?;
+        Ok(decision)
+    }
+
+    fn decide_change(
+        &self,
+        draft: &Draft,
+        sender: &str,
+        id: &Identity,
+        now: i64,
+        all: &[Item],
+    ) -> Result<Option<Value>, Refusal> {
         let incoming = &draft.edit;
         let mut edit = incoming.clone();
         edit.operation = types::op(&draft.setup, &draft.nonce);
         let digest = types::key(json!(edit));
-        let now = Timestamp::now().as_millisecond();
         let edit_target = &edit.target;
-        let all = self.strict_items(now)?;
         let item = all.iter().find(|item| item.id == edit_target.id);
-        if !self.owns_editor(edit_target, &id.here, item) {
+        let deletion = if item.is_none() {
+            self.fence(Fence::Deleted, &edit_target.id)?
+        } else {
+            None
+        };
+        let target = fence_target(edit_target, deletion.as_ref());
+        if !self.owns_editor(&target, &id.here, item) {
             return Ok(None);
         }
         let mut row = item
@@ -71,7 +90,7 @@ impl Writer {
         let mut history = if let Some(item) = item {
             self.revisions.observe_item(&mut row, &item.id, None)
         } else {
-            self.revisions.absent(&edit_target.id, false)
+            self.revisions.absent(&edit_target.id, deletion.is_some())
         };
         let answer_for_sender = |mut decision: Decision| {
             decision.operation = incoming.operation.clone();
@@ -131,9 +150,12 @@ impl Writer {
             }
         }
         let Some(item) = item else {
-            if edit.create() {
+            if edit.create()
+                && deletion.is_none()
+                && self.fence(Fence::Departed, &edit_target.id)?.is_none()
+            {
                 return self
-                    .add_offline(&edit, digest, &all, now)
+                    .add_offline(&edit, digest, all, now)
                     .map(answer_for_sender);
             }
             return Ok(Some(
@@ -234,7 +256,7 @@ impl Writer {
             // Legacy notes were assigned stable IDs when the edit baseline was observed.
             let baseline = Item::read(&item.owner, &row).expect("queue item");
             let mut decision = None;
-            self.edit_fields(&all, &baseline, &fields, &staged, now, &people, |row| {
+            self.edit_fields(all, &baseline, &fields, &staged, now, &people, |row| {
                 decision = Some(write(row)?);
                 Ok(())
             })?;
