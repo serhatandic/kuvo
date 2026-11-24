@@ -524,6 +524,20 @@ Tools still running when a turn ends are stopped. A summary reported only
 once it's done gets its own row. A repeated note is written once. Stop
 tells Claude Code no for an open ask.
 
+`POST kuvo/agents/api/session/:id/compact` is now declared with the other
+coding-agent session routes, and the Rust resident serves it from the shared
+session runs. A summary goes first in line, now or once the turn under way
+ends. It is refused in the reference bridge's words for a subagent's
+conversation, a model whose agent isn't here, an agent that only summarizes
+by itself (`Agent::compacts`, false unless an adapter says so), a
+conversation the agent hasn't started, and a pending undo. The Rust resident
+counts a conversation as started when the agent's slot has vendor state,
+because Rust has no handover `seen` cursor yet. The summary's row carries
+its own ID with `reason: "manual"`, and the conversation's last outcome stays
+as it was. The Rust session store keeps a
+transcript's data pictures as files under `attachments/<session>/transcript-pictures`,
+as the reference store does.
+
 A message handed to a running turn has a receipt before it is sent: the
 UUID Claude acknowledges it by. The receipt stays unresolved while a live or
 recovered turn hasn't acknowledged the message. After that, the message
@@ -543,7 +557,8 @@ The two rows expanded from the bot and session steering loop count separately.
 | 11–13 | The holder scenario covers 11, a late steered result, and its receipt. 4.4b owns the other steering and missed-message cases, and 4.1b owns retry of missed messages. |
 | 14–28 | 4.4b Claude task lifecycle and holder reuse. 4.1b owns resident background projection, wake-up, staged Undo, account deletion and restarting the session. 4.6 owns projection of agent-initiated turns. |
 | 29–42 | 4.6 subagent sessions, background lanes, messaging and handover. 4.4b supplies Claude's wire events. |
-| 43–50 | 4.4b context and compaction settings, usage, images, tool results, native notices and model windows. 4.1c owns MCP tool transport. |
+| 43–49 | Ported to agents-claude-turns on both boxes: the summary window Claude Code is started with and its setting between messages, the saved context, a tool's picture kept as a file, server tool results, its own notes, repeated hook failures and limit warnings. |
+| 50 | 4.4b model windows from `get_context_usage`. The shared catalog model has no context size yet; it goes with 55–57. |
 | 51–54 | 4.4a conformance covers account-selected default aliases and the concrete name and ID of a default outside the listed models. |
 | 55–57 | 4.4a provides the provisional list. 4.4b still needs end-to-end proof of provisional models, running the native default and compatibility when Claude omits window information. |
 | 58–61 | 4.6 conversation transfer and chosen model across computers. 4.4b supplies Claude's native transcript and memory locations. |
@@ -552,8 +567,8 @@ The two rows expanded from the bot and session steering loop count separately.
 | 73–85 | 4.4b bounded and redacted native process diagnostics, history of the current process and interruption. |
 | 86–92 | 4.4b sandbox launch, file copies, sign-out and adoption. 6.1 owns sandbox policy and 6.3 owns worktree paths. |
 | 93–103 | 4.4b Claude permissions, Plan mode and question fields. 4.1b owns the cards and session rules. 6.1 supplies the computer's permission rules. |
-| 104–109 | Ported to [agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs) on both boxes. The reference bridge under its holder starts Claude Code again after Stop, so only Rust checks that the same process takes the next message. |
-| 110–114 | 4.4b typed `/compact`. The Rust resident has no `session/:id/compact` route yet. |
+| 104–109 | Ported to [agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs) on both boxes. After Stop, the reference bridge under its holder starts Claude Code again, while its own test expects the same process to take the next message. Rust does that, and only Rust checks it. |
+| 110–114 | Ported to agents-claude-turns on both boxes, with a refusal for a conversation Claude Code hasn't started. |
 | 115–122 | Ported to agents-claude-turns on both boxes, except the `session.compaction.*` events, which the conformance cases don't read. |
 | 123–127 | 4.4b notices and one-time instruction updates. 4.6 owns carry and handover. |
 | 128–131 | 4.4b credential attribution and generation fences. 5.4 owns the account's gathered usage and limits. |

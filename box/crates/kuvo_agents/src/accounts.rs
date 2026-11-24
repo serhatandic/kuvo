@@ -41,6 +41,17 @@ impl AgentKind {
         }
     }
 
+    /// The agent's name, as people read it.
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Cursor => "Cursor",
+            Self::Grok => "Grok",
+            Self::Antigravity => "Antigravity",
+        }
+    }
+
     pub const fn provider(self) -> &'static str {
         match self {
             Self::Claude => "claude-code",

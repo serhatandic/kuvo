@@ -113,7 +113,7 @@ impl AgentModelSource for Models {
                 if row.unavailable || status.is_none() {
                     catalog.unavailable.push(provider.clone());
                 }
-                let program = display_name(row.account.kind);
+                let program = row.account.kind.display_name();
                 let name = if row.account.id == "default" {
                     program.to_owned()
                 } else {
@@ -168,16 +168,6 @@ impl AgentModelSource for Models {
 
     fn session_folder<'a>(&'a self, session: &'a str) -> CatalogRead<'a, Option<String>> {
         Box::pin(self.runtime.session_folder(session))
-    }
-}
-
-fn display_name(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "Claude Code",
-        AgentKind::Codex => "Codex",
-        AgentKind::Cursor => "Cursor",
-        AgentKind::Grok => "Grok",
-        AgentKind::Antigravity => "Antigravity",
     }
 }
 

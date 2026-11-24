@@ -37,6 +37,22 @@ pub use update::{HandedTurn, Handover, Update};
 
 type Reply<T> = oneshot::Sender<io::Result<T>>;
 
+/// A summary asked for: under way now, or once the turn under way ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Compacting {
+    Now,
+    Waiting,
+}
+
+impl Compacting {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Now => "compacting",
+            Self::Waiting => "waiting",
+        }
+    }
+}
+
 /// What became of a message taken back from the line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cancelled {
@@ -95,6 +111,8 @@ struct Live {
     rules: Arc<TurnRules>,
     thread: Arc<dyn Thread>,
     provider: String,
+    /// A summary you asked for, not a turn of its own work.
+    compacting: bool,
 }
 
 /// What a conversation is doing now.
@@ -426,6 +444,13 @@ impl SessionRuns {
             reply,
         })
         .await
+    }
+
+    /// Summarize the conversation with the agent that holds it: now, or once
+    /// the turn under way ends. Refused, in a sentence, when it can't be.
+    pub async fn compact(&self, session: String) -> io::Result<Compacting> {
+        self.line(|reply| line::Request::Compact { session, reply })
+            .await
     }
 
     pub async fn interrupt(&self, session: String) -> io::Result<bool> {
@@ -887,6 +912,7 @@ impl Service {
             policy.clone(),
         );
         let id = input.id.clone();
+        let compacting = matches!(input.kind, TurnKind::Compact);
         let turn = RunningTurn::launch(thread.clone(), input, sink, writes, writer);
         Ok(Live {
             turn,
@@ -894,6 +920,7 @@ impl Service {
             rules: policy,
             thread,
             provider,
+            compacting,
         })
     }
 }

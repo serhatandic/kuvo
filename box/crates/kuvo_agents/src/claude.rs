@@ -166,6 +166,10 @@ impl Agent for Claude {
         true
     }
 
+    fn compacts(&self) -> bool {
+        true
+    }
+
     fn sign_in(&self, request: Request) -> AdapterCall<'_, Arc<dyn Attempt>> {
         Box::pin(self.program.login(request, self.models.clone()))
     }

@@ -235,11 +235,14 @@ impl InboxEvent {
                     json!({"sessionID": session, "inboxID": input.id, "item": item}),
                 )
             }
-            Self::Delivered { session, id, row } => (
-                session,
-                "session.inbox.delivered",
-                json!({"sessionID": session, "inboxID": id, "message": row}),
-            ),
+            Self::Delivered { session, id, row } => {
+                let mut data = json!({"sessionID": session, "inboxID": id});
+                // (A summary has no message of its own.)
+                if !row.is_null() {
+                    data["message"] = row.clone();
+                }
+                (session, "session.inbox.delivered", data)
+            }
             Self::Cancelled { session, id } => (
                 session,
                 "session.inbox.cancelled",

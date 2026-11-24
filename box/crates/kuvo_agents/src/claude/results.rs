@@ -104,7 +104,9 @@ fn limited(mut text: String) -> String {
 }
 
 fn with_pictures(text: String, pictures: Vec<ToolOutput>) -> Vec<ToolOutput> {
-    std::iter::once(ToolOutput::Text(text)).chain(pictures).collect()
+    std::iter::once(ToolOutput::Text(text))
+        .chain(pictures)
+        .collect()
 }
 
 fn tool_text(content: &Value) -> String {
@@ -172,15 +174,14 @@ fn picture_url(url: &str) -> Option<ToolOutput> {
         return picture_data(data, mime);
     }
     let path = url.strip_prefix("file://")?;
-    let path = percent_encoding::percent_decode_str(path).decode_utf8().ok()?;
+    let path = percent_encoding::percent_decode_str(path)
+        .decode_utf8()
+        .ok()?;
     picture_file(&path)
 }
 
 fn picture_file(path: &str) -> Option<ToolOutput> {
-    let extension = Path::new(path)
-        .extension()?
-        .to_str()?
-        .to_ascii_lowercase();
+    let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
     let mime = match extension.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
@@ -208,7 +209,10 @@ fn file_url(path: &str) -> String {
         .add(b'`')
         .add(b'{')
         .add(b'}');
-    format!("file://{}", percent_encoding::utf8_percent_encode(path, PATH))
+    format!(
+        "file://{}",
+        percent_encoding::utf8_percent_encode(path, PATH)
+    )
 }
 
 /// What an edit did, from Claude Code's own account of it.

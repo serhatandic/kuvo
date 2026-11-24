@@ -143,7 +143,10 @@ impl Projection {
                 {
                     let words = output
                         .iter()
-                        .map(|line| line.as_str().map_or_else(|| line.to_string(), str::to_owned))
+                        .map(|line| {
+                            line.as_str()
+                                .map_or_else(|| line.to_string(), str::to_owned)
+                        })
                         .collect::<Vec<_>>()
                         .join("\n");
                     out.push(TurnEvent::Notice(words));
@@ -198,7 +201,11 @@ impl Projection {
             .map(|errors| {
                 errors
                     .iter()
-                    .map(|error| error.as_str().map_or_else(|| error.to_string(), str::to_owned))
+                    .map(|error| {
+                        error
+                            .as_str()
+                            .map_or_else(|| error.to_string(), str::to_owned)
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             });
@@ -329,7 +336,9 @@ impl Projection {
         let streamed = id.is_some_and(|id| self.streamed.contains(id));
         let error = frame["error"].as_str().or(message["error"].as_str());
         if error.is_none()
-            && let Some(model) = message["model"].as_str().filter(|model| !model.starts_with('<'))
+            && let Some(model) = message["model"]
+                .as_str()
+                .filter(|model| !model.starts_with('<'))
         {
             self.context_model = Some(model.into());
         }
@@ -550,7 +559,12 @@ impl Projection {
         out.push(tool(id, &name, state));
     }
 
-    fn rate_limit(&mut self, info: &Value, noticed: &mut HashSet<String>, out: &mut Vec<TurnEvent>) {
+    fn rate_limit(
+        &mut self,
+        info: &Value,
+        noticed: &mut HashSet<String>,
+        out: &mut Vec<TurnEvent>,
+    ) {
         // A limit being used up: said once per threshold it passes, and again once it's close.
         if info["status"] == "allowed_warning" {
             let (text, close) = limit_warning(info);
@@ -624,9 +638,14 @@ impl Projection {
                         self.compact_failed = true;
                         self.problem = Some(format!(
                             "Claude Code couldn't summarize the conversation{}.",
-                            frame["compact_error"].as_str().map_or_else(String::new, |error| {
-                                format!(": {}", redact(error.strip_suffix('.').unwrap_or(error)))
-                            })
+                            frame["compact_error"]
+                                .as_str()
+                                .map_or_else(String::new, |error| {
+                                    format!(
+                                        ": {}",
+                                        redact(error.strip_suffix('.').unwrap_or(error))
+                                    )
+                                })
                         ));
                     }
                     return;
@@ -660,7 +679,9 @@ impl Projection {
             }
             "local_command_output" => {
                 // What a command you typed for Claude Code itself printed (/cost, /usage).
-                if let Some(content) = frame["content"].as_str().filter(|text| !text.trim().is_empty())
+                if let Some(content) = frame["content"]
+                    .as_str()
+                    .filter(|text| !text.trim().is_empty())
                 {
                     let key = self.synthetic_block();
                     out.push(TurnEvent::TextDelta {
@@ -717,7 +738,9 @@ impl Projection {
                     } else {
                         format!(": {}", redact(said))
                     };
-                    out.push(TurnEvent::Notice(format!("Your {hook} hook failed{words}.")));
+                    out.push(TurnEvent::Notice(format!(
+                        "Your {hook} hook failed{words}."
+                    )));
                 }
             }
             "memory_recall" => {
@@ -733,7 +756,13 @@ impl Projection {
                 } else {
                     paths
                 };
-                out.push(tool(&id, "memory", ToolState::Running { input: input.clone() }));
+                out.push(tool(
+                    &id,
+                    "memory",
+                    ToolState::Running {
+                        input: input.clone(),
+                    },
+                ));
                 out.push(tool(
                     &id,
                     "memory",
@@ -763,13 +792,20 @@ impl Projection {
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
             // Smaller than before: it started counting again (a new conversation).
-            let spent = if total >= before { total - before } else { total };
+            let spent = if total >= before {
+                total - before
+            } else {
+                total
+            };
             state.insert("claudeCost".into(), Value::from(total));
             if spent > 0.0 && self.uses_key {
                 out.push(TurnEvent::Cost(spent));
             }
         }
-        let used_model = self.context_model.clone().unwrap_or_else(|| model.id.clone());
+        let used_model = self
+            .context_model
+            .clone()
+            .unwrap_or_else(|| model.id.clone());
         let window = frame["modelUsage"][&used_model]["contextWindow"]
             .as_u64()
             .filter(|window| *window > 0);
@@ -815,7 +851,12 @@ fn unknown(kind: &str, frame: &Value, noticed: &mut HashSet<String>, out: &mut V
         .filter_map(|field| frame[field].as_str())
         .find(|words| !words.trim().is_empty());
     if let Some(words) = words {
-        notice_once(noticed, format!("unknown:{kind}:{words}"), words.into(), out);
+        notice_once(
+            noticed,
+            format!("unknown:{kind}:{words}"),
+            words.into(),
+            out,
+        );
     }
     if noticed.insert(format!("log:{kind}")) {
         let said = redact(&frame.to_string());
@@ -886,7 +927,10 @@ fn limit_warning(info: &Value) -> (String, bool) {
         return (text, close);
     }
     // No figure: the threshold it passed, at least.
-    match info["surpassedThreshold"].as_f64().filter(|passed| *passed > 0.0) {
+    match info["surpassedThreshold"]
+        .as_f64()
+        .filter(|passed| *passed > 0.0)
+    {
         None => (format!("Claude Code warned about {limit}."), false),
         Some(passed) if passed >= CLOSE => (format!("You're close to {limit}."), true),
         Some(passed) => (
@@ -946,11 +990,7 @@ fn usage(value: &Value) -> Usage {
 
 /// How much of the context a request's usage fills: none when it doesn't say its input.
 fn step_context(usage: &Usage) -> Option<u64> {
-    let used = usage.input
-        + usage.output
-        + usage.reasoning
-        + usage.cache_read
-        + usage.cache_write;
+    let used = usage.input + usage.output + usage.reasoning + usage.cache_read + usage.cache_write;
     (used > 0).then_some(used)
 }
 

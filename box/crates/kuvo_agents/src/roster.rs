@@ -27,6 +27,11 @@ pub trait Agent: Adoption {
         })
     }
 
+    /// Whether it summarizes its conversation when asked (not only by itself as it fills up).
+    fn compacts(&self) -> bool {
+        false
+    }
+
     fn keep_account(&self) -> Duration {
         Duration::ZERO
     }
