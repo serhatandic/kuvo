@@ -29,6 +29,49 @@ async function loadWire(home, env) {
   }
 }
 
+async function relayDesktop(t, relay, computer, ask, secret, session, name) {
+  const wire = await loadWire(computer.home, computer.env);
+  const key = wire.publicOf(secret).toString("base64url");
+  const paired = await ask("POST", "kuvo/devices/pair", { key, kind: "desktop", name }, { "x-kuvo-from": "app" });
+  assert.equal(paired.status, 200, paired.text);
+  const link = readJSON(path.join(computer.home, "run", "link.json"));
+  const address = relayAddress(Buffer.from(link.secret, "base64url"));
+  const target = Buffer.from((await ask("GET", "kuvo/setup")).json.you.key, "base64url");
+  const device = relay.device();
+  t.after(() => device.leave());
+  const send = (kind, body) => device.send(address, wire.frame(kind, session, body));
+  const receive = async kind => {
+    const message = wire.readRelay(await device.next());
+    assert.equal(message.kind, "deliver");
+    const frame = wire.readFrame(message.payload);
+    assert.equal(frame.session, session);
+    assert.equal(frame.kind, kind);
+    return frame.body;
+  };
+  const initiator = new wire.IKInitiator(secret, target, wire.PROLOGUE);
+  const hello = { v: 1, app: "1.0.0", client: "desktop", pairing: paired.json.pairing };
+  send(wire.Frame.handshake1, initiator.writeMessage1(Buffer.from(JSON.stringify(hello))));
+  const { transport } = initiator.readMessage2(await receive(wire.Frame.handshake2));
+  let requestId = 0;
+  const post = async (route, body, headers = {}) => {
+    const id = ++requestId;
+    const head = { t: "req", id, m: "POST", p: route, h: { "content-type": "application/json", ...headers } };
+    for (const part of wire.pieces(head, Buffer.from(JSON.stringify(body)), true)) {
+      send(wire.Frame.transport, transport.seal(part));
+    }
+    const chunks = [];
+    let status;
+    for (;;) {
+      const answer = wire.decodeMessage(transport.open(await receive(wire.Frame.transport)));
+      assert.equal(answer.head.id, id);
+      status ??= answer.head.s;
+      chunks.push(answer.body);
+      if (answer.head.end === true) return { status, json: JSON.parse(Buffer.concat(chunks)) };
+    }
+  };
+  return { key, post };
+}
+
 test("a transient addressed SSH Add refuses start, answer and cancel after authenticating", {
   skip: process.platform !== "darwin" || !fs.existsSync(wireFixture) && "Build the reference Noise fixture",
   timeout: 100_000,
@@ -552,47 +595,7 @@ test("SSH Add stops sending sign-ins when its paired device is revoked during en
   const engine = stageEngine(t, target, { holdReady: true });
   const { selectedKey, credentials } = await selectedSshCredentials(fixture);
 
-  const wire = await loadWire(main.home, main.env);
-  const secret = Buffer.alloc(32, 82);
-  const deviceKey = wire.publicOf(secret).toString("base64url");
-  const paired = await ask("POST", "kuvo/devices/pair", { key: deviceKey, kind: "desktop", name: "Add caller" }, { "x-kuvo-from": "app" });
-  assert.equal(paired.status, 200, paired.text);
-  const link = readJSON(path.join(main.home, "run", "link.json"));
-  const address = relayAddress(Buffer.from(link.secret, "base64url"));
-  const computer = Buffer.from((await ask("GET", "kuvo/setup")).json.you.key, "base64url");
-  const device = relay.device();
-  t.after(() => device.leave());
-  const session = 412;
-  const send = (kind, body) => device.send(address, wire.frame(kind, session, body));
-  const receive = async kind => {
-    const message = wire.readRelay(await device.next());
-    assert.equal(message.kind, "deliver");
-    const frame = wire.readFrame(message.payload);
-    assert.equal(frame.session, session);
-    assert.equal(frame.kind, kind);
-    return frame.body;
-  };
-  const initiator = new wire.IKInitiator(secret, computer, wire.PROLOGUE);
-  send(wire.Frame.handshake1, initiator.writeMessage1(Buffer.from(JSON.stringify({ v: 1, app: "1.0.0", client: "desktop", pairing: paired.json.pairing }))));
-  const opened = initiator.readMessage2(await receive(wire.Frame.handshake2));
-  let requestId = 0;
-  const fromDevice = async (route, body) => {
-    const id = ++requestId;
-    const header = { t: "req", id, m: "POST", p: route, h: { "content-type": "application/json" } };
-    for (const part of wire.pieces(header, Buffer.from(JSON.stringify(body)), true)) {
-      send(wire.Frame.transport, opened.transport.seal(part));
-    }
-    const head = wire.decodeMessage(opened.transport.open(await receive(wire.Frame.transport)));
-    assert.equal(head.head.id, id);
-    const chunks = [head.body];
-    let last = head;
-    while (last.head.end !== true) {
-      last = wire.decodeMessage(opened.transport.open(await receive(wire.Frame.transport)));
-      assert.equal(last.head.id, id);
-      chunks.push(last.body);
-    }
-    return { status: head.head.s, json: JSON.parse(Buffer.concat(chunks)) };
-  };
+  const { key: deviceKey, post: fromDevice } = await relayDesktop(t, relay, main, ask, Buffer.alloc(32, 82), 412, "Add caller");
   const begun = await fromDevice("kuvo/computers/add", { destination: "lab", credentials });
   assert.equal(begun.status, 202, JSON.stringify(begun.json));
   const id = begun.json.try.id;
@@ -1041,6 +1044,48 @@ test("SSH Add explains connection failures and leaves the account and host trust
   assert.deepEqual(fs.readdirSync(remote), []);
   assert.equal((await ask("DELETE", `kuvo/computers/add/${nowhere}`, undefined, headers)).status, 200);
   assert.equal((await page()).tries.some(item => item.id === nowhere), false);
+});
+
+test("only the local app can resolve a pending wipe on the explicit wipe route", {
+  skip: !fs.existsSync(wireFixture) && "Build the reference Noise fixture", timeout: 40_000,
+}, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const { member } = seedPeerSetup(studio.home, relay.url);
+  const ask = studio.connect(await studio.start().ready());
+  const initial = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(initial.json.setup), "Studio did not obtain a lease.");
+  const { post } = await relayDesktop(t, relay, studio, ask, Buffer.alloc(32, 87), 413, "Remote desktop");
+  const headers = { "x-kuvo-from": "app" };
+  const route = `kuvo/computers/${member.key}`;
+  const wipe = `${route}/unlink-and-wipe`;
+  const operation = Buffer.alloc(16, 87).toString("base64url");
+  const begun = await ask("POST", wipe, { operation }, headers);
+  assert.equal(begun.status, 200, begun.text);
+  assert.equal(begun.json.removal.state, "wipe-pending");
+  const resolve = { operation, resolve: "lost" };
+  const expected = { status: 403, json: { message: "Prepare the wipe from Kuvo Code." } };
+  const prepare = { moveTo: initial.json.you.key };
+  for (const body of [resolve, { operation, prepare }, { operation, retryPreparation: true },
+    { operation, prepare, supersedes: Buffer.alloc(16, 88).toString("base64url") }]) {
+    assert.deepEqual(await post(wipe, body, headers), expected);
+  }
+  const replay = await post(wipe, { operation, retryPreparation: false });
+  assert.equal(replay.status, 200, JSON.stringify(replay.json));
+  assert.equal(replay.json.removal.state, "wipe-pending");
+  for (const body of [{ operation: null }, { wipe: null }, { operation, retryPreparation: "true" }]) {
+    assert.deepEqual(await post(wipe, body), { status: 400, json: { message: "Send a valid removal request." } });
+  }
+  for (const [method, wrong] of [["POST", `${route}/unlink`], ["DELETE", route]]) {
+    const refused = await ask(method, wrong, resolve, headers);
+    assert.deepEqual({ status: refused.status, json: refused.json }, expected);
+  }
+  const pending = (await ask("GET", "kuvo/computers")).json.wipePending;
+  assert.equal(pending[0].operation, operation);
+  const local = await ask("POST", wipe, resolve, headers);
+  assert.equal(local.status, 200, local.text);
+  assert.deepEqual(local.json.removal, { operation, state: "lost", accessRemoved: true });
+  assert.equal((await ask("GET", "kuvo/computers")).json.wipePending, undefined);
 });
 
 test("uninstall from a saved SSH address commits a signed wipe and waits for confirmation", {

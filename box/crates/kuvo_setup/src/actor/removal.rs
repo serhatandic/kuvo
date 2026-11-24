@@ -82,9 +82,17 @@ impl WipeReview {
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Unlink {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kuvo_protocol::json::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     operation: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kuvo_protocol::json::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     wipe: Option<bool>,
     #[serde(
         default,
@@ -113,6 +121,8 @@ impl ResolveWipe {
 }
 
 impl Unlink {
+    pub(crate) const LOCAL_APP_ONLY: &str = "Prepare the wipe from Kuvo Code.";
+
     pub(super) fn operation(&self) -> Option<&str> {
         self.operation.as_deref()
     }
@@ -123,18 +133,27 @@ impl Unlink {
         }
     }
 
-    pub(super) fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         self.operation
             .as_deref()
             .is_none_or(|op| safe_token(op, 22, 43))
             && !self.extra.contains_key("save")
+            && self
+                .extra
+                .get("retryPreparation")
+                .is_none_or(Value::is_boolean)
+            && (!self.prepares_wipe() || self.operation.is_some())
             && (self.resolve.is_none() || self.operation.is_some() && !self.prepares_wipe())
     }
 
+    pub(crate) fn requires_local_app(&self) -> bool {
+        self.resolve.is_some() || self.prepares_wipe()
+    }
+
     fn prepares_wipe(&self) -> bool {
-        ["prepare", "retryPreparation", "supersedes"]
-            .iter()
-            .any(|field| self.extra.contains_key(*field))
+        self.extra.contains_key("prepare")
+            || self.extra.contains_key("supersedes")
+            || self.extra.get("retryPreparation") == Some(&Value::Bool(true))
     }
 
     pub(super) fn bind_operation(&mut self) -> Result<String, Error> {
@@ -285,6 +304,9 @@ impl Owner {
         }
         if !by.current(&self.link) {
             return Ok(answer(403, "The submitting device no longer has access."));
+        }
+        if request.requires_local_app() && !matches!(by, Submitter::Computer) {
+            return Ok(answer(403, Unlink::LOCAL_APP_ONLY));
         }
         let setup = self.link.setup()?.clone();
         if setup.role != Role::Primary {

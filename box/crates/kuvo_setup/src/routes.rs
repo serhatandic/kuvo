@@ -286,6 +286,23 @@ impl SetupHandle {
                         })?
                         .unwrap_or_default()
                 };
+                if !request.valid() {
+                    return Err(Refusal::new(
+                        StatusCode::BAD_REQUEST,
+                        "Send a valid removal request.",
+                    ));
+                }
+                if kuvo_wire::keys::decode_exact::<32>(&key).is_none() {
+                    return Err(Refusal::new(
+                        StatusCode::NOT_FOUND,
+                        "That isn’t one of your computers.",
+                    ));
+                }
+                if request.requires_local_app()
+                    && (wipe != Some(true) || !matches!(&by, Submitter::Computer))
+                {
+                    return Err(Refusal::new(StatusCode::FORBIDDEN, Unlink::LOCAL_APP_ONLY));
+                }
                 request.on_route(wipe);
                 respond(
                     setup
