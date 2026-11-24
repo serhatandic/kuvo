@@ -4,6 +4,9 @@ use serde_json::json;
 
 use super::*;
 
+/// What the stand-in was sent: the conversation, the note, its summary, and how it went.
+type Sent = (String, String, Option<String>, WakeDelivered);
+
 /// A stand-in engine: its sessions, what's stopped, what waits in its inbox, what it was sent,
 /// and whether it takes anything now.
 #[derive(Default)]
@@ -11,7 +14,7 @@ struct Stand {
     sessions: BTreeMap<String, Value>,
     stopped: Vec<String>,
     inbox: Vec<(String, String)>,
-    sent: Mutex<Vec<(String, String, Option<String>, WakeDelivered)>>,
+    sent: Mutex<Vec<Sent>>,
     down: bool,
 }
 

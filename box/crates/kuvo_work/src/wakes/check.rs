@@ -158,9 +158,28 @@ fn shell() -> Option<PathBuf> {
     if cfg!(unix) {
         return Some(PathBuf::from("/bin/sh"));
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|folder| folder.join("sh.exe"))
+    // Git for Windows' shell: where its installer says, beside the `git` on PATH (its `cmd` or
+    // `mingw64/bin` folder), or any `sh.exe` on PATH.
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let folders: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    let installed = std::env::var_os("GIT_INSTALL_ROOT").map(PathBuf::from);
+    let beside_git = folders
+        .iter()
+        .find(|folder| folder.join("git.exe").is_file())
+        .into_iter()
+        .flat_map(|folder| {
+            folder
+                .ancestors()
+                .skip(1)
+                .take(2)
+                .map(Path::to_owned)
+                .collect::<Vec<_>>()
+        });
+    installed
+        .into_iter()
+        .chain(beside_git)
+        .map(|root| root.join("bin").join("sh.exe"))
+        .chain(folders.iter().map(|folder| folder.join("sh.exe")))
         .find(|candidate| candidate.is_file())
 }
 

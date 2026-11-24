@@ -44,7 +44,8 @@ function normalise(value, name, home, enginePort, field = "") {
   if (reachFiles.includes(name) && /^[A-Za-z0-9_-]{43}$/.test(field) && typeof value === "number")
     return "<number: relay observation timestamp>";
   const usageScan = name === "agents/usage/usage.json" && /^accounts\/[^/]+\/scanned$/.test(field);
-  const why = usageScan ? "local account scan timestamp" : volatile.get(name)?.[field];
+  const botSince = name === "GET kuvo/bots" && /^bots\/\d+\/now\/since$/.test(field);
+  const why = usageScan ? "local account scan timestamp" : botSince ? "when this box saw the bot's state begin" : volatile.get(name)?.[field];
   if (why && ["number", "string"].includes(typeof value)) return `<${typeof value}: ${why}>`;
   if (name === "updates/rehome/journal.json" && field === "kept" && typeof value === "string") {
     value = value.replace(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/, "<move start time>");

@@ -17,7 +17,9 @@ const files = [...fs.readdirSync(vectors).filter(name => name.endsWith(".json"))
 const binary = boxBinary();
 const isOurs = (only, kind) => only === undefined || only === kind;
 
-const selected = files.filter(file => !area || file === area + ".json");
+// An area of the Rust plan that spans more than one fixture.
+const groups = new Map([["bots", ["bots.json", "wakes.json"]]]);
+const selected = files.filter(file => !area || (groups.get(area) ?? [area + ".json"]).includes(file));
 if (area && !selected.length) throw new Error(`Unknown route area: ${area}`);
 
 test("routes", { concurrency: 3 }, async t => {
