@@ -1018,6 +1018,75 @@ test("after a failure only your own message to steer opens the queue again", { t
   await until(async () => (await queue()).json?.paused === false, "Your steer did not open the queue.");
 });
 
+test("Stop holds an inbox steer ahead of the queue until Resume", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("stop-inbox-order");
+  const session = "ses_stopOrder";
+  const later = { id: "msg_later", type: "user", delivery: "queue", payload: { text: "Later." } };
+  const next = { id: "msg_next", type: "user", delivery: "steer", payload: { text: "Next." } };
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the session");
+  here.engine.inboxes.set(session, [later, next]);
+  const base = `kuvo/sessions/${session}`;
+  const stopped = await request(record, "POST", base + "/stop");
+  assert.equal(stopped.status, 200, stopped.text);
+  assert.deepEqual(stopped.json, { paused: true, held: [next.id] });
+  assert.equal(next.delivery, "queue");
+  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  const held = await until(async () => {
+    const reply = await request(record, "GET", base + "/queue?items=1");
+    return reply.json?.items?.length === 2 && reply.json;
+  }, "the queue to show both inbox items");
+  assert.deepEqual(held.items.map(row => [row.id, row.held, row.delivery]),
+    [[next.id, true, "queue"], [later.id, false, "queue"]]);
+  assert.equal(held.paused, true);
+  const resumed = await request(record, "POST", base + "/queue/resume");
+  assert.deepEqual(resumed.json, { paused: false, held: [next.id] });
+  assert.deepEqual(here.engine.interrupted, [{ session, resume: false }]);
+  assert.equal(next.delivery, "queue");
+  here.engine.running.delete(session);
+  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+  await until(() => next.delivery === "steer", "the held steer to advance once the engine is free");
+  await until(async () => (await request(record, "GET", base + "/queue")).json?.held.length === 0,
+    "the queue to clear its held item after delivery");
+  assert.equal(next.delivery, "steer");
+  assert.equal(later.delivery, "queue");
+});
+
+test("a failed turn drops its waiting summary and a failed summary lets the queue advance", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("failed-summary");
+  const failedTurn = "ses_failedTurn";
+  const failedSummary = "ses_failedSummary";
+  for (const id of [failedTurn, failedSummary]) {
+    here.engine.sessions.push(sessionOf({ id, directory: here.home }));
+    here.engine.running.add(id);
+  }
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the sessions");
+  const queued = id => ({ id, type: "user", delivery: "queue", payload: { text: "Next." } });
+  const afterTurn = queued("msg_afterTurn");
+  const afterSummary = queued("msg_afterSummary");
+  here.engine.inboxes.set(failedTurn, [afterTurn, { id: "msg_summary", type: "compaction", delivery: "steer" }]);
+  here.engine.inboxes.set(failedSummary, [afterSummary]);
+  here.engine.messages.set(failedSummary, [
+    { type: "idle", outcome: "failed" }, { type: "compaction", status: "failed", reason: "manual" },
+  ]);
+  for (const id of [failedTurn, failedSummary]) {
+    here.engine.running.delete(id);
+    here.engine.emit({ type: "session.execution.failed", data: { sessionID: id, error: { message: "It failed." } } });
+  }
+  await until(() => here.engine.inboxes.get(failedTurn).length === 1, "the failed turn to remove its summary");
+  await until(() => afterSummary.delivery === "steer", "the failed summary to leave the queue moving");
+  assert.equal(afterTurn.delivery, "queue");
+  const queue = id => request(record, "GET", `kuvo/sessions/${id}/queue`);
+  assert.deepEqual((await queue(failedTurn)).json, { paused: true, held: [] });
+  assert.deepEqual((await queue(failedSummary)).json, { paused: false, held: [] });
+});
+
 // Deterministic provider errors for side-by-side TS and Rust comparison. The
 // live queue scenario uses OpenCode Go separately.
 test("a usage limit survives an inbox error and a manual Resume survives restart", { timeout: 45000 }, async t => {

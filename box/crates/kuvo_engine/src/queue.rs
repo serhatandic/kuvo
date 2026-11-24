@@ -963,14 +963,9 @@ pub(crate) async fn advance(
     immediately: bool,
 ) -> Result<bool, Refusal> {
     let current = engine.queues.get(session).await.map_err(save_failed)?;
-    let active = engine
-        .call::<Value>(lease, Method::GET, "api/session/active", None)
+    let running = is_running(engine, lease, session)
         .await
         .map_err(queue_failed)?;
-    let running = active
-        .as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row == session))
-        || active.get(session).is_some_and(|value| !value.is_null());
     if current.contains(id) {
         if !handoff::send(engine, lease, session, id, true).await? {
             return Ok(false);
@@ -1028,6 +1023,16 @@ pub(crate) async fn advance(
     Ok(true)
 }
 
+async fn is_running(engine: &Engine, lease: &Lease, session: &str) -> Result<bool, api::Error> {
+    let active = engine
+        .call::<Value>(lease, Method::GET, "api/session/active", None)
+        .await?;
+    Ok(active
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row == session))
+        || active.get(session).is_some_and(|value| !value.is_null()))
+}
+
 async fn resume_queue(engine: &Engine, session: &str) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
     let _admitted = crate::session_move::admit(engine, session, None).await?;
@@ -1058,10 +1063,18 @@ async fn resume_on(engine: &Engine, lease: &Lease, session: &str) -> Result<Valu
         .put(session, Queue::release)
         .await
         .map_err(save_failed)?;
-    let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
-    let order = saved.order(&inbox);
-    if let Some(id) = order.first() {
-        advance(engine, lease, session, id, true).await?;
+    if !is_running(engine, lease, session)
+        .await
+        .map_err(queue_failed)?
+    {
+        let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
+        if let Some(id) = saved.order(&inbox).first()
+            && !is_running(engine, lease, session)
+                .await
+                .map_err(queue_failed)?
+        {
+            advance(engine, lease, session, id, true).await?;
+        }
     }
     Ok(engine
         .queues
@@ -2240,14 +2253,9 @@ fn sendable(files: &[Value]) -> Vec<Value> {
 }
 
 async fn drain_waiting(engine: &Engine, lease: &Lease, session: &str) -> io::Result<usize> {
-    let active = engine
-        .call::<Value>(lease, Method::GET, "api/session/active", None)
+    let mut steer = !is_running(engine, lease, session)
         .await
         .map_err(io::Error::other)?;
-    let mut steer = !(active
-        .as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row == session))
-        || active.get(session).is_some_and(|value| !value.is_null()));
     let mut sent = 0;
     loop {
         let saved = engine.queues.get(session).await?;
@@ -2707,14 +2715,9 @@ async fn drain(
     let Some(id) = order.first() else {
         return Ok(true);
     };
-    let active = engine
-        .call::<Value>(lease, Method::GET, "api/session/active", None)
+    if is_running(engine, lease, session)
         .await
-        .map_err(io::Error::other)?;
-    if active
-        .as_array()
-        .is_some_and(|rows| rows.iter().any(|row| row == session))
-        || active.get(session).is_some_and(|value| !value.is_null())
+        .map_err(io::Error::other)?
     {
         return Ok(true);
     }
