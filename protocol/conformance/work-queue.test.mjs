@@ -4,7 +4,7 @@ import { verify } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, boxCommand, isolatedEnv, localRelay, openLine, prepareHome, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, localRelay, openLine, privateHome, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 async function withQueue(run) {
@@ -15,7 +15,7 @@ async function withQueue(run) {
   const binary = boxBinary();
   let box;
   try {
-    prepareHome(home, binary);
+    privateHome(home);
     write(path.join(home, "folder-version.json"), '{"version":23}\n');
     await run(queue, async () => {
       box = startBox({ binary, home, env: isolatedEnv(root), relay, mac: true });
@@ -76,7 +76,7 @@ for (const [name, relative, original, message] of [
     const relay = await localRelay();
     let box;
     try {
-      prepareHome(home, binary);
+      privateHome(home);
       write(file, original);
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       box = boxCommand(binary, home, isolatedEnv(root), relay,

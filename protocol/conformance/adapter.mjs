@@ -14,15 +14,16 @@ export function scratch() {
   return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "kc-"));
 }
 
-// Rust opens an existing Windows home only with the same private ACL as the installer.
-export function prepareHome(home, binary) {
-  if (process.platform !== "win32" || binary.typescript) return;
+/** A box's home made private before anything's written in it: on Windows the Rust box takes only a
+ * folder no other account can read (its own user, nothing inherited), as it makes one itself. */
+export function privateHome(home) {
   fs.mkdirSync(home, { recursive: true });
-  const sid = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" })
-    .match(/S-1-[0-9-]+/)?.[0];
-  assert.ok(sid, "The Windows test needs the current user's SID.");
-  execFileSync("icacls.exe", [home, "/setowner", `*${sid}`], { stdio: "pipe" });
-  execFileSync("icacls.exe", [home, "/grant:r", `*${sid}:(OI)(CI)F`, "/inheritance:r"], { stdio: "pipe" });
+  if (process.platform !== "win32") return;
+  const icacls = path.join(process.env.SystemRoot, "System32", "icacls.exe");
+  const user = os.userInfo().username;
+  // (Owned by the user itself: an administrator's new folders can be the Administrators group's.)
+  execFileSync(icacls, [home, "/setowner", user], { stdio: "ignore" });
+  execFileSync(icacls, [home, "/inheritance:r", "/grant:r", `${user}:(OI)(CI)F`], { stdio: "ignore" });
 }
 
 export function write(file, data, options) {
