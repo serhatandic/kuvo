@@ -15,6 +15,7 @@ mod items;
 mod mask;
 mod replay;
 mod routes;
+mod session_asks;
 mod signed;
 #[cfg(unix)]
 mod ssh_agent;
@@ -27,6 +28,9 @@ pub use holder::Holder;
 
 pub use mask::{Hidden, mask};
 pub use routes::Resident;
+pub use session_asks::{
+    VaultAsk, VaultAskCaller, VaultAskReply, VaultCard, VaultDecision, VaultWaiting,
+};
 
 pub use crypto::{Secret, Values};
 pub use encrypted::Encrypted;
