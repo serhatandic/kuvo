@@ -863,9 +863,15 @@ pub(crate) async fn stop_waiting(engine: &Engine, lease: &Lease, session: &str) 
     if asks.is_empty() {
         return;
     }
-    if crate::queue::hold_on(engine, lease, session, Vec::new(), false)
-        .await
-        .is_ok()
+    if crate::queue::hold_on(
+        engine,
+        lease,
+        session,
+        Vec::new(),
+        crate::queue::Hold::Queue,
+    )
+    .await
+    .is_ok()
     {
         let _ = crate::queue::interrupt(engine, lease, session, false).await;
     }

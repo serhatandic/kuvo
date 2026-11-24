@@ -57,6 +57,7 @@ fn main() {
         executor.block_on(async {
             scenarios().await;
             interrupted_inbox_transfer().await;
+            starter_stop_leaves_summary_out_of_queue().await;
             attachment_retention().await;
             local_background_activity().await;
             cancelled_session_writers().await;
@@ -67,6 +68,15 @@ fn main() {
             paired_delivery().await;
         });
     }
+}
+
+fn accepted<T>(result: Result<T, kuvo_server::Refusal>) -> T {
+    result.unwrap_or_else(|refused| {
+        panic!(
+            "The resident refused the request with {}",
+            refused.reply().status
+        )
+    })
 }
 
 struct Server {
@@ -594,12 +604,19 @@ async fn attachment_retention() {
     let legacy = home.join("mac-attachment-copies");
     fs::create_dir_all(legacy.join("ses_gone")).unwrap();
     fs::write(legacy.join("ses_gone/notes.txt"), "Legacy copy.").unwrap();
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("event-watch"), []).unwrap();
     let server = Server::start_with(home, |engine| {
         engine.with_attachment_source(inventory.clone(), Some(legacy.clone()))
     })
     .await;
     assert_eq!(server.get("api/echo").await.status(), 207);
-    let work = home.join("workspace");
+    until(
+        || work.join("event-subscribed").exists(),
+        "the resident to follow attachment events",
+    )
+    .await;
     let show = work.join("attachments-list.json");
     let branch = json!({"id":"ses_branch","metadata":{"kuvo":{"branchedFrom":"ses_middle"}}});
     fs::write(
@@ -646,6 +663,29 @@ async fn attachment_retention() {
     assert!(!files.join("ses_branch").exists());
     assert!(!files.join("ses_carriedFrom").exists());
     assert!(files.join("ses_inMove/notes.txt").exists());
+
+    let deleted = "ses_deletedOnLine";
+    for root in [&files, &legacy] {
+        let folder = root.join(deleted);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("notes.txt"), "From the deleted conversation.").unwrap();
+    }
+    let pending = files.join("pending");
+    fs::create_dir_all(&pending).unwrap();
+    fs::write(pending.join("draft.txt"), "In a draft.").unwrap();
+    let event = format!(
+        "data: {}\n\n",
+        json!({"type":"session.deleted","data":{"sessionID":deleted}})
+    );
+    fs::write(work.join("fixture-event"), event).unwrap();
+    until(
+        || !files.join(deleted).exists() && !legacy.join(deleted).exists(),
+        "the deletion event to drop only its attachment copies",
+    )
+    .await;
+    assert!(pending.join("draft.txt").is_file());
+    assert!(legacy.join("ses_gone/notes.txt").is_file());
+    assert!(files.join("ses_inMove/notes.txt").is_file());
     server.stop().await;
 }
 
@@ -823,6 +863,53 @@ async fn cancelled_session_writers() {
         json!({
             "id":"ses_writers","title":"After","metadata":{"kept":true,"kuvo.pinned":false},
         })
+    );
+    use kuvo_engine::{NoteEdits, SessionPermission};
+    let mut notes = accepted(server.engine.note_writer("ses_writers").await);
+    assert!(!accepted(notes.edit(NoteEdits::default()).await));
+    assert!(accepted(
+        notes
+            .edit(NoteEdits {
+                kuvo: [
+                    ("chat".to_owned(), Some(json!("/chats"))),
+                    ("autopilot".to_owned(), Some(json!(true)))
+                ]
+                .into(),
+                ..Default::default()
+            })
+            .await
+    ));
+    let mut next = edit("pin", json!({"pinned":true}), CancellationToken::new());
+    assert!(
+        time::timeout(Duration::from_millis(100), &mut next)
+            .await
+            .is_err()
+    );
+    assert!(accepted(
+        notes
+            .edit(NoteEdits {
+                kuvo: [
+                    ("autopilot".to_owned(), None),
+                    ("approval".to_owned(), Some(json!("acceptEdits")))
+                ]
+                .into(),
+                top: [("kuvo.pinned".to_owned(), None)].into(),
+                permissions: Some(vec![SessionPermission::new("edit", "*", "allow")]),
+            })
+            .await
+    ));
+    drop(notes);
+    assert_eq!(next.await.unwrap(), StatusCode::OK);
+    let saved: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    assert_eq!(
+        saved["metadata"],
+        json!({
+            "kept": true, "kuvo.pinned": true, "kuvo": { "chat": "/chats", "approval": "acceptEdits" },
+        })
+    );
+    assert_eq!(
+        saved["permissions"],
+        json!([{ "action":"edit", "resource":"*", "effect":"allow" }])
     );
     server.stop().await;
 }
@@ -1398,6 +1485,7 @@ async fn paired_delivery() {
         200
     );
     assert!(work.join("consent-replied").exists());
+
     server.stop().await;
     println!(
         "revoked delivery and permissions were fenced, including during a live permission read"
@@ -1463,7 +1551,14 @@ async fn interrupted_inbox_transfer() {
     assert_eq!(server.get("api/session?limit=1").await.status(), 200);
     fs::remove_file(work.join("refuse-B")).unwrap();
     assert_eq!(server.engine.keep_inboxes().await.unwrap(), 2);
+    let waiting = home.join("run/waiting/msg_A.json");
+    fs::write(work.join("acceptance-unknown"), []).unwrap();
+    assert_eq!(server.engine.release_waiting().await.unwrap(), 0);
+    assert!(waiting.is_file());
+    assert!(!work.join("delivered").exists());
+    fs::remove_file(work.join("acceptance-unknown")).unwrap();
     assert_eq!(server.engine.release_waiting().await.unwrap(), 4);
+    assert!(!waiting.exists());
     assert_eq!(server.engine.release_waiting().await.unwrap(), 0);
     assert_eq!(
         fs::read_to_string(work.join("delivered")).unwrap(),
@@ -1476,6 +1571,53 @@ async fn interrupted_inbox_transfer() {
         .await
         .unwrap();
     assert_eq!(queue, json!({ "paused": false, "held": [] }));
+    server.stop().await;
+}
+
+async fn starter_stop_leaves_summary_out_of_queue() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("inbox-mode"), []).unwrap();
+    fs::write(work.join("event-watch"), []).unwrap();
+    let inbox = work.join("inbox.json");
+    fs::write(
+        &inbox,
+        br#"[{"id":"msg_summary","type":"compaction","delivery":"steer"}]"#,
+    )
+    .unwrap();
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/session/ses_inbox").await.status(), 200);
+    until(
+        || work.join("event-subscribed").exists(),
+        "the resident to follow execution events",
+    )
+    .await;
+    accepted(server.engine.stop_for_starter("ses_inbox").await);
+    assert!(work.join("interrupted").is_file());
+    let stopped = server.get("kuvo/sessions/ses_inbox/queue").await;
+    assert_eq!(
+        stopped.json::<Value>().await.unwrap(),
+        json!({ "paused": false, "held": [] })
+    );
+    let event = json!({"type":"session.execution.interrupted","data":{"sessionID":"ses_inbox","reason":"user"}});
+    fs::write(work.join("fixture-event"), format!("data: {event}\n\n")).unwrap();
+    until(
+        || fs::read_to_string(&inbox).is_ok_and(|rows| rows == "[]"),
+        "the stopped summary to be removed",
+    )
+    .await;
+    let stopped = server.get("kuvo/sessions/ses_inbox/queue").await;
+    assert_eq!(
+        stopped.json::<Value>().await.unwrap(),
+        json!({ "paused": false, "held": [] })
+    );
     server.stop().await;
 }
 
@@ -1498,7 +1640,9 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        if Path::new("inbox-mode").exists() {
+        if Path::new("inbox-mode").exists()
+            && !(req.uri().path() == "/api/event" && Path::new("event-watch").exists())
+        {
             let reply = inbox_fixture(req).await;
             let mut response = Response::new(reply.body);
             *response.status_mut() = reply.status;
@@ -1619,6 +1763,12 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
                 let stream = async_stream::stream! {
                     let _ended = StreamEnded;
                     yield Ok(Frame::data(Bytes::from_static(b"data: connected\n\n")));
+                    if Path::new("event-watch").exists() {
+                        fs::write("event-subscribed", []).unwrap();
+                        until(|| Path::new("fixture-event").exists(), "the test to publish an engine event").await;
+                        let event = fs::read("fixture-event").unwrap();
+                        yield Ok(Frame::data(Bytes::from(event)));
+                    }
                     std::future::pending::<()>().await;
                 };
                 answer.body = StreamBody::new(stream).boxed_unsync();
@@ -1734,6 +1884,10 @@ async fn inbox_fixture(req: Request<Incoming>) -> Reply {
             Reply::json(StatusCode::OK, json!({ "data": inbox }))
         }
         ("GET", "/api/session/active") => empty(),
+        ("POST", "/api/session/ses_inbox/interrupt") => {
+            fs::write("interrupted", []).unwrap();
+            Reply::json(StatusCode::OK, json!({}))
+        }
         ("GET", _) if route.ends_with("/inbox") => empty(),
         ("GET", _) if route.starts_with("/api/session/ses_inbox/message/") => {
             let id = tail("/api/session/ses_inbox/message/").unwrap();
@@ -1766,6 +1920,9 @@ async fn inbox_fixture(req: Request<Incoming>) -> Reply {
             let given: Value =
                 serde_json::from_slice(&req.into_body().collect().await.unwrap().to_bytes())
                     .unwrap();
+            if Path::new("acceptance-unknown").exists() {
+                return Reply::json(StatusCode::OK, json!({}));
+            }
             let mut delivered = fs::OpenOptions::new()
                 .create(true)
                 .append(true)

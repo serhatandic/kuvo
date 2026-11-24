@@ -48,14 +48,14 @@ struct Projects {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Permission {
+pub struct Permission {
     action: String,
     resource: String,
     effect: String,
 }
 
 impl Permission {
-    fn new(action: &str, resource: &str, effect: &str) -> Self {
+    pub fn new(action: &str, resource: &str, effect: &str) -> Self {
         Self {
             action: action.into(),
             resource: resource.into(),

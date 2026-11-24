@@ -68,6 +68,7 @@ pub use launch::pinned_version;
 pub use lifetime::{Engine, State, Timing};
 pub use model_preferences::{ModelStar, ModelStarSource, StarSave};
 pub use models::ModelSpeed;
+pub use notes::{NoteEdits, NoteWriter};
 pub use ownership::{
     ComputerKey, DeviceAccess, OwnedReply, OwnedRequest, OwnerAction, OwnerScope, PeerReply,
     SessionOwner, SessionOwnership, Submitter,
@@ -77,6 +78,7 @@ pub use search::{
 };
 pub use session_list::{Activity, ActivityState, LocalSessions};
 pub use session_move::{MoveEngineError, SessionMove};
+pub use start_session::Permission as SessionPermission;
 pub use transcript::{TranscriptError, TranscriptScope};
 pub use waiting::PeerWaiting;
 

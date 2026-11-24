@@ -384,19 +384,13 @@ where
             if previous == value {
                 None
             } else {
-                if archive
-                    && value == false
-                    && let Some(notes) = session
-                        .metadata
-                        .get_mut("kuvo")
-                        .and_then(Value::as_object_mut)
-                {
-                    notes.remove("archived");
+                let mut edit = crate::NoteEdits::default();
+                if archive && value == false && session.notes().is_some() {
+                    edit.kuvo.insert("archived".to_owned(), None);
                 }
-                session
-                    .metadata
-                    .insert(format!("kuvo.{field}"), value.clone());
-                Some(json!({ "metadata": session.metadata }))
+                edit.top
+                    .insert(format!("kuvo.{field}"), Some(value.clone()));
+                edit.change(&mut session.metadata)
             }
         }
     };

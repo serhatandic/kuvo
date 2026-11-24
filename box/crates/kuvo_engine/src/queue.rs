@@ -940,10 +940,17 @@ async fn holding(
         let _turn = tokio::time::timeout(std::time::Duration::from_secs(10), engine.turn(session))
             .await
             .ok();
-        return hold_on(engine, &lease, session, given, true).await;
+        return hold_on(engine, &lease, session, given, Hold::UserStop).await;
     }
     let _turn = engine.turn(session).await;
-    hold_on(engine, &lease, session, given, stopping).await
+    hold_on(engine, &lease, session, given, Hold::Queue).await
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hold {
+    Queue,
+    UserStop,
+    LeadStop,
 }
 
 pub(crate) async fn hold_on(
@@ -951,10 +958,10 @@ pub(crate) async fn hold_on(
     lease: &Lease,
     session: &str,
     given: Vec<String>,
-    stopping: bool,
+    how: Hold,
 ) -> Result<Value, Refusal> {
     let _admitted = crate::session_move::admit(engine, session, None).await?;
-    if stopping || !given.is_empty() {
+    if how == Hold::UserStop || !given.is_empty() {
         engine
             .queues
             .put(session, |queue| {
@@ -962,7 +969,7 @@ pub(crate) async fn hold_on(
                 queue
                     .arriving
                     .extend(given.iter().map(|id| (id.clone(), expires)));
-                if stopping {
+                if how == Hold::UserStop {
                     queue.paused = true;
                     queue.user_paused = Some(true);
                     queue.limit_stop = None;
@@ -992,7 +999,10 @@ pub(crate) async fn hold_on(
         }
     }
     let remaining = inbox(engine, lease, session).await.unwrap_or(initial);
-    for summary in remaining.iter().filter(|row| !row.is_message() && stopping) {
+    for summary in remaining
+        .iter()
+        .filter(|row| !row.is_message() && how == Hold::UserStop)
+    {
         let path = format!(
             "{}/inbox/{}",
             sessions::path(session),
@@ -1007,7 +1017,7 @@ pub(crate) async fn hold_on(
         .put(session, |queue| queue.keep_held(held, &remaining))
         .await
         .map_err(save_failed)?;
-    if stopping {
+    if how != Hold::Queue {
         interrupt(engine, lease, session, false)
             .await
             .map_err(queue_failed)?;
@@ -2088,6 +2098,21 @@ async fn acknowledge(
 }
 
 impl Engine {
+    /// Stop an OpenCode turn on behalf of the conversation that started it.
+    /// The owner of background work also stops its watches, wake-ups and shells.
+    pub async fn stop_for_starter(&self, session: &str) -> Result<(), Refusal> {
+        if !sessions::valid_id(session) {
+            return Err(Refusal::new(
+                StatusCode::BAD_REQUEST,
+                "Choose a conversation.",
+            ));
+        }
+        let lease = command_target(self, session).await?;
+        let _turn = self.turn(session).await;
+        hold_on(self, &lease, session, Vec::new(), Hold::LeadStop).await?;
+        Ok(())
+    }
+
     /// Keep the old engine's inboxes before a coordinated release switch.
     /// A failed inventory or transfer leaves the engine in place and can be retried.
     pub async fn keep_inboxes(&self) -> io::Result<usize> {
