@@ -35,6 +35,8 @@ pub(in crate::queue) struct Act {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Value>,
 }
 
@@ -49,6 +51,7 @@ pub(in crate::queue) enum Method {
 
 pub(in crate::queue) enum RequestKind<'a> {
     Read,
+    OfflineRead,
     File(&'a str),
     Edit,
     Delete,
@@ -57,7 +60,7 @@ pub(in crate::queue) enum RequestKind<'a> {
 
 impl Act {
     pub fn parse(raw: &Value) -> Option<Self> {
-        if !legacy(raw) || raw.get("area").is_some() || raw.get("agent").is_some() {
+        if !legacy(raw) || raw.get("agent").is_some() {
             return None;
         }
         let act: Self = serde_json::from_value(raw.clone()).ok()?;
@@ -65,6 +68,13 @@ impl Act {
     }
 
     pub fn kind(&self) -> Option<RequestKind<'_>> {
+        if let Some(area) = self.area.as_deref() {
+            return (area == "ownership"
+                && self.item == "offline-edit"
+                && matches!(self.method, Method::Get)
+                && self.action.is_none())
+            .then_some(RequestKind::OfflineRead);
+        }
         Some(match (self.method, self.action.as_deref()) {
             (Method::Get, None) => RequestKind::Read,
             (Method::Get, Some("file")) => {

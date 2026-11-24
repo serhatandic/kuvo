@@ -3,6 +3,7 @@
 mod book;
 mod edit;
 mod importing;
+mod offline;
 mod peer_actions;
 
 use super::{
@@ -78,6 +79,7 @@ struct Writer {
     sessions: LocalSessions,
     reads: PeerReads,
     forward: Forward,
+    revisions: Arc<offline::Revisions>,
 }
 
 pub(super) fn register(
@@ -92,6 +94,7 @@ pub(super) fn register(
     owners: ownership::Handle,
 ) -> Runtime {
     let writer = Writer {
+        revisions: Arc::new(offline::Revisions::new()),
         numbers: Numbers::new(&store, setup.clone(), peers.clone()),
         files: Arc::new(ClientFiles::new()),
         forward: Forward::new(store.clone(), owners, relay.clone()),
@@ -109,7 +112,21 @@ pub(super) fn register(
             if !work_queue_client(&call.request.caller) {
                 return Err(Refusal::new(StatusCode::FORBIDDEN, CLIENT));
             }
-            let body = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
+            let body: Value = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
+            if body.get("baseRevision").is_some() {
+                let id = body["id"].as_str().unwrap_or_default().to_owned();
+                return offline::reply(
+                    here.ordinary_edit(
+                        &call.request.caller,
+                        &call.request.headers,
+                        &id,
+                        body,
+                        true,
+                        false,
+                    )
+                    .await?,
+                );
+            }
             typed(
                 here.create(
                     &call.request.headers,
@@ -127,6 +144,20 @@ pub(super) fn register(
         async move {
             if !work_queue_client(&call.request.caller) {
                 return Err(Refusal::new(StatusCode::FORBIDDEN, CLIENT));
+            }
+            let body: Value = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
+            if store::item_id(&name) && body.get("baseRevision").is_some() {
+                return offline::reply(
+                    here.ordinary_edit(
+                        &call.request.caller,
+                        &call.request.headers,
+                        &name,
+                        body,
+                        false,
+                        true,
+                    )
+                    .await?,
+                );
             }
             typed(
                 here.change_for_client(
@@ -163,6 +194,7 @@ pub(super) fn register(
 
 pub struct Runtime {
     task: tokio::task::JoinHandle<()>,
+    pub(super) edits: Arc<dyn kuvo_setup::RecordEdits>,
 }
 
 impl Drop for Runtime {
@@ -176,12 +208,14 @@ impl Writer {
         let mut incoming = relay.as_ref().and_then(RelayHandle::subscribe);
         let mut upkeep = tokio::time::interval(Duration::from_secs(2));
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let edits = Arc::new(offline::Routes(self.clone()));
         let task = tokio::spawn(async move {
+            let mut retry = std::collections::HashMap::new();
             let mut label_revision = None;
             let mut snapshots = told::Delivery::default();
             loop {
                 let result = tokio::select! {
-                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut label_revision, &mut snapshots).await,
+                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut label_revision, &mut snapshots, &mut retry).await,
                     message = next_mail(&mut incoming) => {
                         match (relay.as_ref(), message.as_deref()) {
                             (Some(relay), Some(RelayEvent::Mail { key, envelope, .. })) => {
@@ -196,7 +230,7 @@ impl Writer {
                 }
             }
         });
-        Runtime { task }
+        Runtime { task, edits }
     }
 
     async fn upkeep(
@@ -204,6 +238,7 @@ impl Writer {
         relay: Option<&RelayHandle>,
         label_revision: &mut Option<(String, u64)>,
         snapshots: &mut told::Delivery,
+        retry: &mut std::collections::HashMap<String, i64>,
     ) -> Result<(), Error> {
         if let Some(setup) = self.setup.queue_setup()
             && let Some(accepted) = setup.labels
@@ -225,6 +260,7 @@ impl Writer {
         if grants.is_some() || self.waiting().await? {
             self.number_waiting(grants).await?;
         }
+        self.retry_offline(relay, now, retry).await?;
         if let Some(relay) = relay {
             let local_max = self.local_max().await?;
             if let Some((main, ask)) = self.numbers.ask_to_send(local_max, now).await?
@@ -280,6 +316,7 @@ impl Writer {
         };
         let by = kuvo_wire::keys::encode(key);
         let now = Timestamp::now().as_millisecond();
+        self.receive_offline(relay, &peer, &by, queue, now).await?;
         if queue.get("scopedAct").is_none()
             && self.forward.admits(*key)
             && let Some(act) = queue.get("act").and_then(Act::parse)
@@ -664,6 +701,7 @@ impl Writer {
                 }
             }
             saved["updated"] = stamp;
+            writer.observe_known(saved, &item.id);
             let response = Item::read(&item.owner, saved).expect("saved queue item");
             let answer = view::mutation(&response, &Assignees::read(&writer.store));
             file.save(&writer.store).map_err(storage_refusal)?;

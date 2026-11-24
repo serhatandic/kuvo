@@ -12,7 +12,22 @@ impl Writer {
                 if !work_queue_client(&call.request.caller) {
                     return Err(Refusal::new(StatusCode::FORBIDDEN, CLIENT));
                 }
-                let fields = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
+                let fields: Value =
+                    serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
+                if store::item_id(&reference) && fields.get("baseRevision").is_some() {
+                    return offline::reply(
+                        writer
+                            .ordinary_edit(
+                                &call.request.caller,
+                                &call.request.headers,
+                                &reference,
+                                fields,
+                                false,
+                                false,
+                            )
+                            .await?,
+                    );
+                }
                 typed(
                     writer
                         .edit_for_client(
@@ -69,7 +84,10 @@ impl Writer {
             if item.removed.is_some() {
                 return Err(bad("It's deleted: bring it back first."));
             }
-            writer.edit_fields(&all, item, &fields, &staged, now, &people)
+            writer.edit_fields(&all, item, &fields, &staged, now, &people, |row| {
+                writer.observe_known(row, &item.id);
+                Ok(())
+            })
         })
         .await
         .map_err(internal)?
@@ -147,7 +165,7 @@ impl Writer {
         Ok(answer)
     }
 
-    fn edit_fields(
+    pub(super) fn edit_fields(
         &self,
         all: &[Item],
         item: &Item,
@@ -155,6 +173,7 @@ impl Writer {
         staged: &Staged,
         now: i64,
         people: &Assignees,
+        revise: impl FnOnce(&mut Value) -> Result<(), Refusal>,
     ) -> Result<Value, Refusal> {
         let mut row = Value::Object(item.saved.clone());
         let mut documents = std::collections::BTreeMap::<String, Document>::new();
@@ -376,9 +395,10 @@ impl Writer {
             fields.get("body").is_some(),
             now,
         )?;
+        revise(&mut row)?;
         let parsed = Item::read(&item.owner, &row).expect("changed queue item");
         let before = Index::read(item);
-        if parsed.body != item.body || before.is_none() {
+        if parsed.body != item.body || parsed.notes != item.notes || before.is_none() {
             let index = Index::rebuild(&self.refs.mentions, &parsed, all, before.as_ref());
             row["mentionIndex"] = json!(index);
             row.as_object_mut()

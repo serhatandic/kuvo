@@ -84,6 +84,20 @@ impl PeerReads {
         }))
     }
 
+    pub(super) fn known_owner(
+        &self,
+        all: &[super::store::Item],
+        id: &str,
+    ) -> Result<Option<QueueTarget>, super::store::Error> {
+        Ok(self
+            .told(all, &Reference::Id(id), true)?
+            .map(|target| QueueTarget {
+                key: target.key,
+                computer: target.computer,
+                id: id.into(),
+            }))
+    }
+
     /// The shared memory transport only calls this for a GET from an accepted computer.
     pub async fn answer(&self, read: Read) -> Answer {
         let here = self.clone();

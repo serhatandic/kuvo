@@ -104,6 +104,7 @@ impl ClientFiles {
                 size: bytes.len(),
                 digest: kuvo_wire::keys::encode(&Sha256::digest(&bytes)),
                 path,
+                id: None,
             });
         }
         Ok(Staged {
@@ -202,7 +203,11 @@ impl ClientFiles {
                 .into_iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>();
-            added.push(json!({"name":name,"size":entry.size,"sha256":entry.digest,"type":media_type(&name),"at":now,"anchor":anchor}));
+            let mut file = json!({"name":name,"size":entry.size,"sha256":entry.digest,"type":media_type(&name),"at":now,"anchor":anchor});
+            if let Some(id) = &entry.id {
+                file["id"] = id.clone().into();
+            }
+            added.push(file);
         }
         if body_changed {
             let marked = self.draft.replace_all(
@@ -322,6 +327,13 @@ pub(in crate::queue) struct Staged {
 }
 
 impl Staged {
+    pub fn with_ids(mut self, ids: impl Iterator<Item = String>) -> Self {
+        for (entry, id) in self.entries.iter_mut().zip(ids) {
+            entry.id = Some(id);
+        }
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -332,6 +344,7 @@ struct Entry {
     name: String,
     size: usize,
     digest: String,
+    id: Option<String>,
 }
 
 #[derive(Default)]

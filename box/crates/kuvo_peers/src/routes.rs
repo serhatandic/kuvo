@@ -36,6 +36,7 @@ pub const FEATURES: &[&str] = &[
     "sessions.location",
     crate::WORK_QUEUE_SNAPSHOTS,
     "work-queue.forward",
+    "data.offline-edits",
 ];
 
 const NOT_READY: &str = "The session list isn’t ready.";

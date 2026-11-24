@@ -49,6 +49,46 @@ impl Forward {
         action: Option<String>,
         body: Option<Value>,
     ) -> Result<Value, Refusal> {
+        self.request(peer, computer, (item, method, action, None, body))
+            .await
+    }
+
+    pub async fn read_edit(
+        &self,
+        peer: ComputerKey,
+        computer: Value,
+        body: Value,
+    ) -> Result<Value, Refusal> {
+        self.request(
+            peer,
+            computer,
+            (
+                "offline-edit".into(),
+                Method::Get,
+                None,
+                Some("ownership".into()),
+                Some(body),
+            ),
+        )
+        .await
+    }
+
+    pub fn pairing_state(&self, key: &ComputerKey, pairing: &str) -> ownership::PairingState {
+        self.owners.current_pairing(key, pairing)
+    }
+
+    async fn request(
+        &self,
+        peer: ComputerKey,
+        computer: Value,
+        (item, method, action, area, body): (
+            String,
+            Method,
+            Option<String>,
+            Option<String>,
+            Option<Value>,
+        ),
+    ) -> Result<Value, Refusal> {
         let display = computer["name"].as_str().unwrap_or_default();
         let failed = |status, reason: String| {
             Refusal::json(status, json!({"message":reason,"computer":computer}))
@@ -103,6 +143,7 @@ impl Forward {
                 method,
                 action,
                 name: None,
+                area,
                 body,
             },
         };

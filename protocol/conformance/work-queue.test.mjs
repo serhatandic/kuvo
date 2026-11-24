@@ -713,3 +713,103 @@ test("a member waits for the main to grant the numbers of its imported items", {
   const self = await member("GET", "kuvo/setup");
   assert.deepEqual(ledger.granted[self.json.you.key], [[240, 240]]);
 });
+
+test("a member saves an offline Work Queue edit and merges it when the keeper returns", { timeout: 150000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const primary = studio.start();
+  const main = studio.connect(await primary.ready());
+  const setup = await main("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  const joined = await lab.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const app = { "x-kuvo-from": "app" };
+  const baseBody = "Check the build.\n\nSend the note.";
+  const created = await main("POST", "kuvo/work-queue/items", {
+    operation: "offline-start", title: "Release plans", body: baseBody,
+  }, app);
+  assert.equal(created.status, 200, created.text);
+  const id = created.json.item.id;
+  const ref = { kind: "queueItems", queue: "usr_you", id, computer: setup.json.you.key };
+  const address = "kuvo/data/edits?" + new URLSearchParams(ref);
+  await until(async () => {
+    const list = await member("GET", "kuvo/work-queue?owner=all&glance=1", undefined, app);
+    return list.json?.items.some(item => item.id === id);
+  }, "The member did not observe the item.", 40000, 100);
+  const revision = await member("GET", address, undefined, app);
+  assert.equal(revision.status, 200, revision.text);
+  assert.equal(revision.json.stale, false);
+  assert.equal(revision.json.fields.body, baseBody);
+  const local = await main("PATCH", "kuvo/work-queue/items/" + id, {
+    title: "Release plans for next week", body: "Check the release build.\n\nSend the note.",
+  }, app);
+  assert.equal(local.status, 200, local.text);
+  await primary.stop();
+  const draft = { ref, operation: "offline-from-lab", baseRevision: revision.json.revision, fields: {
+    body: "Check the build.\n\nSend the note to the team.", priority: "high",
+  }};
+  const pending = await member("POST", "kuvo/data/edits", draft, app);
+  assert.equal(pending.status, 202, pending.text);
+  assert.equal(pending.json.status, "pending");
+  const operation = pending.json.operation;
+  const entries = await member("GET", "kuvo/data/edits/outbox", undefined, app);
+  assert.equal(entries.status, 200, entries.text);
+  assert.ok(entries.json.entries.some(row => row.receipt.operation === operation));
+  const resumed = studio.connect(await studio.start().ready());
+  const receipt = await until(async () => {
+    const answer = await member("GET", "kuvo/data/edits/" + operation, undefined, app);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.receipt.status !== "pending" && answer.json.receipt;
+  }, "The edit was not replayed to the keeper.", 45000, 150);
+  assert.equal(receipt.status, "committed");
+  const changed = await resumed("GET", "kuvo/work-queue/items/" + id);
+  assert.equal(changed.status, 200, changed.text);
+  assert.equal(changed.json.item.title, "Release plans for next week");
+  assert.equal(changed.json.item.body, "Check the release build.\n\nSend the note to the team.");
+  assert.equal(changed.json.item.priority, "high");
+});
+
+test("ordinary revision-aware queue routes and the outbox replay the same decisions", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const ask = studio.connect(await studio.start().ready());
+  const app = { "x-kuvo-from": "app" };
+  const id = "wqi_BBBBBBBBBBBBBBBBBBBB";
+  const ref = { kind: "queueItems", id, queue: "usr_you" };
+  const address = "kuvo/work-queue/items/" + id;
+  const submit = edit => ask("POST", "kuvo/data/edits", { ref, ...edit }, app);
+  const create = { operation: "first-offline-replay", baseRevision: null, create: true, fields: { title: "Original" } };
+  const made = await ask("POST", "kuvo/work-queue/items", { id, owner: ref.queue, baseRevision: null, fields: create.fields },
+    { ...app, "x-kuvo-operation": create.operation });
+  assert.equal(made.status, 200, made.text);
+  assert.equal(made.json.status, "committed");
+  assert.deepEqual((await submit(create)).json, made.json);
+  const edit = { operation: "second-offline-replay", baseRevision: made.json.revision, fields: { title: "First name" } };
+  const changed = await ask("PATCH", address, { owner: ref.queue, ...edit }, app);
+  assert.equal(changed.status, 200, changed.text);
+  assert.equal(changed.json.status, "committed");
+  assert.deepEqual((await submit(edit)).json, changed.json);
+  const conflict = await submit({ operation: "choice-for-title", baseRevision: made.json.revision, fields: { title: "Second name" } });
+  assert.equal(conflict.status, 200, conflict.text);
+  assert.equal(conflict.json.status, "choice");
+  assert.equal(conflict.json.choices.length, 1);
+  const removed = await ask("DELETE", address, { owner: ref.queue, operation: "delete-with-revision", baseRevision: conflict.json.revision }, app);
+  assert.equal(removed.status, 200, removed.text);
+  assert.equal(removed.json.status, "committed");
+  const failed = await submit({ operation: "try-deleted-item", baseRevision: changed.json.revision, fields: { body: "Saved draft" } });
+  assert.equal(failed.status, 409, failed.text);
+  assert.equal(failed.json.status, "deleted");
+  const outbox = await ask("GET", "kuvo/data/edits/" + failed.json.operation, undefined, app);
+  assert.equal(outbox.status, 200, outbox.text);
+  assert.deepEqual(outbox.json.recovery, { body: "Saved draft" });
+  const restore = await ask("POST", address + "/restore", {}, app);
+  assert.equal(restore.status, 200, restore.text);
+  const stale = await submit({ operation: "try-before-deletion", baseRevision: changed.json.revision, fields: { body: "Stale draft" } });
+  assert.equal(stale.status, 409, stale.text);
+  assert.equal(stale.json.status, "refresh");
+});

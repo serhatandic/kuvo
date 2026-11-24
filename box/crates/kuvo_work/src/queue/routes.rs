@@ -163,6 +163,10 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    pub fn record_edits(&self) -> Arc<dyn kuvo_setup::RecordEdits> {
+        self._writer.edits.clone()
+    }
+
     pub fn peer_reads(&self) -> PeerReads {
         self.reads.clone()
     }

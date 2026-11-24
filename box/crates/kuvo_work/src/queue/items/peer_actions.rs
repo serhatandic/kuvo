@@ -168,6 +168,9 @@ impl Writer {
                 value: json!({"message":format!("{here}'s clock and {there}'s are too far apart to take it: check both computers' time.")}),
             });
         }
+        if matches!(kind, RequestKind::OfflineRead) {
+            return self.offline_read(act.body.unwrap_or_default(), peer).await;
+        }
         if let Some(kind) = read {
             let result = self
                 .reads

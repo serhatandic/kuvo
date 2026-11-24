@@ -149,6 +149,7 @@ impl View {
 
     pub(crate) fn features(&self) -> Vec<&'static str> {
         let mut features = crate::routes::FEATURES.to_vec();
+        features.push("data.queued-device-authority");
         if self.backup_receiver {
             features.push("box.backups.relay");
         }

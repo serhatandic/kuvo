@@ -12,8 +12,10 @@ reference chips. Whole items and attachments can be read quietly from their
 keeper through the same transport as setup search. A computer can send an item
 edit, delete or restore to its keeper through the tracked request and receipt
 exchange. Markdown imports read the backlog files and claim each number on the
-main's lease. Imports on a member wait for the main's reply. The full client
-feature is still gated on the remaining routes.
+main's lease. Imports on a member wait for the main's reply. A member can save
+an edit against a revision and replay it to the keeper when it returns. The
+keeper merges independent passages and records competing values as choices.
+The full client feature is still gated on the remaining routes.
 
 Case numbers follow declaration order in each TypeScript file. Partial means a
 conformance scenario exercises part of the TypeScript case. Open cases are
@@ -50,10 +52,11 @@ checks the initial migration and future-format refusal through a real resident.
 |---|---|
 | [setup-shared](../../box/test/setup-shared.test.ts) label restore | Open, 5.2 and 2.5. Preview, acceptance and recovery. |
 | [setup-merge](../../box/test/setup-merge.test.ts) 2–6 | Open in 5.2 and 2.3 for the reservation, import and Markdown rewrite. Partial in case 6 for local alias lookup. |
-| [offline-merge](../../box/test/offline-merge.test.ts) 2–10 as applied to queue records | Open, 5.2. Relation to 2.3 field merge, 2.4 handoffs and 5.5 attachment records. Includes stale edit across deletion and restore, compact tombstones and old-owner replay. |
+| [offline-merge](../../box/test/offline-merge.test.ts) 2, 7 | Partial, 5.2. A member saves a draft against an owner revision and the two residents merge independent passages when the keeper returns. Local conformance covers the deletion fence before and after restoration and recovery of refused text. Competing passages, retired revisions and legacy receipts still need scenarios. |
+| [offline-merge](../../box/test/offline-merge.test.ts) 3–6, 8–10 as applied to queue records | Open, 5.2, 2.4 and 5.5. Large and legacy passage layouts, transferred choices, compact tombstones, former-owner replay and attachment records. |
 | [setup-two-boxes](../../box/bridge-tests/setup-two-boxes.test.js) joined roster, cards and numbering | Open for 5.2 numbering and card input. Existing roster and card coverage belongs to 2.3. |
 | [documents](../../box/bridge-tests/documents.test.js) numbering precedent and independent edits in both orders | Open, 5.2. Existing preference merge belongs to 2.3. |
-| [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) 1–3 and queue slices of scope, handoff and receipt tests | Open, 5.2 and 2.4. Creation replay, failure to claim, revision-aware edits across routes and the authenticated forwarding boundary. |
+| [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) queue slices for creation, claim, revision edits, scopes, handoff and receipts | Partial, 5.2 and 2.4. Ordinary revision-aware creation and PATCH replay the same decision through the shared edit outbox. Claim failure, handoff and the authenticated forwarding boundaries still need coverage. |
 | [setup-handover](../../box/bridge-tests/setup-handover.test.js) 1–5 | Open for 5.2 queue handoff, owner reads and independent queue work while the main computer is offline. Move evidence and transfers belong to 2.4. |
 | [setup-lists](../../box/test/setup-lists.test.ts) 20 and 28 | Open, 5.2. Away deletions and first copy in the combined view. |
 | [setup-handover-shared](../../box/bridge-tests/setup-handover-shared.test.js) 2–4, 6–7, 9–10 | Open, 5.2. Large label restore, old and unreachable main, number blocks across takeover, paired grants, offline edits and deletion recoveries. |
@@ -68,7 +71,7 @@ checks the initial migration and future-format refusal through a real resident.
 | [Move coverage](rust-moves-coverage.md) queue placement, handoff and attachment revisions | Open, 5.2 with 2.4. Preserve ownership evidence and original queue item and file placement. |
 
 Open work in 5.2 includes the remaining peer-view and owner-read cases,
-forwarded writes and receipts, offline merge and handoff, import collision and
+forwarded writes and receipts, offline merge edge cases and handoff, import collision and
 recovery cases and merge reservations, agent and forwarded attachments, mention binding after number grants and owner
 changes, bot reassignment and remaining status and order cases, live GitHub reads
 and vault sign-in, and the agents' tools.

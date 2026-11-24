@@ -189,7 +189,9 @@ pub async fn run(
     if memory_reads.is_some() {
         peers.advertise_conversation_search().await?;
     }
-    setup.handle().register(&mut routes);
+    setup
+        .handle()
+        .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
     kuvo_services::files::register(
         &mut routes,

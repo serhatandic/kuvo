@@ -164,7 +164,7 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
     200: LABEL_RESTORE_RESULT, 400: MESSAGE, 403: MESSAGE, 409: MESSAGE, 503: MESSAGE,
   } },
   // Adds an item; send a client operation id (`x-kuvo-operation`) and reuse it on a retry.
-  { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },
+  { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM }), OFFLINE_EDIT_ANSWERS[200]) } },
   // Imports items from Markdown backlog files on the box (`{owner, files}`), keeping their numbers where free.
   { route: "POST kuvo/work-queue/import", feature: "work-queue", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
   // One item whole, by id or number; one on another computer is read from there (`told: false`) when it can be.
@@ -176,7 +176,7 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   // Brings a deleted item back (kept 30 days).
   { route: "POST kuvo/work-queue/items/:item/restore", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
   // Deletes an item (kept 30 days); one on its way to another computer has its hand-off called off.
-  { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+  { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM }), OFFLINE_EDIT_ANSWERS[200]), 409: oneOf(ON_ANOTHER, OFFLINE_EDIT_ANSWERS[409]), 503: ON_ANOTHER } },
 ];
 
 
