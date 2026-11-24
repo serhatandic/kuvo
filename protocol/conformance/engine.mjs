@@ -229,7 +229,10 @@ export async function standInEngine(root, env) {
         }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));
         if (index < 0) return send({}, 404);
-        if (request.method === "PATCH") Object.assign(inbox[index], given);
+        if (request.method === "PATCH") {
+          Object.assign(inbox[index], given);
+          engine.afterInboxPatch?.(session, inbox[index]);
+        }
         else if (request.method === "DELETE") {
           if (engine.refuseRemoval?.has(waiting[2])) return send({}, 503);
           inbox.splice(index, 1);

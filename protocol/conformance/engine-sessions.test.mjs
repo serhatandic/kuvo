@@ -1087,6 +1087,55 @@ test("a failed turn drops its waiting summary and a failed summary lets the queu
   assert.deepEqual((await queue(failedSummary)).json, { paused: false, held: [] });
 });
 
+test("Stop only holds the messages still in the inbox after changing delivery", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("stop-with-delivery");
+  const session = "ses_deliveryDuringStop";
+  const message = (id, delivery) => ({ id, type: "user", delivery, payload: { text: id } });
+  const taken = message("msg_taken", "steer");
+  const held = message("msg_stillHeld", "steer");
+  const later = message("msg_later", "queue");
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  here.engine.inboxes.set(session, [taken, held, later]);
+  here.engine.afterInboxPatch = (id, item) => {
+    if (item.id !== taken.id) return;
+    here.engine.inboxes.set(id, [held, later]);
+    here.engine.messages.set(id, [{ id: item.id, type: "user", text: item.payload.text }]);
+  };
+  const record = await here.start().ready();
+  const stopped = await request(record, "POST", `kuvo/sessions/${session}/stop`);
+  assert.equal(stopped.status, 200, stopped.text);
+  assert.deepEqual(stopped.json, { paused: true, held: [held.id] });
+  assert.deepEqual(here.engine.inboxes.get(session).map(row => [row.id, row.delivery]),
+    [[held.id, "queue"], [later.id, "queue"]]);
+});
+
+test("an idle inbox arrival advances after the grace period unless paused", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("idle-inbox-arrival");
+  const idle = "ses_idleArrival";
+  const paused = "ses_pausedArrival";
+  for (const id of [idle, paused]) here.engine.sessions.push(sessionOf({ id, directory: here.home }));
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow inbox events");
+  assert.deepEqual((await request(record, "POST", `kuvo/sessions/${paused}/stop`)).json,
+    { paused: true, held: [] });
+  const arrive = sessionID => {
+    const item = { id: "msg_arrived", type: "user", delivery: "queue", payload: { text: "Now I'm waiting." } };
+    here.engine.inboxes.set(sessionID, [item]);
+    here.engine.emit({ type: "session.inbox.enqueued", data: { sessionID, inboxID: item.id, item } });
+    return item;
+  };
+  const held = arrive(paused);
+  const next = arrive(idle);
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  assert.deepEqual([held.delivery, next.delivery], ["queue", "queue"]);
+  await until(() => next.delivery === "steer", "the idle inbox item to advance");
+  assert.equal(held.delivery, "queue");
+  assert.deepEqual(here.engine.interrupted, [{ session: paused, resume: false }]);
+});
+
 // Deterministic provider errors for side-by-side TS and Rust comparison. The
 // live queue scenario uses OpenCode Go separately.
 test("a usage limit survives an inbox error and a manual Resume survives restart", { timeout: 45000 }, async t => {

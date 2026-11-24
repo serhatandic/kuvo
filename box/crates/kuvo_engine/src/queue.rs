@@ -425,6 +425,23 @@ impl Queue {
         self.waiting.iter().any(|item| item.id == id)
     }
 
+    fn keep_held(&mut self, mut moved: Vec<String>, inbox: &[Inbox]) {
+        let waiting = &self.waiting;
+        let present = |id: &str| {
+            waiting.iter().any(|row| row.id == id)
+                || inbox.iter().any(|row| row.id == id && row.is_message())
+        };
+        moved.retain(|id| present(id));
+        self.held.retain(|id| !moved.contains(id) && present(id));
+        if !self.order.is_empty() && !moved.is_empty() {
+            self.order.retain(|id| !moved.contains(id) && present(id));
+            self.order.splice(..0, moved.iter().cloned());
+        }
+        moved.append(&mut self.held);
+        self.held = moved;
+        self.paused |= inbox.iter().any(Inbox::is_message) || !self.waiting.is_empty();
+    }
+
     pub(crate) fn shown(&self, home: &Path) -> Value {
         let mut value = json!({ "paused": self.paused, "held": self.held });
         if !self.waiting.is_empty() {
@@ -900,10 +917,10 @@ pub(crate) async fn hold_on(
             .await
             .map_err(save_failed)?;
     }
-    let inbox = inbox(engine, lease, session).await.map_err(queue_failed)?;
+    let initial = inbox(engine, lease, session).await.map_err(queue_failed)?;
     let mut held = Vec::new();
     for id in given.iter().chain(
-        inbox
+        initial
             .iter()
             .filter(|row| row.delivery == Delivery::Steer)
             .map(|row| &row.id),
@@ -911,7 +928,7 @@ pub(crate) async fn hold_on(
         if held.contains(id) {
             continue;
         }
-        if let Some(item) = inbox.iter().find(|row| &row.id == id && row.is_message())
+        if let Some(item) = initial.iter().find(|row| &row.id == id && row.is_message())
             && (item.delivery == Delivery::Queue
                 || set_delivery(engine, lease, session, id, Delivery::Queue)
                     .await
@@ -920,7 +937,8 @@ pub(crate) async fn hold_on(
             held.push(id.clone());
         }
     }
-    for summary in inbox.iter().filter(|row| !row.is_message() && stopping) {
+    let remaining = inbox(engine, lease, session).await.unwrap_or(initial);
+    for summary in remaining.iter().filter(|row| !row.is_message() && stopping) {
         let path = format!(
             "{}/inbox/{}",
             sessions::path(session),
@@ -932,19 +950,7 @@ pub(crate) async fn hold_on(
     }
     let queue = engine
         .queues
-        .put(session, |queue| {
-            let ids = &mut held;
-            for id in &queue.held {
-                if !ids.contains(id)
-                    && (queue.contains(id)
-                        || inbox.iter().any(|row| &row.id == id && row.is_message()))
-                {
-                    ids.push(id.clone());
-                }
-            }
-            queue.paused |= inbox.iter().any(Inbox::is_message) || !queue.waiting.is_empty();
-            queue.held = held;
-        })
+        .put(session, |queue| queue.keep_held(held, &remaining))
         .await
         .map_err(save_failed)?;
     if stopping {
@@ -2662,17 +2668,20 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
                 .await?;
         }
         QueueEvent::Hold(_) | QueueEvent::Failed(_) => {
-            let mut held = saved.held;
-            for item in waiting.iter().filter(|row| row.delivery == Delivery::Steer) {
+            let mut moved = Vec::new();
+            for item in waiting
+                .iter()
+                .filter(|row| row.delivery == Delivery::Steer && !saved.held.contains(&row.id))
+            {
                 if set_delivery(engine, &lease, session, &item.id, Delivery::Queue)
                     .await
                     .is_ok()
-                    && !held.contains(&item.id)
                 {
-                    held.push(item.id.clone());
+                    moved.push(item.id.clone());
                 }
             }
-            for summary in entries.iter().filter(|row| !row.is_message()) {
+            let remaining = inbox(engine, &lease, session).await.unwrap_or(entries);
+            for summary in remaining.iter().filter(|row| !row.is_message()) {
                 let path = format!(
                     "{}/inbox/{}",
                     sessions::path(session),
@@ -2682,15 +2691,10 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
                     .call::<Value>(&lease, Method::DELETE, &path, None)
                     .await;
             }
-            if !waiting.is_empty() || !saved.waiting.is_empty() {
-                engine
-                    .queues
-                    .put(session, |state| {
-                        state.paused = true;
-                        state.held = held;
-                    })
-                    .await?;
-            }
+            engine
+                .queues
+                .put(session, |state| state.keep_held(moved, &remaining))
+                .await?;
         }
         QueueEvent::Drain => {
             drain(engine, &lease, session, &saved, &entries).await?;
