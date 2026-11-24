@@ -138,8 +138,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Eighty-six have full scenario coverage, 17 have partial proof,
-and 109 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Eighty-seven have full scenario coverage, 17 have partial proof,
+and 108 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -192,6 +192,7 @@ separately where they appear.
 | | 30 | Partial, the original sender can replace an incomplete copy. A complete copy on a managed setup requires an explicit drop. Replacing an older non-checkpointed copy while its engine import is still running remains 2.4. |
 | | 34 | Covered by a failed export keeping the original retired and reporting cleanup pending, followed by a successful retry on the same resident after its interval. |
 | | 31 | Covered by the live lost switch acknowledgement and by a restarted destination replying only with its durable decision. |
+| | 35 | Covered by a receiving resident whose cumulative import time reaches thirty minutes. It sends the matching failure and removes all the imports and the installed wake-up folder, including the import that accepted but never replied. |
 | | 36 | Covered by the authenticated oversized offer, exact refusal and empty destination. |
 | | 37 | Covered by the source and recipient listing the named computers while a two-part transfer is held between acknowledgements. |
 | | 38 | Covered by waiting progress, clearing it on authenticated contact and releasing the original when the destination goes quiet again. |
@@ -205,7 +206,7 @@ separately where they appear.
 | | 48 | Covered by move choices that count a chat’s delegated work and unanswered questions, including a second level of work. |
 | | 53–54 | Native account fallback is owned by 4.6. Bot key handling is owned by 5.1 with native carry in 4.6. |
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
-| | 7, 35 | Open, 2.4 transfer and retry. OpenCode import effects depend on 3.2. |
+| | 7 | Open, 2.4 retry when the relay cannot accept a part. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Covered by driving a request saved before its first check and retiring one with no hold time after thirty minutes waiting for the relay. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |

@@ -2360,3 +2360,240 @@ async fn source_deadline(deadline: SourceDeadline) {
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
+
+#[tokio::test]
+async fn a_destination_deadline_retires_every_import_and_its_wake_folder() {
+    use flate2::{Compression, write::GzEncoder};
+    use kuvo_engine::{Engine, Timing};
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        ownership::{Handle, SetupState},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+        sync::{Semaphore, mpsc},
+        task::JoinSet,
+    };
+
+    let home = tempfile::tempdir().unwrap();
+    let run = home.path().join("run");
+    let session = "ses_slowArrival";
+    let id = "mov_slowArrival";
+    let here = public(RUST_KEY);
+    let peer = public(PEER_KEY);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let endpoint =
+        json!({"pid":std::process::id(),"port":port,"password":"fixture","version":"fixture"});
+    files::write_atomic(
+        &run.join("engine.json"),
+        &serde_json::to_vec(&endpoint).unwrap(),
+    )
+    .unwrap();
+
+    // Each accepted import replies within the engine's own allowance. Only
+    // the move's whole-copy deadline can interrupt the last accepted import.
+    let engine_sessions = Arc::new(Mutex::new(BTreeMap::<String, Value>::new()));
+    let database = engine_sessions.clone();
+    let accepted = Arc::new(Semaphore::new(0));
+    let respond = accepted.clone();
+    let (imported, mut imports) = mpsc::unbounded_channel();
+    let server = tokio::spawn(async move {
+        let mut clients = JoinSet::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            let (database, respond, imported) =
+                (database.clone(), respond.clone(), imported.clone());
+            while let Some(result) = clients.try_join_next() {
+                result.unwrap();
+            }
+            clients.spawn(async move {
+                let mut socket = BufReader::new(socket);
+                let mut request = String::new();
+                if socket.read_line(&mut request).await.unwrap() == 0 { return; }
+                let mut length = 0;
+                let mut header = String::new();
+                while socket.read_line(&mut header).await.unwrap() > 2 {
+                    if let Some((name, value)) = header.split_once(':') && name.eq_ignore_ascii_case("content-length") {
+                        length = value.trim().parse().unwrap();
+                    }
+                    header.clear();
+                }
+                let route = request.split_whitespace().nth(1).unwrap_or_default();
+                let (status, body) = if request.starts_with("POST /api/experimental/session/import ") {
+                    let mut body = vec![0; length];
+                    socket.read_exact(&mut body).await.unwrap();
+                    let entry: Value = serde_json::from_slice(&body).unwrap();
+                    let key = entry["info"]["id"].as_str().unwrap().to_owned();
+                    database.lock().unwrap().insert(key.clone(), entry["info"].clone());
+                    imported.send(key).unwrap();
+                    respond.acquire().await.unwrap().forget();
+                    ("200 OK", json!({}))
+                } else if let Some(key) = route.strip_prefix("/api/session/").filter(|key| key.starts_with("ses_")) {
+                    if request.starts_with("DELETE ") {
+                        assert!(database.lock().unwrap().remove(key).is_some());
+                        ("200 OK", json!({}))
+                    } else if let Some(found) = database.lock().unwrap().get(key).cloned() {
+                        ("200 OK", json!({"data":found}))
+                    } else {
+                        ("404 Not Found", json!({}))
+                    }
+                } else {
+                    ("200 OK", json!({"data":[]}))
+                };
+                let body = body.to_string();
+                let response = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+
+    let (relay, mut wire, _) = TestRelay::welcome(|_| {}).await;
+    let mut resident = ResidentPeers::start(
+        home.path(),
+        Roster {
+            here: Some(here),
+            main: Some(here),
+            name: "Destination".into(),
+            members: vec![Member {
+                key: peer,
+                address: Some(PEER_ADDRESS),
+                name: "Source".into(),
+                kind: ComputerKind::Machine,
+            }],
+        },
+        Some(relay),
+        None,
+        false,
+        Arc::new(|| 1_000_000),
+    )
+    .await
+    .unwrap();
+    let devices = Devices::load(home.path(), "Destination".into(), ComputerKind::Machine)
+        .await
+        .unwrap()
+        .devices;
+    let ownership = Handle::new(
+        resident.reader(),
+        resident.relay_handle(),
+        devices,
+        SetupState::default,
+    );
+    let engine = Engine::new(
+        home.path().to_owned(),
+        Default::default(),
+        Timing::default(),
+    )
+    .unwrap();
+    resident.attach_moves(engine, ownership).await.unwrap();
+
+    let mut exports = vec![json!({"info":{"id":session,"title":"Arrival"},"messages":[]})];
+    exports.extend((1..25).map(
+        |child| json!({"info":{"id":format!("ses_child{child}"),"parentID":session},"messages":[]}),
+    ));
+    let manifest =
+        json!({"kind":"chat","thing":session,"name":"Arrival","exports":exports,"folder":session})
+            .to_string();
+    let mut archive = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+    let mut header = tar::Header::new_gnu();
+    header.set_mode(0o600);
+    header.set_size(manifest.len() as u64);
+    archive
+        .append_data(&mut header, "move.json", manifest.as_bytes())
+        .unwrap();
+    header.set_entry_type(tar::EntryType::Directory);
+    header.set_mode(0o700);
+    header.set_size(0);
+    archive.append_data(&mut header, session, &[][..]).unwrap();
+    let contents = archive.into_inner().unwrap().finish().unwrap();
+    let hash = encode(&Sha256::digest(&contents));
+    let send = |movement: Value| {
+        let packet = json!({"at":1_000_000, "move":movement});
+        let bytes = Envelope(packet.as_object().unwrap().clone())
+            .seal(&PEER_KEY, &here)
+            .unwrap();
+        frames::relay_send(&PEER_ADDRESS, &bytes)
+    };
+    wire.send(send(json!({"id":id,"op":"offer","kind":"chat","thing":session,"name":"Arrival","generation":1,"hash":hash,"size":contents.len(),"safeSwitch":true,"twoComputers":true}))).await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), wire.move_step("ready"))
+            .await
+            .unwrap()["id"],
+        id
+    );
+    wire.send(send(
+        json!({"id":id,"op":"part","generation":1,"hash":hash,"i":0,"of":1,"d":encode(&contents)}),
+    ))
+    .await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), imports.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        session
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), wire.move_step("working"))
+            .await
+            .unwrap()["id"],
+        id
+    );
+    let wake = home.path().join("wakes").join(session);
+    assert_eq!(
+        std::fs::read_to_string(wake.join("paused")).unwrap(),
+        format!("moving:{id}")
+    );
+
+    tokio::time::pause();
+    for child in 1..=23 {
+        wire.send(vec![0]).await;
+        tokio::time::advance(Duration::from_secs(75)).await;
+        accepted.add_permits(1);
+        let imported = tokio::time::timeout(Duration::from_secs(1), imports.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(imported, format!("ses_child{child}"));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), wire.move_step("working"))
+                .await
+                .unwrap()["id"],
+            id
+        );
+    }
+    assert_eq!(engine_sessions.lock().unwrap().len(), 24);
+    wire.send(vec![0]).await;
+    tokio::time::advance(Duration::from_secs(76)).await;
+    let failed = tokio::time::timeout(Duration::from_secs(10), wire.move_step("failed"))
+        .await
+        .unwrap();
+    assert_eq!(failed["id"], id);
+    assert_eq!(failed["hash"], hash);
+    assert!(
+        failed["message"]
+            .as_str()
+            .unwrap()
+            .contains("too long to set up")
+    );
+    let journal = run.join("moves").join(format!("{id}.json"));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while journal.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!wake.exists());
+    assert!(engine_sessions.lock().unwrap().is_empty());
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
