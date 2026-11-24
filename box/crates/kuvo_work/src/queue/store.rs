@@ -109,7 +109,7 @@ impl Stamp {
     }
 }
 
-fn who(value: &Value) -> Option<Value> {
+pub(super) fn who(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
     if fields.get("user").and_then(Value::as_bool) == Some(true) {
         return Some(json!({"user": true}));

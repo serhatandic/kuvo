@@ -6,8 +6,11 @@ use super::{
     sessions::Sessions,
     status::{self, PRIORITIES, STATUSES},
     store::{COLORS, Error, Item, Store, array, limit, positive_integer},
+    told,
 };
-use jiff::{Zoned, civil::Date};
+use icu_collator::{Collator, options::CollatorOptions};
+use jiff::{Timestamp, Zoned, civil::Date};
+use kuvo_peers::setup_lists::View;
 use kuvo_setup::{QueueLabel as Label, QueueSetup};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -115,7 +118,9 @@ impl Query {
         self.filters.iter().all(|(filter, names)| {
             let contains = |name: &str| names.iter().any(|each| each == name);
             match filter.as_str() {
-                "computers" => contains("") || contains(key),
+                "computers" => summary["computer"]["key"]
+                    .as_str()
+                    .map_or_else(|| contains("") || contains(key), contains),
                 "owners" => contains(summary["owner"].as_str().unwrap_or_default()),
                 "sources" => contains(summary["source"]["kind"].as_str().unwrap_or("none")),
                 "labels" => {
@@ -130,10 +135,43 @@ impl Query {
             }
         })
     }
+
+    fn finds_told(&self, item: &Value, labels: &[Label]) -> bool {
+        if self.search.is_empty() {
+            return true;
+        }
+        let mut fields = vec![item["title"].as_str().unwrap_or_default().to_owned()];
+        fields.extend(item["number"].as_f64().map(|number| format!("#{number}")));
+        fields.extend(array(item.get("numberAliases")).iter().map(|alias| {
+            format!(
+                "#{} {}",
+                alias["number"],
+                alias["name"].as_str().unwrap_or_default()
+            )
+        }));
+        for value in [
+            &item["source"]["ref"],
+            &item["source"]["name"],
+            &item["lastNote"]["text"],
+        ] {
+            fields.extend(value.as_str().map(str::to_owned));
+        }
+        fields.extend(
+            labels
+                .iter()
+                .filter(|label| array(item.get("labels")).iter().any(|id| id == &label.id))
+                .map(|label| label.name.clone()),
+        );
+        let words = fields.join("\n").to_lowercase();
+        self.search
+            .to_lowercase()
+            .split_whitespace()
+            .all(|word| words.contains(word))
+    }
 }
 
 #[derive(Serialize)]
-struct Owner<'a> {
+pub(super) struct Owner<'a> {
     owner: &'a str,
     kind: &'static str,
     title: Option<&'a str>,
@@ -143,7 +181,11 @@ struct Owner<'a> {
     bot: Option<Value>,
 }
 
-fn owner<'a>(id: &'a str, sessions: &'a Sessions, assignees: &'a Assignees) -> Owner<'a> {
+pub(super) fn owner<'a>(
+    id: &'a str,
+    sessions: &'a Sessions,
+    assignees: &'a Assignees,
+) -> Owner<'a> {
     let bot = assignees.for_session(id);
     let (kind, title) = if id == "usr_you" {
         ("you", Some("Your own"))
@@ -170,17 +212,18 @@ pub(super) fn list(
     references: &References,
     sessions: &Sessions,
     setup: Option<&QueueSetup>,
+    peers: &View,
 ) -> Result<Value, Error> {
     let all = store.items()?;
     let seen = Seen::read(store)?;
-    let labels = labels::shown(store, setup)?;
+    let mut labels = labels::shown(store, setup)?;
     let assignees = Assignees::read(store);
     let today = Zoned::now().date();
     let mut names = HashSet::new();
     let mut owners = Vec::new();
     if query.owner != "all" {
         names.insert(query.owner.as_str());
-        owners.push(owner(&query.owner, sessions, &assignees));
+        owners.push(json!(owner(&query.owner, sessions, &assignees)));
     }
     let visible: Vec<_> = all
         .iter()
@@ -192,9 +235,25 @@ pub(super) fn list(
         .chain(visible.iter().filter_map(|item| item.handed_by()))
     {
         if names.insert(name) {
-            owners.push(owner(name, sessions, &assignees));
+            owners.push(json!(owner(name, sessions, &assignees)));
         }
     }
+    let now = Timestamp::now().as_millisecond();
+    let retired = setup
+        .and_then(|setup| setup.labels.as_ref())
+        .map_or(&[][..], |accepted| accepted.library.removed.as_slice());
+    let elsewhere =
+        told::items_elsewhere(store, &all, peers, &query.owner, sessions, retired, now)?;
+    for label in elsewhere.labels {
+        if !labels.iter().any(|mine| mine.id == label.id) {
+            labels.push(label);
+        }
+    }
+    owners.extend(elsewhere.owners.into_iter().filter(|owner| {
+        owner["owner"]
+            .as_str()
+            .is_some_and(|owner| !names.contains(owner))
+    }));
     let mut items = Vec::new();
     let mut removed = Vec::new();
     for item in visible
@@ -214,25 +273,94 @@ pub(super) fn list(
         if let Some(stamp) = &item.removed {
             removed.push((stamp.at, row));
         } else {
-            let place = STATUSES
-                .iter()
-                .position(|status| row["status"].as_str() == Some(status.id))
-                .unwrap_or(99);
-            items.push((place, item.order, row));
+            items.push(row);
         }
     }
-    items.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
+    let remote = |mut row: Value| {
+        row.as_object_mut().expect("peer item").remove("handedFrom");
+        let name = row["computer"]["name"].as_str().unwrap_or_default();
+        let computer = elsewhere
+            .computers
+            .iter()
+            .find(|computer| computer["key"] == row["computer"]["key"]);
+        let why = if computer.is_some_and(|computer| computer.get("away").is_some()) {
+            format!(
+                "{name} isn't answering now (it may be asleep, off or offline): it can be changed once it's back."
+            )
+        } else {
+            format!("It's on {name}: change it there.")
+        };
+        row["can"] = json!({"edit":false,"set":false,"assign":false,"close":false,"delete":false,"restore":false,"attach":false,"why":why});
+        row["labels"] = json!(
+            array(row.get("labels"))
+                .iter()
+                .filter(|id| labels.iter().any(|label| **id == label.id))
+                .collect::<Vec<_>>()
+        );
+        if row.get("removed").is_none()
+            && row["status"]
+                .as_str()
+                .is_some_and(|status| !status::closed(status))
+            && row["due"]
+                .as_str()
+                .and_then(|due| due.parse::<Date>().ok())
+                .is_some_and(|date| date < today)
+        {
+            row["overdue"] = true.into();
+        }
+        row
+    };
+    let keep_remote = |row: &Value| query.finds_told(row, &labels) && query.includes(row, key);
+    items.extend(elsewhere.items.into_iter().filter(keep_remote).map(remote));
+    removed.extend(
+        elsewhere
+            .removed
+            .into_iter()
+            .filter(keep_remote)
+            .map(remote)
+            .map(|row| (row["removed"]["at"].as_f64().unwrap_or_default(), row)),
+    );
+    let place = |item: &Value| {
+        STATUSES
+            .iter()
+            .position(|status| item["status"].as_str() == Some(status.id))
+            .unwrap_or(99)
+    };
+    let computer = |item: &Value| {
+        item.get("computer").map_or_else(
+            || "0".to_owned(),
+            |computer| {
+                format!(
+                    "1 {} {}",
+                    computer["name"].as_str().unwrap_or_default(),
+                    computer["key"].as_str().unwrap_or_default()
+                )
+            },
+        )
+    };
+    let collation = Collator::try_new(Default::default(), CollatorOptions::default())
+        .expect("the root collation is compiled in");
+    items.sort_by(|left, right| {
+        place(left)
+            .cmp(&place(right))
+            .then_with(|| collation.compare(&computer(left), &computer(right)))
+            .then_with(|| {
+                left["order"]
+                    .as_f64()
+                    .unwrap_or_default()
+                    .total_cmp(&right["order"].as_f64().unwrap_or_default())
+            })
+    });
     removed.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let items: Vec<_> = items.into_iter().map(|(_, _, row)| row).collect();
     let removed: Vec<_> = removed.into_iter().map(|(_, row)| row).collect();
     let mut answer = json!({
         "owner": query.owner, "statuses": STATUSES, "priorities": PRIORITIES,
         "labels": labels, "colors": COLORS, "assignees": assignees.rows(),
         "new": { "status": "todo", "priority": "normal" }, "today": today.to_string(),
-        "items": items, "owners": owners, "removed": removed, "computers": [], "pendingComputers": [],
+        "items": items, "owners": owners, "removed": removed, "computers": elsewhere.computers, "pendingComputers": elsewhere.pending,
     });
     if query.counts {
-        answer["counts"] = counts(&items, &labels, removed.len(), key);
+        answer["counts"] = counts(&items, &labels, removed.len(), key, &elsewhere.computers);
     }
     if !query.search.is_empty() {
         answer["q"] = query.search.as_str().into();
@@ -243,7 +371,13 @@ pub(super) fn list(
     Ok(answer)
 }
 
-fn counts(items: &[Value], labels: &[Label], removed: usize, key: &str) -> Value {
+fn counts(
+    items: &[Value],
+    labels: &[Label],
+    removed: usize,
+    key: &str,
+    computers: &[Value],
+) -> Value {
     let mut by_status: BTreeMap<&str, usize> =
         STATUSES.iter().map(|status| (status.id, 0)).collect();
     let mut by_priority: BTreeMap<&str, usize> =
@@ -251,8 +385,18 @@ fn counts(items: &[Value], labels: &[Label], removed: usize, key: &str) -> Value
     let mut by_label: BTreeMap<&str, usize> =
         labels.iter().map(|label| (label.id.as_str(), 0)).collect();
     let mut sources = BTreeMap::<&str, usize>::new();
+    let mut by_computer = BTreeMap::from([(key, 0)]);
+    by_computer.extend(
+        computers
+            .iter()
+            .filter_map(|computer| computer["key"].as_str())
+            .map(|key| (key, 0)),
+    );
     let mut open = 0;
     for row in items {
+        *by_computer
+            .entry(row["computer"]["key"].as_str().unwrap_or(key))
+            .or_default() += 1;
         if let Some(status) = row["status"].as_str() {
             *by_status.entry(status).or_default() += 1;
             open += usize::from(!status::closed(status));
@@ -269,7 +413,7 @@ fn counts(items: &[Value], labels: &[Label], removed: usize, key: &str) -> Value
     }
     json!({
         "open": open, "statuses": by_status, "priorities": by_priority, "labels": by_label,
-        "sources": sources, "computers": { key: items.len() }, "removed": removed,
+        "sources": sources, "computers": by_computer, "removed": removed,
     })
 }
 
@@ -289,7 +433,7 @@ pub(super) fn number_aliases(item: &Item) -> Vec<Value> {
         .collect()
 }
 
-fn summary(
+pub(super) fn summary(
     item: &Item,
     today: Date,
     references: &References,
@@ -464,6 +608,10 @@ fn ref_facts(item: &Item, today: Date, references: &References, seen: &Seen) -> 
         &Sessions::default(),
         &Assignees::default(),
     );
+    ref_summary(&row)
+}
+
+fn ref_summary(row: &Value) -> Value {
     let mut facts = Map::new();
     for key in [
         "id",
@@ -477,12 +625,13 @@ fn ref_facts(item: &Item, today: Date, references: &References, seen: &Seen) -> 
         "title",
         "status",
         "owner",
+        "computer",
     ] {
         if let Some(value) = row.get(key) {
             facts.insert(key.into(), value.clone());
         }
     }
-    if item.removed.is_some() {
+    if row.get("removed").is_some() {
         facts.insert("removed".into(), true.into());
     }
     facts.into()
@@ -490,6 +639,7 @@ fn ref_facts(item: &Item, today: Date, references: &References, seen: &Seen) -> 
 
 pub(super) fn references<'a>(
     items: &[Item],
+    far: &[Value],
     parser: &References,
     seen: &Seen,
     listed: impl IntoIterator<Item = &'a str>,
@@ -507,10 +657,24 @@ pub(super) fn references<'a>(
         let item = reference
             .as_ref()
             .and_then(|reference| parser.find(items, reference));
-        found.insert(
-            text.into(),
-            item.map_or(Value::Null, |item| ref_facts(item, today, parser, seen)),
-        );
+        let across = if item.is_none_or(|item| item.removed.is_some()) {
+            reference.as_ref().and_then(|reference| {
+                far.iter()
+                    .filter(|row| parser.names_summary(row, reference))
+                    .max_by(|a, b| {
+                        a["updated"]["at"]
+                            .as_f64()
+                            .unwrap_or_default()
+                            .total_cmp(&b["updated"]["at"].as_f64().unwrap_or_default())
+                    })
+            })
+        } else {
+            None
+        };
+        let facts = across
+            .map(ref_summary)
+            .or_else(|| item.map(|item| ref_facts(item, today, parser, seen)));
+        found.insert(text.into(), facts.unwrap_or(Value::Null));
         if let Some(Reference::Number {
             number,
             setup: None,
@@ -524,6 +688,15 @@ pub(super) fn references<'a>(
                         .any(|alias| alias["number"].as_f64() == Some(f64::from(number)))
                 })
                 .map(|item| ref_facts(item, today, parser, seen))
+                .chain(
+                    far.iter()
+                        .filter(|item| {
+                            array(item.get("numberAliases"))
+                                .iter()
+                                .any(|alias| alias["number"].as_f64() == Some(f64::from(number)))
+                        })
+                        .map(ref_summary),
+                )
                 .collect();
             if !matches.is_empty() {
                 aliases.insert(text.into(), matches.into());

@@ -102,6 +102,26 @@ impl References {
                 .is_some_and(|source| source.key() == *key),
         })
     }
+
+    pub fn names_summary(&self, item: &Value, reference: &Reference<'_>) -> bool {
+        match reference {
+            Reference::Id(id) => item["id"] == *id,
+            Reference::Number {
+                number,
+                setup: None,
+            } => item["number"].as_f64() == Some(f64::from(*number)),
+            Reference::Number {
+                number,
+                setup: Some(setup),
+            } => array(item.get("numberAliases")).iter().any(|alias| {
+                alias["setup"] == *setup && alias["number"].as_f64() == Some(f64::from(*number))
+            }),
+            Reference::Source(key) => item["source"]["ref"]
+                .as_str()
+                .and_then(|reference| self.issue(reference))
+                .is_some_and(|issue| issue.key() == *key),
+        }
+    }
 }
 
 pub(super) struct Issue<'a> {

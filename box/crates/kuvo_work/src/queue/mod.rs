@@ -15,6 +15,7 @@ mod routes;
 mod sessions;
 mod status;
 mod store;
+mod told;
 mod view;
 
 pub use items::Runtime;

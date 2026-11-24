@@ -13,10 +13,11 @@ use super::{
     routes::{blocking, internal, local_work_queue_app, storage_refusal, typed, work_queue_client},
     status::{self, PRIORITIES, STATUSES},
     store::{self, Error, Item, QUEUE, Store, limit, owner_id, plain_name, queue_files},
-    view,
+    told, view,
 };
 use http::{HeaderMap, StatusCode};
 use jiff::Timestamp;
+use kuvo_engine::LocalSessions;
 use kuvo_peers::{
     directory::RecordScope,
     relay::{RelayEvent, RelayHandle},
@@ -68,6 +69,7 @@ struct Writer {
     refs: Arc<References>,
     numbers: Numbers,
     files: Arc<ClientFiles>,
+    sessions: LocalSessions,
 }
 
 pub(super) fn register(
@@ -76,11 +78,13 @@ pub(super) fn register(
     setup: SetupHandle,
     peers: Reader,
     refs: Arc<References>,
+    sessions: LocalSessions,
     relay: Option<RelayHandle>,
 ) -> Runtime {
     let writer = Writer {
         numbers: Numbers::new(&store, setup.clone(), peers.clone()),
         files: Arc::new(ClientFiles::new()),
+        sessions,
         store,
         setup,
         peers,
@@ -147,20 +151,21 @@ impl Writer {
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let task = tokio::spawn(async move {
             let mut label_revision = None;
+            let mut snapshots = told::Delivery::default();
             loop {
                 let result = tokio::select! {
-                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut label_revision).await,
+                    _ = upkeep.tick() => self.upkeep(relay.as_ref(), &mut label_revision, &mut snapshots).await,
                     message = next_mail(&mut incoming) => {
                         match (relay.as_ref(), message.as_deref()) {
                             (Some(relay), Some(RelayEvent::Mail { key, envelope, .. })) => {
-                                self.received(relay, key, &Value::Object(envelope.0.clone())).await
+                                self.received(relay, key, &Value::Object(envelope.0.clone()), &mut snapshots).await
                             }
                             _ => Ok(()),
                         }
                     }
                 };
                 if let Err(error) = result {
-                    eprintln!("Work Queue number exchange: {error}");
+                    eprintln!("Work Queue exchange: {error}");
                 }
             }
         });
@@ -171,6 +176,7 @@ impl Writer {
         &self,
         relay: Option<&RelayHandle>,
         label_revision: &mut Option<(String, u64)>,
+        snapshots: &mut told::Delivery,
     ) -> Result<(), Error> {
         if let Some(setup) = self.setup.queue_setup()
             && let Some(accepted) = setup.labels
@@ -204,6 +210,17 @@ impl Writer {
             {
                 send(relay, peer, json!({"ask":ask}), now).await;
             }
+            snapshots
+                .publish(
+                    &self.store,
+                    &self.peers,
+                    relay,
+                    self.refs.clone(),
+                    &self.sessions,
+                    self.setup.queue_setup(),
+                    now,
+                )
+                .await?;
         }
         Ok(())
     }
@@ -213,6 +230,7 @@ impl Writer {
         relay: &RelayHandle,
         key: &[u8; 32],
         envelope: &Value,
+        snapshots: &mut told::Delivery,
     ) -> Result<(), Error> {
         let queue = &envelope["workQueue"];
         if !queue.is_object()
@@ -234,6 +252,21 @@ impl Writer {
         };
         let by = kuvo_wire::keys::encode(key);
         let now = Timestamp::now().as_millisecond();
+        if let Some(had) = queue["had"].as_str() {
+            snapshots.acknowledge(key, had);
+        }
+        if let Some(told) = queue.get("told").filter(|told| told.is_object()) {
+            let store = self.store.clone();
+            let sender = *key;
+            let told = told.clone();
+            if let Some(id) =
+                tokio::task::spawn_blocking(move || told::keep(&store, &sender, &told, now))
+                    .await
+                    .map_err(io::Error::other)??
+            {
+                send(relay, peer.clone(), json!({"had":id}), now).await;
+            }
+        }
         if queue["ask"].is_object() && queue.get("to").is_none() && queue.get("for").is_none() {
             let local_max = self.local_max().await?;
             if let Some(block) = self

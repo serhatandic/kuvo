@@ -6,6 +6,7 @@ use super::{
     refs::References,
     sessions::Sessions,
     store::{Error, Store, owner_id},
+    told,
     view::{self, Query},
 };
 use http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
@@ -60,7 +61,7 @@ pub async fn register(
         let query = query(&call.request.path);
         async move { reader.read(Arc::new(query?)).await.and_then(typed) }
     });
-    follow(registry, lists);
+    follow(registry, lists.clone());
 
     labels::register(registry, store.clone(), setup.clone());
     let runtime = items::register(
@@ -69,14 +70,13 @@ pub async fn register(
         setup,
         peers,
         references.clone(),
+        sessions.clone(),
         relay,
     );
 
-    let parser = references.clone();
-    let here = store.clone();
+    let here = lists.clone();
     registry.register::<get_kuvo_work_queue_refs::Spec, _, _>(Access::Any, move |call| {
-        let store = here.clone();
-        let parser = parser.clone();
+        let here = here.clone();
         let query = call
             .request
             .path
@@ -86,24 +86,15 @@ pub async fn register(
             .find(|(key, _)| key == "refs")
             .map_or_else(String::new, |(_, value)| value.into_owned());
         async move {
-            blocking(move || {
-                Ok(view::references(
-                    &store.items()?,
-                    &parser,
-                    &Seen::read(&store)?,
-                    listed.split(','),
-                ))
-            })
-            .await
-            .and_then(typed)
+            blocking(move || here.references(listed.split(',')))
+                .await
+                .and_then(typed)
         }
     });
 
-    let parser = references.clone();
-    let here = store.clone();
+    let here = lists;
     registry.register::<post_kuvo_work_queue_refs::Spec, _, _>(Access::Any, move |call| {
-        let store = here.clone();
-        let parser = parser.clone();
+        let here = here.clone();
         async move {
             let body: Value = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
             if let Some(text) = body["text"].as_str() {
@@ -112,11 +103,11 @@ pub async fn register(
                         "Only Kuvo Code on your Mac or iPhone can do this: agents change the Work Queue with their tools."));
                 }
                 let text = super::store::limit(text, 100_000);
-                return blocking(move || Ok(json!({"mentions":parser.mentions.find(&text)}))).await.and_then(typed);
+                return blocking(move || Ok(json!({"mentions":here.parser.mentions.find(&text)}))).await.and_then(typed);
             }
             blocking(move || {
                 let refs = super::store::array(body.get("refs")).iter().filter_map(Value::as_str);
-                Ok(view::references(&store.items()?, &parser, &Seen::read(&store)?, refs))
+                here.references(refs)
             }).await.and_then(typed)
         }
     });
@@ -196,6 +187,27 @@ struct Views {
 }
 
 impl Views {
+    fn references<'a>(&self, listed: impl IntoIterator<Item = &'a str>) -> Result<Value, Error> {
+        let local = self.store.items()?;
+        let seen = Seen::read(&self.store)?;
+        let others = told::items_elsewhere(
+            &self.store,
+            &local,
+            &self.peers.view(),
+            "all",
+            &Sessions::default(),
+            &[],
+            self.peers.now(),
+        )?;
+        Ok(view::references(
+            &local,
+            &others.items,
+            &self.parser,
+            &seen,
+            listed,
+        ))
+    }
+
     async fn read(&self, query: Arc<Query>) -> Result<Value, Refusal> {
         let here = self.clone();
         let key = self
@@ -212,6 +224,7 @@ impl Views {
                 &here.parser,
                 &Sessions::read(here.sessions.latest_record()),
                 here.setup.queue_setup().as_ref(),
+                &here.peers.view(),
             )
         })
         .await

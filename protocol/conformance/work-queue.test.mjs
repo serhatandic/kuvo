@@ -567,3 +567,52 @@ test("the main grants unique Work Queue numbers across two computers", { timeout
   assert.ok(grant);
   assert.ok(grant.to <= leases.leaseFor(setup.json.setup).high);
 });
+test("work queue views merge live and deleted rows by their owning computer", { timeout: 120000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const main = studio.connect(await studio.start().ready());
+  const setup = await main("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not obtain its number lease.");
+  const app = { "x-kuvo-from": "app" };
+  const enrollment = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(enrollment.status, 201, enrollment.text);
+  const joined = await lab.join(enrollment.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const items = "kuvo/work-queue/items";
+  const added = await member("POST", items, { operation: "told-from-lab", title: "Lab prototype" }, app);
+  assert.equal(added.status, 200, added.text);
+  const id = added.json.item.id;
+  const route = "kuvo/work-queue?owner=all&glance=1&counts=1";
+  const seen = await until(async () => {
+    const answer = await main("GET", route);
+    assert.equal(answer.status, 200, answer.text);
+    const item = answer.json.items.find(item => item.id === id);
+    return item && { view: answer.json, item };
+  }, "Studio did not receive the Lab queue.", 30000);
+  assert.equal(seen.item.computer.name, "Lab");
+  assert.equal(seen.view.counts.computers[seen.item.computer.key], 1);
+  const ref = await main("GET", `kuvo/work-queue/refs?refs=${id}`);
+  assert.equal(ref.status, 200, ref.text);
+  assert.equal(ref.json.refs[id].computer.name, "Lab");
+  const copy = JSON.parse(readFileSync(path.join(studio.home, "run", "work-queue", "peers", `${seen.item.computer.key}.json`), "utf8"));
+  assert.equal(copy.formatVersion, 1);
+  assert.equal(copy.items.find(item => item.id === id).title, "Lab prototype");
+  const deleted = await member("DELETE", `${items}/${id}`, undefined, app);
+  assert.equal(deleted.status, 200, deleted.text);
+  await until(async () => {
+    const answer = await main("GET", route);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.removed.some(item => item.id === id && item.computer.key === seen.item.computer.key)
+      && !answer.json.items.some(item => item.id === id);
+  }, "Studio did not receive the Lab deletion.", 30000);
+  const restored = await member("POST", `${items}/${id}/restore`, {}, app);
+  assert.equal(restored.status, 200, restored.text);
+  await until(async () => {
+    const answer = await main("GET", route);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.items.some(item => item.id === id && item.computer.key === seen.item.computer.key)
+      && !answer.json.removed.some(item => item.id === id);
+  }, "Studio did not receive the Lab restore.", 30000);
+});

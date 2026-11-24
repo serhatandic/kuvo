@@ -35,7 +35,7 @@ pub(super) fn shown(store: &Store, setup: Option<&QueueSetup>) -> Result<Vec<Que
     Ok(local(store, setup)?.library.labels)
 }
 
-fn clean_label(id: &str, name: &str, color: &str) -> Option<QueueLabel> {
+pub(super) fn clean_label(id: &str, name: &str, color: &str) -> Option<QueueLabel> {
     if !label_id(id) {
         return None;
     }

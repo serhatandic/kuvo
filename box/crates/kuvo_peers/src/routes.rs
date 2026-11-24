@@ -34,6 +34,7 @@ pub const FEATURES: &[&str] = &[
     "notices",
     "phones",
     "sessions.location",
+    crate::WORK_QUEUE_SNAPSHOTS,
 ];
 
 const NOT_READY: &str = "The session list isn’t ready.";
