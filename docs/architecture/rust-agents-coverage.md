@@ -213,6 +213,10 @@ an interruption never leaves a folder whose versions look installed. Two
 scenarios run it with a stand-in installer. The bridge has no tests of
 its own for this.
 
+The agent-slot store, the JSON-RPC connection (with its real-holder
+process test) and the runtime package installer passed on macOS, Linux
+(lokum), WSL2 and native Windows.
+
 ## TypeScript scenario inventory
 
 ### Holders, reload and repair

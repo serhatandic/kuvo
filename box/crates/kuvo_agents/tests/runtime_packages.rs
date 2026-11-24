@@ -110,7 +110,7 @@ async fn an_agents_packages_install_once_in_its_own_folder() {
     assert_eq!(run["beBun"], "1");
     assert_eq!(run["kept"], "yes");
     assert_eq!(run["install"], root.join("bun").to_str().unwrap());
-    assert_eq!(run["cache"], root.join("bun/install").to_str().unwrap());
+    assert_eq!(run["cache"], root.join("bun").join("install").to_str().unwrap());
     assert_eq!(
         run["manifest"],
         serde_json::json!({"name":"kuvo-agents-runtime","private":true,
