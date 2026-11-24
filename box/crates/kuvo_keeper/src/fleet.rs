@@ -15,7 +15,7 @@ use crate::{
     Command, Release, SELECTOR, execute,
     manifest::{ReleaseRef, SignedRelease, local_target, sha256},
     prepare_command::version_order,
-    read_record, staging, update_status,
+    read_record, retirement, staging, update_status,
 };
 
 const STAGE_WAIT: i64 = 300_000;
@@ -373,6 +373,7 @@ pub struct HeldPack {
     pub reference: ReleaseRef,
     pub size: usize,
     file: File,
+    _lease: Option<File>,
 }
 
 impl HeldPack {
@@ -403,7 +404,20 @@ impl HeldPack {
             .map(|target| (target.folder(home.root()), Some(target)))
             .chain(std::iter::once(bridge))
         {
-            let Some(text) = files::text_of(&folder.join("boxes.json")) else {
+            let manifest = folder.join("boxes.json");
+            if !manifest.is_file() {
+                continue;
+            }
+            let lease = match target
+                .as_ref()
+                .map(|release| retirement::share(home.root(), release))
+                .transpose()
+            {
+                Ok(lease) => lease,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error),
+            };
+            let Some(text) = files::text_of(&manifest) else {
                 continue;
             };
             let Ok(candidate) = Candidate::verify(text, key) else {
@@ -436,6 +450,7 @@ impl HeldPack {
                     reference,
                     file,
                     size: size as usize,
+                    _lease: lease,
                 }));
             }
         }
@@ -568,6 +583,8 @@ async fn download_once(
 
 #[cfg(unix)]
 async fn shell_switch(home: &Home, target: Release) -> io::Result<()> {
+    let _stage = kuvo_store::locks::try_file_lock(&home.run().join(".release-staging.lock"))?;
+    target.validate(home.root())?;
     // The detached keeper command must outlive the outgoing resident. Only
     // ask to keep workers after the keeper itself has confirmed compatibility.
     let root = home

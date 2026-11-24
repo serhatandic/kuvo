@@ -156,14 +156,25 @@ impl Drop for OwnedLock {
 
 /// Kernel-held lock for Rust-only writers. The lock file remains after release.
 pub fn try_file_lock(path: &Path) -> io::Result<File> {
-    let file = File::options()
+    let file = open_lock(path)?;
+    file.try_lock().map_err(io::Error::from)?;
+    Ok(file)
+}
+
+/// Hold a published resource open while readers are still using it.
+pub fn try_shared_file_lock(path: &Path) -> io::Result<File> {
+    let file = open_lock(path)?;
+    file.try_lock_shared().map_err(io::Error::from)?;
+    Ok(file)
+}
+
+fn open_lock(path: &Path) -> io::Result<File> {
+    File::options()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(path)?;
-    file.try_lock().map_err(io::Error::from)?;
-    Ok(file)
+        .open(path)
 }
 
 #[derive(Clone, Copy, Debug)]

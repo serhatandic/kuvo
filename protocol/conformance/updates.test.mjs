@@ -798,6 +798,13 @@ test("Rust prepares its target without changing the selected release and its kee
     assert.equal(called.status, 0, called.error?.message ?? called.stderr);
   }
   const initial = "versions/0.8.0-beta.1-000000000000";
+  const unused = path.join(home, "versions/0.7.1-111111111111");
+  const used = path.join(home, "versions/0.7.2-222222222222");
+  const unrelated = path.join(home, "versions/notes");
+  const priorRetirement = path.join(home, "versions/.retired-interrupted");
+  for (const folder of [unused, used, unrelated, priorRetirement]) write(path.join(folder, "marker"), "kept data");
+  const olderProgram = path.join(used, executable);
+  write(olderProgram, members[executable], { mode: 0o700 });
   const accountEntries = fs.readdirSync(env.HOME).sort();
   const tempEntries = fs.readdirSync(env.TMPDIR).sort();
   write(path.join(home, "folder-version.json"), '{"version":23}\n');
@@ -860,9 +867,36 @@ test("Rust prepares its target without changing the selected release and its kee
     assert.equal(fs.existsSync(installedEngine), false);
     assert.equal(fs.existsSync(path.join(home, "run/fleet-ready.json")), false);
     assert.equal(readJSON(serveRecord).generation, previous.generation);
+    const holderDir = path.join(home, "run/agents/retirement-fixture");
+    const holdOpen = path.join(home, "run/retirement-fixture-open");
+    write(holdOpen, "");
+    const id = "0123456789ab";
+    const holder = launch(olderProgram, ["hold", holderDir, id, "raw"], env, home, "pipe");
+    const finishHolder = () => fs.rmSync(holdOpen, { force: true });
+    t.after(async () => {
+      finishHolder();
+      await holder.stop();
+    });
+    holder.child.stdin.end(encode({ key: "fixture-only-key", spec: {
+      command: [process.execPath, "-e", 'setInterval(() => { if (!require("node:fs").existsSync(process.argv[1])) process.exit(0); }, 25);', holdOpen],
+      cwd: home, bridge: process.pid, orphan: 120000, linger: 100,
+    } }));
+    await until(() => fs.existsSync(path.join(holderDir, id + ".json")), () => holder.log());
+    assert.equal(fs.existsSync(unused), true, "failed preparation leaves existing releases alone");
     const start = performance.now();
     for (let retry = 0; retry < 2; retry++) {
       assert.deepEqual(update(signed), { result: "waiting", version });
+      assert.equal(fs.existsSync(unused), false, "a superseded release has been retired");
+      assert.equal(fs.existsSync(priorRetirement), false, "an interrupted retirement is swept");
+      assert.equal(fs.existsSync(path.join(unrelated, "marker")), true);
+      assert.equal(fs.existsSync(path.join(home, initial, executable)), true);
+      assert.equal(fs.existsSync(path.join(used, "marker")), retry === 0, "a running holder protects its own release");
+      if (retry === 0) {
+        assert.equal(holder.child.exitCode, null);
+        finishHolder();
+        await until(() => holder.child.exitCode !== null || holder.child.signalCode !== null, () => holder.log());
+        assert.equal((await holder.exited).code, 0, holder.log());
+      }
       assert.equal(fs.readFileSync(path.join(home, "active-release"), "utf8"), `${initial}/bin`);
       assert.equal(readJSON(serveRecord).generation, previous.generation);
       assert.deepEqual(readJSON(path.join(home, "run/fleet-ready.json")), { version, sha256: hash });

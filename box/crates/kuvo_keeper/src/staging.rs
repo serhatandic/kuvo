@@ -162,6 +162,9 @@ fn prepare_pack(
             &home.run().join("fleet-ready.json"),
             &serde_json::to_vec(&reference)?,
         )?;
+        if let Err(error) = crate::retirement::sweep(home, &release) {
+            eprintln!("Sweeping superseded Kuvo releases: {error}");
+        }
     }
     Ok(reference)
 }
