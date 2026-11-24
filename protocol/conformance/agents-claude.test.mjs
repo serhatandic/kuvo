@@ -69,6 +69,42 @@ test("Claude accepts a pasted sign-in code, then offers that account's models", 
   });
 });
 
+/** Signs Claude Code in with a pasted code, as you would on a computer you reach remotely. */
+async function signInClaude(listener) {
+  const started = await request(listener, "POST", oauth, { methodID: "claudeai", remote: true }, headers, 20000);
+  assert.equal(started.status, 200, started.text);
+  const { attemptID } = started.json.data;
+  const done = await request(listener, "POST", `${oauth}/${attemptID}/complete`, { code: "fixture-code" }, headers);
+  assert.equal(done.status, 200, done.text);
+  await until(async () => (await request(listener, "GET", `${oauth}/${attemptID}`, undefined, headers)).json?.data?.status === "complete",
+    "The Claude sign-in did not finish.");
+}
+
+test("signed out, the Claude Code a conversation has open goes: its next message starts another", { timeout: 90000 }, async t => {
+  const session = "ses_claude_signed_out";
+  const route = `kuvo/agents/api/session/${session}`;
+  await withClaude(t, { signedIn: false, turns: true }, async (listener, _home, env) => {
+    const heard = () => fs.readFileSync(path.join(env.HOME, "claude-heard.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+    const took = text => heard().find(line => line.type === "user" && line.message?.content?.some(part => part.text?.startsWith(text)))?.pid;
+    const answered = async (id, text, turns) => {
+      const sent = await request(listener, "POST", route + "/prompt", { id, text }, headers, 45000);
+      assert.equal(sent.status, 200, sent.text);
+      await until(async () => (await transcript(listener, route)).filter(row => row.type === "idle").length === turns,
+        "The Claude fixture did not finish its turn.");
+    };
+    await signInClaude(listener);
+    await answered("msg_signed_out_first", "first", 1);
+    const out = await request(listener, "POST", "kuvo/agents/api/integration/claude-code/disconnect", {}, headers, 20000);
+    assert.equal(out.status, 200, out.text);
+    await signInClaude(listener);
+    await answered("msg_signed_out_again", "again", 2);
+    assert.ok(took("first") && took("again"));
+    assert.notEqual(took("again"), took("first"));
+    const rows = await transcript(listener, route);
+    assert.equal(rows.filter(row => row.type === "idle").at(-1).outcome, "succeeded");
+  }, home => seedSession(home, session));
+});
+
 test("a new Claude account starts a new probe, and an old probe can't change its models", { timeout: 90000 }, async t => {
   await withClaude(t, { signedIn: false }, async (listener, _home, env) => {
     const offered = async (query = "?refresh=1") => {
@@ -76,15 +112,7 @@ test("a new Claude account starts a new probe, and an old probe can't change its
       assert.equal(answer.status, 200, answer.text);
       return answer.json.models.filter(model => model.providerID === provider).map(model => model.id).sort();
     };
-    const signIn = async () => {
-      const started = await request(listener, "POST", oauth, { methodID: "claudeai", remote: true }, headers, 20000);
-      assert.equal(started.status, 200, started.text);
-      const { attemptID } = started.json.data;
-      const done = await request(listener, "POST", `${oauth}/${attemptID}/complete`, { code: "fixture-code" }, headers);
-      assert.equal(done.status, 200, done.text);
-      await until(async () => (await request(listener, "GET", `${oauth}/${attemptID}`, undefined, headers)).json?.data?.status === "complete",
-        "The Claude sign-in did not finish.");
-    };
+    const signIn = () => signInClaude(listener);
     const catalog = value => write(path.join(env.HOME, "claude-catalog.json"), JSON.stringify(value));
     const marked = name => fs.existsSync(path.join(env.HOME, name));
     const model = (value, displayName) => ({ value, resolvedModel: `claude-${value}`, displayName });
