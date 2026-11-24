@@ -47,6 +47,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U31 | The main receives a member's fixable failure and rejects a retry for a stale digest. After the main has switched, it can still request a retry for the member's signed target over authenticated mail. The member retries and the main's own failure record stays untouched. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U32 | The computers list reports the local failure with its signed target version and digest, the current release, and whether retry is available. The list and retry replies use the same row shape and wording. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U33 | The main's computers list reports the reachable member's failure with the version and digest of the signed pack for that member's platform. The row shows the member's current release and offers a retry for the matching target. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U34 | The computers list shows getting ready and ready from the live preparation, then up to date for a confirmed computer and off for one awaiting return. The selected signed release on trial shows switching while the previous release remains current. Once the keeper clears the trial, the row shows the installed version and digest. Passed on Mac, native Linux, WSL2, and native Windows. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -293,9 +294,15 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, ahead member offers its version | U28 covers receiving the signed offer, pulling the member's retained pack and switching. The member's up-to-date row is part of the row-progress work below. | 7.2 |
 | Same, Update Now chooses the immediate candidate | Partial. An explicit check bypasses the automatic release age rule. U20 verifies that an authenticated member request starts the check. A newly published release still needs a full switch scenario. | 7.2 |
 | Same, progress summary remains while switching and after settlement | Open. | 7.2 |
-| Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover the failure rows. Preparation, ready, switching, away and up-to-date states remain open. | 7.2 |
+| Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover retryable failure rows. U34 covers getting ready, ready, switching, off and up to date. Reporting an unfixable preparation refusal remains open. | 7.2 |
 | Same, pull progress never moves back | Open. | 7.2 |
 | Same, member asks main to check | Covered by U20. | — |
+| [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | Partial. U34 checks the signed trial boundary and the ready, switching, and confirmed wordings. Exact restart grace and expiry through relay remain open. | 7.2 |
+| Same, local box says it is switching and ready reads separately from done | Covered by U34. | — |
+| Same, preparation fraction is visible in local and peer rows | Open. | 7.2 |
+| Same, off row reports when it was last heard from | Partial. U34 checks one never heard from. Exact seen-time wordings remain open. | 7.2 |
+| Same, notifier stays while restarting, phases and words, ten-minute settled display | Open. | 7.2 |
+| Same, verified kept pack is announced | Partial. U8–U9 cover signed manifest selection, prepared facts, and authenticated delivery from a new main. The kept-pack announcement boundary remains open. | 7.2 |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |
 | Same, Helper starts the new code after the resident exits | Partial. 7.1 dispatches Helper `serve` to a Rust pack. Live Helper update remains open. | 6.2, 7.2, 9.3 |
 | [update-switch](../../box/test/update-switch.test.ts), broken route probe and beta.35 switch | Covered in scope. U4 rejects a signed pack whose Rust program fails the self-test. U10 checks a live switch with the transition-capable beta. The historical beta.35 switch is outside the scope of section 4. | — |

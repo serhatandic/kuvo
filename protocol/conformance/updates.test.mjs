@@ -364,7 +364,8 @@ test("the main can ask a reachable member to retry its failed fleet download", {
   write(path.join(main.home, "active-release"), `${release}/bin`);
   const row = await until(async () => {
     const answer = await request(first, "GET", "kuvo/computers");
-    return answer.status === 200 && answer.json.computers.find(row => row.key === key)?.fleetUpdate;
+    const update = answer.json?.computers?.find(row => row.key === key)?.fleetUpdate;
+    return answer.status === 200 && update?.state === "cannot" && update;
   }, "the member row must show the signed failure");
   assert.deepEqual(row, {
     current: "0.8.0-beta.1", target: version, targetSha256: hash, state: "cannot",
@@ -398,12 +399,52 @@ test("the computers list shows a retryable failure for the signed fleet target",
   const { reason } = readJSON(failed);
   const progress = await until(async () => {
     const answer = await request(resident, "GET", "kuvo/computers");
-    return answer.status === 200 && answer.json.computers.find(row => row.here)?.fleetUpdate;
+    const update = answer.json?.computers?.find(row => row.here)?.fleetUpdate;
+    return answer.status === 200 && update?.state === "cannot" && update;
   }, "the computer row must include the retryable failure");
   assert.deepEqual(progress, {
     current: installed, target: version, targetSha256: hash, state: "cannot",
     reason, fixable: true, canRetry: true,
     line: { words: `beta.1 · ${reason}`, tone: "warning", short: "Can’t update" },
+  });
+});
+
+test("the computers list shows a signed release on trial before it reports completion", { timeout: 45000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { computer } = await bench(t);
+  const here = await computer("Standalone", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const { version, hash, signed, updateEnv } = await failedFleetDownload(t);
+  const installed = "0.8.0-beta.1";
+  write(path.join(here.home, "bin/box-version"), installed + "\n");
+  const resident = await here.start(binary, updateEnv).ready();
+  const rowInState = state => until(async () => {
+    const answer = await request(resident, "GET", "kuvo/computers");
+    const row = answer.json?.computers?.[0]?.fleetUpdate;
+    return row?.state === state && row;
+  }, `the computers list must show ${state}`);
+  await rowInState("cannot");
+
+  // Hold the keeper's publication at its trial boundary until the resident describes it.
+  const release = `versions/${version}-${hash.slice(0, 12)}`;
+  const previous = path.join(here.home, "run/previous");
+  write(path.join(here.home, release, "boxes.json"), signed);
+  write(previous, `versions/${installed}-000000000000/bin`);
+  write(path.join(here.home, "active-release"), `${release}/bin`);
+  const switching = await rowInState("updating");
+  assert.deepEqual(switching, {
+    current: installed, target: version, targetSha256: hash, state: "updating", stage: "switching", canRetry: false,
+    line: { words: `Switching to ${version}…`, tone: "working", phase: "switching" },
+  });
+
+  fs.unlinkSync(previous);
+  const done = await rowInState("up-to-date");
+  assert.deepEqual(done, {
+    current: version, currentSha256: hash, target: version, targetSha256: hash, state: "up-to-date", canRetry: false,
+    line: { words: `${version} · Up to date`, tone: "done", phase: "done" },
   });
 });
 
@@ -919,6 +960,14 @@ Buffer.from = function (value, encoding, ...args) {
   const active = peer => shell(peer)
     ? fs.readlinkSync(path.join(peer.home, "bin"))
     : fs.readFileSync(path.join(peer.home, "active-release"), "utf8");
+  const checkRows = failover || (shellKeepers && !stageDeadline);
+  const rows = async peer => {
+    try {
+      const resident = readJSON(path.join(peer.home, "run/serve.json"));
+      const answer = await request(resident, "GET", "kuvo/computers");
+      return Object.fromEntries(answer.json.computers.map(row => [row.name, row.fleetUpdate]));
+    } catch { return {}; }
+  };
   const staged = peer => fs.existsSync(path.join(peer.home, "run/fleet-ready.json"));
   const confirmed = peer => active(peer) === selected && !fs.existsSync(path.join(peer.home, "run/previous"));
   const diagnose = () => [...keepers.keys()].map(peer => {
@@ -974,6 +1023,19 @@ Buffer.from = function (value, encoding, ...args) {
     assert.equal(active(member), initial(member));
     assert.equal(active(away), initial(away));
     t.diagnostic(`first preparation in ${Math.round(performance.now() - began)} ms`);
+    if (checkRows) {
+      const [preparing, ready] = await until(async () => {
+        const found = await rows(main);
+        const pair = [found.Studio, found.Lab].sort((a, b) => (a?.state ?? "").localeCompare(b?.state ?? ""));
+        return pair[0]?.state === "getting-ready" && pair[1]?.state === "ready" && pair;
+      }, "the computers list must show one ready computer and one still preparing");
+      for (const row of [preparing, ready]) {
+        assert.deepEqual([row.current, row.target, row.targetSha256, row.canRetry],
+          ["0.8.0-beta.1", version, hash, false]);
+      }
+      assert.deepEqual(preparing.line, { words: "Getting ready…", tone: "working", phase: "getting-ready" });
+      assert.deepEqual(ready.line, { words: `Ready for ${version}`, tone: "done", phase: "ready" });
+    }
 
     await reply("turn before release switch");
     if (shellKeepers) await runningTurn();
@@ -1024,6 +1086,16 @@ Buffer.from = function (value, encoding, ...args) {
     await reply("same turn after release switch");
     if (shellKeepers) await runningTurn();
     assert.equal(active(away), initial(away));
+    if (checkRows) {
+      const { Lab: current, Away: offline } = await until(async () => {
+        const found = await rows(leader);
+        return found.Lab?.state === "up-to-date" && found.Away?.state === "off" && found;
+      }, "after confirmation the computers list must show the updated and offline computers");
+      assert.deepEqual([current.current, current.currentSha256, current.target, current.targetSha256],
+        [version, hash, version, hash]);
+      assert.deepEqual(current.line, { words: `${version} · Up to date`, tone: "done", phase: "done" });
+      assert.deepEqual(offline.line, { words: "Can’t be reached: updates when it’s back", tone: "off", phase: "off" });
+    }
     t.diagnostic(`online member confirmed ${Math.round(performance.now() - released)} ms after its download resumed`);
 
     const returned = performance.now();
