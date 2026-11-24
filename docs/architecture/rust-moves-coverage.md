@@ -18,6 +18,7 @@ for addressed work and receipt lookup.
 | Live transfer | Two Rust residents move a chat, its child, a paused queue, an ordinary note and a replay fence in each direction between the main computer and a member. The former computer's outbox still names its old owner. The letter reaches the new owner once. The TypeScript reference runs the same transfer and checks the records it leaves. |
 | Lost part, arrival and switch replies | The relay holds the live Rust transfer's first packets for `check`, `checked`, `offer`, `ready`, `part`, `got`, `working`, `arrive`, `arrived`, `switch` and `switched`. The source resends the part whose acknowledgement was lost, and retries arrival after a minute. The destination restarts after committing the switch. The source reconnects and recovers the acknowledgement through its next scheduled switch retry. |
 | Lost part window | Both residents lose the first 16 parts, then retry the first eight and complete the transfer with the whole transcript. |
+| Retry clocks | The Rust resident resumes a switch whose saved timestamp is ahead of its clock. A steady wall clock still allows the next minute's retry, and a backward jump prompts another retry of the same authenticated switch. The part window uses monotonic time separately. The TypeScript reference covers both clocks. |
 | Interrupted import | The engine accepts the import but its reply is cut short by a destination restart. The destination deletes just that copy using the import receipt. The source keeps its original and reports failure. |
 | Partial copy | A restarted destination finishes the live transfer using the part it saved earlier. After a week an incomplete copy can be removed with a durable drop decision. A complete two-computer copy still waits for its switch decision. |
 | Replacement offer | Both residents let the same authenticated sender replace its incomplete copy under a new move ID, retain a durable drop decision for the old ID, and require an explicit drop of a complete copy before accepting its replacement. |
@@ -124,8 +125,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Sixty-four have full scenario coverage, 23 have partial proof,
-and 125 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Sixty-five have full scenario coverage, 23 have partial proof,
+and 124 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -172,6 +173,7 @@ separately where they appear.
 | | 36 | Covered by the authenticated oversized offer, exact refusal and empty destination. |
 | | 37 | Covered by the source and recipient listing the named computers while a two-part transfer is held between acknowledgements. |
 | | 39 | Covered by a live source whose durable switch is unanswered for 90 seconds and whose repeated switch later recovers the destination receipt. |
+| | 40 | Covered by authenticated switch retries with a future saved time, a steady wall clock and a backward jump. The part-window test checks monotonic retry deadlines. |
 | | 41–42 | Covered by an incomplete copy waiting after 90 seconds and a complete copy waiting after 150 seconds, and by clearing a waiting announcement when the peer answers again. |
 | | 45 | Partial, a live chat returns to the same computer and discards the earlier move's backup. The pre-activation retention and timed cleanup checks remain 2.4. |
 | | 50, 52 | Partial, the receiver refuses an unavailable OpenCode provider before the source holds its work and permits a retry after sign-in. Native coding-agent preflight and replacement account notes remain 2.4 and 4.6. |
@@ -179,7 +181,7 @@ separately where they appear.
 | | 48 | Covered by move choices that count a chat’s delegated work and unanswered questions, including a second level of work. |
 | | 53–54 | Native account fallback is owned by 4.6. Bot key handling is owned by 5.1 with native carry in 4.6. |
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
-| | 1, 3–4, 7, 10–11, 21, 23, 32, 35, 38, 40, 51 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
+| | 1, 3–4, 7, 10–11, 21, 23, 32, 35, 38, 51 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |

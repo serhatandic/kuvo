@@ -1697,3 +1697,110 @@ async fn incomplete_and_complete_copies_wait_on_different_deadlines() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn switch_retry_survives_wall_clock_changes() {
+    use kuvo_engine::{Engine, Timing};
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        ownership::{Handle, SetupState},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use serde_json::Value;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+
+    async fn next_switch(wire: &mut TestRelay) -> Value {
+        loop {
+            let sent = wire.binary().await;
+            if sent.get(1..17) != Some(PEER_ADDRESS.as_slice()) {
+                continue;
+            }
+            if let Some((Kind::Mail, _, bytes)) = frames::read_frame(&sent[17..]) {
+                let mail = Envelope::open(bytes, &PEER_KEY, &public(RUST_KEY)).unwrap();
+                if let Some(movement) = mail.0.get("move")
+                    && movement["op"] == "switch"
+                {
+                    return movement.clone();
+                }
+            }
+        }
+    }
+
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let home = tempfile::tempdir().unwrap();
+        let (relay, mut wire) = TestRelay::connect().await;
+        let here = public(RUST_KEY);
+        let peer = public(PEER_KEY);
+        let clock = Arc::new(AtomicI64::new(1_000_000));
+        let id = "mov_clockSwitch";
+        let hash = encode(&[13; 32]);
+        let journal = home.path().join(format!("run/moves/{id}.json"));
+        let saved = json!({
+            "formatVersion": 1, "id": id, "kind": "chat", "thing": "ses_clockSwitch",
+            "name": "Clock switch", "from": encode(&here), "to": encode(&peer), "peer": encode(&peer),
+            "role": "from", "stage": "switching", "step": "switch", "sessions": ["ses_clockSwitch"],
+            "started": 920_000, "switchSince": 950_000, "sentAt": 1_050_000, "generation": 1, "hash": hash,
+        });
+        files::write_atomic(&journal, &serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut resident = ResidentPeers::start(
+            home.path(),
+            Roster {
+                here: Some(here),
+                main: Some(here),
+                name: "Source".into(),
+                members: vec![Member {
+                    key: peer,
+                    address: Some(PEER_ADDRESS),
+                    name: "Destination".into(),
+                    kind: ComputerKind::Machine,
+                }],
+            },
+            Some(relay),
+            None,
+            false,
+            {
+                let clock = clock.clone();
+                Arc::new(move || clock.load(Ordering::Relaxed))
+            },
+        )
+        .await
+        .unwrap();
+        let devices = Devices::load(home.path(), "Source".into(), ComputerKind::Machine)
+            .await
+            .unwrap()
+            .devices;
+        let owner = Handle::new(resident.reader(), resident.relay_handle(), devices, SetupState::default);
+        let engine = Engine::new(home.path().to_owned(), Default::default(), Timing::default()).unwrap();
+        resident.attach_moves(engine, owner).await.unwrap();
+
+        let first = next_switch(&mut wire).await;
+        assert_eq!(first["id"], id);
+        assert_eq!(first["hash"], hash);
+        assert_eq!(first["generation"], 1);
+        let sent_at = || serde_json::from_slice::<Value>(&std::fs::read(&journal).unwrap()).unwrap()["sentAt"].clone();
+        assert_eq!(sent_at(), 1_000_000);
+
+        tokio::time::pause();
+        clock.store(1_000_001, Ordering::Relaxed);
+        assert!(tokio::time::timeout(Duration::from_secs(10), next_switch(&mut wire)).await.is_err());
+        assert_eq!(sent_at(), 1_000_000);
+        wire.send(vec![0]).await;
+        tokio::time::advance(Duration::from_secs(52)).await;
+        assert_eq!(next_switch(&mut wire).await, first);
+        assert_eq!(sent_at(), 1_000_001);
+        assert!(tokio::time::timeout(Duration::from_secs(1), next_switch(&mut wire)).await.is_err());
+
+        clock.store(990_000, Ordering::Relaxed);
+        wire.send(vec![0]).await;
+        assert_eq!(tokio::time::timeout(Duration::from_secs(6), next_switch(&mut wire)).await.unwrap(), first);
+        assert_eq!(sent_at(), 990_000);
+    })
+    .await
+    .unwrap();
+}
