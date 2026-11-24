@@ -330,11 +330,16 @@ test("Rust prepares its target without changing the selected release and its kee
     files: Object.fromEntries(Object.entries(members).map(([name, bytes]) => [name, digest(bytes)])),
     [system]: { [architecture]: engine.build },
   }));
+  const archive = (tree, name) => {
+    const tar = path.join(release, `${name}.tar`);
+    const archived = spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { encoding: "utf8", timeout: 90000 });
+    assert.equal(archived.status, 0, archived.stderr);
+    const bytes = gzipSync(fs.readFileSync(tar), { level: 1 });
+    write(path.join(release, `${name}.tar.gz`), bytes);
+    return digest(bytes);
+  };
   const file = path.join(release, "target.tar.gz");
-  const archived = spawnSync("tar", ["cf", path.join(release, "target.tar"), "-C", packRoot, "box.json", "bin"], { encoding: "utf8", timeout: 90000 });
-  assert.equal(archived.status, 0, archived.stderr);
-  write(file, gzipSync(fs.readFileSync(path.join(release, "target.tar")), { level: 1 }));
-  const hash = digest(fs.readFileSync(file));
+  const hash = archive(packRoot, "target");
   const legacy = path.join(release, "legacy.tar.gz");
   write(legacy, "pack");
   const signer = fileURLToPath(new URL("../../scripts/sign-box.mjs", import.meta.url));
@@ -405,6 +410,21 @@ test("Rust prepares its target without changing the selected release and its kee
     assert.equal(fs.existsSync(installedEngine), false);
     assert.equal(fs.existsSync(path.join(home, "run/fleet-ready.json")), false);
     assert.equal(fs.existsSync(prepared), false);
+    const brokenRoot = path.join(release, "failed-probe");
+    const broken = process.platform === "win32" ? fs.readFileSync(process.execPath) : Buffer.from("#!/bin/sh\nexit 1\n");
+    write(path.join(brokenRoot, executable), broken, { mode: 0o700 });
+    write(path.join(brokenRoot, "bin/box-version"), members["bin/box-version"]);
+    const contents = readJSON(metadata);
+    contents.files[executable] = digest(broken);
+    write(path.join(brokenRoot, "box.json"), encode(contents));
+    const unusable = { url: "https://example.invalid/failed-probe.tar.gz", sha256: archive(brokenRoot, "failed-probe") };
+    const unusableRelease = envelope({ ...manifest, packs: { ...manifest.packs, [target]: unusable } }, key);
+    const brokenResult = update(unusableRelease);
+    assert.equal(brokenResult.result, "failed");
+    assert.match(brokenResult.message, /The new box doesn't run with its engine here\./);
+    assert.equal(fs.existsSync(installedEngine), false);
+    assert.equal(fs.existsSync(path.join(home, "run/fleet-ready.json")), false);
+    assert.equal(readJSON(serveRecord).generation, previous.generation);
     const start = performance.now();
     for (let retry = 0; retry < 2; retry++) {
       assert.deepEqual(update(signed), { result: "waiting", version });
@@ -415,7 +435,7 @@ test("Rust prepares its target without changing the selected release and its kee
       assert.equal(digest(fs.readFileSync(path.join(prepared, executable))), digest(members[executable]));
     }
     t.diagnostic(`prepared and retried in ${Math.round(performance.now() - start)} ms`);
-    assert.equal(fs.readFileSync(engine.calls, "utf8"), "download\ndownload\n");
+    assert.equal(fs.readFileSync(engine.calls, "utf8"), "download\ndownload\ndownload\n");
     assert.equal(digest(fs.readFileSync(installedEngine)), digest(fs.readFileSync(engine.engine)));
     const selected = `versions/${path.basename(prepared)}/bin`;
     const switching = performance.now();
