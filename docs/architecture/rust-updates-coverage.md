@@ -218,6 +218,12 @@ test returned the computer in 11.9 seconds, including a failed first keeper
 start and the automatic retry. Reservation and staging cleanup took another
 45 milliseconds. With the first launch refused and the retry missing, the
 old build never started the selected Rust keeper.
+The full run on that Linux build passed 14 checks in 124.2 seconds. Both
+released machine homes moved in 4.3 seconds each. The Mac caller with the
+same signed test release sent a distinct Linux target pack over the scratch
+SSH transport to Ubuntu 24.04 under WSL2. After the forced first launch
+failure, the computer answered in 33.2 seconds. The reservation and staging
+cleared 304 milliseconds later, and its identity and saved work stayed.
 
 ## TypeScript reference cases
 
