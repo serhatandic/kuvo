@@ -68,6 +68,13 @@ up the returning computer in 24.1 seconds from the feed. With the feed
 returning 404, the Rust computer confirmed in 68.1 seconds using the main's
 retained pack, and the returning TypeScript beta confirmed in 52.3 seconds.
 The TypeScript fixture uses the checkout's transition-capable bundle.
+The deployed 0.8.0-beta.48 bundle and keeper from `44d71568d` took the same
+signed pack from the Rust main over the relay. The updater refused it 41.6
+seconds after boot with “The new link doesn't work with it here.” The beta.48
+selection stayed active. Its updater runs fixed JavaScript probes and reads
+the legacy `pack` descriptor. The fixture used a Bun preload to substitute
+the public verification key for both the original resident and its detached
+updater. The copied bundle and keeper came unchanged from the revision.
 The v0.7.2 move took 44.0 seconds and the beta.1 move took 27.0 seconds.
 Their Helper restarts took 0.8 and 1.1 seconds through the launchctl
 stand-in. Those timings exclude generation of the golden homes.
@@ -99,6 +106,26 @@ took over in 27.1 seconds from boot with the lease clock advanced, and it
 confirmed 22.9 seconds after its download resumed. The returning computer
 confirmed in 90.1 seconds via the new main. The check includes lease and
 stage records in its failure output.
+
+The following macOS run passed 22 checks and skipped the TypeScript-only
+prepare check. First preparation took 27.8 seconds in the shell-keeper
+scenario. Its main and member confirmed 39.1 and 44.0 seconds after the
+download resumed, and the returning Rust computer took 28.9 seconds. The
+failover fixture took 36.7 seconds to prepare, 39.0 seconds from boot to take
+the lease with the test clock advanced, and 29.1 seconds from the resumed
+download to confirm. The returning computer confirmed in 68.1 seconds.
+The transition-capable TypeScript computer confirmed in 43.1 seconds.
+The v0.7.2 and beta.1 moves took 42.7 and 38.4 seconds through `kuvo-install`,
+with Helper restarts taking 1.1 and 0.9 seconds. The TypeScript conformance
+area passed its seven cases. In the differential run, `kuvo/update` and the
+machine's Stop refusal matched. The other runtime inventory had 80 differences.
+
+The following native Windows run passed seven checks. Preparing and retrying
+took 9.5 seconds, and selection took 2.5 seconds. The failover fixture prepared
+in 4.8 seconds, changed main in 6.2 seconds from boot with the test clock
+advanced, confirmed in 5.8 seconds after the download resumed, and caught up
+the returning computer in 14.1 seconds. The fixture resolved the llvm-mingw
+runtime DLL from the scratch folder for every executable copy.
 
 ## TypeScript reference cases
 

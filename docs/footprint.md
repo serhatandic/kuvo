@@ -16,6 +16,9 @@ Kuvo Code must never spread files across the user's Mac or their machines. Every
 - **Organized inside**: a folder per kind (`engine/<version>`, `browser/<build>`, `bin`, `run`, `keys`, `bots`, `groups`, `trash`), the active `bin` symlink selecting `versions/<version>-<sha12>/bin`, and
   `run/previous` recording the rollback target. A staged release can sit beside
   the running release. Older installations may still have a real `bin` directory.
+  A staged Rust release keeps its signed manifest and archive in its version's
+  folder beside `bin`. The running computer can send that archive to one of
+  your other computers through the relay, including after the feed drops it.
   The active box also keeps its engine data under the keeper's `XDG_DATA_HOME`,
   with bridge and group stores in the box home.
 - **Removing the folders removes everything**: `uninstall.md` and `privacy.md` list them all; anything new keeps that true and updates them. After a change, list what's new in the computer's home folder and `/tmp`.
