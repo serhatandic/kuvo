@@ -70,7 +70,9 @@ function linger(spec) {
   const script = pathOf.join(${JSON.stringify(root)}, "claude-linger.cjs");
   fs.writeFileSync(script, "const fs = require('node:fs'); const spec = JSON.parse(process.argv[2]);" +
     "const say = () => fs.write(2, spec.stderr || '', () => { fs.appendFileSync(spec.heard, JSON.stringify({ lingered: spec.stderr || '' }) + String.fromCharCode(10)); process.exit(0); });" +
-    "const wait = () => (!spec.go || fs.existsSync(spec.go)) ? setTimeout(say, spec.after || 0) : setTimeout(wait, 20);" +
+    // (A case that ends before it's told to go leaves it no reason to stay: it goes within a minute.)
+    "const begun = Date.now();" +
+    "const wait = () => (!spec.go || fs.existsSync(spec.go)) ? setTimeout(say, spec.after || 0) : Date.now() - begun > 60000 ? process.exit(0) : setTimeout(wait, 20);" +
     "wait();");
   // (A Windows process outlives the one that started it without being detached, which would cut it
   // off from the error output it's to hold.)
