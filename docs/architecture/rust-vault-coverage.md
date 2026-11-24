@@ -148,9 +148,10 @@ this row. Installed Helper cases still need the released supervision path.
   restart, setting changes that affect pending asks, Mac Helper recovery
   and signed-file failure cases. Completed command replay is covered. Browser launch and site recheck
   belong to 6.4.
-- The app-owned Mac wipe depends on 2.3's signed prepared-wipe admission,
-  Helper shutdown and the post-detach identity-removal callback. The Rust
-  headless wipe gate rejects the Mac layout before that callback can run.
+- The app-owned Mac wipe has a vault operation for the 2.3 callback. The
+  disposable Keychain test checks removal before detach, removal and retry
+  after detach, refusal outside App Support and preservation of a neighboring
+  app's service. The prepared-wipe and shutdown path calls it through 2.3c.
 - The stock differential runner also compares unrelated resident-owned
   files. Read the vault route and storage path results alongside the
   complete comparison.
