@@ -72,6 +72,7 @@ Intel Mac: checked without running; a real run waits for an Intel Mac.
 | U53 | The release dry run builds the five target programs and assembles and signs them separately from the desktop release. A local replay packaged all five binaries, checked every signed archive digest and file list, and prepared the matching release on Mac arm64, native Linux x64, WSL2, and native Windows x64. Static checks verified the Intel-only box executable, its universal ad-hoc signed Helper, and the static Linux arm64 executable. |
 | U54 | During the shell-keeper fleet switch, the main Mac retains the anonymous and named launcher markers from older clients. It confirms the signed release and reports an unblocked updater with the same marker bytes. The TypeScript launcher-marker reference also passed. |
 | U55 | Fresh installer status checks the pinned engine download without writing files. Corrupt bytes and an unavailable download give the TypeScript failures. With an earlier executable already installed, status answers offline without a download. Restored media passes and installs on Mac, native Linux, and WSL2. Native Windows passes the signed installer status cases. |
+| U56 | A computer announces the verified candidate and its prepared digest while it still reports its current release. The peer receives the original signed envelope, and the retained archive matches that digest. Passed on Mac, native Linux, WSL2, and native Windows. The TypeScript reference also passed. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -333,7 +334,7 @@ dependencies.
 | Same, preparation fraction is visible in local and peer rows | Covered by U38. | — |
 | Same, off row reports when it was last heard from | U34 checks one never heard from, U39 checks a quiet trial's expiry, and U45 checks last-heard wording and a peer without update facts. | — |
 | Same, notifier stays while restarting, phases and words, ten-minute settled display | U35 covers the live summary and saved settlement across restart. The exact peer restart grace remains part of the reach cases above. | 7.2 |
-| Same, verified kept pack is announced | Partial. U8–U9 cover signed manifest selection, prepared facts, and authenticated delivery from a new main. The kept-pack announcement boundary remains open. | 7.2 |
+| Same, verified kept pack is announced | U56 compares the remote announcement with the retained verified pack before activation. U8–U9 cover authenticated delivery after selection. | — |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |
 | Same, Helper starts the new code after the resident exits | Partial. 7.1 dispatches Helper `serve` to a Rust pack. Live Helper update remains open. | 6.2, 7.2, 9.3 |
 | [update-switch](../../box/test/update-switch.test.ts), broken route probe and beta.35 switch | Covered in scope. U4 rejects a signed pack whose Rust program fails the self-test. U10 checks a live switch with the transition-capable beta. The historical beta.35 switch is outside the scope of section 4. | — |

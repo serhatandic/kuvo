@@ -1410,6 +1410,20 @@ Buffer.from = function (value, encoding, ...args) {
       assert.deepEqual([summary.shown, summary.phase, summary.done, summary.updating, summary.behind,
         summary.title, summary.detail],
         [true, "getting-ready", 1, 1, 1, `Getting ${version} ready · 1 of 3`, "Your computers stay on beta.1 meanwhile."]);
+      const prepared = staged(main) ? main : member;
+      const watching = prepared === main ? member : main;
+      const seen = path.join(watching.home, "run/peer-agents.json");
+      const facts = await until(() => {
+        if (!fs.existsSync(seen)) return;
+        return Object.values(readJSON(seen)).find(entry => entry.computer?.staged?.sha256 === hash)?.computer;
+      }, "the other computer must receive the prepared release announcement");
+      assert.deepEqual(facts.staged, { version, sha256: hash });
+      assert.equal(facts.kuvo, versionBefore(prepared));
+      assert.equal(facts.runningManifest, undefined);
+      assert.deepEqual(JSON.parse(facts.releaseManifest), signedTarget());
+      const retained = path.join(prepared.home, selected, "..");
+      assert.deepEqual(readJSON(path.join(retained, "boxes.json")), signedTarget());
+      assert.equal(digest(fs.readFileSync(path.join(retained, "pack"))), hash);
     }
 
     await reply("turn before release switch");
