@@ -126,7 +126,7 @@ Case numbers use the order in the cited source file.
 | [toolrelay](../../box/test/agents/toolrelay.test.ts), 9, and [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 4.1c owns persisted address and keys, session attribution, reconnect and cancel, and engine tool registration. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
 | [sessions](../../box/test/agents/sessions.test.ts), 158 | Shared agent session store, queue, and event projection → 4.1b. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
-| [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 134, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |
+| [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 136, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |
 | [agent-tools.test.js](../../box/bridge-tests/agent-tools.test.js), [artifacts](../../box/test/artifacts.test.ts), [subagents](../../box/test/agents/subagents.test.ts), [carry-agents](../../box/test/agents/carry-agents.test.ts), [to-agents](../../box/bridge-tests/to-agents.test.js) and [agents-handover](../../box/bridge-tests/agents-handover.test.js) | Agent registration and tools dispatch share 4.1b/c. Tool handler semantics span 2.4 ownership and messages, 4.6 subagents and transfers, 5.1 starts and bot work, 5.5 artifacts, and 6.1 permissions. |
 | Agent account imports in [usage tests](../../box/test/usage), and [settings-agents-live](../../box/bridge-tests/settings-agents-live.test.js) | 5.4 owns usage and limits. 6.1 owns the engine Agents settings file and the live engine settings page. Both consume 4.1b account state. |
 
@@ -151,3 +151,80 @@ The saved-home checks for the account index, agent sessions and legacy
 `run/agents.json` projection remain in 4.1b. Authenticated vendor runs, live
 resident adoption during a fleet rollout, route-level differential comparison,
 and golden-home compatibility are still open.
+
+## Claude Code (4.4)
+
+4.4a covers account discovery, native sign-in and the model catalog. The
+[agents-claude conformance cases](../../protocol/conformance/agents-claude.test.mjs)
+use the same Claude CLI stand-in with both residents. They exercise a signed-out
+account, code submission and confirmation, account-specific default models,
+a retained Console directory, and replacement of a saved setup token after
+native sign-in. All six cases pass through both binaries on macOS. The model
+catalog uses Claude's initialize reply directly.
+It provides a provisional list while that reply is pending.
+
+### TypeScript scenarios
+
+Numbers follow source order in [claude.test.ts](../../box/test/agents/claude.test.ts).
+The two rows expanded from the bot and session steering loop count separately.
+
+| Cases | Coverage and remaining owner |
+|---|---|
+| 1–7 | 4.4b stream events, cancellation before launch, limit scope, error messages and expired sign-in. Skill resolution and startup cancellation also need 4.1b/c. |
+| 8–10 | 4.1b route and queue recovery, including a late cancelled handoff and steering across resident reconnect. 4.4b owns the Claude stream and message acknowledgements. |
+| 11–13 | 4.4b steering, late results and reporting messages that Claude never took. 4.1b owns retry of the missed messages. |
+| 14–28 | 4.4b Claude task lifecycle and holder reuse. 4.1b owns resident background projection, wake-up, staged Undo, account deletion and restarting the session. 4.6 owns projection of agent-initiated turns. |
+| 29–42 | 4.6 subagent sessions, background lanes, messaging and handover. 4.4b supplies Claude's wire events. |
+| 43–50 | 4.4b context and compaction settings, usage, images, tool results, native notices and model windows. 4.1c owns MCP tool transport. |
+| 51–54 | 4.4a conformance covers account-selected default aliases and the concrete name and ID of a default outside the listed models. |
+| 55–57 | 4.4a provides the provisional list. 4.4b still needs end-to-end proof of provisional models, running the native default and compatibility when Claude omits window information. |
+| 58–61 | 4.6 conversation transfer and chosen model across computers. 4.4b supplies Claude's native transcript and memory locations. |
+| 62–66 | 4.1c MCP server wiring, status, credentials, reconnect and deadlines. 4.4b supplies Claude's control request boundary. |
+| 67–72 | 4.4b Claude launch, native state and session environment. 4.1c owns relay wiring and 6.1 owns sandbox policy and launch. |
+| 73–85 | 4.4b bounded and redacted native process diagnostics, history of the current process and interruption. |
+| 86–92 | 4.4b sandbox launch, file copies, sign-out and adoption. 6.1 owns sandbox policy and 6.3 owns worktree paths. |
+| 93–103 | 4.4b Claude permissions, Plan mode and question fields. 4.1b owns the cards and session rules. 6.1 supplies the computer's permission rules. |
+| 104–109 | 4.4b usage, tool results, file diffs and interrupt. 4.1b owns event projection, queue and asks. |
+| 110–122 | 4.4b typed and automatic compaction, command lifecycle and its interaction with steering and process exit. |
+| 123–127 | 4.4b notices and one-time instruction updates. 4.6 owns carry and handover. |
+| 128–131 | 4.4b credential attribution and generation fences. 5.4 owns the account's gathered usage and limits. |
+| 132–136 | 4.6 subagent definition and policy projection, with 6.1 for Agents settings. |
+
+| Other TypeScript source | Coverage and remaining owner |
+|---|---|
+| [claude-mac-update.test.ts](../../box/test/agents/claude-mac-update.test.ts), 3 | Cases 1–2 have 4.4a binary conformance for setup-token replacement and in-place Console import. Empty unused directories are removed. The Rust migration keeps unfamiliar files in a folder with neither marker. |
+| [hold-claude.test.ts](../../box/test/agents/hold-claude.test.ts), 1 | H3 covers holder replay suppression. 4.4b owns reinitialization and open-ask reconciliation. |
+| [claude-code.test.js](../../box/bridge-tests/claude-code.test.js), 7 | 4.6 owns the import of local Claude subagent definitions. The scanner must preserve the existing name, type, link and size limits. |
+| [sessions.test.ts](../../box/test/agents/sessions.test.ts), late completion after delete and first Undo after a quit | 4.1b owns session guards and transcript loading. 4.4b provides held results and awaits durable sink events. |
+
+The live Haiku and keeper replacement proof, complete home comparison, and
+platform verification remain part of 4.4.
+
+### Claude account and catalog differential
+
+The differential runner can install the same labelled Claude stand-in on both
+copies of a scratch home when `KUVO_CONFORMANCE_AREA=agents-claude`. The seed
+has a previously saved Claude Console account in `agents/claude/console`.
+The model picker reads the same model IDs, aliases, and account ID. The saved
+account index and the native fixture in the Console directory compare unchanged.
+
+The full inventory also compares unrelated startup state and records these
+remaining differences.
+
+| Difference | Owner or reason |
+|---|---|
+| Picker generation values and absent generations for accounts with no model catalog | The values are per-instance IDs. 4.1b owns reporting generations for signed-out accounts. Other vendor accounts are registered by 4.2, 4.3 and 4.5. |
+| `agents/runtime/claude` | The TypeScript fixture installs its SDK symlink here. Rust speaks stream-json directly. |
+| `agents/limits.json`, `agents/usage/`, `run/usage-attribution.json` | 5.4 owns limits, usage collection and Insights. |
+| `agents/sessions/`, `run/agents.json`, `run/glance-source.json`, `run/lists/sessions.json` sequence | 4.1b owns resident session storage and its shared projections. |
+| `run/agents/` and its `relay.json`, `box/marketplace/mcp-relay-v1.json`, engine defaults plugin and generated config folders | 4.1c owns agent and engine tool relay. Marketplace integration also uses 6.4. |
+| `box/approval.json`, `run/fence/` | 6.1 owns permissions and sandbox policy and their files. |
+| `artifacts/`, `library/` | 5.5 owns artifacts and Library backfill. |
+| `bots/`, `run/bots-seen`, `wakes/`, `run/work/` | 5.1 owns bot, wake-up and work publishers. 4.1b supplies agent background state. |
+| `run/github-sign-in`, `run/work-queue/` | 5.2 owns Work Queue setup and access. |
+| `groups/` | 5.3 owns group chats. |
+| Legacy arrays and maps in `run/link.json` | 2.1 owns the signed setup representation, 2.2 owns peer projections, and 7.3 owns the released compatibility fields. |
+| `run/link.version` | 7.2 owns release/version projection. |
+| `run/route/ssh` | 1.4 uses one private resident IPC endpoint. The TypeScript reference creates the old route socket directory. |
+| `run/queues-scanned.json` | 3.2 owns OpenCode queue reconciliation with its stand-in. |
+| `run/notices/` | 2.2 owns peer notices. 5.1 owns the resident scan that publishes notices from work. |

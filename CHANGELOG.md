@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The Rust box checks Claude Code sign-in and lists the models available to each account.
+
 - Deleting a conversation while its agent is stopping no longer causes a transcript write error.
 - Undo waits for file recovery when it is the first action after a restart.
 

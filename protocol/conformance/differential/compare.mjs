@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "../adapter.mjs";
 import { standInEngine } from "../engine.mjs";
+import { claudeEnvironment, startClaudeBridge } from "../claude.mjs";
 
 // These are individual fields, scoped to a route or home file. A missing field,
 // a changed type, a changed path, and every other value remain visible.
@@ -43,6 +44,8 @@ const reachFiles = ["run/peer-reach.json", "run/peer-reach-checked.json"];
 function normalise(value, name, home, enginePort, field = "") {
   if (reachFiles.includes(name) && /^[A-Za-z0-9_-]{43}$/.test(field) && typeof value === "number")
     return "<number: relay observation timestamp>";
+  if (name === "GET kuvo/models/offered" && /^generations\/[^/]+$/.test(field) && typeof value === "string")
+    return "<string: model catalog generation>";
   const usageScan = name === "agents/usage/usage.json" && /^accounts\/[^/]+\/scanned$/.test(field);
   const why = usageScan ? "local account scan timestamp" : volatile.get(name)?.[field];
   if (why && ["number", "string"].includes(typeof value)) return `<${typeof value}: ${why}>`;
@@ -206,14 +209,16 @@ function seenReach(home, { key, state }) {
     && (state === "away" ? typeof map[key] === "number" : !Object.hasOwn(map, key))) && maps;
 }
 
-async function run(binary, home, sequence, relay, peerSeed) {
-  const env = isolatedEnv(path.dirname(home));
+async function run(binary, home, sequence, relay, peerSeed, claude) {
+  const isolated = isolatedEnv(path.dirname(home));
+  const env = claude ? claudeEnvironment(binary, home, isolated, { signedIn: false }) : isolated;
   const engine = await standInEngine(path.dirname(home), env);
   const engineFile = path.join(home, "run", "engine.json");
-  let box, peer, peerEngine;
+  let box, peer, peerEngine, bridge;
   const answers = [];
   try {
     wireRelay(home, relay);
+    if (claude) bridge = await startClaudeBridge(binary, home, env);
     write(engineFile, JSON.stringify(engine.record));
     const mac = fs.existsSync(path.join(home, "box", "kind")) && fs.readFileSync(path.join(home, "box", "kind"), "utf8").trim() === "mac";
     box = startBox({ binary, home, env: { ...env, KUVO_SANDBOX: "off" }, relay, mac });
@@ -263,7 +268,7 @@ async function run(binary, home, sequence, relay, peerSeed) {
       if (box) await box.stop();
       if (peer) await peer.stop();
     } finally {
-      await Promise.all([engine.close(), peerEngine?.close()]);
+      await Promise.all([engine.close(), peerEngine?.close(), bridge?.stop()]);
     }
   }
   const transcript = normalise({
@@ -286,7 +291,7 @@ export function difference(label, a, b, out) {
   out.push(`${label}\n  A  ${show(a)}\n  B  ${show(b)}`);
 }
 
-export async function compare(seed, sequence, a, b, { peerSeed, secondSeed = seed } = {}) {
+export async function compare(seed, sequence, a, b, { peerSeed, secondSeed = seed, claude = false } = {}) {
   seed = checkSeed(seed);
   secondSeed = checkSeed(secondSeed);
   if (peerSeed) peerSeed = checkSeed(peerSeed);
@@ -315,8 +320,8 @@ export async function compare(seed, sequence, a, b, { peerSeed, secondSeed = see
     const options = { recursive: true, verbatimSymlinks: true, preserveTimestamps: true };
     fs.cpSync(seed, one, options);
     fs.cpSync(secondSeed, two, options);
-    const first = await run(a, one, sequence, relay, peerSeed);
-    const second = await run(b, two, sequence, relay, peerSeed);
+    const first = await run(a, one, sequence, relay, peerSeed, claude);
+    const second = await run(b, two, sequence, relay, peerSeed, claude);
     const out = [];
     for (const [index, step] of sequence.entries()) {
       difference(`request ${index + 1} ${step.method} ${step.path}`, first.answers[index], second.answers[index], out);
@@ -337,7 +342,10 @@ export async function cli(args) {
     "Usage: node protocol/conformance/differential SEED_HOME REQUESTS.json [PEER_SEED_HOME]");
   const a = boxBinary(process.env.KUVO_BOX_BIN_A || "");
   const b = boxBinary(process.env.KUVO_BOX_BIN_B || "");
-  const out = await compare(args[0], readJSON(args[1]), a, b, { peerSeed: args[2] });
+  const out = await compare(args[0], readJSON(args[1]), a, b, {
+    peerSeed: args[2],
+    claude: process.env.KUVO_CONFORMANCE_AREA === "agents-claude",
+  });
   if (out.length) {
     console.error(out.join("\n"));
     process.exitCode = 1;

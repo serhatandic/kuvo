@@ -8,6 +8,7 @@ use std::{
 
 use kuvo_agents::{
     accounts::{AgentKind, Provider},
+    claude::{ClaudeFactory, adopt_console_folder},
     resident::ResidentAgents,
     roster::Factory,
     runtime::Runtime,
@@ -30,14 +31,20 @@ use kuvo_protocol::routes::{
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde_json::json;
 
-pub(super) fn factories(_home: &std::path::Path) -> HashMap<AgentKind, Arc<dyn Factory>> {
+pub(super) async fn factories(home: &std::path::Path) -> HashMap<AgentKind, Arc<dyn Factory>> {
     #[cfg(feature = "agent-runtime-fixture")]
-    if let Some(fixture) = fixture::for_home(_home) {
+    if let Some(fixture) = fixture::for_home(home) {
         return HashMap::from([(AgentKind::Codex, fixture)]);
     }
 
-    // Rows 4.2–4.5 register their compiled factories here.
-    HashMap::new()
+    let Ok(home) = kuvo_store::home::Home::new(home.to_owned()) else {
+        return HashMap::new();
+    };
+    if let Err(error) = adopt_console_folder(&home).await {
+        eprintln!("Kuvo could not register the previous Claude Code account: {error}");
+    }
+    let claude: Arc<dyn Factory> = Arc::new(ClaudeFactory::new(home));
+    HashMap::from([(AgentKind::Claude, claude)])
 }
 
 pub(super) struct Models {
@@ -63,11 +70,20 @@ impl AgentModelSource for Models {
                 if row.unavailable || status.is_none() {
                     catalog.unavailable.push(provider.clone());
                 }
+                let program = display_name(row.account.kind);
+                let name = if row.account.id == "default" {
+                    program.to_owned()
+                } else {
+                    format!(
+                        "{program} · {}",
+                        row.account.label.as_deref().unwrap_or("Another account")
+                    )
+                };
                 catalog.accounts.push(ModelAccount {
                     provider: provider.clone(),
                     kind: row.account.kind.name().into(),
                     id: row.account.id,
-                    name: display_name(row.account.kind).into(),
+                    name,
                     label: row.account.label,
                     signed_in_as: status.and_then(|status| status.label.clone()),
                     plan: None,

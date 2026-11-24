@@ -428,7 +428,7 @@ parallel.
 | 4.1c | Tools relay, `mcp` mode, shared RPC, Bun sidecar | agents | 4.1a | — | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
-| 4.4 | Claude Code over stream-json and control stdio, with holder handoff and signed-in checks | agents | 4.1, 0.3 | 6 | B |
+| 4.4 | Claude Code over stream-json and control stdio. 4.4a covers account checks, sign-in, legacy account migration and model discovery. 4.4b covers turns, holder handoff and live keeper proof. [Coverage](rust-agents-coverage.md#claude-code-44) | agents | 4.1, 0.3 | 6 | B |
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4 | 4 ×2 | B |
 | 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |

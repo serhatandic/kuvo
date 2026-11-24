@@ -12,18 +12,38 @@ const boxModules = fileURLToPath(new URL("../node_modules", import.meta.url));
 
 /** The stand-in in `root`'s `.local/bin`, and the SDK in the bridge's `agents` folder: the folder to
  * put first on the bridge's PATH. */
-export function standInClaude({ root, agents, stands = "opus" }) {
+export function standInClaude({ root, agents, stands = "opus", signedIn = true, catalog }) {
   const bin = path.join(root, ".local", "bin");
   fs.mkdirSync(bin, { recursive: true });
   const named = { opus: "Opus 5.5", sonnet: "Sonnet 5.5" };
-  const models = [
+  const models = catalog ?? [
     { value: "default", resolvedModel: `claude-${stands}-5-5`, displayName: "Default (recommended)", description: `${named[stands]} · Recommended` },
     { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", description: "Opus 5.5 · Most capable" },
     { value: "sonnet", resolvedModel: "claude-sonnet-5-5", displayName: "Sonnet 5.5", description: "Sonnet 5.5 · Everyday" },
   ];
-  fs.writeFileSync(path.join(bin, "claude"), `#!${process.execPath}
-const args = process.argv.slice(2);
-if (args[0] === "auth") { console.log('{"loggedIn":true,"authMethod":"claude.ai"}'); process.exit(0); }
+  const program = `const args = process.argv.slice(2);
+const fs = require("node:fs");
+const signIn = require("node:path").join(process.env.CLAUDE_CONFIG_DIR || process.env.HOME, "fixture-signed-in");
+if (args[0] === "auth") {
+  if (args[1] === "login") {
+    console.log("Open https://claude.example.test/sign-in");
+    process.stdout.write("Paste code here if prompted > ");
+    require("node:readline").createInterface({ input: process.stdin }).on("line", code => {
+      if (code === "fixture-code") {
+        fs.writeFileSync(signIn, args[2]);
+        process.exit(0);
+      }
+      process.stdout.write("Invalid code\\nPaste code here if prompted > ");
+    });
+  } else if (args[1] === "logout") {
+    fs.rmSync(signIn, { force: true });
+  } else {
+    const loggedIn = ${signedIn} || fs.existsSync(signIn);
+    console.log(JSON.stringify({ loggedIn, authMethod: loggedIn ? "claude.ai" : "none" }));
+    process.exit(loggedIn ? 0 : 1);
+  }
+  return;
+}
 if (!args.includes("stream-json")) process.exit(1);
 const models = ${JSON.stringify(models)};
 const answer = (request_id, said) => process.stdout.write(JSON.stringify({ type: "control_response", response: { request_id, ...said } }) + "\\n");
@@ -34,7 +54,14 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (message.request?.subtype === "initialize") answer(message.request_id, { subtype: "success", response: { models, commands: [], agents: [], output_style: "default", available_output_styles: ["default"], account: {} } });
   else answer(message.request_id, { subtype: "error", error: "Not in this stand-in." });
 }).on("close", () => process.exit(0));
-`, { mode: 0o755 });
+`;
+  if (process.platform === "win32") {
+    fs.writeFileSync(path.join(bin, "claude.cjs"), program);
+    fs.writeFileSync(path.join(bin, "claude.cmd"), `@"${process.execPath}" "%~dp0claude.cjs" %*\r\n`);
+  } else {
+    fs.writeFileSync(path.join(bin, "claude"), `#!${process.execPath}\n${program}`, { mode: 0o755 });
+  }
+  if (!agents) return bin;
   const runtime = path.join(agents, "runtime", "claude");
   fs.mkdirSync(runtime, { recursive: true });
   if (!fs.existsSync(path.join(runtime, "node_modules"))) fs.symlinkSync(boxModules, path.join(runtime, "node_modules"));

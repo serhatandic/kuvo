@@ -3,6 +3,7 @@
 pub mod account_check;
 pub mod accounts;
 pub mod catalog;
+pub mod claude;
 pub mod hold;
 pub mod resident;
 pub mod roster;
