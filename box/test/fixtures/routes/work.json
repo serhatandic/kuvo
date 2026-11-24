@@ -1318,6 +1318,259 @@
      }
     }
    ]
+  },
+  {
+   "name": "a finish waits for what its session left running, then its starter hears it",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_build",
+       "title": "Build",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_build",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Started the build."
+          }
+         ]
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "shell": {
+       "id": "shl_1",
+       "session": "ses_build",
+       "folder": "{{work}}/app",
+       "command": "npm run build"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/background",
+     "why": "What it left running, as the engine's place says.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "sessions": {
+        "ses_build": {
+         "commands": 1,
+         "subagents": 0
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_build"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "shellEnded": {
+       "id": "shl_1"
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "why": "Told once what it left running is over.",
+      "json": {
+       "text": {
+        "<contains>": "[Session finished] \"Build\" in app (address ses_build)"
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/background",
+     "expect": {
+      "status": 200,
+      "json": {
+       "sessions": {}
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "what happened while the box was down is told as it starts, and an answer given late",
+   "steps": [
+    {
+     "given": {
+      "write": {
+       "path": "{{home}}/run/work/told.json",
+       "text": "{\"since\": 0, \"sessions\": {}}"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_other",
+       "title": "Other",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_done",
+       "title": "Done meanwhile",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_done",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "All done."
+          }
+         ]
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_late",
+       "session": "ses_other",
+       "project": "Late",
+       "late": true,
+       "answered": "Made Late."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[Session finished] \"Done meanwhile\" in app (address ses_done)"
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_other/prompt",
+      "json": {
+       "text": "[The user answered] Made Late."
+      }
+     }
+    }
+   ]
   }
  ]
 }

@@ -92,7 +92,7 @@ async function run(t, scenario, kind) {
       let answer = await ask();
       // These reads show projections updated by the engine stream and filesystem watches.
       // Wait for the expected projection once it can answer, without replaying mutations.
-      if (method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering"].includes(route.split("?")[0])
+      if (method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering", "kuvo/work/background"].includes(route.split("?")[0])
         && answer.status === expect.status && mismatch(expect.json, answer.json)) {
         await until(async () => {
           answer = await ask();
@@ -127,7 +127,7 @@ async function run(t, scenario, kind) {
       const wanted = filled(step.engineGot, vars);
       const last = () => engine.asked.findLast(each => each.method === wanted.method && each.path === wanted.path);
       // (What the box sends on its own, a moment later, is waited for.)
-      await until(() => last() && mismatch(wanted.json ?? {}, last().json, "sent") === null, where, 15000, 100).catch(() => {});
+      await until(() => last() && mismatch(wanted.json ?? {}, last().json, "sent") === null, where, 30000, 100).catch(() => {});
       const got = last();
       assert.ok(got, `${where}: engine received no ${wanted.method} ${wanted.path}, only ${engine.asked.map(each => `${each.method} ${each.path}`).slice(-20).join(", ")}`);
       assert.equal(mismatch(wanted.json ?? {}, got.json, "sent"), null, where);

@@ -86,6 +86,9 @@ pub struct EngineEvent {
     pub kind: String,
     #[serde(default, alias = "properties")]
     pub data: serde_json::Value,
+    /// Where it happened, as the engine says (`directory`), for an event about a folder.
+    #[serde(default)]
+    pub location: serde_json::Value,
 }
 
 pub(crate) struct Lease {

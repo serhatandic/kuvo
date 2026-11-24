@@ -98,6 +98,14 @@ impl Work {
         )
     }
 
+    /// What a lead is told of one of its sessions whose finish waited on what it left running, once
+    /// that's over, when the user has written to it since: that it's done, not the user's answer.
+    pub(super) fn done_since_line(&self, session: &Value) -> String {
+        let named = self.named_of(session);
+        let rest = "The user has written to it since, so its last reply answers them: read its report with read_conversation.";
+        format!("[Session finished] {named}:\nWhat it left running is done. {rest}")
+    }
+
     /// What a lead is told of one of its sessions that the user stopped: only that, so it doesn't
     /// wait on a session that won't finish now.
     pub fn stopped_line(&self, session: &Value) -> String {
