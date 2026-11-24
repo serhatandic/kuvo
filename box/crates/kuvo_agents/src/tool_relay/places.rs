@@ -1,8 +1,6 @@
-//! Where Kuvo Code's own tools are, as the box knows them: on a computer,
-//! the program its engine's settings start for them (`kuvo-browser`), which
-//! an agent's relay runs with the conversation in `KUVO_SESSION`; or a
-//! server an app says it has, which each call reaches with its password and
-//! the conversation in a header.
+//! Where Kuvo Code's own tools are, as the box knows them: the program its
+//! engine's settings start for them (`kuvo-browser`), which an agent's
+//! relay runs with the conversation in `KUVO_SESSION`.
 
 use super::{ToolSource, Tools};
 use kuvo_os::platform::Environment;
@@ -11,15 +9,6 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Mutex, time::Duration};
 
 /// The name Kuvo Code's own tools have among the engine's servers.
 pub const TOOL_SERVER_NAME: &str = "kuvo-browser";
-
-/// A server of Kuvo Code's tools an app has.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ToolServer {
-    pub url: String,
-    pub token: String,
-    /// How long a call may take (one that asks you waits for you).
-    pub timeout: Duration,
-}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 struct ToolProgram {
@@ -32,17 +21,12 @@ struct ToolProgram {
 /// Where each conversation's Kuvo Code tools are: none until the box is told.
 #[derive(Default)]
 pub struct ToolPlaces {
-    server: Mutex<Option<ToolServer>>,
     program: Mutex<Option<ToolProgram>>,
 }
 
 const CALL_TIME: Duration = Duration::from_secs(960);
 
 impl ToolPlaces {
-    pub fn set_server(&self, server: Option<ToolServer>) {
-        *self.server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = server;
-    }
-
     /// The program as the settings the engine starts with name it
     /// (`OPENCODE_CONFIG_CONTENT`), if they do.
     pub fn set_program_settings(&self, settings: Option<&str>) {
@@ -63,19 +47,12 @@ impl ToolPlaces {
 
 impl ToolSource for ToolPlaces {
     fn tools(&self, session: &str) -> Option<Tools> {
-        if let Some(server) = self.server.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone() {
-            let headers = vec![
-                ("Authorization".into(), format!("Bearer {}", server.token)),
-                ("X-Kuvo-Session".into(), session.into()),
-            ];
-            return Some(Tools::Http { url: server.url, headers, timeout: server.timeout });
-        }
         let program = self.program.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()?;
         let mut env: Environment = std::env::vars_os().collect();
         env.extend(program.environment.iter().map(|(name, value)| (name.into(), value.into())));
         env.insert("KUVO_SESSION".into(), session.into());
         let (command, args) = program.command.split_first()?;
-        Some(Tools::Program {
+        Some(Tools {
             key: serde_json::to_string(&program).unwrap_or_default(),
             command: PathBuf::from(command),
             args: args.iter().map(Into::into).collect(),
