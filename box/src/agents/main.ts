@@ -28,7 +28,8 @@ import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { setToolProgram } from "./kuvotools"
 import { keepRelayKeys, relayPort, setToolRelayRun, usesToolRelay } from "./toolrelay"
-import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
+import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, onMacBox, takeOwnFolders } from "./machine"
+import { settingsLayers } from "./blocks"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
 import { forgetOldAntigravity } from "./agents/antigravity"
@@ -217,6 +218,10 @@ const store = new Store(join(home, "sessions"), Boolean(transfer), machineHome &
 const auto = new Auto(home)
 // The engine's own models, run in sessions here (the app says where the engine is).
 const link = new EngineLink()
+// Blocks from the files the engine reads, while it's parked (only coding agents at work) or starting
+// again, as its start names them (kuvo-launch): its settings folder, and a machine's own settings.
+if (onMachine && machineHome) link.settingsLayers = (directory) => settingsLayers(directory, join(machineHome!, "config"), onMacBox ? undefined : machineHome)
+else if (process.env.KUVO_ENGINE_CONFIG) link.settingsLayers = (directory) => settingsLayers(directory, process.env.KUVO_ENGINE_CONFIG)
 if (machineEngine) link.configure(machineEngine.url, machineEngine.password, machineEngine.pid)
 // Its engine started again (a crash, a hang ended, an update's new engine): followed where its
 // record says now, every two seconds, its turns going on meanwhile (`EngineLink` reconnects).
