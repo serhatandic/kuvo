@@ -748,11 +748,34 @@ impl Job {
         self.send(Progress::Step(id, state, detail.into())).await
     }
 
+    async fn admit(&self) -> Result<(), String> {
+        let reply = self
+            .setup
+            .request_command(Command::SshAdmission(self.by.clone()))
+            .await
+            .map_err(|error| error.to_string())?;
+        if self.stop.load(Ordering::Acquire) {
+            return Err("The Add was stopped.".into());
+        }
+        match reply.status {
+            200 => Ok(()),
+            403 => Err(
+                "The device that started this add is no longer paired. Start a new add from one of your devices."
+                    .into(),
+            ),
+            _ => Err(reply.value["message"]
+                .as_str()
+                .unwrap_or("The Add was stopped.")
+                .into()),
+        }
+    }
+
     async fn add(&self, destination: Address) -> Result<Completed, AddError> {
         let name = preferences::truncate(destination.as_str(), 100);
         self.step("checking", StepState::Now, &format!("Connecting to {name}"))
             .await?;
         let remote = Destination::inspect(self, destination.clone(), &name).await?;
+        self.admit().await?;
         let name = remote.name();
         if let Some(existing) = remote.existing() {
             if let Some(identity) = &existing.identity {
@@ -791,6 +814,7 @@ impl Job {
         }
         self.step("files", StepState::Now, "").await?;
         remote.install(self).await?;
+        self.admit().await?;
         self.step("engine", StepState::Done, "").await?;
         self.step("starting", StepState::Done, "").await?;
         self.step("seeding", StepState::Done, "Nothing to copy.")
@@ -810,6 +834,7 @@ impl Job {
         let invitation = crate::installer::Code::read(code)
             .map(|(code, _)| crate::installer::hash(&code.token))
             .ok_or("Your main computer could not issue an installer code.")?;
+        self.admit().await?;
         let (computer, identity) = remote.enroll(self, name, code).await?;
         let done = self
             .setup

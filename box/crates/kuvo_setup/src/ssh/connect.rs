@@ -1,7 +1,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::atomic::Ordering,
     time::Duration,
 };
 
@@ -106,14 +105,7 @@ impl Destination {
             job.send(Progress::HostKey(keys.clone(), answer)).await?;
             answered.await.map_err(|_| "The Add was stopped.")?;
             // Recheck the submitter's grant after the interactive wait.
-            let admission = job
-                .setup
-                .request_command(crate::actor::Command::SshAdmission(job.by.clone()))
-                .await
-                .map_err(|error| error.to_string())?;
-            if admission.status != 200 || job.stop.load(Ordering::Acquire) {
-                return Err("The Add was stopped.".into());
-            }
+            job.admit().await?;
             let ssh = connection.clone();
             tokio::task::spawn_blocking(move || ssh.trust(&keys))
                 .await
