@@ -463,3 +463,32 @@ impl BackupFences {
             .map(String::as_str)
     }
 }
+
+/// Active moves, recent departures, and recently dropped copies keep their
+/// attachments on disk until retention can see the whole picture. Fail closed
+/// if the move records cannot be read.
+pub fn protects_attachments(run: &Path, session: &str, now: Millis) -> bool {
+    let Ok(active) = journals(run) else {
+        return true;
+    };
+    if active.into_iter().filter(Journal::live).any(|movement| {
+        movement.step.as_deref() != Some("check")
+            && (movement.thing == session || movement.sessions.iter().any(|id| id == session))
+    }) {
+        return true;
+    }
+    let Ok(moved) = departures(run) else {
+        return true;
+    };
+    if moved.into_iter().any(|record| {
+        record.queue.is_none()
+            && record.session == session
+            && now.saturating_sub(record.at) < ROUTING_FOR
+    }) {
+        return true;
+    }
+    match receipt::dropped_here(run, now) {
+        Ok(dropped) => dropped.contains(session),
+        Err(_) => true,
+    }
+}

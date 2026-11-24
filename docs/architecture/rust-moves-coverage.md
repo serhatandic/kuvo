@@ -1,6 +1,6 @@
 # Rust moves and ownership coverage
 
-Phase 2.4 is open. The Rust resident moves ordinary OpenCode chats and their
+Phase 2.4 is done. The Rust resident moves ordinary OpenCode chats and their
 descendants, wake-up folders, managed attachments, held prompt queues, ordinary note histories
 and session-scoped forwarded decisions. A destination reply proves the generation and hash it
 committed. The source keeps the retired original until it saves a backup. The peer
@@ -35,7 +35,8 @@ for addressed work and receipt lookup.
 | Receipt indexing | A Rust move with unrelated receipt history yields after one bounded scan. The source keeps the original and resumes the scan after restarting. The retry carries the replay fence. TypeScript's indexed preparation is covered by its owner-mutation scenario. |
 | Receipt issuer | Both residents submit a real draft before moving it. The original computer can still read its committed effect with the new owner shown. The destination cannot look up someone else’s computer receipt or replay the earlier draft. |
 | Receipt pages | An accepted replacement changes while a page is in flight. The caller gets an incomplete page without a next cursor. Retrying the original cursor returns every receipt once. Rust selects up to 41 candidates per indexed receipt family with issuer and author filters before reading the records. |
-| Owner observations | An authenticated absence invalidates older pages and survives a restart. An older answer cannot replace a newer observation. A conversation, its file inventory and its paused queue answer from the destination after a live move. Verification of the native Windows attachment path correction remains with 2.4. |
+| Owner observations | An authenticated absence invalidates older pages and survives a restart. An older answer cannot replace a newer observation. A conversation, its file inventory and its paused queue answer from the destination after a live move, including with native Windows attachment paths. |
+| Session actions and live asks | Moving conversations report `held` on their actions menu and refuse pin, archive, rename and delete. Moved conversations redirect those actions with the new computer's key even when a stale local copy remains, and reject late permission replies. Move attachment protection covers active moves, recent departures and recent drops. Both residents run the same conformance case. |
 | Removal fence | Unlinking an activated destination whose acknowledgement was lost leaves the source held across a restart. It reports a pending switch and refuses to start a second copy. |
 | Replacement restore | The first issuer commits a draft through another computer, then backs it up before moving the conversation. After disk loss and unlink, the replacement restores the issuer’s receipt. The live owner keeps the replay fence, transcript and verified attachment and refuses to run the draft again. |
 | Retired backup | Only the destination starts the retention clock. The backup stays while a move back is in progress. Once that move is dropped, an expired backup stays recorded through a failed deletion and the next round retries it. A destination distinguishes the first local reply from a carried reply with a future timestamp. |
@@ -146,11 +147,15 @@ For the owner read, receipt page and queue integration, macOS Rust passed all 67
 including the two-binary peer reach comparison. The TypeScript reference passed all 63 applicable
 scenarios. WSL2 GNU and static Linux musl each passed all 66 applicable scenarios. The focused
 replacement restore passed on TypeScript and on Rust for macOS, WSL2 GNU, static Linux musl and
-native Windows. The Windows move run reproduced a false missing-file report on a local attachment.
-The correction shares the move verifier's path handling. Its Windows rerun is pending.
-A separate side-by-side run matched the five move and owner-read responses and the persisted
-move, outbox and peer reach records. The full home comparison still reports startup and unrelated
-file differences.
+native Windows. After the native attachment-path fix and merging `main`, native Windows passed
+65/65 applicable moves (64/65 on the full run plus an immediate rerun of the one timed-out letter
+case) and the focused replacement restore. After adding session-action and live-ask move fences,
+move attachment protection (`protects_attachments`), and the mutation-lock responsiveness check,
+scoped Clippy (`kuvo_engine`, `kuvo_peers`), `move_storage` (4/4), `resident`, the two-binary peer
+reach check, and the 6 focused move scenarios plus focused replacement restore passed on macOS Rust,
+macOS TypeScript, WSL2 GNU, static Linux musl and native Windows. A side-by-side run matched all
+five move and owner-read responses and the persisted move, outbox and peer reach records. The full
+home comparison still reports startup and unrelated file differences.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in

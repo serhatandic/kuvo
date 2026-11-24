@@ -224,6 +224,59 @@ impl<'a> Receipts<'a> {
     }
 }
 
+pub(super) fn dropped_here(
+    run: &Path,
+    now: Millis,
+) -> Result<std::collections::BTreeSet<String>, Error> {
+    let mut sessions = std::collections::BTreeSet::new();
+    let collect = |record: kuvo_store::format::Object,
+                   sessions: &mut std::collections::BTreeSet<String>| {
+        if record.fields.get("as").and_then(Value::as_str) != Some("dropped") {
+            return;
+        }
+        let Some(at) = record.fields.get("at").and_then(Value::as_i64) else {
+            return;
+        };
+        if now.saturating_sub(at) >= super::ROUTING_FOR {
+            return;
+        }
+        for id in record
+            .fields
+            .get("sessions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            sessions.insert(id.to_owned());
+        }
+    };
+    let hints = run.join("moves/decision-hints");
+    match std::fs::read_dir(&hints) {
+        Ok(entries) => {
+            for entry in entries {
+                let path = entry?.path();
+                if path.extension().is_some_and(|ext| ext == "json")
+                    && let Some(record) = HINT.read(&path)?
+                {
+                    collect(record, &mut sessions);
+                }
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let legacy = run.join("moves/ended.json");
+    if let Some(Value::Object(records)) = read_json(&legacy)? {
+        for value in records.into_values() {
+            if value.is_object() {
+                collect(RECEIPT.decode(value)?, &mut sessions);
+            }
+        }
+    }
+    Ok(sessions)
+}
+
 fn decode(record: kuvo_store::format::Object) -> Result<Decision, Error> {
     serde_json::from_value(record.fields.into()).map_err(Error::Invalid)
 }

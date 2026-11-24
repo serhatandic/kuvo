@@ -305,6 +305,82 @@ test("a held move fences prompt, command, and queue writes after a restart", { t
   assert.equal(here.engine.messages.get(id)?.[0]?.id, "msg_afterFence");
 });
 
+test("a moving or moved conversation fences session actions and live ask replies", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("action-fence");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  const chats = path.join(here.home, "chats");
+  fs.mkdirSync(chats, { recursive: true });
+  const moving = "ses_movingAction", gone = "ses_movedGone", stale = "ses_movedStale";
+  here.engine.sessions.push(sessionOf({ id: moving, title: "Moving chat", directory: chats }));
+  here.engine.sessions.push(sessionOf({ id: stale, title: "Stale copy", directory: chats }));
+  here.engine.permissions.set(stale, [{
+    id: "per_movedAsk", action: "edit", resources: [path.join(chats, "note.txt")],
+    message: "Edit note.txt", time: { created: Date.now() },
+  }]);
+  const journal = path.join(here.home, "run/moves/mov_actionHold.json");
+  write(journal, JSON.stringify({
+    formatVersion: 1, id: "mov_actionHold", kind: "chat", thing: moving, name: "Moving chat",
+    from: member.key, to: main.key, peer: member.key, role: "to", stage: "copying",
+    sessions: [moving], started: Date.now(), safeSwitch: true, complete: true, setUpAt: Date.now(),
+  }));
+  const movedPath = path.join(here.home, "run/moves/moved.json");
+  write(movedPath, JSON.stringify([
+    { formatVersion: 1, session: gone, key: member.key, at: Date.now() },
+  ]));
+  const resident = await here.start().ready();
+  const heldNotice = "This record is held while its owner changes.";
+  const menuHeld = "It’s moving to another computer. Try again once it’s there.";
+  const elsewhere = { message: `It’s on ${member.name} now. Change it there.`, computer: member.key };
+
+  const menu = await request(resident, "GET", `kuvo/sessions/${moving}/actions`);
+  assert.equal(menu.status, 200, menu.text);
+  assert.equal(menu.json.held, menuHeld);
+  for (const [method, suffix, body] of [
+    ["POST", "/pin", { pinned: true }],
+    ["POST", "/archive", { archived: true }],
+    ["POST", "/rename", { title: "Elsewhere" }],
+    ["DELETE", "", undefined],
+  ]) {
+    const refused = await request(resident, method, `kuvo/sessions/${moving}${suffix}`, body);
+    assert.equal(refused.status, 409, `${method} ${suffix}: ${refused.text}`);
+    assert.equal(refused.json.message, heldNotice);
+  }
+  assert.ok(!here.engine.asked.some(call => call.path === `/api/session/${moving}` && ["PATCH", "DELETE"].includes(call.method)));
+
+  for (const [method, suffix, body] of [
+    ["GET", "/actions", undefined],
+    ["POST", "/archive", { archived: true }],
+    ["DELETE", "", undefined],
+  ]) {
+    const redirected = await request(resident, method, `kuvo/sessions/${gone}${suffix}`, body);
+    assert.equal(redirected.status, 409, `${method} ${suffix}: ${redirected.text}`);
+    assert.deepEqual(redirected.json, elsewhere);
+  }
+
+  // A live permission answer must stop once the conversation moves away, and
+  // session actions redirect even when a stale local copy remains on disk.
+  here.engine.beforeLivePermission = () => {
+    write(movedPath, JSON.stringify([
+      { formatVersion: 1, session: gone, key: member.key, at: Date.now() },
+      { formatVersion: 1, session: stale, key: member.key, at: Date.now() },
+    ]));
+  };
+  const askReply = await request(resident, "POST", `kuvo/sessions/${stale}/asks/per_movedAsk`, { answer: "once" }, { "x-kuvo-from": "app" });
+  assert.equal(askReply.status, 409, askReply.text);
+  assert.ok(!here.engine.asked.some(call => call.method === "POST" && call.path.includes("per_movedAsk")));
+
+  for (const [method, suffix, body] of [
+    ["POST", "/archive", { archived: true }],
+    ["DELETE", "", undefined],
+  ]) {
+    const redirected = await request(resident, method, `kuvo/sessions/${stale}${suffix}`, body);
+    assert.equal(redirected.status, 409, `${method} ${suffix}: ${redirected.text}`);
+    assert.deepEqual(redirected.json, elsewhere);
+  }
+  assert.ok(!here.engine.asked.some(call => call.path === `/api/session/${stale}` && ["PATCH", "DELETE"].includes(call.method)));
+});
+
 const binary = boxBinary();
 const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
 
