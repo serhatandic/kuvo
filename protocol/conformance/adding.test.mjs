@@ -125,6 +125,48 @@ test("an unsupported installer code leaves the new computer’s home untouched",
   }
 });
 
+test("ordinary installer and SSH enrollment leave a used independent setup intact", { timeout: 45_000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const issuer = await computer("Studio");
+  const independent = await computer("Independent", undefined, undefined, { canonical: true });
+  const resident = independent.start();
+  const own = await independent.connect(await resident.ready())("GET", "kuvo/setup");
+  assert.equal(own.status, 200, own.text);
+  assert.equal(own.json.you.role, "primary");
+  await resident.stop();
+  const session = '{"id":"ses_here"}\n';
+  const work = path.join(independent.home, "agents", "sessions", "ses_here", "session.json");
+  write(work, session, { mode: 0o600 });
+  const link = path.join(independent.home, "run", "link.json");
+  const before = readJSON(link);
+  const ask = issuer.connect(await issuer.start().ready());
+  const original = await ask("GET", "kuvo/setup");
+  assert.notEqual(original.json.setup, own.json.setup);
+  await until(() => leases.leaseFor(original.json.setup), "Studio did not claim its lease.");
+  const invite = await ask("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "app" });
+  assert.equal(invite.status, 201, invite.text);
+
+  const ts = boxBinary().typescript;
+  const result = await independent.command(ts ? ["join"] : ["install", "--join"], invite.json.code + "\n");
+  assert.equal(result.code, 1, result.log);
+  assert.match(result.log, /setup merge/i);
+  if (!ts) {
+    const ssh = await independent.command(["ssh-enroll", "Independent"], invite.json.code + "\n");
+    assert.equal(ssh.code, 1, ssh.log);
+    assert.match(ssh.log, /setup merge/i);
+  } else if (process.platform !== "win32") {
+    const from = readJSON(path.join(issuer.home, "run", "link.json"));
+    const token = `guarded-${"56".repeat(24)}`;
+    fs.symlinkSync(token, path.join(path.dirname(independent.home), ".kuvo-code-adding"));
+    const ssh = await independent.command(["setup", token], JSON.stringify({ mac: from.setup.primary, macSign: from.setup.sign, relay: from.relay }));
+    assert.notEqual(ssh.code, 0, ssh.log);
+    assert.match(ssh.log, /already has a Kuvo setup/i);
+  }
+  assert.deepEqual(readJSON(link), before);
+  assert.equal(fs.readFileSync(work, "utf8"), session);
+  assert.deepEqual((await ask("GET", "kuvo/setup")).json.computers, original.json.computers);
+});
+
 test("a Rust applicant leaves an older home for the move", {
   skip: boxBinary().typescript,
 }, async t => {

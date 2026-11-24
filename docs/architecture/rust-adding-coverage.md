@@ -40,7 +40,8 @@ the races that span removal, backup, moves, and an authority change.
 | C30 | [SSH Add recovers a disconnected credential writer](../../protocol/conformance/ssh-adding.test.mjs) | The SSH client dies by signal or returns 255 while the target still writes. An alias cannot acquire the active lock. Once the writer settles, explicit recovery resumes the same copy, rejects a different checklist, and enrolls the same account without duplicating its sign-in. |
 | C31 | [Stop and failed enrollment roll back the staged SSH engine and credentials](../../protocol/conformance/ssh-adding.test.mjs) | Stop waits for the guarded writer before cleaning up. A separate attempt fails at enrollment after copying. Both remove staged keys and SQLite sign-ins, stop the verified engine and leave no member or receipt. |
 | C32 | [A failed SSH Add leaves a previously uninstalled computer's credentials and settings in place](../../protocol/conformance/ssh-adding.test.mjs) | A prior machine identity keeps the computer out of the fresh-copy path. Add reports that the target keeps its own settings, leaves its keys and sign-ins byte for byte, and touches no staged credential state when joining fails. |
-| C33 | [An SSH-enrolled member follows the next primary after reconnecting](../../protocol/conformance/ssh-adding.test.mjs) | Two Rust computers move the main role twice before adding a third via SSH. The new resident starts at the accepted epoch. After another handover while it is offline, it reconnects and accepts the new signed authority while keeping its own identity. The TypeScript reference seeds the preceding epoch through its SSH path and then catches up. |
+| C33 | [An SSH-enrolled member follows the next primary after reconnecting](../../protocol/conformance/ssh-adding.test.mjs) | Two Rust computers move the main role twice before adding a third via SSH. The new resident starts at the accepted epoch. After another handover while it is offline, it reconnects and accepts the new signed authority while keeping its own identity. The TypeScript reference gives the current signed roster as SSH does before testing the same catch-up. |
+| C34 | [Ordinary installer and SSH enrollment leave a used independent setup intact](../../protocol/conformance/adding.test.mjs) | Both flavors give the deployed installer a valid code for a different setup, then exercise the SSH enrollment command. A saved session makes both attempts refuse. The original setup keys and session bytes stay intact, and the issuing computer's roster stays unchanged. Rust passed on Mac, WSL and native Windows. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -279,7 +280,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 51 have coverage and 143 still have open or partial work. Of those, 96 list 2.3 as an owner (71 open, 25 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 51 have coverage and 143 still have open or partial work. Of those, 95 list 2.3 as an owner (71 open, 24 partial).
 
 ### computers-add
 
@@ -371,7 +372,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 51 h
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
 | [a lost merge answer keeps one accepted roster and resumes with both old Work Queues](../../box/bridge-tests/installer-enrollment.test.js#L142) | Open | 2.3 |
-| [ordinary enrollment leaves a used independent setup alone](../../box/bridge-tests/installer-enrollment.test.js#L304) | The admission check guards saved state and detectable local work. Exact inventory parity is open. | 2.3, 2.6 |
+| [ordinary enrollment leaves a used independent setup alone](../../box/bridge-tests/installer-enrollment.test.js#L304) | C34 checks both deployed admission commands and preservation of the original setup, keys and saved session. Inventory parity for former layouts remains in the move row. | 2.6 |
 | [a whole setup comes over while one member is unreachable](../../box/bridge-tests/installer-enrollment.test.js#L330) | Open | 2.3 |
 | [a prepared merge can resume with a new code before destination acceptance](../../box/bridge-tests/installer-enrollment.test.js#L415) | Open | 2.3 |
 | [a sleeping computer follows both accepted mergers when it returns](../../box/bridge-tests/installer-enrollment.test.js#L452) | Open | 2.3 |
