@@ -58,7 +58,10 @@ const scriptedTurns = ${turns};
 const scriptFile = ${JSON.stringify(path.join(root, "claude-script.json"))};
 const heard = ${JSON.stringify(path.join(root, "claude-heard.jsonl"))};
 const hear = value => { if (scriptedTurns) fs.appendFileSync(heard, JSON.stringify({ pid: process.pid, ...value }) + "\\n"); };
-hear({ argv: args });
+// Its arguments, and what the box set for it (a secret's only that it's set).
+hear({ argv: args, cwd: process.cwd(), env: Object.fromEntries(Object.entries(process.env)
+  .filter(([name]) => /^(CLAUDE_|DISABLE_|ANTHROPIC_|KUVO_)/.test(name))
+  .map(([name, value]) => [name, /TOKEN|KEY|SECRET|PASSWORD/.test(name) ? "<set>" : value])) });
 let held, step = 0, playing = false;
 const waiting = [], queued = [];
 const waitFor = test => new Promise(resolve => waiting.push({ test, resolve }));
@@ -84,7 +87,7 @@ async function play(steps, vars) {
     } else if (step.until) {
       // Until the test says go: a file of that name beside the script.
       while (!fs.existsSync(require("node:path").join(require("node:path").dirname(scriptFile), step.until))) await delay(20);
-    } else if (step.stderr !== undefined || step.exit !== undefined) {
+    } else if (step.type === undefined && (step.stderr !== undefined || step.exit !== undefined)) {
       if (step.stderr !== undefined) await new Promise(done => process.stderr.write(step.stderr, done));
       if (step.exit !== undefined) process.exit(step.exit);
     } else {

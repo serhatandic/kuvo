@@ -12,6 +12,7 @@ use std::{
 
 mod line;
 mod metadata;
+mod pictures;
 mod projection;
 
 pub use line::Line;
@@ -196,9 +197,27 @@ impl SessionStore {
 
     /// Update a transcript by message ID. Updating an existing step keeps its
     /// position, including when a tool result arrives after the step ended.
-    pub async fn write_messages(&self, id: &str, rows: Vec<Value>) -> io::Result<bool> {
-        self.mutate_existing(id, move |folder| write_messages(folder, rows))
-            .await
+    pub async fn write_messages(&self, id: &str, mut rows: Vec<Value>) -> io::Result<bool> {
+        let attachments = self.attachments();
+        let session = id.to_owned();
+        self.mutate_existing(id, move |folder| {
+            if let Some(attachments) = &attachments {
+                for row in &mut rows {
+                    pictures::retain(attachments, &session, row);
+                }
+            }
+            write_messages(folder, rows)
+        })
+        .await
+    }
+
+    /// Where a box keeps attachments (`<home>/attachments`), for a store in the box's own
+    /// `agents/sessions`.
+    fn attachments(&self) -> Option<PathBuf> {
+        let agents = self.root.parent()?;
+        (self.root.file_name()? == "sessions" && agents.file_name()? == "agents")
+            .then(|| agents.parent().map(|home| home.join("attachments")))
+            .flatten()
     }
 
     pub async fn delete(&self, id: &str) -> io::Result<bool> {

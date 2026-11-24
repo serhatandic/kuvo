@@ -1,8 +1,10 @@
 // Claude Code's turns through each resident, on a scripted stand-in (claude.test.ts: "Claude Code's
 // context and usage", "Claude Code's reply", "summarizing on its own, as the conversation fills up").
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { after, before, describe, test } from "node:test";
 import {
   askFirst, assertMatch, canUse, idles, result, scriptedClaude, steps, streams, texts, toolCalls,
@@ -34,6 +36,7 @@ function resident(fixture = {}) {
     await box.claude.start();
   });
   after(async () => box.claude?.close());
+  box.peek = ({ ask = false } = {}) => pool[ask ? "ask" : "plain"][0];
   box.next = ({ ask = false } = {}) => {
     const session = pool[ask ? "ask" : "plain"].shift();
     assert.ok(session, "Seed more sessions.");
@@ -292,5 +295,132 @@ describe("summarizing on its own, as the conversation fills up", { skip }, () =>
     const rows = await box.claude.idles(id);
     assertMatch(summaries(rows), [{ status: "completed", reason: "auto" }]);
     assert.deepEqual(notices(rows), []);
+  });
+});
+
+describe("Claude Code's context window and its summaries", { skip }, () => {
+  const box = resident();
+  /** What the Claude Code that took the session's message `text` was started with. */
+  const started = (text) => {
+    const heard = box.claude.heard();
+    const pid = heardUser(box.claude, text).at(-1)?.pid;
+    return heard.find(line => line.argv && line.pid === pid);
+  };
+  const flag = (argv, name) => argv.find(arg => arg.startsWith(name + "="))?.slice(name.length + 1)
+    ?? (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
+  const setting = value => fs.writeFileSync(path.join(box.claude.home, "box", "conversation-compaction.json"), JSON.stringify(value));
+
+  test("Claude Code gets the chosen window and summarizes a long conversation at its native threshold", async () => {
+    const session = box.next();
+    const { id } = await box.begin([
+      ...streams("$UUID", [{ type: "text", text: "Working." }], { input: 2, read: 399_500 - 502, write: 400, output: 100 }),
+      ...streams("$UUID", [{ type: "text", text: "Working." }], { input: 2, read: 401_500 - 502, write: 400, output: 100 }),
+      // The pinned CLI's native preflight rule for a 1M model, at the window it was given.
+      { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: 401_500, post_tokens: 18_000 } },
+      result(["$UUID"], "success", { modelUsage: { default: { contextWindow: 1_000_000 } } }),
+    ], {}, session);
+    const rows = await box.claude.idles(id);
+    assert.equal(started(`go ${id}`).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "433000");
+    assertMatch(rows.filter(row => row.type === "compaction"), [{ reason: "auto", status: "completed" }]);
+    assert.equal(heardUser(box.claude, `go ${id}`).length, 1);
+  });
+
+  test("changing the box's summary setting applies to the next message in the same Claude conversation", async () => {
+    try {
+      const { id } = await box.begin([result(["$UUID"])]);
+      await box.claude.idles(id);
+      const first = started(`go ${id}`);
+      assert.equal(first.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "433000");
+      const native = flag(first.argv, "--session-id");
+      assert.ok(native, JSON.stringify(first.argv));
+      setting("600000");
+      box.claude.script(`continue ${id}`, [result(["$UUID"], "success", { modelUsage: { default: { contextWindow: 1_000_000 } } })]);
+      await box.claude.prompt(id, `continue ${id}`);
+      await box.claude.idles(id, 2);
+      const second = started(`continue ${id}`);
+      assert.equal(flag(second.argv, "--resume"), native);
+      assert.equal(second.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "633000");
+      setting("never");
+      box.claude.script(`once more ${id}`, [result(["$UUID"])]);
+      await box.claude.prompt(id, `once more ${id}`);
+      await box.claude.idles(id, 3);
+      const third = started(`once more ${id}`);
+      assert.equal(flag(third.argv, "--resume"), native);
+      assert.equal(third.env.DISABLE_AUTO_COMPACT, "1");
+    } finally {
+      setting("400000");
+    }
+  });
+
+  test("Claude's session state uses the last request and includes its cached context", async () => {
+    const { id } = await box.begin([
+      ...streams("$UUID", [{ type: "text", text: "Working." }], { input: 2, read: 238_000, write: 1100, output: 400 }),
+      ...streams("$UUID", [{ type: "text", text: "Done." }], { input: 4, read: 240_000, write: 900, output: 300 }),
+      result(["$UUID"], "success", { modelUsage: { default: { contextWindow: 1_000_000 } } }),
+    ]);
+    await box.claude.idles(id);
+    const saved = await until(() => box.claude.saved(id).outcome && box.claude.saved(id), "Never saved.");
+    assert.deepEqual(saved.context, { used: 241_204, window: 1_000_000 });
+  });
+});
+
+describe("Claude Code, nothing dropped", { skip }, () => {
+  const box = resident();
+  async function turn(frames) {
+    const { id } = await box.begin([...frames, result(["$UUID"])]);
+    return box.claude.idles(id);
+  }
+  const notices = rows => rows.flatMap(row => row.type === "synthetic" ? [row.text] : []);
+
+  test("a picture a tool brings back, and a server tool's results", async () => {
+    const id = box.peek().id;
+    const rows = await turn([
+      { type: "assistant", message: { id: "a1", content: [{ type: "tool_use", id: "r1", name: "Read", input: { file_path: "/tmp/shot.png" } }] }, parent_tool_use_id: null, user_message_uuids: ["$UUID"] },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "r1", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "CCCC" } }] }] }, parent_tool_use_id: null },
+      { type: "assistant", message: { id: "a2", content: [{ type: "server_tool_use", id: "s1", name: "web_search", input: { query: "kuvo" } }, { type: "web_search_tool_result", tool_use_id: "s1", content: [{ type: "web_search_result", title: "Kuvo", url: "https://kuvo.run" }] }] }, parent_tool_use_id: null },
+    ]);
+    const [read, search] = toolCalls(rows);
+    // Kept as a file of its own beside the session's attachments.
+    const kept = createHash("sha256").update(Buffer.from("CCCC", "base64")).digest("hex");
+    assertMatch(read.state.content, [{ type: "text", text: "" }, { type: "file", mime: "image/png" }]);
+    assert.ok(read.state.content[1].uri.endsWith(`/attachments/${id}/transcript-pictures/${kept}.png`), read.state.content[1].uri);
+    assert.ok(fs.existsSync(fileURLToPath(read.state.content[1].uri)));
+    assertMatch(search, { name: "websearch", state: { status: "completed", content: [{ type: "text", text: "Kuvo — https://kuvo.run" }] } });
+  });
+
+  test("what Claude Code says about itself: compacting, retrying, and a kind this bridge doesn't know", async () => {
+    const rows = await turn([
+      { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto" } },
+      { type: "system", subtype: "api_retry", attempt: 2, max_retries: 10, error_status: 529, error: "overloaded" },
+      { type: "system", subtype: "api_retry", attempt: 3, max_retries: 10, error_status: 529, error: "overloaded" },
+      { type: "system", subtype: "brand_new_thing", content: "Something new to read." },
+      { type: "system", subtype: "post_turn_summary", summary: "Already shown." },
+    ]);
+    assert.deepEqual(notices(rows), ["Claude's API is overloaded: trying again (2/10).", "Something new to read."]);
+    assertMatch(rows.filter(row => row.type === "compaction"), [{ status: "completed", reason: "auto" }]);
+  });
+
+  test("several hooks failing the same way at the same moment show as one row, and the same failure again later as another", async () => {
+    const failed = { type: "system", subtype: "hook_response", hook_name: "SessionStart:compact", hook_event: "SessionStart", outcome: "error", stderr: "Failed to run" };
+    const rows = await turn([failed, failed, failed, failed, { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto" } }, failed]);
+    const row = "Your SessionStart:compact hook failed: Failed to run.";
+    assert.deepEqual(notices(rows), [row, row]);
+    assert.deepEqual(rows.map(row => row.type), ["user", "synthetic", "compaction", "synthetic", "idle"]);
+  });
+
+  test("Claude Code's early warning of a limit says how much is used, and calls it close only near the end (#257)", async () => {
+    const rows = await turn([
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.25, surpassedThreshold: 0.25 } },
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.93, surpassedThreshold: 0.9 } },
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day_opus", utilization: 0.4 } },
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day_opus", utilization: 0.6 } },
+      { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day_opus", utilization: 0.92 } },
+    ]);
+    assert.deepEqual(notices(rows), [
+      "You've used 25% of your weekly Claude limit.",
+      "You're close to your 5-hour Claude limit: 93% used.",
+      "You've used 40% of your weekly Opus limit.",
+      "You're close to your weekly Opus limit: 92% used.",
+    ]);
   });
 });

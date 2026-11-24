@@ -53,7 +53,13 @@ mod tests {
         );
         assert_eq!(file_change("b.ts", None, Some("x\n"))["status"], "added");
         let hunks = patch_change("a.ts", "@@ -1,1 +1,2 @@\n-a\n+b\n+c\n", None);
-        assert_eq!(hunks["patch"], "--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,2 @@\n-a\n+b\n+c\n");
-        assert_eq!((hunks["additions"].as_u64(), hunks["deletions"].as_u64()), (Some(2), Some(1)));
+        assert_eq!(
+            hunks["patch"],
+            "--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,2 @@\n-a\n+b\n+c\n"
+        );
+        assert_eq!(
+            (hunks["additions"].as_u64(), hunks["deletions"].as_u64()),
+            (Some(2), Some(1))
+        );
     }
 }

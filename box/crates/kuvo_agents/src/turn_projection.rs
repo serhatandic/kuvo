@@ -351,7 +351,10 @@ impl Projection {
                     result.outcome,
                     Outcome::Interrupted | Outcome::AgentExited(_)
                 );
-                let mut rows = self.finish_compaction(false).into_iter().collect::<Vec<_>>();
+                let mut rows = self
+                    .finish_compaction(false)
+                    .into_iter()
+                    .collect::<Vec<_>>();
                 rows.extend(self.finish_step(None, None, error));
                 rows.extend(self.stop_tools(interrupted));
                 let id = self.id();
@@ -438,8 +441,7 @@ impl Projection {
             .store
             .change_header(&self.session, move |header| match event {
                 TurnEvent::Context { used, window } => {
-                    if let Some(window) =
-                        window.filter(|&window| window > 0 && window < (1 << 53))
+                    if let Some(window) = window.filter(|&window| window > 0 && window < (1 << 53))
                     {
                         header.insert("contextWindow".into(), json!(window));
                     }
@@ -486,7 +488,10 @@ impl Projection {
                         let total = cache.get(key).and_then(Value::as_u64).unwrap_or_default();
                         cache.insert(key.into(), json!(total.saturating_add(value)));
                     }
-                    let cost = header.get("cost").and_then(Value::as_f64).unwrap_or_default();
+                    let cost = header
+                        .get("cost")
+                        .and_then(Value::as_f64)
+                        .unwrap_or_default();
                     header.insert("cost".into(), json!(cost + spent.cost.unwrap_or_default()));
                 }
                 _ => {}

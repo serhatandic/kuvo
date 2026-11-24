@@ -25,9 +25,16 @@ pub(super) fn kuvo_tool(name: &str, input: &Value) -> (String, Value) {
         }
         "Read" => (
             "read",
-            pick(&[("path", "file_path"), ("offset", "offset"), ("limit", "limit")]),
+            pick(&[
+                ("path", "file_path"),
+                ("offset", "offset"),
+                ("limit", "limit"),
+            ]),
         ),
-        "Write" => ("write", pick(&[("path", "file_path"), ("content", "content")])),
+        "Write" => (
+            "write",
+            pick(&[("path", "file_path"), ("content", "content")]),
+        ),
         "Edit" => (
             "edit",
             pick(&[
@@ -109,8 +116,14 @@ mod tests {
             ("shell".into(), json!({"command":"ls","background":true}))
         );
         assert_eq!(
-            kuvo_tool("Edit", &json!({"file_path":"/a","old_string":"x","new_string":"y"})),
-            ("edit".into(), json!({"path":"/a","oldString":"x","newString":"y"}))
+            kuvo_tool(
+                "Edit",
+                &json!({"file_path":"/a","old_string":"x","new_string":"y"})
+            ),
+            (
+                "edit".into(),
+                json!({"path":"/a","oldString":"x","newString":"y"})
+            )
         );
         assert_eq!(
             kuvo_tool("mcp__files__read__all", &json!({"q":1})),

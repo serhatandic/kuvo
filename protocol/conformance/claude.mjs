@@ -225,7 +225,7 @@ export async function scriptedClaude(fixture = {}) {
 export function streams(uuid, blocks, usage = { input: 10, read: 0, write: 0, output: 5 }) {
   const id = `msg_${Math.random().toString(36).slice(2)}`;
   const event = event => ({ type: "stream_event", event, parent_tool_use_id: null, session_id: "$SESSION" });
-  const frames = [event({ type: "message_start", message: { id, model: "claude-opus-5-5", usage: { input_tokens: usage.input, cache_read_input_tokens: usage.read, cache_creation_input_tokens: usage.write, output_tokens: 1 } } })];
+  const frames = [event({ type: "message_start", message: { id, usage: { input_tokens: usage.input, cache_read_input_tokens: usage.read, cache_creation_input_tokens: usage.write, output_tokens: 1 } } })];
   blocks.forEach((block, index) => {
     if (block.type === "text") {
       frames.push(event({ type: "content_block_start", index, content_block: { type: "text", text: "" } }));
@@ -235,7 +235,7 @@ export function streams(uuid, blocks, usage = { input: 10, read: 0, write: 0, ou
       frames.push(event({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) } }));
     }
     frames.push(event({ type: "content_block_stop", index }));
-    frames.push({ type: "assistant", message: { id, model: "claude-opus-5-5", role: "assistant", content: [block] }, parent_tool_use_id: null, session_id: "$SESSION", user_message_uuids: [uuid] });
+    frames.push({ type: "assistant", message: { id, role: "assistant", content: [block] }, parent_tool_use_id: null, session_id: "$SESSION", user_message_uuids: [uuid] });
   });
   frames.push(event({ type: "message_delta", delta: { stop_reason: blocks.some(block => block.type === "tool_use") ? "tool_use" : "end_turn" }, usage: { output_tokens: usage.output } }));
   frames.push(event({ type: "message_stop" }));
