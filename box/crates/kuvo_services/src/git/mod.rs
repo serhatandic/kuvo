@@ -22,7 +22,9 @@ pub fn register(registry: &mut Registry, box_home: PathBuf) {
         async move {
             let listed = projects::listed(&box_home, &linked).map_err(unsupported)?;
             // (Each project as it's kept: fields the route doesn't name are answered too, as TS does.)
-            Ok(RouteReply::<get_kuvo_projects::Spec>::json_as_kept::<200>(listed))
+            Ok(RouteReply::<get_kuvo_projects::Spec>::json_as_kept::<200>(
+                listed,
+            ))
         }
     });
 }
