@@ -4,8 +4,10 @@ mod mail;
 mod progress;
 mod released_machines;
 mod retry;
+mod summary;
 
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -100,6 +102,7 @@ pub fn start(
     let pack_server = mail
         .as_ref()
         .and_then(|mail| mail.serve(home.clone(), checks.clone()));
+    let summary = summary::History::load(&home);
     let mut fleet = Fleet {
         home,
         peers,
@@ -115,6 +118,7 @@ pub fn start(
         next_bridge: Instant::now(),
         released_machines: released_machines::Checks::new(scratch),
         last_sent: None,
+        summary,
         attempted: None,
         pending: None,
         mail,
@@ -237,6 +241,7 @@ struct Fleet {
     next_bridge: Instant,
     released_machines: released_machines::Checks,
     last_sent: Option<Arc<UpdatePublication>>,
+    summary: summary::History,
     attempted: Option<PreparedRelease>,
     pending: Option<JoinHandle<Result<(), retry::Failure>>>,
     mail: Option<mail::Mail>,
@@ -552,12 +557,11 @@ impl Fleet {
             .map(|(release, _)| release)
             .or(candidate.as_ref())
             .or(running.as_ref());
-        let (local_row, peer_rows) = signed_release
+        let (local_row, peer_rows, summary) = signed_release
             .map(|release| {
                 let local = progress::row(release, &facts, UpdatePresence::default(), true, now);
-                let peers = view
-                    .roster
-                    .members
+                let members = view.roster.members_by_name();
+                let peers: BTreeMap<_, _> = members
                     .iter()
                     .map(|peer| {
                         let (presence, facts) = view.peer_update(&peer.key, now);
@@ -566,7 +570,15 @@ impl Fleet {
                         (peer.key, row)
                     })
                     .collect();
-                (Some(local), peers)
+                let here = view.roster.local();
+                let named = std::iter::once((here.name.as_str(), &local)).chain(
+                    members
+                        .iter()
+                        .filter_map(|peer| Some((peer.name.as_str(), peers.get(&peer.key)?))),
+                );
+                let digest = release.pack_digest(target).map(str::to_owned);
+                let summary = self.summary.summarize(release, digest, named, now);
+                (Some(local), peers, Some(summary))
             })
             .unwrap_or_default();
         let publication = UpdatePublication {
@@ -574,6 +586,7 @@ impl Fleet {
             bridge,
             local_row,
             peer_rows,
+            summary,
         };
         if self.last_sent.as_deref() != Some(&publication) {
             let publication = Arc::new(publication);

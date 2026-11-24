@@ -415,24 +415,29 @@ test("the computers list shows a retryable failure for the signed fleet target",
   });
 });
 
-test("the computers list shows a signed release on trial before it reports completion", { timeout: 45000 }, async t => {
+test("the computers list keeps the update visible from trial to settlement", { timeout: 45000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
   const { computer } = await bench(t);
-  const here = await computer("Standalone", undefined, folder => {
+  const make = name => computer(name, undefined, folder => {
     privateWindowsHome(path.join(folder, "box"));
     return {};
   });
+  const here = await make("Standalone");
   const { version, hash, signed, updateEnv } = await failedFleetDownload(t);
   const installed = "0.8.0-beta.1";
   write(path.join(here.home, "bin/box-version"), installed + "\n");
-  const resident = await here.start(binary, updateEnv).ready();
+  const running = here.start(binary, updateEnv);
+  let resident = await running.ready();
   const rowInState = state => until(async () => {
     const answer = await request(resident, "GET", "kuvo/computers");
     const row = answer.json?.computers?.[0]?.fleetUpdate;
-    return row?.state === state && row;
+    return row?.state === state && { row, summary: answer.json.fleetUpdate };
   }, `the computers list must show ${state}`);
-  await rowInState("cannot");
+  const { row: failed, summary: warning } = await rowInState("cannot");
+  assert.ok(warning, "the computers list must include the fleet warning");
+  assert.deepEqual([warning.shown, warning.stage, warning.warning, warning.title, warning.detail],
+    [true, "failed", true, `Standalone can’t update to ${version}`, `Standalone: ${failed.reason}`]);
 
   // Hold the keeper's publication at its trial boundary until the resident describes it.
   const release = `versions/${version}-${hash.slice(0, 12)}`;
@@ -440,18 +445,46 @@ test("the computers list shows a signed release on trial before it reports compl
   write(path.join(here.home, release, "boxes.json"), signed);
   write(previous, `versions/${installed}-000000000000/bin`);
   write(path.join(here.home, "active-release"), `${release}/bin`);
-  const switching = await rowInState("updating");
+  const { row: switching, summary: moving } = await rowInState("updating");
   assert.deepEqual(switching, {
     current: installed, target: version, targetSha256: hash, state: "updating", stage: "switching", canRetry: false,
     line: { words: `Switching to ${version}…`, tone: "working", phase: "switching" },
   });
 
+  assert.deepEqual([moving.shown, moving.stage, moving.phase, moving.title, moving.detail],
+    [true, "switching", "switching", `Switching to ${version} · 0 of 1 done`, "1 still on beta.1."]);
   fs.unlinkSync(previous);
-  const done = await rowInState("up-to-date");
+  const { row: done, summary: settled } = await rowInState("up-to-date");
   assert.deepEqual(done, {
     current: version, currentSha256: hash, target: version, targetSha256: hash, state: "up-to-date", canRetry: false,
     line: { words: `${version} · Up to date`, tone: "done", phase: "done" },
   });
+  assert.deepEqual([settled.shown, settled.phase, settled.title, settled.detail],
+    [true, "done", `Up to date on ${version}`, undefined]);
+  const record = path.join(here.home, "run/fleet-finished.json");
+  const saved = readJSON(record);
+  assert.equal(saved.target, version);
+  assert.ok(Number.isFinite(saved.finishedAt));
+  await running.stop();
+  const resumed = here.start(binary, updateEnv);
+  resident = await resumed.ready();
+  const { summary: restarted } = await rowInState("up-to-date");
+  assert.equal(restarted.shown, true);
+  assert.deepEqual(readJSON(record), saved);
+  await resumed.stop();
+  const expiredReceipt = { ...saved, finishedAt: saved.finishedAt - 600_001 };
+  write(record, encode(expiredReceipt));
+  resident = await here.start(binary, updateEnv).ready();
+  const { summary: expired } = await rowInState("up-to-date");
+  assert.deepEqual([expired.phase, expired.shown], ["done", false]);
+  assert.deepEqual(readJSON(record), expiredReceipt);
+  const newComputer = await make("Already current");
+  write(path.join(newComputer.home, release, "boxes.json"), signed);
+  write(path.join(newComputer.home, "active-release"), `${release}/bin`);
+  resident = await newComputer.start(binary, updateEnv).ready();
+  const { summary: unseen } = await rowInState("up-to-date");
+  assert.deepEqual([unseen.phase, unseen.shown], ["done", false]);
+  assert.equal(fs.existsSync(path.join(newComputer.home, "run/fleet-finished.json")), false);
 });
 
 test("a machine refuses the Mac Helper's Stop request", async t => {
@@ -967,12 +1000,13 @@ Buffer.from = function (value, encoding, ...args) {
     ? fs.readlinkSync(path.join(peer.home, "bin"))
     : fs.readFileSync(path.join(peer.home, "active-release"), "utf8");
   const checkRows = failover || (shellKeepers && !stageDeadline);
-  const rows = async peer => {
+  const computers = async peer => {
     try {
       const resident = readJSON(path.join(peer.home, "run/serve.json"));
       const answer = await request(resident, "GET", "kuvo/computers");
-      return Object.fromEntries(answer.json.computers.map(row => [row.name, row.fleetUpdate]));
-    } catch { return {}; }
+      const rows = Object.fromEntries(answer.json.computers.map(row => [row.name, row.fleetUpdate]));
+      return { rows, summary: answer.json.fleetUpdate };
+    } catch { return { rows: {} }; }
   };
   const staged = peer => fs.existsSync(path.join(peer.home, "run/fleet-ready.json"));
   const confirmed = peer => active(peer) === selected && !fs.existsSync(path.join(peer.home, "run/previous"));
@@ -1030,10 +1064,11 @@ Buffer.from = function (value, encoding, ...args) {
     assert.equal(active(away), initial(away));
     t.diagnostic(`first preparation in ${Math.round(performance.now() - began)} ms`);
     if (checkRows) {
-      const [preparing, ready] = await until(async () => {
-        const found = await rows(main);
-        const pair = [found.Studio, found.Lab].sort((a, b) => (a?.state ?? "").localeCompare(b?.state ?? ""));
-        return pair[0]?.state === "getting-ready" && pair[1]?.state === "ready" && pair;
+      const { pair: [preparing, ready], summary } = await until(async () => {
+        const { rows, summary } = await computers(main);
+        const pair = [rows.Studio, rows.Lab].sort((a, b) => (a?.state ?? "").localeCompare(b?.state ?? ""));
+        return pair[0]?.state === "getting-ready" && pair[1]?.state === "ready"
+          && rows.Away?.state === "off" && { pair, summary };
       }, "the computers list must show one ready computer and one still preparing");
       for (const row of [preparing, ready]) {
         assert.deepEqual([row.current, row.target, row.targetSha256, row.canRetry],
@@ -1041,6 +1076,9 @@ Buffer.from = function (value, encoding, ...args) {
       }
       assert.deepEqual(preparing.line, { words: "Getting ready…", tone: "working", phase: "getting-ready" });
       assert.deepEqual(ready.line, { words: `Ready for ${version}`, tone: "done", phase: "ready" });
+      assert.deepEqual([summary.shown, summary.phase, summary.done, summary.updating, summary.behind,
+        summary.title, summary.detail],
+        [true, "getting-ready", 1, 1, 1, `Getting ${version} ready · 1 of 3`, "Your computers stay on beta.1 meanwhile."]);
     }
 
     await reply("turn before release switch");
@@ -1094,13 +1132,21 @@ Buffer.from = function (value, encoding, ...args) {
     assert.equal(active(away), initial(away));
     if (checkRows) {
       const { Lab: current, Away: offline } = await until(async () => {
-        const found = await rows(leader);
-        return found.Lab?.state === "up-to-date" && found.Away?.state === "off" && found;
+        const { rows } = await computers(leader);
+        return rows.Lab?.state === "up-to-date" && rows.Away?.state === "off" && rows;
       }, "after confirmation the computers list must show the updated and offline computers");
       assert.deepEqual([current.current, current.currentSha256, current.target, current.targetSha256],
         [version, hash, version, hash]);
       assert.deepEqual(current.line, { words: `${version} · Up to date`, tone: "done", phase: "done" });
       assert.deepEqual(offline.line, { words: "Can’t be reached: updates when it’s back", tone: "off", phase: "off" });
+      if (!failover) {
+        const waiting = await until(async () => {
+          const { summary } = await computers(leader);
+          return summary?.phase === "waiting" && summary;
+        }, "the summary must count the updated and offline computers");
+        assert.deepEqual([waiting.shown, waiting.title, waiting.detail],
+          [true, `${version} · 2 of 3 up to date`, "Away updates when it’s back."]);
+      }
     }
     t.diagnostic(`online member confirmed ${Math.round(performance.now() - released)} ms after its download resumed`);
 
@@ -1144,6 +1190,14 @@ Buffer.from = function (value, encoding, ...args) {
         return false;
       }
     }, diagnose);
+    if (checkRows && !failover) {
+      const finished = await until(async () => {
+        const { summary } = await computers(leader);
+        return summary?.phase === "done" && summary;
+      }, "the summary must settle after the last computer returns");
+      assert.deepEqual([finished.shown, finished.done, finished.behind, finished.title],
+        [true, 3, 0, `All 3 on ${version}`]);
+    }
     assert.equal(retryDownload, false);
     if (peerOnly) assert.ok(refusedPacks > 0);
     if (returningTypescript) {

@@ -59,6 +59,17 @@ pub struct Roster {
 }
 
 impl Roster {
+    pub fn members_by_name(&self) -> Vec<&Member> {
+        let mut peers: Vec<_> = self.members.iter().collect();
+        peers.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then(a.key.cmp(&b.key))
+        });
+        peers
+    }
+
     pub fn local(&self) -> Computer {
         Computer {
             id: self

@@ -54,6 +54,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A reachable computer can retry a failed fleet download when another computer in its setup asks.
 - The computers list reports failed release downloads across the setup and whether they can be retried.
 - The computers list shows when each computer is preparing, ready, switching, up to date, or out of reach during a signed release update.
+- The computers list shows the setup’s release progress and keeps the completion visible for ten minutes.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
 - A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
 
