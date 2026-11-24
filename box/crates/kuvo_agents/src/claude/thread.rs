@@ -5,7 +5,7 @@ use std::{
     fs,
     future::pending,
     io,
-    io::Read,
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -194,6 +194,7 @@ impl Recovery {
 #[derive(Clone)]
 pub(super) struct Conversation {
     commands: mpsc::Sender<Command>,
+    session: String,
     directory: PathBuf,
     config: Option<PathBuf>,
 }
@@ -204,6 +205,7 @@ enum Command {
     Start(Box<TurnInput>, Arc<dyn TurnSink>, Reply<()>),
     Steer(String, Prompt, Reply<Steer>),
     Interrupt(String, Reply<()>),
+    Resolve(SteerReceipt, Reply<Option<bool>>),
     Prepare(Reply<()>),
     Stop(bool, Reply<()>),
 }
@@ -218,6 +220,7 @@ impl Conversation {
         let (commands, receiver) = mpsc::channel(16);
         let conversation = Self {
             commands,
+            session: context.session_id.clone(),
             directory: context.directory.clone(),
             config: program.config_home(&context.directory),
         };
@@ -289,6 +292,11 @@ impl Thread for Conversation {
             }) as Arc<dyn ActiveTurn>)
         })
     }
+
+    /// Claude Code keeps the message's own UUID in its transcript once it takes it.
+    fn resolve_steer(&self, receipt: SteerReceipt) -> AdapterCall<'_, Option<bool>> {
+        Box::pin(self.send(|reply| Command::Resolve(receipt, reply)))
+    }
 }
 
 struct Turn {
@@ -297,6 +305,16 @@ struct Turn {
 }
 
 impl ActiveTurn for Turn {
+    /// The UUID Claude Code acknowledges it by, derived from the message before it's sent.
+    fn steer_receipt(&self, prompt: &Prompt) -> Option<SteerReceipt> {
+        let session = &self.conversation.session;
+        Some(SteerReceipt {
+            thread: session.clone(),
+            turn: self.id.clone(),
+            message: prompt_id(session, prompt.id.clone()),
+        })
+    }
+
     fn steer(&self, prompt: Prompt) -> AdapterCall<'_, Steer> {
         Box::pin(
             self.conversation
@@ -405,6 +423,9 @@ impl Actor {
             Command::Interrupt(turn, reply) => {
                 let result = self.interrupt(&turn).await;
                 let _ = reply.send(result);
+            }
+            Command::Resolve(receipt, reply) => {
+                let _ = reply.send(self.resolve(receipt).await);
             }
             Command::Prepare(reply) => {
                 if let Some(pipe) = &mut self.pipe
@@ -702,10 +723,51 @@ impl Actor {
             return Ok(Steer::InDoubt(SteerReceipt {
                 thread: self.session.clone(),
                 turn: turn.into(),
-                message: id,
+                message: native.into(),
             }));
         }
         Ok(Steer::Accepted)
+    }
+
+    /// Whether Claude Code took a steered message: unknown while a turn that was handed it
+    /// hasn't said, then whether its transcript has it.
+    async fn resolve(&mut self, receipt: SteerReceipt) -> io::Result<Option<bool>> {
+        if receipt.thread != self.session {
+            return Ok(None);
+        }
+        let handed =
+            |steered: &[Steered]| steered.iter().any(|sent| sent.native == receipt.message);
+        let recovered = self.recovery.as_ref().is_some_and(|note| {
+            note.state
+                .as_ref()
+                .and_then(|state| state.get("steered"))
+                .and_then(|steered| serde_json::from_value::<Vec<Steered>>(steered.clone()).ok())
+                .is_some_and(|steered| handed(&steered))
+        });
+        if recovered
+            || self
+                .running
+                .as_ref()
+                .is_some_and(|turn| handed(&turn.steered))
+        {
+            return Ok(None);
+        }
+        let Some(native) = self
+            .state
+            .get("claudeSession")
+            .and_then(Value::as_str)
+            .filter(|id| is_uuid(id))
+            .map(str::to_owned)
+        else {
+            return Ok(Some(false));
+        };
+        let Some(config) = self.program.config_home(&self.directory) else {
+            return Ok(None);
+        };
+        let found =
+            tokio::task::spawn_blocking(move || transcript_has(&config, &native, &receipt.message))
+                .await?;
+        Ok(found.ok())
     }
 
     async fn interrupt(&mut self, turn: &str) -> io::Result<()> {
@@ -1025,6 +1087,36 @@ impl Actor {
         )
         .await
     }
+}
+
+/// Claude Code keeps a conversation as `projects/<folder>/<id>.jsonl`; it finds one by its ID in
+/// any project folder, and so does this.
+fn transcript_has(config: &Path, native: &str, message: &str) -> io::Result<bool> {
+    let projects = match fs::read_dir(config.join("projects")) {
+        Ok(projects) => projects,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    for project in projects {
+        let file = match fs::File::open(project?.path().join(format!("{native}.jsonl"))) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if !line.contains(message) {
+                continue;
+            }
+            if let Ok(entry) = serde_json::from_str::<Value>(&line)
+                && entry["type"] == "user"
+                && entry["uuid"] == message
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn turn_note(note: Option<&TurnNote>) -> io::Result<Metadata> {

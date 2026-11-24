@@ -17,8 +17,8 @@ use kuvo_agents::{
     runtime::{AdapterCall, Runtime},
     session::{
         Answer, Decision, Delivery, EventEnvelope, ModelRef, Outcome, PermissionAsk,
-        PermissionMode, Preflight, Prompt, QuestionAsk, SessionContext, Steer, TurnEvent,
-        TurnInput, TurnKind, TurnSink, VendorState,
+        PermissionMode, Preflight, Prompt, QuestionAsk, SessionContext, Steer, SteerReceipt,
+        TurnEvent, TurnInput, TurnKind, TurnSink, VendorState,
     },
 };
 use kuvo_store::home::Home;
@@ -177,6 +177,13 @@ async fn scenario(root: PathBuf) {
         .await
         .unwrap();
     assert_eq!(questions.recv().await.unwrap(), "tool-approve");
+    let receipt = active
+        .steer_receipt(&prompt("msg_second", "one more"))
+        .unwrap();
+    assert_eq!(
+        (receipt.thread.as_str(), receipt.turn.as_str()),
+        (SESSION, "turn_1")
+    );
     assert_eq!(
         active
             .steer(prompt("msg_second", "one more"))
@@ -184,6 +191,8 @@ async fn scenario(root: PathBuf) {
             .unwrap(),
         Steer::Accepted
     );
+    // Handed, and Claude hasn't said whether it took it.
+    assert_eq!(holder.resolve_steer(receipt.clone()).await.unwrap(), None);
     let before = runtime.holders().records().await.unwrap().pop().unwrap();
     assert!(before.child.is_some());
     old.prepare_replacement().await.unwrap();
@@ -200,6 +209,8 @@ async fn scenario(root: PathBuf) {
     let state = sink.state.lock().unwrap().clone();
     assert_eq!(state["claudeSession"], INITIAL);
     let holder = next.open_thread(context(&root, state)).await.unwrap();
+    // The recovered turn still waits to hear about it.
+    assert_eq!(holder.resolve_steer(receipt.clone()).await.unwrap(), None);
     let (new_sink, mut replayed, mut asks) = Sink::new();
     holder
         .start(
@@ -231,6 +242,20 @@ async fn scenario(root: PathBuf) {
             matches!(result.outcome, Outcome::Succeeded) && result.missed.is_empty()
         )
     );
+    assert_eq!(
+        holder.resolve_steer(receipt.clone()).await.unwrap(),
+        Some(true)
+    );
+    let never = SteerReceipt {
+        message: "5a0f6a3e-2c1b-4d7e-9f80-1a2b3c4d5e6f".into(),
+        ..receipt.clone()
+    };
+    assert_eq!(holder.resolve_steer(never).await.unwrap(), Some(false));
+    let elsewhere = SteerReceipt {
+        thread: "ses_other".into(),
+        ..receipt
+    };
+    assert_eq!(holder.resolve_steer(elsewhere).await.unwrap(), None);
 
     let (cancelled, mut canceled_events, mut asks) = Sink::new();
     let active = holder
@@ -481,6 +506,28 @@ fn claude_wire_fixture() {
         .iter()
         .position(|arg| arg == "--resume")
         .map(|index| args[index + 1].clone());
+    let native = args
+        .iter()
+        .position(|arg| arg == "--resume" || arg == "--session-id")
+        .map(|index| args[index + 1].clone())
+        .unwrap();
+    // Claude Code's transcript keeps each user message it takes, by the UUID it was sent with.
+    let transcript = {
+        let home = env::var_os("HOME")
+            .or_else(|| env::var_os("USERPROFILE"))
+            .unwrap();
+        let folder = PathBuf::from(home).join(".claude/projects/fixture-project");
+        fs::create_dir_all(&folder).unwrap();
+        folder.join(format!("{native}.jsonl"))
+    };
+    let took = |uuid: &Value| {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        writeln!(file, "{}", json!({"type":"user","uuid":uuid})).unwrap();
+    };
     let ask = json!({
         "type":"control_request","request_id":"approval","request":{
             "subtype":"can_use_tool","tool_name":"Bash","input":{"command":"echo fixture"},
@@ -520,6 +567,7 @@ fn claude_wire_fixture() {
                 if message["message"]["content"][0]["text"] == "withdraw" {
                     emit(json!({"type":"control_cancel_request", "request_id":"approval"}));
                     open = false;
+                    took(&message["uuid"]);
                     result(vec![message["uuid"].clone()]);
                 } else {
                     assert!(steered.is_none(), "a message reached the CLI twice");
@@ -527,6 +575,7 @@ fn claude_wire_fixture() {
                 }
             }
             Some("user") => {
+                took(&message["uuid"]);
                 let text = message["message"]["content"][0]["text"].as_str().unwrap();
                 match text {
                     "/clear" => {
@@ -570,8 +619,10 @@ fn claude_wire_fixture() {
                 );
                 open = false;
                 result(Vec::new());
+                let steered = steered.take().unwrap();
+                took(&steered);
                 assistant("second", "second message answered");
-                result(vec![steered.take().unwrap()]);
+                result(vec![steered]);
             }
             _ => panic!("unexpected fixture input"),
         }
