@@ -11,6 +11,7 @@ import { AcpThread } from "../../src/agents/acp"
 import { AntigravityFollower } from "../../src/agents/agents/antigravity"
 import { model, type Agent, type RunInput, type RunResult, type Thread, type TurnHooks } from "../../src/agents/agent"
 import { Auto } from "../../src/agents/auto"
+import { settingsLayers } from "../../src/agents/blocks"
 import { EngineLink } from "../../src/agents/engine"
 import { subscribe } from "../../src/agents/events"
 import type { Roster } from "../../src/agents/roster"
@@ -560,6 +561,101 @@ describe("permissions", () => {
     } finally {
       engine.stop(true)
     }
+  })
+
+  test("Allow Once goes while the engine is parked, with Blocks from its settings files, and Blocks still refuse once it's back", async () => {
+    const project = join(root, "project")
+    const config = join(root, "config")
+    mkdirSync(join(config, "opencode"), { recursive: true })
+    mkdirSync(join(project, ".git"), { recursive: true })
+    const settings = join(config, "opencode", "opencode.jsonc")
+    let engineBlocks: { action: string; resource: string; effect: string }[] = []
+    const serve = () => Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json([{ info: { policies: engineBlocks } }]) })
+    // The engine ran as the bridge started, and was parked since (only a coding agent at work): its
+    // record is gone, and the bridge still points where it was.
+    let engine = serve()
+    const link = new EngineLink()
+    link.settingsLayers = (directory) => settingsLayers(directory, config)
+    link.configure(String(engine.url).replace(/\/$/, ""), "fixture", 101)
+    engine.stop(true)
+    const agents = new Map([a, b].map(agent => [agent.providerID, agent]))
+    sessions = new Sessions(store, { find: (id: string | undefined) => (id ? agents.get(id) : undefined) } as unknown as Roster, auto, undefined, (directory, fresh) => link.policies(directory, fresh))
+    const answers: string[] = []
+    a.script = async (_input, turn, hooks) => {
+      for (const command of ["npm test", "rm -rf build", "git push origin"]) answers.push(await hooks.permission({ action: "shell", resources: [command] }))
+      turn.startStep()
+      turn.text("done")
+      turn.endStep()
+      return { outcome: "succeeded" }
+    }
+    const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: project } }).id
+    sessions.update(id, { permissions: [{ action: "shell", resource: "*", effect: "ask" }] })
+    const waiting = async (command: string) => {
+      await until(() => sessions.permissions(id).some(ask => ask.resources?.[0] === command))
+      return sessions.permissions(id)[0]
+    }
+    const signal = AbortSignal.timeout(5_000)
+    send(id, "go")
+    const first = await waiting("npm test")
+    // Settings that can't be read allow nothing.
+    writeFileSync(settings, "{ \"policies\": [")
+    expect(await sessions.replyPermissionLive(id, first.id, "once", undefined, signal)).toMatchObject({ status: 503 })
+    expect(sessions.permissions(id).map(ask => ask.id)).toEqual([first.id])
+    // As the engine writes them: comments, and a comma before the end.
+    writeFileSync(settings, "// Kept by Kuvo Code\n{\n  \"policies\": [\n    { \"action\": \"tool.use\", \"resource\": \"shell:git status\", \"effect\": \"deny\" }, // not this\n  ],\n}\n")
+    expect(await sessions.replyPermissionLive(id, first.id, "once", undefined, signal)).toBeUndefined()
+    const second = await waiting("rm -rf build")
+    // A Block made while the engine is parked (the project's own settings): it refuses.
+    writeFileSync(join(project, "opencode.json"), JSON.stringify({ policies: [{ action: "tool.use", resource: "shell:rm *", effect: "deny" }] }))
+    expect(await sessions.replyPermissionLive(id, second.id, "once", undefined, signal)).toMatchObject({ status: 403 })
+    await sessions.replyPermissionLive(id, second.id, "reject", undefined, signal)
+    // The engine is back (another process, another port), with a Block of its own.
+    const third = await waiting("git push origin")
+    engine = serve()
+    link.configure(String(engine.url).replace(/\/$/, ""), "fixture", 102)
+    engineBlocks = [{ action: "tool.use", resource: "shell:git push *", effect: "deny" }]
+    try {
+      expect(await sessions.replyPermissionLive(id, third.id, "always", undefined, signal)).toMatchObject({ status: 403 })
+      await sessions.replyPermissionLive(id, third.id, "reject", undefined, signal)
+      await settled(id, 1)
+    } finally {
+      engine.stop(true)
+    }
+    expect(answers).toEqual(["once", "reject", "reject"])
+    expect(texts(id)).toEqual(["done"])
+  })
+
+  test("Full Access runs a harmless command without asking while the engine is parked, and a Block in its settings files still refuses", async () => {
+    const project = join(root, "project")
+    const config = join(root, "config")
+    mkdirSync(join(config, "opencode"), { recursive: true })
+    mkdirSync(project, { recursive: true })
+    const engine = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json([{ info: { policies: [] } }]) })
+    const link = new EngineLink()
+    link.settingsLayers = (directory) => settingsLayers(directory, config)
+    link.configure(String(engine.url).replace(/\/$/, ""), "fixture", 101)
+    // Parked: only coding agents at work.
+    engine.stop(true)
+    const agents = new Map([a, b].map(agent => [agent.providerID, agent]))
+    sessions = new Sessions(store, { find: (id: string | undefined) => (id ? agents.get(id) : undefined) } as unknown as Roster, auto, undefined, (directory, fresh) => link.policies(directory, fresh))
+    let seen: (boolean | string)[] = []
+    a.script = async (_input, _turn, hooks) => {
+      seen.push(hooks.approvesAll(), hooks.check({ action: "shell", resources: ["ls"] }) ?? "its own")
+      seen.push(await hooks.permission({ action: "shell", resources: ["ls"] }), await hooks.permission({ action: "shell", resources: ["rm -rf build"] }))
+      return { outcome: "succeeded" }
+    }
+    const id = sessions.create({ model: { providerID: "alpha", id: "one" }, location: { directory: project } }).id
+    sessions.update(id, { permissions: [{ action: "*", resource: "*", effect: "allow" }] })
+    send(id, "go")
+    await settled(id, 1)
+    expect(seen).toEqual([true, "its own", "once", "once"])
+    expect(sessions.permissions(id)).toHaveLength(0)
+    writeFileSync(join(config, "opencode", "opencode.json"), JSON.stringify({ policies: [{ action: "tool.use", resource: "shell:rm *", effect: "deny" }] }))
+    seen = []
+    send(id, "again")
+    await settled(id, 2)
+    expect(seen).toEqual([false, "its own", "once", "reject"])
+    expect(sessions.permissions(id)).toHaveLength(0)
   })
 
   test("a live Always reply applies current Blocks to every pending ask it covers", async () => {

@@ -952,7 +952,7 @@ async fn group_chat_handoff_and_living_document_from_wakeups() {
     // Pinned code file in git keeps a copy once pinned
     let _ = store.pin(&plan_art.id, Some((PinBy::You, Some("Final".into())))).await;
     assert_eq!(
-        store.get(&plan_art.id).unwrap().pinned.unwrap().note.as_deref(),
+        store.get(&plan_art.id).unwrap().pinned.as_ref().unwrap().note.as_deref(),
         Some("Final")
     );
     let _ = Handover {

@@ -7,6 +7,10 @@ Row 5.5 ports the Library, Artifacts, Marketplace, Integrations, Skills, MCP Cat
 
 ## Platform verification (5.5a)
 
+- **Code size (non-test Rust vs TS reference)**:
+  - TS 5.5a reference (26 files: `link/artifacts/*`, `link/library/*`, `link/areas/{artifacts,library,setup-outputs}.ts`, `shared/routes/{artifacts,library}.ts`, `shared/{attachment-paths,message-block}.ts`): **5,014 lines, 234,518 chars**.
+  - Rust 5.5a before slimming (23 files, non-test): **10,710 lines (2.14×), 360,164 chars (1.54×)**.
+  - Rust 5.5a after slimming (23 files, non-test): **6,419 lines (1.28×), 279,582 chars (1.19×)** (−4,291 lines / −40.1%, −80,582 chars / −22.4%).
 - **macOS (aarch64-apple-darwin)**:
   - `cargo test -p kuvo_services --lib --test library_artifacts`: 41 lib tests + 6 integration tests pass.
   - `KUVO_CONFORMANCE_AREA=artifacts`: 3/3 pass against both `box/dist/kuvo-link.js` and `box/target/debug/kuvo-box`.

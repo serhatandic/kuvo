@@ -5,10 +5,14 @@ split into parts, each mergeable once it has its proof:
 
 - **5.1a** — wake-ups and watches (routes and the resident's own round) and the bot list
   (`kuvo/bots` and its events). This document's first part.
-- **5.1b** — the rest of the bot routes: templates, make, edit, delete, arrived, retell, seen,
-  held edits and bots elsewhere, the gone key routes.
-- **5.1c** — work (activity, background, oversight, asks, settings, the work watcher that tells a
-  conversation of its sessions), approval and Auto's decisions, attention, notices.
+- **5.1b** — the rest of this box's own bot routes: templates, make, edit, delete, arrived,
+  retell, seen, the gone key routes, and each bot told what it is as the engine starts.
+- **5.1c** — approval (5.1c-1, done), then work (activity, background, oversight, asks, settings,
+  the agents' work tools, the work watcher that tells a conversation of its sessions) and notices
+  with their holds while you're at a client. Auto's reviewer (`kuvo/sessions/:id/decisions`,
+  `work/reviewer.ts`, `work/reviewing.ts`) is 6.1's, with the sandbox it acts in.
+- **5.1d** — edits held for bots on your other computers, the bots elsewhere in `kuvo/bots`, and
+  bots' old keys of their own taken away (with what a bot is told while one isn't connected).
 
 Proof for each part: the area's route scenarios pass against both boxes through the binary, a
 side-by-side run over the same home, Rust tests for what the scenarios can't reach, and the platform
@@ -84,11 +88,7 @@ each box saw the state begin.
 | [wakes-events-shape](../../box/test/wakes-events-shape.test.ts) | new: event lines fit the route's shape | `routes::Row` always carries `watching` and `next` |
 | `bots.test.js`, `bots-mac.test.js`: listing cases | list, paused, deletes, `machine` | `bots` list scenarios; `now::tests`, `job::tests` |
 
-Everything else under row 5.1 (`bots*`, `bot-keys-gone*`, `box-work`, `work-*`, `approval*`,
-`attention*`, `at-work*`, `sandbox-asks`, `outside-asks-live`, `personalities-box` bot retell,
-`notices-plain`, `notices-rule`, `conversation-activity`, `work-answers`, `setup-lists`, `mac-peers`
-7 and 13–14, `devices`, and the cases other coverage maps assign to 5.1) is open, owned by 5.1b
-and 5.1c as listed above.
+Everything else under row 5.1 is listed in the parts below, or open there with its part.
 
 ### Deliberate differences from TypeScript
 
@@ -113,3 +113,161 @@ and 5.1c as listed above.
 
 `kuvo/wakes/events` lines left out `watching` (and `next`), which the route's shape requires.
 Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the old code).
+
+## 5.1b — making, changing, deleting and telling bots
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::bots::kit` | `bots/kit.ts` (`readWords`, `readKit`, `wordsHere`, `botTemplates`, `botInstructions`, `runsWithAgents`), `botPersonalities` |
+| `kuvo_work::bots::make` | `bots/make.ts` (`makeBot`, the hour a request's answer is kept), `fitsLook`, `botLook`, `botModel`, `boxProjects` |
+| `kuvo_work::bots::edit` | `bots/edit.ts` (`changeBot`, `effortOf`, `deleteBot`, `finishDeletes`, `bots-left.json`, `deleted.json`), `bots/edited.ts` |
+| `kuvo_work::bots::tell` | `bots/tell.ts` (`told.json`, `toldNow`, `tellBot`, `freshenBot(s)`, `settleFolder`, `settleBot`, `repairRules`) |
+| `kuvo_work::bots::seen` | `bots/seen.ts`, `botSeenRoute` |
+| `kuvo_work::bots::reach` | `signInRefusal`, `startingModelHere`, `usableModels`, `modelNamed`, `toldThere` |
+| `kuvo_work::bots::setup` | `zoneFilesFor`, `writeZoneFiles`, `ownClock`; the library and zone come from the setup service |
+| `kuvo_work::approval` | `work/approval.ts` (`defaultApproval`, `approvalsSince`, `unavailable`, `effectiveApproval`, `approvalRules`, `approvalOf` for a bot), `refreshedRules`, `permissionsHere`, `work/former-asks.ts` |
+| `kuvo_engine::BotEngine` | the engine calls above, `rewriteOn` |
+| `Registry::retire` | the gone key routes (`own-keys.ts` router lines) |
+
+### Proof
+
+- `KUVO_CONFORMANCE_AREA=bots`: 40/40 against both boxes on macOS; the Rust box 40/40 on native
+  Windows (three runs) and on Linux (the static musl build under WSL Ubuntu 24.04).
+- Side by side, 22 requests over a home with a bot (templates, refusals, every Edit Bot change,
+  effort, seen, arrived, retell, the gone key routes, delete twice): every answer matches but
+  `held`, `refused` and `elsewhere` (5.1d). Both boxes made the same engine calls in the same
+  order; what the bot was told differs only by each home's path. The trash folder is named by time
+  and process, its contents the same. `box/approval.json`'s `since` is written by the TypeScript
+  box's approval area (5.1c).
+- What a bot is told was compared whole with TypeScript's for the same bot: the same text.
+- Rust unit tests: `approval::tests` (6), `kit::tests` (4).
+- Size: about 108,000 characters of Rust (tests left out) for about 94,000 of TypeScript (1.15×).
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bots](../../box/bridge-tests/bots.test.js) | 410–453 New Bot's projects and starting model | `bots` "templates" scenario; `reach::starting_model` uses the engine's one rule |
+| | 469, 548, 611 a bot made, what's missing said, one whose conversation can't be marked | `bots` "making a bot…", "made from a template", "keeps its look and model", "told who it is" |
+| | 527, 572, 589 New Bot sent again, a request that leaves mid-way | `make::Bots::make`: one making per `request`, kept an hour, made whatever the request does |
+| | 628, 683, 732, 765, 783, 859 Edit Bot changes, told, refusals | `bots` "changing a bot…", "what Edit Bot changes reaches…"; `edit::onto`, `keep_allowed` |
+| | 805 effort | `bots` "a bot's effort…"; `edit::effort_of` |
+| | 899, 945, 967, 999 Delete Bot, deletes finished later | `bots` "deleting a bot…"; `run/bots-left.json` and `finish_deletes` as the engine starts. Group chats: 5.3 |
+| | 1032, 1090 a machine's own words and facts | `kit::tests`; the Mac kit carry (COMPAT 0.7) isn't ported |
+| | 1129–1230 rules made again, a bot brought here | `approval::tests`; `tell::repair_rules`, `settle` (`arrived`) |
+| | 305 a moving bot isn't changed | `MOVING` (409) in `change` and `delete` |
+| | 286 a bot with the coding agents | 4.x: answered with the agents line until their bridge is in the resident |
+| [bots-mac](../../box/bridge-tests/bots-mac.test.js) | 159, 192, 361, 374, 411 this Mac's bots and words | `bots` scenarios (mac variant), `kit::tests` |
+| | 203, 212, 224, 237, 272, 287, 299, 429 told once, retold as the engine starts, rules put right | `tell::freshen` under one turn per bot; `follow_engine` |
+| | 331 events | 5.1a `kuvo/bots/events`, told on each change here |
+| [personalities-box](../../box/bridge-tests/personalities-box.test.js) | 199 a bot retold with a changed personality | `told_now` reads the library from the setup service; `POST kuvo/bots/retell` |
+| `bot-keys-gone*`, `bots-held*`, `moves-elsewhere` (bots) | held edits, bots elsewhere, old keys | 5.1d |
+| `bots-work*`, `bots-projects`, `bots-dead-models` | a bot's work | 5.1c |
+
+### Deliberate differences from TypeScript
+
+- **The engine starts on demand** to make, change, delete or settle a bot, as every Rust send
+  does; TypeScript answered "The engine isn't running." The retell as the engine starts, and seen,
+  use it only while it runs.
+- **One turn per bot** for Edit Bot, Delete Bot, the retell and arrived: a retell as the engine
+  starts never tells the old words after Edit Bot's new ones, and never writes in a folder being
+  moved to the trash. On Windows a folder still open a moment (a listing reading it) is tried
+  again for up to two seconds before Delete Bot says it couldn't.
+- **Bots with the coding agents** (`via` bridge) are answered with the agents line, and a change to
+  a coding agent's model isn't carried there, until their bridge is in the resident (4.x). A deleted
+  bot's place in group chats stays noted in `run/bots-left.json` for 5.3.
+- **A Mac's deleted bot** stays in Kuvo Code's trash folder: the retired app's Finder Trash hand-off
+  isn't ported.
+- **Not ported:** the older Mac kit carried into the box's facts (COMPAT 0.7 bot-kit), settling a
+  new bot's approval again after it's made (5.1c), and what a bot is told while a key it had isn't
+  connected (5.1d). Seen leaves the session list to take the engine's `session.viewed`.
+
+## 5.1c-1 — approval
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::approval::ApprovalService` | `areas/approval.ts` without the reviewer: `approvalHere`, `shown`, `changeFor`, `write`, `toSettle`, `settle`, `remake`, `setApproval`, `reapplyApprovals`, `adoptConversation`, `adoptPending`, `keepApprovals`, `approvalRoute` |
+| `kuvo_work::approval::Approvals` | `work/approval.ts`: `approvalOf` (whole), `madeBefore`, `rememberApproval`, `allowFullAccess`, `otherComputersAllowed`, `allowOtherComputers`, `APPROVAL_WORDS` |
+| `kuvo_work::bots` (`change`, `freshen`) | `adoptBots`: a bot's conversation from before there were approvals, adopted in its own turn |
+
+### Proof
+
+- New route scenarios `box/test/fixtures/routes/approval.json` (`KUVO_CONFORMANCE_AREA=approval`):
+  this computer's switch, default and the other computers' switch; a conversation's approval read
+  and set, Full Access refused until confirmed, the rules sent to the engine. Both boxes pass on
+  macOS; the Rust box on native Windows and Linux (WSL, static musl). Auto's own fields are left
+  out of the scenarios: it's held here and not offered on Windows. `bots` stays 40/40 on all three
+  (Windows three times).
+- Side by side, 15 requests (switches, every refusal, a conversation set and read again, Full
+  Access confirmed and taken back): every answer matches; `box/approval.json` differs only by
+  `since`, when each box first kept approvals.
+- Size: about 27,000 characters of Rust for about 25,000 of TypeScript (the reviewer's routes
+  left out): 1.08×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [approval](../../box/bridge-tests/approval.test.js) | 108, 132, 199, 265, 274, 313, 341, 369 a conversation read and set, Accept Edits, Full Access only once confirmed, a new conversation's default, what's never Full Access | `approval` scenarios; `Approvals::of`, `rules`; `approval::tests` |
+| | 150, 172, 185, 212, 227, 248, 385, 402 Auto with the sandbox, `.env`, Settings changes reaching conversations in Auto | Auto is held as Ask First until the sandbox (6.1); the rules made for Auto are `approval::tests`, `rules` |
+| | 419, 444, 470 Auto's reviewer | 6.1 |
+| [approval-round-memory](../../box/test/approval-round-memory.test.ts), [approval-settings-round](../../box/test/approval-settings-round.test.ts) | the Full Access launcher markers; Settings changed while the box was down | 6.1 (the launcher's markers); `keep` makes them again as the engine starts |
+| [approval-words](../../box/test/approval-words.test.ts) | each mode's name and line | `options` in the `approval` scenarios |
+| [windows-approval](../../box/test/windows-approval.test.ts) | Auto as coming soon, Ask First by default on Windows | `Approvals::unavailable` (`windows`, "Coming soon on Windows.") and `default_approval`; the scenarios leave Auto out so they pass on Windows too |
+| [attention](../../box/bridge-tests/attention.test.js), [attention-mac](../../box/bridge-tests/attention-mac.test.js) | the lease (`kuvo/attention`) | Peers (the `attention` area passes on both boxes) |
+| | holding your phones' notices while a client's in use, answered or seen | 5.1c, with notices: open |
+
+### Deliberate differences from TypeScript
+
+- **The round looks when something changes** (the engine starts, the Full Access switch or
+  Settings › Permissions change, the session list changes) rather than every two seconds, and only
+  while the engine runs: a lease each round would keep it from stopping when idle.
+- **A bot's conversation from before there were approvals** is adopted by the bots, in the bot's
+  turn (as it's told what it is as the engine starts, and before Edit Bot changes it), not by the
+  round, so what Edit Bot says to it is the last it hears. A bot's work kept with no approval is
+  left as its rules say.
+- **Not ported here:** the sandbox's Full Access markers and Auto's places (6.1), and the coding
+  agents' subagents' approval (their bridge, 4.x).
+
+## 5.1c-2 — work settings, oversight, work changes, the asks list
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::work::WorkSettings` | `work/settings.ts` (`projectsFolder`, `suggestedFolder`, `folderGiven`, `setProjectsFolder`, `keepsAwakeSetting`, `patchWorkSettings`, `workSettings`), `work/awake.ts` (`keepsMacAwakeItself`, `awakeForWork`, `holdForWork`, `lookAtWork`, `keepAwakeWhileWorking`) |
+| `kuvo_work::work::Records` | `work/changes.ts`, `work/oversight.ts` |
+| `kuvo_work::work::asks` | `workAsks`, `projectPlace`, `folderName`, `resetAskWords` |
+| `kuvo_work::work::Work` | `workRoute` (`kuvo/work/events`, `kuvo/work/oversight` and its events), `workAsksRoute` (`kuvo/work/settings`, `kuvo/work/asks` and its events) |
+
+### Proof
+
+- Route scenarios `box/test/fixtures/routes/work.json` (`KUVO_CONFORMANCE_AREA=work`): where new
+  projects go (none, refusals, a folder picked, a change on what was read), oversight and asks on a
+  new box. Both boxes on macOS; the Rust box on native Windows and Linux (WSL, static musl), with
+  `approval` and `bots` again on all three.
+- Side by side, 12 requests (every settings refusal, a folder picked, a stale `was`, a keep-awake
+  that isn't true or false, asks, oversight): every answer and `box/work.json` match.
+- `asks::tests` (a project's folder name).
+- Size: about 27,500 characters of Rust for about 24,000 of TypeScript (settings, keep-awake,
+  changes, oversight, the asks list and their routes): 1.15×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bots-projects](../../box/bridge-tests/bots-projects.test.js) | 222, 236 a projects folder picked, only a real one | `work` scenarios; `WorkSettings::change` |
+| | 100–208, 250–338 asking to make or clone a project, answering, Always, `kuvo/projects/new` | 5.1c, with the work tools: open |
+| `own-mac` (Keep This Mac Awake) | the setting and whether it holds now | `WorkSettings::keep_awake`: `caffeinate -i -w` while agents work, `run/work-awake.json`; only on a Mac box on macOS |
+
+### Deliberate differences from TypeScript
+
+- **Keep This Mac Awake** asks the session list whether agents work (any conversation at work or
+  asking) rather than the engine's and bridge's active lists each look; a session list that can't
+  say holds as nothing at work.
+- **Followed lists** (`kuvo/work/events`, oversight and asks events) look again as the session list
+  changes and every two seconds, rather than watching files.

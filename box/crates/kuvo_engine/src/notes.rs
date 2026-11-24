@@ -84,6 +84,11 @@ pub struct NoteWriter<'a> {
 }
 
 impl NoteWriter<'_> {
+    /// The session as the engine has it now, read in this turn.
+    pub async fn current(&self) -> Result<Value, Refusal> {
+        sessions::read(self.engine, &self.lease, &self.route).await
+    }
+
     pub async fn edit(&mut self, edits: NoteEdits) -> Result<bool, Refusal> {
         let current = sessions::read(self.engine, &self.lease, &self.route).await?;
         let mut metadata = current

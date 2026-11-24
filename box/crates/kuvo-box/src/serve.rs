@@ -322,8 +322,23 @@ pub async fn run(
         wakes.clone(),
         peers.reader(),
         sessions.clone(),
+        engine.clone(),
+        Arc::new(super::bot_setup::BotSetup(setup.handle())),
     );
     bots.register(&mut routes);
+    let bots_follow_engine = bots.follow_engine();
+    let approvals = kuvo_work::approval::ApprovalService::new(
+        kuvo_work::approval::Approvals::new(home, kind == ComputerKind::Mac),
+        engine.clone(),
+        home.join("bots"),
+        sessions.clone(),
+    );
+    approvals.register(&mut routes);
+    let approvals_kept = approvals.keep();
+    let work_settings = kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
+    let working = sessions.clone();
+    let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
+    kuvo_work::work::Work::new(work_settings, home, sessions.clone(), peers.reader()).register(&mut routes);
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -464,6 +479,11 @@ pub async fn run(
         }
     }
     firing.stop().await;
+    bots_follow_engine.abort();
+    approvals_kept.abort();
+    if let Some(kept_awake) = kept_awake {
+        kept_awake.abort();
+    }
     if let Some(updates) = updates {
         updates.stop().await;
     }
