@@ -38,6 +38,7 @@ pub(crate) mod computer_requests;
 mod device_access;
 mod edit_delivery;
 mod handover;
+mod marketplace;
 mod model_stars;
 mod predecessor;
 mod removal;
@@ -48,6 +49,7 @@ pub(crate) use removal::Unlink;
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
 pub use work_queue::{AcceptedQueueLabels, QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease, QueueSetup};
 use handover::{Handover, HandoverReply};
+pub use marketplace::MarketplaceSetup;
 pub use model_stars::ModelStar;
 
 pub(crate) const LINK: &str = "run/link.json";
@@ -171,6 +173,7 @@ pub(crate) struct View {
     zone: Option<(String, Option<Vec<u8>>)>,
     link_id: Option<String>,
     work_queue: Option<QueueSetup>,
+    marketplace: Option<MarketplaceSetup>,
     model_stars: Option<Vec<ModelStar>>,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
@@ -223,6 +226,10 @@ pub(crate) enum Command {
     Personalities(preferences::PersonalityChange),
     QueueNumberLease,
     QueueLabelsSave(work_queue::Save),
+    MarketplaceSave {
+        expected: Option<u64>,
+        value: Value,
+    },
     Zone {
         zone: String,
         revision: Option<String>,
@@ -915,6 +922,7 @@ fn make_view(
             .filter(|id| !id.is_empty())
             .map(str::to_owned),
         work_queue: work_queue::accepted(link),
+        marketplace: marketplace::accepted(link),
     })
 }
 
@@ -1038,6 +1046,7 @@ impl Owner {
                     && old.personalities == view.personalities
                     && old.clock == view.clock
                     && old.work_queue == view.work_queue
+                    && old.marketplace == view.marketplace
                     && old.access == view.access
                     && old.model_stars == view.model_stars
                     && old.ownership.id == view.ownership.id
@@ -1484,6 +1493,9 @@ impl Owner {
                 Ok(Response::ok(json!(receipt)))
             }
             Command::QueueNumberLease => Ok(Response::ok(json!(self.work_queue_number_lease()))),
+            Command::MarketplaceSave { expected, value } => {
+                self.save_marketplace_installations(expected, value).await
+            }
             Command::Handover { .. }
             | Command::DeviceChange(_)
             | Command::QueueLabelsSave(_)

@@ -1,7 +1,7 @@
 //! Git, Changes, worktrees and projects (rust-box.md row 6.3, part B): so far the box's projects
 //! list (`kuvo/projects`) and the safe git layer every Changes route runs git through (`safe`).
 
-mod projects;
+pub(crate) mod projects;
 pub mod safe;
 mod trees;
 
