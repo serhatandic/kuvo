@@ -2340,6 +2340,47 @@ test("the Mac installer preserves a machine and the earlier app's home", t => {
   assert.deepEqual(fs.readdirSync(home).sort(), ["bin", "box", "engine", "workspace"]);
 });
 
+test("the Mac installer waits for a live move", async t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac move lock.");
+  const { binary, env, release } = box(t);
+  const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.wait-fixture");
+  const home = path.join(env.HOME, ".kuvo-code");
+  const lock = path.join(home, "updates/rehome/lock/pid");
+  const holder = launch(process.execPath, ["-e", "console.log('ready');process.stdin.resume()", "rehome"], env, env.HOME, "pipe");
+  const ask = verb => {
+    const install = ["install", `--${verb}`, "--root", ".kuvo-code", "--app", bundle];
+    const args = binary.typescript
+      ? ["--config=/dev/null", "--no-env-file", binary.file, ...install, "--release", release, "--engine", path.join(env.HOME, "engine")]
+      : verb === "status" ? install : ["install-media", release, ".kuvo-code", bundle, ...(verb === "new" ? ["--start"] : [])];
+    const run = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
+      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+    });
+    assert.ifError(run.error);
+    return [run.status, JSON.parse(run.stdout)];
+  };
+  try {
+    await once(holder.child.stdout, "data");
+    write(lock, String(holder.child.pid));
+    const [code, status] = ask("status");
+    assert.equal(code, 0);
+    assert.equal(status.verdict, "waits");
+    assert.equal(status.verb, null);
+    for (const verb of ["move", "new"]) {
+      assert.deepEqual(ask(verb), [4, {
+        result: "waits", verdict: "waits", message: "Another move is under way.", status: status.status,
+      }]);
+    }
+    assert.equal(fs.readFileSync(lock, "utf8"), String(holder.child.pid));
+    assert.deepEqual(fs.readdirSync(path.join(home, "updates")), ["rehome"]);
+  } finally {
+    await holder.stop();
+  }
+  const [code, status] = ask("status");
+  assert.equal(code, 0);
+  assert.equal(status.verdict, "fresh");
+  assert.equal(status.verb, "new");
+});
+
 test("kuvo-install creates a new Mac home and moves the released homes", { timeout: 420000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "darwin") {
