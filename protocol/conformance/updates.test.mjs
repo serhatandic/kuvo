@@ -912,8 +912,12 @@ test("kuvo-install creates a new Mac home and moves the two released Mac homes",
     const helper = "bin/Kuvo Helper.app";
     const helperPath = "Contents/MacOS/Kuvo Helper";
     const manifest = readJSON(path.join(tree, "box.json"));
+    const starter = fs.readFileSync(new URL("../../box/src/keeper/kuvo-start", import.meta.url), "utf8")
+      .replaceAll("@ENGINE@", pin);
+    write(path.join(tree, "bin/kuvo-start"), starter, { mode: 0o700 });
     write(path.join(tree, "bin/kuvo-box"), fs.readFileSync(binary.file), { mode: 0o700 });
     write(path.join(tree, "bin/box-version"), version + "\n");
+    manifest.files["bin/kuvo-start"] = digest(starter);
     manifest.files["bin/kuvo-box"] = digest(fs.readFileSync(path.join(tree, "bin/kuvo-box")));
     manifest.files["bin/box-version"] = digest(version + "\n");
     manifest.bundles = { [helper]: { [helperPath]: digest(fs.readFileSync(path.join(tree, helper, helperPath))) } };
@@ -1012,6 +1016,32 @@ esac
     assert.ok(fs.existsSync(registration));
     assert.equal(fs.readFileSync(logs, "utf8"), "print\nbootstrap\nprint\nprint\nbootstrap\nkickstart\n");
     t.diagnostic(`${tag} relaunched its Helper in ${Math.round(performance.now() - restarting)} ms`);
+
+    // The old app was closed throughout. Start through the entry point its
+    // replacement Helper uses, from the installation the signed media put down.
+    const serving = performance.now();
+    const homeEnv = { ...environment, HOME: app.home, TMPDIR: path.join(app.home, "tmp"),
+      KUVO_HOME: app.K, KUVO_TEST_RELAY: "ws://127.0.0.1:1", KUVO_RELAY_URL: "ws://127.0.0.1:1" };
+    const resident = launch("/bin/sh", [path.join(app.K, "bin/kuvo-start"), "serve", "--resident"], homeEnv, app.K);
+    try {
+      resident.child.stdin.write(JSON.stringify({ password: "installed-fixture", renews: true }) + "\n");
+      const ready = await until(() => {
+        if (resident.child.exitCode !== null || resident.child.signalCode !== null) throw new Error(resident.log());
+        try {
+          const record = readJSON(path.join(app.K, "run/serve.json"));
+          return record.pid === resident.child.pid ? record : undefined;
+        } catch { return undefined; }
+      }, () => {
+        const log = path.join(app.K, "run/serve.log");
+        return `the installed keeper should start the Rust resident\n${fs.existsSync(log) ? fs.readFileSync(log, "utf8") : resident.log()}`;
+      });
+      const info = await request(ready, "GET", "kuvo/info");
+      assert.equal(info.status, 200, info.text);
+      assert.equal(ready.password, "installed-fixture");
+      t.diagnostic(`${tag} installed keeper answered in ${Math.round(performance.now() - serving)} ms`);
+    } finally {
+      await resident.stop();
+    }
   }
 });
 
