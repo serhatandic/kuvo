@@ -16,6 +16,12 @@ import { boxBinary, isolatedEnv, launch, readJSON, relayAddress, request, scratc
 import { bench } from "./bench.mjs";
 import "./update-helper.mjs";
 
+const { peerTransferMs, keeperTrialMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
+const failoverReturnMs = peerTransferMs + keeperTrialMs;
+const firstPreparationMs = 90_000;
+const leaseElectionMs = 30_000;
+const failoverTestMs = firstPreparationMs + leaseElectionMs + keeperTrialMs + failoverReturnMs;
+
 const keypair = () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   return {
@@ -662,7 +668,7 @@ test("Rust prepares its target without changing the selected release and its kee
 });
 
 test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
-test("a new main finishes a prepared release after the old main goes away", { timeout: 240000 }, t => fleetRun(t, { failover: true }));
+test("a new main finishes a prepared release after the old main goes away", { timeout: failoverTestMs }, t => fleetRun(t, { failover: true }));
 test("the main takes a signed release from a member already running it", { timeout: 150000 }, t => fleetRun(t, { aheadMember: true }));
 test("a slow member can catch up after the main's preparation deadline", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true, stageDeadline: true }));
 test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true }));
@@ -1017,7 +1023,7 @@ Buffer.from = function (value, encoding, ...args) {
       }, diagnose, 15000);
       return;
     }
-    await until(() => waiting.length && (staged(main) || staged(member)), diagnose, 90000);
+    await until(() => waiting.length && (staged(main) || staged(member)), diagnose, firstPreparationMs);
     assert.equal(readJSON(path.join(main.home, "run/update.json")).latest, version);
     assert.equal(active(main), initial(main));
     assert.equal(active(member), initial(member));
@@ -1071,7 +1077,7 @@ Buffer.from = function (value, encoding, ...args) {
           return now.json?.you?.role === "primary" && lease.holder === now.json.you.key;
         } catch { return false; }
       },
-        "the remaining online computer must claim the lease", 30000);
+        "the remaining online computer must claim the lease", leaseElectionMs);
       leader = member;
       t.diagnostic(`a new main claimed the lease ${Math.round(performance.now() - began)} ms after the first boot`);
     }
@@ -1079,7 +1085,7 @@ Buffer.from = function (value, encoding, ...args) {
     hold = false;
     const released = performance.now();
     for (const res of waiting) res.end(pack);
-    await until(() => confirmed(leader), diagnose, 75000);
+    await until(() => confirmed(leader), diagnose, failover ? keeperTrialMs : 75000);
     if (failover) assert.ok(heldChecks > 0, "the new main checks the feed without waiting to activate");
     if (!stageDeadline) t.diagnostic(`main confirmed ${Math.round(performance.now() - released)} ms after member download resumed`);
     await until(() => confirmed(member), diagnose, 75000);
@@ -1124,11 +1130,12 @@ Buffer.from = function (value, encoding, ...args) {
       t.diagnostic(`returning ${previousVersion} confirmed the bridge in ${Math.round(performance.now() - returned)} ms`);
     }
     const rustBegan = performance.now();
+    const returnMs = failover ? failoverReturnMs : peerOnly ? 120000 : 65000;
     await until(() => {
-      const failure = bridgeBeta && refused();
+      const failure = (failover || bridgeBeta) && refused();
       if (failure?.version === version) throw new Error(failure.reason);
       return confirmed(away);
-    }, diagnose, peerOnly ? 120000 : 65000);
+    }, diagnose, returnMs);
     await until(async () => {
       try {
         const resident = readJSON(path.join(away.home, "run/serve.json"));
