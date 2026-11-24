@@ -153,6 +153,18 @@ worktree, as the TypeScript list does. Holding the box queue on Archive
 and Stop belongs with the delivery work below. The engine's `Auto` run
 that a session forgets on delete stays with Auto.
 
+`POST kuvo/sessions` starts a coding agent's conversation on the shared
+start rules (project, folder, approval, parent and wake checks). The
+engine starts only when the start needs it: its own conversations, a
+worktree, or a parent it keeps. The new conversation's ID uses the
+engine's ascending format, its header is the bridge's, and a task's
+message keeps its client notes (`kuvo.parts`) on its row. The binary
+case passes on both boxes and the normalized answers, header and user
+row match. Open: the engine's refusal for a model without an ID uses
+different words from the TypeScript model rule (engine start, 3.2), and
+wake-up notes on a coding agent's conversation wait for the shared note
+writer.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.

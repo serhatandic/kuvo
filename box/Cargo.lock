@@ -1280,6 +1280,7 @@ dependencies = [
  "kuvo_store",
  "serde",
  "serde_json",
+ "sha1 0.10.7",
  "subtle",
  "tempfile",
  "tokio",

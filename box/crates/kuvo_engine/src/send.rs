@@ -30,6 +30,11 @@ pub(crate) fn valid_id(id: &str) -> bool {
 }
 
 pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
+    new_id_with(engine, "msg")
+}
+
+/// An ID in the engine's ascending format, so it sorts among the engine's own.
+pub(crate) fn new_id_with(engine: &Engine, prefix: &str) -> Result<String, Refusal> {
     let now = disk::now() << 12;
     let tick = engine
         .message_clock
@@ -41,7 +46,7 @@ pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
     getrandom::fill(&mut random).map_err(|_| {
         Refusal::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "The computer couldn’t make a message ID.",
+            "The computer couldn’t make an ID.",
         )
     })?;
     const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -50,7 +55,7 @@ pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
         .map(|byte| char::from(ALPHABET[usize::from(byte) % ALPHABET.len()]))
         .collect::<String>();
     Ok(format!(
-        "msg_{:012x}{random}",
+        "{prefix}_{:012x}{random}",
         now.max(tick + 1) & 0xffff_ffff_ffff
     ))
 }

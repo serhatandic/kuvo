@@ -61,7 +61,8 @@ pub use agent_models::{
     AgentCatalog, AgentModel, AgentModelSource, AutoModel, CatalogRead, ModelAccount,
 };
 pub use agent_sessions::{
-    AgentCall, AgentSessionPatch, AgentSessionRead, AgentSessionRow, AgentSessionSource,
+    AgentCall, AgentPrompt, AgentSessionPatch, AgentSessionRead, AgentSessionRow,
+    AgentSessionSource, NewAgentSession,
 };
 pub use attachment_retention::{AttachmentConversation, AttachmentRead, AttachmentSource};
 pub use external_asks::{

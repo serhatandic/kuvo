@@ -169,6 +169,7 @@ pub async fn run(
             store: sessions.clone(),
             running: Some(runs.clone()),
             home: home.to_owned(),
+            agents: Some(accounts.clone()),
         };
         agents::turns::register(runs, sessions, home.to_owned(), &mut routes);
         engine
@@ -182,6 +183,7 @@ pub async fn run(
             store: sessions,
             running: None,
             home: home.to_owned(),
+            agents: None,
         }))
     };
     if kind == ComputerKind::Machine {

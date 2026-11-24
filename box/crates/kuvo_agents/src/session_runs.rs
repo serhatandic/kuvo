@@ -14,6 +14,7 @@ use crate::{
     turn_runtime::RunningTurn,
     turn_sink::ResidentSink,
 };
+use serde_json::{Map, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, ErrorKind},
@@ -48,6 +49,7 @@ struct Start {
     session: String,
     input: TurnInput,
     policy: Policy,
+    note: Option<Map<String, Value>>,
     reply: Reply<RunningTurn>,
 }
 
@@ -183,11 +185,24 @@ impl SessionRuns {
         input: TurnInput,
         policy: Policy,
     ) -> io::Result<RunningTurn> {
+        self.run_turn_noted(session, input, policy, None).await
+    }
+
+    /// Start a turn whose message carries a client's notes (its `metadata`),
+    /// kept on the conversation's row for it.
+    pub async fn run_turn_noted(
+        &self,
+        session: String,
+        input: TurnInput,
+        policy: Policy,
+        note: Option<Map<String, Value>>,
+    ) -> io::Result<RunningTurn> {
         self.call(|reply| {
             Command::Start(Box::new(Start {
                 session,
                 input,
                 policy,
+                note,
                 reply,
             }))
         })
@@ -308,7 +323,7 @@ impl Service {
                 next = commands.recv() => {
                     match next {
                         Some(Command::Start(request)) => {
-                            let Start { session, input, policy, reply } = *request;
+                            let Start { session, input, policy, note, reply } = *request;
                             if retired.contains(&session) {
                                 let _ = reply.send(Err(io::Error::new(
                                     ErrorKind::NotFound, "That conversation is being deleted.",
@@ -325,7 +340,7 @@ impl Service {
                                 .or_insert_with(|| watch::channel(Vec::new()).0).clone();
                             let service = self.clone();
                             preparations.spawn(async move {
-                                let outcome = service.begin(&session, input, policy, remembered).await;
+                                let outcome = service.begin(&session, input, policy, remembered, note).await;
                                 (session, outcome, reply)
                             });
                         }
@@ -389,6 +404,7 @@ impl Service {
         input: TurnInput,
         mut policy: Policy,
         remembered: watch::Sender<Vec<Allowance>>,
+        note: Option<Map<String, Value>>,
     ) -> io::Result<Live> {
         let provider = Provider::parse(&input.model.provider).ok_or_else(|| {
             io::Error::new(ErrorKind::InvalidInput, "Choose a coding-agent model.")
@@ -417,7 +433,8 @@ impl Service {
         });
         let agent = if input.plan { "plan" } else { "build" };
         let writer =
-            Projection::start(self.store.clone(), session.into(), agent.into(), &input).await?;
+            Projection::start(self.store.clone(), session.into(), agent.into(), &input, note)
+                .await?;
         let asks = self.asks.for_turn(session.into(), input.id.clone());
         let (sink, writes) =
             ResidentSink::channel(session.into(), self.store.clone(), asks, policy.clone());

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { request, write } from "./adapter.mjs";
+import { request, until, write } from "./adapter.mjs";
 import { withAgentFixture } from "./agent-fixture.mjs";
 
 test("saved agent transcript pages honor order and cursor without reopening the agent",
@@ -114,6 +114,62 @@ test("a saved agent conversation's menu, rename, pin, archive and delete",
         "kuvo.pinned": true, "kuvo.archived": false });
       assert.equal(kept.title, "Renamed");
       assert.equal(existsSync(folderOf(home)), false);
+      if (trace) write(trace, JSON.stringify(log) + "\n", { flag: "wx" });
+    });
+  });
+
+test("starting a coding agent's conversation saves it with the agent's notes and its task",
+  { timeout: 60000 }, t => {
+    const trace = process.env.KUVO_CONFORMANCE_AGENT_START;
+    return withAgentFixture(t, home => {
+      mkdirSync(path.join(home, "work"), { recursive: true });
+    }, async (listener, home) => {
+      const app = { "x-kuvo-from": "app" };
+      const folder = path.join(home, "work");
+      const model = { providerID: "codex-cli", id: "stand-in" };
+      const start = async body => {
+        let answer;
+        for (let tries = 0; tries < 50; tries++) {
+          answer = await request(listener, "POST", "kuvo/sessions", body, app);
+          if (answer.status !== 503) break;
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+        return answer;
+      };
+      const saved = id => JSON.parse(readFileSync(path.join(home, "agents", "sessions", id, "session.json"), "utf8"));
+      const made = await start({ folder, model, title: "Agent start", approval: "askFirst" });
+      assert.equal(made.status, 200, made.text);
+      const { session, info } = made.json;
+      assert.match(session, /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+      assert.deepEqual({ ...made.json, session: "<id>", info: undefined },
+        { session: "<id>", title: "Agent start", folder, project: "work", info: undefined });
+      const header = saved(session);
+      assert.equal(header.agent, "build");
+      assert.deepEqual(header.model, model);
+      assert.equal(header.title, "Agent start");
+      assert.equal(header.metadata.kuvoAgent, "codex");
+      assert.deepEqual(header.metadata.kuvo, { approval: "askFirst", applied: "askFirst" });
+      assert.equal(info.id, session);
+      assert.equal(info.summarize.value, "400000");
+
+      const tasked = await start({ folder, model, task: "Say hi", approval: "askFirst" });
+      assert.equal(tasked.status, 200, tasked.text);
+      const id = tasked.json.session;
+      let user;
+      await until(async () => {
+        const page = await request(listener, "GET", `kuvo/agents/api/session/${id}/message?order=asc&limit=5`, undefined, app);
+        user = page.json?.data?.find(message => message.type === "user");
+        return Boolean(user);
+      }, "the task never reached the conversation");
+      assert.equal(user.text, "Say hi");
+      assert.deepEqual(user.metadata, { kuvo: { parts: { words: "Say hi" } } });
+      const log = {
+        made: { ...made.json, session: "<id>", folder: "<folder>",
+          info: { ...info, id: "<id>", time: "<time>", location: "<home>", projectID: "<project>" } },
+        header: { ...header, id: "<id>", time: "<time>", location: "<home>", projectID: "<project>" },
+        tasked: { ...tasked.json, session: "<id>", folder: "<folder>" },
+        user: { ...user, id: "<id>", time: "<time>" },
+      };
       if (trace) write(trace, JSON.stringify(log) + "\n", { flag: "wx" });
     });
   });

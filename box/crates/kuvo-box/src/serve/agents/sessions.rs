@@ -5,10 +5,19 @@ use kuvo_agents::{
     session_runs::SessionRuns,
     session_store::{MessageOrder, SessionStore},
 };
-use kuvo_agents::{live_asks::AskKey, session_store::SessionPatch, session_view};
-use kuvo_engine::{
-    AgentCall, AgentSessionPatch, AgentSessionRead, AgentSessionRow, AgentSessionSource,
+use kuvo_agents::{
+    accounts::Provider,
+    live_asks::AskKey,
+    resident::ResidentAgents,
+    session::{Prompt, TurnKind},
+    session_store::{NewSession, SessionPatch},
+    session_view,
 };
+use kuvo_engine::{
+    AgentCall, AgentPrompt, AgentSessionPatch, AgentSessionRead, AgentSessionRow,
+    AgentSessionSource, NewAgentSession,
+};
+use std::io;
 use serde_json::{Map, Value};
 use kuvo_protocol::routes::{
     get_kuvo_agents_api_session_id_message as transcript,
@@ -23,6 +32,14 @@ pub(crate) struct Inventory {
     pub store: SessionStore,
     pub running: Option<SessionRuns>,
     pub home: std::path::PathBuf,
+    pub agents: Option<ResidentAgents>,
+}
+
+fn no_model() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "Pick a model of an agent you've connected.",
+    )
 }
 
 impl AgentSessionSource for Inventory {
@@ -91,6 +108,76 @@ impl AgentSessionSource for Inventory {
                 Some(runs) => runs.delete(id.to_owned()).await,
                 None => self.store.delete(id).await,
             }
+        })
+    }
+
+    fn create(&self, new: NewAgentSession) -> AgentCall<'_, Map<String, Value>> {
+        Box::pin(async move {
+            let provider = new.model["providerID"]
+                .as_str()
+                .and_then(Provider::parse)
+                .filter(|_| new.model["id"].as_str().is_some_and(|id| !id.is_empty()))
+                .ok_or_else(no_model)?;
+            let agents = self.agents.as_ref().ok_or_else(no_model)?;
+            if agents.roster().find(&provider).is_none() {
+                return Err(no_model());
+            }
+            let NewAgentSession {
+                id,
+                directory,
+                agent,
+                model,
+                title,
+                permissions,
+                metadata,
+            } = new;
+            self.store
+                .begin(NewSession {
+                    id,
+                    directory,
+                    kind: provider.kind,
+                    agent,
+                    model,
+                    title,
+                    permissions,
+                    metadata,
+                })
+                .await
+        })
+    }
+
+    fn prompt<'a>(&'a self, id: &'a str, prompt: AgentPrompt) -> AgentCall<'a, ()> {
+        Box::pin(async move {
+            let runs = self
+                .running
+                .as_ref()
+                .ok_or_else(|| io::Error::other("The coding agents aren't running here."))?;
+            let saved = self
+                .store
+                .read(id)
+                .await?
+                .ok_or(io::ErrorKind::NotFound)?;
+            let folder = saved
+                .directory()
+                .map(std::path::PathBuf::from)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            let AgentPrompt { id: message, text, metadata } = prompt;
+            let (input, policy) = super::turns::turn_setup(
+                &self.home,
+                folder,
+                &saved.into_fields(),
+                &message,
+                TurnKind::Prompt(Prompt {
+                    id: message.clone(),
+                    text,
+                    files: Vec::new(),
+                    synthetic: false,
+                }),
+            )
+            .map_err(|refusal| io::Error::other(format!("{:?}", refusal.reply().status)))?;
+            runs.run_turn_noted(id.to_owned(), input, policy, metadata)
+                .await
+                .map(|_| ())
         })
     }
 

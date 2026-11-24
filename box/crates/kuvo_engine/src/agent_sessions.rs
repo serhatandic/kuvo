@@ -25,6 +25,26 @@ pub struct AgentSessionPatch {
     pub metadata: Option<Map<String, Value>>,
 }
 
+/// A new conversation for a coding agent, as a client's start asks for it.
+#[derive(Debug)]
+pub struct NewAgentSession {
+    pub id: String,
+    pub directory: String,
+    pub agent: Option<String>,
+    pub model: Value,
+    pub title: Option<String>,
+    pub permissions: Option<Value>,
+    pub metadata: Map<String, Value>,
+}
+
+/// A message for a coding agent's conversation.
+#[derive(Debug)]
+pub struct AgentPrompt {
+    pub id: String,
+    pub text: String,
+    pub metadata: Option<Map<String, Value>>,
+}
+
 pub trait AgentSessionSource: Send + Sync {
     fn inventory(&self) -> AgentSessionRead<'_>;
 
@@ -49,6 +69,16 @@ pub trait AgentSessionSource: Send + Sync {
 
     /// Stop its turn and remove it. False when it wasn't here.
     fn delete<'a>(&'a self, _id: &'a str) -> AgentCall<'a, bool> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    /// Make a conversation. `InvalidInput` names a model no agent here runs.
+    fn create(&self, _new: NewAgentSession) -> AgentCall<'_, Map<String, Value>> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    /// Give the conversation a message, starting its turn.
+    fn prompt<'a>(&'a self, _id: &'a str, _prompt: AgentPrompt) -> AgentCall<'a, ()> {
         Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
     }
 

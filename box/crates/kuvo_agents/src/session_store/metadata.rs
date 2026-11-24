@@ -16,6 +16,19 @@ pub struct SessionPatch {
     pub metadata: Option<Map<String, Value>>,
 }
 
+/// A new conversation, as the bridge makes one.
+#[derive(Debug)]
+pub struct NewSession {
+    pub id: String,
+    pub directory: String,
+    pub kind: crate::accounts::AgentKind,
+    pub agent: Option<String>,
+    pub model: Value,
+    pub title: Option<String>,
+    pub permissions: Option<Value>,
+    pub metadata: Map<String, Value>,
+}
+
 /// A replacement for the header's metadata that keeps the bridge's own notes.
 fn kept_notes(before: Option<&Value>, mut given: Map<String, Value>) -> Value {
     let agent = before.and_then(|notes| notes.get("kuvoAgent")).cloned();
@@ -70,6 +83,48 @@ impl SessionStore {
             )
         })
         .await?
+    }
+
+    /// Save a new conversation's header. Answers it as saved.
+    pub async fn begin(&self, new: NewSession) -> io::Result<Map<String, Value>> {
+        use sha1::{Digest, Sha1};
+        let now = crate::turn_projection::now();
+        let project = hex::encode(Sha1::digest(new.directory.as_bytes()));
+        let mut header = Map::new();
+        header.insert("id".into(), new.id.into());
+        header.insert("projectID".into(), format!("prj_{}", &project[..16]).into());
+        header.insert(
+            "agent".into(),
+            new.agent
+                .filter(|agent| !agent.is_empty())
+                .unwrap_or_else(|| "build".into())
+                .into(),
+        );
+        header.insert("model".into(), new.model);
+        header.insert("cost".into(), 0.into());
+        header.insert(
+            "tokens".into(),
+            serde_json::json!({"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}),
+        );
+        header.insert(
+            "time".into(),
+            serde_json::json!({ "created": now, "updated": now }),
+        );
+        if let Some(title) = new.title {
+            header.insert("title".into(), title.into());
+        }
+        header.insert(
+            "location".into(),
+            serde_json::json!({ "directory": new.directory }),
+        );
+        if let Some(permissions) = new.permissions {
+            header.insert("permissions".into(), permissions);
+        }
+        let mut metadata = new.metadata;
+        metadata.insert("kuvoAgent".into(), new.kind.name().into());
+        header.insert("metadata".into(), Value::Object(metadata));
+        self.create(header.clone()).await?;
+        Ok(header)
     }
 
     pub(crate) async fn change_header(

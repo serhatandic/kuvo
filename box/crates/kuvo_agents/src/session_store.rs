@@ -13,7 +13,7 @@ use std::{
 mod metadata;
 mod projection;
 
-pub use metadata::SessionPatch;
+pub use metadata::{NewSession, SessionPatch};
 
 const FORMAT: ObjectFormat = ObjectFormat::additive("Coding-agent session");
 const TRANSCRIPT: &str = "messages-v1.sqlite";

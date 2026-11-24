@@ -32,6 +32,7 @@ impl Projection {
         session: String,
         agent: String,
         input: &TurnInput,
+        note: Option<Map<String, Value>>,
     ) -> io::Result<Self> {
         let prior = if matches!(input.kind, TurnKind::Recover { .. }) {
             store
@@ -57,7 +58,11 @@ impl Projection {
             prior,
         };
         if let TurnKind::Prompt(prompt) = &input.kind {
-            projection.write(vec![user(prompt)]).await?;
+            let mut row = user(prompt);
+            if let Some(note) = note {
+                row["metadata"] = Value::Object(note);
+            }
+            projection.write(vec![row]).await?;
         }
         Ok(projection)
     }
