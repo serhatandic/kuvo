@@ -43,7 +43,7 @@ impl Rule {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Allowance {
     pub action: String,
     pub patterns: Vec<String>,

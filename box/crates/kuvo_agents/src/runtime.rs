@@ -31,6 +31,14 @@ pub trait Adoption: Send + Sync {
         turns: BTreeMap<String, TurnNote>,
         controller: Controller,
     ) -> AdapterCall<'a, ()>;
+
+    /// The resident won't take up this attached turn after all: its
+    /// conversation is gone or has moved on, or `Thread::start` with
+    /// `TurnKind::Recover` failed. Stop the held agent unless another turn
+    /// taken up in it still runs.
+    fn let_go<'a>(&'a self, _turn: &'a TurnNote) -> AdapterCall<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[derive(Clone)]
@@ -91,6 +99,22 @@ impl Runtime {
         roster.reconcile(&self.accounts, factories).await?;
         let (failures, turns) = self.recover_with_turns(&roster.recovery_adapters()).await?;
         Ok((roster, failures, turns))
+    }
+
+    /// The conversations whose turns go on in held agents: the next
+    /// resident can take them up.
+    pub async fn held_sessions(&self) -> io::Result<std::collections::BTreeSet<String>> {
+        let mut held = std::collections::BTreeSet::new();
+        for record in self.holders.records().await? {
+            let Ok(turns) = record.turns() else { continue };
+            held.extend(
+                turns
+                    .into_values()
+                    .filter(|turn| turn.turn.is_some())
+                    .map(|turn| turn.session),
+            );
+        }
+        Ok(held)
     }
 
     /// Read only the saved session header. Model routing does not need to open

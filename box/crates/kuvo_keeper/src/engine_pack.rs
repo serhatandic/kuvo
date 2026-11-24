@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, File},
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -119,10 +119,7 @@ impl EnginePack {
         } else {
             let build = build()
                 .ok_or_else(|| io::Error::other("The release has no engine for this machine."))?;
-            let archive = download(build, scratch)?;
-            let executable = scratch.join(EXECUTABLE);
-            unpack(&archive, &executable)?;
-            Some(executable)
+            Some(fetch_engine(build, scratch)?)
         };
         Ok(Self { installed, draft })
     }
@@ -142,37 +139,111 @@ impl EnginePack {
     }
 }
 
-fn download(build: EngineBuild, scratch: &Path) -> io::Result<PathBuf> {
-    let bad_engine = || io::Error::other("The engine isn't what the release says.");
+/// Status can use any installed engine. On a fresh computer, check the pinned
+/// download without retaining any installer files.
+pub(crate) fn check_installer_engine(
+    home: &Home,
+    release: &SignedRelease,
+    target: &str,
+) -> io::Result<()> {
+    let installed = fs::read_dir(home.root().join("engine"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| !entry.file_name().as_encoded_bytes().starts_with(b"."))
+        .any(|entry| {
+            fs::metadata(entry.path().join(EXECUTABLE)).is_ok_and(|metadata| {
+                #[cfg(unix)]
+                let executable = {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    metadata.permissions().mode() & 0o111 != 0
+                };
+                #[cfg(not(unix))]
+                let executable = true;
+                metadata.is_file() && executable
+            })
+        });
+    if installed {
+        return Ok(());
+    }
+    let here = if cfg!(target_os = "macos") {
+        "this Mac"
+    } else {
+        "this computer"
+    };
+    let build = release.engine_build(target).ok_or_else(|| {
+        io::Error::other("This copy of Kuvo has no engine for this kind of computer.")
+    })?;
+    receive(build, io::sink()).map_err(|error| match error.kind() {
+        io::ErrorKind::InvalidData => io::Error::other(
+            "The engine that was downloaded isn't what this copy of Kuvo's release says. Try again.",
+        ),
+        io::ErrorKind::NotConnected => io::Error::other(format!(
+            "The engine couldn't be downloaded. Check that {here} is online, then try again."
+        )),
+        _ => error,
+    })
+}
+
+fn fetch_engine(build: EngineBuild, scratch: &Path) -> io::Result<PathBuf> {
+    let archive = scratch.join("engine.tar.gz");
+    receive(build, File::create(&archive)?)?;
+    let executable = scratch.join(EXECUTABLE);
+    unpack(&archive, &executable)?;
+    Ok(executable)
+}
+
+fn receive(build: EngineBuild, mut output: impl Write) -> io::Result<()> {
+    let bad_engine = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "The engine isn't what the release says.",
+        )
+    };
     let integrity = build
         .integrity
         .strip_prefix("sha512-")
         .and_then(|base64| STANDARD.decode(base64).ok())
         .filter(|bytes| bytes.len() == 64)
         .ok_or_else(bad_engine)?;
-    let fetch_error =
-        |error| io::Error::other(format!("Kuvo couldn't download the engine: {error}"));
+    let fetch_error = |error| {
+        io::Error::new(
+            io::ErrorKind::NotConnected,
+            format!("Kuvo couldn't download the engine: {error}"),
+        )
+    };
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(900))
         .build()
         .map_err(fetch_error)?;
-    let response = client
+    let mut response = client
         .get(build.url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(fetch_error)?;
-    let archive = scratch.join("engine.tar.gz");
-    let mut file = File::create(&archive)?;
-    let len = io::copy(&mut response.take(MAX_DOWNLOAD + 1), &mut file)?;
-    if len > MAX_DOWNLOAD {
-        return Err(bad_engine());
-    }
+        .map_err(fetch_error)?
+        .take(MAX_DOWNLOAD + 1);
+    let mut size = 0;
     let mut digest = Sha512::new();
-    io::copy(&mut File::open(&archive)?, &mut digest)?;
+    let mut buffer = [0; 32 * 1024];
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|error| io::Error::new(io::ErrorKind::NotConnected, error))?;
+        if read == 0 {
+            break;
+        }
+        size += read as u64;
+        if size > MAX_DOWNLOAD {
+            return Err(bad_engine());
+        }
+        let bytes = &buffer[..read];
+        digest.update(bytes);
+        output.write_all(bytes)?;
+    }
     if digest.finalize().as_slice() != integrity {
         return Err(bad_engine());
     }
-    Ok(archive)
+    Ok(())
 }
 
 fn unpack(archive: &Path, executable: &Path) -> io::Result<()> {

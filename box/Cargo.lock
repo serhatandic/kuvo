@@ -1278,12 +1278,17 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "jiff",
  "kuvo_os",
  "kuvo_store",
  "percent-encoding",
  "regex",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1 0.10.7",
@@ -1293,6 +1298,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "uuid",
 ]
 
 [[package]]

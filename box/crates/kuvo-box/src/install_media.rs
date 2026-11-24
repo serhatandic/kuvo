@@ -55,10 +55,7 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         .canonicalize()?;
     let system = account.home.canonicalize()?;
     let target = profile.join(root);
-    let located = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
-    let real = located(&target)
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&located(&system.join(".kuvo-code")).to_string_lossy());
+    let real = kuvo_move::install::same_mac_home(&target, &system.join(".kuvo-code"));
     let app_id = kuvo_move::mac::bundle_id(bundle)?;
     if real != (app_id == "run.kuvo.code") {
         return Err(io::Error::other(if real {
@@ -71,6 +68,26 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     let home = Home::new(target)?;
     let app = profile.join("Library/Application Support").join(&app_id);
     let before = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
+    if before.verdict == kuvo_move::install::Verdict::Waits {
+        println!(
+            "{}",
+            json!({"result":"waits", "verdict":before.verdict,
+                "message":"Another move is under way.", "status":before.status})
+        );
+        return Ok(4);
+    }
+    if before.verdict == kuvo_move::install::Verdict::Two {
+        let message = if restart {
+            "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are."
+        } else {
+            kuvo_move::install::TWO_HOMES_MOVE
+        };
+        println!(
+            "{}",
+            json!({"result":"refused", "verdict":before.verdict, "message":message, "status":before.status})
+        );
+        return Ok(1);
+    }
     let verified = || -> io::Result<(SignedRelease, Vec<u8>)> {
         let key = (!real)
             .then(|| std::env::var("KUVO_TEST_RELEASE_KEY").ok())

@@ -14,8 +14,11 @@ mod line;
 mod metadata;
 mod pictures;
 mod projection;
+mod repair;
 
 pub use line::Line;
+pub(crate) use repair::close_rows;
+pub use repair::OpenTurn;
 
 pub use metadata::{NewSession, SessionPatch};
 
@@ -428,18 +431,10 @@ fn query_messages(
     Ok(messages)
 }
 
-fn write_messages(folder: &Path, rows: Vec<Value>) -> io::Result<()> {
-    let destination = folder.join(TRANSCRIPT);
-    // Seed a staging database when adopting a legacy array. An interrupted
-    // import leaves the legacy transcript authoritative until the rename.
-    let staging = (!destination.try_exists()?)
-        .then(|| tempfile::tempdir_in(folder))
-        .transpose()?;
-    let file = staging
-        .as_ref()
-        .map_or_else(|| destination.clone(), |dir| dir.path().join(TRANSCRIPT));
-    let mut db = sqlite::open_wal(
-        &file,
+/// The transcript database, for writing.
+fn open_transcript(file: &Path) -> io::Result<rusqlite::Connection> {
+    sqlite::open_wal(
+        file,
         Duration::from_secs(1),
         "Coding-agent transcript",
         &[|db| {
@@ -452,7 +447,20 @@ fn write_messages(folder: &Path, rows: Vec<Value>) -> io::Result<()> {
             )
         }],
     )
-    .map_err(io::Error::other)?;
+    .map_err(io::Error::other)
+}
+
+fn write_messages(folder: &Path, rows: Vec<Value>) -> io::Result<()> {
+    let destination = folder.join(TRANSCRIPT);
+    // Seed a staging database when adopting a legacy array. An interrupted
+    // import leaves the legacy transcript authoritative until the rename.
+    let staging = (!destination.try_exists()?)
+        .then(|| tempfile::tempdir_in(folder))
+        .transpose()?;
+    let file = staging
+        .as_ref()
+        .map_or_else(|| destination.clone(), |dir| dir.path().join(TRANSCRIPT));
+    let mut db = open_transcript(&file)?;
     db.pragma_update(None, "synchronous", "FULL")
         .map_err(io::Error::other)?;
     let transaction = db.transaction().map_err(io::Error::other)?;

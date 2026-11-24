@@ -27,6 +27,9 @@ use serde_json::json;
 #[path = "agent_turn.rs"]
 mod turn;
 
+#[path = "agent_held.rs"]
+mod held;
+
 const ASK: &str = r#"{"id":17,"method":"fixture/approve"}"#;
 const REPLY: &str = r#"{"id":17,"result":{"allow":true}}"#;
 
@@ -41,6 +44,8 @@ pub(super) fn for_home(root: &Path) -> Option<Arc<dyn Factory>> {
         home,
         program,
         recovered: Arc::new(tokio::sync::Mutex::new(None)),
+        parked: Arc::default(),
+        provider: String::new(),
     }))
 }
 
@@ -49,6 +54,8 @@ struct Fixture {
     home: Home,
     program: PathBuf,
     recovered: Arc<tokio::sync::Mutex<Option<Controller>>>,
+    parked: held::Parked,
+    provider: String,
 }
 
 impl Factory for Fixture {
@@ -61,7 +68,9 @@ impl Factory for Fixture {
                 }
             });
         }
-        Ok(Arc::new(self.clone()))
+        let mut agent = self.clone();
+        agent.provider = account.provider().to_string();
+        Ok(Arc::new(agent))
     }
 }
 
@@ -85,6 +94,14 @@ impl Agent for Fixture {
         Box::pin(async move {
             let thread: Arc<dyn Thread> = if context.session_id == "ses_keeper_fixture" {
                 Arc::new(HeldFixture(self.clone()))
+            } else if context.session_id.starts_with("ses_held_") {
+                Arc::new(held::HeldThread {
+                    home: self.home.clone(),
+                    program: self.program.clone(),
+                    session: context.session_id,
+                    provider: self.provider.clone(),
+                    parked: self.parked.clone(),
+                })
             } else {
                 Arc::new(turn::FixtureThread)
             };
@@ -99,6 +116,9 @@ impl Agent for Fixture {
 
 impl Adoption for Fixture {
     fn accepts(&self, record: &Record, turns: &BTreeMap<String, TurnNote>) -> bool {
+        if record.meta.get("fixture") == Some(&json!(held::KIND)) {
+            return true;
+        }
         record.meta.get("fixture") == Some(&json!(true))
             && turns
                 .values()
@@ -108,17 +128,33 @@ impl Adoption for Fixture {
     fn attach<'a>(
         &'a self,
         _: &'a Account,
-        _: Record,
+        record: Record,
         turns: BTreeMap<String, TurnNote>,
         controller: Controller,
     ) -> AdapterCall<'a, ()> {
         let home = self.home.clone();
         Box::pin(async move {
+            if record.meta.get("fixture") == Some(&json!(held::KIND)) {
+                if let Some(turn) = turns.values().next() {
+                    self.parked
+                        .lock()
+                        .await
+                        .insert(turn.session.clone(), controller);
+                }
+                return Ok(());
+            }
             if turns.values().any(|turn| turn.turn.is_some()) {
                 *self.recovered.lock().await = Some(controller);
             } else {
                 tokio::spawn(replay(home, controller, None));
             }
+            Ok(())
+        })
+    }
+
+    fn let_go<'a>(&'a self, turn: &'a TurnNote) -> AdapterCall<'a, ()> {
+        Box::pin(async move {
+            held::let_go(&self.parked, turn).await;
             Ok(())
         })
     }
@@ -138,6 +174,14 @@ impl Fixture {
         }
         let binary = std::env::current_exe()?;
         let runtime = Runtime::for_home(&self.home);
+        // (The message that begins the turn, as a resident writes it.)
+        runtime
+            .sessions()
+            .write_messages(
+                "ses_keeper_fixture",
+                vec![json!({"type":"user","id":"keeper_fixture","text":"begin","time":{"created":1}})],
+            )
+            .await?;
         let mut controller = runtime
             .holders()
             .start(

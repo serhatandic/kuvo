@@ -217,11 +217,67 @@ engine conformance areas give the same results as before. Moves and
 wake-ups into a coding agent's conversation still go through the engine and
 remain open, as do Auto and summaries.
 
-The following integration work remains open:
+Turns go on through a resident update. The resident that makes way hands
+each turn going on in a held agent to the next one
+(`run/agents-handover.json`, read once). The handover holds the asks the
+turn was waiting on and the approvals you gave for the rest of it. After
+that, the old resident answers nothing that is waiting. It doesn't turn asks
+down as it goes, so the agent hears only the next resident's answer. A
+message waiting behind a turn whose agent won't go on with it is kept for
+the next resident and marked steered. So is one sent while the resident
+makes way. The next resident sends them once, in order, as it starts.
 
-- Production vendor factory registration as the adapters land.
-- Unified sign-in and account status, default-home migration, and shared session, queue and approval routing.
-- Differential and golden-home runs for the remaining routes, with platform verification.
+The next resident takes up its agents' turns before anything else starts.
+Each turn runs as a turn of the message that began it, if that turn is still
+the conversation's last, still open, and on the same agent. Otherwise the
+adapter is told to let its agent go (`Adoption::let_go`). Adapters keep their
+own ask IDs, so a replayed ask shows once, under the ID it had before. A
+client's read of the approvals waits up to ten seconds for the asks the
+earlier resident showed; `?live=1` doesn't wait. An answer for an ask that
+isn't waiting is refused.
+
+A take-up that fails keeps what was shown of the turn, with its tools
+stopped and its steps closed, and ends it as failed. One that goes through
+writes the turn again from the agent's lines, by the same IDs, and drops the
+rows the replay didn't write again. At start, a turn no agent goes on with is
+closed as the bridge closes it (`interrupted`, reason `restart`), and a
+summary waiting for it is dropped. A turn whose agent couldn't start, or
+stopped reporting, ends as failed in its conversation.
+
+Five Rust scenarios (`kuvo_agents/tests/updates.rs`) port
+`held-resume.test.ts` 1–3 and `sessions.test.ts` 8, and carry an ask and an
+approval through the handover. The binary case (`agent-turn-fixture` 4)
+replaces the resident while a held stand-in's turn waits on an approval,
+through the shared JSON-RPC connection. The stand-in's replay comes a second
+late, yet the next resident's first read shows the ask once. A stale answer
+is refused, the answer reaches the agent once, and the message queued before
+the update goes next, once. Without the wait, that first read is empty. The
+keeper switch case still passes. The update scenarios and all four
+`agent-turn-fixture` cases passed on macOS, Linux (lokum), WSL2 and native
+Windows, with the holder, account, saved-session, line and agent conformance
+cases. On Windows the test harness stops the resident by force, so nothing is
+handed over there. The ask still comes again, and the case waits for it.
+
+The current beta's golden home (`compat/current-world.ts`) now also keeps a
+waiting message and an agent's slot in its coding-agent conversation, written
+by the TypeScript store. The `agent-sessions` case copies that conversation,
+its account index and the account's folder into a fresh home and opens them
+through either box. Both close the conversation's open turn as a restart's
+and keep its waiting message, its agent's slot and the account index. Their
+normalized answers and files match. The traces differ only in the run's
+scratch folder, the generated account ID, and an empty Undo record
+(`snapshots`) that the bridge adds as it closes the turn; Undo is row 4.6.
+
+Carried to the rows that bring them:
+
+- Production vendor factory registration, as each adapter lands (4.2–4.5).
+- `sessions.test.ts` 9 (a program update's drain) and 12 (a model whose
+  account is signed out): 4.2, with the first program updater and production
+  account status.
+- 59–60 and 127–139 (turns an agent starts on its own, and Stop or Send Now
+  while one is handed over): 4.2 and 4.4, whose agents start them.
+- Moves and wake-ups into a coding agent's conversation: 4.6, with carry and
+  handover.
 
 ## Tools, shared RPC and sidecar progress (4.1c)
 
@@ -270,6 +326,72 @@ The agent-slot store, the JSON-RPC connection (with its real-holder
 process test), the runtime package installer and the stdio forwarder
 passed on macOS, Linux (lokum), WSL2 and native Windows.
 
+`kuvo_agents::tool_relay` is the relay itself, for Kuvo Code's tools. It
+listens on 127.0.0.1 and gives each conversation a key of its own, which
+stays while any of its agents' threads holds it. The address and keys are
+kept in `run/agents/relay.json`, so an agent held through an update reaches
+its tools at the same address with the same key. The next resident keeps
+only the keys of the conversations whose agents it took up. Each call is
+its own conversation's whatever it names, with an operation of its own: a
+forwarder's operation is kept, so a call sent again after a restart is done
+once.
+
+On a computer the tools are a program run outside the sandbox, one per
+conversation, shared by its agent's connections. Their requests are
+numbered anew, so a cancel reaches only its own connection's call. What the
+program asks the agent is refused at once, and a call past its time is
+cancelled there. On the Mac, calls go on to the app's server with the
+app's password and the conversation's own header. That server is followed
+only where it moves the request on its own site.
+
+Six scenarios with stand-in tools port toolrelay cases 2–7; the stand-in
+program is the test binary itself.
+
+The computer's own MCP servers are relayed too, each at `/mcp/<name>`, to
+every agent. The agent is given only the relay's address and its
+conversation's key. A command's server starts for each of an agent's
+connections, found on the `PATH`, with its keys and the conversation in its
+environment, and stops when the agent leaves it. A URL's server is reached
+with its headers, and the relay reads its start before passing it on. A
+server that can't be reached, or won't start, or turns down its sign-in
+doesn't stop the turn: the agent connects to a stand-in of the relay's own
+with no tools, whose instructions say why, and a call that fails partway
+says why as the tool's error. A turned-down sign-in is renewed and tried
+again, and the host is asked once, for each setup, to connect the server
+again. Once the server is set right, the agent is given it at another
+address and connects afresh.
+
+What the servers are and how they're renewed comes from a host trait
+(`ServerHost`). So does running a command in the sandbox: the engine
+supplies the servers (3.x) and the sandbox supplies the command runner
+(6.1). Three scenarios cover an unreachable server, the sign-in loop (the
+bridge's `relay-live` case) and command servers per connection. The
+relay's nine scenarios passed on macOS, Linux (lokum), WSL2 and native
+Windows, with the agent conformance areas. The update case now also checks
+that both turns' holders end with their turns.
+
+A server the relay stood in for because it couldn't be reached or start
+is checked again at an agent's next message: connected to and let go. The
+message waits a second at most for the answer, and the check goes on
+without it. One still not there is checked a few minutes on, then twice as
+long each time, up to half an hour; a change to how it's set up checks it
+at once. Once it answers, its agent is given it afresh. A command's server
+no connection has used for an hour stops. Four scenarios port the `acp`
+cases for these (given afresh once it answers, not holding a message up,
+not started again at each message and checked less often) and the idle
+stop.
+
+On a desktop whose box serves Kuvo Code's own tools itself, a call to one
+of them goes to the box's routes (`run/tool-http.json`), keeping its
+operation. While the box's address is replaced, the agent's forwarder gets
+a 503 and sends the call again, so the tool runs once (toolrelay case 8,
+through the real forwarder).
+
+Still open in 4.1c: wiring the relay into the resident. The relay is wired
+in with the adapters that give agents their tools and the host that reads
+the engine's servers. The sandbox note (case 9) goes with 6.1, and
+`engine-own-tools` with 6.4.
+
 ## TypeScript scenario inventory
 
 ### Holders, reload and repair
@@ -279,7 +401,7 @@ Case numbers use the order in the cited source file.
 | TypeScript source | Port and remaining owner |
 |---|---|
 | [hold.test.ts](../../box/test/agents/hold.test.ts), 19 | 1 → R1, diagnostic events checked through H7. 2 → H1. 3 → H7. 4–5 → H2. 6–7 → H4. 8 → managed program install cleanup (4.3). 9 → H4. 10 → H2. 11 → H8. 12 → H9. 13 → H5. 14 → R2. 15 → H6 and H11. 16 → H1. 17 → H3. 18 → socket path fallback integration (4.1b). 19 → startup cancellation and fallback (4.1b). |
-| [held-resume.test.ts](../../box/test/agents/held-resume.test.ts), 3 | 1–3 → session recovery and open approval reconciliation (4.1b). R1 covers the underlying process and replay. |
+| [held-resume.test.ts](../../box/test/agents/held-resume.test.ts), 3 | 1–3 → `kuvo_agents/tests/updates.rs`, with `agent-turn-fixture` 4 through the binary. R1 covers the underlying process and replay. |
 | [hold-claude.test.ts](../../box/test/agents/hold-claude.test.ts), 1 | H3 covers holder suppression, with real CLI reconnection and request cancellation in 4.4. |
 | [bridge-update.test.ts](../../box/test/agents/bridge-update.test.ts), 2 and [bridge-update-cursor.test.ts](../../box/test/agents/bridge-update-cursor.test.ts), 2 | Holder continuity → R1. Adapter readiness, same conversation and next-turn reuse → 4.1b, 4.2, 4.4 and 4.5. |
 | [agents-renewal.test.js](../../box/bridge-tests/agents-renewal.test.js), 4 and [update-stops-nothing.test.js](../../box/bridge-tests/update-stops-nothing.test.js), 5 | R1 covers the holder portion of replacement. Resident admission, actual keeper selection, readiness and rollback → 4.1b and 7.2. The historical bridge-specific standby, bridge build, pre-holder switch and quiet-stop rules belong to the TypeScript transition in 9.1. |
@@ -293,9 +415,10 @@ Case numbers use the order in the cited source file.
 | [accounts-check](../../box/test/agents/accounts-check.test.ts), 20, [account-refresh](../../box/test/agents/account-refresh.test.ts), 8, [added-account-route](../../box/test/agents/added-account-route.test.ts), 3, [own-homes](../../box/test/agents/own-homes.test.ts), 4, and [signin-mode](../../box/test/agents/signin-mode.test.ts), 3 | 4.1b owns account index, home selection, checks, catalog cache and sign-in state. Vendor sign-in commands and authentication messages → 4.2–4.5. Accounts-check 18 covers Work Queue GitHub authorization in 5.2. |
 | [sign-in.test.js](../../box/bridge-tests/sign-in.test.js), 11 | Agent route cases 2–4, 8 and 10–11 → 4.1b. OpenCode methods and status → 3.2. Setup and remote transport assertions use the resident dispatcher. |
 | [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. |
-| [toolrelay](../../box/test/agents/toolrelay.test.ts), 9, and [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 4.1c owns persisted address and keys, session attribution, reconnect and cancel, and engine tool registration. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
+| [toolrelay](../../box/test/agents/toolrelay.test.ts), 9 | 1 → `kuvo_agents/tests/tool_forwarder.rs`; 2–8 and `relay-live` 1 → `kuvo_agents/tests/tool_relay.rs`, with the relay's parts of four `acp` cases (re-checks and the idle stop). 9 with 6.1. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
+| [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 6.4: the browser keeper owns the `kuvo-browser` tools program the engine starts with. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
-| [sessions](../../box/test/agents/sessions.test.ts), 158 | 20 ported to `kuvo_agents/tests/inbox.rs`: 3–7, 10, 11, 13–18, 48, 54–58, 61. Still 4.1b: 8 (held marking as the resident stops), 9 and 12 (program drains, signed-out models), 59–60 and 127–139 (turns an agent starts itself, Stop and Send Now while a message is handed). Shared agent session store, queue, and event projection → 4.1b. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
+| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 and 12 (program drains, signed-out models) → 4.2; 59–60 and 127–139 (turns an agent starts itself, Stop and Send Now while a message is handed) → 4.2 and 4.4. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
 | [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 136, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |
 | [agent-tools.test.js](../../box/bridge-tests/agent-tools.test.js), [artifacts](../../box/test/artifacts.test.ts), [subagents](../../box/test/agents/subagents.test.ts), [carry-agents](../../box/test/agents/carry-agents.test.ts), [to-agents](../../box/bridge-tests/to-agents.test.js) and [agents-handover](../../box/bridge-tests/agents-handover.test.js) | Agent registration and tools dispatch share 4.1b/c. Tool handler semantics span 2.4 ownership and messages, 4.6 subagents and transfers, 5.1 starts and bot work, 5.5 artifacts, and 6.1 permissions. |
 | Agent account imports in [usage tests](../../box/test/usage), and [settings-agents-live](../../box/bridge-tests/settings-agents-live.test.js) | 5.4 owns usage and limits. 6.1 owns the engine Agents settings file and the live engine settings page. Both consume 4.1b account state. |
@@ -317,10 +440,11 @@ and existing partial coverage remain in [the engine map](rust-engine-coverage.md
 | attachment-paths, attachments-go | 1; 1–4 |
 | session-models | 6–9, 11, 15–16, 18, 21, 23–24, 26–27, 31–32 |
 
-The saved-home checks for the account index, agent sessions and legacy
-`run/agents.json` projection remain in 4.1b. Authenticated vendor runs, live
-resident adoption during a fleet rollout, route-level differential comparison,
-and golden-home compatibility are still open.
+The golden-home check above covers the account index and a saved agent
+conversation. The legacy `run/agents.json` projection is the peer directory,
+regenerated at start (2.6 and 7.3). Authenticated vendor runs belong to
+4.2–4.5 (Claude Code's to 4.4), and live adoption during a fleet rollout to
+7.2.
 
 ## Claude Code (4.4)
 

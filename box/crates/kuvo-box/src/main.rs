@@ -697,9 +697,14 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         .filter(|path| path != OsStr::new(""))
         .map_or_else(|| folder.join(".kuvo-code"), PathBuf::from);
     let located = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.into());
-    if located(home.root()) != located(&selected) {
+    #[cfg(target_os = "macos")]
+    let same_place = kuvo_move::install::same_mac_home;
+    #[cfg(not(target_os = "macos"))]
+    let same_place = |left: &Path, right: &Path| located(left) == located(right);
+    if !same_place(home.root(), &selected) {
         return usage();
     }
+    let real = same_place(home.root(), &account.home.join(".kuvo-code"));
     #[cfg(target_os = "macos")]
     let source = {
         let Some(id) = bundle
@@ -714,7 +719,6 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
             );
             return Ok(ExitCode::FAILURE);
         };
-        let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
         if real != (id == "run.kuvo.code") {
             let message = if real {
                 "Only Kuvo itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own."
@@ -738,12 +742,11 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         if !media.is_absolute() {
             return usage();
         }
-        let scratch = located(home.root()) != located(&account.home.join(".kuvo-code"));
-        let key = scratch
+        let key = (!real)
             .then(|| env::var("KUVO_TEST_RELEASE_KEY").ok())
             .flatten();
         let key = key.as_deref().unwrap_or(kuvo_keeper::manifest::UPDATE_KEY);
-        if let Err(error) = kuvo_keeper::staging::check_install_media(media, key) {
+        if let Err(error) = kuvo_keeper::staging::check_install_media(&home, media, key) {
             println!(
                 "{}",
                 serde_json::json!({"result":"failed","message":error.to_string()})
@@ -755,7 +758,6 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         #[cfg(target_os = "macos")]
         {
             let profile = located(&folder);
-            let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
             home.bin()
                 .join("kuvo-box")
                 .is_file()
@@ -779,7 +781,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
     }
     let mut reply = serde_json::to_value(judge)?;
     if reply["verdict"] == "two" {
-        reply["message"] = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.".into();
+        reply["message"] = kuvo_move::install::TWO_HOMES_MOVE.into();
     }
     println!("{reply}");
     Ok(ExitCode::SUCCESS)

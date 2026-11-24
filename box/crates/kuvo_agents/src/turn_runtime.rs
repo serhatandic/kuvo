@@ -16,6 +16,12 @@ use tokio::sync::{mpsc, watch};
 
 pub trait TurnWriter: Send {
     fn apply<'a>(&'a mut self, event: &'a EventEnvelope) -> AdapterCall<'a, ()>;
+
+    /// The turn ended without its agent saying how: it couldn't start, or
+    /// stopped reporting. Write it as failed with `error`.
+    fn abandon<'a>(&'a mut self, _error: &'a io::Error) -> AdapterCall<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[derive(Clone)]
@@ -120,15 +126,24 @@ async fn run(
                         started = true;
                         publish.send_replace(State::Active(turn));
                     }
-                    Err(error) => break Err(Arc::new(error)),
+                    Err(error) => {
+                        if let Err(unwritten) = writer.abandon(&error).await {
+                            eprintln!("Kuvo could not write a turn that failed to start: {unwritten}");
+                        }
+                        break Err(Arc::new(error));
+                    }
                 }
             }
             update = writes.recv() => {
                 let Some(update) = update else {
-                    break Err(Arc::new(io::Error::new(
+                    let error = io::Error::new(
                         ErrorKind::BrokenPipe,
                         "The adapter stopped reporting its turn.",
-                    )));
+                    );
+                    if let Err(unwritten) = writer.abandon(&error).await {
+                        eprintln!("Kuvo could not write a turn its agent left: {unwritten}");
+                    }
+                    break Err(Arc::new(error));
                 };
                 let last = match &update.event.event {
                     TurnEvent::Finished(result) => Some(result.outcome.clone()),

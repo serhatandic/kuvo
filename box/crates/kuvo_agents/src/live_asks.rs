@@ -50,6 +50,7 @@ enum Command {
     Answer(AskKey, Reply, ResultSender<()>),
     Cancel(AskKey, ResultSender<()>),
     End(String, String, ResultSender<()>),
+    Keep(ResultSender<()>),
 }
 
 struct Pending {
@@ -98,6 +99,13 @@ impl LiveAsks {
 
     pub async fn reply(&self, key: AskKey, answer: Reply) -> io::Result<()> {
         self.call(|reply| Command::Answer(key, answer, reply)).await
+    }
+
+    /// The resident makes way for the next, which asks again: from now on
+    /// nothing waiting is answered here, not even turned down as the
+    /// resident goes, so the agent hears only the next resident's answer.
+    pub async fn keep_unanswered(&self) -> io::Result<()> {
+        self.call(Command::Keep).await
     }
 
     async fn call<T>(&self, command: impl FnOnce(ResultSender<T>) -> Command) -> io::Result<T> {
@@ -176,7 +184,24 @@ async fn run(
     published: watch::Sender<Arc<BTreeMap<AskKey, Ask>>>,
 ) {
     let mut pending = BTreeMap::<AskKey, Pending>::new();
+    let mut kept = false;
     while let Some(command) = commands.recv().await {
+        let command = match command {
+            Command::Keep(result) => {
+                kept = true;
+                let _ = result.send(Ok(()));
+                continue;
+            }
+            Command::Answer(_, _, result) if kept => {
+                let _ = result.send(Err(stopped()));
+                continue;
+            }
+            Command::Cancel(_, result) | Command::End(_, _, result) if kept => {
+                let _ = result.send(Ok(()));
+                continue;
+            }
+            command => command,
+        };
         let reply = match command {
             Command::Ask(key, ask, ended, answer) => {
                 if answer.is_closed() {
@@ -228,6 +253,7 @@ async fn run(
                 }
                 Some((result, Ok(())))
             }
+            Command::Keep(_) => unreachable!("handled above"),
             Command::End(session, turn, result) => {
                 pending = pending
                     .into_iter()
@@ -252,6 +278,11 @@ async fn run(
         if let Some((sender, reply)) = reply {
             let _ = sender.send(reply);
         }
+    }
+    if kept {
+        // (Never answered: the process ends with them waiting.)
+        std::mem::forget(pending);
+        return;
     }
     for (_, ask) in pending {
         ask.cancel();

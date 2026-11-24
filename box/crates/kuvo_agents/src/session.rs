@@ -393,6 +393,10 @@ pub trait TurnSink: Send + Sync {
     /// This never creates an interactive ask. Set `native_plan` if the
     /// adapter enforces plan mode on its own.
     fn preflight(&self, ask: PermissionAsk, native_plan: bool) -> AdapterCall<'_, Preflight>;
+    /// Show the ask until it's answered. Keep `ask.id` the agent's own, so a
+    /// replay after a resident update shows the same ask, once. An `Err`
+    /// means the resident is going away: leave the native request unanswered
+    /// for the next resident, which asks again.
     fn permission(&self, ask: PermissionAsk) -> AdapterCall<'_, Decision>;
     fn question(&self, ask: QuestionAsk) -> AdapterCall<'_, Answer>;
 

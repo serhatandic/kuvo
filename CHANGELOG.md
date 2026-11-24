@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - The Rust box checks Claude Code sign-in and lists the models available to each account.
 
+- On Rust computers, a coding agent's turn goes on through an update: an approval it was waiting for shows again once, approvals you gave for the turn still apply, and messages waiting behind it go once, in order.
 - Stop still works while a conversation waits for its current turn to finish before moving.
 - Rust computers answer conversation reads from your other computers.
 - A move carries forwarding decisions saved while the conversation is on its way.
@@ -40,6 +41,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.
 - The Mac installer can set up a new computer directly from the signed Rust release and start Kuvo Helper.
+- The Mac installer explains why it leaves a machine installation and an earlier app’s sessions in place.
+- The Mac installer recognizes the selected home even when its name is written with different capitalization.
+- The Mac installer reports that it is waiting when another move is already running.
 - The Linux installer can set up a computer from a signed Rust release and retry a failed first start while keeping earlier work.
 - After a successful Linux install, earlier unfinished installer staging no longer makes the computer look uninstalled.
 - A Linux installation stays complete if its old staging files cannot be deleted.
@@ -53,7 +57,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The main computer waits for reachable computers to prepare a Rust update before switching. A computer that was offline can catch up when it returns.
 - A returning computer can get a signed update from another computer when the release feed no longer serves it. On a Mac, Kuvo restarts an older Helper when the update is ready.
 - A computer keeps a manual update check until its main computer can receive it, even if the computer restarts first.
-- A failed fleet download can be retried for the same signed release after the computer restarts.
+- A failed release or engine download can be retried for the same signed release after the computer restarts.
 - A reachable computer can retry a failed fleet download when another computer in its setup asks.
 - The computers list reports failed release downloads across the setup and whether they can be retried.
 - The computers list shows when each computer is preparing, ready, switching, up to date, or out of reach during a signed release update.
@@ -64,7 +68,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - If a release fails to start and Kuvo switches back, the computer shows why it is waiting for the next release.
 - Kuvo clears superseded release files after preparing an update and keeps the files still used by running work.
 - The computers list shows when it last heard from an unreachable computer even if that computer sent no update status.
-- The installer reports damaged release media or a local engine archive path during its status check, before it writes to the computer’s home.
+- The installer reports damaged release media, a local engine archive path, or a failed engine download during its status check, before it writes to the computer’s home.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
 - A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
 
