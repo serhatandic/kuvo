@@ -39,6 +39,14 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U23 | A stopped Unix home with an installed keeper removes only Kuvo's tagged reboot entry. An unreadable crontab leaves the original table and the installation intact. The retry keeps the other jobs and saved work and writes nothing to the scratch account's temporary folder. The Mac run with a disposable crontab took 2.5 seconds. |
 | U24 | The signed installer admits the stopped released-machine homes by their saved machine identity. It rejects the wrong identity and waits if a recorded old process is still alive. The v0.7.2 and beta.1 fixtures moved, kept their keys and saved work, and answered through the selected Rust keeper in 17.2 and 21.1 seconds on Mac and 4.7 and 4.7 seconds on Linux musl under WSL2. |
 | U25 | A Rust main tries the saved SSH address while its v0.7.2 machine is offline. When the address answers, it checks the saved machine identity, sends the retained signed target pack, and starts `kuvo-install`. If the first keeper launch fails after selection, the next round resumes it. The Rust keeper answers and the SSH reservation and installer staging clear. The old key, secret and work remain in place. |
+| U26 | The signed Linux installer judges a fresh home and refuses a move without creating the home. It installs its target pack, preserves earlier work and the desktop identity, adds one tagged reboot job, and waits for the new resident to answer. A failed startup leaves the fresh verdict available. A retry preserves the partial identity and link alongside the earlier work and makes a new setup. If an earlier keeper is still running, the installer leaves the home and crontab untouched. |
+
+U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
+TypeScript installer scenarios passed under the same WSL2 distribution.
+The Rust updates area passed 17 applicable cases on WSL2 and seven on
+native Windows, including the signed update and stopped uninstall.
+On Mac, the signed fresh install and released-home moves, stopped Helper
+uninstall, and tagged reboot cleanup passed against the release binary.
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -296,7 +304,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, failed departure keeps identity | Open. | 2.3 |
 | [install-offer](../../box/test/install-offer.test.ts), last wipe approval follows old identity | Partial. 2.3 U8 covers detachment identity. Installer re-entry remains open. | 2.3, 6.2, 7.2 |
 | Same, app member wipe and receipt | Open. | 2.3, 7.2 |
-| [install](../../box/bridge-tests/install.test.js) 124, signed pack, engine, and fresh verdict | Partial. U1–U4 cover update admission, 2.6 C1 covers the read-only verdict, and U11 checks signed media and engine for a Mac install and move. Fresh Linux installer proof remains open. | 7.2 |
+| [install](../../box/bridge-tests/install.test.js) 124, signed pack, engine, and fresh verdict | Covered by U11 on Mac and U26 on Linux. | — |
 | Same 148, 204, 267, installer after last wipe, stop without Helper, and completion outside App Support | Open as installer scenarios. See 2.3 U7–U8 for wipe and receipt checks. | 2.3, 6.2, 7.2 |
 | Same 361, two installers prepare together | Open. | 7.2 |
 | Same 379 and 387, refuse local-file engine and damaged pack or engine | Partial. U2 and U4 cover update pack and engine integrity. The installer entry remains open. | 7.2 |
@@ -305,9 +313,9 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same 564, 594, 645, existing app's data moves, progress order, and legacy app kept | Partial. U11 covers the move, ordered progress, and both the retained source and published home. The live Helper readiness check remains open. | 6.2, 7.2 |
 | Same 700, 725, launch retry after move and deferred key settlement | Partial. U11 checks installer restart after a missing Helper registration. 2.6 covers resumable settlement with stand-ins. Actual launchd and authenticated Keychain settlement remain open. | 6.2, 7.2 |
 | Same 750, two installations preserved | Partial. 2.6 covers the verdict and fence. Installer invocation remains open. | 7.2 |
-| Same 766, Linux move refusal | Partial. Existing Rust move command refuses. The installer entry remains open. | 7.2 |
+| Same 766, Linux move refusal | Covered by U26. | — |
 | Same 774 and 793, Mac app copy and case spelling | Partial. 2.6 checks the Mac command's matching home. The installer entry remains open. | 7.2 |
-| Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | Partial. U24 checks the live-process fence and signed installation on the stopped released Linux homes. Fresh Linux making and restart after startup failure remain open. | 2.3, 7.2 |
+| Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. Interruptions during file publication remain open. | 7.2 |
 | [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 checks missing Helper registration and restart with a stand-in. Live readiness (45, 57, 128), restarted fresh making (74), and Linux starter admission (169) remain open. | 6.2, 7.2 |
 
 ## Inherited cases and system proof

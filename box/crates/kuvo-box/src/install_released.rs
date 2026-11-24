@@ -187,7 +187,7 @@ fn upgrade(args: &[OsString]) -> Result<bool, Box<dyn std::error::Error>> {
     Ok(true)
 }
 
-fn regular(path: &Path, directory: bool) -> io::Result<()> {
+pub(super) fn regular(path: &Path, directory: bool) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(entry)
             if if directory {
@@ -207,7 +207,7 @@ fn regular(path: &Path, directory: bool) -> io::Result<()> {
     }
 }
 
-async fn wait_for_resident(home: &Home) -> io::Result<()> {
+pub(super) async fn wait_for_resident(home: &Home) -> io::Result<()> {
     let file = home.run().join("serve.json");
     let listen = async {
         loop {
@@ -232,7 +232,7 @@ async fn wait_for_resident(home: &Home) -> io::Result<()> {
         })?
 }
 
-fn check_stopped(home: &Home) -> io::Result<()> {
+pub(super) fn check_stopped(home: &Home) -> io::Result<()> {
     if home.run().join(".launching").exists() || home.run().join("update-trial").exists() {
         return Err(io::Error::new(
             io::ErrorKind::WouldBlock,

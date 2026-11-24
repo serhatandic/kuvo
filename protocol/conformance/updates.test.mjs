@@ -1009,6 +1009,151 @@ async function linuxInstallMedia(t, binary, root, key, beforeStart = "") {
   return { media, tree, version, pack, bytes };
 }
 
+async function freshLinuxInstaller(t, binary, beforeStart = "") {
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const key = keypair();
+  const { media, version, pack } = await linuxInstallMedia(t, binary, root, key,
+    `export KUVO_TEST_RELAY=ws://127.0.0.1:1\n${beforeStart}`);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const tools = path.join(env.HOME, "tools");
+  const cron = path.join(tools, "table");
+  const cronBefore = "30 7 * * * /bin/true\n";
+  write(cron, cronBefore);
+  write(path.join(tools, "crontab"), `#!/bin/sh
+case "$1" in
+  -l) cat "$KUVO_TEST_UNINSTALL_TOOLS/table" ;;
+  -) cat >"$KUVO_TEST_UNINSTALL_TOOLS/table" ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o700 });
+  const fixtureEnv = { ...env, PATH: `${tools}${path.delimiter}${env.PATH}`, KUVO_TEST_UNINSTALL_TOOLS: tools,
+    KUVO_TEST_RELEASE_KEY: key.key };
+  const install = verb => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb], {
+    cwd: env.HOME, env: fixtureEnv, encoding: "utf8", timeout: 90000,
+  });
+  const stop = () => {
+    if (!fs.existsSync(path.join(home, "bin/kuvo-start"))) return;
+    const stopped = spawnSync("/bin/sh", [path.join(home, "bin/kuvo-start"), "off"], {
+      cwd: home, env: fixtureEnv, encoding: "utf8", timeout: 15000,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+  };
+  return { env, home, cron, cronBefore, version, pack, install, stop };
+}
+
+test("signed Linux installer makes a fresh machine and keeps unrelated reboot jobs", { timeout: 120000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
+  const { env, home, cron, cronBefore, version, pack, install, stop } = await freshLinuxInstaller(t, binary);
+  const status = install("status");
+  assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
+  const { verdict, verb } = JSON.parse(status.stdout);
+  assert.deepEqual({ verdict, verb }, { verdict: "fresh", verb: "new" });
+  assert.equal(fs.existsSync(home), false);
+  const move = install("move");
+  assert.equal(move.status, 1, move.error?.message ?? move.stdout + move.stderr);
+  assert.equal(JSON.parse(move.stdout).message, "There's nothing to move on this computer: Kuvo is where it belongs already.");
+  assert.equal(fs.existsSync(home), false);
+  write(path.join(home, "workspace/old-work"), "keep earlier work");
+  write(path.join(home, "desktop/identity"), "keep this desktop");
+  try {
+    const began = performance.now();
+    const made = install("new");
+    assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
+    const result = JSON.parse(made.stdout.trim().split("\n").at(-1));
+    assert.deepEqual([result.result, result.verdict, result.started], ["done", "machine", true]);
+    assert.equal(fs.readFileSync(path.join(result.setAside, "workspace/old-work"), "utf8"), "keep earlier work");
+    assert.equal(fs.readFileSync(path.join(home, "desktop/identity"), "utf8"), "keep this desktop");
+    assert.equal(fs.readlinkSync(path.join(home, "bin")), `versions/${version}-${pack.sha256.slice(0, 12)}/bin`);
+    assert.equal(readJSON(path.join(home, "run/link.json")).setup.role, "primary");
+    const info = await request(readJSON(path.join(home, "run/serve.json")), "GET", "kuvo/info");
+    assert.equal(info.status, 200, info.text);
+    assert.match(fs.readFileSync(path.join(home, "machine-id"), "utf8"), /^[a-f0-9]{32}$/);
+    assert.match(fs.readFileSync(path.join(home, "run/launch.env"), "utf8"), /^PATH=/m);
+    assert.equal(fs.readFileSync(cron, "utf8"), cronBefore +
+      '@reboot sh "$HOME/.kuvo-code/bin/kuvo-start" >/dev/null 2>&1 # kuvo-code: starts its engine again after a restart\n');
+    t.diagnostic(`fresh Linux machine made and answered in ${Math.round(performance.now() - began)} ms`);
+    const refused = install("new");
+    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+    assert.equal(JSON.parse(refused.stdout).verdict, "machine");
+    assert.equal(fs.readlinkSync(path.join(home, "bin")), `versions/${version}-${pack.sha256.slice(0, 12)}/bin`);
+    assert.deepEqual(fs.readdirSync(env.TMPDIR), []);
+  } finally {
+    stop();
+  }
+});
+
+test("a Linux installer retries a failed first start and keeps its earlier files", { timeout: 180000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
+  const interruptedLink = JSON.stringify({ mac: "A".repeat(43), macs: ["A".repeat(43)], phones: [] });
+  const { env, home, cron, install, stop } = await freshLinuxInstaller(t, binary, `
+if [ "$1" = box ] && [ -f "$HOME/refuse-start" ]; then
+  printf '%s' '${interruptedLink}' > "$HOME/.kuvo-code/run/link.json"
+  exit 1
+fi
+`);
+  const fault = path.join(env.HOME, "refuse-start");
+  const previousWork = path.join("workspace", "old-work");
+  write(fault, "");
+  write(path.join(home, previousWork), "keep earlier work");
+  try {
+    const failed = install("new");
+    assert.equal(failed.status, 1, failed.error?.message ?? failed.stdout + failed.stderr);
+    const failure = JSON.parse(failed.stdout);
+    assert.deepEqual([failure.result, failure.verdict, failure.started], ["failed", "fresh", false]);
+    const firstId = fs.readFileSync(path.join(home, "machine-id"), "utf8");
+    assert.equal(fs.readFileSync(path.join(failure.setAside, previousWork), "utf8"), "keep earlier work");
+    const table = fs.readFileSync(cron, "utf8");
+    const status = install("status");
+    assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
+    const { verdict, verb } = JSON.parse(status.stdout);
+    assert.deepEqual({ verdict, verb }, { verdict: "fresh", verb: "new" });
+    fs.rmSync(fault);
+    const made = install("new");
+    assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
+    const result = JSON.parse(made.stdout);
+    assert.deepEqual([result.result, result.verdict, result.started], ["done", "machine", true]);
+    assert.equal(fs.readFileSync(path.join(result.setAside, "machine-id"), "utf8"), firstId);
+    assert.equal(fs.readFileSync(path.join(result.setAside, "run/link.json"), "utf8"), interruptedLink);
+    const link = readJSON(path.join(home, "run/link.json"));
+    assert.equal(link.setup.role, "primary");
+    assert.equal(link.mac, undefined);
+    assert.notEqual(fs.readFileSync(path.join(home, "machine-id"), "utf8"), firstId);
+    assert.equal(fs.readFileSync(path.join(failure.setAside, previousWork), "utf8"), "keep earlier work");
+    assert.equal(fs.readFileSync(cron, "utf8"), table);
+    assert.deepEqual(fs.readdirSync(path.join(home, "updates/install")), []);
+  } finally {
+    stop();
+  }
+});
+
+test("a fresh Linux install leaves the earlier home alone while its keeper is still running", { timeout: 15000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
+  const { env, home, cron, cronBefore, install } = await freshLinuxInstaller(t, binary);
+  write(path.join(home, "run/off"), "");
+  write(path.join(home, "workspace/old-work"), "keep earlier work");
+  const writer = launch("/bin/sleep", ["30"], env, home);
+  try {
+    write(path.join(home, "run/box.pid"), String(writer.child.pid));
+    const refused = install("new");
+    assert.equal(refused.status, 1, refused.error?.message ?? refused.stdout + refused.stderr);
+    assert.deepEqual(JSON.parse(refused.stdout), {
+      result: "refused", verdict: "fresh",
+      message: "Something is running in this computer's ~/.kuvo-code: Kuvo is installed there once that's stopped.",
+    });
+    assert.equal(writer.child.exitCode, null);
+    assert.deepEqual(fs.readdirSync(home).sort(), ["run", "workspace"]);
+    assert.equal(fs.readFileSync(path.join(home, "workspace/old-work"), "utf8"), "keep earlier work");
+    assert.equal(fs.readFileSync(cron, "utf8"), cronBefore);
+  } finally {
+    await writer.stop();
+  }
+});
+
 test("signed Linux media moves the two released machines after they return", { timeout: 240000 }, async t => {
   const binary = boxBinary();
   const cache = process.env.KUVO_CONFORMANCE_RELEASED_MACHINES;
