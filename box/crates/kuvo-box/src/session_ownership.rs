@@ -7,7 +7,9 @@ use kuvo_engine::{
     ComputerKey, DeviceAccess, Engine, LocalSessions, OwnedReply, OwnedRequest, OwnerScope,
     PeerReply, SessionOwner, SessionOwnership,
 };
-use kuvo_peers::ownership::{Admission, Error, Handle, PairingState, PeerOwner, Reply};
+use kuvo_peers::ownership::{
+    Admission, Error, Handle, IncomingRequests, PairingState, PeerOwner, Reply,
+};
 use kuvo_server::Refusal;
 use serde_json::json;
 
@@ -76,10 +78,12 @@ impl SessionOwnership for OwnerPort {
     }
 }
 
-pub(crate) async fn serve(handle: Handle, engine: Engine, sessions: LocalSessions) {
-    let Ok(mut requests) = handle.incoming() else {
-        return;
-    };
+pub(crate) async fn serve(
+    handle: Handle,
+    mut requests: IncomingRequests,
+    engine: Engine,
+    sessions: LocalSessions,
+) {
     let mut active = tokio::task::JoinSet::new();
     loop {
         let incoming = tokio::select! {

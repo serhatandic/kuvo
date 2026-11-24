@@ -4,7 +4,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, isolatedEnv, launch, localRelay, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, launch, localRelay, privateHome, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { generateCurrent } from "./compat/generate.mjs";
 
 const pinned = process.env.KUVO_CONFORMANCE_OPENCODE;
@@ -15,6 +15,7 @@ test("the recorded beta session pages and saved queue open through the resident"
   const root = fs.realpathSync(scratch());
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
   const { home } = generateCurrent(path.join(root, "source"));
+  privateHome(home);
   const env = isolatedEnv(root);
   const reserve = net.createServer();
   await new Promise(resolve => reserve.listen(0, "127.0.0.1", resolve));

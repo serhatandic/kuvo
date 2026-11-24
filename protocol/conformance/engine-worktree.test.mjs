@@ -122,6 +122,35 @@ test("a sibling project folder files both explicit and delegated starts under th
   assert.deepEqual(JSON.parse(fs.readFileSync(settings, "utf8")).projects.map(row => row.directory), [project]);
 });
 
+test("a started session promises a finished notice only after it saves the starter's mark", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("start-finished-notice");
+  const lead = sessionOf({ id: "ses_noticeLead", title: "Coordinator", directory: here.home });
+  here.engine.sessions.push(lead);
+  const record = await here.start().ready();
+  const start = given => request(record, "POST", "kuvo/sessions",
+    { title: "Review the release", task: "Review the files.", folder: here.home, wake: "finished", ...given });
+  const work = await start({ startedBy: lead.id });
+  assert.equal(work.status, 200, work.text);
+  assert.deepEqual(work.json.wakes, ["finished"]);
+  const details = id => here.engine.sessions.find(row => row.id === id);
+  const prompt = id => here.engine.messages.get(id)[0].text;
+  assert.deepEqual(details(work.json.session).metadata.kuvo.wake, ["finished"]);
+  assert.match(prompt(work.json.session), /They get your last reply when you finish/);
+
+  const outside = await start({});
+  assert.equal(outside.status, 200, outside.text);
+  assert.equal(outside.json.wakes, undefined);
+  assert.equal(prompt(outside.json.session), "Review the files.");
+
+  here.engine.holdSessionPatch = { id: "ses_made3", accepted() {}, release: Promise.resolve(), status: 503 };
+  const unmarked = await start({ startedBy: lead.id });
+  assert.equal(unmarked.status, 200, unmarked.text);
+  assert.equal(unmarked.json.wakes, undefined);
+  assert.equal(details(unmarked.json.session).metadata.kuvo.wake, undefined);
+  assert.match(prompt(unmarked.json.session), /To answer, use send_message to ses_noticeLead/);
+});
+
 test("a session made through OpenCode is told its recorded worktree and branch", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const { home, engine, start } = await computer("worktree-instructions");
