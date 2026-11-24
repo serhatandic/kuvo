@@ -241,7 +241,7 @@ test("desktop compatibility tools keep the same operation while their box HTTP e
         started = true
         return Response.json({ retryToolCall: true }, { status: 503 })
       }
-      return Response.json({ text: "Sent.", isError: false })
+      return Response.json({ text: { unexpected: true }, message: "Sent.", isError: false })
     } })
     record()
     expect(JSON.parse(new TextDecoder().decode((await output.read()).value)).result.content[0].text).toBe("Sent.")

@@ -24,6 +24,12 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Your other computer learns a newly created conversation’s name before its message arrives.
 - Notes for a moving conversation wait for its new computer to confirm the move, then reach it while the original is being cleaned up.
 - A conversation stays on its current computer while Kuvo indexes the receipts required for its move.
+- Deleting a conversation while its agent is stopping no longer causes a transcript write error.
+- Undo waits for file recovery when it is the first action after a restart.
+
+- Coding agents receive readable tool replies when an older desktop connection returns an unexpected reply format.
+
+- A project marked removed by hand in its settings file is listed the same way it's treated.
 - Windows uninstall completes when there is no sign-in task to remove.
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.
@@ -64,6 +70,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
 - A Rust computer can add a fresh account over SSH when it has the compatible release to copy.
+- Adding a computer over SSH accepts the engine when its verified download runs successfully.
 - An installer code can carry the sign-ins and keys you select from a Rust computer. Retry the same code if the new computer’s engine could not save them.
 - Uninstall on a stopped, standalone Rust computer can clear its desktop identity and local credentials while retaining its saved work.
 - Wiping the last standalone Rust computer stops its Unix resident and erases its installation when it has no keeper or configured backup.

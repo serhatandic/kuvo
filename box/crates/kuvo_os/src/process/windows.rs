@@ -30,6 +30,18 @@ pub(super) struct Owner {
 }
 
 impl Owner {
+    pub(super) fn send_signal(&self, signal: GroupSignal) -> io::Result<()> {
+        match signal {
+            GroupSignal::Kill | GroupSignal::Terminate => {
+                // SAFETY: the open job contains only this worker's process tree.
+                ok(unsafe { TerminateJobObject(self.job.as_raw_handle(), 1) })
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Unix process signal",
+            )),
+        }
+    }
     pub(super) fn leave_running_on_drop(&mut self) {
         self.leave_running = true;
     }
@@ -101,6 +113,10 @@ impl Owner {
         self.status = Some(status);
         Ok(status)
     }
+}
+
+pub(super) fn signal_from_exit(_: ExitStatus) -> Option<String> {
+    None
 }
 
 impl Drop for Owner {

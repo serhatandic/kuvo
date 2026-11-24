@@ -21,7 +21,11 @@ test("an engine session reports its latest measured step and drops it when a sum
       return new Response(null, { status: 404 })
     },
   })
-  const route = engineHandler(() => ({ pid: process.pid, port: engine.port, password: "test" }))
+  const route = engineHandler(() => {
+    const port = engine.port
+    if (port === undefined) throw new Error("The test engine did not bind a port.")
+    return { pid: process.pid, port, password: "test" }
+  })
   const read = async () => {
     let status = 0
     const body: Buffer[] = []

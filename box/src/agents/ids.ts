@@ -16,7 +16,8 @@ function ascending(): string {
   return time + random
 }
 
-export const newID = (prefix: "ses" | "msg" | "evt" | "per" | "frm" | "att" | "call" | "shl" | "btw" | "rev" | "fnd") => `${prefix}_${ascending()}`
+// `agy` is a local sign-in marker, read as an opaque string.
+export const newID = (prefix: "ses" | "msg" | "evt" | "per" | "frm" | "att" | "call" | "shl" | "btw" | "rev" | "fnd" | "agy") => `${prefix}_${ascending()}`
 
 /** The message an event names as its own (the app's reducer does the same for idle markers). */
 export const messageID = (eventID: string) => "msg_" + eventID.slice("evt_".length)
