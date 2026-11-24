@@ -152,7 +152,7 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   // The agents' `queue_…` tools (MCP definitions) and their instructions, for a tool server to list.
   { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
   // Runs an agent's `queue_…` call (`{name, arguments, session}`), only while that session is making it.
-  { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }) } },
+  { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }), 503: object({ retryToolCall: bool, message: string }) } },
   // What each ref names (`refs=243,12`: a `#n`, an id or a `gh:` issue), for chips; null for one unknown.
   { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
   // Refs as a list (`{refs}`), or `{text}` → the `#n` mentions in a description (UTF-16 ranges).

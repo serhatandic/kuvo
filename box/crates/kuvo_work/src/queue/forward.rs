@@ -17,6 +17,25 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tokio::{sync::broadcast, time::Instant};
 
+pub(super) const AGENT_FEATURE: &str = "work-queue.forward.agent";
+
+struct Outgoing {
+    item: String,
+    method: Method,
+    action: Option<String>,
+    area: Option<String>,
+    body: Option<Value>,
+    id: Option<String>,
+    agent: Option<records::Agent>,
+}
+
+pub(super) struct CallAgent {
+    pub agent: records::Agent,
+    pub undo: bool,
+    pub body: Value,
+    pub operation: Option<String>,
+}
+
 const RETRY: Duration = Duration::from_secs(5);
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -49,8 +68,20 @@ impl Forward {
         action: Option<String>,
         body: Option<Value>,
     ) -> Result<Value, Refusal> {
-        self.request(peer, computer, (item, method, action, None, body))
-            .await
+        self.request(
+            peer,
+            computer,
+            Outgoing {
+                item,
+                method,
+                action,
+                area: None,
+                body,
+                id: None,
+                agent: None,
+            },
+        )
+        .await
     }
 
     pub async fn read_edit(
@@ -62,13 +93,15 @@ impl Forward {
         self.request(
             peer,
             computer,
-            (
-                "offline-edit".into(),
-                Method::Get,
-                None,
-                Some("ownership".into()),
-                Some(body),
-            ),
+            Outgoing {
+                item: "offline-edit".into(),
+                method: Method::Get,
+                action: None,
+                area: Some("ownership".into()),
+                body: Some(body),
+                id: None,
+                agent: None,
+            },
         )
         .await
     }
@@ -83,13 +116,52 @@ impl Forward {
         self.request(
             peer,
             computer,
-            (
-                path.into(),
-                Method::Post,
-                None,
-                Some("ownership".into()),
-                Some(json!({"value":value})),
-            ),
+            Outgoing {
+                item: path.into(),
+                method: Method::Post,
+                action: None,
+                area: Some("ownership".into()),
+                body: Some(json!({"value":value})),
+                id: None,
+                agent: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn agent_change(
+        &self,
+        peer: ComputerKey,
+        computer: Value,
+        item: String,
+        action: CallAgent,
+    ) -> Result<Value, Refusal> {
+        let CallAgent {
+            agent,
+            undo,
+            body,
+            operation,
+        } = action;
+        let (method, directive) = match agent.tool {
+            records::Tool::Remove if undo => (Method::Post, Some("restore".into())),
+            records::Tool::Remove => (Method::Delete, None),
+            records::Tool::Update | records::Tool::Hand => (Method::Patch, None),
+        };
+        let id = operation
+            .as_deref()
+            .map(|key| format!("wqa_tool_{}", &key[..key.len().min(32)]));
+        self.request(
+            peer,
+            computer,
+            Outgoing {
+                item,
+                method,
+                action: directive,
+                area: Some("queue-agent".into()),
+                body: Some(body),
+                id,
+                agent: Some(agent),
+            },
         )
         .await
     }
@@ -102,14 +174,17 @@ impl Forward {
         &self,
         peer: ComputerKey,
         computer: Value,
-        (item, method, action, area, body): (
-            String,
-            Method,
-            Option<String>,
-            Option<String>,
-            Option<Value>,
-        ),
+        outgoing: Outgoing,
     ) -> Result<Value, Refusal> {
+        let Outgoing {
+            item,
+            method,
+            action,
+            area,
+            body,
+            id,
+            agent,
+        } = outgoing;
         let display = computer["name"].as_str().unwrap_or_default();
         let failed = |status, reason: String| {
             Refusal::json(status, json!({"message":reason,"computer":computer}))
@@ -151,9 +226,14 @@ impl Forward {
                 ),
             ));
         }
-        let mut random = [0; 16];
-        getrandom::fill(&mut random).map_err(internal)?;
-        let id = format!("wqa_{}", kuvo_wire::keys::encode(&random));
+        let id = match id {
+            Some(id) => id,
+            None => {
+                let mut random = [0; 16];
+                getrandom::fill(&mut random).map_err(internal)?;
+                format!("wqa_{}", kuvo_wire::keys::encode(&random))
+            }
+        };
         let at = jiff::Timestamp::now().as_millisecond();
         let spool = Spool {
             to: kuvo_wire::keys::encode(&peer),
@@ -166,6 +246,7 @@ impl Forward {
                 name: None,
                 area,
                 body,
+                agent,
             },
         };
         let payload = json!({"act":spool.act});

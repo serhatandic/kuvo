@@ -26,6 +26,21 @@ pub(super) enum Error {
     Io(#[from] io::Error),
 }
 
+pub(super) fn exclusive(
+    path: &Path,
+    wait: std::time::Duration,
+) -> io::Result<kuvo_store::locks::OwnedLock> {
+    kuvo_store::locks::OwnedLock::acquire(path, wait).map_err(|error| {
+        if error.kind() == io::ErrorKind::WouldBlock {
+            return io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Kuvo Code is updating its link. Try again in a moment.",
+            );
+        }
+        error
+    })
+}
+
 #[derive(Clone)]
 pub(super) struct Store {
     pub root: PathBuf,

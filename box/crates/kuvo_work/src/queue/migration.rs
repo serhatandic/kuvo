@@ -52,12 +52,7 @@ pub(super) fn migrate(root: &Path) -> Result<(), Error> {
         Duration::ZERO,
         OnBusy::Refuse,
     )?;
-    let _queues = StaleLock::acquire(
-        &root.join(".lock"),
-        STALE,
-        Duration::from_secs(10),
-        OnBusy::Refuse,
-    )?;
+    let _queues = store::exclusive(&root.join(".lock"), Duration::from_secs(10))?;
     if current(root)? {
         return Ok(());
     }

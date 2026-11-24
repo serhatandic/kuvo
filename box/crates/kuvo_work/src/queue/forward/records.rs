@@ -38,6 +38,8 @@ pub(in crate::queue) struct Act {
     pub area: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<Agent>,
 }
 
 #[derive(Clone, Copy, Deserialize, Serialize)]
@@ -53,6 +55,7 @@ pub(in crate::queue) enum RequestKind<'a> {
     Read,
     OfflineRead,
     LabelRestore,
+    Agent,
     File(&'a str),
     Edit,
     Delete,
@@ -61,7 +64,7 @@ pub(in crate::queue) enum RequestKind<'a> {
 
 impl Act {
     pub fn parse(raw: &Value) -> Option<Self> {
-        if !legacy(raw) || raw.get("agent").is_some() {
+        if !legacy(raw) {
             return None;
         }
         let act: Self = serde_json::from_value(raw.clone()).ok()?;
@@ -69,6 +72,10 @@ impl Act {
     }
 
     pub fn kind(&self) -> Option<RequestKind<'_>> {
+        if let Some(agent) = &self.agent {
+            return (self.area.as_deref() == Some("queue-agent") && agent.valid(self))
+                .then_some(RequestKind::Agent);
+        }
         if let Some(area) = self.area.as_deref() {
             if area != "ownership" || self.action.is_some() {
                 return None;
@@ -241,4 +248,43 @@ pub(in crate::queue) fn receipt(
         store.root.parent().expect("Work Queue under run"),
     )?;
     Ok(None)
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(in crate::queue) struct Agent {
+    pub tool: Tool,
+    pub owner: String,
+    pub session: String,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub(in crate::queue) enum Tool {
+    #[serde(rename = "queue_update")]
+    Update,
+    #[serde(rename = "queue_remove")]
+    Remove,
+    #[serde(rename = "queue_hand")]
+    Hand,
+}
+
+impl Agent {
+    fn valid(&self, act: &Act) -> bool {
+        if !self.session.starts_with("ses_")
+            || !store::owner_id(&self.session)
+            || (self.owner != self.session
+                && !(self.owner.starts_with("grp_") && store::owner_id(&self.owner)))
+            || self.name.trim().is_empty()
+            || self.name.encode_utf16().count() > 200
+            || !store::item_id(&act.item)
+        {
+            return false;
+        }
+        matches!(
+            (self.tool, act.method, act.action.as_deref()),
+            (Tool::Update | Tool::Hand, Method::Patch, None)
+                | (Tool::Remove, Method::Delete, None)
+                | (Tool::Remove, Method::Post, Some("restore"))
+        )
+    }
 }

@@ -10,6 +10,7 @@ pub(super) use read::item_name;
 pub(super) use receipt::kept_answer;
 
 use super::*;
+use crate::queue::forward;
 use kuvo_engine::ActiveTool;
 use kuvo_protocol::routes::{
     get_kuvo_work_queue_tools as list, post_kuvo_work_queue_tools as route,
@@ -33,7 +34,10 @@ impl Writer {
                     let name = given["name"].as_str().unwrap_or("undefined");
                     return typed(refused(format!("There's no tool {name}.")));
                 }
-                let operation = receipt::Operation::for_call(&call.request.headers, &given)?;
+                let reading = matches!(name, "queue_list" | "queue_show") ||
+                    (name == "queue_labels" && !["add","rename","recolor","remove"].iter()
+                    .any(|key| args[*key].as_str().is_some_and(|value| !value.trim().is_empty())));
+                let operation = if reading { None } else { receipt::Operation::for_call(&call.request.headers, &given)? };
                 let previous = if let Some(operation) = operation.as_ref() {
                     let store = writer.store.clone();
                     let operation = operation.clone();
@@ -47,7 +51,15 @@ impl Writer {
                 let answer = match engine.active_tool(session, name, args).await {
                     Some(caller) => match writer.run_tool(name, args.clone(), caller, operation.as_ref().map(|op| op.id.clone()), &engine).await {
                         Ok(answer) => answer,
-                        Err(error) => tool_refusal(error).await,
+                        Err(error) => {
+                            let reply = error.reply();
+                            let status = reply.status;
+                            let value = refusal_value(reply).await;
+                            if status == StatusCode::SERVICE_UNAVAILABLE && value["retryToolCall"] == true {
+                                return Err(Refusal::json(status, value));
+                            }
+                            refused(value["message"].as_str().unwrap_or("The Work Queue couldn't do that."))
+                        },
                     },
                     None => refused("Only a conversation's own tool call can use Work Queue tools, and this one isn't running in it."),
                 };
@@ -93,7 +105,10 @@ impl Writer {
             }
             "queue_update" => self.update_words(args, caller, operation).await,
             "queue_remove" => self.remove_words(args, caller, operation).await,
-            "queue_hand" => self.hand_local(args, caller, operation, engine).await,
+            "queue_hand" => {
+                self.hand_words(args, caller, operation, engine, false)
+                    .await
+            }
             "queue_import" => {
                 let owner = self.tool_owner(&caller, true)?;
                 let result = self
@@ -101,7 +116,179 @@ impl Writer {
                     .await?;
                 Ok(said(result["said"].as_str().unwrap_or_default()))
             }
-            _ => Ok(refused("This Work Queue tool isn’t available yet.")),
+            "queue_labels" => {
+                self.tool_owner(&caller, false)?;
+                labels::tool(&self.store, &self.setup, args, actor(&caller)).await
+            }
+            _ => Ok(refused(format!("There's no tool {name}."))),
+        }
+    }
+
+    pub(super) async fn peer_tool(&self, mut act: Act) -> Value {
+        use forward::records::{Method, Tool};
+        let agent = act.agent.take().expect("parsed forwarded agent");
+        let mut args = act
+            .body
+            .take()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        args["item"] = act.item.as_str().into();
+        args["undo"] = Value::Bool(
+            matches!(act.method, Method::Post) && act.action.as_deref() == Some("restore"),
+        );
+        let operation = act.id.starts_with("wqa_tool_").then_some(act.id);
+        let caller = ActiveTool {
+            root: agent.session,
+            name: Some(agent.name),
+            seat: agent.owner.starts_with("grp_"),
+            group: agent.owner.starts_with("grp_").then_some(agent.owner),
+            directory: None,
+        };
+        let id = act.item;
+        let reply = match agent.tool {
+            Tool::Update => {
+                self.update_local(id.clone(), args, caller, operation, true)
+                    .await
+            }
+            Tool::Remove => {
+                let removal = if args["undo"] == true {
+                    Removal::Restore
+                } else {
+                    Removal::Delete
+                };
+                self.change_as(id.clone(), removal, actor(&caller), operation)
+                    .await
+            }
+            Tool::Hand => {
+                self.hand_words(args, caller, operation, &self.engine, true)
+                    .await
+            }
+        };
+        match reply {
+            Ok(mut answer) => {
+                let here = self.clone();
+                let item = blocking(move || {
+                    let seen = super::super::github::Seen::read(&here.store)?;
+                    let sessions =
+                        super::super::sessions::Sessions::read(here.sessions.latest_record());
+                    Ok(here
+                        .store
+                        .items()?
+                        .into_iter()
+                        .find(|item| item.id == id)
+                        .map(|item| {
+                            view::summary(
+                                &item,
+                                jiff::Zoned::now().date(),
+                                &here.refs,
+                                &seen,
+                                &sessions,
+                                &Assignees::read(&here.store),
+                            )
+                        }))
+                })
+                .await;
+                if let Ok(Some(item)) = item {
+                    answer["item"] = item;
+                }
+                answer
+            }
+            Err(error) => tool_refusal(error).await,
+        }
+    }
+
+    async fn change_there(
+        &self,
+        target: &Value,
+        tool: forward::records::Tool,
+        mut args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+    ) -> Result<Value, Refusal> {
+        let comp = &target["computer"];
+        let id = target["id"]
+            .as_str()
+            .expect("remote Work Queue item id")
+            .to_owned();
+        let key = comp["key"]
+            .as_str()
+            .and_then(kuvo_wire::keys::decode_exact)
+            .ok_or_else(|| bad("That computer is not in this setup."))?;
+        if !self.peers.view().advertises(&key, forward::AGENT_FEATURE) {
+            let name = comp["name"].as_str().unwrap_or_default();
+            return Err(bad(format!(
+                "{} is on {name}. Update Kuvo there so it can record which agent made the change.",
+                read::item_name(target)
+            )));
+        }
+        let body = args.as_object_mut().expect("tool arguments");
+        body.remove("item");
+        if let Some(given) = body
+            .remove("files")
+            .filter(|_| matches!(tool, forward::records::Tool::Update))
+        {
+            let writer = self.clone();
+            let directory = caller.directory.clone();
+            let name = comp["name"].as_str().unwrap_or_default().to_owned();
+            let files = tokio::task::spawn_blocking(move || {
+                writer
+                    .files
+                    .stage_agent(&writer.store, Some(&given), directory.as_deref())?
+                    .for_computer(&name)
+            })
+            .await
+            .map_err(internal)??;
+            body.insert("files".into(), files);
+        }
+        let agent = forward::records::Agent {
+            tool,
+            owner: self.tool_owner(&caller, false)?,
+            session: caller.root,
+            name: caller.name.unwrap_or_else(|| "An agent".into()),
+        };
+        let name = comp["name"].as_str().unwrap_or_default().to_owned();
+        let undo = args["undo"] == true;
+        let action = forward::CallAgent {
+            agent,
+            undo,
+            body: args,
+            operation: operation.clone(),
+        };
+        let changed = match self
+            .forward
+            .agent_change(key, comp.clone(), id.clone(), action)
+            .await
+        {
+            Ok(reply) => reply,
+            Err(error) if operation.is_some() => {
+                let reply = error.reply();
+                if reply.status == StatusCode::SERVICE_UNAVAILABLE {
+                    return Err(Refusal::json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"retryToolCall":true,"message":format!("Waiting for {name} to confirm the Work Queue change.")}),
+                    ));
+                }
+                return Ok(refused(refusal_message(reply).await));
+            }
+            Err(error) => return Ok(tool_refusal(error).await),
+        };
+        if changed["isError"] == false && changed["item"]["id"] == id {
+            let store = self.store.clone();
+            let item = changed["item"].clone();
+            let deleted = matches!(tool, forward::records::Tool::Remove) && !undo;
+            let _ = tokio::task::spawn_blocking(move || {
+                told::apply_reply(&store, &key, &item, deleted)
+            })
+            .await;
+        }
+        if let (Some(text), Some(error)) = (changed["text"].as_str(), changed["isError"].as_bool())
+        {
+            Ok(json!({"text":text,"isError":error}))
+        } else {
+            Ok(refused(changed["message"].as_str().map_or_else(
+                || format!("{name} didn't confirm the change."),
+                str::to_owned,
+            )))
         }
     }
 
@@ -456,6 +643,13 @@ async fn tool_refusal(error: Refusal) -> Value {
 }
 
 async fn refusal_message(reply: kuvo_server::Reply) -> String {
+    refusal_value(reply).await["message"]
+        .as_str()
+        .unwrap_or("The Work Queue couldn't do that.")
+        .to_owned()
+}
+
+async fn refusal_value(reply: kuvo_server::Reply) -> Value {
     use http_body_util::BodyExt;
     reply
         .body
@@ -463,8 +657,7 @@ async fn refusal_message(reply: kuvo_server::Reply) -> String {
         .await
         .ok()
         .and_then(|body| serde_json::from_slice::<Value>(&body.to_bytes()).ok())
-        .and_then(|body| body["message"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| "The Work Queue couldn't do that.".into())
+        .unwrap_or_else(|| json!({"message":"The Work Queue couldn't do that."}))
 }
 
 fn refused(text: impl Into<String>) -> Value {

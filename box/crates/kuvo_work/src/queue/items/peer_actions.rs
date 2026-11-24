@@ -198,13 +198,22 @@ impl Writer {
         .map_err(io::Error::other)??
         {
             let here = self.peers.view().roster.name.clone();
-            return Ok(before.answer.unwrap_or_else(|| Reply { status: 409, value: json!({"message":format!("{here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.")}) }));
+            if let Some(answer) = before.answer {
+                return Ok(answer);
+            }
+            if !matches!(kind, RequestKind::Agent) || !id.starts_with("wqa_tool_") {
+                return Ok(Reply {
+                    status: 409,
+                    value: json!({"message":format!("{here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.")}),
+                });
+            }
         }
         let result = match kind {
             RequestKind::Edit => {
                 self.edit(act.item, act.body.unwrap_or_default(), false)
                     .await
             }
+            RequestKind::Agent => Ok(self.peer_tool(act).await),
             RequestKind::LabelRestore => {
                 let value = act.body.unwrap_or_default()["value"].clone();
                 if value.get("dryRun").is_some_and(|given| given != false) {

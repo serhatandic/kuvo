@@ -1,6 +1,7 @@
 //! Durable operation claims shared with the TypeScript tool adapter.
 
 use super::*;
+use kuvo_store::locks::{OnBusy, StaleLock};
 
 #[derive(Clone)]
 pub(super) struct Operation {

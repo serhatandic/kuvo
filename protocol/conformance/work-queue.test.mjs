@@ -1,7 +1,8 @@
 // A real resident reads Work Queue files in an isolated home with a local relay.
+import { spawn } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash, verify } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { boxBinary, boxCommand, isolatedEnv, localRelay, openLine, privateHome, request, scratch, startBox, until, write } from "./adapter.mjs";
@@ -1416,4 +1417,156 @@ test("linking a numbered item to GitHub retains its number and previous descript
   const same = await ask("POST", "kuvo/work-queue/tools", { name: "queue_update", session: session.id, arguments: args });
   assert.equal(same.json.isError, true, same.text);
   assert.match(same.json.text, / is that one already\.$/);
+});
+
+test("an agent manages shared labels and records which items it changed", { timeout: 60000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const lab = await computer("Lab");
+  const session = { id: "ses_LabelEditor", title: "Label editor", time: { created: 1, updated: 2 } };
+  lab.engine.sessions.push(session);
+  const ask = lab.connect(await lab.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const app = { "x-kuvo-from": "app" };
+  const labels = "kuvo/work-queue/labels";
+  const shared = await ask("POST", labels, { add: "Already there", color: "mint" }, app);
+  assert.equal(shared.status, 200, shared.text);
+  const endpoint = "kuvo/work-queue/tools";
+  const call = async (args, operation) => {
+    lab.engine.messages.set(session.id, [{ id: "msg_1", type: "assistant", content: [{ type: "tool",
+      name: "kuvo-browser_queue_labels", state: { status: "running", input: args } }] }]);
+    const result = await ask("POST", endpoint, { name: "queue_labels", session: session.id, arguments: args, operation });
+    assert.equal(result.status, 200, result.text);
+    return result.json;
+  };
+  const empty = await call({});
+  assert.equal(empty.isError, false, empty.text);
+  assert.match(empty.text, /^Labels \(one set for every queue; an item carries several\): Already there \(mint\)\. Statuses aren't labels:/);
+  const added = await call({ add: "Notes to file", color: "orange" }, "agent-label-add");
+  assert.equal(added.isError, false, added.text);
+  assert.equal(added.save?.status, "committed");
+  assert.match(added.text, /^Made the label Notes to file\. Labels now:/);
+  const definitions = await ask("GET", labels);
+  const label = definitions.json.labels.find(label => label.name === "Notes to file");
+  assert.equal(label.color, "orange");
+  const rename = await call({ rename: label.id, to: "Done" });
+  assert.deepEqual(rename, { isError: true, text: "Done is a status, not a label: set it on an item with status." });
+  const item = await ask("POST", "kuvo/work-queue/items", { operation: "item-for-label", title: "Write notes", labels: [label.id] }, app);
+  assert.equal(item.status, 200, item.text);
+  assert.deepEqual(item.json.item.labels, [label.id]);
+  const gone = await call({ remove: label.id }, "agent-label-remove");
+  assert.equal(gone.isError, false, gone.text);
+  assert.equal(gone.save?.status, "committed");
+  assert.match(gone.text, /^Removed \(and took off every item here\) the label Notes to file\./);
+  const changed = await ask("GET", "kuvo/work-queue/items/" + item.json.item.id);
+  assert.deepEqual(changed.json.item.labels, []);
+  const event = changed.json.item.events.at(-1);
+  assert.deepEqual(event.by, { session: session.id, name: session.title });
+  assert.deepEqual(event.fields, ["labels"]);
+  assert.equal(event.kind, "edited");
+});
+
+test("a keeper records the agent's changes and files from another computer", { timeout: 100000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const folder = path.join(lab.home, "..", "project");
+  const attachment = path.join(folder, "review.txt");
+  write(attachment, "Carried from an agent's project.");
+  const session = { id: "ses_RemoteEditor", title: "Lab Editor", location: { directory: folder }, time: { created: 1, updated: 2 } };
+  lab.engine.sessions.push(session);
+  const main = studio.connect(await studio.start().ready());
+  const setup = await main("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  const joined = await lab.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const app = { "x-kuvo-from": "app" };
+  const created = await main("POST", "kuvo/work-queue/items", { operation: "agent-remote-fixture", title: "Remote work" }, app);
+  assert.equal(created.status, 200, created.text);
+  const item = created.json.item.id;
+  await until(async () => {
+    const answer = await member("GET", "kuvo/work-queue?owner=all&glance=1");
+    return answer.json?.items.some(row => row.id === item && row.computer?.name === "Studio");
+  }, "The recipient did not see the keeper's queue.");
+  const route = "kuvo/work-queue/tools";
+  const call = (name, args, operation) => {
+    lab.engine.messages.set(session.id, [{ id: "msg_1", type: "assistant", content: [{ type: "tool",
+      name: "kuvo-browser_" + name, state: { status: "running", input: args } }] }]);
+    return member("POST", route, { name, session: session.id, arguments: args, operation });
+  };
+  const changed = await call("queue_update", { item, body: "Remote reviewer wrote this.", note: "Lab checked the work.", files: [attachment] }, "remote-review");
+  assert.equal(changed.status, 200, changed.text);
+  assert.equal(changed.json.isError, false, changed.text);
+  const itemPath = "kuvo/work-queue/items/" + item;
+  const reviewed = await main("GET", itemPath);
+  assert.equal(reviewed.status, 200, reviewed.text);
+  assert.equal(reviewed.json.item.body, "Remote reviewer wrote this.");
+  assert.equal(reviewed.json.item.notes.at(-1).text, "Lab checked the work.");
+  assert.deepEqual(reviewed.json.item.updated.by, { session: session.id, name: session.title });
+  assert.equal((await main("GET", itemPath + "/files/review.txt")).text, "Carried from an agent's project.");
+  const removed = await call("queue_remove", { item }, "remote-remove");
+  assert.equal(removed.status, 200, removed.text);
+  assert.equal(removed.json.isError, false, removed.text);
+  const deleted = await main("GET", itemPath);
+  assert.deepEqual(deleted.json.item.removed.by, { session: session.id, name: session.title });
+  const undone = await call("queue_remove", { item, undo: true }, "remote-undo");
+  assert.equal(undone.status, 200, undone.text);
+  assert.equal(undone.json.isError, false, undone.text);
+  const restored = await main("GET", itemPath);
+  assert.equal(restored.json.item.removed, undefined);
+  assert.equal(restored.json.item.events.at(-1).kind, "restored");
+  assert.deepEqual(restored.json.item.events.at(-1).by, { session: session.id, name: session.title });
+});
+
+test("queue writers use the resident PID to reclaim a dead owner and wait for a live one", { timeout: 35000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const ask = studio.connect(await studio.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const queue = path.join(studio.home, "run", "work-queue");
+  const app = { "x-kuvo-from": "app" };
+  const add = operation => ask("POST", "kuvo/work-queue/items", { operation, title: operation }, app);
+  const first = await add("prime-prior-queue-writer");
+  assert.equal(first.status, 200, first.text);
+
+  const dead = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", ""]);
+    child.once("error", reject);
+    child.once("exit", code => code === 0 ? resolve(child.pid) : reject(new Error("The marker fixture did not exit.")));
+  });
+  const placeMarker = (lock, pid) => write(path.join(lock, `owner-${pid}-ee00ee00ee00ee00`), "");
+  const writer = path.join(queue, ".lock");
+  placeMarker(writer, dead);
+  const replaced = await add("replace-dead-queue-writer");
+  assert.equal(replaced.status, 200, replaced.text);
+
+  const ledger = path.join(queue, ".numbers.json.lock");
+  placeMarker(ledger, dead);
+  const numbered = await add("replace-dead-number-writer");
+  assert.equal(numbered.status, 200, numbered.text);
+  const numberOf = row => until(async () => {
+    const item = await ask("GET", "kuvo/work-queue/items/" + row.json.item.id);
+    return item.json?.item?.number;
+  }, "The item did not receive a number.");
+  assert.ok(await numberOf(numbered) > await numberOf(replaced));
+
+  placeMarker(writer, process.pid);
+  const waiting = add("wait-for-living-queue-writer");
+  void waiting.catch(() => {});
+  try {
+    await until(() => readdirSync(queue).some(name => name.startsWith(".lock.owner-") || name.startsWith(".lock.pending-")),
+      "The resident did not queue behind the older writer.", 1800);
+    const answer = await ask("GET", "kuvo/nonexistent");
+    assert.equal(answer.status, 404, answer.text);
+  } finally {
+    rmSync(writer, { recursive: true, force: true });
+  }
+  const written = await waiting;
+  assert.equal(written.status, 200, written.text);
 });

@@ -18,9 +18,15 @@ impl Writer {
         let answer = self.reads.item_for_tool(reference).await?;
         let target = &answer["item"];
         if target.get("computer").is_some() {
-            return Err(bad(
-                "Use the Work Queue on the computer that keeps that item to change it.",
-            ));
+            return self
+                .change_there(
+                    target,
+                    forward::records::Tool::Remove,
+                    args,
+                    caller,
+                    operation,
+                )
+                .await;
         }
         let id = target["id"].as_str().expect("queue item id").to_owned();
         self.change_as(id, removal, actor(&caller), operation).await
@@ -36,14 +42,42 @@ impl Writer {
         let answer = self.reads.item_for_tool(reference).await?;
         let target = &answer["item"];
         if target.get("computer").is_some() {
-            return Err(bad(
-                "Use the Work Queue on the computer that keeps that item to change it.",
-            ));
+            return self
+                .change_there(
+                    target,
+                    forward::records::Tool::Update,
+                    args,
+                    caller,
+                    operation,
+                )
+                .await;
         }
         let id = target["id"].as_str().expect("queue item id").to_owned();
+        self.update_local(id, args, caller, operation, false).await
+    }
+
+    pub(super) async fn update_local(
+        &self,
+        id: String,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+        forwarded: bool,
+    ) -> Result<Value, Refusal> {
+        let existing = self.store.clone();
+        let item = id.clone();
+        let target = blocking(move || {
+            Ok(existing
+                .items()?
+                .into_iter()
+                .find(|row| row.id == item)
+                .map(|row| Value::Object(row.saved)))
+        })
+        .await?
+        .ok_or_else(|| bad("There's no item like that."))?;
         let linked = if let Some(given) = args.get("issue") {
             if let Some(source) = target.get("source") {
-                let display = read::item_name(target);
+                let display = read::item_name(&target);
                 let reference = source["ref"].as_str().unwrap_or_default();
                 let named = given.as_str().and_then(|issue| self.refs.issue(issue));
                 let current = self.refs.issue(reference);
@@ -68,9 +102,13 @@ impl Writer {
         let folder = caller.directory.clone();
         let file_args = args.get("files").cloned();
         let staged = tokio::task::spawn_blocking(move || {
-            writer
-                .files
-                .stage_agent(&writer.store, file_args.as_ref(), folder.as_deref())
+            if forwarded {
+                writer.files.stage(&writer.store, file_args.as_ref(), false)
+            } else {
+                writer
+                    .files
+                    .stage_agent(&writer.store, file_args.as_ref(), folder.as_deref())
+            }
         })
         .await
         .map_err(internal)??;
@@ -176,23 +214,37 @@ impl Writer {
             Ok(result.expect("saved tool answer"))
         }).await.map_err(internal)?
     }
-    pub(super) async fn hand_local(
+    pub(super) async fn hand_words(
         &self,
         args: Value,
         caller: ActiveTool,
         operation: Option<String>,
         engine: &Engine,
+        forwarded: bool,
     ) -> Result<Value, Refusal> {
         self.tool_owner(&caller, false)?;
-        let reference = self.tool_item_reference(&args["item"])?;
-        let answer = self.reads.item_for_tool(reference).await?;
-        let target = &answer["item"];
-        if target.get("computer").is_some() {
-            return Err(bad(
-                "Use the Work Queue on the computer that keeps that item to hand it off.",
-            ));
-        }
-        let id = target["id"].as_str().expect("queue item id").to_owned();
+        let id = if forwarded {
+            args["item"]
+                .as_str()
+                .expect("parsed forwarded item id")
+                .to_owned()
+        } else {
+            let reference = self.tool_item_reference(&args["item"])?;
+            let answer = self.reads.item_for_tool(reference).await?;
+            let target = &answer["item"];
+            if target.get("computer").is_some() {
+                return self
+                    .change_there(
+                        target,
+                        forward::records::Tool::Hand,
+                        args,
+                        caller,
+                        operation,
+                    )
+                    .await;
+            }
+            target["id"].as_str().expect("queue item id").to_owned()
+        };
         let to = args["to"]
             .as_str()
             .unwrap_or_default()

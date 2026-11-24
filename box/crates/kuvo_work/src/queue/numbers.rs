@@ -10,7 +10,6 @@ use kuvo_setup::{QueueNumberLease, QueueSetup, SetupHandle};
 use kuvo_store::{
     files,
     format::{Fields, ObjectFormat},
-    locks::{OnBusy, StaleLock},
 };
 use serde_json::{Value, json};
 use std::{io, path::PathBuf, time::Duration};
@@ -187,16 +186,10 @@ impl Numbers {
         change: impl FnOnce(&mut Ledger, Scope) -> io::Result<T> + Send + 'static,
     ) -> Result<T, Error> {
         let lock = self.file.with_file_name(".numbers.json.lock");
-        let guard = tokio::task::spawn_blocking(move || {
-            StaleLock::acquire(
-                &lock,
-                Duration::from_secs(10),
-                Duration::from_secs(3),
-                OnBusy::Refuse,
-            )
-        })
-        .await
-        .map_err(io::Error::other)??;
+        let guard =
+            tokio::task::spawn_blocking(move || store::exclusive(&lock, Duration::from_secs(3)))
+                .await
+                .map_err(io::Error::other)??;
         let setup = self.setup.queue_setup();
         let lease = if setup.as_ref().is_some_and(|setup| setup.main_here) {
             self.setup

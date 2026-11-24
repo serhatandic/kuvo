@@ -42,7 +42,7 @@ use kuvo_setup::{QueueLabel, SetupHandle};
 use kuvo_store::{
     files,
     format::{Fields, ObjectFormat},
-    locks::{OnBusy, StaleLock},
+    locks::OwnedLock,
 };
 use kuvo_wire::mail::Envelope;
 use serde_json::{Value, json};
@@ -80,6 +80,7 @@ struct Writer {
     numbers: Numbers,
     files: Arc<ClientFiles>,
     sessions: LocalSessions,
+    engine: Engine,
     reads: PeerReads,
     forward: Forward,
     revisions: Arc<offline::Revisions>,
@@ -103,6 +104,7 @@ pub(super) fn register(
         files: Arc::new(ClientFiles::new()),
         forward: Forward::new(store.clone(), owners, relay.clone()),
         sessions,
+        engine: engine.clone(),
         reads,
         store,
         setup,
@@ -416,11 +418,9 @@ impl Writer {
         let root = self.store.root.clone();
         let guard = tokio::task::spawn_blocking(move || {
             migration::migrate(&root)?;
-            Ok::<_, Error>(StaleLock::acquire(
+            Ok::<_, Error>(store::exclusive(
                 &root.join(".lock"),
-                Duration::from_secs(10),
                 Duration::from_secs(3),
-                OnBusy::Refuse,
             )?)
         })
         .await
@@ -811,16 +811,14 @@ impl Writer {
         Ok(())
     }
 
-    async fn lock(&self) -> Result<Option<StaleLock>, Refusal> {
+    async fn lock(&self) -> Result<OwnedLock, Refusal> {
         let root = self.store.root.clone();
         blocking(move || {
             files::create_private_dirs(&root)?;
             migration::migrate(&root)?;
-            Ok(StaleLock::acquire(
+            Ok(store::exclusive(
                 &root.join(".lock"),
-                Duration::from_secs(10),
                 Duration::from_secs(3),
-                OnBusy::Refuse,
             )?)
         })
         .await
@@ -1018,7 +1016,7 @@ fn event(item: &mut Value, now: i64, kind: &str) {
     append_event(item, json!({"at":now,"by":{"user":true},"kind":kind}));
 }
 
-fn append_event(item: &mut Value, event: Value) {
+pub(super) fn append_event(item: &mut Value, event: Value) {
     let mut events = store::array(item.get("events")).to_vec();
     let last = events.last_mut();
     let reorder = |event: &Value| event["kind"] == "moved" && event["from"] == event["to"];
@@ -1101,7 +1099,7 @@ fn text(value: &Value, limit: usize, name: &str) -> Result<String, Refusal> {
     Ok(value.into())
 }
 
-fn status_of(value: &Value) -> Result<&'static str, Refusal> {
+pub(super) fn status_of(value: &Value) -> Result<&'static str, Refusal> {
     let words = value.as_str().unwrap_or_default().trim().to_lowercase();
     let words = words
         .split(|ch: char| ch.is_whitespace() || matches!(ch, '_' | '-'))

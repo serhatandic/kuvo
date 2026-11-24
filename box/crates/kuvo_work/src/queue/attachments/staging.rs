@@ -558,6 +558,23 @@ pub(in crate::queue) struct Staged {
 }
 
 impl Staged {
+    pub fn for_computer(&self, computer: &str) -> Result<Value, Refusal> {
+        if self.entries.iter().map(|entry| entry.size).sum::<usize>() > 4_000_000 {
+            return Err(Refusal::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "These files are too big to send to {computer} with one change (4 MB in all at most)."
+                ),
+            ));
+        }
+        let base64 = base64::engine::general_purpose::STANDARD;
+        self.entries.iter().map(|entry| {
+            let content = fs::read(&entry.path).map_err(internal)?;
+            let name = &entry.name;
+            Ok(json!({"name":name,"uri":format!("data:{};base64,{}",media_type(name),base64.encode(content))}))
+        }).collect::<Result<Vec<_>,_>>().map(Value::from)
+    }
+
     pub fn with_ids(mut self, ids: impl Iterator<Item = String>) -> Self {
         for (entry, id) in self.entries.iter_mut().zip(ids) {
             entry.id = Some(id);

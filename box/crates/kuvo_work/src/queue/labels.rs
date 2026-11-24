@@ -312,16 +312,20 @@ fn words(value: &Value) -> String {
 }
 
 pub(super) fn strip(store: &Store, removed: &[String]) -> Result<(), Error> {
+    strip_as(store, removed, None)
+}
+
+fn strip_as(store: &Store, removed: &[String], actor: Option<&Value>) -> Result<(), Error> {
     if removed.is_empty() {
         return Ok(());
     }
     migration::migrate(&store.root)?;
-    let _queues = StaleLock::acquire(
-        &store.root.join(".lock"),
-        Duration::from_secs(10),
-        Duration::from_secs(3),
-        OnBusy::Refuse,
-    )?;
+    let _queues = store::exclusive(&store.root.join(".lock"), Duration::from_secs(3))?;
+    strip_locked(store, removed, actor)
+}
+
+fn strip_locked(store: &Store, removed: &[String], actor: Option<&Value>) -> Result<(), Error> {
+    let now = jiff::Timestamp::now().as_millisecond();
     for file in queue_files(&store.root.join("queues")) {
         if !file
             .file_stem()
@@ -347,7 +351,16 @@ pub(super) fn strip(store: &Store, removed: &[String]) -> Result<(), Error> {
                         .as_str()
                         .is_some_and(|label| removed.iter().any(|id| id == label))
                 });
-                changed |= before != labels.len();
+                if before != labels.len() {
+                    changed = true;
+                    if let Some(actor) = actor {
+                        super::items::append_event(
+                            item,
+                            json!({"at":now,"by":actor,"kind":"edited","fields":["labels"]}),
+                        );
+                        item["updated"] = json!({"at":now,"by":actor});
+                    }
+                }
             }
         }
         if changed {
@@ -358,12 +371,21 @@ pub(super) fn strip(store: &Store, removed: &[String]) -> Result<(), Error> {
 }
 
 fn local_save(store: &Store, edit: Edit) -> Result<Value, Refusal> {
-    migration::migrate(&store.root).map_err(super::routes::storage_refusal)?;
     let removal = edit.removal();
+    let (changed, labels) = local_change(store, edit, None)?;
+    Ok(answer(labels, changed, removal))
+}
+
+fn local_change(
+    store: &Store,
+    edit: Edit,
+    actor: Option<&Value>,
+) -> Result<(QueueLabel, Vec<QueueLabel>), Refusal> {
+    migration::migrate(&store.root).map_err(super::routes::storage_refusal)?;
     if let Edit::Remove { which } = &edit {
         let kept = local(store, None).map_err(super::routes::storage_refusal)?;
         let index = named_or_missing(&kept.library.labels, which).map_err(bad)?;
-        strip(store, &[kept.library.labels[index].id.clone()])
+        strip_as(store, &[kept.library.labels[index].id.clone()], actor)
             .map_err(super::routes::storage_refusal)?;
     }
     let _lock = StaleLock::acquire(
@@ -397,7 +419,7 @@ fn local_save(store: &Store, edit: Edit) -> Result<Value, Refusal> {
     }
     store::write(&store.root.join("labels.json"), LABELS, fields)
         .map_err(super::routes::internal)?;
-    Ok(answer(kept.library.labels, done, removal))
+    Ok((done, kept.library.labels))
 }
 
 fn answer(labels: Vec<QueueLabel>, done: QueueLabel, removal: bool) -> Value {
@@ -412,6 +434,24 @@ fn bad(message: String) -> Refusal {
     Refusal::new(StatusCode::BAD_REQUEST, message)
 }
 
+fn changed_library(
+    store: &Store,
+    selected: QueueSetup,
+    edit: Edit,
+) -> Result<(QueueLabelLibrary, QueueLabel), Refusal> {
+    migration::migrate(&store.root).map_err(super::routes::storage_refusal)?;
+    let mut library = match selected.labels {
+        Some(accepted) => accepted.library,
+        None => {
+            local(store, Some(&selected))
+                .map_err(super::routes::storage_refusal)?
+                .library
+        }
+    };
+    let changed = edit.apply(&mut library).map_err(bad)?;
+    Ok((library, changed))
+}
+
 async fn managed_save(
     store: Store,
     setup: SetupHandle,
@@ -422,21 +462,10 @@ async fn managed_save(
     let removal = edit.removal();
     let fixture = store.clone();
     let selection = selected.clone();
-    let (library, done) = tokio::task::spawn_blocking(move || {
-        migration::migrate(&fixture.root).map_err(super::routes::storage_refusal)?;
-        let mut library = match selection.labels {
-            Some(accepted) => accepted.library,
-            None => {
-                local(&fixture, Some(&selection))
-                    .map_err(super::routes::storage_refusal)?
-                    .library
-            }
-        };
-        let done = edit.apply(&mut library).map_err(bad)?;
-        Ok::<_, Refusal>((library, done))
-    })
-    .await
-    .map_err(super::routes::internal)??;
+    let (library, done) =
+        tokio::task::spawn_blocking(move || changed_library(&fixture, selection, edit))
+            .await
+            .map_err(super::routes::internal)??;
     let receipt = setup
         .save_queue_labels(&caller, &selected, library.clone())
         .await?;
@@ -492,4 +521,144 @@ pub(super) fn register(registry: &mut Registry, store: Store, setup: SetupHandle
                 .map_err(super::routes::internal)?.and_then(super::routes::typed)
         }
     });
+}
+
+pub(super) async fn tool(
+    store: &Store,
+    setup: &SetupHandle,
+    args: Value,
+    who: Value,
+) -> Result<Value, Refusal> {
+    use super::{
+        items::status_of,
+        status::{PRIORITIES, STATUSES},
+    };
+    let statuses = STATUSES
+        .iter()
+        .map(|status| status.name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let priorities = PRIORITIES
+        .iter()
+        .map(|priority| priority.name)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let kept = setup.queue_setup();
+    let asked = ["add", "rename", "recolor", "remove"]
+        .into_iter()
+        .filter(|key| {
+            args[*key]
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty())
+        })
+        .collect::<Vec<_>>();
+    let listed = |labels: &[QueueLabel]| {
+        if labels.is_empty() {
+            "none yet".into()
+        } else {
+            labels
+                .iter()
+                .map(|label| format!("{} ({})", label.name, label.color))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    let Some(action) = asked.first().copied() else {
+        let store = store.clone();
+        let labels = super::routes::blocking(move || shown(&store, kept.as_ref())).await?;
+        return Ok(
+            json!({"isError":false,"text":format!("Labels (one set for every queue; an item carries several): {}. Statuses aren't labels: {statuses}. Priorities: {priorities}.",listed(&labels))}),
+        );
+    };
+    if asked.len() > 1 {
+        return Err(bad(
+            "One change a call: add, rename (with to), recolor (with color) or remove.".into(),
+        ));
+    }
+    if status_of(&args["add"]).is_ok() || status_of(&args["to"]).is_ok() {
+        return Err(bad(format!(
+            "{} is a status, not a label: set it on an item with status.",
+            args["add"]
+                .as_str()
+                .or_else(|| args["to"].as_str())
+                .unwrap_or_default()
+        )));
+    }
+    let supplied = match action {
+        "add" => json!({"add":args["add"],"color":args["color"]}),
+        "rename"
+            if args["to"]
+                .as_str()
+                .is_some_and(|name| !name.trim().is_empty()) =>
+        {
+            json!({"change":args["rename"],"name":args["to"]})
+        }
+        "rename" => return Err(bad("Say its new name (to).".into())),
+        "recolor"
+            if args["color"]
+                .as_str()
+                .is_some_and(|color| !color.trim().is_empty()) =>
+        {
+            json!({"change":args["recolor"],"color":args["color"]})
+        }
+        "recolor" => return Err(bad("Say its new colour (color).".into())),
+        "remove" => json!({"remove":args["remove"]}),
+        _ => unreachable!(),
+    };
+    let edit = Edit::parse(&supplied).map_err(bad)?;
+    let store_owned = store.clone();
+    let selected = kept.clone();
+    let (done, next, save) = if let Some(selected) = selected {
+        let expected = selected.clone();
+        let (library, changed) =
+            tokio::task::spawn_blocking(move || changed_library(&store_owned, expected, edit))
+                .await
+                .map_err(super::routes::internal)??;
+        let guard = if action == "remove" {
+            let path = store.root.join(".lock");
+            super::routes::blocking(move || {
+                Ok(Some(store::exclusive(&path, Duration::from_secs(3))?))
+            })
+            .await?
+        } else {
+            None
+        };
+        let save = setup
+            .save_queue_labels_on_this_computer(&selected, library.clone())
+            .await?;
+        if action == "remove" {
+            let store = store.clone();
+            let removed = [changed.id.clone()];
+            super::routes::blocking(move || {
+                let _guard = guard;
+                strip_locked(&store, &removed, Some(&who))
+            })
+            .await?;
+        }
+        (changed, library.labels, Some(save))
+    } else {
+        let (label, labels) =
+            tokio::task::spawn_blocking(move || local_change(&store_owned, edit, Some(&who)))
+                .await
+                .map_err(super::routes::internal)??;
+        (label, labels, None)
+    };
+    let verb = match action {
+        "add" => "Made",
+        "remove" => "Removed (and took off every item here)",
+        _ => "Changed",
+    };
+    let text = format!(
+        "{verb} the label {}. Labels now: {}.",
+        done.name,
+        listed(&next)
+    );
+    if let Some(save) = save {
+        let serialized = serde_json::to_string(&save).map_err(super::routes::internal)?;
+        Ok(
+            json!({"isError":false, "text":format!("{text} Save receipt: {serialized}"), "save":save}),
+        )
+    } else {
+        Ok(json!({"isError":false, "text":text}))
+    }
 }
