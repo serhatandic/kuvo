@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 
@@ -1683,7 +1683,7 @@ esac
     assert.equal(stopped.status, 0, stopped.stderr);
   };
   const begin = (verb, stdout) => launch("/bin/sh", [entry, verb], fixtureEnv, env.HOME, stdout);
-  return { env, home, cron, cronBefore, version, pack, media, install, begin, stop };
+  return { env, home, cron, cronBefore, version, pack, media, key, install, begin, stop };
 }
 
 function damagedInstallerStatus(install, media, home) {
@@ -1701,6 +1701,27 @@ function damagedInstallerStatus(install, media, home) {
     } finally {
       fs.truncateSync(file, original);
     }
+  }
+}
+
+function fileEngineInstallerStatus(install, media, home, key) {
+  const file = path.join(media, "boxes.json");
+  const original = fs.readFileSync(file);
+  const signed = JSON.parse(original);
+  const manifest = JSON.parse(Buffer.from(signed.manifest, "base64"));
+  const system = process.platform === "darwin" ? "darwin" : "linux";
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  manifest[system][arch].url = pathToFileURL(path.join(media, "engine.tar.gz")).href;
+  try {
+    write(file, encode(envelope(manifest, key)));
+    const refused = install("status");
+    assert.equal(refused.status, 1, refused.error?.message ?? refused.stdout + refused.stderr);
+    assert.deepEqual(JSON.parse(refused.stdout), {
+      result: "failed", message: "This copy of Kuvo is damaged. Download it again, then try again.",
+    });
+    assert.equal(fs.existsSync(home), false);
+  } finally {
+    write(file, original);
   }
 }
 
@@ -1728,8 +1749,9 @@ async function concurrentInstallStatus(start, home) {
 test("signed Linux installer makes a fresh machine and keeps unrelated reboot jobs", { timeout: 120000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
-  const { env, home, cron, cronBefore, version, pack, media, install, begin, stop } = await freshLinuxInstaller(t, binary);
+  const { env, home, cron, cronBefore, version, pack, media, key, install, begin, stop } = await freshLinuxInstaller(t, binary);
   damagedInstallerStatus(install, media, home);
+  fileEngineInstallerStatus(install, media, home, key);
   await concurrentInstallStatus(() => begin("status", "pipe"), home);
   const status = install("status");
   assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
@@ -2170,6 +2192,7 @@ esac
       const starts = performance.now();
       const futureHome = path.join(fresh, ".kuvo-code");
       damagedInstallerStatus(verb => install(verb, fresh, freshTools), media, futureHome);
+      fileEngineInstallerStatus(verb => install(verb, fresh, freshTools), media, futureHome, key);
       await concurrentInstallStatus(
         () => launch("/bin/sh", installArgs("status"), installEnv(fresh, freshTools), fresh, "pipe"), futureHome,
       );
