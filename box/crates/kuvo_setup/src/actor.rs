@@ -869,7 +869,7 @@ fn make_view(
         setup: view,
         access,
         ownership,
-        local_wipe: crate::wipe::LocalWipe::from(link).is_some(),
+        local_wipe: crate::wipe::ready_for_shutdown(files.root(), link),
         pending_wipes: removal::pending_wipes(link),
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
@@ -944,6 +944,17 @@ impl Owner {
                 () = time::sleep_until(until) => {
                     if self.next <= Instant::now() {
                         self.next = Instant::now() + Duration::from_secs(2);
+                        #[cfg(target_os = "macos")]
+                        if self.kind == ComputerKind::Mac
+                            && let Err(error) = crate::wipe::prepare_app_wipe(self.files.root(), &mut self.link).await
+                        {
+                            eprintln!("preparing app-owned wipe: {error}");
+                        }
+                        if self.kind == ComputerKind::Machine
+                            && let Err(error) = crate::wipe::prepare_headless_member(self.files.root(), &mut self.link)
+                        {
+                            eprintln!("preparing member wipe: {error}");
+                        }
                         if let Err(error) = self.resume_local_unlink().await {
                             eprintln!("setup unlink cleanup: {error}");
                         }
@@ -992,6 +1003,7 @@ impl Owner {
                     && old.clock == view.clock
                     && old.access == view.access
                     && old.pending_wipes == view.pending_wipes
+                    && old.local_wipe == view.local_wipe
                 {
                     return false;
                 }

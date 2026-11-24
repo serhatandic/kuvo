@@ -13,7 +13,7 @@ use kuvo_protocol::routes::types::{
 };
 use kuvo_wire::{
     documents::{self, Kind},
-    keys::{Host, decode_exact, encode},
+    keys::{Address, Host, decode_exact, encode},
     mail::Envelope,
 };
 use serde::{Deserialize, Serialize};
@@ -84,10 +84,6 @@ impl Unlink {
             .is_none_or(|op| safe_token(op, 22, 43))
             && !self.extra.contains_key("save")
             && (self.resolve.is_none() || self.operation.is_some() && !self.prepares_wipe())
-    }
-
-    pub(super) fn requests_wipe(&self) -> bool {
-        self.wipe == Some(true) || self.resolve.is_some() || self.prepares_wipe()
     }
 
     fn prepares_wipe(&self) -> bool {
@@ -529,6 +525,7 @@ impl Owner {
     pub(super) async fn receive_unlink(
         &mut self,
         sender: [u8; 32],
+        from: Address,
         envelope: &Envelope,
     ) -> Result<(), Error> {
         if self.link.extra.contains_key("localUnlink")
@@ -575,18 +572,22 @@ impl Owner {
                 self.commit(next).await?;
                 self.publish(false).await?;
             }
-        } else if !record.asks_erase()
-            && message.get("done").and_then(Value::as_str) == Some(&record.operation)
+        } else if message.get("done").and_then(Value::as_str) == Some(&record.operation)
             && !message.contains_key("generation")
         {
+            let erase = record.asks_erase();
             if !record.delivered {
                 record.delivered = true;
+                record.extra.shift_remove("error");
+                record.extra.shift_remove("unresolved");
                 insert_removal(&mut roster, &record)?;
                 let mut next = self.link.clone();
-                let acks = next.extra.entry("removalAcks").or_insert_with(|| json!({}));
-                acks.as_object_mut()
-                    .ok_or(Error::Invalid("removal acknowledgments"))?
-                    .insert(key.clone(), json!(record.operation));
+                if !erase {
+                    let acks = next.extra.entry("removalAcks").or_insert_with(|| json!({}));
+                    acks.as_object_mut()
+                        .ok_or(Error::Invalid("removal acknowledgments"))?
+                        .insert(key.clone(), json!(record.operation));
+                }
                 next.put(
                     self.own()?,
                     SharedKind::MembershipAndAccess,
@@ -596,9 +597,17 @@ impl Owner {
                 )?;
                 self.commit(next).await?;
                 self.publish(false).await?;
+                if erase {
+                    return Ok(());
+                }
             }
+            let reply = message
+                .get("receipt")
+                .and_then(Value::as_str)
+                .and_then(decode_exact)
+                .map_or(peer, |key| Host { key, address: from });
             self.send_removal(
-                &peer,
+                &reply,
                 json!({"recorded": record.operation, "setup": setup.id}),
             )
             .await;
@@ -628,9 +637,6 @@ impl Owner {
         sender: [u8; 32],
         envelope: &Envelope,
     ) -> Result<(), Error> {
-        if self.kind != ComputerKind::Machine {
-            return Ok(());
-        }
         let message = &envelope.0;
         let source = encode(&sender);
         if let Some(pending) = self.local_unlink()? {
@@ -738,8 +744,24 @@ impl Owner {
         {
             if body["wipe"] == true {
                 if held.is_none() {
-                    match wipe::supports_headless(self.files.root()) {
-                        Ok(true) => return Ok(()),
+                    match wipe::supports_member(self.files.root()) {
+                        Ok(true) => {
+                            let approved = wipe::member::MemberWipe {
+                                setup: position.id.clone(),
+                                operation: operation.into(),
+                                primary,
+                                source: key,
+                            };
+                            let mut next = self.link.clone();
+                            next.extra.insert("localWipe".into(), json!(approved));
+                            next.extra.insert("phones".into(), json!([]));
+                            next.extra.shift_remove("pairing");
+                            next.extra.shift_remove("appPairing");
+                            self.commit(next).await?;
+                            self.unlink_challenge = None;
+                            self.next = Instant::now();
+                            return Ok(());
+                        }
                         Ok(false) => {}
                         Err(error) => {
                             eprintln!("checking removal source layout: {error}");
@@ -759,6 +781,9 @@ impl Owner {
                 self.send_removal(&host, json!({
                     "setup": position.id, "operation": operation, "epoch": position.epoch, "review": UNSUPPORTED_REVIEW,
                 })).await;
+                return Ok(());
+            }
+            if self.kind != ComputerKind::Machine {
                 return Ok(());
             }
             let pending = LocalUnlink {
@@ -1086,11 +1111,11 @@ fn removal_reply(record: &Removal, save: Option<crate::Receipt>) -> Response {
 }
 
 fn local_wipe_reply(operation: &str, save: crate::Receipt) -> Response {
-    Response::ok(with_receipt(
-        json!({"removal": {"operation": operation, "state": "wipe-pending", "accessRemoved": true},
-        "offer": "reinstall-local"}),
-        save,
-    ))
+    let mut value = json!({"removal": {"operation": operation, "state": "wipe-pending", "accessRemoved": true}});
+    if std::env::var_os("KUVO_BOX").is_none_or(|kind| kind != "mac") {
+        value["offer"] = json!("reinstall-local");
+    }
+    Response::ok(with_receipt(value, save))
 }
 
 fn answer(status: u16, message: &str) -> Response {

@@ -41,10 +41,12 @@ the races that span removal, backup, moves, and an authority change.
 | U11 | [Uninstall reports the desktop identity failure first and can be retried](../../protocol/conformance/removal.test.mjs) | When identity and sign-in cleanup both fail on a stopped Unix machine, the command reports the identity error. After permissions are repaired, retry removes the identity and preserves work. |
 | U12 | [A member misses two handovers and sees the former primary unlinked](../../box/crates/kuvo_setup/tests/live.test.mjs) | The offline member accepts the latest epoch and both receipt pages. The current primary commits the former primary’s unlink in that epoch. The former primary keeps a new standalone setup and both remaining computers receive its acknowledgment. |
 | U13 | [The computers list shows signed pending wipes and omits resolved removals](../../protocol/conformance/removal.test.mjs) | Both residents project the signed removal details into the computers list. The removed key stays out of the computers list and a lost disk does not appear among pending wipes. |
-| U14 | [An offline wipe stays pending across a restart until a lost disk is recorded](../../protocol/conformance/removal.test.mjs) | An observing member receives the signed pending wipe while the target is offline. The main restarts, replays the lost-disk decision, and keeps the revocation. The observing member removes the pending row after receiving the resolution. |
+| U14 | [An offline wipe stays pending across a restart until a lost disk is recorded](../../protocol/conformance/removal.test.mjs) | A member forwards the wipe to the main and receives the signed pending row while the target is offline. The main restarts, replays the lost-disk decision, and keeps the revocation. The forwarding member removes the pending row after receiving the resolution. |
 | U15 | [An unsupported wipe can be cancelled after the source holds its work for review](../../protocol/conformance/removal.test.mjs) | The source refuses the signed wipe and holds its work for review. After accepting a signed cancel instruction, it starts a standalone setup, acknowledges the decision, and preserves its saved session. |
 | U16 | [A member set aside by its main computer cannot pair a desktop](../../protocol/conformance/removal.test.mjs) | Both residents refuse the device with the same explanation. The device receives no grant and no request is queued for the main. |
-| U17 | [A detached app member wipe retries Keychain cleanup before deleting work](../../box/crates/kuvo_setup/tests/wipe_app.rs) | On macOS, the member hook runs after recording detach. A failed call preserves the old data, a replacement is left alone, and retry finishes the member receipt without writing a reinstall offer. The installer and live member preparation are tracked below. |
+| U17 | [A detached app member wipe retries Keychain cleanup before deleting work](../../box/crates/kuvo_setup/tests/wipe_app.rs) | On macOS, the member hook runs after recording detach. A failed call preserves the old data, a replacement is left alone, and retry finishes the member receipt without writing a reinstall offer. |
+| U18 | [A removed Unix member wipes on reconnect and retries its sealed completion](../../protocol/conformance/removal.test.mjs) | Both boxes preserve the revocation while the source is offline. After erasing the source, the worker retries the same removal frame from a fresh reply identity after the relay disconnects. The durable completion holds neither old private key. The main verifies and records the completion and acknowledges it to the fresh identity. |
+| U19 | [An app-owned Mac completes last-computer and member wipes](../../protocol/conformance/removal.test.mjs) | An isolated Helper clears integration keys while the original folder exists. The accepted wipe records the original inode before stopping its keeper. Keychain cleanup precedes detach for a last computer and follows detach for a member. Both finish the right receipt, preserve sibling data, and offer local reinstall only after a last-computer wipe. |
 
 ## Stored and inherited cases
 
@@ -197,7 +199,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 28 have coverage and 166 still have open or partial work. Of those, 123 list 2.3 as an owner (94 open, 29 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 30 have coverage and 164 still have open or partial work. Of those, 120 list 2.3 as an owner (91 open, 29 partial).
 
 ### computers-add
 
@@ -262,7 +264,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 28 h
 | [status on a new computer: the pack checked and unpacked, the release's engine fetched once and checked, and the verdict `fresh`](../../box/bridge-tests/install.test.js#L124) | Open | 7.1 |
 | [the installer offers reinstall only after the last setup wipe](../../box/bridge-tests/install.test.js#L148) | U7 and U10 verify the installer status gate, recovering a detached wipe, and consuming the offer after enrollment. The standalone release installer’s start after reinstall belongs to 7.2. | 7.2 |
 | [a stopped Mac's authorized last wipe finishes without its helper](../../box/bridge-tests/install.test.js#L204) | Open | 2.3, 6.2 |
-| [the last app-owned wipe verifies preparation and leaves a completion receipt outside App Support data](../../box/bridge-tests/install.test.js#L267) | Open | 2.3, 2.5 |
+| [the last app-owned wipe verifies preparation and leaves a completion receipt outside App Support data](../../box/bridge-tests/install.test.js#L267) | U19 verifies app approval, keeper stop, Keychain order and the external completion receipt. The verified-export gate, export readback after stop, and the associated recovery are open. | 2.3, 2.5 |
 | [two installers at once on a new computer each get their answer: neither takes the other's unpacking or download away](../../box/bridge-tests/install.test.js#L361) | Open | 7.1 |
 | [an engine named as a file is only ever a test's: without a test's say-so the release is refused as damaged, and no engine is taken](../../box/bridge-tests/install.test.js#L379) | Open | 7.1 |
 | [a damaged copy is refused in words before anything of it runs: a pack that isn't what boxes.json says, an engine that isn't what the release says](../../box/bridge-tests/install.test.js#L387) | Open | 7.1 |
@@ -363,8 +365,8 @@ This map lists 194 reference cases, including expanded parameterized cases. 28 h
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [a saved wipe approval is tied to the old installation and only the erasing phase removes it](../../box/test/install-offer.test.ts#L8) | U8 verifies the identity of a detached directory and preserves a replacement. Resume through the installer and app-owned approval and stopping remain open. | 2.3, 6.2 |
-| [an app member wipe resumes after detach and yields only a member receipt](../../box/test/install-offer.test.ts#L47) | U17 verifies durable detach, Keychain failure and retry with only a member receipt. A live managed member wipe through the app and installer remains open. | 2.3 |
+| [a saved wipe approval is tied to the old installation and only the erasing phase removes it](../../box/test/install-offer.test.ts#L8) | U8, U10 and U19 verify the saved directory identity, app-owned approval and stopping, and resume before the installer offers reinstall. The released installer consumes the old app receipt on successful reinstall under 7.2. | 7.2 |
+| [an app member wipe resumes after detach and yields only a member receipt](../../box/test/install-offer.test.ts#L47) | U17 verifies durable detach, Keychain failure and retry with only a member receipt. U19 verifies the live member wipe and the installer verdict after it. | — |
 
 ### install-verdict
 
@@ -459,7 +461,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 28 h
 | [live permission replies from paired clients expire across pc5 reconnect](../../box/bridge-tests/setup-handover-access.test.js#L207) | Open | 2.2, 2.3 |
 | [clients share machine changes and revocations across three boxes](../../box/bridge-tests/setup-handover-access.test.js#L303) | Open | 2.3 |
 | [online unlink from a member keeps the target’s sessions and bots standalone](../../box/bridge-tests/setup-handover-removal.test.js#L14) | U6 verifies the target’s standalone setup, unchanged session and bot files, the delivered acknowledgment on both other computers and replay of the original receipt. | — |
-| [an offline member is unlinked at commit and wipes after returning](../../box/bridge-tests/setup-handover-removal.test.js#L33) | Open | 2.3, 2.5 |
+| [an offline member is unlinked at commit and wipes after returning](../../box/bridge-tests/setup-handover-removal.test.js#L33) | U14 and U18 verify the offline revocation, pending row, later erase and signed completion. The configured pre-wipe backup and its verification are open. | 2.3, 2.5 |
 | [revoked Relay-only headless member accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a shutdown write accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a lost export accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
@@ -486,7 +488,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 28 h
 | [source work added after readiness invalidates the wipe grant](../../box/bridge-tests/setup-handover-wipe.test.js#L197) | Open | 2.3, 2.5 |
 | [a session attachment added after readiness invalidates the wipe grant](../../box/bridge-tests/setup-handover-wipe.test.js#L232) | Open | 2.3, 2.5 |
 | [a session attachment changed after readiness invalidates the wipe grant](../../box/bridge-tests/setup-handover-wipe.test.js#L232) | Open | 2.3, 2.5 |
-| [a deleted member retries a lost completion from outside its folder](../../box/bridge-tests/setup-handover-wipe.test.js#L266) | Open | 2.3, 2.5 |
+| [a deleted member retries a lost completion from outside its folder](../../box/bridge-tests/setup-handover-wipe.test.js#L266) | U18 verifies the same sealed frame across a relay disconnect, the retired source’s signature, the fresh reply identity, and cleanup after acknowledgment. | — |
 | [a mixed-build update cut and lost move reply survive disk loss, restore, and replay](../../box/bridge-tests/setup-handover-recovery.test.js#L258) | Open | 2.3, 2.4, 2.5, 9.3 |
 | [relay lease: a two-computer main pairs a phone and adds a computer with the other stopped](../../box/bridge-tests/setup-handover-lease.test.js#L31) | C2 covers ordinary enrollment under a valid lease. Device and independent offline member combinations are open. | 2.3 |
 | [main saves alone: after unlinking one of two computers new items get numbers](../../box/bridge-tests/setup-handover-lease.test.js#L111) | U1 proves revocation with only the main online. Queue allocation following removal is open. | 5.2 |

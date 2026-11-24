@@ -1,6 +1,10 @@
 //! A verified removal can erase its installation after its writers stop. The
 //! durable journal follows the directory's original inode.
 
+#[cfg(target_os = "macos")]
+mod app;
+pub(crate) mod member;
+
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -34,6 +38,11 @@ pub(crate) struct LocalWipe {
 
 impl LocalWipe {
     pub(crate) fn from(link: &Link) -> Option<Self> {
+        let own = Identity::read(link).ok()?;
+        Self::accepted(link, &own.public, &own.sign)
+    }
+
+    fn accepted(link: &Link, key: &str, sign: &str) -> Option<Self> {
         let kept = link.extra.get("localWipe")?;
         if kept.get("primary").is_some()
             || kept.get("backup").is_some()
@@ -44,14 +53,13 @@ impl LocalWipe {
         }
         let wipe: Self = serde_json::from_value(kept.clone()).ok()?;
         let setup = link.setup().ok()?;
-        let own = Identity::read(link).ok()?;
         let roster = link.member_list().ok()?;
         let decision = link.shared_outcomes.get(&wipe.operation)?;
         let accepted = link.shared.get(&SharedKind::MembershipAndAccess)?;
-        let saved = roster.extra.get("removals")?.get(&own.public)?;
+        let saved = roster.extra.get("removals")?.get(key)?;
         (setup.role == Role::Primary
-            && setup.position.primary == own.public
-            && setup.sign == own.sign
+            && setup.position.primary == key
+            && setup.sign == sign
             && setup.position.id == wipe.setup
             && roster.boxes.len() == 1
             && model::safe_token(&wipe.operation, 22, 43)
@@ -88,7 +96,11 @@ fn boundary(home: &Path) -> io::Result<Option<PathBuf>> {
     Ok((account == actual).then_some(actual.join(".kuvo-code")))
 }
 
-pub(crate) fn supports_headless(home: &Path) -> io::Result<bool> {
+pub(crate) fn supports_member(home: &Path) -> io::Result<bool> {
+    #[cfg(target_os = "macos")]
+    if let Some(target) = app::Target::for_box(home)? {
+        return Ok(target.check_layout(&app::Target::settings()?).is_ok());
+    }
     let Some(root) = boundary(home)? else {
         return Ok(false);
     };
@@ -96,6 +108,10 @@ pub(crate) fn supports_headless(home: &Path) -> io::Result<bool> {
 }
 
 pub(crate) fn check(home: &Path) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if let Some(target) = app::Target::for_box(home)? {
+        return target.check(&app::Target::settings()?);
+    }
     let Some(root) = boundary(home)? else {
         return Err(io::Error::other(UNSUPPORTED));
     };
@@ -176,7 +192,33 @@ pub struct ReinstallReceipt {
 
 pub enum InstallState {
     Pending,
+    #[cfg(target_os = "macos")]
+    MemberReview,
     Erased(ReinstallReceipt),
+}
+
+#[cfg(target_os = "macos")]
+pub fn launch_app_wipe(home: &Path) -> io::Result<bool> {
+    let Some(target) = app::Target::for_box(home)? else {
+        return Ok(false);
+    };
+    if !target.pending()? {
+        return Ok(false);
+    }
+    target.launch_worker()?;
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+pub async fn app_install_state(
+    folder: &Path,
+    account: &Path,
+    keychain: &dyn AppWipeKeychain,
+) -> io::Result<Option<InstallState>> {
+    match app::Target::for_folder(folder, account)? {
+        Some(target) => target.install_state(keychain).await,
+        None => Ok(None),
+    }
 }
 
 /// The box supplies the vault operation. The path is the original App Support
@@ -189,6 +231,174 @@ pub trait AppWipeKeychain {
 pub enum AppWipeKind {
     LastComputer,
     Member,
+}
+
+impl AppWipeKind {
+    fn marker(self) -> &'static str {
+        match self {
+            Self::LastComputer => "last-setup-wipe",
+            Self::Member => "app-member-wipe",
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub async fn finish_prepared_app_wipe(
+    home: &Path,
+    keychain: &dyn AppWipeKeychain,
+) -> io::Result<bool> {
+    match app::Target::for_box(home)? {
+        Some(target) => target.finish(keychain).await,
+        None => Ok(false),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn prepare_app_wipe(home: &Path, link: &mut Link) -> Result<(), crate::Error> {
+    if let Some((kind, decision, member)) = app_decision(link)
+        && let Some(target) = app::Target::for_box(home).map_err(app_error)?
+        && !target.retained(kind, &decision).map_err(app_error)?
+    {
+        let settings = app::Target::settings().map_err(app_error)?;
+        target.check(&settings).map_err(app_error)?;
+        let Some(wipe) = link
+            .extra
+            .get_mut("localWipe")
+            .and_then(Value::as_object_mut)
+        else {
+            return Err(crate::Error::Invalid("app-owned wipe approval"));
+        };
+        let kept = target.box_files();
+        if app::helper_keeps_keys(&kept) && wipe.get("hostKeysCleared") != Some(&Value::Bool(true))
+        {
+            crate::mac_host::clear_integration_keys(&kept).await?;
+            wipe.insert("hostKeysCleared".into(), Value::Bool(true));
+        }
+        wipe.insert("prepared".into(), Value::Bool(true));
+        crate::actor::write_link(&kept, link, model::ComputerKind::Mac)?;
+        target
+            .prepare(kind, decision, member.as_ref(), link, &settings)
+            .map_err(app_error)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn app_error(error: io::Error) -> crate::Error {
+    crate::Error::Installer(error.to_string())
+}
+
+pub(crate) fn ready_for_shutdown(home: &Path, link: &Link) -> bool {
+    if !link.extra.contains_key("localWipe") {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("KUVO_BOX").is_some_and(|kind| kind == "mac") {
+        return app_decision(link)
+            .zip(app::Target::for_box(home).ok().flatten())
+            .is_some_and(|((kind, removal, _), target)| {
+                target.retained(kind, &removal).unwrap_or(false)
+            });
+    }
+    (LocalWipe::from(link).is_some() || member_approval(link).is_some())
+        && boundary(home).ok().flatten().is_some()
+}
+
+#[cfg(target_os = "macos")]
+fn app_decision(link: &Link) -> Option<(AppWipeKind, LocalWipe, Option<member::MemberWipe>)> {
+    if !link.extra.contains_key("localWipe") {
+        return None;
+    }
+    if let Some(last) = LocalWipe::from(link) {
+        return Some((AppWipeKind::LastComputer, last, None));
+    }
+    let own = Identity::read(link).ok()?;
+    let member = member::MemberWipe::from(link, &own.public)?;
+    let decision = LocalWipe {
+        setup: member.setup.clone(),
+        operation: member.operation.clone(),
+    };
+    Some((AppWipeKind::Member, decision, Some(member)))
+}
+
+fn member_approval(link: &Link) -> Option<member::MemberWipe> {
+    if link.extra.get("localWipe")?["prepared"] != true {
+        return None;
+    }
+    member::MemberWipe::from(link, &Identity::read(link).ok()?.public)
+}
+
+pub(crate) fn prepare_headless_member(home: &Path, link: &mut Link) -> io::Result<()> {
+    let Some(local) = link.extra.get("localWipe") else {
+        return Ok(());
+    };
+    if !local["primary"].is_object() || local["prepared"] == true {
+        return Ok(());
+    }
+    let Some(root) = boundary(home)? else {
+        return Ok(());
+    };
+    let own = Identity::read(link).map_err(io::Error::other)?;
+    let Some(wipe) = member::MemberWipe::from(link, &own.public) else {
+        return Ok(());
+    };
+    check(&root)?;
+    let marker = journal_path(&root)?;
+    let receipts = parent(&marker)?;
+    let _guard = OwnedLock::acquire(&parent(&root)?.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
+    member::Completion::prepare(receipts, link, &wipe)?;
+    let mut next = link.clone();
+    next.extra["localWipe"]["prepared"] = Value::Bool(true);
+    let kept = Files::new(root);
+    crate::actor::write_link(&kept, &next, model::ComputerKind::Machine)
+        .map_err(io::Error::other)?;
+    *link = next;
+    Ok(())
+}
+
+pub fn headless_member_pending(home: &Path) -> io::Result<bool> {
+    let Some(root) = boundary(home)? else {
+        return Ok(false);
+    };
+    Ok(Files::new(root)
+        .read::<Link>(LINK)
+        .map_err(io::Error::other)?
+        .as_ref()
+        .and_then(member_approval)
+        .is_some())
+}
+
+pub async fn finish_headless_member(home: &Path) -> io::Result<bool> {
+    let Some(root) = boundary(home)? else {
+        return Ok(false);
+    };
+    if !headless_member_pending(&root)? {
+        return Ok(false);
+    }
+    let marker = journal_path(&root)?;
+    let receipts = parent(&marker)?;
+    let guard = OwnedLock::acquire(&parent(&root)?.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
+    check(&root)?;
+    let kept = Files::new(root.clone());
+    let owner = OwnedLock::acquire(&kept.path("run/.client-owner"), Duration::ZERO)?;
+    let link = OwnedLock::acquire(&kept.path("run/.link.lock"), Duration::ZERO)?;
+    validate_disk(&kept).map_err(io::Error::other)?;
+    let Some(wipe) = kept
+        .read::<Link>(LINK)
+        .map_err(io::Error::other)?
+        .as_ref()
+        .and_then(member_approval)
+    else {
+        return Ok(false);
+    };
+    let completion = member::Completion::read(receipts, &wipe.setup, &wipe.operation)?
+        .ok_or_else(|| io::Error::other("The wipe’s completion receipt is unavailable."))?;
+    check(&root)?;
+    kept.write_bytes("run/off", b"").map_err(io::Error::other)?;
+    files::remove_tree_synced(&root)?;
+    drop((owner, link, guard));
+    completion.publish(&root, receipts).await?;
+    Ok(true)
 }
 
 /// Recover the erasing or detached phase of an app-owned wipe. For a member,
@@ -208,10 +418,7 @@ pub fn resume_app_wipe(
         .and_then(|id| id.to_str())
         .ok_or_else(|| io::Error::other(UNSUPPORTED))?;
     let receipts = parent.join(format!(".{id}-removal-receipts"));
-    let marker = receipts.join(match kind {
-        AppWipeKind::LastComputer => "last-setup-wipe",
-        AppWipeKind::Member => "app-member-wipe",
-    });
+    let marker = receipts.join(kind.marker());
     let Some(journal) = read_journal(&marker)? else {
         return Ok(false);
     };
@@ -232,17 +439,21 @@ pub fn resume_app_wipe(
         |journal| files::write_atomic_through(&marker, &serde_json::to_vec(journal)?, parent),
         || {
             if kind == AppWipeKind::Member {
-                if identity(&root)?.is_some() {
-                    return Err(io::Error::other(
-                        "The app-owned Box’s identity could not be removed safely.",
-                    ));
-                }
-                keychain.clear_app_link_keys(&root)?;
+                clear_detached_app_identity(&root, keychain)?;
             }
             Ok(())
         },
     )?;
     Ok(true)
+}
+
+fn clear_detached_app_identity(root: &Path, keychain: &dyn AppWipeKeychain) -> io::Result<()> {
+    if identity(root)?.is_some() {
+        return Err(io::Error::other(
+            "The app-owned Box’s identity could not be removed safely.",
+        ));
+    }
+    keychain.clear_app_link_keys(root)
 }
 
 fn app_boundary(folder: &Path, account: &Path) -> io::Result<Option<PathBuf>> {
@@ -276,6 +487,10 @@ impl InstallState {
     pub fn pending_message(&self) -> Option<&'static str> {
         match self {
             Self::Pending => Some("This computer’s wipe hasn’t finished."),
+            #[cfg(target_os = "macos")]
+            Self::MemberReview => Some(
+                "This computer’s wipe needs review on the main Box. If the source is offline, restart the original app’s Box to continue.",
+            ),
             Self::Erased(_) => None,
         }
     }

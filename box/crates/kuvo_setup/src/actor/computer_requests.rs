@@ -355,8 +355,6 @@ impl Owner {
                 Some(refused(400, "Send a valid removal request."))
             } else if decode_exact::<32>(key).is_none() {
                 Some(refused(404, "That isn’t one of your computers."))
-            } else if request.requests_wipe() {
-                Some(refused(409, "Wipe preparation is unavailable."))
             } else if self.link.disabled(&self.roster()?, &self.own()?.public) {
                 Some(refused(409, CHANGED))
             } else {

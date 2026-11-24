@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - A pending wipe stays visible after the main computer restarts. You can record a lost disk or cancel a wipe that can’t erase the computer’s data layout.
+- A removed computer can finish its wipe when it reconnects and retry its completion after a relay disconnect.
 - Windows installer codes can enroll a computer before enabling sign-in startup.
 
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.

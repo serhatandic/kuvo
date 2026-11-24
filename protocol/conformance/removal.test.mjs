@@ -1,11 +1,13 @@
 // The main and departing computer use real residents. The private relay lets
 // the test hold the removed computer offline while the main commits.
 import assert from "node:assert/strict";
+import { createHmac, createPublicKey, verify } from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxBinary, boxCommand, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, launch, localRelay, readJSON, relayAddress, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 
@@ -64,7 +66,12 @@ test("an offline wipe stays pending across a restart until a lost disk is record
   write(work, "Lab remains offline");
   const operation = Buffer.alloc(16, 77).toString("base64url");
   const route = `kuvo/computers/${key}/unlink-and-wipe`;
-  const queued = await primary("POST", route, { operation }, fromApp);
+  if (boxBinary().typescript) {
+    await until(async () => (await copy("GET", "kuvo/computers")).json.computers
+      .some(peer => peer.key === state().setup.primary && peer.features?.includes("computers.removal")),
+    "Workshop did not learn the main's removal capability.", 20000);
+  }
+  const queued = await copy("POST", route, { operation }, fromApp);
   assert.equal(queued.status, 200, queued.text);
   assert.deepEqual(queued.json.removal, { operation, state: "wipe-pending", accessRemoved: true });
   const row = { key, name: "Lab", operation };
@@ -85,6 +92,83 @@ test("an offline wipe stays pending across a restart until a lost disk is record
   assert.deepEqual(roster().left, [key]);
   assert.equal(roster().removals[key].peer.sign, source.sign);
   assert.equal(fs.readFileSync(work, "utf8"), "Lab remains offline");
+});
+
+test("a removed Unix member wipes on reconnect and retries the sealed completion from a fresh reply identity", {
+  skip: process.platform === "win32", timeout: 60000,
+}, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab", undefined, undefined, { canonical: true });
+  const primary = studio.connect(await studio.start().ready());
+  const accepted = (await primary("GET", "kuvo/setup")).json;
+  await until(() => leases.leaseFor(accepted.setup), "Studio did not obtain the relay lease.");
+  const offer = await primary("POST", "kuvo/computers/add/code", {}, fromMac);
+  assert.equal(offer.status, 201, offer.text);
+  const joined = await lab.join(offer.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  fs.rmSync(path.join(lab.home, "run", "engine.json"), { force: true });
+  write(path.join(lab.home, "data", "old-session"), "retire only this work");
+  const outside = path.join(path.dirname(lab.home), "keep-outside.txt");
+  write(outside, "keep this");
+  const state = () => readJSON(path.join(studio.home, "run", "link.json"));
+  const roster = () => state().shared.membershipAndAccess.value;
+  const studioAddress = Buffer.from(roster().boxes.find(peer => peer.key === accepted.you.key).address, "base64url");
+  const target = roster().boxes.find(peer => peer.name === "Lab");
+  const original = readJSON(path.join(lab.home, "run", "link.json"));
+  const oldAddress = Buffer.from(target.address, "base64url");
+  const operation = Buffer.alloc(16, 78).toString("base64url");
+  const route = `kuvo/computers/${target.key}/unlink-and-wipe`;
+  const result = await primary("POST", route, { operation }, fromMac);
+  assert.equal(result.status, 200, result.text);
+  assert.equal(result.json.removal.state, "wipe-pending");
+  assert.ok(fs.existsSync(lab.home));
+  const receipts = path.join(path.dirname(lab.home), ".kuvo-code-removal-receipts");
+  const file = path.join(receipts, `${operation}.json`);
+  const proof = path.join(receipts, `${operation}.ack`);
+  const packets = [];
+  const stopIntercepting = relay.intercept(null, studioAddress, packet => {
+    if (packet.from.equals(oldAddress) || packet.payload[0] !== 5 || fs.existsSync(lab.home)) return false;
+    if (!packet.payload.subarray(5).subarray(0, 16).equals(Buffer.from("kuvo-removal-v1\0"))) return false;
+    packets.push(packet);
+    return true;
+  });
+  t.after(stopIntercepting);
+  // The source removed at the primary still starts from its prior, signed roster.
+  lab.start();
+  await until(() => packets.length >= 2, "The erased source did not retry its completion from a fresh relay address.", 30000);
+  assert.equal(fs.existsSync(lab.home), false);
+  assert.equal(fs.readFileSync(outside, "utf8"), "keep this");
+  const kept = readJSON(file);
+  assert.equal(kept.deleted, true);
+  assert.equal(JSON.stringify(kept).includes(original.key), false);
+  assert.equal(JSON.stringify(kept).includes(original.sign), false);
+  const signed = readJSON(proof);
+  const document = Buffer.from(signed.d, "base64url");
+  const body = JSON.parse(document).body;
+  assert.equal(body.removal, "completed");
+  assert.equal(body.source, target.key);
+  const signer = createPublicKey({ format: "der", type: "spki", key: Buffer.concat([
+    Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(target.sign, "base64url"),
+  ]) });
+  assert.equal(verify(null, Buffer.concat([Buffer.from("kuvo-link doc v1\0"), document]), signer,
+    Buffer.from(signed.s, "base64url")), true);
+  assert.ok(!packets[0].from.equals(oldAddress));
+  assert.deepEqual(packets[0].from, relayAddress(Buffer.from(kept.secret, "base64url")));
+  assert.deepEqual(packets[1].payload, packets[0].payload);
+  assert.deepEqual(Buffer.concat([Buffer.from([2]), studioAddress, packets[0].payload]), Buffer.from(kept.done, "base64url"));
+  assert.deepEqual(packets[0].payload.subarray(0, 5), Buffer.from([5, 0, 0, 0, 0]));
+  assert.deepEqual(packets[0].payload.subarray(21, 53), Buffer.from(target.key, "base64url"));
+  const reconnect = relay.disconnect(packets[0].from);
+  t.after(reconnect);
+  assert.notEqual(roster().removals[target.key].delivered, true);
+  stopIntercepting();
+  reconnect();
+  await until(() => roster().removals[target.key]?.delivered, "The main did not take the authenticated completion.");
+  await until(() => !fs.existsSync(file) && !fs.existsSync(proof), "The fresh identity did not receive the matching acknowledgment.", 12000);
+  const finished = await primary("POST", route, { operation }, fromMac);
+  assert.equal(finished.json.removal.state, "wiped", finished.text);
+  assert.equal((await primary("GET", "kuvo/computers")).json.wipePending, undefined);
 });
 
 test("an unsupported wipe can be cancelled after the source holds its work for review", { timeout: 80000 }, async t => {
@@ -340,6 +424,167 @@ test("the only computer commits a wipe and erases only its old installation", {
     assert.equal(fs.existsSync(local), false);
   }
 });
+
+test("the last app-owned Mac stops its keeper and clears its identity before erasing its directory", {
+  skip: process.platform !== "darwin", timeout: 45000,
+}, t => appOwnedWipe(t, false));
+
+test("an app-owned Mac member clears its identity after detach and acknowledges the wipe", {
+  skip: process.platform !== "darwin", timeout: 55000,
+}, t => appOwnedWipe(t, true));
+
+async function appOwnedWipe(t, member) {
+  const root = fs.realpathSync(scratch());
+  const env = isolatedEnv(root);
+  const binary = boxBinary();
+  const { computer, relay, leases } = await bench(t);
+  const id = "run.kuvo.code.wipe-fixture";
+  const support = path.join(env.HOME, "Library", "Application Support");
+  const app = path.join(support, id);
+  const home = path.join(app, "box");
+  const operation = Buffer.alloc(16, 71).toString("base64url");
+  const receipts = path.join(support, `.${id}-removal-receipts`);
+  const marker = path.join(receipts, member ? "app-member-wipe" : "last-setup-wipe");
+  const work = path.join(app, "Chats", "chat");
+  const outside = path.join(env.HOME, "unrelated.txt");
+  const steps = path.join(root, "steps");
+  write(work, "old app data");
+  write(outside, "keep this");
+  write(path.join(home, "folder-version.json"), '{"version":23}');
+  write(path.join(home, "box", "kind"), "mac");
+  const password = "fixture-helper";
+  const keys = new Set(["KUVO_KEY_SAMPLE"]);
+  const seed = Buffer.alloc(32, 94).toString("base64url");
+  let identity = { key: seed, sign: seed, secret: seed };
+  let studio;
+  if (member) {
+    const setMac = roster => { roster.boxes[1].kind = "mac"; };
+    studio = await computer("Studio");
+    seedPeerSetup(studio.home, relay.url, 1, 2, setMac);
+    seedPeerSetup(home, relay.url, 2, 2, setMac);
+    const file = path.join(home, "run", "link.json");
+    const { key, secret, sign, ...link } = readJSON(file);
+    identity = { key, secret, sign };
+    write(file, JSON.stringify(link), { mode: 0o600 });
+  }
+  const helper = http.createServer(async (req, res) => {
+    const bytes = [];
+    for await (const chunk of req) bytes.push(chunk);
+    const input = JSON.parse(Buffer.concat(bytes).toString() || "{}");
+    const send = (status, value) => res.writeHead(status, { "content-type": "application/json", "x-kuvo-host-version": "1" }).end(JSON.stringify(value));
+    if (req.url === "/hello") {
+      const proof = createHmac("sha256", password).update(`kuvo-host-hello\0${input.nonce}\0${req.headers.host}`).digest("hex");
+      return send(200, { proof });
+    }
+    if (req.headers.authorization !== `Bearer ${password}`) return send(401, {});
+    if (req.url === "/link/identity") return send(200, identity);
+    if (req.url === "/keys/names") return send(200, { names: [...keys] });
+    if (req.url === "/keys/delete") {
+      if (!keys.delete(input.name) || fs.existsSync(marker)) return send(409, {});
+      fs.appendFileSync(steps, "helper\n");
+      return send(200, {});
+    }
+    send(404, {});
+  });
+  await new Promise(resolve => helper.listen(0, "127.0.0.1", resolve));
+  const keeperFile = path.join(home, "run", "keeper.json");
+  const ownedResident = path.join(root, "fixture-resident-pid");
+  const keeperScript = path.join(root, "keeper.mjs");
+  write(keeperScript, `import fs from "node:fs";
+import http from "node:http";
+const [record, marker, work, steps, ownedResident] = process.argv.slice(3);
+const keeper = http.createServer((req, res) => {
+  if (req.method !== "POST" || req.url !== "/stop" || req.headers.authorization !== "Bearer fixture-keeper") {
+    return res.writeHead(403).end();
+  }
+  if (JSON.parse(fs.readFileSync(marker)).phase !== "stopping" || !fs.existsSync(work)) {
+    return res.writeHead(409).end();
+  }
+  fs.appendFileSync(steps, "keeper\\n");
+  if (fs.existsSync(ownedResident)) {
+    const pid = Number(fs.readFileSync(ownedResident, "utf8"));
+    try { process.kill(pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+  }
+  res.writeHead(204, { Connection: "close" }).end(() => keeper.close());
+});
+keeper.listen(0, "127.0.0.1", () => fs.writeFileSync(record,
+  JSON.stringify({ pid: process.pid, url: "http://127.0.0.1:" + keeper.address().port, password: "fixture-keeper" }), { mode: 0o600 }));
+`);
+  const keeper = launch(process.execPath, [keeperScript, "--box", keeperFile, marker, work, steps, ownedResident], env, root);
+  const tools = path.join(env.HOME, "tools");
+  // Use a fixture tool on this test account. It cannot reach the account Keychain.
+  const checkIdentityTiming = member
+    ? `[ ! -e '${app}' ] && [ -f '${path.join(receipts, `erase-${operation}`, "Chats", "chat")}' ] && /usr/bin/grep -q '"phase":"detached"' '${marker}'`
+    : `[ -f '${work}' ] && /usr/bin/grep -q '"phase":"stopping"' '${marker}'`;
+  write(path.join(tools, "security"), `#!/bin/sh
+set -eu
+[ "$1" = delete-generic-password ] && [ "$3" = '${id}.phone-link' ]
+${checkIdentityTiming}
+printf 'keychain %s\\n' "$5" >> '${steps}'
+`, { mode: 0o700 });
+  write(path.join(home, "run", "host.json"), JSON.stringify({
+    formatVersion: 1, password, url: `http://127.0.0.1:${helper.address().port}`,
+  }), { mode: 0o600 });
+  write(path.join(home, "run", "mac-link.json"), JSON.stringify({ phones: true, own: true, relay: relay.url }));
+  const residentEnv = {
+    ...env, KUVO_BOX: "mac", KUVO_KEYS_ON_HOST: "1", KUVO_ENGINE_CONFIG: path.join(app, "engine-config"),
+    KUVO_TEST_UNINSTALL_TOOLS: tools, OPENCODE_PASSWORD: "fixture-serve",
+  };
+  const resident = binary.typescript
+    ? boxCommand(binary, home, residentEnv, relay, ["serve"])
+    : startBox({ binary, home, relay, env: residentEnv });
+  if (binary.typescript) write(ownedResident, String(resident.child.pid), { mode: 0o600 });
+  t.after(async () => {
+    await Promise.all([resident.stop(), keeper.stop()]);
+    helper.closeAllConnections();
+    await new Promise(resolve => helper.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await until(() => fs.existsSync(keeperFile), "The test app's keeper did not start.");
+  const toolHttp = path.join(home, "run", "tool-http.json");
+  const record = binary.typescript
+    ? await until(() => fs.existsSync(toolHttp) && readJSON(toolHttp), resident.log, 10000)
+    : await resident.ready();
+  const before = await request(record, "GET", "kuvo/setup");
+  const { setup, you } = before.json;
+  assert.equal(you.role, member ? "member" : "primary", before.text);
+  let ask = (...args) => request(record, ...args);
+  if (member) {
+    ask = studio.connect(await studio.start().ready());
+    await until(() => leases.leaseFor(setup), "The main did not acquire the relay lease.");
+  }
+  const route = `kuvo/computers/${you.key}/${member ? "unlink-and-wipe" : "unlink"}`;
+  const requested = await ask("POST", route, { operation }, fromMac);
+  assert.equal(requested.status, 200, requested.text);
+  assert.equal(requested.json.removal?.state, "wipe-pending", requested.text);
+  assert.equal(requested.json.offer, undefined, requested.text);
+  await until(() => fs.existsSync(marker) && !readJSON(marker).phase,
+    () => `The app-owned wipe did not finish. ${resident.log()}`, 20000);
+  assert.equal((await keeper.exited).code, 0, keeper.log());
+  assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
+  assert.equal(fs.existsSync(app), false);
+  assert.equal(fs.readFileSync(outside, "utf8"), "keep this");
+  assert.equal(fs.readFileSync(steps, "utf8"), "helper\nkeeper\nkeychain key\nkeychain secret\nkeychain sign\n");
+  if (member) {
+    const primaryLink = path.join(studio.home, "run", "link.json");
+    await until(() => readJSON(primaryLink).shared.membershipAndAccess.value.removals[you.key]?.delivered,
+      "The main did not accept the app member's completion.");
+    await until(() => !fs.existsSync(path.join(receipts, `${operation}.json`)), "The app member did not retire its acknowledgment.");
+  }
+  const bundle = path.join(root, "Fixture.app");
+  write(path.join(bundle, "Contents", "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${id}</string></dict></plist>`);
+  const installer = boxCommand(binary, root, env, relay, ["install", "--status", "--root", ".kuvo-code", "--app", bundle],
+    { KUVO_HOME: path.join(env.HOME, ".kuvo-code") }, "pipe");
+  let stdout = "";
+  installer.child.stdout.setEncoding("utf8").on("data", text => { stdout += text; });
+  installer.child.stdin.end();
+  assert.equal((await installer.exited).code, 0, stdout + installer.log());
+  const status = JSON.parse(stdout);
+  assert.deepEqual([status.verdict, status.verb, status.offer, status.wipeReceipt], member
+    ? ["fresh", "new", undefined, undefined]
+    : ["fresh", null, "reinstall-local", { setup, operation }]);
+}
 
 test("the installer waits for an authorized wipe before offering reinstall", {
   skip: process.platform === "win32" && "Windows wipe startup still belongs to 8.1.",

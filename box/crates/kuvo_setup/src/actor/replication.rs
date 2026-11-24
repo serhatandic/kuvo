@@ -256,11 +256,11 @@ impl Owner {
                 self.receive_installer(*from, *key, payload).await?;
             }
             relay::RelayEvent::Removal {
+                from,
                 hinted_key,
                 envelope,
-                ..
             } => {
-                self.receive_unlink(*hinted_key, envelope).await?;
+                self.receive_unlink(*hinted_key, *from, envelope).await?;
             }
             relay::RelayEvent::Connected(_) => {
                 self.next = Instant::now();
