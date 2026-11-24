@@ -69,6 +69,10 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     let home = Home::new(target)?;
     let app = profile.join("Library/Application Support").join(&app_id);
     let before = install::judge(&home, Some(&app), Platform::Mac, None)?;
+    if let Some(message) = before.unreadable_move() {
+        println!("{}", json!({"result":"refused", "message":message}));
+        return Ok(1);
+    }
     let declined = match (restart, before.verdict) {
         (_, Verdict::Waits) => Some((4, "waits", "Another move is under way.")),
         (false, Verdict::Machine) => Some((
