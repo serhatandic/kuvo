@@ -8,6 +8,7 @@ pub mod bot;
 pub mod projects;
 pub mod records;
 pub mod settings;
+pub mod unanswering;
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
@@ -18,14 +19,16 @@ use kuvo_protocol::routes::{
     get_kuvo_work as work_get, get_kuvo_work_asks as asks_get,
     get_kuvo_work_asks_events as asks_events, get_kuvo_work_events as changed_events,
     get_kuvo_work_oversight as oversight_get, get_kuvo_work_oversight_events as oversight_events,
-    get_kuvo_work_settings as settings_get, patch_kuvo_work_settings as settings_patch,
-    post_kuvo_projects_new as project_new, post_kuvo_work_asks_id as ask_answer,
+    get_kuvo_work_settings as settings_get, get_kuvo_work_unanswering as unanswering_get,
+    patch_kuvo_work_settings as settings_patch, post_kuvo_projects_new as project_new,
+    post_kuvo_work_asks_id as ask_answer,
 };
 use kuvo_server::{Access, JsonLine, Refusal, Registry, RouteReply};
 use serde_json::{Value, json};
 
 pub use records::Records;
 pub use settings::WorkSettings;
+pub use unanswering::Unanswerings;
 
 use crate::bots::here::BotHere;
 
@@ -49,6 +52,7 @@ fn refused((status, message): (u16, String)) -> Refusal {
 pub struct Work {
     pub settings: WorkSettings,
     pub records: Records,
+    pub unanswering: Unanswerings,
     home: PathBuf,
     bots: PathBuf,
     list: crate::bots::Bots,
@@ -69,6 +73,7 @@ impl Work {
         Self {
             settings,
             records: Records::new(&home.join("run")),
+            unanswering: Unanswerings::new(&home.join("run")),
             home: home.to_owned(),
             bots: bots.bots_folder().to_owned(),
             list: bots,
@@ -76,6 +81,22 @@ impl Work {
             peers,
             setup,
         }
+    }
+
+    /// Follows the engine's events for what they change here: which models can't answer.
+    pub fn watch(&self) -> tokio::task::JoinHandle<()> {
+        let (work, mut events) = (self.clone(), self.list.engine().events());
+        tokio::spawn(async move {
+            loop {
+                let event = match events.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => return,
+                };
+                let engine = work.list.engine().running_bot_engine().await;
+                work.unanswering.follow(&event, engine.as_ref()).await;
+            }
+        })
     }
 
     /// What each bot's work looks like now, to tell when it changed: what's at work under it,
@@ -183,6 +204,27 @@ impl Work {
                 let mut answered = work.answer_work(&id, &given).await.map_err(refused)?;
                 answered.as_object_mut().map(|said| said.shift_remove("at"));
                 Ok(RouteReply::json::<200>(typed(answered)?))
+            }
+        });
+        let work = self.clone();
+        routes.register::<unanswering_get::Spec, _, _>(Access::Any, move |_| {
+            let work = work.clone();
+            async move {
+                let held = work.unanswering.now();
+                // (Which of an account's models a hold on its paid or free ones covers: as its
+                // engine prices them.)
+                let mut listed = None;
+                if held.iter().any(|each| each.paid || each.free)
+                    && let Some(engine) = work.list.engine().running_bot_engine().await
+                {
+                    let wait = Duration::from_secs(10);
+                    let models = engine
+                        .call(http::Method::GET, "api/model", None, wait)
+                        .await;
+                    listed = models.ok().and_then(|models| models.as_array().cloned());
+                }
+                let list = Unanswerings::list(&held, listed.as_deref());
+                Ok(RouteReply::json::<200>(typed(list)?))
             }
         });
         let work = self.clone();

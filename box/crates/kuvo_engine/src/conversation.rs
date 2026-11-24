@@ -65,13 +65,7 @@ pub(crate) fn compaction_event(line: &[u8]) -> Option<Vec<u8>> {
     Some(encoded)
 }
 
-#[derive(serde::Deserialize)]
-struct Event {
-    #[serde(rename = "type")]
-    kind: String,
-    #[serde(default, alias = "properties")]
-    data: Value,
-}
+use crate::lifetime::EngineEvent as Event;
 
 pub(crate) fn watch(
     engine: crate::Engine,
@@ -203,6 +197,10 @@ pub(crate) fn watch(
                             .strip_prefix(b"data:")
                             .and_then(|data| serde_json::from_slice::<Event>(data).ok())
                         {
+                            let event = Arc::new(event);
+                            if engine.heard.receiver_count() > 0 {
+                                let _ = engine.heard.send(event.clone());
+                            }
                             engine.catalogs.event(&event.kind, &event.data);
                             if event.kind == "session.deleted"
                                 && let Some(attachments) = &attachments
