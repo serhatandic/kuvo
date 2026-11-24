@@ -11,7 +11,9 @@ peer snapshot capability exchanges combined views, retained deletions and
 reference chips. Whole items and attachments can be read quietly from their
 keeper through the same transport as setup search. A computer can send an item
 edit, delete or restore to its keeper through the tracked request and receipt
-exchange. The full client feature is still gated on the remaining routes.
+exchange. Markdown imports read the backlog files and claim each number on the
+main's lease. Imports on a member wait for the main's reply. The full client
+feature is still gated on the remaining routes.
 
 Case numbers follow declaration order in each TypeScript file. Partial means a
 conformance scenario exercises part of the TypeScript case. Open cases are
@@ -19,8 +21,8 @@ assigned to the indicated row for the rest of the port.
 
 | TypeScript suite | Cases | Status and owner |
 |---|---:|---|
-| [work-queue](../../box/bridge-tests/work-queue.test.js) | 1, 5, 10, 16, 23, 25, 28, 57 | Partial, 5.2. Creation retry, summary counts and order, local delete and restore, label writes, saved attachment download and a view change written by another process. |
-| | 2–4, 6–9, 11–15, 17–22, 24, 26–27, 29–56, 58–60 | Open, 5.2. Agent operations, live session variations, edits, imports, staging, recovery and handoff. |
+| [work-queue](../../box/bridge-tests/work-queue.test.js) | 1, 5, 10, 16, 23, 25, 28, 32, 48, 57 | Partial, 5.2. Creation retry, summary counts and order, local delete and restore, label writes, saved attachment download and a view change written by another process. A Markdown file imports through the client route with its statuses, bodies and numbers. A member queues an import and receives its claimed number from the main. The multiple-file, collision and refusal variants need scenarios. |
+| | 2–4, 6–9, 11–15, 17–22, 24, 26–27, 29–31, 33–47, 49–56, 58–60 | Open, 5.2. Agent operations, live session variations, edits, remaining import cases, staging, recovery and handoff. |
 | [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1, 4, 20, 24 | Partial, 5.2. Authenticated snapshots and acknowledgements carry remote rows and chips through the relay. The shared memory transport reads the keeper's full item and file. Edits, deletes and restores reach the keeper through another computer. Mixed peers, partition and receipt replay cases, scoped forwarding and attachments still need scenarios. |
 | | 2–3, 5–19, 21–23, 25–32 | Open, 5.2 and 2.4. Numbering and leases, further projections, forwarding, handoff and deduplication. Retain retired ranked numbering checks in TS. |
 | [work-queue-two-boxes](../../box/bridge-tests/work-queue-two-boxes.test.js) | 1 | Partial, 5.2. A member spends an ordinary block from the main after it goes away and the main's combined view shows the member's rows. Handoff remains open. |
@@ -33,13 +35,14 @@ assigned to the indicated row for the rest of the port.
 | [work-queue-migrate](../../box/test/work-queue-migrate.test.ts) | 1–2, 4 | Partial, 5.2. The original bytes and unknown fields survive, an interrupted migration resumes and a future owner file stops startup. Future-file refusal during an edit and the complete snapshots need scenarios. |
 | | 3, 5–7 | Open, 5.2. Read when copying fails, legacy label writes, future model and labels during edits, and peer summaries. |
 | [work-queue-numbering](../../box/test/work-queue-numbering.test.ts) | 3–5 | Partial, 5.2. Real residents grant within the high mark and spend existing numbers while the main is unavailable. Exhaustion, missing lease and boundary cases need the referenced scenarios. |
-| | 1–2, 6 | Open, 5.2. Claim and receipt replay, inherited counters and Markdown import. |
+| | 6 | Covered. A Markdown import claims its numbers, opens the items by those numbers and skips the same items on replay. |
+| | 1–2 | Open, 5.2. Grant receipt replay and inherited counters. |
 | [work-queue-relations](../../box/test/work-queue-relations.test.ts) | 1, 4 | Covered. The preview route uses the shared exclusions and UTF-16 offsets for non-BMP text, fences, code spans, links, and bidirectional text. |
 | | 2–3, 5–8, 10 | Partial, 5.2. Saved note mentions preserve their ranges and backlinks. Local relation edits preserve mention bindings and show the inverse. Downloads refuse symlink replacements. Client staging keeps distinct names, bytes and anchors when both the metadata and disk have collisions. Inline marker removal preserves current text and attachment bytes. Missing indexes are reconstructed on reads. More staging cases, durable recovery and typed note writes still need coverage. |
 | | 9, 11 | Open, 5.2. Purge pruning and dispatch responsiveness with a held writer lock. |
 | [queue-live](../../box/bridge-tests/queue-live.test.js), [queue-stop](../../box/test/queue-stop.test.ts), [queue-items](../../box/test/queue-items.test.ts) | 1, 1–6, 1–25 respectively | Conversation message queues. See the case-by-case [engine map](rust-engine-coverage.md) for status and rows 3.2, 4.1 and 5.1. |
 
-Of the 182 directly named cases, 2 are covered, 36 are partial, 112 are open in
+Of the 182 directly named cases, 3 are covered, 38 are partial, 109 are open in
 Work Queue and 32 are tracked in the engine map. The Work Queue conformance area also
 checks the initial migration and future-format refusal through a real resident.
 
@@ -65,8 +68,8 @@ checks the initial migration and future-format refusal through a real resident.
 | [Move coverage](rust-moves-coverage.md) queue placement, handoff and attachment revisions | Open, 5.2 with 2.4. Preserve ownership evidence and original queue item and file placement. |
 
 Open work in 5.2 includes the remaining peer-view and owner-read cases,
-forwarded writes and receipts, offline merge and handoff, import claims and merge
-reservations, agent and forwarded attachments, mention binding after number grants and owner
+forwarded writes and receipts, offline merge and handoff, import collision and
+recovery cases and merge reservations, agent and forwarded attachments, mention binding after number grants and owner
 changes, bot reassignment and remaining status and order cases, live GitHub reads
 and vault sign-in, and the agents' tools.
 Label restore and setup seeding remain open. Signed label changes use the Rust

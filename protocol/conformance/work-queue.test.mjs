@@ -633,3 +633,83 @@ test("work queue views merge live and deleted rows by their owning computer", { 
   assert.equal(onKeeper.json.item.priority, "high");
   assert.deepEqual(onKeeper.json.item.events.slice(-2).map(event => event.kind), ["deleted", "restored"]);
 });
+
+test("a Markdown backlog keeps its numbers, headings and previous imports", { timeout: 40000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const queue = path.join(studio.home, "run", "work-queue");
+  const route = studio.connect(await studio.start().ready());
+  const setup = await route("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const ask = (url, method = "GET", body, headers) => route(method, url, body, headers);
+  const source = path.join(queue, "..", "..", "backlog.md");
+  write(source, [
+    "# Done last week",
+    "- #62 [x] Sent the release. Add this paragraph.",
+    "# Plans",
+    "- #60 Confirm the revised tests. Details stay in the item.",
+    "- #61 / #63 Gather the remaining questions",
+    "- #60 A second line with #64",
+    "LATER: #61",
+    "NEXT: #62",
+    "",
+  ].join("\n"));
+  const app = { "x-kuvo-from": "app" };
+  const creation = await ask("kuvo/work-queue/items", "POST", { operation: "import-test-first", title: "An existing item" }, app);
+  assert.equal(creation.status, 200, creation.text);
+  const id = creation.json.item.id;
+  const used = await until(async () => (await ask("kuvo/work-queue/items/" + id)).json.item.number,
+    "The first item did not spend a number from the lease.", 12000);
+  const proposal = { owner: "usr_you", files: [source] };
+  const first = await ask("kuvo/work-queue/import", "POST", proposal, { "x-kuvo-from": "app" });
+  assert.equal(first.status, 200, first.text);
+  assert.deepEqual(first.json, {
+    added: 3,
+    byStatus: { todo: 1, backlog: 1, done: 1 },
+    waiting: 0,
+    skipped: ["#63 (named with #61 on one line)", "#64 (named, but no line starts with it)"],
+    said: "Imported 3 items with their numbers: 1 Todo, 1 Backlog, 1 Done. Left out (2): #63 (named with #61 on one line); #64 (named, but no line starts with it).",
+  });
+  const item = await ask("kuvo/work-queue/items/60");
+  assert.equal(item.status, 200, item.text);
+  assert.equal(item.json.item.number, 60);
+  assert.equal(item.json.item.title, "Confirm the revised tests.");
+  assert.equal(item.json.item.body, "#60 Confirm the revised tests. Details stay in the item.\n\n#60 A second line with #64");
+  const retried = await ask("kuvo/work-queue/import", "POST", proposal, { "x-kuvo-from": "app" });
+  assert.equal(retried.status, 200, retried.text);
+  assert.equal(retried.json.added, 0);
+  assert.match(retried.json.said, /#60–62 \(already in the Work Queue here\)/);
+  const file = JSON.parse(readFileSync(path.join(queue, "numbers.json"), "utf8"));
+  assert.deepEqual(file.used, [[used, used], [60, 62]]);
+});
+
+test("a member waits for the main to grant the numbers of its imported items", { timeout: 90000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const main = studio.connect(await studio.start().ready());
+  const setup = await main("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  const joined = await lab.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const source = path.join(lab.home, "backlog.md");
+  write(source, "- #240 Follow up on the member's backlog.\n");
+  const answer = await member("POST", "kuvo/work-queue/import", { owner: "usr_you", files: source }, { "x-kuvo-from": "app" });
+  assert.equal(answer.status, 200, answer.text);
+  assert.equal(answer.json.waiting, 1);
+  assert.match(answer.json.said, /1 waits for the main computer to grant its number/);
+  const result = await until(async () => {
+    const item = await member("GET", "kuvo/work-queue/items/240");
+    return item.status === 200 && item.json.item;
+  }, "The member did not receive its imported number.", 45000, 150);
+  assert.equal(result.title, "Follow up on the member's backlog.");
+  assert.equal(result.number, 240);
+  const ledger = JSON.parse(readFileSync(path.join(studio.home, "run", "work-queue", "numbers.json"), "utf8"));
+  const self = await member("GET", "kuvo/setup");
+  assert.deepEqual(ledger.granted[self.json.you.key], [[240, 240]]);
+});

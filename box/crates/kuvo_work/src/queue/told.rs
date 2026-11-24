@@ -87,6 +87,34 @@ fn read(store: &Store, sender: &ComputerKey) -> Result<Option<Kept>, Error> {
         .and_then(|fields| serde_json::from_value(Value::Object(fields)).ok()))
 }
 
+/// Numbers in the saved views are used to distinguish a prior import from a collision.
+pub(super) fn known_numbers(
+    store: &Store,
+) -> Result<std::collections::BTreeMap<u64, String>, Error> {
+    let mut found = std::collections::BTreeMap::new();
+    for sender in store::queue_files(&store.root.join("peers"))
+        .iter()
+        .filter_map(|file| kuvo_wire::keys::decode_exact(file.file_stem()?.to_str()?))
+    {
+        if let Some(kept) = read(store, &sender)? {
+            for item in kept
+                .told
+                .items
+                .into_iter()
+                .filter(|item| item["source"].is_null())
+            {
+                if let (Some(number), Some(title)) = (
+                    store::positive_integer(&item["number"]),
+                    item["title"].as_str(),
+                ) {
+                    found.insert(number as u64, title.into());
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// Keep late mail only if the sender reset its clock. Acknowledge duplicates as well.
 pub(super) fn keep(
     store: &Store,

@@ -237,7 +237,7 @@ impl Edit {
     }
 }
 
-fn named(labels: &[QueueLabel], which: &Value) -> Option<usize> {
+pub(super) fn named(labels: &[QueueLabel], which: &Value) -> Option<usize> {
     let text = which.as_str()?.trim().to_lowercase();
     if text.is_empty() {
         return None;

@@ -1,6 +1,8 @@
 //! Client creation and local deletion/restore through the queue's writer lock.
 
+mod book;
 mod edit;
+mod importing;
 mod peer_actions;
 
 use super::{
@@ -10,7 +12,7 @@ use super::{
     labels,
     mentions::Index,
     migration,
-    numbers::Numbers,
+    numbers::{Grant, Numbers},
     peer_reads::PeerReads,
     refs::{Reference, References},
     routes::{blocking, internal, local_work_queue_app, storage_refusal, typed, work_queue_client},
@@ -155,6 +157,7 @@ pub(super) fn register(
         }
     });
     writer.register_edits(registry);
+    writer.register_import(registry);
     writer.start(relay)
 }
 
@@ -216,12 +219,13 @@ impl Writer {
                 *label_revision = Some(revision);
             }
         }
-        let waiting = self.waiting().await?;
-        if waiting {
-            self.number_waiting().await?;
+        let now = Timestamp::now().as_millisecond();
+        let local_max = self.local_max().await?;
+        let grants = self.numbers.answer_own(local_max, now).await?;
+        if grants.is_some() || self.waiting().await? {
+            self.number_waiting(grants).await?;
         }
         if let Some(relay) = relay {
-            let now = Timestamp::now().as_millisecond();
             let local_max = self.local_max().await?;
             if let Some((main, ask)) = self.numbers.ask_to_send(local_max, now).await?
                 && let Some(key) = kuvo_wire::keys::decode_exact(&main)
@@ -326,12 +330,12 @@ impl Writer {
             }
         } else if queue["give"].is_object() && queue.get("for").is_none() {
             let local_max = self.local_max().await?;
-            if self
+            if let Some(grant) = self
                 .numbers
                 .accept(by, queue["give"].clone(), local_max)
                 .await?
             {
-                self.number_waiting().await?;
+                self.number_waiting(Some(grant)).await?;
             }
         }
         Ok(())
@@ -347,13 +351,26 @@ impl Writer {
     async fn waiting(&self) -> Result<bool, Error> {
         let store = self.store.clone();
         tokio::task::spawn_blocking(move || {
-            store.items().map(|items| items.iter().any(needs_number))
+            store.items().map(|items| {
+                items.iter().any(|item| {
+                    item.removed.is_none()
+                        && item.source().is_none()
+                        && !item.saved.contains_key("handing")
+                        && (item.number.is_none() || book::wanted(item).is_some())
+                })
+            })
         })
         .await
         .map_err(io::Error::other)?
     }
 
-    async fn number_waiting(&self) -> Result<(), Error> {
+    fn may_number(&self, item: &Item) -> bool {
+        item.source().is_none()
+            && !item.saved.contains_key("handing")
+            && self.admit(&item.owner).is_ok()
+    }
+
+    async fn number_waiting(&self, received: Option<Grant>) -> Result<(), Error> {
         let root = self.store.root.clone();
         let guard = tokio::task::spawn_blocking(move || {
             migration::migrate(&root)?;
@@ -367,50 +384,62 @@ impl Writer {
         .await
         .map_err(io::Error::other)??;
         let store = self.store.clone();
-        let mut items = tokio::task::spawn_blocking(move || store.items())
+        let items = tokio::task::spawn_blocking(move || store.items())
             .await
             .map_err(io::Error::other)??;
-        let local_max = highest(&items);
-        items.retain(|item| needs_number(item) && self.admit(&item.owner).is_ok());
-        items.sort_by(|a, b| a.created.at.total_cmp(&b.created.at));
+        let mut book = book::Book::new(items);
         let now = Timestamp::now().as_millisecond();
-        let assigned = self.numbers.allocate(items.len(), local_max, now).await?;
-        let mut changes = std::collections::BTreeMap::<String, Vec<(String, u64)>>::new();
-        for (item, number) in items.into_iter().zip(assigned) {
-            changes
-                .entry(item.owner)
-                .or_default()
-                .push((item.id, number));
+        let grant = match received {
+            Some(answer) => Some(answer),
+            None => {
+                let asked = self.numbers.asking_claims().await?;
+                let claims = book
+                    .items
+                    .iter()
+                    .filter(|item| item.removed.is_none() && self.may_number(item))
+                    .filter_map(|item| {
+                        let number = book::wanted(item)?;
+                        (!book::flag(item, "backGranted")
+                            && !super::numbers::contains(&asked, number))
+                        .then_some((number, item.number.is_some()))
+                    })
+                    .collect::<Vec<_>>();
+                let restores = claims
+                    .iter()
+                    .filter(|(_, returns)| *returns)
+                    .map(|(number, _)| *number)
+                    .collect();
+                self.numbers
+                    .claim(
+                        claims.into_iter().map(|(number, _)| number).collect(),
+                        restores,
+                        highest(&book.items),
+                        now,
+                    )
+                    .await?
+            }
+        };
+        let (waiting, used) = book.settle(grant, |item| self.may_number(item), now);
+        let assigned = self
+            .numbers
+            .allocate_with_used(waiting.len(), used, highest(&book.items), now)
+            .await?;
+        for (index, number) in waiting.into_iter().zip(assigned) {
+            book::assign(book.mark(index), number);
         }
-        let store = self.store.clone();
+        let writer = self.clone();
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
-            for (owner, updates) in changes {
-                let path = store.root.join("queues").join(format!("{owner}.json"));
-                let Some(mut record) = QUEUE.read(&path)? else {
-                    continue;
-                };
-                let Some(saved) = record.fields.get_mut("items").and_then(Value::as_array_mut)
-                else {
-                    continue;
-                };
-                for (id, number) in updates {
-                    if let Some(item) = saved.iter_mut().find(|item| item["id"] == id) {
-                        item["number"] = number.into();
-                    }
-                }
-                let bytes =
-                    serde_json::to_vec(&QUEUE.encode(record.fields)).map_err(io::Error::other)?;
-                files::write_atomic_through(
-                    &path,
-                    &bytes,
-                    store.root.parent().expect("Work Queue under run"),
-                )?;
-            }
-            Ok(())
+            book.save(&writer, now).map_err(|error| {
+                io::Error::other(format!(
+                    "Cannot persist Work Queue numbers (status {}).",
+                    error.reply().status
+                ))
+            })
         })
         .await
-        .map_err(io::Error::other)?
+        .map_err(io::Error::other)??;
+        Ok(())
     }
 
     async fn create(
@@ -794,14 +823,6 @@ fn highest(items: &[Item]) -> u64 {
         .iter()
         .filter_map(|item| item.number)
         .fold(0.0, f64::max) as u64
-}
-
-fn needs_number(item: &Item) -> bool {
-    item.number.is_none()
-        && item.source().is_none()
-        && item.removed.is_none()
-        && !item.saved.contains_key("wanted")
-        && !item.saved.contains_key("handing")
 }
 
 enum Removal {

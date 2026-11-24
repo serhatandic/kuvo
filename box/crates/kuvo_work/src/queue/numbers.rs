@@ -1,5 +1,9 @@
 //! Spend persisted number leases and install the main computer's certified ledger.
 
+mod claims;
+
+pub(super) use claims::{Grant, contains, runs};
+
 use super::store::{self, Error, Store};
 use kuvo_peers::setup_lists::Reader;
 use kuvo_setup::{QueueNumberLease, QueueSetup, SetupHandle};
@@ -44,11 +48,28 @@ impl Numbers {
         local_max: u64,
         now: i64,
     ) -> Result<Vec<u64>, Error> {
-        if count == 0 {
+        self.allocate_with_used(count, Vec::new(), local_max, now)
+            .await
+    }
+
+    pub async fn allocate_with_used(
+        &self,
+        count: usize,
+        used: Vec<u64>,
+        local_max: u64,
+        now: i64,
+    ) -> Result<Vec<u64>, Error> {
+        if count == 0 && used.is_empty() {
             return Ok(Vec::new());
         }
         self.change(local_max, move |ledger, scope| {
-            ledger.allocate(scope, count, now)
+            let allocated = if count == 0 {
+                Vec::new()
+            } else {
+                ledger.allocate(scope, count, now)?
+            };
+            ledger.note_used(used);
+            Ok(allocated)
         })
         .await
     }
@@ -121,38 +142,41 @@ impl Numbers {
         .await
     }
 
-    pub async fn accept(&self, by: String, block: Value, local_max: u64) -> Result<bool, Error> {
+    pub async fn accept(
+        &self,
+        by: String,
+        block: Value,
+        local_max: u64,
+    ) -> Result<Option<Grant>, Error> {
         self.change(local_max, move |ledger, scope| {
             if !scope
                 .setup
                 .as_ref()
                 .is_some_and(|setup| !setup.main_here && setup.primary == by && !setup.merging)
             {
-                return Ok(false);
+                return Ok(None);
             }
-            let Some(id) = block["id"].as_str() else {
-                return Ok(false);
+            Ok(ledger.receive_block(&block))
+        })
+        .await
+    }
+
+    pub async fn answer_own(&self, local_max: u64, now: i64) -> Result<Option<Grant>, Error> {
+        let Some(setup) = self.setup.queue_setup().filter(|setup| setup.main_here) else {
+            return Ok(None);
+        };
+        self.change(local_max, move |ledger, scope| {
+            let Some(mut ask) = ledger
+                .fields
+                .get("asking")
+                .filter(|ask| valid_ask(ask))
+                .cloned()
+            else {
+                return Ok(None);
             };
-            let (Some(from), Some(to)) = (integer(&block["from"]), integer(&block["to"])) else {
-                return Ok(false);
-            };
-            if from == 0
-                || to < from
-                || to > MAX
-                || to - from > 1000
-                || ledger
-                    .fields
-                    .get("asking")
-                    .and_then(|asked| asked["id"].as_str())
-                    != Some(id)
-            {
-                return Ok(false);
-            }
-            ledger.fields.remove("asking");
-            let mut leases = ledger.leases.clone();
-            leases.push([from, to]);
-            ledger.fields.insert("leases".into(), json!(joined(leases)));
-            Ok(true)
+            ask["own"] = true.into();
+            let reply = ledger.give(scope, &setup.primary, &ask, now)?;
+            Ok(reply.as_ref().and_then(|block| ledger.receive_block(block)))
         })
         .await
     }
@@ -289,16 +313,12 @@ impl Ledger {
                 range[0] += 1;
             }
             allocated.push(number);
-            used.push([number, number]);
+            used.push(number);
         }
         if self.leases != before {
             self.fields.insert("leases".into(), json!(self.leases));
         }
-        if !used.is_empty() {
-            self.used.extend(used);
-            self.fields
-                .insert("used".into(), json!(joined(std::mem::take(&mut self.used))));
-        }
+        self.note_used(used);
         let left: u64 = self.leases.iter().map(|[from, to]| to - from + 1).sum();
         if allocated.len() != count || (!main && left <= LOW) {
             self.ask(now)?;
@@ -360,64 +380,13 @@ impl Ledger {
         let next = self.next().max(top + 1);
         self.fields.insert("next".into(), next.into());
         let claims = ranges(ask.get("claims"));
-        let claim_limit = (next + 10_000).min(MAX - count);
-        let needed = intersect(&claims, &[[next, claim_limit]])
-            .last()
-            .map_or(next - 1, |claim| claim[1])
-            + count;
-        if needed > ceiling {
-            let before = self
-                .fields
-                .get("reserveThrough")
-                .and_then(integer)
-                .unwrap_or(0);
-            self.fields
-                .insert("reserveThrough".into(), before.max(needed).into());
+        if !self.claim_room(&claims, count, ceiling) {
             return Ok(None);
         }
-        let mut granted = self
-            .fields
-            .get("granted")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let before = ranges(granted.get(by));
-        let mut offered = intersect(&claims, &[[next, (next + 10_000).min(ceiling - count)]]);
-        offered.extend(intersect(&claims, &before));
-        if ask["own"].as_bool() == Some(true) {
-            let blocks: Vec<_> = self
-                .fields
-                .get("given")
-                .and_then(Value::as_object)
-                .into_iter()
-                .flat_map(|given| given.values())
-                .filter(|block| block["by"].as_str() == Some(by))
-                .filter_map(|block| Some([integer(&block["from"])?, integer(&block["to"])?]))
-                .collect();
-            offered.extend(intersect(&claims, &blocks));
-        }
-        let offered = joined(offered);
-        let from = offered.last().map_or(next, |range| next.max(range[1] + 1));
+        let owned = (ask["own"].as_bool() == Some(true)).then(|| ranges(ask.get("restores")));
+        let offered = self.grant_claims(by, &claims, owned.as_deref(), ceiling - count);
+        let from = self.next();
         let to = from + count - 1;
-        if to > ceiling {
-            let before = self
-                .fields
-                .get("reserveThrough")
-                .and_then(integer)
-                .unwrap_or(0);
-            self.fields
-                .insert("reserveThrough".into(), before.max(to).into());
-            return Ok(None);
-        }
-        if !offered.is_empty() {
-            granted.insert(
-                by.into(),
-                json!(joined(
-                    before.into_iter().chain(offered.iter().copied()).collect()
-                )),
-            );
-            self.fields.insert("granted".into(), granted.into());
-        }
         self.fields.insert("next".into(), (to + 1).into());
         let mut given = self
             .fields
@@ -435,6 +404,22 @@ impl Ledger {
         self.fields
             .insert("given".into(), Value::Object(ordered.into_iter().collect()));
         Ok(Some(json!({"id":id,"from":from,"to":to,"granted":offered})))
+    }
+
+    fn receive_block(&mut self, block: &Value) -> Option<Grant> {
+        let id = block["id"].as_str()?;
+        let from = integer(&block["from"])?;
+        let to = integer(&block["to"])?;
+        let asked = self.fields.get("asking")?;
+        if from == 0 || to < from || to > MAX || to - from > 1000 || asked["id"] != id {
+            return None;
+        }
+        let answer = claims::grant(asked, block);
+        self.fields.remove("asking");
+        self.leases.push([from, to]);
+        self.leases = joined(std::mem::take(&mut self.leases));
+        self.fields.insert("leases".into(), json!(self.leases));
+        Some(answer)
     }
 
     fn next(&self) -> u64 {
@@ -504,14 +489,18 @@ impl Ledger {
     fn ask(&mut self, now: i64) -> io::Result<()> {
         let valid = self.fields.get("asking").is_some_and(valid_ask);
         if !valid {
-            let mut bytes = [0; 12];
-            getrandom::fill(&mut bytes).map_err(io::Error::other)?;
-            let id = format!("wqn_{}", kuvo_wire::keys::encode(&bytes));
+            let id = ask_id()?;
             self.fields
                 .insert("asking".into(), json!({"id":id,"count":BLOCK,"since":now}));
         }
         Ok(())
     }
+}
+
+fn ask_id() -> io::Result<String> {
+    let mut bytes = [0; 12];
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+    Ok(format!("wqn_{}", kuvo_wire::keys::encode(&bytes)))
 }
 
 fn integer(value: &Value) -> Option<u64> {
