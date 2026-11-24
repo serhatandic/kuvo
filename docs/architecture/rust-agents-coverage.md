@@ -227,8 +227,8 @@ relay itself (keys, programs, the computer's MCP servers and stand-ins,
 cases 2–9) and the browser's MCP mode remain open.
 
 The agent-slot store, the JSON-RPC connection (with its real-holder
-process test) and the runtime package installer passed on macOS, Linux
-(lokum), WSL2 and native Windows.
+process test), the runtime package installer and the stdio forwarder
+passed on macOS, Linux (lokum), WSL2 and native Windows.
 
 ## TypeScript scenario inventory
 
