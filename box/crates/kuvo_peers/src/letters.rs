@@ -372,7 +372,10 @@ impl Letters {
             return Ok(Some(delivered(id)));
         }
         if let Some(answered) = &letter.answers
-            && (self.accept_answer(view, key, &letter, answered, now)? || letter.read.is_some())
+            && (self
+                .accept_answer(view, key, &letter, answered, now)
+                .await?
+                || letter.read.is_some())
         {
             self.receipts()?
                 .accepted(&id, note.is_some(), now)
@@ -713,7 +716,7 @@ impl Letters {
         Some((from, name))
     }
 
-    fn accept_answer(
+    async fn accept_answer(
         &mut self,
         view: &View,
         key: ComputerKey,
@@ -723,6 +726,31 @@ impl Letters {
     ) -> io::Result<bool> {
         let run = self.reader.run.clone();
         let sender = self.sender(view, key, letter.from.as_deref());
+        // The engine can already answer for a moved-in conversation while
+        // the last full session list still omits it.
+        let local_name = if sender.is_none()
+            && view.roster.here == Some(key)
+            && letter.read.is_none()
+            && let Some(from) = letter.from.as_deref()
+            && let Ok(engine) = self.engine.session_move().await
+            && let Ok(Some(info)) = engine.lookup(from).await
+        {
+            Some((
+                from,
+                info["title"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("New session")
+                    .to_owned(),
+            ))
+        } else {
+            None
+        };
+        let sender = sender.or_else(|| {
+            local_name
+                .as_ref()
+                .map(|(from, name)| (*from, name.as_str()))
+        });
         // The awaited letter may be the only record left after a restart.
         self.outbox()?
             .answer(&key, answered, now, |sent| {
