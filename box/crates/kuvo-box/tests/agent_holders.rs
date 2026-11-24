@@ -377,7 +377,18 @@ fn scans_only_live_rust_holders_and_leaves_typescript_records_alone() {
 #[cfg(feature = "agent-runtime-fixture")]
 #[test]
 fn keeper_release_switch_adopts_the_residents_running_holder() {
-    use kuvo_os::process::ProcessIdentity;
+    keeper_switch_holds_turn(false);
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+#[test]
+fn keeper_rollback_adopts_the_residents_running_holder() {
+    keeper_switch_holds_turn(true);
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+fn keeper_switch_holds_turn(resume_rollback: bool) {
+    use kuvo_os::process::{ProcessIdentity, ProcessState};
 
     const OLD: &str = "versions/0.8.0-beta.1-123456789abc/bin";
     const NEW: &str = "versions/0.8.0-beta.2-123456789abc/bin";
@@ -402,8 +413,14 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
         )
         .unwrap();
         let executable = bin.join(binary.file_name().unwrap());
-        fs::hard_link(&binary, &executable)
-            .or_else(|_| fs::copy(&binary, &executable).map(drop))
+        // The test harness exits without serving when the keeper launches it.
+        let program = if resume_rollback && release == NEW {
+            env::current_exe().unwrap()
+        } else {
+            binary.clone()
+        };
+        fs::hard_link(&program, &executable)
+            .or_else(|_| fs::copy(&program, &executable).map(drop))
             .unwrap();
         #[cfg(windows)]
         {
@@ -455,7 +472,27 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
     assert_eq!(started["generation"], 1);
 
     keeper.control(&["select", NEW]);
-    let finished = fixture_until("the new release to finish the held turn", || {
+    if resume_rollback {
+        fixture_until(
+            "the failed release to run after the first resident exits",
+            || {
+                let log = fs::read_to_string(keeper.root.join("run/serve.log")).ok()?;
+                (first.state() == ProcessState::Stale
+                    && (log.contains("running 0 tests") || log.contains("Unrecognized option:")))
+                .then_some(())
+            },
+        );
+        assert_eq!(
+            fs::read_to_string(keeper.root.join("run/previous"))
+                .unwrap()
+                .trim(),
+            OLD
+        );
+        // Replay the durable decision left when rollback was interrupted.
+        kuvo_store::files::write_secret(&keeper.root.join("run/keeper-rollback"), NEW.as_bytes())
+            .unwrap();
+    }
+    let finished = fixture_until("the replacement resident to finish the held turn", || {
         fixture_checkpoint(&keeper.root, "agent-fixture-finished")
     });
     let second = finished["resident"].as_u64().unwrap() as u32;
@@ -485,18 +522,27 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
     let completed: serde_json::Value = serde_json::from_str(&completed).unwrap();
     assert_eq!(completed["outcome"], "succeeded");
     drop(db);
+    let expected = if resume_rollback { OLD } else { NEW };
     fixture_until(
-        "the new resident to answer and the keeper to confirm its trial",
+        "the replacement resident to answer and the keeper to settle its trial",
         || {
             (keeper.ready(&second.to_string())
                 && !keeper.root.join("run/previous").exists()
                 && fs::read_to_string(keeper.root.join(kuvo_keeper::SELECTOR))
                     .ok()?
                     .as_str()
-                    == NEW)
+                    == expected)
                 .then_some(())
         },
     );
+    if resume_rollback {
+        let refusal = fs::read_to_string(keeper.root.join("run/update-cannot")).unwrap();
+        assert_eq!(
+            refusal.split_whitespace().skip(1).collect::<Vec<_>>(),
+            ["0.8.0-beta.2", "123456789abc"]
+        );
+        assert!(!keeper.root.join("run/keeper-rollback").exists());
+    }
     keeper.control(&["off"]);
 }
 
