@@ -34,6 +34,8 @@ enum Mode {
     Replies,
     /// Works until stopped or released.
     Works,
+    /// Works until released, ignoring Stop.
+    Ignores,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -185,7 +187,7 @@ async fn run(
     let _ = sink.save_state(state).await;
     let words = match mode {
         Mode::Replies => format!("on: {text}"),
-        Mode::Works => "working".into(),
+        Mode::Works | Mode::Ignores => "working".into(),
     };
     let _ = sink
         .event(say(TurnEvent::TextDelta {
@@ -200,6 +202,7 @@ async fn run(
             _ = stopped.recv() => Outcome::Interrupted,
             outcome = released => outcome.unwrap_or(Outcome::Interrupted),
         },
+        Mode::Ignores => released.await.unwrap_or(Outcome::Interrupted),
     };
     let _ = sink
         .event(say(TurnEvent::StepEnded {
@@ -1099,4 +1102,26 @@ async fn a_cancelled_handoff_refuses_its_late_message() {
             .await
             .unwrap()
     );
+}
+
+// "an agent that doesn't stop is given up on"; bab62eb80: deleting a
+// conversation while its agent winds down never writes its transcript again.
+#[tokio::test]
+async fn deleting_gives_up_on_an_agent_that_wont_stop_and_its_late_finish_writes_nothing() {
+    let mut case = Case::new().await;
+    case.runs = case
+        .runs
+        .clone()
+        .with_stop_grace(Duration::from_millis(100));
+    case.with(|script| script.mode = Mode::Ignores);
+    let id = case.create("ses_stubborn");
+    case.send(&id, "first", Delivery::Steer).await;
+    until("the first turn", || case.runs().len() == 1).await;
+    let deleted = tokio::time::timeout(Duration::from_secs(5), case.runs.delete(id.clone()))
+        .await
+        .expect("deleting waits only the grace for the turn");
+    assert!(deleted.unwrap());
+    case.release(Outcome::Succeeded);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!case.root.join("agents/sessions").join(&id).exists());
 }

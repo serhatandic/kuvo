@@ -61,14 +61,18 @@ impl OwnedLock {
             platform::private_file(&file)?;
         }
         with_deadline(wait, Duration::from_millis(10), || {
+            // On Windows a lock its owner is removing refuses to be opened
+            // until it's gone: busy, as one held.
             match fs::symlink_metadata(path) {
-                Ok(meta) if meta.is_dir() => {
-                    if !reap(path, rehome_pid)? {
-                        return Ok(None);
-                    }
-                }
+                Ok(meta) if meta.is_dir() => match reap(path, rehome_pid) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(None),
+                    Err(err) if platform::directory_conflict(&err) => return Ok(None),
+                    Err(err) => return Err(err),
+                },
                 Ok(_) => return Ok(None),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => (),
+                Err(err) if platform::directory_conflict(&err) => return Ok(None),
                 Err(err) => return Err(err),
             }
             match fs::rename(pending.path(), path) {

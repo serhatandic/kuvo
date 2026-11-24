@@ -22,6 +22,7 @@ use std::{
     io::{self, ErrorKind},
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
+    time::Duration,
 };
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch},
@@ -125,8 +126,13 @@ struct Conversation {
     checking: bool,
 }
 
+/// How long a turn asked to stop is waited for before its conversation goes
+/// without it.
+const STOP_GRACE: Duration = Duration::from_secs(8);
+
 #[derive(Clone)]
 pub struct SessionRuns {
+    stop_grace: Duration,
     asks: LiveAsks,
     store: SessionStore,
     commands: mpsc::Sender<Command>,
@@ -156,12 +162,20 @@ impl SessionRuns {
         };
         tokio::spawn(service.run(requests));
         Self {
+            stop_grace: STOP_GRACE,
             asks,
             store,
             commands,
             running,
             events,
         }
+    }
+
+    /// Wait this long for a turn asked to stop, rather than the usual eight
+    /// seconds.
+    pub fn with_stop_grace(mut self, grace: Duration) -> Self {
+        self.stop_grace = grace;
+        self
     }
 
     pub fn asks(&self) -> &LiveAsks {
@@ -414,9 +428,13 @@ impl SessionRuns {
             .await?;
         let deleted = async {
             if let Some(live) = live {
-                // A turn that can't be interrupted still ends when its record goes.
-                let _ = live.turn.interrupt().await;
-                let _ = live.turn.finished().await;
+                // One that doesn't stop is given up on: what it says after
+                // can't bring the conversation back.
+                let stopping = async {
+                    let _ = live.turn.interrupt().await;
+                    let _ = live.turn.finished().await;
+                };
+                let _ = tokio::time::timeout(self.stop_grace, stopping).await;
             }
             let headers = self.store.headers().await?;
             let children = headers
