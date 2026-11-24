@@ -56,6 +56,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Retrying a desktop message after a server restart confirms a message already received, without sending another copy.
 - On the Rust box, a draft can wait for its conversation’s computer, starred models appear across the setup, and conversation search includes other computers.
 - Windows project keys open their session lists, and branches keep attachments they refer to by Windows paths.
+- Summarizing a conversation you’ve already read keeps it marked as read.
 - The Rust box shows the coding-agent status reported by each computer and leaves conversations waiting for you out of its working count.
 
 - The Rust box pairs your desktop app across your computers and learns about removed devices when it reconnects, even while your main computer is away.
