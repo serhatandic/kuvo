@@ -3,8 +3,10 @@
 Row 5.2 is open. The current slice covers local migration and reads, the watch
 stream, saved attachments and cached GitHub state. It creates items with a durable
 receipt, deletes and restores local items, spends and exchanges ordinary number
-blocks on the relay lease, and saves signed labels. Feature advertisements wait
-for the complete contract.
+blocks on the relay lease, and saves signed labels. It also edits local text,
+status, order and fields, reads and writes manual relations, previews Markdown
+references, and removes inline picture markers. Feature advertisements wait for
+the complete contract.
 
 Case numbers follow declaration order in each TypeScript file. Partial means a
 conformance scenario exercises part of the TypeScript case. Open cases are
@@ -17,8 +19,8 @@ assigned to the indicated row for the rest of the port.
 | [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1–32 | Open, 5.2 and 2.4. Numbering and leases, projections, forwarding, handoff and deduplication. Retain retired ranked numbering checks in TS. |
 | [work-queue-two-boxes](../../box/bridge-tests/work-queue-two-boxes.test.js) | 1 | Partial, 5.2. A member spends an ordinary block from the main after it goes away. Combined views and handoff remain open. |
 | | 2 | Open, 5.2. Read, delete and restore on the owning computer through another one. |
-| [work-queue-statuses](../../box/bridge-tests/work-queue-statuses.test.js) | 1, 3, 9, 13–15 | Partial, 5.2. Local migration, retry, creation, search, one filter and label saves. Remaining status, filter and view variants need scenarios. |
-| | 2, 4–8, 10–12, 16 | Open, 5.2. Settling active work after migration, writer locks and recovery, item edits and agent tools. |
+| [work-queue-statuses](../../box/bridge-tests/work-queue-statuses.test.js) | 1, 3, 9–10, 13–15 | Partial, 5.2. Local migration, retry, creation, search, one filter, label saves and a local move between statuses. Remaining edit, filter and view variants need scenarios. |
+| | 2, 4–8, 11–12, 16 | Open, 5.2. Settling active work after migration, writer locks and recovery, reassignment to a bot queue, action limits and agent tools. |
 | [work-queue-github](../../box/bridge-tests/work-queue-github.test.js) | 2, 9 | Partial, 5.2. The saved closure changes the projection on a glance and preserves the item bytes. Freshness, reconnect and reopening need the signed-in reader. |
 | | 1, 3–8, 10–15 | Open, 5.2. Sign-in, fresh reads with the stand-in, issue tools and the peer cache and forwarding. |
 | [work-queue-github-envelope](../../box/bridge-tests/work-queue-github-envelope.test.js) | 1 | Open, 5.2. Authenticate and decrypt the GitHub sign-in envelope with the vault boundary. |
@@ -26,12 +28,13 @@ assigned to the indicated row for the rest of the port.
 | | 3, 5–7 | Open, 5.2. Read when copying fails, legacy label writes, future model and labels during edits, and peer summaries. |
 | [work-queue-numbering](../../box/test/work-queue-numbering.test.ts) | 3–5 | Partial, 5.2. Real residents grant within the high mark and spend existing numbers while the main is unavailable. Exhaustion, missing lease and boundary cases need the referenced scenarios. |
 | | 1–2, 6 | Open, 5.2. Claim and receipt replay, inherited counters and Markdown import. |
-| [work-queue-relations](../../box/test/work-queue-relations.test.ts) | 2, 5–6 | Partial, 5.2. A saved mention keeps its UTF-16 range, note ID and backlink. An attached file opens and a symlink replacement is refused. Relation writes, rebuilds and replay remain open. |
-| | 1, 3–4, 7–11 | Open, 5.2. Markdown parsing, attachment staging and anchors, pruning, rebuilds and dispatch responsiveness with a held writer lock. |
+| [work-queue-relations](../../box/test/work-queue-relations.test.ts) | 1, 4 | Covered. The preview route uses the shared exclusions and UTF-16 offsets for non-BMP text, fences, code spans, links, and bidirectional text. |
+| | 2, 5–6, 8, 10 | Partial, 5.2. Saved note mentions preserve their ranges and backlinks. Local relation edits preserve mention bindings and show the inverse. An attached file opens and a symlink replacement is refused. Inline marker removal preserves current text and attachment bytes. Missing indexes are reconstructed on reads. Durable recovery, staging and typed note writes still need coverage. |
+| | 3, 7, 9, 11 | Open, 5.2. Attachment staging and anchors, purge pruning and dispatch responsiveness with a held writer lock. |
 | [queue-live](../../box/bridge-tests/queue-live.test.js), [queue-stop](../../box/test/queue-stop.test.ts), [queue-items](../../box/test/queue-items.test.ts) | 1, 1–6, 1–25 respectively | Conversation message queues. See the case-by-case [engine map](rust-engine-coverage.md) for status and rows 3.2, 4.1 and 5.1. |
 
-Of the 182 directly named cases, 26 are partial, 124 are open in Work Queue
-and 32 are tracked in the engine map. The Work Queue conformance area also
+Of the 182 directly named cases, 2 are covered, 29 are partial, 119 are open in
+Work Queue and 32 are tracked in the engine map. The Work Queue conformance area also
 checks the initial migration and future-format refusal through a real resident.
 
 | Cross-area cases | Work Queue status and owner |
@@ -57,8 +60,9 @@ checks the initial migration and future-format refusal through a real resident.
 
 Open work in 5.2 includes merged peer views and the quiet owner-read transport,
 forwarded writes and receipts, offline merge and handoff, import claims and merge
-reservations, attachment staging, relation edits and mention rebuilds, status edit
-and reorder routes, live GitHub reads and vault sign-in, and the agents' tools.
+reservations, attachment staging, mention binding after number grants and owner
+changes, bot reassignment and remaining status and order cases, live GitHub reads
+and vault sign-in, and the agents' tools.
 Label restore and setup seeding remain open. Signed label changes use the Rust
 setup authority request and reply. The TypeScript work-queue forwarding envelope
 still needs to be connected for mixed-version label saves.

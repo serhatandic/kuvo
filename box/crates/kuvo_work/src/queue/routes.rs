@@ -2,7 +2,7 @@ use super::{
     assignees::Assignees,
     attachments,
     github::Seen,
-    items, labels, numbers,
+    items, labels, mentions, numbers,
     refs::References,
     sessions::Sessions,
     store::{Error, Store, owner_id},
@@ -17,6 +17,7 @@ use kuvo_protocol::{
     routes::{
         get_kuvo_work_queue, get_kuvo_work_queue_events as events, get_kuvo_work_queue_items_item,
         get_kuvo_work_queue_items_item_files_name, get_kuvo_work_queue_refs,
+        post_kuvo_work_queue_refs,
     },
 };
 use kuvo_server::{
@@ -39,7 +40,9 @@ pub async fn register(
     let startup = store.clone();
     tokio::task::spawn_blocking(move || {
         numbers::check(&startup)?;
-        startup.items()
+        let _ = kuvo_store::files::create_private_dirs(&startup.root.join("forward"));
+        startup.items()?;
+        Ok::<_, Error>(())
     })
     .await??;
 
@@ -88,11 +91,33 @@ pub async fn register(
                     &store.items()?,
                     &parser,
                     &Seen::read(&store)?,
-                    &listed,
+                    listed.split(','),
                 ))
             })
             .await
             .and_then(typed)
+        }
+    });
+
+    let parser = references.clone();
+    let here = store.clone();
+    registry.register::<post_kuvo_work_queue_refs::Spec, _, _>(Access::Any, move |call| {
+        let store = here.clone();
+        let parser = parser.clone();
+        async move {
+            let body: Value = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
+            if let Some(text) = body["text"].as_str() {
+                if !work_queue_client(&call.request.caller) {
+                    return Err(Refusal::new(StatusCode::FORBIDDEN,
+                        "Only Kuvo Code on your Mac or iPhone can do this: agents change the Work Queue with their tools."));
+                }
+                let text = super::store::limit(text, 100_000);
+                return blocking(move || Ok(json!({"mentions":parser.mentions.find(&text)}))).await.and_then(typed);
+            }
+            blocking(move || {
+                let refs = super::store::array(body.get("refs")).iter().filter_map(Value::as_str);
+                Ok(view::references(&store.items()?, &parser, &Seen::read(&store)?, refs))
+            }).await.and_then(typed)
         }
     });
 
@@ -105,7 +130,8 @@ pub async fn register(
         let name = decode(call.param("item"));
         async move {
             let answer = blocking(move || {
-                let all = store.items()?;
+                let mut all = store.items()?;
+                mentions::recover(&parser.mentions, &mut all);
                 let item = parser
                     .parse(&name)
                     .and_then(|reference| parser.find(&all, &reference));

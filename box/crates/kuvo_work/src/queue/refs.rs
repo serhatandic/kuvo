@@ -1,4 +1,5 @@
 use super::{
+    mentions::Mentions,
     store::{Item, array, item_id},
     view::number_aliases,
 };
@@ -6,6 +7,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 pub(super) struct References {
+    pub mentions: Mentions,
     stored: Regex,
     page: Regex,
 }
@@ -15,6 +17,7 @@ impl References {
         let owner = r"([A-Za-z0-9][A-Za-z0-9_-]{0,38})";
         let repo = r"([A-Za-z0-9_.-]{1,100})";
         Self {
+            mentions: Mentions::new(),
             stored: Regex::new(&format!(r"^gh:{owner}/{repo}#([0-9]{{1,10}})$")).expect("stored issue reference"),
             page: Regex::new(&format!(r"(?i)^https?://(?:www\.)?github\.com/{owner}/{repo}/(?:issues|pull)/([0-9]{{1,10}})(?:[/?#][^\s]*)?$")).expect("GitHub issue page"),
         }
@@ -71,27 +74,33 @@ impl References {
     }
 
     pub fn find<'a>(&self, items: &'a [Item], reference: &Reference<'_>) -> Option<&'a Item> {
-        items
-            .iter()
-            .filter(|item| match reference {
-                Reference::Id(id) => item.id == *id,
-                Reference::Number {
-                    number,
-                    setup: None,
-                } => item.number == Some(f64::from(*number)),
-                Reference::Number {
-                    number,
-                    setup: Some(setup),
-                } => number_aliases(item).iter().any(|alias| {
-                    alias["setup"].as_str() == Some(*setup)
-                        && alias["number"].as_f64() == Some(f64::from(*number))
-                }),
-                Reference::Source(key) => item
-                    .source()
-                    .and_then(|source| self.issue(source["ref"].as_str()?))
-                    .is_some_and(|source| source.key() == *key),
-            })
+        self.named(items, reference)
             .min_by_key(|item| item.removed.is_some())
+    }
+
+    pub fn named<'a, 'b>(
+        &'b self,
+        items: &'a [Item],
+        reference: &'b Reference<'_>,
+    ) -> impl Iterator<Item = &'a Item> + use<'a, 'b> {
+        items.iter().filter(move |item| match reference {
+            Reference::Id(id) => item.id == *id,
+            Reference::Number {
+                number,
+                setup: None,
+            } => item.number == Some(f64::from(*number)),
+            Reference::Number {
+                number,
+                setup: Some(setup),
+            } => number_aliases(item).iter().any(|alias| {
+                alias["setup"].as_str() == Some(*setup)
+                    && alias["number"].as_f64() == Some(f64::from(*number))
+            }),
+            Reference::Source(key) => item
+                .source()
+                .and_then(|source| self.issue(source["ref"].as_str()?))
+                .is_some_and(|source| source.key() == *key),
+        })
     }
 }
 
@@ -155,7 +164,7 @@ pub(super) fn relations(item: &Item, items: &[Item]) -> Vec<Value> {
         .collect()
 }
 
-fn inverse(kind: &str) -> Option<&'static str> {
+pub(super) fn inverse(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "related" => "related",
         "blocks" => "blocked-by",

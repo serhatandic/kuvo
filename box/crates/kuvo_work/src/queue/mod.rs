@@ -5,6 +5,7 @@ mod attachments;
 mod github;
 mod items;
 mod labels;
+mod mentions;
 
 mod migration;
 mod numbers;

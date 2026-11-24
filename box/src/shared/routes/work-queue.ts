@@ -21,6 +21,7 @@ const WHO = oneOf(object({ user: bool }), object({ session: string, name: string
 const STAMP = object({ at: number, by: WHO });
 const NOTE = object({ at: number, by: WHO, text: string, "id?": string });
 const MENTION = object({ start: number, end: number, number, item: string });
+const MENTION_RANGE = object({ start: number, end: number, number });
 const ITEM_RELATION = object({ id: string, kind: string, title: string, "number?": number });
 /** Activity history. An edit can name its fields and a stop can name the affected session. */
 const EVENT = object({ at: number, by: WHO, kind: string, "from?": string, "to?": string, "top?": bool, "fields?": list(string), "session?": string, "fromLabel?": string, "toLabel?": string });
@@ -105,7 +106,7 @@ export const QUEUE_ITEM_WHOLE = object({
   "itemRelations?": list(ITEM_RELATION),
   "canLinkItems?": bool,
   events: list(EVENT),
-  files: list(object({ name: string, size: number, type: string, at: number, "id?": string, "anchor?": string, "sha256?": string })),
+  files: list(object({ name: string, size: number, type: string, "at?": number, "id?": string, "anchor?": string, "sha256?": string })),
   links: list(object({ url: string, "title?": string, "kind?": string, "ref?": string })),
   handed: list(object({ from: string, to: string, at: number })),
 });
@@ -150,7 +151,7 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   // What each ref names (`refs=243,12`: a `#n`, an id or a `gh:` issue), for chips; null for one unknown.
   { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
   // Refs as a list (`{refs}`), or `{text}` → the `#n` mentions in a description (UTF-16 ranges).
-  { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
+  { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: oneOf(REFS, object({ mentions: list(MENTION_RANGE) })) } },
   { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
   // Adds (`{add, color?}`), changes (`{change, name?, color?}`) or removes (`{remove}`) a label.
   { route: "POST kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
@@ -171,7 +172,7 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   // An item's file; one on another computer comes from there, 4 MB at most, else 413.
   { route: "GET kuvo/work-queue/items/:item/files/:name", feature: "work-queue.attachments", answers: { 200: BYTES, 409: ON_ANOTHER, 413: object({ message: string, "computer?": COMPUTER }), 502: ON_ANOTHER, 503: ON_ANOTHER } },
   // Changes only what's sent; one kept on another computer is changed there by its box.
-  { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM }), OFFLINE_EDIT_ANSWERS[200]), 409: oneOf(ON_ANOTHER, OFFLINE_EDIT_ANSWERS[409]), 503: ON_ANOTHER } },
+  { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM, "itemRelationApplied?": bool, "inlineImagesApplied?": bool }), OFFLINE_EDIT_ANSWERS[200]), 409: oneOf(ON_ANOTHER, OFFLINE_EDIT_ANSWERS[409]), 503: ON_ANOTHER } },
   // Brings a deleted item back (kept 30 days).
   { route: "POST kuvo/work-queue/items/:item/restore", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
   // Deletes an item (kept 30 days); one on its way to another computer has its hand-off called off.

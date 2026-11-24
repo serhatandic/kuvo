@@ -488,12 +488,17 @@ fn ref_facts(item: &Item, today: Date, references: &References, seen: &Seen) -> 
     facts.into()
 }
 
-pub(super) fn references(items: &[Item], parser: &References, seen: &Seen, listed: &str) -> Value {
+pub(super) fn references<'a>(
+    items: &[Item],
+    parser: &References,
+    seen: &Seen,
+    listed: impl IntoIterator<Item = &'a str>,
+) -> Value {
     let today = Zoned::now().date();
     let mut found = Map::new();
     let mut aliases = Map::new();
     for text in listed
-        .split(',')
+        .into_iter()
         .map(str::trim)
         .filter(|text| !text.is_empty() && text.encode_utf16().count() <= 300)
         .take(200)

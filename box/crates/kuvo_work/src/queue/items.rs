@@ -1,8 +1,12 @@
 //! Client creation and local deletion/restore through the queue's writer lock.
 
+mod edit;
+
 use super::{
     assignees::Assignees,
-    labels, migration,
+    labels,
+    mentions::Index,
+    migration,
     numbers::Numbers,
     refs::{Reference, References},
     routes::{blocking, internal, storage_refusal, typed, work_queue_client},
@@ -112,6 +116,7 @@ pub(super) fn register(
             typed(here.change(name, Removal::Restore).await?)
         }
     });
+    writer.register_edits(registry);
     writer.start(relay)
 }
 
@@ -388,6 +393,9 @@ impl Writer {
             if body.get("files").is_some_and(|files| !files.is_null() && !files.as_array().is_some_and(Vec::is_empty))
                 || body.get("removeInlineImages").is_some_and(|images| !images.as_array().is_some_and(Vec::is_empty)) {
                 return Err(bad("Choose files to attach and try again."));
+            }
+            if let Some(parsed) = Item::read(&owner, &item) {
+                item["mentionIndex"] = json!(Index::rebuild(&writer.refs.mentions, &parsed, &all, None));
             }
             let local_max = highest(&all);
             let document = writer.read_owner(&owner, now)?;

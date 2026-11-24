@@ -391,6 +391,110 @@ test("a queue item keeps its creation receipt and number through delete and rest
     assert.deepEqual(detail.json.item.events.map(event => event.kind), ["deleted", "restored"]);
   }));
 
+test("reference previews use UTF-16 offsets and skip Markdown and outside references", { timeout: 30000 }, () =>
+  withQueue(async (_queue, start) => {
+    const ask = await start();
+    const app = { "x-kuvo-from": "app" };
+    for (const [text, numbers] of [
+      ["🖼 See #821 and (#82). Ranked #1, #2 in search, PR #3, #4seller, gh:acme/project-#5, `#6`, [#7](https://example.com), https://example.com/#8.\n\n```\n#92\n", [821, 82]],
+      ["🖼 #9000", [9000]],
+      ["🧭 See #71, `#72` and [#73](https://example.com).\n\n    #74\n\nIssue #75, #1 result, gh:acme/project#76, https://example.com/#77 and (#78).", [71, 78]],
+      ["~~~ markdown\n#41\n~~~~\n\n`` See #42 ` followed by #43 ``\n\n[See #44](https://example.test/path(a(b))) [word #45][target]\n\n[target]: https://example.test\n\n🖼 עברית #46 ثم #47", [46, 47]],
+    ]) {
+      const reply = await ask("kuvo/work-queue/refs", "POST", { text }, app);
+      assert.equal(reply.status, 200, reply.text);
+      assert.deepEqual(reply.json.mentions, numbers.map(number => {
+        const start = text.search(new RegExp(`#${number}(?![0-9])`));
+        return { start, end: start + 1 + String(number).length, number };
+      }));
+    }
+  }));
+
+test("editing a local item changes status and keeps its links and history", { timeout: 30000 }, () =>
+  withQueue(async (queue, start) => {
+    const second = { id: "wqi_abcdefghijklmnopqrst", number: 71 };
+    const stamp = { at: 1760000000000, by: { user: true } };
+    write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+    write(path.join(queue, "queues", "usr_you.json"), JSON.stringify({
+      formatVersion: 1, owner: "usr_you", items: [
+        { ...second, title: "Second", status: "todo", created: stamp, updated: stamp },
+      ],
+    }));
+    const ask = await start();
+    const app = { "x-kuvo-from": "app" };
+    const items = "kuvo/work-queue/items";
+    const item = async title => {
+      const reply = await ask(items, "POST", { title, operation: `queue-edit-${title}` }, app);
+      assert.equal(reply.status, 200, reply.text);
+      return reply.json.item;
+    };
+    const first = await item("First");
+    const source = `${items}/${first.id}`;
+    const target = `${items}/${second.id}`;
+    const body = `Follow #${second.number}.`;
+    const changed = await ask(source, "PATCH", { body, status: "in-progress", top: true, due: "2026-12-31", priority: "high" }, app);
+    assert.equal(changed.status, 200, changed.text);
+    assert.equal(changed.json.item.status, "in-progress");
+    assert.equal(changed.json.item.priority, "high");
+    assert.equal(changed.json.item.due, "2026-12-31");
+    const linked = await ask(source, "PATCH", { itemRelation: { item: second.id, kind: "blocks" } }, app);
+    assert.equal(linked.status, 200, linked.text);
+    assert.equal(linked.json.itemRelationApplied, true);
+    const detail = await ask(source);
+    assert.equal(detail.status, 200, detail.text);
+    assert.equal(detail.json.item.body, body);
+    assert.deepEqual(detail.json.item.bodyMentions, [{
+      number: second.number, start: 7, end: 8 + String(second.number).length, item: second.id,
+    }]);
+    assert.deepEqual(detail.json.item.events.map(({ kind, from, to, top }) => ({ kind, from, to, top })), [
+      { kind: "moved", from: "todo", to: "in-progress", top: true },
+    ]);
+    const edited = await ask(source, "PATCH", { body: `${body} Check #${second.number} again.` }, app);
+    assert.equal(edited.status, 200, edited.text);
+    assert.deepEqual((await ask(source)).json.item.bodyMentions.map(({ item }) => item), [second.id, second.id]);
+    const inverse = await ask(target);
+    assert.equal(inverse.status, 200, inverse.text);
+    assert.deepEqual(inverse.json.item.itemRelations.map(({ id, kind }) => ({ id, kind })), [
+      { id: first.id, kind: "blocked-by" }, { id: first.id, kind: "mentioned-in" },
+    ]);
+    const unlinked = await ask(source, "PATCH", { itemRelation: { item: second.id, kind: null } }, app);
+    assert.equal(unlinked.status, 200, unlinked.text);
+    assert.deepEqual((await ask(target)).json.item.itemRelations.map(({ kind }) => kind), ["mentioned-in"]);
+  }));
+
+test("removing an inline picture preserves the current text and saved attachments", { timeout: 30000 }, () =>
+  withQueue(async (queue, start) => {
+    const id = "wqi_abcdefghijklmnopqrst";
+    const anchor = "0123456789abcdef01234567";
+    const url = `kuvo-attachment:file/${anchor}`;
+    const image = `![left.png](${url})`;
+    const next = "![right.png](kuvo-attachment:legacy/2)";
+    const latest = `🎨 The rest of the description stays. ${image} / ${next}\n\n\`${image}\``;
+    const stamp = { at: 1760000000000, by: { user: true } };
+    write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+    write(path.join(queue, "queues", "usr_you.json"), JSON.stringify({
+      formatVersion: 1, owner: "usr_you", items: [{
+        id, title: "Pictures", status: "todo", body: latest, created: stamp, updated: stamp,
+        files: [{ name: "left.png", type: "image/png", size: 1, anchor }, { name: "right.png", type: "image/png", size: 1 }],
+      }],
+    }));
+    write(path.join(queue, "files", id, "left.png"), "a");
+    write(path.join(queue, "files", id, "right.png"), "b");
+    const ask = await start();
+    const route = `kuvo/work-queue/items/${id}`;
+    const remove = { removeInlineImages: [{ url, name: "left.png" }] };
+    for (let times = 0; times < 2; times++) {
+      const result = await ask(route, "PATCH", remove, { "x-kuvo-from": "app" });
+      assert.equal(result.status, 200, result.text);
+      assert.equal(result.json.inlineImagesApplied, true);
+    }
+    const detail = await ask(route);
+    assert.equal(detail.status, 200, detail.text);
+    assert.equal(detail.json.item.body, latest.replace(image, ""));
+    assert.deepEqual(detail.json.item.files.map(({ name }) => name), ["left.png", "right.png"]);
+    assert.equal((await ask(`${route}/files/right.png`)).text, "b");
+  }));
+
 test("the main grants unique Work Queue numbers across two computers", { timeout: 90000 }, async t => {
   const { computer, leases } = await bench(t);
   const studio = await computer("Studio");
