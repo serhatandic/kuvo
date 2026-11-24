@@ -27,6 +27,10 @@ const agentProviders = ["claude-code", "codex-cli", "antigravity", "grok-cli", "
 const agentNames = ["claude", "codex", "antigravity", "grok", "cursor"] as const;
 const codingSession = (agent: string) => `ses_fixture${agent}`;
 
+function lineFrames<T = unknown>(text: string): { t: string; d: T }[] {
+  return text.trim().split("\n").map(line => JSON.parse(line));
+}
+
 function pair(codingAgents = false, bridgeDelivery = false, { withLibrary = false, managed = false, withOutputs = false } = {}) {
   const root = mkdtempSync(path.join(process.env.KUVO_HOME!, "setup-lists-"));
   const device = newKey();
@@ -519,8 +523,8 @@ test("the nearest box serves a remote bot’s own activity on its bots line", as
     await share(far, near, far.session);
     const botTopic = Buffer.from(JSON.stringify({ bots: "kuvo/bots/events" })).toString("base64url");
     const bots = await near.read(`kuvo/line?once=1&watch=${botTopic}`);
-    const state = bots.text.trim().split("\n").map(JSON.parse as (line: string) => any).find(row => row.t === "bots");
-    expect(state.d.elsewhere).toEqual([expect.objectContaining({ id: bot, session: far.session, box: far.computer.id,
+    const state = lineFrames<{ elsewhere: unknown }>(bots.text).find(row => row.t === "bots");
+    expect(state?.d.elsewhere).toEqual([expect.objectContaining({ id: bot, session: far.session, box: far.computer.id,
       now: expect.objectContaining({ state: "needsYou", asking: 1 }) })]);
   } finally { setup.close(); }
 }, 30_000);
@@ -910,7 +914,7 @@ test("setup attention lists the original computer of a kept notice and counts it
     await awayAWhile(near, far);
     const answer = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}` });
     expect(answer.status).toBe(200);
-    const [, ...frames] = answer.text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    const [, ...frames] = lineFrames<{ notices?: unknown }>(answer.text);
     const states = Object.fromEntries(frames.map(frame => [frame.t, frame.d]));
     expect(states.notices?.notices).toEqual([expect.objectContaining({
       id: "ntc_far", computer: far.computer, away: true, lastSeen: expect.any(Number),
@@ -1068,7 +1072,14 @@ test("merged views name a computer until its first copy arrives and distinguish 
   const read = async (away?: string) => {
     const { status, text } = await near.run({ kind: "route", path: `kuvo/line?once=1&watch=${watch}`, away });
     expect(status).toBe(200);
-    const [, ...states] = text.trim().split("\n").map(JSON.parse as (line: string) => any);
+    type View = {
+      pendingComputers: { id: string; name: string }[];
+      items: { computer: { key: string } }[];
+      computers: { key: string; state: string }[];
+      sessions: Record<string, { computer: { id: string; name: string } }>;
+      waiting: { session: string }[];
+    };
+    const [, ...states] = lineFrames<Partial<View>>(text);
     expect(states.map(topic => topic.t).sort()).toEqual(Object.keys(topics).sort());
     for (const state of states) expect(state).not.toHaveProperty("refused");
     return Object.fromEntries(states.map(topic => [topic.t, topic.d]));
@@ -1087,9 +1098,9 @@ test("merged views name a computer until its first copy arrives and distinguish 
     expect(await near.run({ kind: "receive", frames: queues })).toBe(true);
     const received = await read();
     for (const state of Object.values(received)) expect(state.pendingComputers).toEqual([]);
-    expect(received.listing.sessions[far.session].computer).toEqual(far.computer);
-    expect(received.waiting.waiting.map((row: any) => row.session)).toEqual([far.session]);
-    expect(received.library.items.map((row: any) => row.computer.key)).toContain(far.computer.id);
+    expect(received.listing.sessions?.[far.session]?.computer).toEqual(far.computer);
+    expect(received.waiting.waiting?.map(row => row.session)).toEqual([far.session]);
+    expect(received.library.items?.map(row => row.computer.key)).toContain(far.computer.id);
   } finally { setup.close(); }
 }, 30_000);
 

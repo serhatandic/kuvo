@@ -91,7 +91,8 @@ test("Codex publishes its limits immediately after sign-in and reports the first
   limits.settings.change({ notifications: { underTenPercent: true, healthyToClose: false, closeToRunningOut: false } })
   const refresh = new AccountRefresh(limits, () => now, (_provider, known) => { signedIn = known })
   const agent: Agent = {
-    ...source, id: "codex", name: "Codex", methods: () => [],
+    providerID: source.providerID, instance: source.instance, limits: source.limits,
+    id: "codex", name: "Codex", methods: () => [],
     account: async () => ({ installed: true, signedIn: Boolean(source.limits?.signIn?.()) }),
     models: async () => [],
     thread: () => { throw new Error("The account should publish before starting any conversation.") },

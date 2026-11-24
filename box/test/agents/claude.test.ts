@@ -652,15 +652,22 @@ describe("Claude Code, on its own", () => {
     expect(job.command).toBe("cargo build")
     const bridge = Bun.serve({ port: 0, fetch: handler({ sessions, password: "pw" } as any) })
     const route = `kuvo/work/background/${id}/commands/${job.id}/output`
+    const readBridge = () => {
+      const port = bridge.port
+      if (port === undefined) throw new Error("The test bridge did not bind a port.")
+      return { port, password: "pw" }
+    }
+    const output: Parameters<typeof ask>[0] = (request, phone, signal) => commandOutputRoute({
+      request, phone, signal, route, bridge: readBridge, readBridge,
+      readEngine: () => { throw new Error("No engine") },
+      info: { name: "Test box" }, hold: null, phonesChanged: () => {},
+      json: (status, value) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }],
+      text: (status, value) => [{ head: { status, headers: {} } }, { body: Buffer.from(value) }],
+    }, route.match(COMMAND_OUTPUT_ROUTE)!)
     const printed = async () => {
-      const pieces = commandOutputRoute({
-        request: { method: "GET" },
-        readEngine: () => { throw new Error("No engine") },
-        bridge: () => ({ port: bridge.port!, password: "pw" }),
-        json: (status: number, value: unknown) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }],
-      } as RouteContext, route.match(COMMAND_OUTPUT_ROUTE)!)
-      const [, body] = await Array.fromAsync(pieces)
-      return JSON.parse(Buffer.from(body!.body!).toString())
+      const { status, json } = await ask(output, "GET", route)
+      expect(status).toBe(200)
+      return json
     }
     try {
       fake.outputs.set("build-task", "Compiling\n")
