@@ -4,7 +4,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use kuvo_os::{platform::Environment, process::ProcessIdentity};
+use kuvo_os::{
+    platform::Environment,
+    process::{ProcessIdentity, ProcessState},
+};
 use serde::Deserialize;
 use tokio::{
     fs,
@@ -79,6 +82,7 @@ pub(crate) use crate::turns::Turns;
 pub(crate) struct Lease {
     pub record: Record,
     commands: Option<mpsc::UnboundedSender<Command>>,
+    started_for_install: Option<ProcessIdentity>,
 }
 
 impl Drop for Lease {
@@ -102,8 +106,17 @@ pub(crate) enum Control {
     Restart,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeaseUse {
+    Resident,
+    Install,
+}
+
+const INSTALL_ENGINE: &str = "run/ssh-engine.json";
+
 enum Command {
-    Acquire(Demand, oneshot::Sender<Option<Lease>>),
+    Acquire(Demand, LeaseUse, oneshot::Sender<Option<Lease>>),
+    StopInstall(ProcessIdentity, oneshot::Sender<io::Result<()>>),
     Release,
     Control(Control),
 }
@@ -190,12 +203,72 @@ impl Engine {
     }
 
     pub(crate) async fn acquire(&self, demand: Demand) -> Option<Lease> {
+        self.request_lease(demand, LeaseUse::Resident).await
+    }
+
+    async fn request_lease(&self, demand: Demand, purpose: LeaseUse) -> Option<Lease> {
         if demand != Demand::Start && *self.state.borrow() == State::Starting {
             return None;
         }
         let (answer, reply) = oneshot::channel();
-        self.commands.send(Command::Acquire(demand, answer)).ok()?;
+        self.commands
+            .send(Command::Acquire(demand, purpose, answer))
+            .ok()?;
         reply.await.ok().flatten()
+    }
+
+    /// Hold OpenCode open while a staged installation imports sign-ins. A failed import
+    /// stops the engine only when this call started and still owns the same process.
+    pub async fn with_install_engine<T>(
+        &self,
+        import: impl Future<Output = io::Result<T>>,
+    ) -> io::Result<T> {
+        let lease = self
+            .request_lease(Demand::Start, LeaseUse::Install)
+            .await
+            .ok_or_else(|| io::Error::other("The staged engine did not start."))?;
+        let result = import.await;
+        let started = lease.started_for_install.clone();
+        drop(lease);
+        if result.is_err()
+            && let Some(started) = started
+        {
+            self.stop_staged_worker(started).await?;
+        }
+        result
+    }
+
+    /// Resume cleanup after the guarded install command that started OpenCode exited.
+    pub async fn stop_install_engine(&self) -> io::Result<()> {
+        let bytes = match fs::read(self.home.join(INSTALL_ENGINE)).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return match fs::symlink_metadata(self.home.join("run/engine.json")).await {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(error),
+                    Ok(_) => Err(io::Error::other(
+                        "There is no receipt for the running engine.",
+                    )),
+                };
+            }
+            Err(error) => return Err(error),
+        };
+        self.stop_staged_worker(serde_json::from_slice(&bytes)?)
+            .await
+    }
+
+    /// Once enrollment commits, the resident owns this engine as usual.
+    pub fn finish_install_engine(home: &Path) -> io::Result<()> {
+        kuvo_store::files::remove_file_synced(&home.join(INSTALL_ENGINE))
+    }
+
+    async fn stop_staged_worker(&self, identity: ProcessIdentity) -> io::Result<()> {
+        let (reply, result) = oneshot::channel();
+        let stopped = || io::Error::other("The staged engine coordinator stopped.");
+        self.commands
+            .send(Command::StopInstall(identity, reply))
+            .map_err(|_| stopped())?;
+        result.await.map_err(|_| stopped())?
     }
 
     pub(crate) async fn control(&self, action: Control) -> Result<(), &'static str> {
@@ -262,8 +335,11 @@ impl Supervisor {
             tokio::select! {
                 biased;
                 command = inbox.recv() => match command {
-                    Some(Command::Acquire(demand, reply)) if !reply.is_closed() => {
-                        self.acquire(demand, reply).await;
+                    Some(Command::Acquire(demand, purpose, reply)) if !reply.is_closed() => {
+                        self.acquire(demand, purpose, reply).await;
+                    }
+                    Some(Command::StopInstall(identity, reply)) => {
+                        let _ = reply.send(self.stop_install(identity).await);
                     }
                     Some(Command::Release) => {
                         self.leases -= 1;
@@ -274,7 +350,7 @@ impl Supervisor {
                             eprintln!("Starting the engine on request: {error}");
                         }
                     }
-                    Some(Command::Acquire(_, _)) => {},
+                    Some(Command::Acquire(..)) => {},
                     None => break,
                 },
                 Some(result) = probing.join_next(), if !probing.is_empty() => {
@@ -308,7 +384,13 @@ impl Supervisor {
         Ok(())
     }
 
-    async fn acquire(&mut self, demand: Demand, reply: oneshot::Sender<Option<Lease>>) {
+    async fn acquire(
+        &mut self,
+        demand: Demand,
+        purpose: LeaseUse,
+        reply: oneshot::Sender<Option<Lease>>,
+    ) {
+        let mut started_for_install = None;
         let result = async {
             self.reap().await?;
             if self.worker.is_none()
@@ -316,7 +398,7 @@ impl Supervisor {
                 && !stopped(&self.home).await
                 && !starting_fenced(&self.home).await
             {
-                self.start().await?;
+                started_for_install = self.start(purpose).await?;
             } else if self.worker.is_some() && !self.healthy && demand == Demand::Start {
                 self.ready().await?;
             }
@@ -339,6 +421,7 @@ impl Supervisor {
                 Lease {
                     record: worker.record.clone(),
                     commands,
+                    started_for_install,
                 }
             });
         if lease.as_ref().is_some_and(|lease| lease.commands.is_some()) {
@@ -353,7 +436,7 @@ impl Supervisor {
         self.activity = self.activity.wrapping_add(1);
     }
 
-    async fn start(&mut self) -> io::Result<()> {
+    async fn start(&mut self, purpose: LeaseUse) -> io::Result<Option<ProcessIdentity>> {
         let _ = self.updates.send(State::Starting);
         let home = self.home.clone();
         let version = self.version.clone();
@@ -366,22 +449,38 @@ impl Supervisor {
             Worker::launch(&home, &version, env)
         })
         .await?;
-        match start {
+        let staged = match start {
             Ok(worker) => {
+                let staged = (purpose == LeaseUse::Install && worker.spawned())
+                    .then(|| worker.record.identity())
+                    .flatten();
                 self.worker = Some(worker);
+                if let Some(identity) = &staged
+                    && let Err(error) = kuvo_store::files::write_atomic(
+                        &self.home.join(INSTALL_ENGINE),
+                        &serde_json::to_vec(identity)?,
+                    )
+                {
+                    self.stop_install(identity.clone()).await?;
+                    return Err(error);
+                }
+                staged
             }
             Err(error) => {
                 self.publish().await;
                 return Err(error);
             }
-        }
+        };
         match self.ready().await {
             Ok(()) => {
                 self.recover = true;
                 self.touch();
-                Ok(())
+                Ok(staged)
             }
             Err(error) => {
+                if let Some(identity) = staged {
+                    self.stop_install(identity).await?;
+                }
                 self.publish().await;
                 Err(error)
             }
@@ -462,6 +561,29 @@ impl Supervisor {
         Ok(())
     }
 
+    async fn stop_install(&mut self, identity: ProcessIdentity) -> io::Result<()> {
+        match &self.worker {
+            Some(worker)
+                if self.leases == 0
+                    && worker.owned()
+                    && worker.record.identity().as_ref() == Some(&identity) =>
+            {
+                self.stop().await?;
+            }
+            None if identity.state() == ProcessState::Stale => (),
+            _ => {
+                return Err(io::Error::other(
+                    "The engine is no longer owned by this installation attempt.",
+                ));
+            }
+        }
+        match fs::remove_file(self.home.join(INSTALL_ENGINE)).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn control(&mut self, action: Control) -> io::Result<()> {
         if starting_fenced(&self.home).await
             || exists(&self.home, "off").await
@@ -478,7 +600,7 @@ impl Supervisor {
             self.stop().await?;
         }
         if self.worker.is_none() {
-            self.start().await?;
+            self.start(LeaseUse::Resident).await?;
         }
         self.publish().await;
         Ok(())
@@ -492,7 +614,7 @@ impl Supervisor {
         }
         let Some(worker) = &self.worker else {
             if self.recover && !starting_fenced(&self.home).await {
-                self.start().await?;
+                self.start(LeaseUse::Resident).await?;
             }
             return Ok(());
         };

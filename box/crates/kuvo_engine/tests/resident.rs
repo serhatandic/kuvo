@@ -51,8 +51,11 @@ fn main() {
         .enable_all()
         .build()
         .unwrap();
-    if std::env::args().nth(1).as_deref() == Some("serve") {
+    let mode = std::env::args().nth(1);
+    if mode.as_deref() == Some("serve") {
         executor.block_on(fixture());
+    } else if mode.as_deref() == Some("ssh-install") {
+        executor.block_on(ssh_install_failure());
     } else {
         executor.block_on(async {
             scenarios().await;
@@ -68,6 +71,57 @@ fn main() {
             paired_delivery().await;
         });
     }
+}
+
+async fn ssh_install_failure() {
+    let home = tempfile::tempdir().unwrap();
+    let installed = install(home.path());
+    let _cleanup = Cleanup {
+        home: home.path().into(),
+        installed,
+    };
+    let mut env: kuvo_os::platform::Environment = std::env::vars_os()
+        .filter(|(key, _)| !key.to_string_lossy().starts_with("KUVO_"))
+        .collect();
+    env.insert("HOME".into(), home.path().into());
+    env.insert("USERPROFILE".into(), home.path().into());
+    let engine = Engine::new(home.path().into(), env, Timing::default()).unwrap();
+    let fail = || io::Error::other("fixture refused credential import");
+    let mut owned = None;
+    let result = engine
+        .with_install_engine(async {
+            owned = ProcessIdentity::read(current(home.path())).unwrap();
+            assert!(matches!(
+                engine.state().await,
+                kuvo_engine::State::Running { .. }
+            ));
+            Err::<(), _>(fail())
+        })
+        .await;
+    assert_eq!(result.unwrap_err().to_string(), fail().to_string());
+    assert!(!home.path().join("run/engine.json").exists());
+    assert!(!home.path().join("run/ssh-engine.json").exists());
+    assert_eq!(
+        owned.unwrap().state(),
+        kuvo_os::process::ProcessState::Stale
+    );
+
+    engine.with_install_engine(async { Ok(()) }).await.unwrap();
+    let earlier = ProcessIdentity::read(current(home.path()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        engine
+            .with_install_engine(async { Err::<(), _>(fail()) })
+            .await
+            .unwrap_err()
+            .to_string(),
+        fail().to_string()
+    );
+    assert_eq!(current(home.path()), earlier.pid);
+    assert_eq!(earlier.state(), kuvo_os::process::ProcessState::Live);
+    engine.stop_install_engine().await.unwrap();
+    assert_eq!(earlier.state(), kuvo_os::process::ProcessState::Stale);
 }
 
 fn accepted<T>(result: Result<T, kuvo_server::Refusal>) -> T {
