@@ -68,6 +68,14 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     let home = Home::new(target)?;
     let app = profile.join("Library/Application Support").join(&app_id);
     let before = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
+    if before.verdict == kuvo_move::install::Verdict::Waits {
+        println!(
+            "{}",
+            json!({"result":"waits", "verdict":before.verdict,
+                "message":"Another move is under way.", "status":before.status})
+        );
+        return Ok(4);
+    }
     if before.verdict == kuvo_move::install::Verdict::Two {
         let message = if restart {
             "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are."
