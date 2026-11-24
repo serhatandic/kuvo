@@ -60,7 +60,7 @@ pub fn new_readiness(
     engine_data: Option<&Path>,
     account: &Path,
 ) -> NewReadiness {
-    check(home, app_box, engine_data, account)
+    check(home, app_box, engine_data, account, None)
         .unwrap_or_else(|error| NewReadiness::refused(error.to_string()))
 }
 
@@ -69,6 +69,7 @@ fn check(
     app_box: Option<&Path>,
     engine_data: Option<&Path>,
     account: &Path,
+    staged_engine: Option<&Path>,
 ) -> Result<NewReadiness, Error> {
     layout::inspect(home)?;
     let located = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
@@ -132,7 +133,11 @@ fn check(
             "Something is running in this Mac's ~/.kuvo-code: it's made there once that's stopped.",
         ));
     }
-    if entries(&app.join("engine")).unwrap_or_default().is_empty() {
+    let engine = app.join("engine");
+    if entries(staged_engine.unwrap_or(&engine))
+        .unwrap_or_default()
+        .is_empty()
+    {
         return Ok(NewReadiness::refused(
             "The engine isn't downloaded yet: Kuvo is set up on this Mac once it is.",
         ));
@@ -152,6 +157,38 @@ pub fn new_home(
     release: Option<&Path>,
     keeps_awake_off: bool,
 ) -> Outcome {
+    make_home(
+        home,
+        app_box,
+        engine_data,
+        account,
+        release,
+        None,
+        keeps_awake_off,
+    )
+}
+
+pub fn new_home_from_media(home: &Home, app_box: &Path, account: &Path, media: &Home) -> Outcome {
+    make_home(
+        home,
+        Some(app_box),
+        None,
+        account,
+        Some(&media.root().join("release")),
+        Some(&media.root().join("engine")),
+        false,
+    )
+}
+
+fn make_home(
+    home: &Home,
+    app_box: Option<&Path>,
+    engine_data: Option<&Path>,
+    account: &Path,
+    release: Option<&Path>,
+    staged_engine: Option<&Path>,
+    keeps_awake_off: bool,
+) -> Outcome {
     let say = |result, message| Outcome {
         result,
         message,
@@ -160,7 +197,7 @@ pub fn new_home(
     };
     let make = || -> Result<Outcome, Error> {
         let admit = || -> Result<Option<Outcome>, Error> {
-            let readiness = check(home, app_box, engine_data, account)?;
+            let readiness = check(home, app_box, engine_data, account, staged_engine)?;
             Ok(if readiness.made {
                 Some(say("nothing", None))
             } else if let Some(why) = readiness.why {
@@ -209,10 +246,11 @@ pub fn new_home(
         if let Err(error) = publish(
             &disk,
             release,
-            &app.join("engine"),
+            staged_engine.unwrap_or(&app.join("engine")),
             began,
             keeps_awake_off,
             interrupted,
+            staged_engine.is_some(),
         ) {
             files::remove_tree_synced(&disk.path(STAGE)?)?;
             if !disk.path("box/kind")?.is_file() {
@@ -254,6 +292,7 @@ fn publish(
     began: u64,
     keeps_awake_off: bool,
     interrupted: bool,
+    native_media: bool,
 ) -> Result<(), Error> {
     let stage = disk.path(STAGE)?;
     files::remove_tree_synced(&stage)?;
@@ -286,15 +325,22 @@ fn publish(
     fs::copy(release.join(PLUGIN), &plugin)?;
     fs::set_permissions(&plugin, fs::Permissions::from_mode(0o644))?;
     files::clone_mac_entry(engine, &stage.join("engine"), true)?;
+    if native_media {
+        fs::copy(release.join("box.json"), stage.join("box.json"))?;
+    }
     if keeps_awake_off {
         files::write_new(&stage.join("box/work.json"), br#"{"keepsAwake":false}"#)?;
     }
     files::write_new(&stage.join("box/kind"), b"mac\n")?;
     files::sync_tree(&stage, &disk.0)?;
     Destination::fresh(disk, began)?.take(disk, began, || {})?;
-    for name in ["bin", "config", "engine", "box"] {
+    for name in ["bin", "config", "engine"] {
         files::place_mac_entry(&stage.join(name), &disk.path(name)?)?;
     }
+    if native_media {
+        files::place_mac_entry(&stage.join("box.json"), &disk.path("box.json")?)?;
+    }
+    files::place_mac_entry(&stage.join("box"), &disk.path("box")?)?;
     files::remove_empty_dir_synced(&stage)?;
     Ok(())
 }

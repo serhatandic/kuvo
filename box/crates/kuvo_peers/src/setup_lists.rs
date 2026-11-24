@@ -77,6 +77,14 @@ pub struct View {
 }
 
 impl View {
+    /// Check for Updates uses the already persisted observation even while the
+    /// receiver is still publishing its new in-memory view.
+    pub fn kept_peer_is_away(&self, run: &Path, key: &ComputerKey, now: Millis) -> bool {
+        let key = encode(key);
+        let heard = self.announced.get(&key).and_then(|entry| entry.heard);
+        Reach::load(run).peer_is_away(&key, heard, now)
+    }
+
     pub fn peer_updates(&self, key: &ComputerKey, now: Millis) -> (bool, UpdateFacts) {
         let key = encode(key);
         let announcement = self.announced.get(&key);

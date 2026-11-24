@@ -3,6 +3,8 @@
 //! The updater stages complete packs before requesting a selection. The keeper
 //! only switches executable code and records the trial. It never restores a data snapshot.
 
+#[cfg(unix)]
+pub mod crontab;
 mod engine_pack;
 pub mod fleet;
 #[cfg(target_os = "macos")]

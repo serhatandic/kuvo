@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
 mod install_media;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod install_released;
 mod model_stars;
 mod serve;
 mod session_ownership;
@@ -35,6 +37,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     if word(0) == Some("install-media") {
         return Ok(install_media::run(&args[1..]));
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if word(0) == Some("install-released-machine") {
+        return Ok(install_released::run(&args[1..]));
     }
     #[cfg(target_os = "macos")]
     if (word(0), args.len()) == (Some("helper-hand-over"), 1) {
@@ -188,7 +194,19 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
     }
     if let Some(check) = uninstall {
-        let outcome = kuvo_setup::uninstall::run(&home, check);
+        let startup = |_check| {
+            Ok(kuvo_setup::uninstall::StartupEntries {
+                #[cfg(unix)]
+                crontab: kuvo_keeper::crontab::uninstall(&home, _check)?,
+                #[cfg(not(unix))]
+                crontab: None,
+                #[cfg(target_os = "macos")]
+                launch_agent: kuvo_keeper::mac_helper::uninstall(&home, _check)?,
+                #[cfg(not(target_os = "macos"))]
+                launch_agent: None,
+            })
+        };
+        let outcome = kuvo_setup::uninstall::run(&home, check, startup);
         #[cfg(windows)]
         if !check
             && outcome.status == 0
