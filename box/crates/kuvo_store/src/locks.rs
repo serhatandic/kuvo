@@ -282,6 +282,100 @@ impl Drop for LaunchLock {
     }
 }
 
+/// A released machine's launcher only removes an empty, five-minute-old
+/// directory. Keep a recorded owner inside it while its data is moved.
+pub struct ReleasedLaunch {
+    path: PathBuf,
+    owner: ProcessIdentity,
+}
+
+impl ReleasedLaunch {
+    const MARKER: &str = "released-install.json";
+
+    #[cfg(target_os = "linux")]
+    pub fn acquire(run: &Path) -> io::Result<Self> {
+        files::create_private_dirs(run)?;
+        let path = run.join(".launching");
+        let owner = ProcessIdentity::read(std::process::id())?
+            .ok_or_else(|| io::Error::other("The installer cannot identify itself."))?;
+        let pending = tempfile::Builder::new()
+            .prefix(".launching.pending-")
+            .tempdir_in(run)?;
+        files::write_new(
+            &pending.path().join(Self::MARKER),
+            &serde_json::to_vec(&owner)?,
+        )?;
+        // Do not replace an empty legacy launch lock, or leave an unowned one
+        // if the installer dies between creating the directory and its marker.
+        if let Err(error) = platform::place_exclusive(pending.path(), &path) {
+            if error.kind() != io::ErrorKind::AlreadyExists {
+                return Err(error);
+            }
+            if !Self::read_owner(&path)?.is_some_and(|old| old.state() == ProcessState::Stale) {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Another installation change is under way.",
+                ));
+            }
+            Self::retire(&path)?;
+            platform::place_exclusive(pending.path(), &path).map_err(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "Another installation change is under way.",
+                    )
+                } else {
+                    error
+                }
+            })?;
+        }
+        Ok(Self { path, owner })
+    }
+
+    fn read_owner(path: &Path) -> io::Result<Option<ProcessIdentity>> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let marker = path.join(Self::MARKER);
+        if !fs::symlink_metadata(&marker).is_ok_and(|meta| meta.is_file()) {
+            return Ok(None);
+        }
+        Ok(files::read(&marker)?
+            .map(|bytes| serde_json::from_slice(&bytes))
+            .transpose()?)
+    }
+
+    pub fn owns(&self, path: &Path) -> bool {
+        self.path == path && Self::read_owner(path).ok().flatten().as_ref() == Some(&self.owner)
+    }
+
+    fn retire(path: &Path) -> io::Result<()> {
+        let aside = tempfile::Builder::new()
+            .prefix(".launching.retired-")
+            .tempdir_in(files::parent(path)?)?
+            .keep();
+        let retired = aside.join("lock");
+        if let Err(error) = fs::rename(path, &retired) {
+            let _ = fs::remove_dir(&aside);
+            return Err(error);
+        }
+        fs::remove_file(retired.join(Self::MARKER))?;
+        fs::remove_dir(retired)?;
+        fs::remove_dir(aside)
+    }
+}
+
+impl Drop for ReleasedLaunch {
+    fn drop(&mut self) {
+        if self.owns(&self.path) {
+            let _ = Self::retire(&self.path);
+        }
+    }
+}
+
 fn said(file: &Path) -> Option<String> {
     files::text_of(file)
         .map(|text| text.trim().to_owned())

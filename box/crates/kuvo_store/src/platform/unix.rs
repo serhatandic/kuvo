@@ -49,6 +49,16 @@ pub fn exchange(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 pub fn exchange(from: &Path, to: &Path) -> io::Result<()> {
+    rename_linux(from, to, libc::RENAME_EXCHANGE)
+}
+
+#[cfg(target_os = "linux")]
+pub fn place_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    rename_linux(from, to, libc::RENAME_NOREPLACE)
+}
+
+#[cfg(target_os = "linux")]
+fn rename_linux(from: &Path, to: &Path, flags: libc::c_uint) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
     let from = CString::new(from.as_os_str().as_bytes())?;
@@ -61,7 +71,7 @@ pub fn exchange(from: &Path, to: &Path) -> io::Result<()> {
             from.as_ptr(),
             libc::AT_FDCWD,
             to.as_ptr(),
-            libc::RENAME_EXCHANGE,
+            flags,
         )
     } == 0
     {
