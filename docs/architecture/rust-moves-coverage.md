@@ -3,7 +3,7 @@
 Phase 2.4 is open. The Rust resident moves ordinary OpenCode chats and their
 descendants, wake-up folders, managed attachments, held prompt queues, ordinary note histories
 and session-scoped forwarded decisions. A destination reply proves the generation and hash it
-committed. The source saves a backup before retiring its original. The peer
+committed. The source keeps the retired original until it saves a backup. The peer
 resident routes ordinary letters and notes through the same owner lookup used
 for addressed work and receipt lookup.
 
@@ -16,6 +16,7 @@ for addressed work and receipt lookup.
 | Other computers | A third computer distinguishes a connected computer whose first move snapshot is pending from a known away computer. It sees both parties' authenticated projections and receives their successive removals on the move event stream. Both residents run the same case. |
 | Newer departure | The location route and a letter addressed to the previous computer follow a newer peer announcement after a move. The location falls back to the durable departure after expiry and keeps a local conversation at home. |
 | Live transfer | Two Rust residents move a chat, its child, a paused queue, an ordinary note and a replay fence in each direction between the main computer and a member. The former computer's outbox still names its old owner. The letter reaches the new owner once. The TypeScript reference runs the same transfer and checks the records it leaves. |
+| Pinned OpenCode | A pair of Rust residents and a separate pair of TypeScript residents each run one OpenCode Go DeepSeek v4.1 Flash prompt with OpenCode 2.2.6. Each move retires the original and the destination opens the transcript with the model's reply. |
 | Lost part, arrival and switch replies | The relay holds the live Rust transfer's first packets for `check`, `checked`, `offer`, `ready`, `part`, `got`, `working`, `arrive`, `arrived`, `switch` and `switched`. The source resends the part whose acknowledgement was lost, and retries arrival after a minute. The destination restarts after committing the switch. The source reconnects and recovers the acknowledgement through its next scheduled switch retry. |
 | Lost part window | Both residents lose the first 16 parts, then retry the first eight and complete the transfer with the whole transcript. |
 | Retry clocks | The Rust resident resumes a switch whose saved timestamp is ahead of its clock. A steady wall clock still allows the next minute's retry, and a backward jump prompts another retry of the same authenticated switch. The part window uses monotonic time separately. The TypeScript reference covers both clocks. |
@@ -40,13 +41,15 @@ for addressed work and receipt lookup.
 | Wake-up folder | Both residents hold a wake-up folder on each computer until the switch. The source uses configured roots outside its home. The destination rebases the directory and restores the saved pause. The source retains its backup until the returning copy activates. Both move the unpaused folder back and read the receipt after the journal retires. Letters and notes reach the returned conversation while the full engine list is unavailable. A source wake-up folder over 1 GB is refused and its hold is released. |
 | Legacy wake-up hold | Both residents restore the saved pause in a failed v0 journal, remove an orphaned bare `moving` marker and retain a pause that names another move. |
 | Waited letter | Both residents identify the sender by its own announcement. The destination sends an answer after the engine reply. The original tool gets it through its saved letter ID and authenticated destination after the sender restarts with only the awaited record. |
+| Sender introduction | Both residents hold the engine's refreshed list before releasing a new sender's first letter. The recipient sees the sender's name and address on cold start and after a restart with an older list and a temporarily unavailable sender lookup. |
+| Letter retry | The Rust relay scenario observes the same bounded letter bytes after each minute, ignores a receipt from another computer, and accepts the reply from the intended computer both before and after its acknowledgement. Shared scenarios check expiry, order and late replies. |
 | Letter ordering and delivery recovery | Both residents send pending letters oldest first. A temporary lookup failure leaves the letter pending. Replaying the same letter after the destination restarts without receiving its engine's acceptance returns the receipt with one prompt ID and one saved message. |
 | Letter allowance | Both residents retry letters to a held conversation and an unavailable engine without charging the peer. Its next twenty messages can be delivered. The following message waits for the rate limit. |
 | Note addresses | Both residents learn session addresses from accepted notes and move announcements, keep the newer address across a restart, and send a pending note there when the original announcement expires. A redirect from the authenticated recipient is durable. A different computer's redirect is ignored. |
 | Older letter destinations | Both residents allow a lead to write to an unlisted conversation it started and refuse another conversation's letter. Listed conversations and recent arrivals still receive letters. |
 | Tool that stopped waiting | Both residents deliver an ordinary letter without the wait, cancel an unsent transcript request, and deliver a reply that was left behind to the local conversation. Replaying a delivered letter starts no second turn, and an unlisted sender hears that it cannot receive a reply. |
 | Transcript read | Both residents retry a temporarily unavailable page, return excerpts to the waiting tool and skip an undone passage. Only the lead can read its archived work. The read submits no prompt. |
-| Late answer | A saved answer and a new answer from a local conversation wait while the caller is held. Both reach its new owner once. A transcript left by an abandoned read is discarded during the hold. |
+| Late answer and notes | A saved answer, a local conversation's reply and two queued notes wait while the receiver is held. After the switch, the new owner accepts them once with their original attribution. A transcript left by an abandoned read is discarded. A separate transfer accepts a note on the new owner while the original awaits cleanup. |
 | Refused letter | Both residents ignore a refusal from another computer. They save the owner’s refusal while the sender is held, then deliver it once as a queued note after a resident restart and release of the hold. The archived recipient is untouched. |
 | Managed files | Both residents refuse missing and export-only attachments before switching. The destination keeps the exact bytes, verifies the file receipt, rebases typed root and child references and a held prompt while preserving a quotation, and opens the file after its own restart and loss of the original file. |
 | Prompt fence | A journal survives a resident restart and refuses direct prompts, commands, sends and queue resumes. Both residents fence queue removal, undo and resume while sending a live move. After the destination proves it dropped the copy, the source still has the original paused queue in order and allows removal. The Rust composer keeps a saved draft pending during the hold, then delivers it once after release. |
@@ -87,6 +90,12 @@ It failed on the old bundle and passed after the change. Rust also checks
 the live engine for an authenticated local reply's sender if its saved list
 still lacks the chat.
 
+The TypeScript outbox also refreshes from the engine before introducing a
+sender missing from the cached list. The old process sent the letter ahead of
+its announcement. In Rust, the outbox waits for the publication to the right
+peer, and the receiving resident applies that announcement before attributing
+the letter. The sender's previous computer can identify it from the switch.
+
 The move area passed 29 Rust and 27 applicable TypeScript scenarios on
 macOS, including the two-binary reach comparison. The backup retry interval
 was checked separately after those runs. Fifteen Rust storage, transfer and
@@ -105,9 +114,14 @@ home files still differ.
 
 The later macOS move-area runs passed 58 Rust and 56 applicable TypeScript scenarios,
 including the two-binary reach comparison. Focused checks added afterward passed on
-both residents. The latest production build passed five focused checks on native Windows and
+both residents. That production build passed five focused checks on native Windows and
 six each on WSL2 GNU and static Linux musl. These covered wake-up holds and the return move,
 queue admission, letter replay and attachment placement.
+
+The expanded macOS TypeScript area passed 58 applicable scenarios. The sender-order and
+held-note cases also passed in focused runs. WSL2 GNU and static Linux musl passed five
+focused cases for wake-up holds, sender introduction, held mail, refusals and backup retries.
+The pinned OpenCode proof passed once on each implementation with disposable residents.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
@@ -138,8 +152,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Ninety-four have full scenario coverage, 13 have partial proof,
-and 105 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Ninety-seven have full scenario coverage, 15 have partial proof,
+and 100 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -155,7 +169,8 @@ separately where they appear.
 | | 4, 9 | Bot moves and wake-up state owned by 5.1. |
 | | 6 | Group placement owned by 5.3. |
 | | 5 | Covered by a connected destination refusing while its engine is unavailable. The source stays active. |
-| | 10, 13 | Open, 2.4 Autopilot transfer and Stop during a move. Engine queue effects are 3.2. |
+| | 10 | Autopilot state, its instruction and its decision history transfer belong to 5.3. |
+| | 13 | Open, 2.4 integration after 3.2 admits Stop while a live turn is holding the move and preserves the resulting pause. |
 | [moves-elsewhere](../../box/bridge-tests/moves-elsewhere.test.js) | 1 | Covered by a third computer observing both authenticated projections and their successive clears over the event stream. |
 | | 2 | Covered by receiver-clock expiry, sender clock rewind, and filtering malformed, local and unauthenticated notices. |
 | | 3 | Covered by a following client that loses a quiet peer’s notice when the receiver clock reaches expiry. |
@@ -221,7 +236,7 @@ separately where they appear.
 | | 23–24 | Covered by queued notices retaining their text, author and presentation on the new computer and after a return home. |
 | | 8 | Covered by a changed transcript causing a second offer, retrying that same offer every minute, and releasing the original and its wake-up marker when the destination stays quiet. |
 | | 9 | Covered by a resident with successive slow engine exports, releasing the original and its wake-up marker at the thirty-minute deadline before the first offer. |
-| | 13–14 | Open, 2.4 ordinary letters, notes and delayed delivery, including forwarding after a move. |
+| | 13–14 | Partial. Session news and a user-answer note wait during the switch and reach the new owner once. Creating the notices from the failed session event or the late ask answer needs 5.1 and 3.2 respectively. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 1–3 | Work Queue creation, forwarded claims and edits owned by 5.2. |
 | | 15–16 | Partial, the final move snapshot is rebuilt when a replay fence is saved after an offer. The destination preserves a settled decision and rolls back a conflicting handoff. Submission receipt lookup, page recovery and effects remain 2.4 and 3.2. |
 | | 9–10, 17–18 | Open, 2.4 owner observations, indexed move preparation and receipt-page recovery. Session effects depend on 3.2. |
@@ -239,16 +254,20 @@ separately where they appear.
 | | 28 | Covered by a letter with a stale remote address reaching the conversation after it moves home and its awaited reply returning without relay mail. |
 | | 29 | Covered by a live move followed by a letter whose engine acceptance went unheard. Replaying it after restart acknowledges the original prompt without a second submission. |
 | | 31, 33 | Covered by late replies recovered through the resident and by abandoned transcript replies being discarded during the same hold. |
-| | 13 | Partial, live expiry while disconnected, ordered delivery after reconnect, the longer lifetime of notes, authenticated acceptance and awaited or abandoned replies are proved. Sender introduction and the full retry sequence remain 2.4. |
-| | 6, 8, 10–11, 14, 32 | Open, 2.4 letter handling through the resident. [2.2](rust-peers-coverage.md) proves parts of mail and outbox storage. |
-| [mac-peers](../../box/bridge-tests/mac-peers.test.js) | 11 | Partial, transcript mail has a live two-computer scenario. The calling tool’s route and name lookup remain 2.4. |
-| | 2–3, 6, 8, 10, 12 | Open, 2.4 letter handling and Mac peer policy. The linked peer map also covers wire pieces. |
+| | 13 | Covered by a live outbox retrying at one minute, authenticated acknowledgement, Unicode-safe wire limits, answers before or after acknowledgement, late reply recovery, expiry while disconnected and the longer lifetime of notes. |
+| | 14 | Covered on cold start and with an older saved list. The peer sees the fresh sender's authenticated list before the letter and receives its verified name and reply address. |
+| | 6, 10–11, 32 | Open. 4.6 supplies the disappearing or restarting coding-agent bridge and the authoritative absence once it returns. 2.4 still needs the corresponding result through the letter and abandoned-answer paths. |
+| | 8 | Open. The paused engine queue and its reason need the 3.2 reply adapter to save an ordinary letter with the right instructions and tell its waiter why a separate reply will follow. |
+| [mac-peers](../../box/bridge-tests/mac-peers.test.js) | 11 | Partial, transcript mail has a live two-computer scenario. The calling tool’s route and name lookup still need 3.2 and 4.1. |
+| | 6 | Covered by retryable mail refused during a move, the held recipient seeing no prompt, and saved outbox mail following the acknowledged owner. |
+| | 8 | Partial, disconnect and reconnect cover durable delivery. The offline answer from the calling tool still needs 3.2 and 4.1. |
+| | 2–3, 10, 12 | Open. 3.2 and 4.1 supply the calling tools, name lookup and capability refusal against an older peer. The letter receiver and reply transport are exercised separately. |
 | [setup-lists](../../box/test/setup-lists.test.ts) | 16 | Typed drafts, remote queue ordering and lost-effect receipts belong to 3.2, with authenticated transport from 2.2. |
 | | 28 | The 2.4 move projection is covered by the first snapshot pending and away states on the third computer. The other merged views belong to 2.2, 5.1 and 5.2. |
 | [reach-elsewhere](../../box/bridge-tests/reach-elsewhere.test.js) | 1, 3 | Open, 2.4 real move fixtures, with engine effects in 3.2. [2.2](rust-peers-coverage.md) proves the authenticated call transport. |
 | [reach-elsewhere-rules](../../box/bridge-tests/reach-elsewhere-rules.test.js) | 11 | Covered by lead-only letters to an unlisted older conversation and the exception for a conversation that arrived recently. |
 | | 4 | Covered for ordinary chats while the source is switching and retiring. Only the authenticated new owner speaks for the chat before its announcement. The reply reaches that owner. Bot moves remain 5.1. |
-| | 3, 14 | Open, 2.4 switched sessions and returning results to a moved lead. Case 14 was numbered 13 before the stale snapshot scenario was added. |
+| | 3, 14 | Open. The 3.2 remote work actions and 5.1 bot lead runtime must run against the new owner for case 3. Case 14 needs the remote work sender to stop a pending call whose lead moved and leave its notice for the new owner. |
 | [offline-merge](../../box/test/offline-merge.test.ts) | 4 | Open, refinement of an older note passage on the new owner in 2.4 and 3.2. |
 | | 8–9 | Work Queue deletion and former-owner replay owned by 5.2. |
 | [setup-handover, move and owner reads](../../box/bridge-tests/setup-handover.test.js#L15) | v3 compatibility | Partial, v0–v3 storage and the compatibility writer are covered. Old-reader rejection through the archive and queue handoffs remain 2.4 and 5.2. |
@@ -269,17 +288,14 @@ order and count a parameterized declaration once.
 
 ## Remaining transfer and delivery work
 
-- 2.4 owns the rest of retry and waiting progress parity, wake-up and attachment edge cases,
-  source and destination contention, handoff recovery for forwarded edits, and the calling
-  tool paths for letters and transcript reads.
-- 3.2 owns the effect and receipt adapter behind the new ownership handle, typed consent
-  and restored queue effects. 2.4's peer forwarding carries both draft limits through multipart mail.
-- The queue effects still need Stop admission while the source waits for an active turn,
-  the paused reason in awaited-letter receipts, and typed errors for unreadable held prompts.
-  The Rust owner transport handles submissions, delivery and receipt lookup. Owner snapshot
-  reads, including authoritative absence and out-of-order replies, still need their read route.
-- 4.6, 5.1 and 5.3 own native coding-agent carry and bot and group runtime placement.
-  They use the shared relay steps, journals and immutable decisions delivered in 2.4.
-- 5.2 owns the Work Queue item and file placement, with 2.4 responsible for preserving
-  its handoff proof during a move. 2.3 and 2.5 own removal admission and restoration
-  of copies after source disk loss, using the 2.4 receipt.
+- 2.4 still needs integrated proof of owner snapshot reads, indexed receipt-page recovery,
+  and lost effects across a handoff. The 3.2 effect and receipt adapter supplies the submission
+  and owner-read routes, including authoritative absence and out-of-order replies.
+- 3.2 supplies Stop admission during an active turn, the queued-letter answer policy, typed
+  errors for unreadable holds, late asks and remote work effects. The live calling paths for
+  `send_message` and `read_conversation` also depend on the 4.1 tools relay.
+- 4.6 owns native carry and bridge transitions. 5.1 owns bot runtime and session notices.
+  5.3 owns group runtime and Autopilot transfer. They use the shared journals and decisions.
+- 5.2 owns Work Queue item and file placement, including the old-reader rejection across a queue
+  handoff. 2.3 and 2.5 own removal admission and recovery after source disk loss. 2.4 still needs
+  to exercise its move and receipt boundaries in those integrated cases.
