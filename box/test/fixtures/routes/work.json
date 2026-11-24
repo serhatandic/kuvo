@@ -140,6 +140,20 @@
      }
     }
    ]
+  },
+  {
+   "name": "what's asked before a bot does it: nothing on a new box",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "expect": {
+      "status": 200,
+      "json": {
+       "asks": []
+      }
+     }
+    }
+   ]
   }
  ]
 }

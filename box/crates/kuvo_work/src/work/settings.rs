@@ -53,7 +53,7 @@ impl WorkSettings {
     }
 
     /// The folder to offer when none is picked, if there's one.
-    fn suggested(&self) -> Option<PathBuf> {
+    pub fn suggested(&self) -> Option<PathBuf> {
         ["Developer", "Projects", "projects", "dev", "code"]
             .iter()
             .map(|name| self.account.join(name))

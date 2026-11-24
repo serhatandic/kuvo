@@ -2,6 +2,7 @@
 //! (`kuvo/work/settings`), this Mac kept awake while agents work, what bots just did to their
 //! sessions (`kuvo/work/oversight`) and when each bot's work last changed (`kuvo/work/events`).
 
+pub mod asks;
 pub mod records;
 pub mod settings;
 
@@ -11,6 +12,7 @@ use http::StatusCode;
 use kuvo_engine::LocalSessions;
 use kuvo_peers::setup_lists::Reader;
 use kuvo_protocol::routes::{
+    get_kuvo_work_asks as asks_get, get_kuvo_work_asks_events as asks_events,
     get_kuvo_work_events as changed_events, get_kuvo_work_oversight as oversight_get,
     get_kuvo_work_oversight_events as oversight_events, get_kuvo_work_settings as settings_get,
     patch_kuvo_work_settings as settings_patch,
@@ -132,6 +134,31 @@ impl Work {
                 let given = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
                 let changed = settings.change(&given).map_err(refused)?;
                 Ok(RouteReply::json::<200>(typed(changed)?))
+            }
+        });
+        let work = self.clone();
+        routes.register::<asks_get::Spec, _, _>(Access::Any, move |_| {
+            let work = work.clone();
+            async move {
+                Ok(RouteReply::json::<200>(typed(
+                    json!({ "asks": work.asks() }),
+                )?))
+            }
+        });
+        let work = self.clone();
+        routes.register::<asks_events::Spec, _, _>(Access::Any, move |call| {
+            let work = work.clone();
+            async move {
+                let reading = work.clone();
+                let lines = work.followed(
+                    move || json!({ "asks": reading.asks() }),
+                    call.cancel.clone(),
+                );
+                Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
+                    for await value in lines {
+                        yield JsonLine::new(serde_json::from_value(value?)?)?;
+                    }
+                }))
             }
         });
         let here = self.records.clone();
