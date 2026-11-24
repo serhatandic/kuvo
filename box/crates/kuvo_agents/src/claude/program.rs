@@ -197,6 +197,47 @@ impl Program {
         Some(personal.join(".claude"))
     }
 
+    /// Where Claude Code keeps who's signed in (`.claude.json`): its folder when it's given one,
+    /// else your home.
+    fn record_home(&self) -> Option<PathBuf> {
+        if let Some(managed) = &self.managed {
+            return Some(managed.clone());
+        }
+        let env: Environment = std::env::vars_os().collect();
+        let platform = Platform::current();
+        if let Some(config) = env_value(platform, &env, "CLAUDE_CONFIG_DIR")
+            .filter(|value| !value.to_string_lossy().trim().is_empty())
+        {
+            return Some(PathBuf::from(config));
+        }
+        let account = kuvo_os::platform::Account::current().ok()?;
+        account.home_folder(platform, &env).ok()
+    }
+
+    /// Its sign-in, as a fingerprint of who it is: the same through Claude Code's renewals, which
+    /// Kuvo never sees, and nothing of the account in it. None when no one's signed in that way.
+    pub async fn sign_in_mark(&self) -> Option<String> {
+        let file = self.record_home()?.join(".claude.json");
+        let record: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(file).await.ok()?).ok()?;
+        let account = &record["oauthAccount"];
+        let uuid = account["accountUuid"].as_str()?.trim().to_lowercase();
+        if uuid.is_empty() {
+            return None;
+        }
+        let organization = account["organizationUuid"]
+            .as_str()
+            .map(|id| id.trim().to_lowercase())
+            .unwrap_or_default();
+        let digest = Sha256::digest(format!("anthropic:{uuid}|{organization}"));
+        Some(
+            digest[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        )
+    }
+
     pub fn scratch(&self) -> PathBuf {
         self.home.run().join("agents/tmp")
     }

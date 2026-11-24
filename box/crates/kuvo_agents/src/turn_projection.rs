@@ -3,14 +3,25 @@
 use crate::{
     runtime::AdapterCall,
     session::{
-        EventEnvelope, ModelRef, Outcome, Prompt, TextKind, ToolOutput, ToolState, TurnError,
-        TurnEvent, TurnInput, TurnKind, TurnResult, Usage,
+        EventEnvelope, ModelRef, Outcome, PlanLimitReading, Prompt, TextKind, ToolOutput,
+        ToolState, TurnError, TurnEvent, TurnInput, TurnKind, TurnResult, Usage,
     },
     session_store::{SessionStore, close_rows},
     turn_runtime::TurnWriter,
 };
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, io, time::SystemTime};
+use std::{collections::BTreeMap, io, sync::Arc, time::SystemTime};
+
+/// Where the plan limits a turn heard go: the limits ring (5.4). `account`:
+/// the agent account the turn runs on.
+pub trait PlanLimits: Send + Sync {
+    fn heard(&self, _account: &str, _reading: &PlanLimitReading) {}
+}
+
+/// No ring yet: what's heard goes nowhere.
+pub struct Unheard;
+
+impl PlanLimits for Unheard {}
 
 pub(crate) struct Projection {
     store: SessionStore,
@@ -36,9 +47,17 @@ pub(crate) struct Projection {
     /// and the conversation's last outcome stays as it was.
     summary: bool,
     summary_started: Option<u64>,
+    limits: Arc<dyn PlanLimits>,
 }
 
 impl Projection {
+    /// The plan limits its turn hears go to `limits` (the limits ring, 5.4).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn with_limits(mut self, limits: Arc<dyn PlanLimits>) -> Self {
+        self.limits = limits;
+        self
+    }
+
     pub(crate) async fn start(
         store: SessionStore,
         session: String,
@@ -74,6 +93,7 @@ impl Projection {
             spent: Usage::default(),
             summary: false,
             summary_started: None,
+            limits: Arc::new(Unheard),
         };
         let mut projection = projection;
         projection.summary = match &input.kind {
@@ -325,6 +345,10 @@ impl Projection {
                 self.finish_step(usage.clone(), finish.clone(), error.clone())
                     .into_iter()
                     .collect()
+            }
+            TurnEvent::PlanLimit(reading) => {
+                self.limits.heard(&self.agent, reading);
+                Vec::new()
             }
             TurnEvent::Cost(cost) => {
                 if cost.is_finite() && *cost > 0.0 {
@@ -825,4 +849,73 @@ pub(crate) fn now() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{LimitWindow, PermissionMode};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Ring(Mutex<Vec<(String, PlanLimitReading)>>);
+
+    impl PlanLimits for Ring {
+        fn heard(&self, account: &str, reading: &PlanLimitReading) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((account.to_owned(), reading.clone()));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_plan_limits_a_turn_hears_go_to_the_ring_for_its_account_and_write_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(home.path().to_owned());
+        let input = TurnInput {
+            id: "turn_limits".into(),
+            kind: TurnKind::AgentStarted,
+            model: ModelRef {
+                provider: "claude-code@a1".into(),
+                id: "default".into(),
+                variant: None,
+            },
+            instructions: String::new(),
+            permissions: PermissionMode::AskFirst,
+            plan: false,
+            auto: false,
+        };
+        let ring = Arc::new(Ring::default());
+        let mut projection = Projection::start(
+            store,
+            "ses_limits".into(),
+            "claude-code@a1".into(),
+            &input,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .with_limits(ring.clone());
+        let reading = PlanLimitReading {
+            windows: vec![LimitWindow {
+                id: "five_hour".into(),
+                used: 0.3,
+                minutes: Some(300),
+                resets_at: None,
+                model: None,
+            }],
+            sign_in: Some("ddfa9296fabdbb7b".into()),
+        };
+        assert!(
+            projection
+                .rows(&TurnEvent::PlanLimit(reading.clone()))
+                .is_empty()
+        );
+        assert_eq!(
+            *ring.0.lock().unwrap(),
+            [("claude-code@a1".to_owned(), reading)]
+        );
+    }
 }

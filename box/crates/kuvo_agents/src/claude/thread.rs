@@ -56,6 +56,9 @@ struct Pipe {
     exited: bool,
     compact_at: Option<u64>,
     said: Said,
+    /// The sign-in it started under, as a fingerprint: what it hears of the plan's limits counts
+    /// for that one alone. None when it wasn't known (or no one was signed in that way).
+    sign_in: Option<String>,
 }
 
 impl Pipe {
@@ -88,6 +91,12 @@ impl Pipe {
                 .get("claudeCompactAt")
                 .and_then(Value::as_u64),
             said: Said::default(),
+            sign_in: controller
+                .welcome
+                .meta
+                .get("claudeSignIn")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         }
     }
 
@@ -620,11 +629,13 @@ impl Actor {
             .instructions
             .as_ref()
             .is_some_and(|old| *old != input.instructions);
-        if self
-            .pipe
-            .as_ref()
-            .is_some_and(|pipe| pipe.compact_at != compact_at || instructions_changed)
-            && let Some(pipe) = self.pipe.take()
+        // One started under another sign-in, or one taken up whose sign-in isn't known: what it
+        // hears of the plan's limits would count for the wrong account (or none), so it starts
+        // again, going on with its conversation.
+        let sign_in = self.program.sign_in_mark().await;
+        if self.pipe.as_ref().is_some_and(|pipe| {
+            pipe.compact_at != compact_at || instructions_changed || pipe.sign_in != sign_in
+        }) && let Some(pipe) = self.pipe.take()
         {
             let _ = pipe.stop().await;
         }
@@ -764,6 +775,7 @@ impl Actor {
                 .insert("claudeTold".into(), Value::String(instructions.to_owned()));
         }
         let native = native.map_or_else(unique_id, Ok)?;
+        let sign_in = self.program.sign_in_mark().await;
         let start = tokio::task::spawn_blocking(move || {
             turn_launch(
                 program, session, directory, provider, native, resume, compact_at, plan,
@@ -774,6 +786,7 @@ impl Actor {
             .start(&self.program.holder_binary, start)
             .await?;
         let mut pipe = Pipe::new(controller, false);
+        pipe.sign_in = sign_in;
         match pipe.call(initialize(instructions)).await {
             Ok(wire::ReplyBody::Success {
                 pending_permission_requests,
@@ -786,6 +799,10 @@ impl Actor {
                         (
                             "claudeInstructions".into(),
                             Value::String(instructions.to_owned()),
+                        ),
+                        (
+                            "claudeSignIn".into(),
+                            pipe.sign_in.clone().map_or(Value::Null, Value::String),
                         ),
                     ]))
                     .await?;
@@ -1013,6 +1030,15 @@ impl Actor {
     }
 
     async fn message(&mut self, sequence: u64, replay: bool, message: &Value) -> io::Result<()> {
+        // Where the plan's limits stand counts for the sign-in this Claude Code started under, while
+        // it's still the one signed in (one from before a sign-in changed counts for no one).
+        let heard_under = if message["type"] == "rate_limit_event" && self.running.is_some() {
+            let started = self.pipe.as_ref().and_then(|pipe| pipe.sign_in.clone());
+            let now = self.program.sign_in_mark().await;
+            Some((started == now).then_some(started))
+        } else {
+            None
+        };
         let Some(turn) = &mut self.running else {
             return Ok(());
         };
@@ -1044,6 +1070,15 @@ impl Actor {
         if self.state != prior_state {
             turn.sink.save_state(self.state.clone()).await?;
         }
+        let mut events = events;
+        events.retain_mut(|event| match (event, &heard_under) {
+            (TurnEvent::PlanLimit(reading), Some(Some(sign_in))) => {
+                reading.sign_in = sign_in.clone();
+                true
+            }
+            (TurnEvent::PlanLimit(_), _) => false,
+            _ => true,
+        });
         let count = events.len() as u32;
         for (ordinal, event) in events.into_iter().enumerate() {
             turn.sink
