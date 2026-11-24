@@ -60,6 +60,7 @@ enum Check {
         retry::Request,
         oneshot::Sender<Result<retry::Answer, kuvo_server::Refusal>>,
     ),
+    PeerRetry(PreparedRelease),
 }
 
 enum CheckReply {
@@ -126,7 +127,8 @@ pub fn start(
                 request = requests.recv() => match request {
                     Some(Check::Local(answer)) => { let _ = answer.send(fleet.request_check(true)); }
                     Some(Check::Peer) => { let _ = fleet.request_check(false); }
-                    Some(Check::Retry(given, answer)) => { let _ = answer.send(fleet.retry(given)); }
+                    Some(Check::Retry(given, answer)) => { let _ = answer.send(fleet.retry(given).await); }
+                    Some(Check::PeerRetry(release)) => { let _ = fleet.retry_local(&release.version, Some(&release.sha256)); }
                     None => return,
                 }
             }
@@ -349,7 +351,7 @@ impl Fleet {
             && let Some(pending) = self.pending.take()
             && let Err(error) = pending.await.map_err(io::Error::other)?
         {
-            eprintln!("Preparing Kuvo's release: {}", error.reason);
+            eprintln!("Preparing Kuvo's release: {}", error.0.reason);
             error.save(&self.home)?;
         }
         let (version, working) = fleet::installed(&self.home)?;
@@ -481,7 +483,8 @@ impl Fleet {
             };
             facts.candidate = Some(candidate.version().into());
             facts.release_manifest = Some(candidate.envelope().into());
-            let failed = retry::Failure::for_release(&self.home, &prepared)?.is_some();
+            facts.cannot = retry::Failure::for_release(&self.home, &prepared)?;
+            let failed = facts.cannot.is_some();
             if !failed && candidate.is_prepared(&self.home)? {
                 facts.staged = Some(prepared.clone());
             } else if !failed
