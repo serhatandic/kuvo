@@ -68,6 +68,8 @@ the races that span removal, backup, moves, and an authority change.
 | U23 | [Unlink keeps its signed revocation when forgetting the SSH address fails](../../protocol/conformance/ssh-adding.test.mjs) | Both boxes commit access revocation before editing the address list. An unwritable list produces an error with the saved proof. After restart, repeating the operation clears the address and its pending cleanup record without advancing membership again. |
 | U24 | [A removed Unix member completes a pending wipe after the main computer hands over](../../protocol/conformance/removal.test.mjs) | Both boxes carry the same pending operation to the successor. The original source comes online in the old epoch, gets the successor’s signed checkpoint over removal mail, and wipes. The successor records the signed completion, and the former main sees the pending row disappear. |
 | U25 | [The installer finishes an authorized stopped Mac wipe without its helper](../../protocol/conformance/removal.test.mjs) | A failed keeper stop leaves the authorized stopping receipt and app data. After the owned resident and Helper are stopped, the installer status command resumes the same operation, clears the test Keychain entries and erases only the old app folder. Both implementations leave the same reinstall offer and receipt. |
+| U26 | [An app-owned Mac keeps its data if the verified backup disappears during keeper stop](../../protocol/conformance/removal.test.mjs) | Both boxes verify the configured disk backup before stopping. The fixture disconnects it during keeper stop. Last-computer Keychain cleanup precedes the final readback, which fails and leaves the data, stopping receipt and local diagnostic. Restoring the disk lets installer status finish the same operation with the same archive bytes. |
+| U27 | [A revoked Relay-only member holds its work until a separate export is chosen](../../protocol/conformance/removal.test.mjs) | Both boxes record the signed `choose-export` review. Restarting the source after removing the Relay backup configuration does not make the original wipe safe to run. The source answers a fresh removal instruction with the same review, then accepts a signed cancellation and keeps its saved work. |
 
 ## Stored and inherited cases
 
@@ -211,6 +213,9 @@ engine glance checkpoint now has a verdict below.
 After merging the pinned-engine probe fix, the same run agreed on the replies
 and had 49 differing paths. The three additional paths are the Insights
 database and its two journal files, already listed under 5.4.
+After the managed-wipe backup checks, the same replies agreed and the pass
+found 50 differing paths. The extra path was an atomic-write draft from the
+Rust resident during differential shutdown.
 
 Re-enrollment after a TypeScript member's unlink originally failed against
 either main. The released baseline hashed the inode and change time for
@@ -251,6 +256,7 @@ exists. The directory entries are included with the respective files.
 | `run/link.json` | **2.3** owns the invitation entries. The code's random bearer token changes the hash used as the entry key. C2 checks that the hash, expiry and scope agree with the reply. **2.1** owns the remaining empty `left`, `macMoved`, `macPeers`, `removalRevisions`, `removed` and `removedHere` compatibility projections. `setup/membership.ts` and the Rust setup actor write these from the accepted roster. |
 | `run/setup-card.json` | **2.3, 5.2.** The SSH probe in `add/scripts.ts` and the local reader in `setup/judge.ts` consume the card. The `used` and item-count fields depend on the work inventory and queue. |
 | `run/wipe-preparation` | **2.3, 2.5.** `setup/before-wipe.ts` stores durable preparation and export state here. |
+| `run/.kuvo-write-*` | **1.2.** The stopped snapshot caught the temporary sibling used by `kuvo_store::files` before atomic publication. Readers use the published filename. The layout classifier ignores this draft name when inspecting remnants of an interrupted write. |
 | `run/link.needed` | **7.1.** `box/src/keeper/kuvo-start` uses it to start the link. The agents' fence and browser also check the marker. |
 | `run/link.version` | **Identical encoding.** Both write a plain build identifier. The identifier reflects the executable. Keeper version selection is **7.1**. |
 | `run/route/ssh` | **1.4.** `server/ssh-pipe.ts` selects the TypeScript local SSH endpoint. |
@@ -347,7 +353,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 52 h
 | [status on a new computer: the pack checked and unpacked, the release's engine fetched once and checked, and the verdict `fresh`](../../box/bridge-tests/install.test.js#L124) | Open | 7.1 |
 | [the installer offers reinstall only after the last setup wipe](../../box/bridge-tests/install.test.js#L148) | U7 and U10 verify the installer status gate, recovering a detached wipe, and consuming the offer after enrollment. The standalone release installer’s start after reinstall belongs to 7.2. | 7.2 |
 | [a stopped Mac's authorized last wipe finishes without its helper](../../box/bridge-tests/install.test.js#L204) | U25 verifies the same failure and stopped retry with both boxes, including the reinstall receipt. The older Helper's headless layout 21 key access remains in 6.2. | 6.2 |
-| [the last app-owned wipe verifies preparation and leaves a completion receipt outside App Support data](../../box/bridge-tests/install.test.js#L267) | U19 verifies app approval, keeper stop, Keychain order and the external completion receipt. The verified-export gate, export readback after stop, and the associated recovery are open. | 2.3, 2.5 |
+| [the last app-owned wipe verifies preparation and leaves a completion receipt outside App Support data](../../box/bridge-tests/install.test.js#L267) | U19 verifies app approval and the external completion receipt. U26 verifies the readback of a configured disk backup after keeper stop, the retained app data if it fails, and installer recovery. The explicit prepared-export gate and its generation checks remain open. | 2.3, 2.5 |
 | [two installers at once on a new computer each get their answer: neither takes the other's unpacking or download away](../../box/bridge-tests/install.test.js#L361) | Open | 7.1 |
 | [an engine named as a file is only ever a test's: without a test's say-so the release is refused as damaged, and no engine is taken](../../box/bridge-tests/install.test.js#L379) | Open | 7.1 |
 | [a damaged copy is refused in words before anything of it runs: a pack that isn't what boxes.json says, an engine that isn't what the release says](../../box/bridge-tests/install.test.js#L387) | Open | 7.1 |
@@ -545,7 +551,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 52 h
 | [clients share machine changes and revocations across three boxes](../../box/bridge-tests/setup-handover-access.test.js#L303) | Open | 2.3 |
 | [online unlink from a member keeps the target’s sessions and bots standalone](../../box/bridge-tests/setup-handover-removal.test.js#L14) | U6 verifies the target’s standalone setup, unchanged session and bot files, the delivered acknowledgment on both other computers and replay of the original receipt. | — |
 | [an offline member is unlinked at commit and wipes after returning](../../box/bridge-tests/setup-handover-removal.test.js#L33) | U14 and U20 verify the offline revocation and replicated pending row. The member returns, verifies its configured disk backup, erases its installation, and the observing member sees completion. | — |
-| [revoked Relay-only headless member accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
+| [revoked Relay-only headless member accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | U27 verifies the signed choice prompt after revocation, its durable fence through restart and cancellation. Accepting and verifying a separate export after reconnect remains open. | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a shutdown write accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a lost export accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
 | [unsupported erase layout stays pending and can cancel without losing work](../../box/bridge-tests/setup-handover-removal.test.js#L279) | U15 verifies the signed review and cancellation, standing alone after cancellation, and preservation of saved work. | — |

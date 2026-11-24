@@ -296,7 +296,11 @@ impl Target {
         report: Report,
     ) -> io::Result<bool> {
         for kind in [AppWipeKind::LastComputer, AppWipeKind::Member] {
-            if self.finish_kind(kind, keychain, report).await? {
+            if self
+                .finish_kind(kind, keychain, report)
+                .await
+                .inspect_err(|error| uninstall::log_cleanup(&self.box_files(), error))?
+            {
                 return Ok(true);
             }
         }
@@ -347,7 +351,13 @@ impl Target {
             self.check_layout(&settings)?;
             verify_approval(&kept, kind, journal)
         };
-        verify(&journal)?;
+        let accepted = verify(&journal)?;
+        crate::backup::with_verified_configured_disk(
+            kept.root(),
+            &self.root,
+            super::saved_backup(&accepted)?.as_ref(),
+            || Ok(()),
+        )?;
         let receipts = self.receipts()?;
         if kind == AppWipeKind::Member
             && Completion::read(&receipts, &journal.setup, &journal.operation)?.is_none()
@@ -375,12 +385,11 @@ impl Target {
         }
         let owner = OwnedLock::acquire(&kept.path("run/.client-owner"), Duration::ZERO)?;
         let link = OwnedLock::acquire(&kept.path("run/.link.lock"), Duration::ZERO)?;
-        verify(&journal)?;
-        let candidate = kept
-            .read::<Link>(LINK)
-            .map_err(io::Error::other)?
-            .ok_or_else(|| io::Error::other("The wipe has no accepted removal."))?;
+        let candidate = verify(&journal)?;
         let backup = super::saved_backup(&candidate)?;
+        if kind == AppWipeKind::LastComputer {
+            keychain.clear_app_link_keys(&self.root)?;
+        }
         let setup = journal.setup.clone();
         let operation = journal.operation.clone();
         crate::backup::with_verified_configured_disk(
@@ -388,9 +397,6 @@ impl Target {
             &self.root,
             backup.as_ref(),
             || {
-                if kind == AppWipeKind::LastComputer {
-                    keychain.clear_app_link_keys(&self.root)?;
-                }
                 verify(&journal)?;
                 journal.phase = Some(Phase::Erasing);
                 self.save(kind, &journal)?;
@@ -453,7 +459,7 @@ fn resolved_data(path: &Path) -> io::Result<PathBuf> {
     }
 }
 
-fn verify_approval(kept: &Files, kind: AppWipeKind, journal: &Journal) -> io::Result<()> {
+fn verify_approval(kept: &Files, kind: AppWipeKind, journal: &Journal) -> io::Result<Link> {
     validate_disk(kept).map_err(io::Error::other)?;
     let link = kept
         .read::<Link>(LINK)
@@ -487,7 +493,7 @@ fn verify_approval(kept: &Files, kind: AppWipeKind, journal: &Journal) -> io::Re
     if !verified {
         return Err(io::Error::other("The wipe has no accepted removal."));
     }
-    Ok(())
+    Ok(link)
 }
 
 #[derive(Deserialize)]

@@ -241,13 +241,21 @@ async function unixMemberWipe(t, { makesBackup = false, handover = false } = {})
   }
 }
 
-test("an unsupported wipe can be cancelled after the source holds its work for review", { timeout: 80000 }, async t => {
+test("an unsupported wipe can be cancelled after the source holds its work for review", { timeout: 80000 },
+  t => cancelHeldWipe(t));
+
+test("a revoked member with Relay backups holds its work for a separate export across restart", {
+  skip: process.platform === "win32", timeout: 80000,
+}, t => cancelHeldWipe(t, { relayBackup: true }));
+
+async function cancelHeldWipe(t, { relayBackup = false } = {}) {
   const fromApp = { "x-kuvo-from": "app" };
-  const { computer, leases } = await bench(t);
+  const { computer, relay, leases } = await bench(t);
   const studio = await computer("Studio");
-  const lab = await computer("Lab");
+  const lab = await computer("Lab", undefined, undefined, { canonical: relayBackup });
   const ask = studio.connect(await studio.start().ready());
-  const setup = (await ask("GET", "kuvo/setup")).json.setup;
+  const accepted = (await ask("GET", "kuvo/setup")).json;
+  const setup = accepted.setup;
   await until(() => leases.leaseFor(setup), "Studio did not obtain the relay lease.");
   const offer = await ask("POST", "kuvo/computers/add/code", {}, fromApp);
   assert.equal(offer.status, 201, offer.text);
@@ -256,7 +264,15 @@ test("an unsupported wipe can be cancelled after the source holds its work for r
   const read = box => readJSON(path.join(box.home, "run", "link.json"));
   const session = path.join(lab.home, "agents/sessions/ses_retained/messages.json");
   write(session, "saved work");
-  const there = lab.connect(await lab.start().ready());
+  const config = path.join(lab.home, "backup", "configuration.json");
+  if (relayBackup) {
+    write(config, JSON.stringify({ version: 1, enabled: true,
+      source: "b_" + Buffer.alloc(16, 42).toString("base64url"), key: Buffer.alloc(32, 41).toString("base64url"),
+      dest: { kind: "computer", computer: accepted.you.key }, projects: [],
+    }), { mode: 0o600 });
+  }
+  const source = lab.start();
+  let there = lab.connect(await source.ready());
   const key = (await there("GET", "kuvo/setup")).json.you.key;
   const route = `kuvo/computers/${key}/unlink-and-wipe`;
   const operation = Buffer.alloc(16, 43).toString("base64url");
@@ -264,15 +280,37 @@ test("an unsupported wipe can be cancelled after the source holds its work for r
   const begun = await take({});
   assert.equal(begun.status, 200, begun.text);
   assert.equal(begun.json.removal.state, "wipe-pending");
-  const error = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.";
+  const error = relayBackup
+    ? "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer."
+    : "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.";
+  const nextAction = relayBackup ? "choose-export" : "cancel-wipe";
   const roster = () => read(studio).shared.membershipAndAccess.value;
-  await until(() => roster().removals[key]?.error === error, "The main did not record the source review.");
+  await until(() => roster().removals[key]?.error === error, "The main did not record the source review.", 15000);
   assert.equal(read(lab).removalSource.operation, operation);
-  assert.equal(read(lab).removalSource.review, "unsupported-layout");
+  assert.equal(read(lab).removalSource.review, relayBackup ? "choose-export" : "unsupported-layout");
   assert.equal(fs.readFileSync(session, "utf8"), "saved work");
   const held = await take({});
-  assert.deepEqual(held.json.removal, { operation, state: "review", accessRemoved: true, nextAction: "cancel-wipe" });
+  assert.deepEqual(held.json.removal, { operation, state: "review", accessRemoved: true, nextAction });
   assert.equal(held.json.message, error);
+  if (relayBackup) {
+    await source.stop();
+    fs.rmSync(config);
+    const address = Buffer.from(roster().removals[key].peer.address, "base64url");
+    const primaryAddress = Buffer.from(roster().boxes[0].address, "base64url");
+    let replies = 0;
+    const stop = relay.intercept(address, primaryAddress, packet => {
+      if (packet.payload[0] === 5) replies++;
+      return false;
+    });
+    t.after(stop);
+    there = lab.connect(await lab.start().ready());
+    await until(() => replies >= 2, "The returning source did not answer a new signed wipe instruction.");
+    stop();
+    assert.equal(read(lab).removalSource.review, "choose-export");
+    assert.equal(read(lab).localWipe, undefined);
+    assert.equal(fs.readFileSync(session, "utf8"), "saved work");
+    assert.equal((await ask("GET", "kuvo/computers")).json.wipePending[0].nextAction, "choose-export");
+  }
   const cancelled = await take({ resolve: "cancel" });
   assert.equal(cancelled.status, 200, cancelled.text);
   assert.deepEqual(cancelled.json.removal, { operation, state: "cancelled", accessRemoved: true });
@@ -283,7 +321,7 @@ test("an unsupported wipe can be cancelled after the source holds its work for r
   assert.equal(fs.readFileSync(session, "utf8"), "saved work");
   assert.equal((await ask("GET", "kuvo/computers")).json.wipePending, undefined);
   assert.equal(roster().boxes.some(peer => peer.key === key), false);
-});
+}
 
 test("a member set aside by its main computer cannot pair a desktop", { timeout: 20000 }, async t => {
   const { computer, relay } = await bench(t);
@@ -557,7 +595,11 @@ test("the installer finishes an authorized stopped Mac wipe without its helper",
   skip: process.platform !== "darwin", timeout: 55_000,
 }, t => appOwnedWipe(t, false, { resumeWithoutHelper: true }));
 
-async function appOwnedWipe(t, member, { resumeWithoutHelper = false } = {}) {
+test("an app-owned Mac keeps its data when the verified backup disappears during keeper stop", {
+  skip: process.platform !== "darwin", timeout: 70_000,
+}, t => appOwnedWipe(t, false, { diskDisconnects: true }));
+
+async function appOwnedWipe(t, member, { resumeWithoutHelper = false, diskDisconnects = false } = {}) {
   const root = fs.realpathSync(scratch());
   const env = isolatedEnv(root);
   const binary = boxBinary();
@@ -572,10 +614,20 @@ async function appOwnedWipe(t, member, { resumeWithoutHelper = false } = {}) {
   const work = path.join(app, "Chats", "chat");
   const outside = path.join(env.HOME, "unrelated.txt");
   const steps = path.join(root, "steps");
+  const disk = path.join(env.HOME, "backup-disk");
+  const unplugged = path.join(root, "unplugged-disk");
+  const backupSource = "b_" + Buffer.alloc(16, 72).toString("base64url");
   write(work, "old app data");
   write(outside, "keep this");
   write(path.join(home, "folder-version.json"), '{"version":23}');
   write(path.join(home, "box", "kind"), "mac");
+  if (diskDisconnects) {
+    fs.mkdirSync(disk);
+    write(path.join(home, "backup", "configuration.json"), JSON.stringify({ version: 1, enabled: true,
+      source: backupSource, key: Buffer.alloc(32, 73).toString("base64url"),
+      dest: { kind: "disk", path: disk }, disk: fs.statSync(disk).dev, projects: [],
+    }), { mode: 0o600 });
+  }
   const password = "fixture-helper";
   const keys = new Set(["KUVO_KEY_SAMPLE"]);
   const seed = Buffer.alloc(32, 94).toString("base64url");
@@ -616,7 +668,7 @@ async function appOwnedWipe(t, member, { resumeWithoutHelper = false } = {}) {
   const keeperScript = path.join(root, "keeper.mjs");
   write(keeperScript, `import fs from "node:fs";
 import http from "node:http";
-const [record, marker, work, steps, ownedResident] = process.argv.slice(3);
+const [record, marker, work, steps, ownedResident, disk, unplugged] = process.argv.slice(3);
 const keeper = http.createServer((req, res) => {
   if (req.method !== "POST" || req.url !== "/stop" || req.headers.authorization !== "Bearer fixture-keeper") {
     return res.writeHead(403).end();
@@ -628,6 +680,7 @@ const keeper = http.createServer((req, res) => {
     if (!fs.readFileSync(steps, "utf8").includes("keeper-blocked")) fs.appendFileSync(steps, "keeper-blocked\\n");
     return res.writeHead(409).end();
   }
+  if (disk) fs.renameSync(disk, unplugged);
   fs.appendFileSync(steps, "keeper\\n");
   if (fs.existsSync(ownedResident)) {
     const pid = Number(fs.readFileSync(ownedResident, "utf8"));
@@ -638,7 +691,8 @@ const keeper = http.createServer((req, res) => {
 keeper.listen(0, "127.0.0.1", () => fs.writeFileSync(record,
   JSON.stringify({ pid: process.pid, url: "http://127.0.0.1:" + keeper.address().port, password: "fixture-keeper" }), { mode: 0o600 }));
 `);
-  const keeper = launch(process.execPath, [keeperScript, "--box", keeperFile, marker, work, steps, ownedResident], env, root);
+  const keeper = launch(process.execPath, [keeperScript, "--box", keeperFile, marker, work, steps, ownedResident,
+    ...(diskDisconnects ? [disk, unplugged] : [])], env, root);
   const tools = path.join(env.HOME, "tools");
   // Use a fixture tool on this test account. It cannot reach the account Keychain.
   const checkIdentityTiming = member
@@ -714,13 +768,30 @@ printf 'keychain %s\\n' "$5" >> '${steps}'
     await new Promise(resolve => helper.close(resolve));
     status = await install();
   }
+  const identityCleared = "keychain key\nkeychain secret\nkeychain sign\n";
+  if (diskDisconnects) {
+    const diagnostic = path.join(home, "run", "uninstall.log");
+    await until(() => fs.existsSync(diagnostic) && fs.readFileSync(diagnostic, "utf8").includes(disk),
+      () => `The stopped wipe did not report the unavailable backup. ${resident.log()}`, 20_000);
+    assert.equal(fs.readFileSync(steps, "utf8"), "helper\nkeeper\n" + identityCleared);
+    assert.equal(readJSON(marker).phase, "stopping");
+    assert.equal(fs.readFileSync(work, "utf8"), "old app data");
+    const point = readJSON(path.join(home, "run", "link.json")).localWipe.backup;
+    const archive = path.join("kuvo-backups", backupSource, `${point.id}.kuvo`);
+    const saved = fs.readFileSync(path.join(unplugged, archive));
+    fs.renameSync(unplugged, disk);
+    fs.rmSync(keeperFile, { force: true });
+    status = await install();
+    assert.deepEqual(fs.readFileSync(path.join(disk, archive)), saved);
+  }
   await until(() => fs.existsSync(marker) && !readJSON(marker).phase,
     () => `The app-owned wipe did not finish. ${resident.log()}`, 20000);
   if (!resumeWithoutHelper) assert.equal((await keeper.exited).code, 0, keeper.log());
   assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
   assert.equal(fs.existsSync(app), false);
   assert.equal(fs.readFileSync(outside, "utf8"), "keep this");
-  assert.equal(fs.readFileSync(steps, "utf8"), `helper\n${resumeWithoutHelper ? "keeper-blocked" : "keeper"}\nkeychain key\nkeychain secret\nkeychain sign\n`);
+  assert.equal(fs.readFileSync(steps, "utf8"),
+    `helper\n${resumeWithoutHelper ? "keeper-blocked" : "keeper"}\n${identityCleared.repeat(diskDisconnects ? 2 : 1)}`);
   if (member) {
     const primaryLink = path.join(studio.home, "run", "link.json");
     await until(() => readJSON(primaryLink).shared.membershipAndAccess.value.removals[you.key]?.delivered,

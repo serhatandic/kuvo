@@ -32,7 +32,7 @@ pub use receipts::ReceiptOwner;
 pub use recovery::{Authority, RecoveryResult, Standalone};
 pub use wipe::WipeExport;
 pub(crate) use wipe::{
-    ConfiguredPoint, pre_wipe_backup_enabled, prepare_configured_disk,
+    ConfiguredPoint, pre_wipe_backup_enabled, prepare_configured_disk, uses_automatic_relay_backup,
     with_verified_configured_disk,
 };
 

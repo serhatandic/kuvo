@@ -66,6 +66,12 @@ pub(crate) fn pre_wipe_backup_enabled(home: &Path) -> Result<bool> {
     Ok(read_configuration(home)?.is_some_and(|(_, config, _)| config.enabled))
 }
 
+pub(crate) fn uses_automatic_relay_backup(home: &Path) -> Result<bool> {
+    Ok(read_configuration(home)?.is_some_and(|(_, config, _)| {
+        config.enabled && matches!(config.dest, Destination::Computer { ssh: None, .. })
+    }))
+}
+
 /// Capture and authenticate the source's configured backup while its ownership
 /// view is still available. The saved point contains no recovery credential.
 pub(crate) fn prepare_configured_disk(

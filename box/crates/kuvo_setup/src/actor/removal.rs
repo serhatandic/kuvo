@@ -31,8 +31,53 @@ use crate::{
     object, random, wipe,
 };
 
-const UNSUPPORTED_REVIEW: &str = "unsupported-layout";
 const LAYOUT_REVIEW: &str = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.";
+const EXPORT_REQUIRED: &str = "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer.";
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WipeReview {
+    UnsupportedLayout,
+    ChooseExport,
+}
+
+impl WipeReview {
+    fn read(value: Option<&Value>) -> Option<Self> {
+        serde_json::from_value(value?.clone()).ok()
+    }
+
+    fn record(self, extra: &mut Map<String, Value>) -> bool {
+        match self {
+            Self::UnsupportedLayout if !extra.contains_key("error") => {
+                extra.insert("error".into(), json!(LAYOUT_REVIEW));
+            }
+            Self::ChooseExport if extra.get("needsExport") != Some(&Value::Bool(true)) => {
+                extra.insert("needsExport".into(), json!(true));
+                extra.insert("error".into(), json!(EXPORT_REQUIRED));
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn for_source(home: &std::path::Path, prior: Option<Self>) -> Result<Option<Self>, Error> {
+        if prior == Some(Self::ChooseExport) {
+            return Ok(prior);
+        }
+        let supported =
+            wipe::supports_member(home).map_err(|error| Error::Installer(error.to_string()))?;
+        if !supported {
+            return Ok(Some(Self::UnsupportedLayout));
+        }
+        let relay = crate::backup::uses_automatic_relay_backup(home)
+            .map_err(|error| Error::Installer(error.to_string()))?;
+        Ok(if relay {
+            Some(Self::ChooseExport)
+        } else {
+            prior
+        })
+    }
+}
 
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -166,7 +211,6 @@ impl Removal {
     }
 
     fn wipe_row(&self) -> PendingWipe {
-        const EXPORT_REQUIRED: &str = "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer.";
         const EXPORT_DISK: &str =
             "Choose an export on a separate disk or another computer over SSH.";
 
@@ -414,7 +458,10 @@ impl Owner {
         if record.resolution() == Some(resolution.state()) {
             return Ok(removal_reply(&record, saved));
         }
-        let can_cancel = record.extra.get("error").and_then(Value::as_str) == Some(LAYOUT_REVIEW)
+        let held = record.plan().is_some()
+            || record.extra.get("needsExport") == Some(&Value::Bool(true))
+            || record.extra.get("error").and_then(Value::as_str) == Some(LAYOUT_REVIEW);
+        let can_cancel = held
             && record.extra.get("generation").is_none()
             && record.extra.get("withdrawnGeneration").is_none();
         if !record.asks_erase()
@@ -605,12 +652,11 @@ impl Owner {
             }
         } else if record.asks_erase()
             && !record.delivered
-            && message.get("review").and_then(Value::as_str) == Some(UNSUPPORTED_REVIEW)
+            && let Some(review) = WipeReview::read(message.get("review"))
             && message.get("operation").and_then(Value::as_str) == Some(&record.operation)
             && message.get("epoch").and_then(Value::as_u64) == Some(setup.epoch)
         {
-            if record.extra.get("error").is_none() {
-                record.extra.insert("error".into(), json!(LAYOUT_REVIEW));
+            if review.record(&mut record.extra) {
                 insert_removal(&mut roster, &record)?;
                 let mut next = self.link.clone();
                 next.put(
@@ -798,14 +844,16 @@ impl Owner {
         let Some(host) = Host::from_text(&primary.key, &primary.address) else {
             return Ok(());
         };
-        let held = self.link.extra.get("removalSource");
-        if held.is_some_and(|held| {
-            held["setup"] != position.id
-                || held["operation"] != operation
-                || held["review"] != UNSUPPORTED_REVIEW
-        }) {
-            return Ok(());
-        }
+        let prior = match self.link.extra.get("removalSource") {
+            Some(held) if held["setup"] == position.id && held["operation"] == operation => {
+                let Some(review) = WipeReview::read(held.get("review")) else {
+                    return Ok(());
+                };
+                Some(review)
+            }
+            Some(_) => return Ok(()),
+            None => None,
+        };
         let now = Instant::now();
         let matches = |challenge: &Challenge| {
             challenge.position == *position
@@ -836,44 +884,38 @@ impl Owner {
                 .any(|field| body.contains_key(*field))
         {
             if body["wipe"] == true {
-                if held.is_none() {
-                    match wipe::supports_member(self.files.root()) {
-                        Ok(true) => {
-                            let approved = wipe::member::MemberWipe {
-                                setup: position.id.clone(),
-                                operation: operation.into(),
-                                primary,
-                                source: key,
-                            };
-                            let mut next = self.link.clone();
-                            next.extra.insert("localWipe".into(), json!(approved));
-                            next.extra.insert("phones".into(), json!([]));
-                            next.extra.shift_remove("pairing");
-                            next.extra.shift_remove("appPairing");
-                            self.commit(next).await?;
-                            self.unlink_challenge = None;
-                            self.next = Instant::now();
-                            return Ok(());
-                        }
-                        Ok(false) => {}
-                        Err(error) => {
-                            eprintln!("checking removal source layout: {error}");
-                            return Ok(());
-                        }
-                    }
+                let review = WipeReview::for_source(self.files.root(), prior)?;
+                if prior.is_none() || prior != review {
                     let mut next = self.link.clone();
-                    next.extra.insert("removalSource".into(), json!({
-                        "setup": position.id, "operation": operation, "review": UNSUPPORTED_REVIEW,
-                    }));
+                    if let Some(review) = review {
+                        next.extra.insert(
+                            "removalSource".into(),
+                            json!({
+                                "setup": position.id, "operation": operation, "review": review,
+                            }),
+                        );
+                    } else {
+                        let approved = wipe::member::MemberWipe {
+                            setup: position.id.clone(),
+                            operation: operation.into(),
+                            primary,
+                            source: key,
+                        };
+                        next.extra.insert("localWipe".into(), json!(approved));
+                    }
                     next.extra.insert("phones".into(), json!([]));
                     next.extra.shift_remove("pairing");
                     next.extra.shift_remove("appPairing");
                     self.commit(next).await?;
                 }
                 self.unlink_challenge = None;
-                self.send_removal(&host, json!({
-                    "setup": position.id, "operation": operation, "epoch": position.epoch, "review": UNSUPPORTED_REVIEW,
-                })).await;
+                if let Some(review) = review {
+                    self.send_removal(&host, json!({
+                        "setup": position.id, "operation": operation, "epoch": position.epoch, "review": review,
+                    })).await;
+                } else {
+                    self.next = Instant::now();
+                }
                 return Ok(());
             }
             if self.kind != ComputerKind::Machine {
