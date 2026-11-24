@@ -1,7 +1,6 @@
 //! Durable ordinary letters and notes. Resolve ownership again for each send
 //! and immediately before placing an incoming prompt on a local session.
 pub(crate) mod homes;
-mod transcript;
 
 use std::{
     borrow::Cow,
@@ -12,7 +11,7 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use kuvo_engine::{Engine, MoveEngineError, SessionMove};
+use kuvo_engine::{Engine, MoveEngineError, SessionMove, TranscriptError, TranscriptScope};
 use kuvo_store::{
     files,
     locks::{OnBusy, StaleLock},
@@ -29,6 +28,7 @@ use tokio::{
     task::{JoinHandle, JoinSet},
     time::{self, Instant, MissedTickBehavior},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     directory::{Announcement, ComputerKey},
@@ -53,7 +53,6 @@ pub fn start(
     relay: RelayHandle,
     engine: Engine,
     ownership: Handle,
-    dispatcher: watch::Receiver<Option<kuvo_server::Dispatcher>>,
 ) -> io::Result<JoinHandle<()>> {
     let events = relay
         .subscribe()
@@ -64,7 +63,6 @@ pub fn start(
         relay,
         engine,
         ownership,
-        dispatcher,
         outbox: None,
         receipts: None,
         answers: JoinSet::new(),
@@ -79,7 +77,6 @@ struct Letters {
     relay: RelayHandle,
     engine: Engine,
     ownership: Handle,
-    dispatcher: watch::Receiver<Option<kuvo_server::Dispatcher>>,
     outbox: Option<Outbox>,
     receipts: Option<Receipts>,
     answers: JoinSet<Option<(Id, Letter)>>,
@@ -90,6 +87,11 @@ struct Letters {
 struct Introduction {
     since: Instant,
     wait_for_list: Option<bool>,
+}
+
+struct ReadFailure {
+    message: String,
+    retry: bool,
 }
 
 #[derive(Deserialize)]
@@ -805,18 +807,8 @@ impl Letters {
         if moving(&request.to)? {
             return Ok(refused(id, MOVING_READ, true, None));
         }
-        let dispatcher = self.dispatcher.borrow().clone();
-        let Some(dispatcher) = dispatcher else {
-            return Ok(refused(
-                id,
-                "The conversation’s engine isn’t answering.",
-                true,
-                None,
-            ));
-        };
         let result = self
             .transcript(
-                &dispatcher,
                 &request.to,
                 &from,
                 request
@@ -863,12 +855,11 @@ impl Letters {
 
     async fn transcript(
         &self,
-        dispatcher: &kuvo_server::Dispatcher,
         session: &str,
         from: &str,
         query: Option<&str>,
-    ) -> Result<String, transcript::Error> {
-        let unavailable = |error: kuvo_engine::MoveEngineError| transcript::Error {
+    ) -> Result<String, ReadFailure> {
+        let unavailable = |error: MoveEngineError| ReadFailure {
             message: format!("It couldn't be read: {error}"),
             retry: true,
         };
@@ -877,12 +868,12 @@ impl Letters {
             .lookup(session)
             .await
             .map_err(unavailable)?
-            .ok_or_else(|| transcript::Error {
+            .ok_or_else(|| ReadFailure {
                 message: "Its coding agents aren't running here now: it comes again once they are."
                     .into(),
                 retry: true,
             })?;
-        let refuse = |message: &str| transcript::Error {
+        let refuse = |message: &str| ReadFailure {
             message: message.into(),
             retry: false,
         };
@@ -905,11 +896,22 @@ impl Letters {
                 "It's archived, and only the conversation that started this work can read it.",
             ));
         }
-        transcript::read(dispatcher, session, &info, query)
+        let title = info["title"]
+            .as_str()
+            .filter(|title| !title.is_empty())
+            .unwrap_or("New session");
+        self.engine
+            .transcript(
+                session,
+                title,
+                query,
+                TranscriptScope::Peer,
+                &CancellationToken::new(),
+            )
             .await
-            .map_err(|mut error| {
-                error.message = format!("It couldn't be read: {}", error.message);
-                error
+            .map_err(|error| ReadFailure {
+                message: format!("It couldn't be read: {error}"),
+                retry: !matches!(error, TranscriptError::Refused(_)),
             })
     }
 

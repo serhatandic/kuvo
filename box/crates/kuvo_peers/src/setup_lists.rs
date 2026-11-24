@@ -430,7 +430,6 @@ pub struct ResidentPeers {
     transfers: Option<(crate::moves::Handle, JoinHandle<()>)>,
     move_waiting: watch::Sender<Arc<BTreeSet<String>>>,
     letters: Option<JoinHandle<()>>,
-    letter_dispatch: Option<watch::Sender<Option<kuvo_server::Dispatcher>>>,
     task: JoinHandle<()>,
 }
 
@@ -492,7 +491,6 @@ impl ResidentPeers {
             transfers: None,
             move_waiting,
             letters: None,
-            letter_dispatch: None,
             task,
         })
     }
@@ -556,15 +554,12 @@ impl ResidentPeers {
             ownership.clone(),
             self.move_waiting.clone(),
         )?);
-        let (letter_dispatch, dispatcher) = watch::channel(None);
         self.letters = Some(crate::letters::start(
             self.reader(),
             relay,
             engine,
             ownership,
-            dispatcher,
         )?);
-        self.letter_dispatch = Some(letter_dispatch);
         Ok(())
     }
 
@@ -579,9 +574,6 @@ impl ResidentPeers {
     }
 
     pub async fn dispatch_with(&self, dispatcher: kuvo_server::Dispatcher) {
-        if let Some(letters) = &self.letter_dispatch {
-            letters.send_replace(Some(dispatcher.clone()));
-        }
         let _ = self.changes.send(Change::Dispatch(dispatcher)).await;
     }
 

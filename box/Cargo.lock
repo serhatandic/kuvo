@@ -1398,7 +1398,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
- "unicode-normalization",
  "url",
  "webpki-roots 1.0.12",
 ]
