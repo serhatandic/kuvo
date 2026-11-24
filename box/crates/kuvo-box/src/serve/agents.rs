@@ -31,6 +31,7 @@ use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde_json::json;
 
 pub(super) mod sessions;
+pub(super) mod turns;
 
 pub(super) fn factories(_home: &std::path::Path) -> HashMap<AgentKind, Arc<dyn Factory>> {
     #[cfg(feature = "agent-runtime-fixture")]

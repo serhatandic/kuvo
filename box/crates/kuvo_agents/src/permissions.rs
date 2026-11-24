@@ -2,6 +2,7 @@
 
 mod settings;
 mod shell;
+pub(crate) mod turn;
 #[cfg(test)]
 mod tests;
 

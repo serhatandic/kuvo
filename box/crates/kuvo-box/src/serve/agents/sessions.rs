@@ -49,7 +49,7 @@ pub(crate) fn register(sessions: SessionStore, routes: &mut Registry) {
     });
 }
 
-fn missing(id: &str) -> Refusal {
+pub(super) fn missing(id: &str) -> Refusal {
     Refusal::new(StatusCode::NOT_FOUND, format!("No session {id}."))
 }
 

@@ -122,6 +122,14 @@ unavailable settings, native Plan mode, Auto outside the sandbox and
 paths outside the project. Row 6.1 owns editing Blocks, the Settings
 pages and sandbox setup and can reuse this evaluator.
 
+The resident starts and interrupts a saved coding-agent session through
+the compatibility routes. The macOS binary case follows a stand-in
+through two turns and checks the saved conversation and vendor state.
+The keeper case also checks that its replacement resident connects the
+recovered adapter to the shared sink and saves the replayed text and
+final outcome. The holder and child PIDs are unchanged. The controller
+contract and roster factory signature are unchanged.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.

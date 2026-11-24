@@ -432,6 +432,8 @@ export type SideThreads = Infer<typeof SIDE_THREADS>;
 export const SESSION_ROUTES: RouteShape[] = [
   // The transcript of a coding-agent session, kept in the same format across box updates.
   { route: "GET kuvo/agents/api/session/:id/message", feature: "agents", answers: { 200: object({ data: list(any), cursor: object({ "next?": string }) }), 404: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/agents/api/session/:id/prompt", feature: "agents", body: any, answers: { 200: object({}), 400: REFUSED, 404: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/agents/api/session/:id/interrupt", feature: "agents", answers: { 200: object({ interrupted: bool }), 404: REFUSED, 503: REFUSED } },
   // Carry a conversation on with the coding agents, as picking one of their models does.
   { route: "POST kuvo/sessions/:id/agents", feature: "sessions.agents", answers: { 200: CARRIED } },
   // Give a conversation its project's other folders as a client opens it.

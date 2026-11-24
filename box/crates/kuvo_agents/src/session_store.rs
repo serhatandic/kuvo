@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+mod metadata;
 mod projection;
 
 const FORMAT: ObjectFormat = ObjectFormat::additive("Coding-agent session");

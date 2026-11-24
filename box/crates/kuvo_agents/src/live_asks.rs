@@ -99,6 +99,7 @@ impl LiveAsks {
 
 /// One adapter's ask handle for an active turn. The resident explicitly
 /// retires this handle before releasing session ownership.
+#[derive(Clone)]
 pub struct TurnAsks {
     book: LiveAsks,
     session: String,
