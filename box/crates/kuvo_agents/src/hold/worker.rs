@@ -69,6 +69,7 @@ pub(super) async fn run(
     let files = Files {
         record: record_path,
         journal: journal_path,
+        stop: super::client::stop_request(folder, id),
     };
 
     let mut env: Environment = std::env::vars_os().collect();
@@ -138,7 +139,7 @@ pub(super) async fn run(
         portable_requests: boot.spec.portable_requests,
         lifecycle: folder.join("lifecycle.log"),
     };
-    let stopping = termination()?;
+    let stopping = termination(state.files.stop.clone())?;
     state.publish()?;
     state.report("holder listening", serde_json::json!({}));
     let mut ready = serde_json::to_vec(&Ready {
@@ -163,12 +164,15 @@ fn duration(ms: Option<u64>) -> Duration {
 struct Files {
     record: PathBuf,
     journal: PathBuf,
+    /// Where it's asked to stop (`Directory::stop_all`).
+    stop: PathBuf,
 }
 
 impl Drop for Files {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.record);
         let _ = fs::remove_file(&self.journal);
+        let _ = fs::remove_file(&self.stop);
     }
 }
 
@@ -822,7 +826,16 @@ async fn write_frame(writer: &mut WriteHalf<LocalStream>, frame: Frame) -> io::R
     }
 }
 
-fn termination() -> io::Result<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>> {
+/// When it's asked to stop: SIGTERM, or (on any system) a request beside its record.
+fn termination(
+    request: PathBuf,
+) -> io::Result<std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>> {
+    let asked = async move {
+        let mut look = tokio::time::interval(Duration::from_millis(250));
+        while !request.exists() {
+            look.tick().await;
+        }
+    };
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -831,9 +844,12 @@ fn termination() -> io::Result<std::pin::Pin<Box<dyn std::future::Future<Output 
         let interrupt = signal(SignalKind::interrupt())?;
         Ok(Box::pin(async move {
             let _ignored = (hangup, interrupt);
-            terminate.recv().await;
+            tokio::select! {
+                _ = terminate.recv() => {}
+                () = asked => {}
+            }
         }))
     }
     #[cfg(windows)]
-    Ok(Box::pin(std::future::pending()))
+    Ok(Box::pin(asked))
 }

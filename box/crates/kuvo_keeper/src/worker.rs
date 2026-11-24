@@ -131,11 +131,19 @@ impl Worker {
         }
     }
 
-    pub async fn stop(mut self, run: &Path) -> io::Result<()> {
+    /// Stop the resident: to make way for the next one (`next`: a release switch or a rollback; it
+    /// hands its coding agents over) or for good (turned off or paused; they stop with it).
+    pub async fn stop(mut self, run: &Path, next: bool) -> io::Result<()> {
         const GRACE: Duration = Duration::from_secs(5);
         let request = run.join("keeper-stop");
-        #[cfg(windows)]
-        files::write_secret(&request, &serde_json::to_vec(self.identity())?)?;
+        // (Read on every system as the resident stops; a Windows one also waits for it.)
+        files::write_secret(
+            &request,
+            &serde_json::to_vec(&StopRequest {
+                identity: self.identity().clone(),
+                next: Some(next),
+            })?,
+        )?;
         let result = tokio::task::spawn_blocking(move || match &mut self.process {
             Process::Child(child) => child.stop(GRACE, |_| {}).map(|_| ()),
             Process::Adopted(process) => {
@@ -157,6 +165,41 @@ impl Worker {
     }
 }
 
+/// What a keeper asks of the resident it stops: the resident it names, and whether another comes
+/// after it. (A keeper from before this said only the first, and only on Windows.)
+#[derive(Deserialize, Serialize)]
+struct StopRequest {
+    #[serde(flatten)]
+    identity: ProcessIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    next: Option<bool>,
+}
+
+/// Whether a resident comes after this one as it stops, so its coding agents are handed over rather
+/// than stopped with it: its keeper asked it to make way (a release switch, a rollback). Not when
+/// its keeper stopped it for good (turned off, paused), nor when no keeper keeps it.
+pub fn next_resident_coming(home: &Path) -> bool {
+    let Ok(Some(this)) = ProcessIdentity::read(std::process::id()) else {
+        return false;
+    };
+    let run = home.join("run");
+    let read = |name: &str| files::read(&run.join(name)).ok().flatten();
+    if let Some(request) = read("keeper-stop")
+        .and_then(|bytes| serde_json::from_slice::<StopRequest>(&bytes).ok())
+        .filter(|request| request.identity == this)
+    {
+        return request.next.unwrap_or(true);
+    }
+    // Kept, and stopped otherwise (an older keeper, or a stop from outside it): the keeper starts
+    // it again unless it's off or paused.
+    read("keeper-resident.json")
+        .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok())
+        .is_some_and(|record| record.identity == this)
+        && ["off", "paused", "stopped"]
+            .iter()
+            .all(|marker| !run.join(marker).exists())
+}
+
 pub async fn wait_for_stop(home: &Path) {
     let Ok(Some(identity)) = ProcessIdentity::read(std::process::id()) else {
         return std::future::pending().await;
@@ -174,5 +217,44 @@ pub async fn wait_for_stop(home: &Path) {
         {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resident_hands_its_agents_over_only_when_another_comes_after_it() {
+        let home = tempfile::tempdir().unwrap();
+        let run = home.path().join("run");
+        fs::create_dir_all(&run).unwrap();
+        let this = ProcessIdentity::read(std::process::id()).unwrap().unwrap();
+        let ask = |request: serde_json::Value| {
+            fs::write(run.join("keeper-stop"), request.to_string()).unwrap();
+            next_resident_coming(home.path())
+        };
+        // No keeper keeps it: a stop is for good.
+        assert!(!next_resident_coming(home.path()));
+        let named = serde_json::to_value(&this).unwrap();
+        let mut switch = named.clone();
+        switch["next"] = true.into();
+        let mut off = named.clone();
+        off["next"] = false.into();
+        assert!(ask(switch));
+        assert!(!ask(off));
+        // An older keeper's request on Windows said only whom it stopped: a switch, as before.
+        assert!(ask(named));
+        // One for another resident isn't this one's.
+        assert!(!ask(
+            serde_json::json!({ "pid": 1, "startIdentity": "other", "next": true })
+        ));
+        fs::remove_file(run.join("keeper-stop")).unwrap();
+        // Kept, and stopped from outside its keeper: it comes back unless it's off or paused.
+        let kept = serde_json::json!({ "release": "0.8.0", "identity": this, "job": "job" });
+        fs::write(run.join("keeper-resident.json"), kept.to_string()).unwrap();
+        assert!(next_resident_coming(home.path()));
+        fs::write(run.join("off"), "").unwrap();
+        assert!(!next_resident_coming(home.path()));
     }
 }

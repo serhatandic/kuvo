@@ -52,6 +52,28 @@ impl Directory {
         tokio::task::spawn_blocking(move || records(&folder)).await?
     }
 
+    /// Ask every agent held here to stop, as the box stops for good (no resident comes after it to
+    /// take them up): each holder stops its agent as on SIGTERM, and goes once it has. Nothing waits.
+    pub async fn stop_all(&self) -> io::Result<()> {
+        for record in self.records().await? {
+            if record.identity.process.state() != ProcessState::Live {
+                continue;
+            }
+            // (Any system: a Windows holder has no SIGTERM to hear.)
+            kuvo_store::files::write_atomic(&stop_request(&self.folder, &record.id), b"")?;
+            #[cfg(unix)]
+            if let Some(holder) = kuvo_os::process::AdoptedProcess::open(
+                record.pid,
+                Some(&record.identity.process.start_identity),
+                |_| true,
+                None,
+            )? {
+                holder.terminate()?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn start(&self, binary: &Path, options: Start) -> io::Result<Controller> {
         if !self.available() {
             return Err(invalid("The holder socket path is too long"));
@@ -165,6 +187,11 @@ impl Directory {
 
 fn as_millis(duration: Duration) -> u64 {
     duration.as_millis().min(SAFE_INTEGER as u128) as u64
+}
+
+/// Where a holder is asked to stop: beside its record.
+pub(super) fn stop_request(folder: &Path, id: &str) -> PathBuf {
+    folder.join(format!("{id}.stop"))
 }
 
 fn records(folder: &Path) -> io::Result<Vec<Record>> {
