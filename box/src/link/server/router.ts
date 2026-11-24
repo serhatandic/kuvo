@@ -50,7 +50,7 @@ import { noticesRoute, setupNoticesRoute } from "../areas/notices";
 import { personalitiesDocumentRoute, personalityEventsRoute, personalityRoute } from "../areas/personalities";
 import { devicesPairRoute, pairingRoute, phonesRemoveRoute, phonesRoute } from "../areas/phones";
 import { DESKTOP_UNINSTALL_ROUTE, desktopUninstallRoute } from "../uninstall";
-import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
+import { QUEUE_ROUTE, queueHoldWhileSettling, queueRoute } from "../areas/queue";
 import { SESSION_ASKS_ROUTE, sessionAsksRoute } from "../areas/session-asks";
 import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute } from "../areas/mentions";
 import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
@@ -451,7 +451,9 @@ export function createBoxDispatcher({
           return yield* json(409, { computer: owner.key, message: `Open this record on ${owner.name} to change it.` });
         }
         // (No computer known to have it: it runs here, where the engine answers it, unless it's held.)
-        if (!mayActivate(ref))
+        const stopOrHold = session && method === "POST"
+          && (route === `kuvo/sessions/${session}/stop` || route === `kuvo/sessions/${session}/queue/hold`);
+        if (!mayActivate(ref) && !(stopOrHold && queueHoldWhileSettling(session)))
           return yield* json(409, { message: "This record is held while its owner changes." });
         if ((desktop || paired) && method === "POST" && (session && SEND_ROUTE.test(route) || group && route === `kuvo/groups/${group}`)) {
           const result = await ownerMessageHere(context, (session ?? group)!);

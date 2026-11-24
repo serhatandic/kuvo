@@ -1,6 +1,6 @@
 //! Ownership facts and authenticated transport supplied by the peers runtime.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use http::StatusCode;
 use kuvo_server::{Caller, Pairing, Refusal, Transport};
@@ -149,6 +149,9 @@ pub trait SessionOwnership: Send + Sync {
     fn scope(&self, session: &str, issuer: Option<ComputerKey>) -> Result<OwnerScope, Refusal>;
     fn members(&self) -> Vec<SessionOwner> {
         Vec::new()
+    }
+    fn receipt_issuers(&self) -> BTreeMap<ComputerKey, ComputerKey> {
+        BTreeMap::new()
     }
     fn current_pairing(&self, key: &ComputerKey, pairing: &str) -> DeviceAccess;
     fn request(&self, target: ComputerKey, request: OwnedRequest, wait: Duration) -> PeerReply<'_>;

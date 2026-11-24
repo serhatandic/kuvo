@@ -16,9 +16,16 @@ use kuvo_agents::{
     hold::{Controller, HoldKind, Limits, Output, Record, Start, TurnNote},
     roster::{Agent, Factory},
     runtime::{AdapterCall, Adoption, Runtime},
+    session::{
+        ActiveTurn, Delivery, EventEnvelope, Outcome, TextKind, Thread, TurnEvent, TurnInput,
+        TurnKind, TurnResult, TurnSink,
+    },
 };
 use kuvo_store::{files, home::Home};
 use serde_json::json;
+
+#[path = "agent_turn.rs"]
+mod turn;
 
 const ASK: &str = r#"{"id":17,"method":"fixture/approve"}"#;
 const REPLY: &str = r#"{"id":17,"result":{"allow":true}}"#;
@@ -30,13 +37,18 @@ pub(super) fn for_home(root: &Path) -> Option<Arc<dyn Factory>> {
         return None;
     }
     let home = Home::new(root.to_owned()).ok()?;
-    Some(Arc::new(Fixture { home, program }))
+    Some(Arc::new(Fixture {
+        home,
+        program,
+        recovered: Arc::new(tokio::sync::Mutex::new(None)),
+    }))
 }
 
 #[derive(Clone)]
 struct Fixture {
     home: Home,
     program: PathBuf,
+    recovered: Arc<tokio::sync::Mutex<Option<Controller>>>,
 }
 
 impl Factory for Fixture {
@@ -66,6 +78,20 @@ impl Agent for Fixture {
         Box::pin(async { Ok(Models::default()) })
     }
 
+    fn open_thread(
+        &self,
+        context: kuvo_agents::session::SessionContext,
+    ) -> AdapterCall<'_, Arc<dyn kuvo_agents::session::Thread>> {
+        Box::pin(async move {
+            let thread: Arc<dyn Thread> = if context.session_id == "ses_keeper_fixture" {
+                Arc::new(HeldFixture(self.clone()))
+            } else {
+                Arc::new(turn::FixtureThread)
+            };
+            Ok(thread)
+        })
+    }
+
     fn shutdown(&self) -> AdapterCall<'_, ()> {
         Box::pin(async { Ok(()) })
     }
@@ -83,28 +109,16 @@ impl Adoption for Fixture {
         &'a self,
         _: &'a Account,
         _: Record,
-        _: BTreeMap<String, TurnNote>,
-        mut controller: Controller,
+        turns: BTreeMap<String, TurnNote>,
+        controller: Controller,
     ) -> AdapterCall<'a, ()> {
         let home = self.home.clone();
         Box::pin(async move {
-            tokio::spawn(async move {
-                let result: io::Result<()> = async {
-                    line(&mut controller, "before").await?;
-                    line(&mut controller, ASK).await?;
-                    controller.input.unpin().await?;
-                    controller.input.write(REPLY).await?;
-                    line(&mut controller, "after").await?;
-                    write_checkpoint(&home, "agent-fixture-finished", &controller)?;
-                    controller.input.end().await?;
-                    while !matches!(controller.output.next().await?, Output::Exited { .. }) {}
-                    controller.input.bye().await
-                }
-                .await;
-                if let Err(error) = result {
-                    eprintln!("Agent fixture replay failed: {error}");
-                }
-            });
+            if turns.values().any(|turn| turn.turn.is_some()) {
+                *self.recovered.lock().await = Some(controller);
+            } else {
+                tokio::spawn(replay(home, controller, None));
+            }
             Ok(())
         })
     }
@@ -141,7 +155,10 @@ impl Fixture {
                     kind: HoldKind::JsonRpc,
                     meta: json!({
                         "provider":"codex-cli", "fixture":true,
-                        "turns":{"thread":{"session":"ses_keeper_fixture","from":0}},
+                        "turns":{"thread":{"session":"ses_keeper_fixture","from":0,
+                            "turn": self.home.root().join("agents/sessions/ses_keeper_fixture/session.json")
+                                .is_file().then_some("keeper_fixture"),
+                        }},
                     })
                     .as_object()
                     .unwrap()
@@ -167,6 +184,107 @@ impl Fixture {
         write_checkpoint(&self.home, "agent-fixture-started", &controller)?;
         while controller.output.next().await.is_ok() {}
         Ok(())
+    }
+}
+
+struct HeldFixture(Fixture);
+struct HeldControl;
+
+impl ActiveTurn for HeldControl {
+    fn interrupt(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+}
+
+impl Thread for HeldFixture {
+    fn start(
+        &self,
+        input: TurnInput,
+        sink: Arc<dyn TurnSink>,
+    ) -> AdapterCall<'_, Arc<dyn ActiveTurn>> {
+        Box::pin(async move {
+            if !matches!(input.kind, TurnKind::Recover { .. }) {
+                return Err(io::ErrorKind::Unsupported.into());
+            }
+            let holder = self
+                .0
+                .recovered
+                .lock()
+                .await
+                .take()
+                .ok_or_else(|| io::Error::other("The fixture holder was not attached."))?;
+            tokio::spawn(replay(self.0.home.clone(), holder, Some((input, sink))));
+            Ok(Arc::new(HeldControl) as Arc<dyn ActiveTurn>)
+        })
+    }
+}
+
+async fn replay(
+    home: Home,
+    mut controller: Controller,
+    sink: Option<(TurnInput, Arc<dyn TurnSink>)>,
+) {
+    let target = sink.as_ref().map(|(_, sink)| sink);
+    let report = |delivery, event| async move {
+        if let Some(sink) = target {
+            sink.event(EventEnvelope {
+                position: None,
+                delivery,
+                event,
+            })
+            .await?;
+        }
+        Ok::<_, io::Error>(())
+    };
+    let result: io::Result<()> = async {
+        line(&mut controller, "before").await?;
+        report(
+            Delivery::Replay,
+            TurnEvent::StepStarted {
+                model: sink.as_ref().map(|(input, _)| input.model.clone()),
+            },
+        )
+        .await?;
+        report(
+            Delivery::Replay,
+            TurnEvent::TextDelta {
+                kind: TextKind::Text,
+                block: None,
+                delta: "before".into(),
+            },
+        )
+        .await?;
+        line(&mut controller, ASK).await?;
+        report(Delivery::Live, TurnEvent::ReplayCaughtUp).await?;
+        controller.input.unpin().await?;
+        controller.input.write(REPLY).await?;
+        line(&mut controller, "after").await?;
+        report(
+            Delivery::Live,
+            TurnEvent::TextDelta {
+                kind: TextKind::Text,
+                block: None,
+                delta: " after".into(),
+            },
+        )
+        .await?;
+        report(
+            Delivery::Live,
+            TurnEvent::Finished(TurnResult {
+                outcome: Outcome::Succeeded,
+                took_prompt: true,
+                missed: Vec::new(),
+            }),
+        )
+        .await?;
+        write_checkpoint(&home, "agent-fixture-finished", &controller)?;
+        controller.input.end().await?;
+        while !matches!(controller.output.next().await?, Output::Exited { .. }) {}
+        controller.input.bye().await
+    }
+    .await;
+    if let Err(error) = result {
+        eprintln!("Agent fixture replay failed: {error}");
     }
 }
 

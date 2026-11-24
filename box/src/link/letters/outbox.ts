@@ -547,6 +547,7 @@ export function sendOutbox(host: Pick<LinkHost, "send">, link: LinkState | null 
     if (!name.endsWith(".gaveup")) continue;
     const id = name.slice(0, -7);
     fs.rmSync(path.join(REPLIES, name), { force: true });
+    fs.rmSync(path.join(REPLIES, `${id}.alive`), { force: true });
     fs.rmSync(path.join(REPLIES, `${id}.wait`), { force: true });
     givenUp(id);
   }
@@ -624,6 +625,9 @@ export function sendOutbox(host: Pick<LinkHost, "send">, link: LinkState | null 
     // Moved here since it was left (as the box it went from says, or as this box lists it now): here,
     // relay or not.
     if (lives === mine || (!lives && ownHere.has(letter.to))) {
+      // Moving to or from another computer: wait without arming a retry cooldown so it goes as
+      // soon as the move settles or retires.
+      if (frozen().has(letter.to)) continue;
       if (now - (letterTries.get(id) ?? 0) < 60_000) continue;
       letterTries.set(id, now);
       telling.push(deliverHere(id, file, letter, step));
@@ -643,7 +647,7 @@ export function sendOutbox(host: Pick<LinkHost, "send">, link: LinkState | null 
       if (!introduced) {
         const introduction = { at: now, done: false };
         introducing.set(id, introduction);
-        telling.push(announce(host, readEngineFile, link).catch(() => {}).finally(() => { introduction.done = true; }));
+        telling.push(announce(host, readEngineFile, link, now, false, undefined, "engine").catch(() => {}).finally(() => { introduction.done = true; }));
         continue;
       }
       if (!introduced.done && now - introduced.at < INTRODUCING_FOR) continue;

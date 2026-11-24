@@ -4,6 +4,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    sync::LazyLock,
     time::Duration,
 };
 
@@ -14,16 +15,42 @@ use crate::{
     Command, Release, SELECTOR, execute,
     manifest::{ReleaseRef, SignedRelease, local_target, sha256},
     prepare_command::version_order,
-    read_record, staging,
+    read_record, retirement, staging, update_status,
 };
 
 const STAGE_WAIT: i64 = 300_000;
 const MAX_BRIDGE_ENVELOPE: usize = 8192;
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Timing {
+    peer_transfer_ms: u64,
+    keeper_trial_ms: u64,
+}
+
+static TIMING: LazyLock<Timing> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../../src/shared/fleet-timing.json"))
+        .expect("valid fleet timing")
+});
+
+pub fn peer_transfer_limit() -> Duration {
+    Duration::from_millis(TIMING.peer_transfer_ms)
+}
+
+pub(crate) fn keeper_trial_limit() -> Duration {
+    Duration::from_millis(TIMING.keeper_trial_ms)
+}
+
 #[derive(Clone)]
 pub struct Candidate {
     signed: SignedRelease,
     envelope: String,
+}
+
+pub struct InstallerMedia {
+    pub pack_name: String,
+    pub pack_sha256: String,
+    pub archive: Vec<u8>,
 }
 
 impl Candidate {
@@ -59,9 +86,11 @@ impl Candidate {
     }
 
     pub fn matches_pack(&self, target: &str, digest: &str) -> bool {
-        self.signed
-            .pack_for(target)
-            .is_ok_and(|pack| pack.sha256 == digest)
+        self.pack_digest(target) == Some(digest)
+    }
+
+    pub fn pack_digest(&self, target: &str) -> Option<&str> {
+        Some(self.signed.pack_for(target).ok()?.sha256.as_str())
     }
 
     pub fn local(&self) -> io::Result<ReleaseRef> {
@@ -134,10 +163,9 @@ impl Candidate {
         files::write_secret(&folder.join("boxes.json"), self.envelope.as_bytes())
     }
 
-    pub fn kept(home: &Home, key: &str) -> io::Result<Option<Self>> {
-        files::text_of(&home.updates().join("release/boxes.json"))
-            .map(|bytes| Self::verify(bytes, key))
-            .transpose()
+    pub fn kept(home: &Home, key: &str) -> Option<Self> {
+        let envelope = files::text_of(&home.updates().join("release/boxes.json"))?;
+        Self::verify(envelope, key).ok()
     }
 
     pub fn keep(&self, home: &Home) -> io::Result<()> {
@@ -156,13 +184,7 @@ impl Candidate {
         {
             return Ok(false);
         }
-        if files::text_of(&home.run().join("update-cannot")).is_some_and(|text| {
-            let mut words = text.split_whitespace().skip(1);
-            words.next() == Some(&release.version)
-                && words
-                    .next()
-                    .is_some_and(|digest| release.sha256.starts_with(digest))
-        }) {
+        if update_status::trial_failure(home, &release.version, &release.sha256).is_some() {
             return Ok(false);
         }
         match target.validate(home.root()) {
@@ -181,6 +203,75 @@ impl Candidate {
             Duration::from_secs(300),
         )
         .await
+    }
+
+    /// Carry the running signed release and its installer to an older SSH machine.
+    pub async fn installer_media(
+        &self,
+        home: &Home,
+        target: &str,
+        fetcher: &Fetcher,
+    ) -> io::Result<InstallerMedia> {
+        if !self.signed.launches_rust() {
+            return Err(io::Error::other("The running release does not start Rust."));
+        }
+        let pack = self.signed.pack_for(target)?;
+        let name = pack.filename()?;
+        if matches!(
+            name.as_str(),
+            "boxes.json" | "kuvo-install" | "kuvo-install-bin"
+        ) {
+            return Err(io::Error::other("The release has an invalid pack name."));
+        }
+        let reference = self.signed.reference(pack);
+        let held = reference.target()?.folder(home.root()).join("pack");
+        let held_ref = reference.clone();
+        let cached = tokio::task::spawn_blocking(move || {
+            staging::read_release(&held, staging::MAX_PACK)
+                .ok()
+                .filter(|bytes| held_ref.matches_bytes(bytes))
+        })
+        .await
+        .map_err(io::Error::other)?;
+        let bytes = match cached {
+            Some(bytes) => bytes,
+            None => {
+                download(
+                    &fetcher.0,
+                    &pack.url,
+                    staging::MAX_PACK,
+                    Duration::from_secs(300),
+                )
+                .await?
+            }
+        };
+        let envelope = self.envelope.clone();
+        tokio::task::spawn_blocking(move || {
+            if !reference.matches_bytes(&bytes) {
+                return Err(io::Error::other("The pack isn't what the release says."));
+            }
+            let mut archive = tar::Builder::new(Vec::new());
+            for (path, bytes) in [
+                ("boxes.json", envelope.as_bytes()),
+                (
+                    "kuvo-install",
+                    include_bytes!("../../../src/install/kuvo-install").as_slice(),
+                ),
+                (name.as_str(), bytes.as_slice()),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(0o600);
+                header.set_size(bytes.len() as u64);
+                archive.append_data(&mut header, path, bytes)?;
+            }
+            Ok(InstallerMedia {
+                pack_name: name,
+                pack_sha256: reference.sha256,
+                archive: archive.into_inner()?,
+            })
+        })
+        .await
+        .map_err(io::Error::other)?
     }
 
     pub async fn prepare(self, home: Home, bytes: Vec<u8>) -> io::Result<()> {
@@ -282,6 +373,7 @@ pub struct HeldPack {
     pub reference: ReleaseRef,
     pub size: usize,
     file: File,
+    _lease: Option<File>,
 }
 
 impl HeldPack {
@@ -302,7 +394,7 @@ impl HeldPack {
         };
         let (_, running) = installed(home)?;
         let kept =
-            Candidate::kept(home, key)?.and_then(|candidate| candidate.local().ok()?.target().ok());
+            Candidate::kept(home, key).and_then(|candidate| candidate.local().ok()?.target().ok());
         let bridge = (home.updates().join("bridge"), None);
         let root = home.root().canonicalize()?;
         for (folder, target) in [exact, running, kept]
@@ -312,7 +404,20 @@ impl HeldPack {
             .map(|target| (target.folder(home.root()), Some(target)))
             .chain(std::iter::once(bridge))
         {
-            let Some(text) = files::text_of(&folder.join("boxes.json")) else {
+            let manifest = folder.join("boxes.json");
+            if !manifest.is_file() {
+                continue;
+            }
+            let lease = match target
+                .as_ref()
+                .map(|release| retirement::share(home.root(), release))
+                .transpose()
+            {
+                Ok(lease) => lease,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error),
+            };
+            let Some(text) = files::text_of(&manifest) else {
                 continue;
             };
             let Ok(candidate) = Candidate::verify(text, key) else {
@@ -345,6 +450,7 @@ impl HeldPack {
                     reference,
                     file,
                     size: size as usize,
+                    _lease: lease,
                 }));
             }
         }
@@ -371,9 +477,20 @@ pub fn stopped(home: &Home) -> bool {
         .any(|name| home.run().join(name).exists())
 }
 
+fn selected(home: &Home) -> io::Result<Option<Release>> {
+    Ok(Release::read(&home.root().join(SELECTOR))?
+        .or_else(|| fs::read_link(home.bin()).ok()?.to_str()?.parse().ok()))
+}
+
+pub fn trial_release(home: &Home) -> io::Result<Option<Release>> {
+    let Some(previous) = Release::read(&home.run().join("previous"))? else {
+        return Ok(None);
+    };
+    Ok(selected(home)?.filter(|next| next != &previous))
+}
+
 pub fn installed(home: &Home) -> io::Result<(Option<String>, Option<Release>)> {
-    let selected = Release::read(&home.root().join(SELECTOR))?
-        .or_else(|| fs::read_link(home.bin()).ok()?.to_str()?.parse().ok());
+    let selected = selected(home)?;
     let working = Release::read(&home.run().join("previous"))?.or(selected);
     let version = working
         .as_ref()
@@ -466,6 +583,8 @@ async fn download_once(
 
 #[cfg(unix)]
 async fn shell_switch(home: &Home, target: Release) -> io::Result<()> {
+    let _stage = kuvo_store::locks::try_file_lock(&home.run().join(".release-staging.lock"))?;
+    target.validate(home.root())?;
     // The detached keeper command must outlive the outgoing resident. Only
     // ask to keep workers after the keeper itself has confirmed compatibility.
     let root = home

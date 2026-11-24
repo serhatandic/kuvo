@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 const DAY: u64 = 86_400_000;
 const LETTER_MEMORY: u64 = 2 * DAY;
-const NOTE_MEMORY: u64 = 30 * DAY;
+pub(crate) const NOTE_MEMORY: u64 = 30 * DAY;
 const RETRY_EVERY: u64 = 60_000;
 const EXPIRED: &str = "It couldn't get there in two days of trying.";
 
@@ -40,7 +40,7 @@ pub struct FailureContext {
     pub tool_waiting: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Id(String);
 
@@ -186,6 +186,7 @@ pub struct Pending {
 }
 
 pub struct Outbox {
+    run: PathBuf,
     sending: PathBuf,
     replies: PathBuf,
     tries: HashMap<String, u64>,
@@ -202,6 +203,7 @@ impl Outbox {
         }
         let writer = lock(&run.join("outbox/writer.lock"))?;
         Ok(Self {
+            run: run.into(),
             sending,
             replies,
             tries: HashMap::new(),
@@ -223,6 +225,36 @@ impl Outbox {
         }
         write(&self.pending(id), letter)?;
         Ok(true)
+    }
+
+    /// A tool stopped waiting. A request for a transcript has no recipient
+    /// for its result, while a message can still go on without a waiter.
+    pub(crate) fn give_up(&mut self, id: &Id) -> Result<bool, Error> {
+        let pending = self.pending(id);
+        let letter = match read::<Letter>(&pending) {
+            Ok(letter) => letter,
+            // A sibling process may still be writing the pending letter; keep the
+            // `.gaveup` marker for the next round instead of silently dropping it.
+            Err(Error::Json { .. }) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if let Some(mut letter) = letter {
+            if letter.other.contains_key("call") || letter.other.contains_key("seat") {
+                return Ok(false);
+            }
+            if letter.read.is_some() {
+                remove(&pending)?;
+            } else if letter.wait {
+                letter.wait = false;
+                write(&pending, &letter)?;
+            }
+        }
+        remove(&self.waiting(id))?;
+        Ok(true)
+    }
+
+    pub fn cancel_try(&mut self, id: &Id) {
+        self.tries.remove(id.as_str());
     }
 
     pub fn due(&mut self, now: u64, online: bool) -> Result<Vec<Pending>, Error> {
@@ -327,6 +359,11 @@ impl Outbox {
             {
                 letter.peer = Some(keys::encode(&next));
                 write(&path, &letter)?;
+                if let Err(error) =
+                    crate::letters::homes::remember(&self.run, [letter.to.as_str()], &next, now)
+                {
+                    eprintln!("Remembering where a note was redirected: {error}");
+                }
             }
             return Ok(Settlement::Retry);
         }
@@ -747,13 +784,30 @@ fn relocate(from: &Path, to: &Path) -> Result<(), Error> {
 }
 
 fn remove(path: &Path) -> Result<(), Error> {
-    match fs::remove_file(path) {
-        Ok(()) => sync_parent(path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(storage(path, source)),
-    }
+    kuvo_store::files::remove_file_synced(path).map_err(|source| storage(path, source))
 }
 
-fn sync_parent(path: &Path) -> Result<(), Error> {
-    kuvo_store::files::sync_parent(path).map_err(|source| storage(path, source))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn give_up_defers_while_pending_letter_json_is_incomplete() {
+        let run = tempfile::tempdir().unwrap();
+        let id = Id::try_from("ltr_partial01".to_owned()).unwrap();
+        let mut outbox = Outbox::open(run.path()).unwrap();
+        let pending = run.path().join("outbox/sending/ltr_partial01.json");
+        fs::write(&pending, "{").unwrap();
+
+        assert!(!outbox.give_up(&id).unwrap());
+
+        fs::write(
+            &pending,
+            r#"{"to":"ses_target","text":"Hi","wait":true,"at":1}"#,
+        )
+        .unwrap();
+        assert!(outbox.give_up(&id).unwrap());
+        let updated: Letter = read(&pending).unwrap().unwrap();
+        assert!(!updated.wait);
+    }
 }

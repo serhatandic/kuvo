@@ -134,18 +134,34 @@ pub(super) fn note_ran(run: &Path, id: &str, from: &str, at: Millis) -> io::Resu
 }
 
 pub(super) fn forget(run: &Path, id: &str) -> io::Result<()> {
+    if let Some(backup) = forget_entry(run, id)? {
+        remove_trash(run, backup.trash.as_deref())?;
+    }
+    Ok(())
+}
+
+/// Keep the retry record until an expired backup has actually been removed.
+pub(super) fn expire(run: &Path, backup: &Backup) -> io::Result<()> {
+    remove_trash(run, backup.trash.as_deref())?;
+    forget_entry(run, &backup.id).map(|_| ())
+}
+
+fn forget_entry(run: &Path, id: &str) -> io::Result<Option<Backup>> {
     let mut rows = read(run)?;
-    if let Some(index) = rows.iter().position(|row| row.id == id) {
-        let row = rows.remove(index);
-        save(run, rows)?;
-        if let Some(path) = row.trash {
-            let trash_root = run.parent().expect("resident has a home").join("trash");
-            if in_trash(&trash_root, &path) {
-                files::remove_tree_synced(&path)?;
-                if let Some(parent) = path.parent().filter(|parent| *parent != trash_root) {
-                    let _ = files::remove_empty_dir_synced(parent);
-                }
-            }
+    let Some(index) = rows.iter().position(|row| row.id == id) else {
+        return Ok(None);
+    };
+    let row = rows.remove(index);
+    save(run, rows)?;
+    Ok(Some(row))
+}
+
+fn remove_trash(run: &Path, path: Option<&Path>) -> io::Result<()> {
+    let trash_root = run.parent().expect("resident has a home").join("trash");
+    if let Some(path) = path.filter(|path| in_trash(&trash_root, path)) {
+        files::remove_tree_synced(path)?;
+        if let Some(parent) = path.parent().filter(|parent| *parent != trash_root) {
+            let _ = files::remove_empty_dir_synced(parent);
         }
     }
     Ok(())

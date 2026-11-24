@@ -362,6 +362,32 @@ console.log("watching");
     assert.equal((await successor.closed()).done, true);
 }));
 
+test("an agent's exit is told soon even when something it started keeps its output open",
+  { timeout: 15000 }, t => withHolder(t, {
+    agent: `
+import { spawn } from "node:child_process";
+// Its own session on Unix, so clearing the agent's process group leaves it running.
+const left = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"],
+  { stdio: ["ignore", "inherit", "inherit"], detached: true });
+console.log(String(left.pid));
+process.exit(0);
+`,
+  }, async ({ connect }) => {
+    const original = connect();
+    original.send(boot);
+    assert.equal((await original.read()).generation, 1);
+    const left = Number((await original.read()).o);
+    try {
+      const started = Date.now();
+      assert.deepEqual(await original.read(), { x: { code: 0, signal: null } });
+      assert.ok(Date.now() - started < 3000, "the exit waited for the leaked output to close");
+      original.send({ bye: true });
+      assert.equal((await original.closed()).done, true);
+    } finally {
+      try { process.kill(left); } catch {}
+    }
+}));
+
 test("stopping a held agent also stops its subprocess",
   { timeout: 15000 }, t => withHolder(t, {
     agent: `

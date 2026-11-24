@@ -1,5 +1,9 @@
+#[cfg(target_os = "linux")]
+mod install_linux;
 #[cfg(target_os = "macos")]
 mod install_media;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod install_released;
 mod model_stars;
 mod serve;
 mod session_ownership;
@@ -28,13 +32,43 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    let _release = if matches!(word(0), Some("serve" | "keep" | "hold" | "mcp")) {
+        env::var_os("KUVO_HOME")
+            .filter(|home| std::path::Path::new(home).is_absolute())
+            .map(|home| kuvo_keeper::lease_running_release(std::path::Path::new(&home)))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if word(0) == Some("hold") {
         kuvo_agents::hold::run(&args[1..])?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The stdio MCP forwarder an agent starts in its sandbox.
+    if (word(0), args.len()) == (Some("mcp"), 1) {
+        let relay = kuvo_agents::tool_forwarder::Relay::from_env()?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(kuvo_agents::tool_forwarder::forward(
+                relay,
+                tokio::io::BufReader::new(tokio::io::stdin()),
+                tokio::io::stdout(),
+            ))?;
         return Ok(ExitCode::SUCCESS);
     }
     #[cfg(target_os = "macos")]
     if word(0) == Some("install-media") {
         return Ok(install_media::run(&args[1..]));
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if word(0) == Some("install-released-machine") {
+        return Ok(install_released::run(&args[1..]));
+    }
+    #[cfg(target_os = "linux")]
+    if word(0) == Some("install-linux") {
+        return Ok(install_linux::run(&args[1..]));
     }
     #[cfg(target_os = "macos")]
     if (word(0), args.len()) == (Some("helper-hand-over"), 1) {
@@ -64,6 +98,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         ))?;
         kuvo_setup::backup::Backups::new(home).preserve_before_rust()?;
         return Ok(ExitCode::SUCCESS);
+    }
+    if (word(0), word(1)) == (Some("box"), Some("labels")) {
+        return kuvo_work::label_restore::run(&args[2..]);
     }
     if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
         if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
@@ -188,7 +225,19 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
     }
     if let Some(check) = uninstall {
-        let outcome = kuvo_setup::uninstall::run(&home, check);
+        let startup = |_check| {
+            Ok(kuvo_setup::uninstall::StartupEntries {
+                #[cfg(unix)]
+                crontab: kuvo_keeper::crontab::uninstall(&home, _check)?,
+                #[cfg(not(unix))]
+                crontab: None,
+                #[cfg(target_os = "macos")]
+                launch_agent: kuvo_keeper::mac_helper::uninstall(&home, _check)?,
+                #[cfg(not(target_os = "macos"))]
+                launch_agent: None,
+            })
+        };
+        let outcome = kuvo_setup::uninstall::run(&home, check, startup);
         #[cfg(windows)]
         if !check
             && outcome.status == 0
@@ -618,15 +667,18 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
     use std::{ffi::OsStr, path::Path};
 
     let usage = || {
-        eprintln!("usage: kuvo-box install --status --root <name> [--app <bundle>]");
+        eprintln!(
+            "usage: kuvo-box install --status --root <name> [--app <bundle>] [--media <folder>]"
+        );
         Ok(ExitCode::from(2))
     };
     let mut words = args.iter().filter(|word| *word != "--status");
-    let (mut root, mut bundle) = (None, None);
+    let (mut root, mut bundle, mut media) = (None, None, None);
     while let Some(word) = words.next() {
         let slot = match word.to_str() {
             Some("--root") if root.is_none() => &mut root,
             Some("--app") if bundle.is_none() => &mut bundle,
+            Some("--media") if media.is_none() => &mut media,
             _ => return usage(),
         };
         *slot = words.next().map(Path::new);
@@ -682,6 +734,23 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
+    if let Some(media) = media {
+        if !media.is_absolute() {
+            return usage();
+        }
+        let scratch = located(home.root()) != located(&account.home.join(".kuvo-code"));
+        let key = scratch
+            .then(|| env::var("KUVO_TEST_RELEASE_KEY").ok())
+            .flatten();
+        let key = key.as_deref().unwrap_or(kuvo_keeper::manifest::UPDATE_KEY);
+        if let Err(error) = kuvo_keeper::staging::check_install_media(media, key) {
+            println!(
+                "{}",
+                serde_json::json!({"result":"failed","message":error.to_string()})
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+    }
     let helper_ready = {
         #[cfg(target_os = "macos")]
         {
