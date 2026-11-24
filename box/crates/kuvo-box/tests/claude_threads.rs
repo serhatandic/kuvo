@@ -543,6 +543,9 @@ impl TurnSink for Sink {
 #[test]
 #[ignore = "Fixture subprocess launched by the real holder"]
 fn claude_wire_fixture() {
+    // With one test thread the harness starts a "test … " line first: end it, so the next line
+    // Claude's reader sees is the first frame.
+    println!();
     let args: Vec<_> = env::args().collect();
     let resume = args
         .iter()
