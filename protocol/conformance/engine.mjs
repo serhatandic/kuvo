@@ -189,7 +189,10 @@ export async function standInEngine(root, env) {
         };
         if (held?.beforeAcceptance) {
           held.accepted();
-          if (held.release) void held.release.then(() => { accept(); send({}); });
+          if (held.release) void held.release.then(() => {
+            if (!held.status) accept();
+            send({}, held.status);
+          });
           return;
         }
         accept();
@@ -208,6 +211,14 @@ export async function standInEngine(root, env) {
           if (engine.inboxUnavailable?.has(session)) return send({}, 503);
           const reply = engine.inboxReplies?.get(session);
           if (reply) return send(reply.body, reply.status);
+          if (engine.holdInbox?.session === session) {
+            const held = engine.holdInbox;
+            engine.holdInbox = null;
+            const read = structuredClone(inbox);
+            held.accepted();
+            void held.release.then(() => send({ data: read }));
+            return;
+          }
           return send({ data: inbox });
         }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));

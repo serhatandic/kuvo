@@ -1519,20 +1519,46 @@ where
 {
     let session = sessions::id(&call)?;
     let id = queue_item(&call)?;
-    let _turn = engine.turn(&session).await;
-    let _admitted = crate::session_move::admit(engine, &session, None).await?;
-    let lease = command_target(engine, &session).await?;
-    if !advance(engine, &lease, &session, &id, immediately).await? {
-        return Err(not_waiting());
-    }
-    Ok(RouteReply::json::<200>(sessions::typed(
-        engine
-            .queues
-            .get(&session)
-            .await
-            .map_err(save_failed)?
-            .shown(&engine.home),
-    )?))
+    let engine = engine.clone();
+    let work = async move {
+        let _turn = engine.turn(&session).await;
+        let _admitted = crate::session_move::admit(&engine, &session, None).await?;
+        let lease = command_target(&engine, &session).await?;
+        if !advance(&engine, &lease, &session, &id, immediately).await? {
+            return Err(not_waiting());
+        }
+        Ok::<_, Refusal>(
+            engine
+                .queues
+                .get(&session)
+                .await
+                .map_err(save_failed)?
+                .shown(&engine.home),
+        )
+    };
+    let shown = if immediately {
+        // The caller's deadline cannot cancel a native POST whose acceptance
+        // is still being checked. The task owns its turn through settlement.
+        let sending = tokio::spawn(work);
+        match tokio::time::timeout(Duration::from_secs(30), sending).await {
+            Ok(Ok(shown)) => shown?,
+            Ok(Err(error)) => {
+                eprintln!("Sending a queued message: {error}");
+                return Err(send_now_checking());
+            }
+            Err(_) => return Err(send_now_checking()),
+        }
+    } else {
+        work.await?
+    };
+    Ok(RouteReply::json::<200>(sessions::typed(shown)?))
+}
+
+fn send_now_checking() -> Refusal {
+    Refusal::new(
+        StatusCode::BAD_GATEWAY,
+        "Kuvo is still checking whether the message was sent.",
+    )
 }
 
 #[derive(Deserialize)]
@@ -1553,13 +1579,20 @@ async fn reorder_reply(
             "Give the message, its neighbor, and which side to put it on.",
         )
     })?;
-    let _turn = engine.turn(&session).await;
     let _admitted = crate::session_move::admit(engine, &session, None).await?;
     let lease = command_target(engine, &session).await?;
     let inbox = inbox(engine, &lease, &session)
         .await
         .map_err(queue_failed)?;
+    // Read the inbox before taking the writer's turn. An Add or a confirmed
+    // Send Now can finish while this read is waiting on OpenCode.
+    let _turn = engine.turn(&session).await;
     let saved = engine.queues.get(&session).await.map_err(save_failed)?;
+    engine
+        .queues
+        .verify_waiting(&saved)
+        .await
+        .map_err(save_failed)?;
     let mut order = saved
         .order(&inbox)
         .into_iter()

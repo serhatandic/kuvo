@@ -638,6 +638,55 @@ test("Edit requires the exact message lookup after a refused queued handoff", { 
   assert.equal(here.engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt")).length, 1);
 });
 
+test("a native Send Now keeps settling the handoff after the client waits thirty seconds", { timeout: 60000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-now-deadline");
+  const [accept, reject] = ["accepted", "refused"].map(outcome => {
+    const session = "ses_" + outcome;
+    here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+    return { session, id: "msg_" + outcome, queue: `kuvo/sessions/${session}/queue` };
+  });
+  const record = await here.start().ready();
+  for (const row of [accept, reject]) {
+    assert.equal((await request(record, "POST", `kuvo/sessions/${row.session}/stop`)).status, 200);
+    assert.equal((await request(record, "POST", row.queue + "/add", { id: row.id, words: "Keep this message." })).json.waits, true);
+  }
+  const answers = Promise.withResolvers();
+  const sending = async (row, status) => {
+    const seen = Promise.withResolvers();
+    here.engine.holdPrompt = { id: row.id, accepted: seen.resolve, release: answers.promise, beforeAcceptance: true, status };
+    const edit = row.queue + "/" + row.id;
+    const response = request(record, "POST", edit + "/now", undefined, {}, 38000);
+    response.catch(() => {});
+    await seen.promise;
+    return { edit, response, file: path.join(here.home, "run", "waiting", row.id + ".json") };
+  };
+  let one, two;
+  try {
+    one = await sending(accept);
+    two = await sending(reject, 503);
+    for (const send of [one, two]) {
+      const response = await send.response;
+      assert.equal(response.status, 502, response.text);
+      assert.match(response.json.message, /still checking whether the message was sent/);
+      assert.equal((await request(record, "DELETE", send.edit)).status, 502);
+      assert.equal(fs.existsSync(send.file), true);
+    }
+  } finally {
+    answers.resolve();
+  }
+  await until(() => !fs.existsSync(one.file), "the accepted handoff to retire its waiting file");
+  assert.equal((await request(record, "DELETE", one.edit)).status, 404);
+  const recovered = await until(async () => {
+    const response = await request(record, "DELETE", two.edit);
+    return response.status !== 502 && response;
+  }, "the refused handoff to allow its draft to be edited");
+  assert.equal(recovered.status, 200, recovered.text);
+  assert.equal(recovered.json.removed.draft, "Keep this message.");
+  assert.deepEqual(here.engine.messages.get(accept.session).map(row => row.id), [accept.id]);
+  assert.equal(here.engine.messages.has(reject.session), false);
+});
+
 test("a delivered message leaves the displayed queue while its handoff backup survives", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("queue-handoff-backup");
@@ -742,6 +791,43 @@ test("queue reads keep the last complete inbox and the live line skips unreadabl
   const missing = await request(record, "GET", "kuvo/sessions/ses_missing/queue?items=1");
   assert.equal(missing.status, 200, missing.text);
   assert.deepEqual(missing.json, { paused: false, held: [], items: null });
+});
+
+test("a slow reorder reads the queue after a concurrent Add and Send Now finish", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-slow-reorder");
+  const session = "ses_reorderInterleave";
+  const base = `kuvo/sessions/${session}`;
+  const queue = base + "/queue";
+  const drafts = ["msg_a", "msg_b", "msg_c", "msg_d"];
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const record = await here.start().ready();
+  assert.equal((await request(record, "POST", base + "/stop")).status, 200);
+  const add = id => request(record, "POST", queue + "/add", { id, words: id }, { "x-kuvo-from": "app" }, 3000);
+  for (const id of drafts.slice(0, 3)) assert.equal((await add(id)).json.waits, true);
+  const read = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  here.engine.holdInbox = { session, accepted: read.resolve, release: release.promise };
+  const ordering = request(record, "POST", queue + "/reorder", { item: drafts[2], anchor: drafts[1], before: true });
+  ordering.catch(() => {});
+  try {
+    await read.promise;
+    assert.equal((await add(drafts[3])).json.waits, true);
+    assert.equal((await request(record, "POST", queue + "/" + drafts[0] + "/now", undefined, {}, 3000)).status, 200);
+  } finally {
+    release.resolve();
+  }
+  const ordered = await ordering;
+  assert.equal(ordered.status, 200, ordered.text);
+  assert.deepEqual(ordered.json.items.map(item => item.id), [drafts[2], drafts[1], drafts[3]]);
+  assert.equal((await request(record, "POST", queue + "/resume")).status, 200);
+  const delivered = () => here.engine.messages.get(session).map(row => row.id);
+  assert.deepEqual(delivered(), [drafts[0], drafts[2]]);
+  for (const count of [3, 4]) {
+    here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+    await until(() => delivered().length === count, "the next saved draft to drain in its new order");
+  }
+  assert.deepEqual(delivered(), [drafts[0], drafts[2], drafts[1], drafts[3]]);
 });
 
 test("legacy waiting queues read and future formats are refused before removal or Resume", { timeout: 45000 }, async t => {
