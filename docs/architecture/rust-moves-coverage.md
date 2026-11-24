@@ -138,8 +138,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Eighty-three have full scenario coverage, 18 have partial proof,
-and 111 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Eighty-four have full scenario coverage, 18 have partial proof,
+and 110 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -217,7 +217,7 @@ separately where they appear.
 | | 17 | Covered by the overdue drop warning once and staying held, followed by hourly retry and cleanup. |
 | | 19–20 | Covered by a reply from a local conversation following its held caller to the new owner, and by a resident delivering a saved reply to its local conversation. |
 | | 23–24 | Covered by queued notices retaining their text, author and presentation on the new computer and after a return home. |
-| | 8 | Open, 2.4 retry and rollback when the destination goes quiet during a second offer. |
+| | 8 | Covered by a changed transcript causing a second offer, retrying that same offer every minute, and releasing the original and its wake-up marker when the destination stays quiet. |
 | | 9 | Covered by a resident with successive slow engine exports, releasing the original and its wake-up marker at the thirty-minute deadline before the first offer. |
 | | 13–14 | Open, 2.4 ordinary letters, notes and delayed delivery, including forwarding after a move. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 1–3 | Work Queue creation, forwarded claims and edits owned by 5.2. |

@@ -2010,15 +2010,27 @@ async fn dropped_copies_retry_each_minute_then_each_hour() {
 
 #[tokio::test]
 async fn a_quiet_peer_keeps_the_original_until_the_transfer_deadline() {
-    source_deadline(false).await;
+    source_deadline(SourceDeadline::Parts).await;
 }
 
 #[tokio::test]
 async fn a_slow_preparation_releases_the_original_at_the_move_deadline() {
-    source_deadline(true).await;
+    source_deadline(SourceDeadline::Preparation).await;
 }
 
-async fn source_deadline(slow_exports: bool) {
+#[tokio::test]
+async fn a_quiet_peer_can_retry_a_second_offer_until_the_transfer_deadline() {
+    source_deadline(SourceDeadline::SecondOffer).await;
+}
+
+#[derive(PartialEq)]
+enum SourceDeadline {
+    Parts,
+    Preparation,
+    SecondOffer,
+}
+
+async fn source_deadline(deadline: SourceDeadline) {
     use kuvo_engine::{Engine, Timing};
     use kuvo_peers::{
         devices::Devices,
@@ -2031,7 +2043,7 @@ async fn source_deadline(slow_exports: bool) {
     use serde_json::Value;
     use std::sync::{
         Arc,
-        atomic::{AtomicI64, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -2064,6 +2076,9 @@ async fn source_deadline(slow_exports: bool) {
     let (exported, mut exports) = tokio::sync::mpsc::unbounded_channel();
     let export_allowed = Arc::new(tokio::sync::Semaphore::new(0));
     let permit = export_allowed.clone();
+    let changed = Arc::new(AtomicBool::new(false));
+    let needs_second_offer = changed.clone();
+    let slow_exports = deadline == SourceDeadline::Preparation;
     let server = tokio::spawn(async move {
         while let Ok((socket, _)) = listener.accept().await {
             let mut socket = BufReader::new(socket);
@@ -2089,7 +2104,12 @@ async fn source_deadline(slow_exports: bool) {
                 if session_id != session {
                     info["parentID"] = session.into();
                 }
-                json!({"data":{"info":info,"messages":[]}})
+                let messages = if changed.load(Ordering::Relaxed) {
+                    json!([{"info":{"id":"msg_newLetter","role":"user"},"parts":[{"type":"text","text":"I found one more thing."}]}])
+                } else {
+                    json!([])
+                };
+                json!({"data":{"info":info,"messages":messages}})
             } else if slow_exports
                 && route.starts_with(&format!("/api/session?parentID={session}&"))
             {
@@ -2218,29 +2238,53 @@ async fn source_deadline(slow_exports: bool) {
         0
     );
 
-    let waiting = |shown: &Value| {
-        shown
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["id"] == id)
-            .map(|row| row["waiting"] == true)
-    };
-    tokio::time::pause();
-    clock.store(1_094_000, Ordering::Relaxed);
-    wire.send(vec![0]).await;
-    tokio::time::advance(Duration::from_secs(94)).await;
-    tokio::time::timeout(Duration::from_secs(12), async {
-        while waiting(&wire.moving().await) != Some(true) {}
-    })
-    .await
-    .unwrap();
-    wire.send(mail(step("working"))).await;
-    tokio::time::timeout(Duration::from_secs(12), async {
-        while waiting(&wire.moving().await) != Some(false) {}
-    })
-    .await
-    .unwrap();
+    if deadline == SourceDeadline::SecondOffer {
+        let mut got = step("got");
+        got["i"] = 0.into();
+        wire.send(mail(got)).await;
+        needs_second_offer.store(true, Ordering::Relaxed);
+        wire.send(mail(step("arrived"))).await;
+        let second = tokio::time::timeout(Duration::from_secs(10), wire.move_step("offer"))
+            .await
+            .unwrap();
+        assert_eq!(second["generation"], 2);
+        assert_ne!(second["hash"], offer["hash"]);
+        tokio::time::pause();
+        for seconds in [61, 122] {
+            clock.store(1_000_000 + seconds * 1000, Ordering::Relaxed);
+            wire.send(vec![0]).await;
+            tokio::time::advance(Duration::from_secs(61)).await;
+            let retried = tokio::time::timeout(Duration::from_secs(12), wire.move_step("offer"))
+                .await
+                .unwrap();
+            assert_eq!(retried, second);
+            assert!(!outcome.exists());
+        }
+    } else {
+        let waiting = |shown: &Value| {
+            shown
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == id)
+                .map(|row| row["waiting"] == true)
+        };
+        tokio::time::pause();
+        clock.store(1_094_000, Ordering::Relaxed);
+        wire.send(vec![0]).await;
+        tokio::time::advance(Duration::from_secs(94)).await;
+        tokio::time::timeout(Duration::from_secs(12), async {
+            while waiting(&wire.moving().await) != Some(true) {}
+        })
+        .await
+        .unwrap();
+        wire.send(mail(step("working"))).await;
+        tokio::time::timeout(Duration::from_secs(12), async {
+            while waiting(&wire.moving().await) != Some(false) {}
+        })
+        .await
+        .unwrap();
+    }
 
     clock.store(1_699_000, Ordering::Relaxed);
     wire.send(vec![0]).await;
@@ -2262,6 +2306,8 @@ async fn source_deadline(slow_exports: bool) {
     );
     let parsed: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
     assert_eq!(parsed["step"], "drop");
+    assert!(!wake.join("paused").exists());
+    assert_eq!(std::fs::read(wake.join("answer")).unwrap(), b"keep this");
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
