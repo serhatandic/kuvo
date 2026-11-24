@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Number;
 
 use crate::{
-    directory::{ComputerKey, Ownership, PreparedRelease, RecordScope},
+    directory::{ComputerKey, Ownership, RecordScope},
     kept,
     reach::{Millis, Standing},
     setup_lists::View,
@@ -517,11 +517,7 @@ impl View {
         }
     }
 
-    pub fn runs_on(
-        &self,
-        now: Millis,
-        bridge: Option<&PreparedRelease>,
-    ) -> routes::get_kuvo_setup_runs_on_events::Status200 {
+    pub fn runs_on(&self, now: Millis) -> routes::get_kuvo_setup_runs_on_events::Status200 {
         let here = GetKuvoSetupRunsOnEventsStatus200ComputersItem {
             computer: self.roster.local(),
             agents: self.local.catalog.agents.clone(),
@@ -534,12 +530,7 @@ impl View {
         };
         let computers = std::iter::once(here)
             .chain(self.list_origins(now).map(|(lists, origin)| {
-                let catching_up = bridge.is_some_and(|bridge| {
-                    self.announced
-                        .get(&origin.computer.id)
-                        .and_then(|peer| peer.computer.as_ref())
-                        .is_some_and(|computer| computer.in_bridge_handoff(bridge))
-                });
+                let catching_up = self.in_bridge_handoff(&origin.computer.id);
                 let standing = match origin.standing {
                     Standing::Live if catching_up => Standing::Updating,
                     current => current,
