@@ -167,8 +167,13 @@ if (Test-Path -LiteralPath $temp) {{ [IO.File]::Delete($temp) }}
 $OutputEncoding = [Console]::OutputEncoding
 $env:KUVO_HOME = $K
 $join = [Console]::ReadLine()
-$join | & (Join-Path $K 'bin/kuvo-box.exe') ssh-enroll '{quote}'
-exit $LASTEXITCODE
+$box = Join-Path $K 'bin/kuvo-box.exe'
+$enrolled = $join | & $box ssh-enroll '{quote}'
+if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}
+& $box install --startup | Out-Null
+if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}
+$enrolled
+exit 0
 "#
         );
         let mut input = code.as_bytes().to_vec();
