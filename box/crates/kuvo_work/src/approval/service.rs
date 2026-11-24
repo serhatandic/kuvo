@@ -421,6 +421,9 @@ impl ApprovalService {
             let mut last: Option<String> = None;
             let mut settings_made: Option<String> = None;
             loop {
+                // (A round at most every two seconds, the first two seconds in, as TypeScript's
+                // interval runs them: what a client does as the engine starts goes first.)
+                tokio::time::sleep(LOOK).await;
                 let started = match &*states.borrow_and_update() {
                     kuvo_engine::State::Running { started, .. } => Some(format!("{started:?}")),
                     _ => None,
