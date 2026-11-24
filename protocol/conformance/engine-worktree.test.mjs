@@ -54,6 +54,7 @@ test("a new worktree is recorded under its project before the conversation is re
   git(env, project, "add", "file");
   git(env, project, "commit", "-qm", "Fixture");
   write(path.join(home, "box", "projects.json"), JSON.stringify({ version: 1, projects: [{ directory: project, name: "Fixture" }] }));
+  write(path.join(home, "box", "opencode.json"), JSON.stringify({ branch_prefix: " -ada:/ " }));
   const record = await start().ready();
 
   const response = await request(record, "POST", "kuvo/sessions", {
@@ -63,6 +64,9 @@ test("a new worktree is recorded under its project before the conversation is re
   const { session, folder, worktree } = response.json;
   assert.equal(worktree.project, project);
   assert.equal(worktree.folder, folder);
+  assert.equal(worktree.prefix, "ada/");
+  assert.match(worktree.made, /^ada\/brave-otter-\d+$/);
+  assert.match(git(env, folder, "symbolic-ref", "--short", "HEAD"), /^ada\//);
   assert.notEqual(folder, project);
   assert.equal(fs.readFileSync(path.join(folder, "file"), "utf8"), "Fixture\n");
   const made = engine.sessions.find(each => each.id === session);
