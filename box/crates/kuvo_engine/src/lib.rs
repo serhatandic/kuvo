@@ -35,6 +35,7 @@ mod transcript;
 mod turns;
 mod typed;
 mod waiting;
+mod wake_port;
 mod worktree_notes;
 
 use http::StatusCode;
@@ -81,6 +82,7 @@ pub use session_move::{MoveEngineError, SessionMove};
 pub use start_session::Permission as SessionPermission;
 pub use transcript::{TranscriptError, TranscriptScope};
 pub use waiting::PeerWaiting;
+pub use wake_port::{Delivered as WakeDelivered, Unreachable, WAKE_FROM, WAKE_MARKER, WakeEngine};
 pub use worktree_notes::WorktreeConversation;
 
 impl Engine {

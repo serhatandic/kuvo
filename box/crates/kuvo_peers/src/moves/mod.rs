@@ -228,6 +228,16 @@ fn journal_rows(run: &Path) -> impl Iterator<Item = Result<Journal, kuvo_store::
     })
 }
 
+/// The conversations that live on another computer for now, as moves have them: one arriving
+/// here until it's switched to, one leaving once it is. Unreadable records hold nothing back.
+pub fn away_sessions(run: &Path) -> std::collections::BTreeSet<String> {
+    journal_rows(run)
+        .filter_map(Result::ok)
+        .filter(Journal::away)
+        .flat_map(|record| record.sessions)
+        .collect()
+}
+
 fn journals(run: &Path) -> Result<Vec<Journal>, kuvo_store::format::Error> {
     let mut records = journal_rows(run).collect::<Result<Vec<_>, _>>()?;
     records.sort_by_key(|record| record.started);

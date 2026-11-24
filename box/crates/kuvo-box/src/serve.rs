@@ -219,6 +219,8 @@ pub async fn run(
         },
     );
     kuvo_services::git::register(&mut routes, home.to_owned());
+    let wakes = kuvo_work::wakes::Wakes::new(home, engine.clone());
+    wakes.register(&mut routes);
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -318,6 +320,7 @@ pub async fn run(
         });
     }
     let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
+    let firing = wakes.start();
     let finishing = setup.handle();
     let result = resident
         .serve(dispatcher, Arc::new(devices), async {
@@ -350,6 +353,7 @@ pub async fn run(
             Err(_) => eprintln!("Kuvo timed out checkpointing the coding agents."),
         }
     }
+    firing.stop().await;
     if let Some(updates) = updates {
         updates.stop().await;
     }
@@ -418,6 +422,7 @@ fn info(
     features.extend_from_slice(kuvo_engine::FEATURES);
     features.push(kuvo_peers::memory_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
+    features.extend_from_slice(kuvo_work::wakes::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
     }
