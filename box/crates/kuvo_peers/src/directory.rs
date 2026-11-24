@@ -259,15 +259,18 @@ impl CannotUpdate {
 }
 
 impl ComputerFacts {
-    pub(crate) fn in_bridge_handoff(&self, bridge_version: &str) -> bool {
-        self.extra
-            .get("releaseTarget")
-            .and_then(Value::as_str)
-            .is_none()
-            && self
-                .kuvo
-                .as_deref()
-                .is_some_and(|version| version == "0.8.0-beta.48" || version == bridge_version)
+    pub(crate) fn in_bridge_handoff(&self, bridge: &PreparedRelease) -> bool {
+        let Some(version) = self.kuvo.as_deref() else {
+            return false;
+        };
+        let text = |field| self.extra.get(field).and_then(Value::as_str);
+        if text("releaseTarget").is_none() {
+            return version == "0.8.0-beta.48" || version == bridge.version.as_str();
+        }
+        // While Rust is on trial, the last confirmed release can still be the bridge.
+        version == bridge.version.as_str()
+            && text("installedSha256") == Some(bridge.sha256.as_str())
+            && self.extra.get("switching").is_some_and(Value::is_object)
     }
 
     pub(crate) fn updates(&self) -> UpdateFacts {

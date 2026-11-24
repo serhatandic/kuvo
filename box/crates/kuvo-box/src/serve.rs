@@ -410,7 +410,7 @@ pub async fn run(
         kind == ComputerKind::Mac,
     );
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
-    let bridge_version = crate::updates::bridge_version(&update_home, &account);
+    let bridge = crate::updates::installed_bridge(&update_home, &account);
     let updates = crate::updates::start(update_home, &account, peers.clone(), setup.handle());
     crate::updates::register_check(
         &mut routes,
@@ -431,7 +431,7 @@ pub async fn run(
         backup_mail,
         Some(vault.clone()),
     );
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), bridge_version);
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), bridge);
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
