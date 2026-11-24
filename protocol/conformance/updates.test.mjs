@@ -2340,24 +2340,52 @@ test("the Mac installer preserves a machine and the earlier app's home", t => {
   assert.deepEqual(fs.readdirSync(home).sort(), ["bin", "box", "engine", "workspace"]);
 });
 
+function macInstallerRequest({ binary, env, release }, bundle, verb) {
+  const home = path.join(env.HOME, ".kuvo-code");
+  const install = ["install", `--${verb}`, "--root", ".kuvo-code", "--app", bundle];
+  const args = binary.typescript
+    ? ["--config=/dev/null", "--no-env-file", binary.file, ...install, "--release", release, "--engine", path.join(env.HOME, "engine")]
+    : verb === "status" ? install : ["install-media", release, ".kuvo-code", bundle, ...(verb === "new" ? ["--start"] : [])];
+  const run = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
+    cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+  });
+  assert.ifError(run.error);
+  return [run.status, JSON.parse(run.stdout)];
+}
+
+test("the Mac installer offers a move when the earlier app still has work", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the earlier Mac app's home.");
+  const fixture = box(t);
+  const { env } = fixture;
+  const identifier = "run.kuvo.code.earlier-fixture";
+  const bundle = macInstallerBundle(env.HOME, identifier);
+  const earlier = path.join(env.HOME, "Library/Application Support", identifier);
+  const notes = path.join(earlier, "Chats/c1/notes.md");
+  write(notes, "an earlier conversation");
+  for (const verdict of ["app-07", "app-box"]) {
+    if (verdict === "app-box") write(path.join(earlier, "box/run/keeper.json"), "{}");
+    const [code, status] = macInstallerRequest(fixture, bundle, "status");
+    assert.equal(code, 0);
+    assert.equal(status.verdict, verdict);
+    assert.equal(status.verb, "move");
+    assert.deepEqual(macInstallerRequest(fixture, bundle, "new"), [1, {
+      result: "refused", verdict, status: status.status,
+      message: "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.",
+    }]);
+    assert.equal(fs.readFileSync(notes, "utf8"), "an earlier conversation");
+    assert.equal(fs.existsSync(path.join(env.HOME, ".kuvo-code")), false);
+  }
+});
+
 test("the Mac installer waits for a live move", async t => {
   if (process.platform !== "darwin") return t.skip("Uses the Mac move lock.");
-  const { binary, env, release } = box(t);
+  const fixture = box(t);
+  const { env } = fixture;
   const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.wait-fixture");
   const home = path.join(env.HOME, ".kuvo-code");
   const lock = path.join(home, "updates/rehome/lock/pid");
   const holder = launch(process.execPath, ["-e", "console.log('ready');process.stdin.resume()", "rehome"], env, env.HOME, "pipe");
-  const ask = verb => {
-    const install = ["install", `--${verb}`, "--root", ".kuvo-code", "--app", bundle];
-    const args = binary.typescript
-      ? ["--config=/dev/null", "--no-env-file", binary.file, ...install, "--release", release, "--engine", path.join(env.HOME, "engine")]
-      : verb === "status" ? install : ["install-media", release, ".kuvo-code", bundle, ...(verb === "new" ? ["--start"] : [])];
-    const run = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
-      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
-    });
-    assert.ifError(run.error);
-    return [run.status, JSON.parse(run.stdout)];
-  };
+  const ask = verb => macInstallerRequest(fixture, bundle, verb);
   try {
     await once(holder.child.stdout, "data");
     write(lock, String(holder.child.pid));

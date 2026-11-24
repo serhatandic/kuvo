@@ -79,6 +79,7 @@ Intel Mac: checked without running; a real run waits for an Intel Mac.
 | U60 | The native Mac installer accepts an alternate case spelling of the selected home and returns the same status. It refuses a different home and the production app identifier in a scratch home, without creating either path. The TypeScript installer references cover app ownership and alternate spelling. |
 | U61 | With a live Mac move holding its lock, both installers report waiting for status, move, and new. The actions return the waiting result and exit code, keep the lock and files, and status offers a fresh install once the holder exits. |
 | U62 | The Mac installer resumes an interrupted setup from signed media. It reports the archive with the earlier launcher, selects the verified new release, clears incomplete staging, and starts the Helper through the launchctl fixture. The TypeScript interrupted-install reference also passed. |
+| U63 | With work in an earlier app home or app-owned box, both Mac installers offer a move and give the same refusal for new setup. They keep the earlier files and leave the destination home absent. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -362,6 +363,7 @@ dependencies.
 | Same 379 and 387, refuse local-file engine and damaged pack or engine | U46 checks damaged release media, U49 checks local-file engine refusal, and U55 checks failure to download or verify the signed engine. U2 and U4 cover update pack and engine integrity. | — |
 | Same 418, 442, 451, existing home, fleet update instead of reinstall, and offline status | U55 checks offline status with an earlier installed engine. U58 preserves an already running installation, refuses reinstall and leaves release changes to the fleet updater. | — |
 | Same 468, 505, Mac new and interrupted install, Helper launch | Partial. 2.6 covers staged making. U11 checks a fresh Mac install and U62 checks an interrupted install through signed media. Both start the Helper through a launchctl stand-in. A real Helper job remains open. | 6.2, 9.3 |
+| Same, earlier app's sessions prevent a new home beside them | U63 checks both earlier layouts through the native and TypeScript Mac installers. | — |
 | Same 564, 594, 645, existing app's data moves, progress order, and legacy app kept | Partial. U11 covers the move, ordered progress, and both the retained source and published home. The live Helper readiness check remains open. | 6.2, 7.2 |
 | Same 700, 725, launch retry after move and deferred key settlement | Partial. U11 checks installer restart after a missing Helper registration. 2.6 covers resumable settlement with stand-ins. Actual launchd and authenticated Keychain settlement remain open. | 6.2, 7.2 |
 | Same 750, two installations preserved | U59 checks status, move, and new through the native Mac installer. | — |
