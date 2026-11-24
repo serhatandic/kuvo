@@ -25,9 +25,11 @@ mod keychain;
 mod legacy;
 mod release;
 mod security;
+mod sign_ins;
 
 pub use credentials::{GenericPassword, KeychainItems};
 pub use security::ClaudeKeychain;
+pub use sign_ins::{owns_sign_ins_home, sign_ins};
 
 const PENDING: &str = "updates/rehome/publication.json";
 const JOURNAL: &str = "updates/rehome/journal.json";

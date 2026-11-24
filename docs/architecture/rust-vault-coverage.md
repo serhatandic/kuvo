@@ -130,9 +130,9 @@ this row. Installed Helper cases still need the released supervision path.
 | Prior coverage | Assigned case | Status and owner |
 |---|---|---|
 | [rust-store-coverage.md](rust-store-coverage.md) | Helper rendezvous decoding and Helper launch-stdin format/recovery. | Partial. Helper scratch conformance exercises current rendezvous and stdin. Legacy and future versions need focused assertions (6.2). Recovery also needs 7.1. |
-| [rust-engine-coverage.md](rust-engine-coverage.md) | Tool wording (case 3). Session asks (cases 8–13 and 19). Vault IPC and SSH registration. | Partial. Vault tool list, ask routes and SSH registration run through the resident. Session-ask and wait-count integration needs 6.2 with 3.2 and 5.1. |
+| [rust-engine-coverage.md](rust-engine-coverage.md) | Tool wording (case 3). Session asks (cases 8–13 and 19). Vault IPC and SSH registration. | Partial. The resident exposes typed session cards, owning conversation and caller, scoped replies, cancellation and waiting updates. The binary adapter to `kuvo_engine::ExternalAsks` depends on 3.2c. |
 | [rust-setup-coverage.md](rust-setup-coverage.md) | Signed installed Helper rehearsal, socket key, addressed SSH, vault socket and SSH session directory. | Partial. The released starter and resident recovery run with a debug Helper and disposable Keychain. The signed launchd rehearsal remains in 9.3. Per-session registration runs in scratch. Production enablement needs 6.1 and 4.1. |
-| [rust-move-coverage.md](rust-move-coverage.md) | Custom Claude credentials, released move Keychain copy/rollback, interactive saved-site transfer, vault and SSH session paths. | Partial. The real Claude credential move and the earlier rollback fixtures cover the named credential seam. SSH session paths are exercised in scratch. Saved-site transfer remains in 6.2 with 6.1. Helper launch belongs to 7.2. |
+| [rust-move-coverage.md](rust-move-coverage.md) | Custom Claude credentials, released move Keychain copy/rollback, interactive saved-site transfer, vault and SSH session paths. | Partial. The Claude credential move and rollback fixtures cover the named credential seam. The app can start the saved-site handover through the box. A scratch key-tool process and loopback vault fixture check verification before removal, conflicts, duplicates, and short passwords. The released desktop flow remains with 6.1 and the signed rehearsal. |
 | [rust-backups-coverage.md](rust-backups-coverage.md) | Separate key and no inherited grants; SSH deposits, replacement membership, revoked export, last-app wipe. | Partial. Real wrapped storage and a replacement Mac with a fresh Helper Keychain both restore vault points with a separate key and no inherited grants. Mac enrollment identity, revoked export and wipe orchestration remain with 2.3 and 6.2. |
 | [rust-adding-coverage.md](rust-adding-coverage.md) | Vault socket and SSH registration. Darwin launchctl cases at 560, 1993, 2015 and 2069; Helper install and recovery cases at 204, 468, 505, 700, 725, 774 and 793. | Partial. The Unix holder, SSH registration and disposable Helper protocol work here. Installed launch, recovery and wipe remain in 6.2 with 7.1 and 7.2. |
 | [rust-adding-coverage.md](rust-adding-coverage.md) | Mac re-enrollment after a lost rotation reply, judges for existing/unknown homes, new-home verdicts, both Mac key replacement cases and all three revoked relay exports. | Open. 6.2 owns the Keychain-dependent proof with 2.3, 2.5, 2.6 and 7.1. |
@@ -148,6 +148,10 @@ this row. Installed Helper cases still need the released supervision path.
   restart, setting changes that affect pending asks, Mac Helper recovery
   and signed-file failure cases. Completed command replay is covered. Browser launch and site recheck
   belong to 6.4.
+- The app-owned Mac wipe has a vault operation for the 2.3 callback. The
+  disposable Keychain test checks removal before detach, removal and retry
+  after detach, refusal outside App Support and preservation of a neighboring
+  app's service. The prepared-wipe and shutdown path calls it through 2.3c.
 - The stock differential runner also compares unrelated resident-owned
   files. Read the vault route and storage path results alongside the
   complete comparison.

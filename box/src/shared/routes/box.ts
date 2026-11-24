@@ -618,7 +618,7 @@ export const BOX_ROUTES: RouteShape[] = [
   // How moving this Mac's box out of the app's folder into a home of its own stands.
   { route: "GET kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
   // Ask to move this Mac's box now or back, or hand over an earlier app's sign-ins (`signIns: true`).
-  { route: "POST kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
+  { route: "POST kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME, 202: REHOME } },
   // What macOS allows Kuvo Helper, the program this Mac's box runs under, each in words.
   { route: "GET kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS } },
   // Put one permission off (`later`, a client's Not Now), kept so every client agrees.
