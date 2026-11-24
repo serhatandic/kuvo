@@ -3,6 +3,8 @@
 // can't come from different releases.
 //   KUVO_BOX_SIGNING_KEY=<PEM> node scripts/sign-box.mjs <version> <pack> <pack's URL> <box.json>
 // For a Rust release, add one --target <triple> <pack> <URL> for each target.
+// Or pass --rust-packs in place of <box.json> to check and sign all the named
+// target archives beside the compatibility pack.
 // During the switch add --bridge <signed TypeScript boxes.json> for returning betas.
 // The first pack remains the compatibility pack read by TypeScript computers.
 //   KUVO_BOX_SPREADS=1   a release for everyone (the release workflow) or the user's private feed:
@@ -14,12 +16,18 @@
 // key is one pinned in kuvo-link.js (UPDATE_KEYS), and the signature covers "kuvo-box v1\n" and
 // the manifest's bytes, so nothing else signed with the key passes for one.
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
-const [version, pack, url, boxFile, ...targets] = process.argv.slice(2);
+const targetNames = [
+  "aarch64-apple-darwin", "x86_64-apple-darwin",
+  "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-gnullvm",
+];
+const [version, pack, url, boxFile, ...options] = process.argv.slice(2);
 if (!version || !pack || !url || !boxFile || !process.env.KUVO_BOX_SIGNING_KEY) {
-  console.error("Usage: KUVO_BOX_SIGNING_KEY=<PEM> node scripts/sign-box.mjs <version> <pack> <pack's URL> <box.json>");
+  console.error("Usage: KUVO_BOX_SIGNING_KEY=<PEM> node scripts/sign-box.mjs <version> <pack> <pack's URL> <box.json|--rust-packs> [--bridge <signed boxes.json>]");
   process.exit(2);
 }
 const key = crypto.createPrivateKey(process.env.KUVO_BOX_SIGNING_KEY);
@@ -27,23 +35,23 @@ if (key.asymmetricKeyType !== "ed25519") {
   console.error("KUVO_BOX_SIGNING_KEY isn't an Ed25519 key.");
   process.exit(1);
 }
-const box = JSON.parse(fs.readFileSync(boxFile, "utf8"));
+const fromPacks = boxFile === "--rust-packs";
+const { box, targets } = fromPacks
+  ? collectTargetPacks(version, pack, url, options)
+  : { box: JSON.parse(fs.readFileSync(boxFile, "utf8")), targets: options };
 if (box.version !== version) {
   console.error(`The box's files are ${box.version}'s, not ${version}'s.`);
   process.exit(1);
 }
 // The built link's header is also used by the keeper before starting the code.
 const linkFile = path.join(path.dirname(boxFile), "bin", "kuvo-link.js");
-const link = targets.length && !fs.existsSync(linkFile) ? "" : fs.readFileSync(linkFile, "utf8");
+const link = fromPacks || (targets.length && !fs.existsSync(linkFile)) ? "" : fs.readFileSync(linkFile, "utf8");
 const layout = /^\/\/ Kuvo folder layout ([1-9][0-9]*) [0-9a-f]{12}\n/.exec(link);
 function packed(file, address) {
   const data = fs.readFileSync(file);
   return { url: address, sha256: crypto.createHash("sha256").update(data).digest("hex"), size: data.length };
 }
-const required = new Set([
-  "aarch64-apple-darwin", "x86_64-apple-darwin",
-  "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-gnullvm",
-]);
+const required = new Set(targetNames);
 const packs = {};
 let bridge;
 if (targets.length) {
@@ -94,3 +102,36 @@ const manifest = Buffer.from(JSON.stringify({
 const signature = crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), key);
 const publicKey = crypto.createPublicKey(key).export({ type: "spki", format: "der" }).subarray(-32).toString("base64url");
 process.stdout.write(JSON.stringify({ manifest: manifest.toString("base64"), signature: signature.toString("base64"), key: publicKey }) + "\n");
+
+function collectTargetPacks(version, legacyPack, legacyAddress, options) {
+  const address = new URL(legacyAddress);
+  const legacyName = `box-${version}.tar.gz`;
+  if (!/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(version) || path.basename(legacyPack) !== legacyName ||
+      address.protocol !== "https:" || path.posix.basename(address.pathname) !== legacyName) {
+    throw new Error("Name the compatibility pack and its HTTPS download URL for this version.");
+  }
+  const contents = file => JSON.parse(execFileSync("tar", ["-xOzf", path.resolve(file), "./box.json"], {
+    encoding: "utf8", maxBuffer: 1_000_000,
+  }));
+  const legacy = contents(legacyPack);
+  if (legacy.version !== version || legacy.launch === "rust" || !legacy.files?.["bin/kuvo-link.js"]) {
+    throw new Error("Give the TypeScript compatibility pack for this version.");
+  }
+  const targets = [...options];
+  let box;
+  for (const target of targetNames) {
+    const name = `box-${version}-${target}.tar.gz`;
+    const file = path.join(path.dirname(legacyPack), name);
+    const next = contents(file);
+    const executable = target.includes("windows") ? "bin/kuvo-box.exe" : "bin/kuvo-box";
+    if (next.kuvo !== "box/1" || next.launch !== "rust" || next.version !== version ||
+        next.engine !== legacy.engine || !next.windows?.x86_64 || !next.files?.[executable] ||
+        !isDeepStrictEqual(next.linux, legacy.linux) || !isDeepStrictEqual(next.darwin, legacy.darwin) ||
+        (box && !isDeepStrictEqual(next.windows, box.windows))) {
+      throw new Error(`${name} doesn't contain the expected Rust release and engine builds.`);
+    }
+    box ??= next;
+    targets.push("--target", target, file, new URL(name, address).href);
+  }
+  return { box, targets };
+}

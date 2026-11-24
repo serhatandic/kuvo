@@ -65,6 +65,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U49 | The native shell installer rejects a signed engine descriptor that names a local file. Status leaves the home absent and the restored network descriptor proceeds to installation. Passed on Mac, native Linux and WSL2. Native Windows passed the keeper status control. |
 | U50 | The release builder assembles Rust target packs with the native executable and common catalogs, browser, and configuration. Mac arm64, native Linux x64, WSL2, and native Windows x64 verify and prepare their pack from the same signed manifest. The Mac pack retains the ad-hoc Helper signature, and the Windows pack ships the runtime library and probes the pinned engine. |
 | U51 | A trial executable exits just after the previous resident stops, leaving its Rust holder running. The keeper resumes the recorded rollback, and the previous release adopts the same holder and agent at the next generation. The conversation completes once and the keeper settles the refusal for the failed digest. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U52 | The release signer reads the five named target archives beside the compatibility pack. It checks their release and engine metadata, signs every archive's digest and URL, and keeps the exact signed TypeScript bridge. An inconsistent target fails before an envelope is written. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -295,7 +296,7 @@ dependencies.
 | Same, pinned signatures and signed bytes | Covered by U1 and U21. | — |
 | Same, stale Mac launcher marks | Open. | 7.2 |
 | Same, partial rollback reported once | Partial. U51 resumes the native rollback journal and records the matching refusal while the held turn finishes. The interrupted in-place restore and its one-time settlement still need the predecessor fixture. | 7.2 |
-| Same, signed release with Helper kept for peers | Partial. U9–U10 pull the signed pack from a peer. U50 prepares locally assembled target packs, including a Mac Helper with a verified ad-hoc signature. Release-signed Helper media and publication remain open. | 7.2, 6.2, 9.3 |
+| Same, signed release with Helper kept for peers | Partial. U9–U10 pull the signed pack from a peer. U50 prepares locally assembled target packs, including a Mac Helper with a verified ad-hoc signature. U52 signs the complete target set with the bridge envelope. Release-signed Helper media and publication remain open. | 7.2, 6.2, 9.3 |
 | Same, full packaged contents | Partial. U50 prepares the complete local Mac arm64, Linux x64, and Windows x64 packs. Mac x64 and Linux arm64 builds and published media remain open. | 7.2, 9.3 |
 | [update-follows-peers](../../box/bridge-tests/update-follows-peers.test.js), installed version and app version | Partial. U8 and U10 follow the main's signed installed version. Installer and app offers remain open. | 7.2 |
 | Same, desktop looks for its own update | TypeScript reference and desktop updater. | — |
