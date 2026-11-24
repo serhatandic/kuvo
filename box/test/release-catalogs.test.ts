@@ -5,7 +5,7 @@
 import "./safety"
 import { expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { createHash } from "node:crypto"
+import { createHash, generateKeyPairSync, verify } from "node:crypto"
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -145,3 +145,68 @@ test("the release builder packs Rust target executables with the common release 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test("the release signer checks a complete set of target archives and preserves the signed bridge", () => {
+  const root = sources("2.2.6")
+  const checkout = join(import.meta.dir, "../..")
+  const version = "0.8.0"
+  const origin = "https://example.invalid/releases/download/v" + version + "/"
+  const legacy = join(root, "dist", `box-${version}.tar.gz`)
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519")
+  const env = { ...process.env, BOX_SOURCES: root, BUN: process.execPath, KUVO_BOX_SPREADS: "1",
+    KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString() }
+  const release = (...args: string[]) =>
+    spawnSync("sh", ["scripts/box-release.sh", ...args], { cwd: checkout, env, encoding: "utf8" })
+  const sign = (...args: string[]) =>
+    spawnSync("node", ["scripts/sign-box.mjs", ...args], { cwd: checkout, env, encoding: "utf8" })
+  try {
+    const pinFile = join(root, "box/src/shared/engine-pin.json")
+    const pin = JSON.parse(readFileSync(pinFile, "utf8"))
+    pin.windows = { x86_64: { ...pin.linux.x86_64 } }
+    writeFileSync(pinFile, JSON.stringify(pin))
+    const legacyBuilt = release(version, `${origin}box-${version}.tar.gz`, dirname(legacy))
+    expect(legacyBuilt.status, legacyBuilt.stderr).toBe(0)
+    const bridgeVersion = "0.8.0-beta.49"
+    const bridgeDir = join(root, "bridge")
+    const bridgeBuilt = release(bridgeVersion, `https://example.invalid/box-${bridgeVersion}.tar.gz`, bridgeDir)
+    expect(bridgeBuilt.status, bridgeBuilt.stderr).toBe(0)
+    const bridge = join(bridgeDir, "boxes.json")
+    const triples = [
+      "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl", "x86_64-pc-windows-gnullvm",
+    ]
+    const expected = Object.fromEntries(triples.map(target => {
+      const program = join(root, target)
+      writeFileSync(program, `fixture executable for ${target}`)
+      const pack = release("--rust-pack", target, program, version, dirname(legacy))
+      expect(pack.status, pack.stderr).toBe(0)
+      const name = `box-${version}-${target}.tar.gz`
+      const bytes = readFileSync(join(dirname(legacy), name))
+      return [target, { url: origin + name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }]
+    }))
+    const args = [version, legacy, `${origin}box-${version}.tar.gz`, "--rust-packs", "--bridge", bridge]
+    const signed = sign(...args)
+    expect(signed.status, signed.stderr).toBe(0)
+    const record = JSON.parse(signed.stdout)
+    const body = Buffer.from(record.manifest, "base64")
+    const manifest = JSON.parse(body.toString())
+    expect(verify(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), body]), publicKey, Buffer.from(record.signature, "base64"))).toBe(true)
+    expect(manifest).toMatchObject({
+      version, launch: "rust", windows: pin.windows, spreads: true,
+      bridge: readFileSync(bridge, "utf8").trim(),
+      pack: { url: `${origin}box-${version}.tar.gz` },
+    })
+    expect(manifest.packs).toEqual(expected)
+
+    pin.windows.x86_64.url = "https://example.invalid/different-engine-2.2.6.tgz"
+    writeFileSync(pinFile, JSON.stringify(pin))
+    const drifted = release("--rust-pack", triples[4]!, join(root, triples[4]!), version, dirname(legacy))
+    expect(drifted.status, drifted.stderr).toBe(0)
+    const refused = sign(...args)
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toBe("")
+    expect(refused.stderr).toContain("doesn't contain the expected Rust release and engine builds")
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 20_000)
