@@ -4,7 +4,8 @@ import "../safety"
 import type { EngineLink } from "../../src/agents/engine"
 import { setSkillSource } from "../../src/agents/skills"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test"
-import { spawnSync } from "node:child_process"
+import { spawnSync, type ChildProcess } from "node:child_process"
+import { once } from "node:events"
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -812,17 +813,17 @@ describe("Claude Code ended between turns, with work in the background (#262)", 
     expect(sessions.inbox(id)).toHaveLength(0)
   })
 
-  test("started again for a command (/review): the session hears it as a note", async () => {
+  test("an update lets a slash command go through while the background tests keep running", async () => {
     const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
     await waiting(id)
     claude.programUpdated()
-    fake.out = new Queue<any>()
     sessions.prompt(id, { id: "msg_claude_lost_004", text: "/review", files: [], delivery: "steer" })
     await until(() => fake.sent.length === 2)
     expect(String(fake.sent[1].message.content.find?.((part: any) => part.type === "text")?.text ?? fake.sent[1].message.content)).toBe("/review")
-    await until(() => sessions.inbox(id).length + sessions.messages(id).filter((message) => message.type === "synthetic").length === 1)
-    const note = [...sessions.inbox(id).map((item: any) => item.payload.text), ...sessions.messages(id).flatMap((message: any) => (message.type === "synthetic" ? [message.text] : []))][0]
-    expect(note).toContain("scripts/test.sh")
+    expect(fake.closed).toBe(false)
+    expect(sessions.background()[id]?.commands.map(job => job.command)).toEqual(["scripts/test.sh"])
+    expect(sessions.inbox(id)).toEqual([])
+    expect(sessions.messages(id).some(message => message.type === "synthetic")).toBe(false)
   })
 
   test("closed by the box itself (its account removed): no note, nothing more starts", async () => {
@@ -835,19 +836,27 @@ describe("Claude Code ended between turns, with work in the background (#262)", 
     expect(fake.sent).toHaveLength(1)
   })
 
-  test("started again for your next message (Claude Code was updated): that message says what stopped with it", async () => {
+  test("an update keeps a conversation and its background tests going until the tests finish", async () => {
     const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
     await waiting(id)
     claude.programUpdated()
-    fake.out = new Queue<any>()
     sessions.prompt(id, { id: "msg_claude_lost_002", text: "how are the tests doing?", files: [], delivery: "steer" })
     await until(() => fake.sent.length === 2)
     const told = String(fake.sent[1].message.content.find?.((part: any) => part.type === "text")?.text ?? fake.sent[1].message.content)
-    expect(told).toContain("Claude Code started again before this message")
-    expect(told).toContain("scripts/test.sh")
-    expect(told).toContain("how are the tests doing?")
-    // Not a turn of its own besides.
+    expect(told).toBe("how are the tests doing?")
+    expect(fake.closed).toBe(false)
+    expect(sessions.background()[id]?.commands.map(job => job.command)).toEqual(["scripts/test.sh"])
     expect(sessions.messages(id).some((message) => message.type === "synthetic")).toBe(false)
+    fake.out.push({ type: "system", subtype: "task_notification", task_id: "t1", status: "completed", tool_use_id: "tool1", summary: "exit code 0" })
+    fake.out.push({ type: "system", subtype: "background_tasks_changed", tasks: [] })
+    fake.say("The tests passed.", [fake.sent[1].uuid])
+    fake.result([fake.sent[1].uuid])
+    await until(() => idles(id).length === 2 && !sessions.background()[id])
+    fake.out = new Queue()
+    sessions.prompt(id, { id: "msg_claude_after_update", text: "What's next?", files: [], delivery: "steer" })
+    await until(() => fake.sent.length === 3)
+    expect(fake.closed).toBe(true)
+    expect(fake.sent[2].message.content[0].text).toContain("What's next?")
   })
 
   test("the bridge stops meanwhile: once it's back, the session is woken with what stopped", async () => {
@@ -1879,6 +1888,20 @@ describe("Claude Code in the box's sandbox", () => {
     /** Claude Code started through the launcher, as the SDK starts it. */
     const spawned = () => fake.options.spawnClaudeCodeProcess({ command: "/bin/echo", args: [], cwd: root, env: { PATH: process.env.PATH, OPENCODE_SESSION_ID: "ses_x" } })
     const closed = (child: any) => new Promise((resolve) => child.once("close", resolve))
+    /** Deliver stderr to the SDK and keep its subprocess alive until the test lets it exit. */
+    const withStderr = async (script: string, check: () => Promise<void>) => {
+      launcher(script + "\nexec 2>&-\nread -r line")
+      const child: ChildProcess = spawned()
+      const done = once(child, "close")
+      try {
+        if (!child.stderr || !child.stdin) throw new Error("Expected the SDK subprocess pipes.")
+        await once(child.stderr, "close")
+        await check()
+      } finally {
+        child.stdin?.end()
+        await done
+      }
+    }
     const newSession = () => sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
     const send = (id: string, turn: number) => sessions.prompt(id, { id: `msg_claude_turn_000${turn}`, text: "go", files: [], delivery: "steer" })
     /** Starts, says what the launcher says, and stops before it takes the message: what the failure says. */
@@ -1967,25 +1990,37 @@ describe("Claude Code in the box's sandbox", () => {
       expect(idles(id)[0].error?.message).toBe(plain)
     })
 
-    test("a warning from when it was working isn't why it stops later", async () => {
+    test("a warning from a successful turn isn't attached to a later SDK error", async () => {
       turnOn()
-      launcher(`echo "warning: something old" >&2\nexit 0`)
       const id = newSession()
       send(id, 1)
       await until(() => fake.sent.length === 1)
-      await closed(spawned())
-      fake.say("done", [fake.sent[0].uuid])
-      fake.result([fake.sent[0].uuid])
-      await until(() => idles(id).length === 1)
-      expect(idles(id)[0].outcome).toBe("succeeded")
-      send(id, 2)
-      await until(() => fake.sent.length === 2)
-      fake.crash(new Error(plain))
-      await until(() => idles(id).length === 2)
-      expect(idles(id)[1].error?.message).toBe(plain)
+      await withStderr('echo "warning: something old" >&2', async () => {
+        fake.say("done", [fake.sent[0].uuid])
+        fake.result([fake.sent[0].uuid])
+        await until(() => idles(id).length === 1)
+        expect(idles(id)[0].outcome).toBe("succeeded")
+        send(id, 2)
+        await until(() => fake.sent.length === 2)
+        fake.crash(new Error(plain))
+        await until(() => idles(id).length === 2)
+        expect(idles(id)[1]).toMatchObject({ outcome: "failed", error: { message: plain } })
+      })
     })
 
-    test("crashing in a turn, the failure says its error, not the stack under it", async () => {
+    test("an SDK failure includes the current stderr error without its stack", async () => {
+      turnOn()
+      const id = newSession()
+      send(id, 1)
+      await until(() => fake.sent.length === 1)
+      await withStderr(`printf 'Error: out of memory\\n    at run (cli.js:1:1)\\n\\nBun v1.3.14 (macOS arm64)\\n' >&2`, async () => {
+        fake.crash(new Error(plain))
+        await until(() => idles(id).length === 1)
+        expect(idles(id)[0]).toMatchObject({ outcome: "failed", error: { message: `${plain}: Error: out of memory` } })
+      })
+    })
+
+    test("Claude Code exiting after a message interrupts the turn", async () => {
       turnOn()
       launcher(`printf 'Error: out of memory\\n    at run (cli.js:1:1)\\n\\nBun v1.3.14 (macOS arm64)\\n' >&2\nexit 1`)
       const id = newSession()
@@ -1994,7 +2029,8 @@ describe("Claude Code in the box's sandbox", () => {
       await closed(spawned())
       fake.crash(new Error(plain))
       await until(() => idles(id).length === 1)
-      expect(idles(id)[0].error?.message).toBe(`${plain}: Error: out of memory`)
+      expect(idles(id)[0]).toMatchObject({ outcome: "interrupted", reason: "agent-exit" })
+      expect(idles(id)[0].error).toBeUndefined()
     })
 
     describe("with its error output held open by what it left running", () => {

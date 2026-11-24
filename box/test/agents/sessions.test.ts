@@ -1796,11 +1796,10 @@ describe("undo, carefully", () => {
     }
     send(id, "change it again")
     await until(() => readFileSync(join(folder, "a.txt"), "utf8") === "three\n")
-    await Bun.sleep(50)
     sessions.closeAll()
+    store.flush()
     const agents = new Map([a, b].map((agent) => [agent.providerID, agent]))
     sessions = new Sessions(new Store(join(root, "sessions")), { find: (provider: string | undefined) => (provider ? agents.get(provider) : undefined) } as unknown as Roster, auto, undefined, undefined, undefined, new Snapshots(join(root, "snapshots")))
-    await until(() => !sessions.active().includes(id))
     // At once: the undo waits while the cut-short turn's files are read.
     await sessions.stageRevert(id, first)
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("one\n")
@@ -1852,15 +1851,16 @@ describe("undo, carefully", () => {
     }
     send(id, "change it again")
     await until(() => a.runs.length === 2)
-    await Bun.sleep(600)
     sessions.closeAll()
+    store.flush()
     // Closed a while; you edited meanwhile.
     const old = new Date(Date.now() - 10 * 60_000)
-    utimesSync(join(root, "sessions", id, transcriptDatabase), old, old)
+    const transcript = join(root, "sessions", id, transcriptDatabase)
+    utimesSync(transcript, old, old)
+    if (existsSync(transcript + "-wal")) utimesSync(transcript + "-wal", old, old)
     writeFileSync(join(folder, "a.txt"), "mine\n")
     const agents = new Map([a, b].map((agent) => [agent.providerID, agent]))
     sessions = new Sessions(new Store(join(root, "sessions")), { find: (provider: string | undefined) => (provider ? agents.get(provider) : undefined) } as unknown as Roster, auto, undefined, undefined, undefined, new Snapshots(join(root, "snapshots")))
-    await Bun.sleep(300)
     await expect(sessions.stageRevert(id, first)).rejects.toThrow("couldn't keep")
     expect(readFileSync(join(folder, "a.txt"), "utf8")).toBe("mine\n")
   }, 30_000)

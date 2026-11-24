@@ -15,6 +15,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Add over SSH copies the settings, keys and sign-ins you choose before enrolling the computer. If enrollment fails after the copy, it removes the copied keys and sign-ins.
 - Uninstalling a computer added over SSH keeps its wipe pending until that computer confirms its data was erased.
 - Removing a computer still revokes its access if its SSH address can’t be cleared. Retrying clears the address when the list is writable again.
+- Deleting a conversation while its agent is stopping no longer causes a transcript write error.
+- Undo waits for file recovery when it is the first action after a restart.
+
 - Coding agents receive readable tool replies when an older desktop connection returns an unexpected reply format.
 
 - A project marked removed by hand in its settings file is listed the same way it's treated.
