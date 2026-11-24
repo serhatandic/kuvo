@@ -685,7 +685,7 @@ test("a second computer cannot take over a held incoming move", {
   assert.deepEqual(here.engine.sessions, [kept]);
 });
 
-test("an incoming bundle cannot replace a local conversation or claim an unrelated tree", {
+test("incoming bundles keep independent conversations and import a repeated part only once", {
   timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
@@ -707,7 +707,7 @@ test("an incoming bundle cannot replace a local conversation or claim an unrelat
     ["mov_badCycle", "ses_badCycle", [{ id: "ses_badCycle", parentID: "ses_cycleChild" },
       { id: "ses_cycleChild", parentID: "ses_badCycle" }]],
   ];
-  for (const [id, thing, tree] of cases) {
+  async function offer(id, thing, tree) {
     const name = "Notes";
     write(path.join(records, "move.json"), JSON.stringify({
       formatVersion: 1, kind: "chat", thing, name,
@@ -721,11 +721,30 @@ test("an incoming bundle cannot replace a local conversation or claim an unrelat
     const identity = { id, hash: createHash("sha256").update(bundle).digest("base64url"), generation: 1 };
     assert.equal((await ask({ ...identity, op: "offer", from: member.key, kind: "chat", thing, name,
       size: bundle.length, safeSwitch: true, twoComputers: true })).op, "ready");
-    assert.equal((await ask({ ...identity, op: "part", i: 0, of: 1, d: bundle.toString("base64url") })).op, "got");
+    return { identity, part: { ...identity, op: "part", i: 0, of: 1, d: bundle.toString("base64url") } };
+  }
+  for (const [id, thing, tree] of cases) {
+    const { identity, part } = await offer(id, thing, tree);
+    assert.equal((await ask(part)).op, "got");
     const failed = await ask({ ...identity, op: "arrive" }, "failed");
     assert.equal(failed.op, "failed", JSON.stringify(failed));
     assert.deepEqual(here.engine.sessions, [original]);
   }
+  const moved = "ses_duplicatePart";
+  const { identity, part } = await offer("mov_duplicatePart", moved, [{ id: moved }]);
+  const imports = () => here.engine.asked.filter(call =>
+    call.method === "POST" && call.path === "/api/experimental/session/import" && call.json.info?.id === moved).length;
+  await ask(part, false);
+  assert.equal((await ask(part, "got")).op, "got");
+  assert.equal((await ask({ ...identity, op: "arrive" }, "arrived")).op, "arrived");
+  assert.equal(imports(), 1);
+  assert.ok((await request(resident, "GET", "kuvo/moves")).json.away.includes(moved));
+  const switching = { ...identity, op: "switch", safeSwitch: true };
+  const switched = await ask(switching, "switched");
+  await ask(part, false);
+  assert.deepEqual(await ask(switching, "switched"), switched);
+  assert.equal(imports(), 1);
+  assert.ok(!(await request(resident, "GET", "kuvo/moves")).json.away.includes(moved));
 });
 
 test("the week-long cleanup warning dates from the drop and keeps the copy held", {
@@ -857,6 +876,32 @@ test("a destination reports its first local reply after the carried transcript",
   const absent = await ask({ op: "ran?", id: gone, session: "ses_absentFirstRun" });
   assert.equal(absent.op, "ran");
   assert.ok(absent.at >= checkedAt, "A conversation that no longer lives here starts the retention clock");
+});
+
+test("a partial copy that never reached the engine can be dropped with the engine down", {
+  timeout: 35000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("bare-copy");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const identity = { id: "mov_bareCopy", generation: 1, hash: "A".repeat(43) };
+  const folder = path.join(here.home, "run/moves", identity.id);
+  save("run/moves/" + identity.id + ".json", {
+    ...identity, thing: "ses_bareCopy", name: "Notes", kind: "chat", from: member.key, to: main.key,
+    peer: member.key, role: "to", stage: "copying", sessions: [], started: Date.now(), safeSwitch: true,
+    size: 20, sent: 0,
+  });
+  write(path.join(folder, "bundle.tgz"), "an unfinished copy");
+  here.engine.refuseActive = true;
+  const resident = await here.start().ready();
+  const answer = await ask({ ...identity, op: "drop" });
+  assert.deepEqual(answer, { ...identity, op: "dropped", neverSwitched: true });
+  await until(() => !fs.existsSync(folder), "The destination kept its unfinished copy");
+  const after = await request(resident, "GET", "kuvo/moves");
+  assert.deepEqual(after.json.moves, []);
+  assert.deepEqual(after.json.away, []);
+  assert.equal(here.engine.sessions.length, 0);
 });
 
 test("an expired partial copy is discarded without making a conversation", {
