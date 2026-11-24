@@ -32,7 +32,7 @@ for addressed work and receipt lookup.
 | Changing conversations | A live move rebuilds a bundle if a replay fence is saved after its first offer. Another move sees a new message on each offer, gives up after three offers, and leaves all four messages on the source. |
 | Retired backup | Only the destination starts the retention clock. The backup stays while a move back is in progress. Once that move is dropped, an expired backup stays recorded through a failed deletion and the next round retries it. A destination distinguishes the first local reply from a carried reply with a future timestamp. |
 | Unproven import | An authenticated drop sends proof that the source can stay active. Both residents keep an older incoming journal held when it has no evidence that its local session came from the move. |
-| Arrival query and size limit | Both residents answer an authenticated repeat with the held copy's generation and hash, report failure for an unknown copy and replay an eight-day-old switch receipt. An offer one byte over 1 GB receives the size-limit refusal without opening a copy. |
+| Arrival query and size limit | Both residents answer an authenticated repeat with the held copy's generation and hash, report failure for an unknown copy and replay an eight-day-old switch receipt. They send no ownership proof for an unknown switch, drop or decision request. An offer one byte over 1 GB receives the size-limit refusal without opening a copy. |
 | Archive links | Both residents refuse a linked manifest, a linked wake-up directory, a link outside that directory and a chain of links that would escape it. The destination keeps its own file private and unchanged and creates no conversation or wake-up directory. |
 | Destination checks | Both residents show the destination by name and mention a running turn in the move confirmation. They leave the original active after an unanswered check, an unavailable engine or a missing sign-in. A retry after sign-in moves the original and preserves the destination's account note in the receipt. |
 | Background work | Both residents refuse a move while the source has a running background command. The source also checks children as it discovers them, and ignores background work past the six-hour reporting limit. |
@@ -102,6 +102,12 @@ also ran on native Windows, WSL2 GNU and static Linux musl. The delivery and
 move records matched in the separate side-by-side run. Startup and unrelated
 home files still differ.
 
+The later macOS move-area runs passed 53 Rust and 51 applicable TypeScript scenarios,
+including the two-binary reach comparison. Focused checks added afterward passed on
+both residents. Native Windows passed nine focused cases on its latest build. The
+latest WSL2 GNU and static Linux musl builds each passed four focused queue, letter
+replay and attachment scenarios. Close-by-close results are recorded below.
+
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
 scope. The side-by-side reach and persisted records checks continue to use
@@ -131,7 +137,7 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Seventy-eight have full scenario coverage, 19 have partial proof,
+below counts 212 declarations. Seventy-nine have full scenario coverage, 18 have partial proof,
 and 115 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
@@ -156,13 +162,14 @@ separately where they appear.
 | [moves-lanes](../../box/bridge-tests/moves-lanes.test.js) | 1–9 | Native transfer and attachment carry owned by 4.6, with bot placement in 5.1. |
 | [moves-lanes-races](../../box/bridge-tests/moves-lanes-races.test.js) | 1–5 | Native runtime proof belongs to 4.6 and 5.1. The shared comparisons and retry behavior remain open in 2.4 under moves-races. |
 | | 6–16 | Native carry and retained copies owned by 4.6, with bot placement in 5.1. |
-| [moves-races](../../box/bridge-tests/moves-races.test.js) | 9, 24 | Partial, live activation and replay after a lost switch reply, unknown or mismatched proof, durable drop and a managed setup's legacy switch fence are exercised. Automatic retry across the complete set of peer and wall-clock interruptions remains 2.4. |
+| [moves-races](../../box/bridge-tests/moves-races.test.js) | 24 | Partial, live activation and replay after a lost switch reply, mismatched proof, durable drop and a managed setup's legacy switch fence are exercised. Automatic retry across the complete set of peer interruptions remains 2.4. |
 | | 1 | Covered by a setup failure arriving as the source switches, followed by the authenticated drop receipt that releases the original. |
 | | 2 | Partial, a missing payload prevents the first offer and a corrupt payload prevents switching. A typed unreadable-queue failure from 3.2 is needed for the same refusal in 2.4. |
 | | 4 | Covered by an idle child's pending inbox blocking the offer and a failed inbox read preserving the source. |
 | | 5 | Covered by the source ignoring a drop for another generation and releasing its original after the destination’s matching drop receipt. |
 | | 6 | Covered by a duplicate bundle part before activation and a delayed repeat afterward. There is one import and the same durable switch receipt. |
 | | 8 | Covered by dropping the entire first window, retrying eight parts, and verifying the completed move contains its original transcript. |
+| | 9 | Covered by an unknown switch, drop and decision query yielding no ownership proof. |
 | | 10 | Covered by rolling back an earlier child or root import and its installed wake-up folder after another import fails. |
 | | 12 | Covered by a live destination refusing an offer over an existing chat and leaving its original unchanged. |
 | | 13–14, 28, 33 | Covered by refusing four invalid archive links while preserving the destination's unrelated file and conversations. |

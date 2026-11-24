@@ -720,6 +720,16 @@ test("a destination reports the same held copy and refuses an unknown arrival", 
   const id = "mov_recordedArrival", unknown = "mov_unknownArrival";
   const session = "ses_recordedArrival", hash = "A".repeat(43);
   const older = "mov_olderSwitch";
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
+  const unknownReplies = [];
+  t.after(relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const move = JSON.parse(openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2),
+      Buffer.from(main.key, "base64url")).payload).move;
+    if (move?.id === unknown) unknownReplies.push(move.op);
+    return false;
+  }));
   save("run/moves/ended.json", { [older]: { as: "switched", at: Date.now() - 8 * 86400_000, peer: member.key } });
   save("run/moves/" + id + ".json", {
     formatVersion: 1, id, thing: session, name: "Notes", kind: "chat", from: member.key,
@@ -735,8 +745,12 @@ test("a destination reports the same held copy and refuses an unknown arrival", 
   assert.equal(refused.op, "failed");
   assert.equal(refused.generation, 1);
   assert.equal(refused.hash, hash);
+  await ask({ op: "switch", id: unknown, generation: 1, hash, safeSwitch: true }, false);
+  await ask({ op: "drop", id: unknown, generation: 1, hash }, false);
+  await ask({ op: "decision?", id: unknown, generation: 1, hash }, false);
   assert.deepEqual(await ask({ op: "switch", id: older, safeSwitch: true }),
     { op: "switched", id: older });
+  assert.deepEqual(unknownReplies, ["failed"]);
 });
 
 test("a drop receipt cannot release an older switch in a managed setup", {
