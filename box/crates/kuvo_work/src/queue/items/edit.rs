@@ -84,10 +84,19 @@ impl Writer {
                 if item.removed.is_some() {
                     return Err(bad("It's deleted: bring it back first."));
                 }
-                writer.edit_fields(&all, item, &fields, &staged, now, &people, |row| {
-                    writer.observe_known(row, &item.id);
-                    Ok(())
-                })?
+                writer.edit_fields(
+                    &all,
+                    item,
+                    &fields,
+                    &staged,
+                    now,
+                    &people,
+                    &json!({"user":true}),
+                    |row| {
+                        writer.observe_known(row, &item.id);
+                        Ok(())
+                    },
+                )?
             };
             compaction.finish(&writer, now)?;
             Ok(answer)
@@ -176,6 +185,7 @@ impl Writer {
         staged: &Staged,
         now: i64,
         people: &Assignees,
+        who: &Value,
         revise: impl FnOnce(&mut Value) -> Result<(), Refusal>,
     ) -> Result<Value, Refusal> {
         let mut row = Value::Object(item.saved.clone());
@@ -188,7 +198,7 @@ impl Writer {
             .unwrap_or(previous);
         let status_changed = previous != new_status;
         let to_top = fields["top"].as_bool() == Some(true);
-        let stamp = json!({"at":now,"by":{"user":true}});
+        let stamp = json!({"at":now,"by":who});
         if let Some(source) = item.source() {
             let display = source["ref"].as_str().unwrap_or_default();
             let name = format!("{display} \"{}\"", item.title);
@@ -209,7 +219,9 @@ impl Writer {
             Seen::read(&self.store)
                 .map_err(storage_refusal)?
                 .apply(&self.refs, &mut projection);
-            if projection.get("keptIn").is_some() {
+            if projection.get("keptIn").is_some()
+                && (who["user"] == true || fields.get("status").is_some())
+            {
                 return Err(bad(if projection["seen"]["gone"] == true {
                     format!(
                         "{name} is gone from GitHub (or gh here can no longer see it), so it's Done: it's back where it stood once GitHub shows it again."
@@ -381,10 +393,10 @@ impl Writer {
         row["order"] = json!(order);
         let new_index = peers.iter().filter(|(_, before)| *before < order).count();
         if status_changed && new_status == "done" {
-            event(&mut row, now, "done");
+            append_event(&mut row, json!({"at":now,"by":who,"kind":"done"}));
         } else if status_changed || new_index != old_index {
             let mut moved =
-                json!({"at":now,"by":{"user":true},"kind":"moved","from":previous,"to":new_status});
+                json!({"at":now,"by":who,"kind":"moved","from":previous,"to":new_status});
             if new_index == 0 && (to_top || before.is_some() || after.is_some()) {
                 moved["top"] = true.into();
             }
@@ -463,7 +475,7 @@ fn item_name(item: &Item) -> String {
     }
 }
 
-fn refuse_handing(item: &Item) -> Result<(), Refusal> {
+pub(super) fn refuse_handing(item: &Item) -> Result<(), Refusal> {
     if let Some(handing) = item.saved.get("handing") {
         let to = handing["name"]
             .as_str()

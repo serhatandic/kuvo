@@ -256,10 +256,19 @@ impl Writer {
             // Legacy notes were assigned stable IDs when the edit baseline was observed.
             let baseline = Item::read(&item.owner, &row).expect("queue item");
             let mut decision = None;
-            self.edit_fields(all, &baseline, &fields, &staged, now, &people, |row| {
-                decision = Some(write(row)?);
-                Ok(())
-            })?;
+            self.edit_fields(
+                all,
+                &baseline,
+                &fields,
+                &staged,
+                now,
+                &people,
+                &json!({"user":true}),
+                |row| {
+                    decision = Some(write(row)?);
+                    Ok(())
+                },
+            )?;
             decision.expect("saved offline decision")
         } else {
             let decision = write(&mut row)?;

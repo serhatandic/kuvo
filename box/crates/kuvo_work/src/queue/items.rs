@@ -656,6 +656,17 @@ impl Writer {
     }
 
     async fn change(&self, name: String, removal: Removal) -> Result<Value, Refusal> {
+        self.change_as(name, removal, json!({"user":true}), None)
+            .await
+    }
+
+    async fn change_as(
+        &self,
+        name: String,
+        removal: Removal,
+        who: Value,
+        operation: Option<String>,
+    ) -> Result<Value, Refusal> {
         let guard = self.lock().await?;
         let writer = self.clone();
         tokio::task::spawn_blocking(move || {
@@ -665,6 +676,10 @@ impl Writer {
                 return Err(Refusal::new(StatusCode::NOT_FOUND, "There's no such item."));
             };
             let (all, compaction) = writer.changes(now)?;
+            if let Some(answer) = operation.as_deref().and_then(|operation| tools::kept_answer(&all, operation)) {
+                compaction.finish(&writer, now)?;
+                return Ok(answer);
+            }
             let Some(item) = writer.refs.find(&all, &reference) else {
                 return Err(Refusal::new(
                     StatusCode::NOT_FOUND,
@@ -678,11 +693,13 @@ impl Writer {
                 .iter_mut()
                 .find(|saved| saved["id"] == item.id)
                 .ok_or_else(|| Refusal::new(StatusCode::NOT_FOUND, "There's no item like that."))?;
-            let stamp = json!({"at":now,"by":{"user":true}});
+            let stamp = json!({"at":now,"by":who});
+            let agent = who["user"] != true;
+            let display = tools::item_name(saved);
             match removal {
                 Removal::Delete => {
                     if item.removed.is_some() {
-                        return Err(bad("It's deleted already."));
+                        return Err(if agent { bad(format!("{display} is deleted already.")) } else { bad("It's deleted already.") });
                     }
                     if let Some(handing) = saved.get("handing").filter(|entry| entry.is_object()) {
                         let here = writer.peers.view().roster.here.map(|key| kuvo_wire::keys::encode(&key));
@@ -694,7 +711,7 @@ impl Writer {
                         }
                         let to = handing["name"].as_str().filter(|name| !name.is_empty())
                             .or_else(|| handing["to"].as_str()).unwrap_or_default();
-                        let note = json!({"at":now,"by":{"user":true},
+                        let note = json!({"at":now,"by":who,
                             "text":format!("Its hand-off to {to} on another computer was called off.")});
                         let mut notes = store::array(saved.get("notes")).to_vec();
                         notes.push(note);
@@ -703,11 +720,17 @@ impl Writer {
                     saved["removed"] = stamp.clone();
                     saved["sessions"] = json!([]);
                     saved.as_object_mut().expect("queue item").remove("handing");
-                    event(saved, now, "deleted");
+                    append_event(saved, json!({"at":now,"by":who,"kind":"deleted"}));
                 }
                 Removal::Restore => {
                     if item.removed.is_none() {
-                        return Err(bad("It isn't deleted."));
+                        return Err(if agent { bad(format!("{display} isn't deleted.")) } else { bad("It isn't deleted.") });
+                    }
+                    if agent && item.removed.as_ref().is_some_and(|stamp| stamp.by["user"] == true) {
+                        return Err(tools::deleted(item));
+                    }
+                    if agent {
+                        edit::refuse_handing(item)?;
                     }
                     if let Some(source) = item.source() {
                         let ref_of = |value: &Value| {
@@ -725,7 +748,7 @@ impl Writer {
                                 source["ref"].as_str().unwrap_or_default(), other.owner)));
                         }
                     }
-                    event(saved, now, "restored");
+                    append_event(saved, json!({"at":now,"by":who,"kind":"restored"}));
                     saved.as_object_mut().expect("queue item").remove("removed");
                     let status = if status_of(&Value::String(item.status.clone())).is_ok() {
                         item.status.as_str()
@@ -741,7 +764,16 @@ impl Writer {
             saved["updated"] = stamp;
             writer.observe_known(saved, &item.id);
             let response = Item::read(&item.owner, saved).expect("saved queue item");
-            let answer = view::mutation(&response, &Assignees::read(&writer.store));
+            let answer = if agent {
+                let answer = tools::said(match removal {
+                    Removal::Delete => format!("Deleted {display}. Bring it back within 30 days with queue_remove and undo."),
+                    Removal::Restore => format!("Brought back {display}."),
+                });
+                tools::keep_reply(saved, operation, &answer);
+                answer
+            } else {
+                view::mutation(&response, &Assignees::read(&writer.store))
+            };
             file.save(&writer.store).map_err(storage_refusal)?;
             compaction.finish(&writer, now)?;
             Ok(answer)
@@ -919,9 +951,15 @@ struct Document {
 
 impl Document {
     fn save(self, store: &Store) -> Result<(), Error> {
+        let items = self
+            .items
+            .iter()
+            .filter_map(|row| Item::read(&self.owner, row))
+            .map(Item::normalized)
+            .collect::<Vec<_>>();
         let record = QUEUE.encode(Fields::from_iter([
             ("owner".into(), self.owner.into()),
-            ("items".into(), self.items.into()),
+            ("items".into(), items.into()),
         ]));
         let bytes = serde_json::to_vec(&record).map_err(io::Error::other)?;
         let run = store.root.parent().expect("Work Queue under run");
@@ -982,7 +1020,41 @@ fn event(item: &mut Value, now: i64, kind: &str) {
 
 fn append_event(item: &mut Value, event: Value) {
     let mut events = store::array(item.get("events")).to_vec();
-    events.push(event);
+    let last = events.last_mut();
+    let reorder = |event: &Value| event["kind"] == "moved" && event["from"] == event["to"];
+    if let Some(last) = last
+        && let (Some(before), Some(after)) = (last["at"].as_f64(), event["at"].as_f64())
+        && after >= before
+        && last["by"] == event["by"]
+        && ["notes", "handed"].iter().all(|field| {
+            !store::array(item.get(*field))
+                .iter()
+                .any(|entry| entry["at"].as_f64().is_some_and(|at| at >= before))
+        })
+    {
+        if after - before < 10.0 * 60_000.0
+            && reorder(last)
+            && reorder(&event)
+            && last["to"] == event["to"]
+        {
+            last["at"] = event["at"].clone();
+            if event["top"] == true {
+                last["top"] = true.into();
+            } else if let Some(fields) = last.as_object_mut() {
+                fields.remove("top");
+            }
+        } else if after - before < 2.0 * 60_000.0
+            && last["kind"] == "stopped"
+            && last.get("session").is_none()
+            && event["kind"] == "started"
+        {
+            events.pop();
+        } else {
+            events.push(event);
+        }
+    } else {
+        events.push(event);
+    }
     events.drain(..events.len().saturating_sub(50));
     item["events"] = events.into();
 }

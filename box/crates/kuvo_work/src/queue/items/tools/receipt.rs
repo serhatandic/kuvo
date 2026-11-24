@@ -81,7 +81,7 @@ impl Operation {
     }
 }
 
-pub(super) fn kept_answer(items: &[Item], operation: &str) -> Option<Value> {
+pub(in crate::queue::items) fn kept_answer(items: &[Item], operation: &str) -> Option<Value> {
     items
         .iter()
         .find_map(|item| item.saved.get("toolReplies")?.get(operation).cloned())

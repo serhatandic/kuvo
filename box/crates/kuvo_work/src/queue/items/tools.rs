@@ -5,6 +5,10 @@ mod mutate;
 mod read;
 mod receipt;
 
+pub(super) use mutate::{deleted, keep_reply};
+pub(super) use read::item_name;
+pub(super) use receipt::kept_answer;
+
 use super::*;
 use kuvo_engine::ActiveTool;
 use kuvo_protocol::routes::{
@@ -86,6 +90,8 @@ impl Writer {
                 self.show_words(&args["item"], self.tool_owner(&caller, false)?)
                     .await
             }
+            "queue_update" => self.update_words(args, caller, operation).await,
+            "queue_remove" => self.remove_words(args, caller, operation).await,
             "queue_import" => {
                 let owner = self.tool_owner(&caller, true)?;
                 let result = self
@@ -95,6 +101,13 @@ impl Writer {
             }
             _ => Ok(refused("This Work Queue tool isn’t available yet.")),
         }
+    }
+
+    fn tool_item_reference(&self, value: &Value) -> Result<String, Refusal> {
+        value.as_str().map(str::to_owned)
+            .or_else(|| value.as_u64().map(|number| number.to_string()))
+            .filter(|given| self.refs.parse(given).is_some())
+            .ok_or_else(|| bad("Say which item (item), by its number, like #243 (or the id an item without one was given), or the GitHub issue or pull request it is, like gh:owner/repo#12."))
     }
 
     fn computer_words(&self) -> (&'static str, &'static str) {
@@ -219,7 +232,7 @@ impl Writer {
                 row["assignee"] = assignee;
             }
             if working {
-                row["sessions"] = json!([{"session":caller.root, "at":now, "by":who}]);
+                row["sessions"] = json!([{"session":caller.root, "since":now}]);
                 append_event(&mut row, json!({"at":now,"by":who,"kind":"started"}));
             }
             let seen_words = seen_words(seen["state"].as_str().unwrap_or_default());
@@ -365,6 +378,6 @@ fn refused(text: impl Into<String>) -> Value {
     json!({"text":text.into(),"isError":true})
 }
 
-fn said(text: impl Into<String>) -> Value {
+pub(super) fn said(text: impl Into<String>) -> Value {
     json!({"text":text.into(),"isError":false})
 }

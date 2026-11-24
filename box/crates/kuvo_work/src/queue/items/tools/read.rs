@@ -173,11 +173,7 @@ impl Writer {
     }
 
     pub(super) async fn show_words(&self, item: &Value, owner: String) -> Result<Value, Refusal> {
-        let reference = item
-            .as_str()
-            .map(str::to_owned)
-            .or_else(|| item.as_u64().map(|number| number.to_string()));
-        let reference = reference.filter(|given| self.refs.parse(given).is_some()).ok_or_else(|| bad("Say which item (item), by its number, like #243 (or the id an item without one was given), or the GitHub issue or pull request it is, like gh:owner/repo#12."))?;
+        let reference = self.tool_item_reference(item)?;
         let answer = match self.reads.item(reference.clone(), true).await {
             Ok(answer) => answer,
             Err(error) => {
@@ -398,7 +394,7 @@ fn labels_or_titles<'a>(list: &'a Value, key: &str, title: &str) -> HashMap<&'a 
         .filter_map(|row| Some((row[key].as_str()?, row[title].as_str()?)))
         .collect()
 }
-pub(super) fn item_name(row: &Value) -> String {
+pub(in crate::queue::items) fn item_name(row: &Value) -> String {
     let title = given(row, "title");
     if let Some(reference) = row["source"]["ref"].as_str() {
         return format!("{reference} \"{title}\"");

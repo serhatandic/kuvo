@@ -2,6 +2,145 @@
 use super::*;
 
 impl Writer {
+    pub(super) async fn remove_words(
+        &self,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+    ) -> Result<Value, Refusal> {
+        self.tool_owner(&caller, false)?;
+        let removal = if args["undo"] == true {
+            Removal::Restore
+        } else {
+            Removal::Delete
+        };
+        let reference = self.tool_item_reference(&args["item"])?;
+        let answer = self.reads.item(reference, true).await?;
+        let target = &answer["item"];
+        if target.get("computer").is_some() {
+            return Err(bad(
+                "Use the Work Queue on the computer that keeps that item to change it.",
+            ));
+        }
+        let id = target["id"].as_str().expect("queue item id").to_owned();
+        self.change_as(id, removal, actor(&caller), operation).await
+    }
+    pub(super) async fn update_words(
+        &self,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+    ) -> Result<Value, Refusal> {
+        self.tool_owner(&caller, false)?;
+        let reference = self.tool_item_reference(&args["item"])?;
+        let answer = self.reads.item(reference, true).await?;
+        let target = &answer["item"];
+        if target.get("computer").is_some() {
+            return Err(bad(
+                "Use the Work Queue on the computer that keeps that item to change it.",
+            ));
+        }
+        let id = target["id"].as_str().expect("queue item id").to_owned();
+        let writer = self.clone();
+        let folder = caller.directory.clone();
+        let file_args = args.get("files").cloned();
+        let staged = tokio::task::spawn_blocking(move || {
+            writer
+                .files
+                .stage_agent(&writer.store, file_args.as_ref(), folder.as_deref())
+        })
+        .await
+        .map_err(internal)??;
+        let guard = self.lock().await?;
+        let writer = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let now = Timestamp::now().as_millisecond();
+            let (all, compaction) = writer.changes(now)?;
+            if let Some(answer) = operation.as_deref().and_then(|operation| receipt::kept_answer(&all, operation)) {
+                compaction.finish(&writer, now)?;
+                return Ok(answer);
+            }
+            let item = all.iter().find(|item| item.id == id).ok_or_else(|| bad("There's no item like that."))?;
+            writer.admit(&item.owner)?;
+            if item.removed.is_some() {
+                return Err(deleted(item));
+            }
+            edit::refuse_handing(item)?;
+            let people = Assignees::read(&writer.store);
+            let actor = actor(&caller);
+            let mut result = None;
+            writer.edit_fields(&all, item, &args, &staged, now, &people, &actor, |row| {
+                fields(row, &args, now, &actor)?;
+                let status = row["status"].as_str().unwrap_or_default();
+                if !status::closed(status) {
+                    let mut sessions = store::array(row.get("sessions")).to_vec();
+                    if args["working"] == true && !caller.seat {
+                        let last = last_word(row, &caller.root) == Some("started");
+                        if !sessions.iter().any(|entry| entry["session"] == caller.root) {
+                            sessions.push(json!({"session":caller.root,"since":now}));
+                        }
+                        if args.get("status").is_none() && matches!(status, "todo" | "backlog" | "waiting") {
+                            let previous = status.to_owned();
+                            row["status"] = "in-progress".into();
+                            row["order"] = json!(place(&all, Some(&id), "in-progress", false));
+                            append_event(row, json!({"at":now,"by":actor,"kind":"moved","from":previous,"to":"in-progress"}));
+                        }
+                        if !last {
+                            append_event(row, json!({"at":now,"by":actor,"kind":"started"}));
+                        }
+                    }
+                    for session in named(&args["sessions"]) {
+                        if !sessions.iter().any(|link| link["session"] == session) {
+                            sessions.push(json!({"session":session,"since":now}));
+                        }
+                    }
+                    let mut unlink = named(&args["unlink"]);
+                    if args["working"] == false {
+                        unlink.push(&caller.root);
+                    }
+                    for session in unlink {
+                        let before = sessions.len();
+                        sessions.retain(|entry| entry["session"] != session);
+                        if sessions.len() != before && last_word(row, session) == Some("started") {
+                            let mut stop = json!({"at":now,"by":actor,"kind":"stopped"});
+                            if actor["session"] != session {
+                                stop["session"] = session.into();
+                            }
+                            append_event(row, stop);
+                        }
+                    }
+                    row["sessions"] = sessions.into();
+                }
+                let changes = ["title", "body", "priority", "labels", "assignee", "due", "progress", "source", "files", "links", "sessions"]
+                    .into_iter()
+                    .filter(|field| item.saved.get(*field) != row.get(*field) && (*field != "sessions" || item.saved.get("events") == row.get("events")))
+                    .collect::<Vec<_>>();
+                if !changes.is_empty() {
+                    append_event(row, json!({"at":now,"by":actor,"kind":"edited","fields":changes}));
+                }
+                writer.observe_known(row, &item.id);
+                let display = read::item_name(row);
+                let where_ = row["status"].as_str().unwrap_or_default();
+                let sessions = store::array(row.get("sessions")).len();
+                let linked = match sessions {
+                    0 => String::new(),
+                    1 => ", 1 session linked".into(),
+                    n => format!(", {n} sessions linked"),
+                };
+                let answer = said(match where_ {
+                    "done" => format!("Marked {display} done."),
+                    "canceled" => format!("Marked {display} canceled."),
+                    _ => format!("Changed {display} ({}{linked}).", status_name(where_)),
+                });
+                keep_reply(row, operation, &answer);
+                result = Some(answer);
+                Ok(())
+            })?;
+            compaction.finish(&writer, now)?;
+            Ok(result.expect("saved tool answer"))
+        }).await.map_err(internal)?
+    }
     pub(super) async fn add_ordinary(
         &self,
         mut args: Value,
@@ -44,7 +183,7 @@ impl Writer {
             let people = Assignees::read(&writer.store);
             let mut row = writer.new_row(&id, &owner, &args, &all, &people, now, &who)?;
             if working && !status::closed(row["status"].as_str().expect("item status")) {
-                row["sessions"] = json!([{"session":caller.root,"at":now,"by":who}]);
+                row["sessions"] = json!([{"session":caller.root,"since":now}]);
                 append_event(&mut row, json!({"at":now,"by":who,"kind":"started"}));
             }
             fields(&mut row, &args, now, &who)?;
@@ -217,4 +356,63 @@ pub(super) fn fields(
     }
     row["links"] = links.into();
     Ok(())
+}
+
+fn last_word<'a>(row: &'a Value, session: &str) -> Option<&'a str> {
+    for event in store::array(row.get("events")).iter().rev() {
+        let kind = event["kind"].as_str();
+        if kind == Some("done") {
+            break;
+        }
+        if matches!(kind, Some("started" | "stopped"))
+            && event["session"]
+                .as_str()
+                .or_else(|| event["by"]["session"].as_str())
+                == Some(session)
+        {
+            return kind;
+        }
+    }
+    None
+}
+
+fn named(value: &Value) -> Vec<&str> {
+    value
+        .as_array()
+        .map_or(std::slice::from_ref(value), Vec::as_slice)
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| name.starts_with("ses_") && owner_id(name))
+        .collect()
+}
+
+pub(in crate::queue::items) fn deleted(item: &Item) -> Refusal {
+    let entry = item.removed.as_ref().expect("deleted queue item");
+    let name = read::item_name(&Value::Object(item.saved.clone()));
+    if entry.by["user"] == true {
+        bad(format!(
+            "The user deleted {name}: only they bring it back. Ask them if it's still needed."
+        ))
+    } else {
+        let actor = entry.by["name"]
+            .as_str()
+            .or_else(|| entry.by["source"].as_str())
+            .unwrap_or("someone else");
+        bad(format!(
+            "{name} was deleted by {actor}: queue_remove with undo brings it back."
+        ))
+    }
+}
+
+pub(in crate::queue::items) fn keep_reply(
+    row: &mut Value,
+    operation: Option<String>,
+    result: &Value,
+) {
+    if let Some(operation) = operation {
+        if !row["toolReplies"].is_object() {
+            row["toolReplies"] = json!({});
+        }
+        row["toolReplies"][operation] = result.clone();
+    }
 }

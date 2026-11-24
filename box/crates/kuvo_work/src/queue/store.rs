@@ -242,6 +242,96 @@ impl Item {
         })
     }
 
+    /// A changed queue writes the same checked fields it reads, keeping newer fields.
+    pub(super) fn normalized(mut self) -> Value {
+        for (key, value) in [
+            ("id", self.id.into()),
+            ("owner", self.owner.into()),
+            ("title", self.title.into()),
+            ("body", self.body.into()),
+            ("status", self.status.into()),
+            ("order", self.order.into()),
+            ("labels", self.labels.into()),
+            ("notes", self.notes.into()),
+            ("files", self.files.into()),
+            ("links", self.links.into()),
+            ("sessions", self.sessions.into()),
+            ("created", json!(self.created)),
+            ("updated", json!(self.updated)),
+        ] {
+            self.saved.insert(key.into(), value);
+        }
+        let number = self.number.map(Value::from);
+        let priority = (self.priority != "normal").then(|| self.priority.into());
+        let removed = self.removed.map(|removed| json!(removed));
+        for (key, value) in [
+            ("number", number),
+            ("priority", priority),
+            ("removed", removed),
+            ("category", None),
+        ] {
+            if let Some(value) = value {
+                self.saved.insert(key.into(), value);
+            } else {
+                self.saved.remove(key);
+            }
+        }
+        for (key, checked) in [("events", self.events), ("handed", self.handed)] {
+            if self.saved.get(key).is_some_and(Value::is_array) {
+                self.saved.insert(key.into(), checked.into());
+            } else {
+                self.saved.remove(key);
+            }
+        }
+        for name in ["wanted", "importedAs"] {
+            if self
+                .saved
+                .get(name)
+                .is_some_and(|value| positive_integer(value).is_none())
+            {
+                self.saved.remove(name);
+            }
+        }
+        for name in ["backGranted", "stays"] {
+            if self.saved.get(name).is_some_and(|value| *value != true) {
+                self.saved.remove(name);
+            }
+        }
+        if self
+            .saved
+            .get("doneAt")
+            .is_some_and(|value| !value.is_number())
+        {
+            self.saved.remove("doneAt");
+        }
+        if self
+            .saved
+            .get("handedBy")
+            .is_some_and(|value| !value.as_str().is_some_and(owner_id))
+        {
+            self.saved.remove("handedBy");
+        }
+        if let Some(fields) = self
+            .saved
+            .get_mut("progress")
+            .and_then(Value::as_object_mut)
+        {
+            fields.retain(|key, value| {
+                (key == "note" && value.is_string()) || (key == "value" && value.is_number())
+            });
+        } else {
+            self.saved.remove("progress");
+        }
+        if self
+            .saved
+            .get("source")
+            .is_some_and(|source| !source["kind"].is_string() || !source["ref"].is_string())
+        {
+            self.saved.remove("source");
+        }
+        Value::Object(self.saved)
+    }
+
     pub fn source(&self) -> Option<&Value> {
         self.saved
             .get("source")

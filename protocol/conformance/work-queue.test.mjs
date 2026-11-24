@@ -1087,6 +1087,8 @@ test("an expired deletion retains its fence and prunes the old item links", { ti
     const saved = JSON.parse(readFileSync(file, "utf8"));
     assert.deepEqual(saved.items.map(item => item.id), [live]);
     assert.equal(saved.items[0].relations, undefined);
+    for (const field of ["files", "labels", "links", "notes", "sessions"]) assert.deepEqual(saved.items[0][field], []);
+    assert.equal(saved.items[0].body, "");
     assert.equal(existsSync(expiredFiles), false);
     const key = createHash("sha256").update(JSON.stringify([dead])).digest("base64url");
     const fence = path.join(queue, "..", "owned-data", "edit-deletions", key + ".json");
@@ -1189,4 +1191,64 @@ test("a running agent adds, lists and reads its numbered work with an attachment
   const repeatedImport = await call("queue_import", imports);
   assert.equal(repeatedImport.json.isError, false, repeatedImport.text);
   assert.match(repeatedImport.json.text, /#171 \(already in the Work Queue here\)/);
+});
+
+test("an agent records work edits and only restores agent deletions", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const lab = await computer("Lab");
+  const home = path.join(lab.home, "run", "work-queue");
+  const session = { id: "ses_QueueEditor", title: "Editor", time: { created: 1, updated: 2 } };
+  lab.engine.sessions.push(session);
+  const ask = lab.connect(await lab.start().ready());
+  const app = { "x-kuvo-from": "app" };
+  const added = await ask("POST", "kuvo/work-queue/items", { operation: "tool-update-fixture", title: "Plan the change" }, app);
+  assert.equal(added.status, 200, added.text);
+  const item = added.json.item.id;
+  const route = "kuvo/work-queue/tools";
+  const tool = async (name, args, operation) => {
+    lab.engine.messages.set(session.id, [{ id: "msg_1", type: "assistant", content: [{ type: "tool",
+      name: "kuvo-browser_" + name, state: { status: "running", input: args } }] }]);
+    const answer = await ask("POST", route, { name, session: session.id, arguments: args, operation });
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  const started = await tool("queue_update", { item, working: true, body: "Describe the change.", note: "Task picked up.", progress: 0.25 }, "begin");
+  assert.equal(started.isError, false, started.text);
+  assert.match(started.text, /\(In progress, 1 session linked\)\.$/);
+  const file = path.join(home, "queues", "usr_you.json");
+  const read = () => JSON.parse(readFileSync(file, "utf8")).items.find(row => row.id === item);
+  let saved = read();
+  assert.deepEqual(saved.updated.by, { session: session.id, name: session.title });
+  assert.deepEqual(saved.sessions, [{ session: session.id, since: saved.updated.at }]);
+  assert.equal(saved.notes.at(-1).text, "Task picked up.");
+  assert.deepEqual(saved.events.map(event => event.kind), ["moved", "started", "edited"]);
+  assert.deepEqual(saved.events.at(-1).fields, ["body", "progress"]);
+  const stopped = await tool("queue_update", { item, working: false });
+  assert.equal(stopped.isError, false, stopped.text);
+  assert.deepEqual(read().sessions, []);
+  assert.equal(read().events.at(-1).kind, "stopped");
+  const resumed = await tool("queue_update", { item, working: true });
+  assert.equal(resumed.isError, false, resumed.text);
+  assert.equal(read().events.some(event => event.kind === "stopped"), false);
+  const done = await tool("queue_update", { item, status: "done" });
+  assert.equal(done.isError, false, done.text);
+  assert.match(done.text, /^Marked .* done\.$/);
+  assert.equal(read().events.at(-1).kind, "done");
+  assert.deepEqual(read().sessions, []);
+
+  const removed = await tool("queue_remove", { item }, "agent-remove");
+  assert.equal(removed.isError, false, removed.text);
+  assert.match(removed.text, /Bring it back within 30 days with queue_remove and undo/);
+  assert.deepEqual(read().removed.by, { session: session.id, name: session.title });
+  const restored = await tool("queue_remove", { item, undo: true }, "agent-restore");
+  assert.equal(restored.isError, false, restored.text);
+  assert.equal(read().removed, undefined);
+  assert.equal(read().events.at(-1).kind, "restored");
+
+  const endpoint = "kuvo/work-queue/items/" + item;
+  const byUser = await ask("DELETE", endpoint, undefined, app);
+  assert.equal(byUser.status, 200, byUser.text);
+  const unauthorized = await tool("queue_remove", { item, undo: true });
+  assert.equal(unauthorized.isError, true, unauthorized.text);
+  assert.match(unauthorized.text, /^The user deleted .*: only they bring it back\. Ask them if it's still needed\.$/);
 });
