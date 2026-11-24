@@ -78,22 +78,41 @@ struct FeedCheck {
     task: JoinHandle<io::Result<Candidate>>,
 }
 
+fn feed(home: &Home, profile: &Path) -> Option<(String, String, bool)> {
+    let config = std::env::var("KUVO_TEST_RELEASE_FEED")
+        .ok()
+        .zip(std::env::var("KUVO_TEST_RELEASE_KEY").ok());
+    let scratch = is_scratch(home).ok()?;
+    match config {
+        Some((url, key)) if scratch => Some((url, key, true)),
+        _ if !scratch && fleet::checked_home(home, profile) => {
+            Some((FEED.into(), UPDATE_KEY.into(), false))
+        }
+        _ => None,
+    }
+}
+
+pub fn bridge_version(home: &Home, profile: &Path) -> Option<String> {
+    let (_, key, _) = feed(home, profile)?;
+    let selected = fleet::selected(home).ok()??;
+    let running = Candidate::verify(fleet::installed_envelope(home, &selected)?, &key).ok()?;
+    if running.local().ok()?.target().ok()? != selected {
+        return None;
+    }
+    Some(running.bridge(&key).ok()??.version().into())
+}
+
 pub fn start(
     home: Home,
     profile: &Path,
     peers: Arc<ResidentPeers>,
     setup: SetupHandle,
 ) -> Option<Worker> {
-    let config = std::env::var("KUVO_TEST_RELEASE_FEED")
-        .ok()
-        .zip(std::env::var("KUVO_TEST_RELEASE_KEY").ok());
-    let scratch = is_scratch(&home).ok()?;
-    let (url, key, delay) = match config {
-        Some((url, key)) if scratch => (url, key, Duration::ZERO),
-        _ if !scratch && fleet::checked_home(&home, profile) => {
-            (FEED.into(), UPDATE_KEY.into(), Duration::from_secs(60))
-        }
-        _ => return None,
+    let (url, key, scratch) = feed(&home, profile)?;
+    let delay = if scratch {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(60)
     };
     let mail = peers
         .relay_handle()

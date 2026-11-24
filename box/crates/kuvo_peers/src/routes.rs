@@ -48,7 +48,12 @@ const ENGINE_NOT_READY: &str = "The engine isn’t running.";
 const CONVERSATION_NOT_READY: &str = "The conversation’s engine isn’t answering.";
 const CONVERSATION_GONE: &str = "That conversation isn’t there any more.";
 
-pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
+pub fn register(
+    registry: &mut Registry,
+    peers: Reader,
+    devices: Devices,
+    bridge_version: Option<String>,
+) {
     crate::moves::register(registry, &peers);
     follow::<get_kuvo_setup_sessions_events::Spec>(
         registry,
@@ -77,7 +82,7 @@ pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
     follow::<get_kuvo_setup_runs_on_events::Spec>(
         registry,
         &peers,
-        |view, now| Some(view.runs_on(now)),
+        move |view, now| Some(view.runs_on(now, bridge_version.as_deref())),
         None,
     );
     follow::<get_kuvo_setup_waiting_counts_events::Spec>(

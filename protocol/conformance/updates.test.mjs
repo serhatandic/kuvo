@@ -12,15 +12,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 
-import { boxBinary, isolatedEnv, launch, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import "./update-helper.mjs";
 
 const { peerTransferMs, keeperTrialMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
-const failoverReturnMs = peerTransferMs + keeperTrialMs;
+const releaseReturnMs = peerTransferMs + keeperTrialMs;
 const firstPreparationMs = 90_000;
 const leaseElectionMs = 30_000;
-const failoverTestMs = firstPreparationMs + leaseElectionMs + keeperTrialMs + failoverReturnMs;
+const failoverTestMs = firstPreparationMs + leaseElectionMs + keeperTrialMs + releaseReturnMs;
+const bridgeTestMs = firstPreparationMs + 2 * keeperTrialMs + 2 * releaseReturnMs;
 
 const keypair = () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -1009,7 +1010,7 @@ test("peer transfer keeps its checked progress after the first holder times out"
 test("a slow member can catch up after the main's preparation deadline", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true, stageDeadline: true }));
 test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true }));
 test("the deployed beta refuses a direct Rust pack", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true, expectRefusal: true }));
-test("the deployed beta takes the bridge before joining a Rust fleet", { timeout: 360000 }, t => fleetRun(t, { returningTypescript: true, bridgeBeta: true }));
+test("the deployed beta takes the bridge before joining a Rust fleet", { timeout: bridgeTestMs }, t => fleetRun(t, { returningTypescript: true, bridgeBeta: true }));
 
 test("the shell keeper records a failed first Rust launch without selecting TypeScript again", async t => {
   if (boxBinary().typescript || process.platform === "win32") {
@@ -1431,7 +1432,7 @@ Buffer.from = function (value, encoding, ...args) {
     if (pullProgress) await checkPullProgress();
     else startOnline();
     if (aheadMember) {
-      await until(() => confirmed(main), diagnose, pullProgress ? failoverReturnMs : firstPreparationMs);
+      await until(() => confirmed(main), diagnose, pullProgress ? releaseReturnMs : firstPreparationMs);
       assert.equal(active(member), selected);
       assert.equal(active(away), initial(away));
       assert.ok(refusedPacks > 0, "the main must get the pack from its member after the download fails");
@@ -1563,7 +1564,66 @@ Buffer.from = function (value, encoding, ...args) {
     const returned = performance.now();
     retryDownload = Boolean(shellKeepers);
     peerOnly = Boolean(failover || returningTypescript);
-    start(away);
+    const bridgeBin = bridgeBeta ? `versions/${bridgeVersion}-${bridgeHash.slice(0, 12)}/bin` : undefined;
+    const placement = async () => {
+      const resident = readJSON(path.join(leader.home, "run/serve.json"));
+      const line = await openLine(resident, "", "kuvo/setup/runs-on/events");
+      try {
+        assert.equal(line.status, 200);
+        for await (const frame of line.frames()) return frame;
+      } finally {
+        line.close();
+      }
+    };
+    if (bridgeBin) {
+      const source = path.join(leader.home, "run/peer-agents.json");
+      const to = readJSON(path.join(away.home, "run/link.json"));
+      const targetAddress = relayAddress(Buffer.from(to.secret, "base64url"));
+      const resident = readJSON(path.join(leader.home, "run/serve.json"));
+      const roster = await request(resident, "GET", "kuvo/computers");
+      const awayKey = roster.json?.computers?.find(row => row.name === "Away")?.key;
+      assert.ok(awayKey, "the Rust main should know the returning computer");
+      const held = { bridge: [], rust: [] };
+      const holding = { bridge: true, rust: true };
+      const stopHolding = [main, member].map(peer => {
+        const link = readJSON(path.join(peer.home, "run/link.json"));
+        const from = relayAddress(Buffer.from(link.secret, "base64url"));
+        return relay.intercept(from, targetAddress, packet => {
+          if (packet.payload.length <= 30_000) return false;
+          const phase = active(away) === bridgeBin ? "rust" : "bridge";
+          if (!holding[phase]) return false;
+          held[phase].push(packet);
+          return true;
+        });
+      });
+      const release = phase => {
+        holding[phase] = false;
+        for (const packet of held[phase].splice(0)) relay.replay(packet);
+      };
+      try {
+        start(away);
+        for (const [phase, prior] of [["bridge", previousVersion], ["rust", bridgeVersion]]) {
+          await until(() => held[phase].length > 0 && readJSON(source)[awayKey]?.computer?.kuvo === prior,
+            () => `the returning beta must ask for its ${phase} release at ${prior}\n${diagnose()}`, peerTransferMs);
+          const { computers } = await placement();
+          assert.ok(computers.some(row => row.here), "the Rust main should be available for work");
+          assert.equal(computers.some(row => row.computer.name === "Away" && !row.away), false,
+            `the returning beta must stay out of work placement at ${prior}`);
+          release(phase);
+          if (phase === "bridge") {
+            await until(() => active(away) === bridgeBin && !fs.existsSync(path.join(away.home, "run/previous")), diagnose, releaseReturnMs);
+            assert.ok(refusedBridges > 0, "the old beta must have reached a peer for its bridge pack");
+            t.diagnostic(`returning ${previousVersion} confirmed the bridge in ${Math.round(performance.now() - returned)} ms`);
+          }
+        }
+      } finally {
+        for (const stop of stopHolding) stop();
+        release("bridge");
+        release("rust");
+      }
+    } else {
+      start(away);
+    }
     const refused = () => {
       const cannot = path.join(away.home, "run/fleet-cannot.json");
       return fs.existsSync(cannot) ? readJSON(cannot) : undefined;
@@ -1579,14 +1639,8 @@ Buffer.from = function (value, encoding, ...args) {
       t.diagnostic(`returning ${previousVersion} refused the release in ${Math.round(performance.now() - returned)} ms`);
       return;
     }
-    const bridgeBin = bridgeBeta ? `versions/${bridgeVersion}-${bridgeHash.slice(0, 12)}/bin` : undefined;
-    if (bridgeBin) {
-      await until(() => active(away) === bridgeBin && !fs.existsSync(path.join(away.home, "run/previous")), diagnose, 120000);
-      assert.ok(refusedBridges > 0, "the old beta must have reached a peer for its bridge pack");
-      t.diagnostic(`returning ${previousVersion} confirmed the bridge in ${Math.round(performance.now() - returned)} ms`);
-    }
     const rustBegan = performance.now();
-    const returnMs = failover ? failoverReturnMs : peerOnly ? 120000 : 65000;
+    const returnMs = failover || bridgeBeta ? releaseReturnMs : peerOnly ? 120000 : 65000;
     await until(() => {
       const failure = (failover || bridgeBeta) && refused();
       if (failure?.version === version) throw new Error(failure.reason);
@@ -1617,6 +1671,10 @@ Buffer.from = function (value, encoding, ...args) {
       assert.equal(readJSON(path.join(away.home, selected, "..", "box.json")).launch, "rust");
     }
     if (bridgeBin) t.diagnostic(`the bridge then confirmed Rust in ${Math.round(performance.now() - rustBegan)} ms`);
+    if (bridgeBin) {
+      await until(async () => (await placement()).computers.some(row => row.computer.name === "Away" && !row.away),
+        "the returning computer must be available for work after confirming Rust");
+    }
     t.diagnostic(`returning computer confirmed in ${Math.round(performance.now() - returned)} ms`);
   } finally {
     feed.close();
