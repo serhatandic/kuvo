@@ -71,9 +71,12 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     let app = profile.join("Library/Application Support").join(&app_id);
     let before = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
     if restart && before.verdict == kuvo_move::install::Verdict::Ours {
+        files::create_private_dirs(&home.updates())?;
+        let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
         let launched = LaunchAgent::for_account(&profile, real)
             .map(|agent| agent.start(&home, &app_id))
             .transpose()?;
+        files::remove_tree_synced(&home.updates().join("install"))?;
         println!(
             "{}",
             json!({"result":"nothing", "verdict":before.verdict, "status":before.status,
@@ -82,11 +85,11 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         );
         return Ok(0);
     }
-    if restart {
+    if restart && before.verdict != kuvo_move::install::Verdict::Fresh {
         println!("{}", json!({"result":"refused","verdict":before.verdict}));
         return Ok(1);
     }
-    if before.verb != Some(kuvo_move::install::Verb::Move) {
+    if !restart && before.verb != Some(kuvo_move::install::Verb::Move) {
         let ours = before.verdict == kuvo_move::install::Verdict::Ours;
         println!(
             "{}",
@@ -104,6 +107,38 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     files::create_private_dirs(&home.updates())?;
     let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
     let media = staging::prepare_install(&home, &signed, source)?;
+    if restart {
+        let result = kuvo_move::mac::new_home_from_media(&home, &app.join("box"), &system, &media);
+        let mut value = serde_json::to_value(&result)?;
+        let code = result.exit_code();
+        let after = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
+        value["verdict"] = serde_json::to_value(after.verdict)?;
+        if code == 0 {
+            match LaunchAgent::for_account(&profile, real) {
+                Some(agent) => match agent.start(&home, &app_id) {
+                    Ok(started) => {
+                        value["started"] = true.into();
+                        value["message"] = started.message().into();
+                    }
+                    Err(error) => {
+                        value["result"] = "failed".into();
+                        value["started"] = false.into();
+                        value["message"] = error.to_string().into();
+                        println!("{value}");
+                        return Ok(1);
+                    }
+                },
+                None => {
+                    value["started"] = false.into();
+                    value["message"] =
+                        "It's made, and starts by itself only in ~/.kuvo-code.".into();
+                }
+            }
+            files::remove_tree_synced(&home.updates().join("install"))?;
+        }
+        println!("{value}");
+        return Ok(code);
+    }
     let mut shown = 0;
     let mut progress = |step: &serde_json::Value| {
         if let Some(index) = step["index"].as_u64().filter(|index| *index > shown) {

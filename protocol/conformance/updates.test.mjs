@@ -888,7 +888,7 @@ Buffer.from = function (value, encoding, ...args) {
   }
 }
 
-test("kuvo-install hands the two released Mac homes to the Rust move", { timeout: 180000 }, async t => {
+test("kuvo-install creates a new Mac home and moves the two released Mac homes", { timeout: 240000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "darwin") {
     return t.skip("The released Mac installer fixture needs the Rust Mac bootstrap and APFS.");
@@ -949,14 +949,36 @@ case "$1" in
 esac
 `, { mode: 0o700 });
     const original = fs.readFileSync(path.join(app.S, "Chats/c1/notes.md"), "utf8");
-    const install = verb => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb, "--app", app.bundle], {
-      cwd: app.home,
+    const install = (verb, account = app.home, launchTools = tools) => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb, "--app", app.bundle], {
+      cwd: account,
       env: {
-        ...environment, HOME: app.home, TMPDIR: path.join(app.home, "tmp"),
-        KUVO_TEST_RELEASE_KEY: key.key, KUVO_TEST_UNINSTALL_TOOLS: tools,
+        ...environment, HOME: account, TMPDIR: path.join(account, "tmp"),
+        KUVO_TEST_RELEASE_KEY: key.key, KUVO_TEST_UNINSTALL_TOOLS: launchTools,
       },
       encoding: "utf8", timeout: 90000,
     });
+    if (tag === "v0.7.2") {
+      const fresh = path.join(root, "fresh");
+      const freshTools = path.join(fresh, "launch-fixture");
+      fs.mkdirSync(path.join(fresh, "tmp"), { recursive: true });
+      fs.cpSync(tools, freshTools, { recursive: true });
+      const starts = performance.now();
+      const status = install("status", fresh, freshTools);
+      assert.equal(status.status, 0, status.stderr);
+      assert.equal(JSON.parse(status.stdout).verb, "new");
+      const made = install("new", fresh, freshTools);
+      assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
+      const answer = JSON.parse(made.stdout.trim().split("\n").at(-1));
+      assert.equal(answer.result, "done");
+      assert.equal(answer.started, true);
+      const home = path.join(fresh, ".kuvo-code");
+      assert.equal(readJSON(path.join(home, "box.json")).launch, "rust");
+      assert.equal(readJSON(path.join(home, "folder-version.json")).version, 23);
+      assert.equal(fs.existsSync(path.join(home, "updates/install")), false);
+      assert.equal(fs.readFileSync(path.join(freshTools, "calls"), "utf8"), "print\nbootstrap\n");
+      assert.deepEqual(fs.readdirSync(path.join(fresh, "tmp")), []);
+      t.diagnostic(`fresh signed Mac media installed and started in ${Math.round(performance.now() - starts)} ms`);
+    }
     const verdict = install("status");
     assert.equal(verdict.status, 0, verdict.error?.message ?? verdict.stdout + verdict.stderr);
     assert.equal(JSON.parse(verdict.stdout).verb, "move");
