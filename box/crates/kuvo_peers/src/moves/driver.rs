@@ -110,6 +110,7 @@ pub(crate) fn start(
         relay,
         engine,
         ownership,
+        forward_evidence: forward_evidence::Index::default(),
         copies: Receiving::default(),
         sending: HashMap::new(),
         retry: HashMap::new(),
@@ -143,6 +144,7 @@ struct Driver {
     relay: RelayHandle,
     engine: Engine,
     ownership: ownership::Handle,
+    forward_evidence: forward_evidence::Index,
     copies: Receiving,
     sending: HashMap<String, Sending>,
     retry: HashMap<String, RetryClock>,
@@ -337,6 +339,9 @@ impl Driver {
         }
         self.refresh_waiting(&rows);
         self.check_trash(&view, &rows).await?;
+        if let Err(error) = self.forward_evidence.warm(&self.reader.run) {
+            eprintln!("Indexing move receipt evidence: {error}");
+        }
         for mut row in rows {
             let result = if row.role == Role::From {
                 self.source_step(&view, &mut row).await
@@ -812,7 +817,9 @@ impl Driver {
             .scope(&row.thing, None)
             .map_err(io::Error::other)?
             .setup;
-        let evidence = forward_evidence::pack(self.run_dir(), setup.as_deref(), &row.sessions)?;
+        let evidence =
+            self.forward_evidence
+                .pack(&self.reader.run, setup.as_deref(), &row.sessions)?;
         if evidence.is_some()
             && !view
                 .announced
@@ -990,7 +997,9 @@ impl Driver {
         if conversation(&exports) != conversation(&sending.manifest.exports)
             || without_clocks(&queues)? != without_clocks(&before)?
             || session_notes::pack(self.run_dir(), &row.sessions)? != sending.manifest.session_notes
-            || forward_evidence::pack(self.run_dir(), setup.as_deref(), &row.sessions)?
+            || self
+                .forward_evidence
+                .pack(&self.reader.run, setup.as_deref(), &row.sessions)?
                 != sending.manifest.forward_evidence
         {
             if row.bundle.generation.unwrap_or_default() >= 3 {

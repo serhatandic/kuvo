@@ -32,6 +32,8 @@ for addressed work and receipt lookup.
 | Dropped-copy retry | Failed deletion keeps each copy held. The Rust resident tries again each minute for a recent drop and each hour after a week. Both copies are released when deletion succeeds. The TypeScript reference covers the failed deletion and the late warning. |
 | Waiting and recent requests | On the same live switch the source shows it is waiting for the destination after its reply is lost. A resident also drives a recent request recorded before its first check when it starts, while a second simultaneous request is refused. The live transfer imports children from both engine pages. |
 | Changing conversations | A live move rebuilds a bundle if a replay fence is saved after its first offer. Another move sees a new message on each offer, gives up after three offers, and leaves all four messages on the source. |
+| Receipt indexing | A Rust move with unrelated receipt history yields after one bounded scan, leaves the source usable and completes on retry with its replay fence. TypeScript's indexed preparation is covered by its owner-mutation scenario. |
+| Receipt issuer | Both residents submit a real draft before moving it. The original computer can still read its committed effect with the new owner shown. The destination can't look up someone else's computer receipt or replay the earlier draft. |
 | Retired backup | Only the destination starts the retention clock. The backup stays while a move back is in progress. Once that move is dropped, an expired backup stays recorded through a failed deletion and the next round retries it. A destination distinguishes the first local reply from a carried reply with a future timestamp. |
 | Unproven import | An authenticated drop sends proof that the source can stay active. Both residents keep an older incoming journal held when it has no evidence that its local session came from the move. |
 | Arrival query and size limit | Both residents answer an authenticated repeat with the held copy's generation and hash, report failure for an unknown copy and replay an eight-day-old switch receipt. They send no ownership proof for an unknown switch, drop or decision request. An offer one byte over 1 GB receives the size-limit refusal without opening a copy. |
@@ -48,7 +50,7 @@ for addressed work and receipt lookup.
 | Note addresses | Both residents learn session addresses from accepted notes and move announcements, keep the newer address across a restart, and send a pending note there when the original announcement expires. A redirect from the authenticated recipient is durable. A different computer's redirect is ignored. |
 | Older letter destinations | Both residents allow a lead to write to an unlisted conversation it started and refuse another conversation's letter. Listed conversations and recent arrivals still receive letters. |
 | Tool that stopped waiting | Both residents deliver an ordinary letter without the wait, cancel an unsent transcript request, and deliver a reply that was left behind to the local conversation. Replaying a delivered letter starts no second turn, and an unlisted sender hears that it cannot receive a reply. |
-| Transcript read | Both residents retry a temporarily unavailable page, return excerpts to the waiting tool and skip an undone passage. Only the lead can read its archived work. The read submits no prompt. |
+| Transcript read | Both residents retry a temporarily unavailable page, return excerpts to the waiting tool and skip an undone passage. Only the lead can read its archived work. The read submits no prompt. Rust uses the shared 3.2 transcript reader. |
 | Late answer and notes | A saved answer, a local conversation's reply and two queued notes wait while the receiver is held. After the switch, the new owner accepts them once with their original attribution. A transcript left by an abandoned read is discarded. A separate transfer accepts a note on the new owner while the original awaits cleanup. |
 | Refused letter | Both residents ignore a refusal from another computer. They save the owner’s refusal while the sender is held, then deliver it once as a queued note after a resident restart and release of the hold. The archived recipient is untouched. |
 | Managed files | Both residents refuse missing and export-only attachments before switching. The destination keeps the exact bytes, verifies the file receipt, rebases typed root and child references and a held prompt while preserving a quotation, and opens the file after its own restart and loss of the original file. |
@@ -118,10 +120,10 @@ both residents. That production build passed five focused checks on native Windo
 six each on WSL2 GNU and static Linux musl. These covered wake-up holds and the return move,
 queue admission, letter replay and attachment placement.
 
-The expanded macOS TypeScript area passed 58 applicable scenarios. The sender-order and
-held-note cases also passed in focused runs. WSL2 GNU and static Linux musl passed five
-focused cases for wake-up holds, sender introduction, held mail, refusals and backup retries.
-The pinned OpenCode proof passed once on each implementation with disposable residents.
+The expanded macOS TypeScript area passed 58 applicable scenarios. WSL2 GNU passed 59
+applicable Rust scenarios before integration with 3.2c. Focused checks on the integrated
+engine cover transcript mail and submission receipts after a move. The pinned OpenCode proof
+passed once on each implementation with disposable residents.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
@@ -152,8 +154,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Ninety-seven have full scenario coverage, 15 have partial proof,
-and 100 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Ninety-seven have full scenario coverage, 16 have partial proof,
+and 99 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -238,8 +240,9 @@ separately where they appear.
 | | 9 | Covered by a resident with successive slow engine exports, releasing the original and its wake-up marker at the thirty-minute deadline before the first offer. |
 | | 13–14 | Partial. Session news and a user-answer note wait during the switch and reach the new owner once. Creating the notices from the failed session event or the late ask answer needs 5.1 and 3.2 respectively. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 1–3 | Work Queue creation, forwarded claims and edits owned by 5.2. |
-| | 15–16 | Partial, the final move snapshot is rebuilt when a replay fence is saved after an offer. The destination preserves a settled decision and rolls back a conflicting handoff. Submission receipt lookup, page recovery and effects remain 2.4 and 3.2. |
-| | 9–10, 17–18 | Open, 2.4 owner observations, indexed move preparation and receipt-page recovery. Session effects depend on 3.2. |
+| | 15–16 | Partial, the final move snapshot is rebuilt when a replay fence is saved after an offer. The destination preserves a settled decision and rolls back a conflicting handoff. A live submission keeps its committed effect at the issuing computer after a move and can't be replayed on the destination. Archive classification, replacement and explicit non-admission still need integrated proof. |
+| | 17 | Partial, the Rust move indexes unrelated receipt history in batches and keeps the original usable until the relevant evidence can be carried. The 3.2 local receipt reader pages across both record versions. Index continuation through restart and mixed peers still need integrated proof. |
+| | 9–10, 18 | Open, 2.4 authoritative owner observations and out-of-order pages, and receipt-page recovery across issuer changes. |
 | | 11 | Setup edit capacity and recovery belong to 2.1. |
 | | 12–13 | Attachment-only Work Queue edits and replay of scoped Work Queue mutations belong to 5.2. Pairing verification uses 2.2. |
 | | 14 | Interrupted native draft recovery belongs to 3.2 and 4.6. |
@@ -289,8 +292,9 @@ order and count a parameterized declaration once.
 ## Remaining transfer and delivery work
 
 - 2.4 still needs integrated proof of owner snapshot reads, indexed receipt-page recovery,
-  and lost effects across a handoff. The 3.2 effect and receipt adapter supplies the submission
-  and owner-read routes, including authoritative absence and out-of-order replies.
+  and lost effects across a handoff. The shared 3.2 submission adapter supplies receipt queries.
+  `kuvo/data/owner` still needs the snapshot adapter for authoritative absence and out-of-order
+  responses. Receipt-page coverage also needs issuer replacement and removal.
 - 3.2 supplies Stop admission during an active turn, the queued-letter answer policy, typed
   errors for unreadable holds, late asks and remote work effects. The live calling paths for
   `send_message` and `read_conversation` also depend on the 4.1 tools relay.

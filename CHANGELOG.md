@@ -23,6 +23,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A moved conversation can send and receive replies by name while its old computer is still cleaning up the original.
 - Your other computer learns a newly created conversation’s name before its message arrives.
 - Notes for a moving conversation wait for its new computer to confirm the move, then reach it while the original is being cleaned up.
+- A conversation stays on its current computer while Kuvo indexes the receipts required for its move.
 - Windows uninstall completes when there is no sign-in task to remove.
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.

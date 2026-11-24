@@ -2,7 +2,7 @@
 //! these records with their original addresses, so a retry keeps its identity.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     io,
     path::{Path, PathBuf},
     time::Duration,
@@ -10,7 +10,7 @@ use std::{
 
 use kuvo_store::{
     declarations::{self, Owner},
-    files,
+    files::{self, FileStamp},
     format::ObjectFormat,
     locks::OwnedLock,
 };
@@ -20,6 +20,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 const OWNED: ObjectFormat = ObjectFormat::additive("Owned data");
+const INDEX_BATCH: usize = 128;
 
 #[derive(Deserialize)]
 struct DraftFence {
@@ -69,29 +70,157 @@ impl Scope {
     }
 }
 
-pub(super) fn pack(
-    run: &Path,
-    setup: Option<&str>,
+#[derive(Default)]
+pub(super) struct Index {
+    mutations: CandidateIndex,
+    submissions: CandidateIndex,
+    warming: bool,
+}
+
+#[derive(Default)]
+struct CandidateIndex {
+    revision: Option<FileStamp>,
+    unread: VecDeque<(String, PathBuf)>,
+    sessions: BTreeMap<String, Vec<(String, PathBuf)>>,
+}
+
+impl CandidateIndex {
+    fn refresh(&mut self, folder: &Path) -> io::Result<()> {
+        let revision = files::file_stamp(folder)?;
+        if self.revision != revision {
+            self.unread = records(folder)?.into();
+            self.sessions.clear();
+            self.revision = revision;
+        }
+        Ok(())
+    }
+
+    fn scan(
+        &mut self,
+        left: &mut usize,
+        session_of: impl Fn(&str, &Map<String, Value>) -> io::Result<Option<String>>,
+    ) -> io::Result<()> {
+        while *left > 0 {
+            let Some((key, path)) = self.unread.front() else {
+                break;
+            };
+            if let Some(object) = OWNED.read(path).map_err(io::Error::other)?
+                && let Some(session) = session_of(key, &object.fields)?
+            {
+                self.sessions
+                    .entry(session)
+                    .or_default()
+                    .push((key.clone(), path.clone()));
+            }
+            self.unread.pop_front();
+            *left -= 1;
+        }
+        Ok(())
+    }
+
+    fn paths<'a>(&'a self, sessions: &'a [String]) -> impl Iterator<Item = (&'a str, &'a Path)> {
+        sessions
+            .iter()
+            .filter_map(|session| self.sessions.get(session))
+            .flatten()
+            .map(|(key, path)| (key.as_str(), path.as_path()))
+    }
+
+    fn current(&self, folder: &Path) -> io::Result<bool> {
+        Ok(self.unread.is_empty() && files::file_stamp(folder)? == self.revision)
+    }
+}
+
+impl Index {
+    pub(super) fn pack(
+        &mut self,
+        run: &Path,
+        setup: Option<&str>,
+        sessions: &[String],
+    ) -> io::Result<Option<BTreeMap<String, Value>>> {
+        let Some(setup) = setup else {
+            return Ok(None);
+        };
+        let root = run.join("owned-data");
+        let _guard = OwnedLock::acquire(&root.join(".mutations.lock"), Duration::from_secs(3))?;
+        self.advance(&root)?;
+        let indexing = || {
+            io::Error::other(
+                "Receipt evidence is still being indexed or cannot be read. Finish indexing or update the Box before moving this work.",
+            )
+        };
+        if !self.current(&root)? {
+            return Err(indexing());
+        }
+        let packed = pack(&root, setup, sessions, &self.mutations, &self.submissions)?;
+        // Each result still comes from the current, validated receipt. A new
+        // record invalidates the index even if it appeared during this read.
+        if !self.current(&root)? {
+            self.warming = true;
+            return Err(indexing());
+        }
+        Ok(packed)
+    }
+
+    pub(super) fn warm(&mut self, run: &Path) -> io::Result<()> {
+        if !self.warming {
+            return Ok(());
+        }
+        let root = run.join("owned-data");
+        let _guard = OwnedLock::acquire(&root.join(".mutations.lock"), Duration::from_secs(3))?;
+        self.advance(&root)
+    }
+
+    fn advance(&mut self, root: &Path) -> io::Result<()> {
+        self.warming = false;
+        let mutations = root.join("mutations");
+        let submissions = root.join("submissions");
+        self.mutations.refresh(&mutations)?;
+        self.submissions.refresh(&submissions)?;
+        let mut left = INDEX_BATCH;
+        self.mutations.scan(&mut left, |key, fields| {
+            Ok(match address(key, fields)? {
+                Scope::Session { id, .. } => Some(id),
+                Scope::Other => None,
+            })
+        })?;
+        self.submissions.scan(&mut left, |_, fields| {
+            Ok(fields
+                .get("submission")
+                .and_then(|saved| saved["session"].as_str())
+                .map(str::to_owned))
+        })?;
+
+        self.warming = !self.current(root)?;
+        Ok(())
+    }
+
+    fn current(&self, root: &Path) -> io::Result<bool> {
+        Ok(self.mutations.current(&root.join("mutations"))?
+            && self.submissions.current(&root.join("submissions"))?)
+    }
+}
+
+fn pack(
+    root: &Path,
+    setup: &str,
     sessions: &[String],
+    mutations: &CandidateIndex,
+    submissions: &CandidateIndex,
 ) -> io::Result<Option<BTreeMap<String, Value>>> {
-    let Some(setup) = setup else {
-        return Ok(None);
-    };
-    let root = run.join("owned-data");
-    let _guard = OwnedLock::acquire(&root.join(".mutations.lock"), Duration::from_secs(3))?;
     let mut entries = BTreeMap::new();
-    for (key, path) in records(&root.join("mutations"))? {
-        let Some(object) = OWNED.read(&path).map_err(io::Error::other)? else {
+    for (key, path) in mutations.paths(sessions) {
+        let Some(object) = OWNED.read(path).map_err(io::Error::other)? else {
             continue;
         };
-        if address(&key, &object.fields)?.follows(setup, sessions) {
-            entries.insert(key, OWNED.encode(object.fields));
+        if address(key, &object.fields)?.follows(setup, sessions) {
+            entries.insert(key.to_owned(), OWNED.encode(object.fields));
         }
     }
     // Before the replay fence acquired a typed address, the stable submission
     // identified the same mutation record by its original digest.
-    for (key, path) in records(&root.join("submissions"))? {
-        let Some(object) = OWNED.read(&path).map_err(io::Error::other)? else {
+    for (key, path) in submissions.paths(sessions) {
+        let Some(object) = OWNED.read(path).map_err(io::Error::other)? else {
             continue;
         };
         let Some(saved) = object.fields.get("submission") else {

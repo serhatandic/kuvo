@@ -1701,6 +1701,93 @@ test("a move carries replay evidence saved after the first offer", {
   assert.deepEqual(readJSON(installed), evidence);
 });
 
+test("a moved conversation's submitted-message receipt stays with its original issuer", { timeout: 90000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("receipt-issuer"), there = await computer("receipt-new-owner");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_submittedBeforeMove", message = "msg_beforeHandoff";
+  const directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, title: "Notes for the move", directory }));
+  const source = here.start(), destination = there.start();
+  const [original, current] = await Promise.all([source.ready(), destination.ready()]);
+  const route = `kuvo/sessions/${session}`, desktop = { "x-kuvo-from": "app" };
+  await readyToMove(original, session, member);
+  const available = await request(original, "GET", route + "/submissions?scope=1", undefined, desktop);
+  assert.equal(available.status, 200, available.text);
+  assert.equal(available.json.currentOwner, main.key, available.text);
+  const submission = `${available.json.setup}.${main.key}.${message}`;
+  const body = { id: message, submission, text: "Keep my earlier message.", message: {} };
+  const sent = await request(original, "POST", route + "/submit", body, desktop);
+  assert.equal(sent.status, 200, sent.text);
+  assert.equal(sent.json.message, message, sent.text);
+  const moving = await request(original, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(moving.status, 202, moving.text);
+  await moveRetired(here, moving.json.move.id, () => source.log() + "\n" + destination.log());
+
+  const receipt = await until(async () => {
+    const read = await request(original, "GET", route + "/submissions/" + submission, undefined, desktop);
+    assert.equal(read.status, 200, read.text);
+    return read.json.complete && read.json.outcomes.length ? read.json : false;
+  }, () => "The issuing computer did not find its receipt after the move\n" + source.log() + "\n" + destination.log(), 20000);
+  assert.equal(receipt.currentOwner, member.key);
+  assert.equal(receipt.outcomes.length, 1);
+  const [outcome] = receipt.outcomes;
+  assert.deepEqual([outcome.status, outcome.originalOwner, outcome.effect.message], ["committed", main.key, message]);
+  const otherReader = await request(current, "GET", route + "/submissions/" + submission, undefined, desktop);
+  assert.equal(otherReader.status, 200, otherReader.text);
+  assert.deepEqual(otherReader.json.outcomes, [], "The other computer cannot impersonate the submitter");
+  const oldDraft = await request(current, "POST", route + "/draft", { id: message, text: body.text, message: {} }, desktop);
+  assert.equal(oldDraft.status, 409, oldDraft.text);
+  assert.deepEqual(there.engine.messages.get(session).map(row => row.id), [message]);
+  assert.ok(!there.engine.asked.some(row => row.method === "POST" && row.path === `/api/session/${session}/prompt`));
+});
+
+test("a cold move receipt index pauses after a bounded scan", {
+  timeout: 90000, skip: binary.typescript && "The TypeScript reference checks its cold index in owner-mutations.test.js",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("move-receipt-index"), there = await computer("move-index-destination");
+  const { member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const setup = readJSON(path.join(here.home, "run/link.json")).setup.id;
+  const session = "ses_indexedMove", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, title: "Indexed chat", directory }));
+  const key = value => createHash("sha256").update(JSON.stringify(value)).digest("base64url");
+  const store = path.join(here.home, "run/owned-data/mutations");
+  for (let index = 0; index < 135; index++) {
+    write(path.join(store, key(["unrelated", index]) + ".json"), JSON.stringify({ digest: "d".repeat(43) }));
+  }
+  const message = "msg_beforeIndexedMove";
+  const shadow = key(["typed-draft", setup, session, message]);
+  const fence = { formatVersion: 1, digest: "scoped:" + "C".repeat(43), draftReplayFence: { setup, session, id: message } };
+  write(path.join(store, shadow + ".json"), JSON.stringify(fence));
+  const source = here.start(), destination = there.start();
+  const [original] = await Promise.all([source.ready(), destination.ready()]);
+  await readyToMove(original, session, member);
+  const start = () => request(original, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  const settled = async id => {
+    await moveRetired(here, id, () => source.log() + "\n" + destination.log());
+    const receipt = await request(original, "GET", "kuvo/moves/receipt?id=" + id);
+    assert.equal(receipt.status, 200, receipt.text);
+    return receipt.json;
+  };
+  const first = await start();
+  assert.equal(first.status, 202, first.text);
+  const outcome = await settled(first.json.move.id);
+  assert.equal(outcome.state, "failed", JSON.stringify(outcome));
+  assert.match(outcome.message, /Receipt evidence is still being indexed/);
+  assert.ok(here.engine.sessions.some(each => each.id === session));
+  assert.ok(!there.engine.sessions.some(each => each.id === session));
+
+  const retry = await start();
+  assert.equal(retry.status, 202, retry.text);
+  assert.equal((await settled(retry.json.move.id)).state, "done");
+  assert.deepEqual(readJSON(path.join(there.home, "run/owned-data/mutations", shadow + ".json")), fence);
+});
+
 test("handoff preserves a settled forwarding decision and rejects a conflicting one", { timeout: 60000 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("handoff-source"), there = await computer("handoff-target");
