@@ -7,10 +7,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, test } from "node:test";
 import {
-  askFirst, assertMatch, canUse, idles, result, scriptedClaude, steps, streams, texts, toolCalls,
-  toolResult,
+  askFirst, assertMatch, canUse, hook, idles, result, scriptedClaude, steps, streams, texts,
+  toolCalls, toolResult,
 } from "./claude.mjs";
-import { boxBinary, until } from "./adapter.mjs";
+import { boxBinary, until, write } from "./adapter.mjs";
 
 const skip = boxBinary().typescript && process.platform === "win32" ? "The reference bridge runs on Unix." : false;
 
@@ -19,26 +19,38 @@ const skip = boxBinary().typescript && process.platform === "win32" ? "The refer
  * bridge reads its sessions as it starts): plain ones, and Ask First ones.
  */
 function resident(fixture = {}) {
-  const pool = { plain: [], ask: [] };
+  const pool = { plain: [], ask: [], plan: [], slot: [] };
   const box = {};
   before(async () => {
     if (skip) return;
     box.claude = await scriptedClaude(fixture);
-    for (const [kind, permissions] of [["plain", undefined], ["ask", askFirst]]) {
+    for (const [kind, permissions, agent] of [["plain", undefined], ["ask", askFirst], ["plan", askFirst, "plan"]]) {
       for (let index = 1; index <= 12; index++) {
         const id = `ses_claude_${kind}_${String(index).padStart(3, "0")}`;
         const folder = path.join(box.claude.home, "projects", id);
         fs.mkdirSync(folder, { recursive: true });
-        box.claude.seed(id, { directory: folder, model: "default", permissions });
+        box.claude.seed(id, { directory: folder, model: "default", permissions, agent });
         pool[kind].push({ id, folder });
       }
+    }
+    // Ones Claude Code has a conversation for in its slot, but that haven't been handed to it.
+    for (let index = 1; index <= 2; index++) {
+      const id = `ses_claude_slot_${String(index).padStart(3, "0")}`;
+      const folder = path.join(box.claude.home, "projects", id);
+      fs.mkdirSync(folder, { recursive: true });
+      box.claude.seed(id, { directory: folder, model: "default" });
+      write(path.join(box.claude.home, "agents/sessions", id, "agent.json"), JSON.stringify({
+        threads: { "claude-code": { state: { claudeSession: `6f1c2a4e-8b3d-4c5a-9e7f-0a1b2c3d4e5${index}`, claudeStarted: true } } },
+      }));
+      pool.slot.push({ id, folder });
     }
     await box.claude.start();
   });
   after(async () => box.claude?.close());
-  box.peek = ({ ask = false } = {}) => pool[ask ? "ask" : "plain"][0];
-  box.next = ({ ask = false } = {}) => {
-    const session = pool[ask ? "ask" : "plain"].shift();
+  const kind = ({ ask = false, plan = false, slot = false }) => slot ? "slot" : plan ? "plan" : ask ? "ask" : "plain";
+  box.peek = (options = {}) => pool[kind(options)][0];
+  box.next = (options = {}) => {
+    const session = pool[kind(options)].shift();
     assert.ok(session, "Seed more sessions.");
     return session;
   };
@@ -478,6 +490,18 @@ describe("summarizing when you ask (/compact)", { skip }, () => {
     assert.match(answer.text, /There's nothing to summarize yet: Claude Code hasn't started on this conversation\./);
   });
 
+  // The reference bridge counts a conversation as started once its agent has seen it (the
+  // handover's `seen` cursor); the Rust resident, without that cursor yet, by the agent's saved
+  // state. 4.6 brings the cursor and turns this into a passing case.
+  test("one whose agent has a conversation saved but hasn't seen this one is refused, saying why", {
+    todo: boxBinary().typescript ? false : "4.6: the handover's seen cursor",
+  }, async () => {
+    const { id } = box.next({ slot: true });
+    const answer = await box.claude.compact(id);
+    assert.equal(answer.status, 400, answer.text);
+    assert.match(answer.text, /hasn't started on this conversation/);
+  });
+
   test("one that fails shows why, though its result says it went through", async () => {
     const id = await afterATurn([
       { type: "system", subtype: "status", status: null, compact_result: "failed", compact_error: "Not enough messages to compact." },
@@ -517,5 +541,261 @@ describe("summarizing when you ask (/compact)", { skip }, () => {
     await compact(id);
     const rows = await box.claude.idles(id, 2);
     assertMatch(rows.filter(row => row.type === "compaction"), [{ status: "completed", reason: "manual" }]);
+  });
+});
+
+describe("Claude Code's permissions", { skip }, () => {
+  const box = resident();
+  const decision = answer => answer.response?.hookSpecificOutput?.permissionDecision;
+  const cards = async (id, count = 1) => until(async () => {
+    const asked = await box.claude.permissions(id);
+    return asked.length === count && asked;
+  }, `There were never ${count} cards.`);
+  const home = () => box.claude.env.HOME;
+
+  test("Ask First: a command it would run is your card on its step; Allow Once lets it run", async () => {
+    const { id } = await box.begin([
+      ...streams("$UUID", [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "npm test" } }]),
+      hook("h1", "Bash", { command: "npm test" }, "toolu_1"), { reply: "h1" },
+      canUse("c1", "Bash", { command: "npm test" }, "toolu_1", { title: "Claude wants to run npm test" }), { reply: "c1" },
+      toolResult("toolu_1", "3 passed"),
+      ...streams("$UUID", [{ type: "text", text: "They pass." }]),
+      result(["$UUID"]),
+    ], { ask: true });
+    // Asked, even where Claude Code's own settings would let it run.
+    assert.equal(decision(await box.claude.answered(id, "h1")), "ask");
+    const [card] = await cards(id);
+    assertMatch(card, { action: "shell", resources: ["npm test"], message: "Claude wants to run npm test", source: { type: "tool", id: "toolu_1" } });
+    await box.claude.replyPermission(id, card.id, "once");
+    assert.deepEqual((await box.claude.answered(id, "c1")).response, { behavior: "allow", updatedInput: { command: "npm test" }, toolUseID: "toolu_1" });
+    const rows = await box.claude.idles(id);
+    assertMatch(toolCalls(rows)[0], { name: "shell", state: { status: "completed", content: [{ type: "text", text: "3 passed" }] } });
+  });
+
+  test("Allow Always: Claude Code keeps it for this session only, and the same command isn't asked about again; one more in the line is", async () => {
+    const suggestions = [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "npm test" }], behavior: "allow", destination: "localSettings" }];
+    const { id } = await box.begin([
+      canUse("c1", "Bash", { command: "npm test" }, "toolu_1", { permission_suggestions: suggestions }), { reply: "c1" },
+      hook("h2", "Bash", { command: "npm test" }, "toolu_2"), { reply: "h2" },
+      canUse("c2", "Bash", { command: "npm test" }, "toolu_2"), { reply: "c2" },
+      hook("h3", "Bash", { command: "npm test && rm -rf build" }, "toolu_3"), { reply: "h3" },
+      result(["$UUID"]),
+    ], { ask: true });
+    const [card] = await cards(id);
+    await box.claude.replyPermission(id, card.id, "always");
+    // Not written into the project's own Claude settings.
+    assert.deepEqual((await box.claude.answered(id, "c1")).response.updatedPermissions, [{ ...suggestions[0], destination: "session" }]);
+    assert.equal(decision(await box.claude.answered(id, "h2")), undefined);
+    assertMatch((await box.claude.answered(id, "c2")).response, { behavior: "allow" });
+    assert.equal(decision(await box.claude.answered(id, "h3")), "ask");
+    await box.claude.idles(id);
+    assert.deepEqual(await box.claude.permissions(id), []);
+  });
+
+  test("Allow Always on an edit lets every later edit in the session through, to other files and by other tools, without asking", async () => {
+    const session = box.next({ ask: true });
+    const [a, b] = [path.join(session.folder, "a.ts"), path.join(session.folder, "b.ts")];
+    fs.writeFileSync(a, "const a = 1\n");
+    fs.writeFileSync(b, "const b = 1\n");
+    const second = { file_path: b, old_string: "const b = 1", new_string: "const b = 2" };
+    const created = { file_path: path.join(session.folder, "c.ts"), content: "export {}\n" };
+    const { id } = await box.begin([
+      canUse("c1", "Edit", { file_path: a, old_string: "const a = 1", new_string: "const a = 2" }, "toolu_1"), { reply: "c1" },
+      hook("h2", "Edit", second, "toolu_2"), { reply: "h2" },
+      canUse("c2", "Edit", second, "toolu_2"), { reply: "c2" },
+      hook("h3", "Write", created, "toolu_3"), { reply: "h3" },
+      canUse("c3", "Write", created, "toolu_3"), { reply: "c3" },
+      result(["$UUID"]),
+    ], {}, session);
+    const [card] = await cards(id);
+    await box.claude.replyPermission(id, card.id, "always");
+    assertMatch((await box.claude.answered(id, "c1")).response, { behavior: "allow" });
+    assert.equal(decision(await box.claude.answered(id, "h2")), undefined);
+    assertMatch((await box.claude.answered(id, "c2")).response, { behavior: "allow" });
+    assert.equal(decision(await box.claude.answered(id, "h3")), undefined);
+    assertMatch((await box.claude.answered(id, "c3")).response, { behavior: "allow" });
+    await box.claude.idles(id);
+    assert.deepEqual(await box.claude.permissions(id), []);
+  });
+
+  test("Deny: an edit's card shows what it would change; Claude Code is told you declined, and the turn goes on", async () => {
+    const session = box.next({ ask: true });
+    const file = path.join(session.folder, "a.ts");
+    fs.writeFileSync(file, "const a = 1\n");
+    const edit = { file_path: file, old_string: "const a = 1", new_string: "const a = 2" };
+    const { id } = await box.begin([
+      ...streams("$UUID", [{ type: "tool_use", id: "toolu_1", name: "Edit", input: edit }]),
+      canUse("c1", "Edit", edit, "toolu_1"), { reply: "c1" },
+      toolResult("toolu_1", "The user declined this.", { error: true }),
+      ...streams("$UUID", [{ type: "text", text: "Leaving it as it is." }]),
+      result(["$UUID"]),
+    ], {}, session);
+    const [card] = await cards(id);
+    assertMatch(card, { action: "edit", resources: [file], metadata: { files: [{ file, additions: 1, deletions: 1 }] } });
+    await box.claude.replyPermission(id, card.id, "reject");
+    assert.deepEqual((await box.claude.answered(id, "c1")).response, { behavior: "deny", message: "The user declined this.", toolUseID: "toolu_1" });
+    const rows = await box.claude.idles(id);
+    assert.equal(idles(rows)[0].outcome, "succeeded");
+    assertMatch(toolCalls(rows)[0], { name: "edit", state: { status: "error" } });
+    assert.ok(texts(rows).includes("Leaving it as it is."));
+  });
+
+  test("Approve All: what it asks about runs without a card, but reading a .env file still asks", async () => {
+    const session = box.next();
+    const edit = { file_path: path.join(session.folder, "a.ts"), old_string: "1", new_string: "2" };
+    const secrets = path.join(session.folder, ".env");
+    const { id } = await box.begin([
+      hook("h1", "Edit", edit, "toolu_1"), { reply: "h1" },
+      canUse("c1", "Edit", edit, "toolu_1"), { reply: "c1" },
+      canUse("c2", "Bash", { command: "rm -rf build" }, "toolu_2"), { reply: "c2" },
+      hook("h3", "Read", { file_path: secrets }, "toolu_3"), { reply: "h3" },
+      canUse("c3", "Read", { file_path: secrets }, "toolu_3"), { reply: "c3" },
+      result(["$UUID"]),
+    ], {}, session);
+    assert.equal(decision(await box.claude.answered(id, "h1")), undefined);
+    assertMatch((await box.claude.answered(id, "c1")).response, { behavior: "allow", updatedInput: edit });
+    assertMatch((await box.claude.answered(id, "c2")).response, { behavior: "allow" });
+    assert.equal(decision(await box.claude.answered(id, "h3")), "ask");
+    const [card] = await cards(id);
+    assertMatch(card, { action: "read", resources: [secrets] });
+    await box.claude.replyPermission(id, card.id, "once");
+    assertMatch((await box.claude.answered(id, "c3")).response, { behavior: "allow" });
+    await box.claude.idles(id);
+  });
+
+  test("reading a file outside the project asks first, as the engine's agents do, but not Claude Code's own: its memory, a long output it saved, its background commands' output", async () => {
+    const keys = path.join(home(), ".ssh", "id_ed25519");
+    const settings = path.join(home(), ".claude");
+    const saved = path.join(settings, "projects", "-tmp-project", "0b5e1f1c-0000-4000-8000-000000000000", "tool-results", "toolu_0.txt");
+    const memory = path.join(settings, "projects", "-tmp-project", "memory", "MEMORY.md");
+    const unix = process.platform !== "win32";
+    const uid = unix ? process.getuid() : 0;
+    const own = [
+      ["Read", { file_path: saved }],
+      ["Read", { file_path: path.join(path.dirname(saved), "pages", "1.png") }],
+      ["Read", { file_path: memory }],
+      ["Write", { file_path: path.join(path.dirname(memory), "testing.md"), content: "Run the tests with bun test." }],
+      ...(unix ? [["Read", { file_path: `/tmp/claude-${uid}/-tmp-project/0b5e1f1c-0000-4000-8000-000000000000/tasks/b1.output` }]] : []),
+    ];
+    const outside = [`${saved}/../../../../../.ssh/id_ed25519`, ...(unix ? [`/tmp/claude-${uid}/notes.txt`] : []), path.join(settings, "settings.json")];
+    const { id } = await box.begin([
+      hook("h1", "Read", { file_path: keys }, "toolu_1"), { reply: "h1" },
+      canUse("c1", "Read", { file_path: keys }, "toolu_1"), { reply: "c1" },
+      ...own.flatMap(([tool, input], index) => [
+        hook(`own-h${index}`, tool, input, `toolu_own${index}`), { reply: `own-h${index}` },
+        canUse(`own-c${index}`, tool, input, `toolu_own${index}`), { reply: `own-c${index}` },
+      ]),
+      ...outside.flatMap((file, index) => [hook(`out-h${index}`, "Read", { file_path: file }, `toolu_out${index}`), { reply: `out-h${index}` }]),
+      result(["$UUID"]),
+    ]);
+    assert.equal(decision(await box.claude.answered(id, "h1")), "ask");
+    const [card] = await cards(id);
+    assertMatch(card, { action: "external_directory", resources: [keys] });
+    await box.claude.replyPermission(id, card.id, "reject");
+    assertMatch((await box.claude.answered(id, "c1")).response, { behavior: "deny" });
+    for (const index of own.keys()) {
+      assert.equal(decision(await box.claude.answered(id, `own-h${index}`)), undefined, JSON.stringify(own[index]));
+      assertMatch((await box.claude.answered(id, `own-c${index}`)).response, { behavior: "allow" });
+    }
+    for (const [index, file] of outside.entries()) assert.equal(decision(await box.claude.answered(id, `out-h${index}`)), "ask", file);
+    await box.claude.idles(id);
+    assert.deepEqual(await box.claude.permissions(id), []);
+  });
+
+  test("its own files aren't outside the project, but your rules still hold for them: Ask First asks before it writes its memory", async () => {
+    const memory = path.join(home(), ".claude", "projects", "-tmp-project", "memory", "MEMORY.md");
+    const { id } = await box.begin([
+      hook("h1", "Write", { file_path: memory, content: "-" }, "toolu_1"), { reply: "h1" },
+      hook("h2", "Read", { file_path: memory }, "toolu_2"), { reply: "h2" },
+      result(["$UUID"]),
+    ], { ask: true });
+    assert.equal(decision(await box.claude.answered(id, "h1")), "ask");
+    assert.equal(decision(await box.claude.answered(id, "h2")), undefined);
+    await box.claude.idles(id);
+  });
+
+  test("your Blocks refuse a tool before it runs, under Approve All too: any command in a line counts, and Claude Code is told why", async () => {
+    const settings = path.join(box.claude.home, "box", "opencode.json");
+    fs.writeFileSync(settings, JSON.stringify({ policies: [{ action: "tool.use", resource: "shell:rm *", effect: "deny" }] }));
+    try {
+      const { id } = await box.begin([
+        hook("h1", "Bash", { command: "npm test && rm -rf build" }, "toolu_1"), { reply: "h1" },
+        hook("h2", "Bash", { command: "npm test" }, "toolu_2"), { reply: "h2" },
+        canUse("c3", "Bash", { command: "rm -rf build" }, "toolu_3"), { reply: "c3" },
+        result(["$UUID"]),
+      ]);
+      const refused = (await box.claude.answered(id, "h1")).response.hookSpecificOutput;
+      assert.equal(refused.permissionDecision, "deny");
+      assert.match(refused.permissionDecisionReason, /Settings › Permissions/);
+      assert.equal(decision(await box.claude.answered(id, "h2")), undefined);
+      // Asked about by Claude Code all the same: refused, with no card.
+      assertMatch((await box.claude.answered(id, "c3")).response, { behavior: "deny" });
+      await box.claude.idles(id);
+      assert.deepEqual(await box.claude.permissions(id), []);
+    } finally {
+      fs.writeFileSync(settings, "{}\n");
+    }
+  });
+
+  test("plan mode is Claude Code's own: it writes its plan to its file even under Ask First, other edits are refused, and Build takes it out", async () => {
+    const session = box.next({ plan: true });
+    const plan = { file_path: path.join(home(), ".claude", "plans", "a-plan.md"), content: "# The plan" };
+    const edit = { file_path: path.join(session.folder, "a.ts"), old_string: "1", new_string: "2" };
+    const { id } = await box.begin([
+      hook("h1", "Write", plan, "toolu_1"), { reply: "h1" },
+      canUse("c2", "Edit", edit, "toolu_2"), { reply: "c2" },
+      canUse("c3", "ExitPlanMode", { plan: "# The plan" }, "toolu_3"), { reply: "c3" },
+      { type: "assistant", message: { id: "plan-said", role: "assistant", content: [{ type: "text", text: "Here's the plan." }] }, parent_tool_use_id: null },
+      result(["$UUID"]),
+    ], {}, session);
+    const taken = await until(() => heardUser(box.claude, `go ${id}`)[0], () => JSON.stringify(box.claude.heard().filter(line => line.type === "user").map(line => [line.pid, line.message.content])));
+    const started = box.claude.heard().find(line => line.argv && line.pid === taken.pid);
+    assert.ok(started.argv.some((arg, index) => arg === "--permission-mode=plan" || (arg === "--permission-mode" && started.argv[index + 1] === "plan")), JSON.stringify(started.argv));
+    assert.equal(decision(await box.claude.answered(id, "h1")), undefined);
+    assertMatch((await box.claude.answered(id, "c2")).response, { behavior: "deny" });
+    // Done planning: told to wait for you, who builds it when you're ready.
+    const exit = (await box.claude.answered(id, "c3")).response;
+    assert.equal(exit.behavior, "deny");
+    assert.match(exit.message, /wait/);
+    await box.claude.idles(id);
+    assert.deepEqual(await box.claude.permissions(id), []);
+    const modes = () => box.claude.heard().filter(line => line.request?.subtype === "set_permission_mode" && line.pid === started.pid).map(line => line.request.mode);
+    const before = modes().length;
+    const answer = await box.claude.selectAgent(id, "build");
+    assert.equal(answer.status, 200, answer.text);
+    await box.claude.prompt(id, `build it ${id}`);
+    await box.claude.idles(id, 2);
+    assert.deepEqual(modes().slice(before), ["default"]);
+  });
+
+  test("in Build, a plan mode it went into on its own it leaves when its plan is done, and carries on", async () => {
+    const { id } = await box.begin([canUse("c1", "ExitPlanMode", { plan: "# The plan" }, "toolu_1"), { reply: "c1" }, result(["$UUID"])]);
+    assertMatch((await box.claude.answered(id, "c1")).response, { behavior: "allow", updatedInput: { plan: "# The plan" } });
+    await box.claude.idles(id);
+    assert.deepEqual(await box.claude.permissions(id), []);
+  });
+
+  test("a question it asks is a form: your answers reach it, and dismissing one tells it so", async () => {
+    const questions = [{ question: "Which database?", header: "Database", options: [{ label: "Postgres" }, { label: "SQLite", description: "One file" }], multiSelect: false }];
+    const { id } = await box.begin([
+      canUse("q1", "AskUserQuestion", { questions }, "toolu_1"), { reply: "q1" },
+      canUse("q2", "AskUserQuestion", { questions }, "toolu_2"), { reply: "q2" },
+      canUse("q3", "AskUserQuestion", { questions }, "toolu_3"), { reply: "q3" },
+      result(["$UUID"]),
+    ]);
+    const form = async () => until(async () => (await box.claude.forms(id))[0], "No form.");
+    const first = await form();
+    assertMatch(first.fields[0], { title: "Database", description: "Which database?", options: [{ value: "Postgres" }, { value: "SQLite", description: "One file" }] });
+    assertMatch(first.metadata, { kind: "question", tool: { id: "toolu_1" } });
+    assert.equal((await box.claude.replyForm(id, first.id, { q0: "SQLite" })).status, 200);
+    assertMatch((await box.claude.answered(id, "q1")).response, { behavior: "allow", updatedInput: { questions, answers: { "Which database?": "SQLite" } } });
+    const second = await until(async () => (await box.claude.forms(id)).find(each => each.id !== first.id), "No second form.");
+    assert.equal((await box.claude.dismissForm(id, second.id)).status, 200);
+    assertMatch((await box.claude.answered(id, "q2")).response, { behavior: "deny" });
+    // Turned down by its box, with words: those are what it hears.
+    const third = await until(async () => (await box.claude.forms(id)).find(each => each.id !== first.id && each.id !== second.id), "No third form.");
+    assert.equal((await box.claude.dismissForm(id, third.id, "This is on Autopilot: leave it.")).status, 200);
+    assertMatch((await box.claude.answered(id, "q3")).response, { behavior: "deny", message: "This is on Autopilot: leave it." });
+    await box.claude.idles(id);
   });
 });

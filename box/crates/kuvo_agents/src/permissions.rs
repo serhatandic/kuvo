@@ -184,6 +184,52 @@ pub fn check(
     .then_some(Decision::Ask)
 }
 
+/// The card for an ask about paths outside the project, where your rules for
+/// working there ask and the action itself wouldn't: asked as that
+/// (`external_directory`, its paths, their folders to save). None leaves the
+/// ask as it is.
+pub fn outside_card(
+    policy: &Policy,
+    ask: &PermissionAsk,
+    owns: impl Fn(&Path) -> bool,
+) -> Option<PermissionAsk> {
+    if ask.already_weighed {
+        return None;
+    }
+    let outside = outside_paths(policy, ask, owns);
+    if outside.is_empty() {
+        return None;
+    }
+    let (folders, _) = outside_targets(policy, &outside, &ask.action);
+    let rules = policy.agent_rules.iter().chain(&policy.session_rules);
+    let asks = outside.iter().any(|file| policy_name(file).contains('\\'))
+        || strictest(
+            rules.clone(),
+            "external_directory",
+            &folders.iter().map(String::as_str).collect::<Vec<_>>(),
+        ) == Some(Effect::Ask);
+    let parts = ask.resources.iter().map(String::as_str).collect::<Vec<_>>();
+    let own = strictest(rules, &ask.action, &parts).unwrap_or(Effect::Allow);
+    let allowed_before = previously_allowed(&policy.allowed, &ask.action, parts.iter().copied());
+    let allowed_outside = previously_allowed(
+        &policy.allowed,
+        "external_directory",
+        folders.iter().map(String::as_str),
+    );
+    (asks && own != Effect::Deny && (own == Effect::Allow || allowed_before) && !allowed_outside)
+        .then(|| PermissionAsk {
+            action: "external_directory".into(),
+            // The paths as the computer writes them; the folders to save, as your rules do.
+            resources: outside
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+            save: folders,
+            unclassified: false,
+            ..ask.clone()
+        })
+}
+
 fn strictest<'a>(
     rules: impl DoubleEndedIterator<Item = &'a Rule> + Clone,
     action: &str,

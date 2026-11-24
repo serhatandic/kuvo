@@ -62,12 +62,12 @@ const hear = value => { if (scriptedTurns) fs.appendFileSync(heard, JSON.stringi
 hear({ argv: args, cwd: process.cwd(), env: Object.fromEntries(Object.entries(process.env)
   .filter(([name]) => /^(CLAUDE_|DISABLE_|ANTHROPIC_|KUVO_)/.test(name))
   .map(([name, value]) => [name, /TOKEN|KEY|SECRET|PASSWORD/.test(name) ? "<set>" : value])) });
-let held, step = 0, playing = false;
+let held, step = 0, playing = false, hookID;
 const waiting = [], queued = [];
 const waitFor = test => new Promise(resolve => waiting.push({ test, resolve }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // A script is a list of steps: a frame to send (with $UUID, $UUID2… for the messages taken and
-// $SESSION for the conversation), or {wait: "<control subtype>" | "user"}, {reply: "<request id>",
+// $SESSION for the conversation, $HOOK for the box's PreToolUse hook), or {wait: "<control subtype>" | "user"}, {reply: "<request id>",
 // allow: [...], deny: [...]} (waits for the box's answer to a request the script sent, then plays the
 // branch for it), {until: "<file>"} (until the test makes that file beside the script), {sleep: ms},
 // {stderr: "..."} and {exit: code}.
@@ -91,7 +91,7 @@ async function play(steps, vars) {
       if (step.stderr !== undefined) await new Promise(done => process.stderr.write(step.stderr, done));
       if (step.exit !== undefined) process.exit(step.exit);
     } else {
-      send(JSON.parse(JSON.stringify(step).replace(/\\$(UUID\\d*|SESSION)/g, (_, name) => name === "SESSION" ? native : vars[name])));
+      send(JSON.parse(JSON.stringify(step).replace(/\\$(UUID\\d*|SESSION|HOOK)/g, (_, name) => name === "SESSION" ? native : name === "HOOK" ? hookID : vars[name])));
     }
   }
 }
@@ -147,6 +147,8 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (message.type !== "control_request") return;
   const subtype = message.request?.subtype;
   if (subtype === "initialize") {
+    // Its PreToolUse hook, as the box registered it ($HOOK in a script).
+    hookID = message.request?.hooks?.PreToolUse?.[0]?.hookCallbackIds?.[0] ?? hookID;
     answer(message.request_id, { subtype: "success", pending_permission_requests: [], response: { models, commands: [], agents: [], output_style: "default", available_output_styles: ["default"], account: {} } });
     if (scriptedTurns && held) {
       say("After the switch.");

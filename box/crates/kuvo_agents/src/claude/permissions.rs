@@ -3,6 +3,7 @@ use std::{io, sync::Arc};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::file_change::file_change;
 use crate::session::{
     Answer, Decision, Field, FieldKind, FormOption, PermissionAsk, Preflight, QuestionAsk, TurnSink,
 };
@@ -91,9 +92,17 @@ impl Request {
                     tool_use_id.or(input.tool_use_id),
                     None,
                 );
+                let edit = ask.action == "edit";
                 let verdict = match sink {
                     Some(sink) => sink.preflight(ask, native_plan).await?,
                     None => Preflight::Deny,
+                };
+                // In plan mode its edits are its own to weigh: its plan, to its file, goes; any
+                // other edit it asks about, and that's refused. Asking first would refuse its plan.
+                let verdict = if verdict == Preflight::Ask && edit && native_plan {
+                    Preflight::NoOverride
+                } else {
+                    verdict
                 };
                 Ok(match verdict {
                     Preflight::NoOverride => json!({}),
@@ -161,25 +170,6 @@ impl Request {
     }
 }
 
-pub(super) fn tool_name(name: &str) -> String {
-    match name {
-        "Bash" | "code_execution" | "bash_code_execution" => "shell".into(),
-        "Edit" | "MultiEdit" | "NotebookEdit" => "edit".into(),
-        "Task" | "Agent" => "subagent".into(),
-        "AskUserQuestion" => "question".into(),
-        "ExitPlanMode" => "plan".into(),
-        "web_search" => "websearch".into(),
-        "web_fetch" => "webfetch".into(),
-        name => name
-            .strip_prefix("mcp__")
-            .and_then(|qualified| qualified.split_once("__"))
-            .map_or_else(
-                || name.to_ascii_lowercase(),
-                |(server, tool)| format!("{server}_{tool}"),
-            ),
-    }
-}
-
 fn permission(
     id: String,
     tool: &str,
@@ -187,34 +177,79 @@ fn permission(
     tool_call_id: Option<String>,
     message: Option<String>,
 ) -> PermissionAsk {
+    let text = |value: &Value| match value {
+        Value::Null => String::new(),
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    let mut metadata = Map::new();
     let (action, resource) = match tool {
-        "Bash" => ("shell".into(), input["command"].as_str()),
-        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => (
-            "edit".into(),
-            input["file_path"]
+        "Bash" => ("shell".into(), text(&input["command"])),
+        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => {
+            let path = input["file_path"]
                 .as_str()
-                .or(input["notebook_path"].as_str()),
-        ),
+                .or(input["notebook_path"].as_str())
+                .unwrap_or_default();
+            // What the edit would do to its file, for the card.
+            if let Some(preview) = preview(tool, input) {
+                metadata.insert("files".into(), Value::Array(vec![preview]));
+            }
+            ("edit".into(), path.to_owned())
+        }
         "Read" | "Glob" | "Grep" | "LS" => (
             "read".into(),
-            input["file_path"].as_str().or(input["path"].as_str()),
+            input["file_path"]
+                .as_str()
+                .or(input["path"].as_str())
+                .unwrap_or("*")
+                .to_owned(),
         ),
-        "WebFetch" => ("webfetch".into(), input["url"].as_str()),
-        "WebSearch" => ("websearch".into(), input["query"].as_str()),
-        name => (tool_name(name), None),
+        "WebFetch" => ("webfetch".into(), text(&input["url"])),
+        "WebSearch" => ("websearch".into(), text(&input["query"])),
+        name => (super::tools::kuvo_tool(name, input).0, "*".into()),
     };
     PermissionAsk {
         id,
         tool_call_id,
         action,
-        resources: vec![resource.unwrap_or("*").into()],
+        resources: vec![resource],
         save: Vec::new(),
         message,
-        metadata: Map::new(),
+        metadata,
         sandboxed: None,
         already_weighed: false,
         unclassified: false,
     }
+}
+
+/// What an edit would do to its file: Write's new content, or the file with
+/// Edit's (or each of MultiEdit's) strings replaced.
+fn preview(tool: &str, input: &Value) -> Option<Value> {
+    let path = input["file_path"]
+        .as_str()
+        .filter(|path| !path.is_empty())?;
+    let before = std::fs::read_to_string(path).ok();
+    if tool == "Write" {
+        let after = input["content"].as_str().unwrap_or_default();
+        return Some(file_change(path, before.as_deref(), Some(after)));
+    }
+    let before = before?;
+    let edits = if tool == "MultiEdit" {
+        input["edits"].as_array().cloned().unwrap_or_default()
+    } else {
+        vec![input.clone()]
+    };
+    let mut after = before.clone();
+    for edit in &edits {
+        let old = edit["old_string"].as_str()?;
+        let new = edit["new_string"].as_str().unwrap_or_default();
+        after = if edit["replace_all"] == true {
+            after.replace(old, new)
+        } else {
+            after.replacen(old, new, 1)
+        };
+    }
+    Some(file_change(path, Some(&before), Some(&after)))
 }
 
 fn deny(message: &str, id: Option<String>) -> Value {

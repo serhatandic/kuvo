@@ -7,6 +7,7 @@ use kuvo_agents::{
     session_store::SessionStore,
 };
 use kuvo_protocol::routes::{
+    post_kuvo_agents_api_session_id_agent as select_agent,
     post_kuvo_agents_api_session_id_compact as compact,
     post_kuvo_agents_api_session_id_interrupt as interrupt,
     post_kuvo_agents_api_session_id_prompt as prompt,
@@ -27,6 +28,21 @@ pub(crate) fn register(runs: SessionRuns, routes: &mut Registry) {
                 .await
                 .map_err(super::refuse)?;
             Ok(RouteReply::json::<200>(prompt::Status200 {}))
+        }
+    });
+    let modes = runs.clone();
+    routes.register::<select_agent::Spec, _, _>(Access::DesktopOrPaired, move |call| {
+        let runs = modes.clone();
+        async move {
+            let id = session_id(call.param("id"))?;
+            let agent = call.body["agent"].as_str().unwrap_or_default();
+            if !runs.select_agent(&id, agent).await.map_err(super::refuse)? {
+                return Err(super::refuse(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("No session {id}."),
+                )));
+            }
+            Ok(RouteReply::json::<200>(select_agent::Status200 {}))
         }
     });
     let summaries = runs.clone();

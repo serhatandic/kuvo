@@ -134,6 +134,19 @@ impl TurnRules {
 }
 
 impl TurnPolicy for TurnRules {
+    fn card(&self, ask: PermissionAsk) -> AdapterCall<'_, PermissionAsk> {
+        Box::pin(async move {
+            let mut policy = self.load(false).await?;
+            let thread = self.thread.clone();
+            tokio::task::spawn_blocking(move || {
+                policy.observe_paths(&ask);
+                super::outside_card(&policy, &ask, |path| thread.owns_path(path)).unwrap_or(ask)
+            })
+            .await
+            .map_err(Into::into)
+        })
+    }
+
     fn preflight(&self, ask: PermissionAsk, native_plan: bool) -> AdapterCall<'_, Preflight> {
         Box::pin(async move {
             Ok(match self.resolve(ask, native_plan, false).await? {

@@ -532,11 +532,38 @@ conversation, a model whose agent isn't here, an agent that only summarizes
 by itself (`Agent::compacts`, false unless an adapter says so), a
 conversation the agent hasn't started, and a pending undo. The Rust resident
 counts a conversation as started when the agent's slot has vendor state,
-because Rust has no handover `seen` cursor yet. The summary's row carries
+because Rust has no handover `seen` cursor yet. 4.6 owns that cursor. The
+case "one whose agent has a conversation saved but hasn't seen this one is
+refused, saying why" passes on the reference and is a `todo` on Rust until
+4.6 makes it pass. The summary's row carries
 its own ID with `reason: "manual"`, and the conversation's last outcome stays
 as it was. The Rust session store keeps a
 transcript's data pictures as files under `attachments/<session>/transcript-pictures`,
 as the reference store does.
+
+For the permission cases, the reference bridge gets the computer's settings
+from a small engine stand-in that serves `box/opencode.json`, the file the
+Rust resident reads Blocks from. The Rust resident gained these, all
+agent-neutral:
+- A card names its step and tool call (`source`).
+- A question turned down with words passes those words to the agent.
+- A path outside the project is asked as `external_directory` when your
+  rules ask about working there (`TurnPolicy::card`, defaulting to the ask
+  as it is).
+- `POST kuvo/agents/api/session/:id/agent` changes a conversation's mode
+  with an `agent-switched` row, as the reference does. It is declared with
+  the other session routes.
+
+Claude Code is started in its permission mode (`--permission-mode`). Its
+hook leaves a plan-mode edit to it, and its own background output under
+`/tmp/claude-<uid>` counts as its own.
+
+Seen once: on lokum, in a one-CPU container, at d50d27912, "the Rust keeper
+keeps an actual Claude adapter turn across a release switch" failed with
+`The replacement resident never finished the held turn.` (adapter.mjs
+`until`, agents-claude.test.mjs:205), after 32.5 s. Two reruns of the same
+build passed, as did WSL and native Windows. If it fails again, it gets a
+root cause before any rerun.
 
 A message handed to a running turn has a receipt before it is sent: the
 UUID Claude acknowledges it by. The receipt stays unresolved while a live or
@@ -566,7 +593,7 @@ The two rows expanded from the bot and session steering loop count separately.
 | 67–72 | 4.4b Claude launch, native state and session environment. 4.1c owns relay wiring and 6.1 owns sandbox policy and launch. |
 | 73–85 | 4.4b bounded and redacted native process diagnostics, history of the current process and interruption. |
 | 86–92 | 4.4b sandbox launch, file copies, sign-out and adoption. 6.1 owns sandbox policy and 6.3 owns worktree paths. |
-| 93–103 | 4.4b Claude permissions, Plan mode and question fields. 4.1b owns the cards and session rules. 6.1 supplies the computer's permission rules. |
+| 93–103 | Ported to agents-claude-turns on both boxes: Ask First, Allow Always for a command and for edits, Deny with the edit's preview, Approve All and `.env`, paths outside the project and Claude Code's own files, Blocks, Plan mode and leaving it, and questions answered, dismissed or turned down with words. |
 | 104–109 | Ported to [agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs) on both boxes. After Stop, the reference bridge under its holder starts Claude Code again, while its own test expects the same process to take the next message. Rust does that, and only Rust checks it. |
 | 110–114 | Ported to agents-claude-turns on both boxes, with a refusal for a conversation Claude Code hasn't started. |
 | 115–122 | Ported to agents-claude-turns on both boxes, except the `session.compaction.*` events, which the conformance cases don't read. |
