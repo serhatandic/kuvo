@@ -944,7 +944,7 @@ impl Driver {
         {
             if row.bundle.generation.unwrap_or_default() >= 3 {
                 return Err(io::Error::other(format!(
-                    "{} kept changing as it moved. Try again when it’s finished.",
+                    "{} kept getting messages while it moved, so it stayed where it is. Try again in a moment.",
                     row.display_name()
                 )));
             }

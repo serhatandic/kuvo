@@ -861,7 +861,7 @@ test("a destination resumes a partial move after restarting", {
 });
 
 test("a move carries replay evidence saved after the first offer", {
-  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 75000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("evidence-source"), there = await computer("evidence-target");
@@ -899,11 +899,59 @@ test("a move carries replay evidence saved after the first offer", {
   const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   assert.equal(begun.status, 202, begun.text);
   const { id } = begun.json.move;
-  await moveRetired(here, id, () => sourceProcess.log() + "\n" + destinationProcess.log());
-  const receipt = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  const installed = path.join(there.home, file);
+  await until(() => fs.existsSync(installed), () => "The destination never installed the evidence\n"
+    + sourceProcess.log() + "\n" + destinationProcess.log(), 20000);
+  const outcome = path.join(here.home, "run/moves", id + ".outcome.json");
+  await until(() => fs.existsSync(outcome), () => "The source did not record the move result\n"
+    + sourceProcess.log() + "\n" + destinationProcess.log(), 30000);
+  const receipt = await request(source, "GET", "kuvo/moves/receipt?id=" + id, undefined, {}, 20000);
+  assert.equal(receipt.status, 200, receipt.text);
   assert.equal(receipt.json.state, "done", receipt.text);
+  assert.equal(receipt.json.move.to, member.key, receipt.text);
   assert.deepEqual([...generations], [1, 2], "An offer prepared before the decision must be rebuilt");
-  assert.deepEqual(readJSON(path.join(there.home, file)), evidence);
+  assert.deepEqual(readJSON(installed), evidence);
+});
+
+test("a conversation that keeps changing stays with its source after three offers", {
+  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("changing-source"), there = await computer("changing-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_changing", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, title: "A changing chat", directory }));
+  const messages = [{ id: "msg_original", type: "user", content: [{ type: "text", text: "Original." }] }];
+  here.engine.messages.set(session, messages);
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const [from, to] = [main, member].map(peer => Buffer.from(peer.address, "base64url"));
+  const generations = new Set();
+  t.after(relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), Buffer.from(main.key, "base64url"));
+    const move = JSON.parse(payload).move;
+    if (move?.op === "offer" && !generations.has(move.generation)) {
+      generations.add(move.generation);
+      messages.push({ id: "msg_during" + move.generation, type: "user", content: [{ type: "text", text: "And this." }] });
+    }
+    return false;
+  }));
+  const sourceProcess = here.start(), targetProcess = there.start();
+  const [source] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const { id } = begun.json.move;
+  await moveRetired(here, id, () => sourceProcess.log() + "\n" + targetProcess.log());
+  const receipt = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(receipt.json.state, "failed", receipt.text);
+  assert.match(receipt.json.message, /kept getting messages while it moved, so it stayed where it is/);
+  assert.deepEqual([...generations], [1, 2, 3]);
+  assert.ok(here.engine.sessions.some(row => row.id === session));
+  assert.equal(here.engine.messages.get(session).length, 4);
+  assert.ok(!there.engine.sessions.some(row => row.id === session));
 });
 
 test("an older incoming copy without import proof stays held after a drop", {
