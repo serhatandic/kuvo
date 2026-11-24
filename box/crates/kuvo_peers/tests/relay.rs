@@ -1334,7 +1334,15 @@ async fn a_quiet_peers_move_disappears_from_a_followed_list() {
 
     tokio::time::timeout(Duration::from_secs(12), async {
         let home = tempfile::tempdir().unwrap();
-        let (relay, mut wire) = TestRelay::connect().await;
+        let stranger = [31; 32];
+        let stranger_address = [32; 16];
+        let (relay, mut wire) = TestRelay::connect_with(|config| {
+            config.peers.push(Host {
+                key: public(stranger),
+                address: stranger_address,
+            });
+        })
+        .await;
         let here = public(RUST_KEY);
         let peer = public(PEER_KEY);
         let other = public([23; 32]);
@@ -1402,9 +1410,23 @@ async fn a_quiet_peers_move_disappears_from_a_followed_list() {
         });
         let mut changed = move_notice.clone();
         changed["stage"] = "switching".into();
-        for (index, moves) in [json!([move_notice]), json!("all of them"), json!([changed])]
-            .into_iter()
-            .enumerate()
+        let mut invalid = move_notice.clone();
+        invalid["stage"] = "flying".into();
+        let mut own_move = move_notice.clone();
+        own_move["from"] = encode(&here).into();
+        let unknown = json!({"at":10_000, "moving":{"moves":[move_notice.clone()]}});
+        let unknown = Envelope(unknown.as_object().unwrap().clone())
+            .seal(&stranger, &here)
+            .unwrap();
+        wire.send(frames::relay_send(&stranger_address, &unknown))
+            .await;
+        for (index, moves) in [
+            json!([move_notice]),
+            json!("all of them"),
+            json!([invalid, own_move, changed]),
+        ]
+        .into_iter()
+        .enumerate()
         {
             // The sender's clock changes, while the observing computer keeps receiving mail.
             let at = if index == 0 {
@@ -1419,8 +1441,10 @@ async fn a_quiet_peers_move_disappears_from_a_followed_list() {
             wire.send(frames::relay_send(&PEER_ADDRESS, &bytes)).await;
             if index != 1 {
                 let list = next(&mut body).await;
+                assert_eq!(list["elsewhere"].as_array().unwrap().len(), 1);
                 let row = &list["elsewhere"][0];
                 assert_eq!(row["box"], encode(&peer));
+                assert_eq!(row["moves"].as_array().unwrap().len(), 1);
                 let shown = &row["moves"][0];
                 assert_eq!(shown["id"], "mov_quiet");
                 assert_eq!(
@@ -1435,6 +1459,113 @@ async fn a_quiet_peers_move_disappears_from_a_followed_list() {
         let expired = next(&mut body).await;
         assert!(expired.get("elsewhere").is_none());
         assert_eq!(expired["moves"], json!([]));
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn move_snapshots_refresh_on_a_minute_and_on_request() {
+    use kuvo_peers::{
+        directory::{Member, Roster},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use serde_json::Value;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+
+    async fn moving(wire: &mut TestRelay) -> Value {
+        loop {
+            let (kind, _, body) = wire.frame().await;
+            if kind == Kind::Mail {
+                let mail = Envelope::open(&body, &PEER_KEY, &public(RUST_KEY)).unwrap();
+                if let Some(moving) = mail.0.get("moving") {
+                    return moving["moves"].clone();
+                }
+            }
+        }
+    }
+
+    tokio::time::timeout(Duration::from_secs(32), async {
+        let home = tempfile::tempdir().unwrap();
+        let (relay, mut wire) = TestRelay::connect().await;
+        let here = public(RUST_KEY);
+        let peer = public(PEER_KEY);
+        let clock = Arc::new(AtomicI64::new(1_000_000));
+        let _resident = ResidentPeers::start(
+            home.path(),
+            Roster {
+                here: Some(here),
+                main: Some(here),
+                name: "Receiver".into(),
+                members: vec![Member {
+                    key: peer,
+                    address: Some(PEER_ADDRESS),
+                    name: "Sender".into(),
+                    kind: ComputerKind::Machine,
+                }],
+            },
+            Some(relay),
+            None,
+            false,
+            {
+                let clock = clock.clone();
+                Arc::new(move || clock.load(Ordering::Relaxed))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(moving(&mut wire).await, json!([]));
+
+        let path = home.path().join("run/moves/mov_report.json");
+        let mut record = json!({
+            "formatVersion":1, "id":"mov_report", "thing":"ses_report", "kind":"chat",
+            "name":"Notes", "from":encode(&peer), "to":encode(&here), "peer":encode(&peer),
+            "role":"to", "stage":"copying", "sessions":["ses_report"], "started":1_000_000,
+            "size":100, "sent":10,
+        });
+        let save = |record: &Value| {
+            files::write_atomic(&path, &serde_json::to_vec(record).unwrap()).unwrap()
+        };
+        save(&record);
+        assert_eq!(moving(&mut wire).await[0]["sent"], 10);
+
+        record["sent"] = 50.into();
+        save(&record);
+        clock.store(1_059_999, Ordering::Relaxed);
+        let check = Duration::from_millis(3500);
+        assert!(
+            tokio::time::timeout(check, moving(&mut wire))
+                .await
+                .is_err(),
+            "More bytes alone do not publish a move"
+        );
+        clock.store(1_060_000, Ordering::Relaxed);
+        assert_eq!(moving(&mut wire).await[0]["sent"], 50);
+
+        let ask = json!({"at":1_060_001, "ask":"agents"});
+        let bytes = Envelope(ask.as_object().unwrap().clone())
+            .seal(&PEER_KEY, &here)
+            .unwrap();
+        wire.send(frames::relay_send(&PEER_ADDRESS, &bytes)).await;
+        assert_eq!(moving(&mut wire).await[0]["id"], "mov_report");
+
+        record["stage"] = "switching".into();
+        save(&record);
+        assert_eq!(moving(&mut wire).await[0]["stage"], "switching");
+        files::remove_file_synced(&path).unwrap();
+        assert_eq!(moving(&mut wire).await, json!([]));
+        clock.store(1_120_000, Ordering::Relaxed);
+        assert!(
+            tokio::time::timeout(check, moving(&mut wire))
+                .await
+                .is_err(),
+            "The clear is published once"
+        );
     })
     .await
     .unwrap();
