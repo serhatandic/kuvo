@@ -3267,7 +3267,8 @@ test("a paused queue moves with its messages in order and resumes the first one"
     const blocked = path.join(here.home, "run/waiting", second + ".json");
     fs.mkdirSync(blocked, { recursive: true });
     const failed = await request(a, "POST", queue + "/add", draft);
-    assert.equal(failed.status, 503, failed.text);
+    assert.equal(failed.status, 500, failed.text);
+    assert.deepEqual(failed.json, { message: "This computer couldn’t save the message. Try sending it again." });
     fs.rmdirSync(blocked);
   }
   const engineRead = `/api/session/${session}/` + (typescript ? "inbox" : `message/${second}`);
@@ -3294,7 +3295,7 @@ test("a paused queue moves with its messages in order and resumes the first one"
   assert.equal(rejected.status, 409, rejected.text);
   fenced = true;
   for (const packet of delayed) relay.replay(packet);
-  await moveRetired(here, move.json.move.id, () => source.log() + "\n" + destination.log());
+  await moveRetired(here, move.json.move.id, () => source.log() + "\n" + destination.log(), 45000);
   const old = await request(a, "GET", queue);
   assert.deepEqual(old.json, { paused: false, held: [] });
   for (const id of [first, second]) assert.ok(!fs.existsSync(path.join(here.home, "run/waiting", id + ".json")));
