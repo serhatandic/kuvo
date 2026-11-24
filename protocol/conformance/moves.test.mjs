@@ -1209,6 +1209,65 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.equal(fs.readFileSync(path.join(folder, "directory"), "utf8"), sourceChats);
 });
 
+test("a transcript read returns to its tool without prompting the conversation", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("read-source"), there = await computer("read-owner");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const sender = "ses_readSender", recipient = "ses_readTarget", archivedSession = "ses_readArchived";
+  here.engine.sessions.push(sessionOf({ id: sender, title: "Reader", directory: path.join(here.home, "chats") }));
+  there.engine.sessions.push({
+    ...sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") }),
+    revert: { messageID: "msg_undoBoundary" },
+  });
+  there.engine.sessions.push(sessionOf({ id: archivedSession, title: "Archived trip", archived: true,
+    directory: path.join(there.home, "chats") }));
+  there.engine.messagePages = new Map([[recipient, new Map([
+    [null, { data: [{ id: "msg_undoBoundary", type: "user", text: "Undo this café detail." }],
+      cursor: { next: "page/2" } }],
+    ["page/2", { data: [
+      { id: "msg_readAnswer", type: "assistant", content: [{ type: "text", text: "The café is booked." }] },
+      { id: "msg_readQuestion", type: "user", text: "Can you book a table?" },
+    ] }],
+  ])]]);
+  const [source, target] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await Promise.all([[source, sender], [target, recipient]].map(([resident, session]) =>
+    until(async () => (await request(resident, "GET", "api/session/" + session)).status === 200,
+      "The conversation's engine did not become ready")));
+  await until(() => [main, member].every(peer => relay.has(Buffer.from(peer.address, "base64url"))),
+    "The computers did not join the relay");
+  const id = "ltr_readConversation";
+  const tool = path.join(here.home, "run/replies", id);
+  write(tool + ".alive", "");
+  write(path.join(here.home, "run/outbox/sending", id + ".json"), JSON.stringify({
+    from: sender, to: recipient, text: "Read the conversation", peer: member.key, wait: true,
+    read: { query: "cafe" }, at: Date.now(),
+  }));
+  const answer = await until(() => {
+    fs.utimesSync(tool + ".alive", new Date(), new Date());
+    return fs.existsSync(tool + ".json") && readJSON(tool + ".json");
+  }, "The original tool did not receive the transcript", 20000, 250);
+  assert.deepEqual(answer, {
+    read: true, text: "1 place mentions \"cafe\" (the rest left out as […]):\n\n**Reservations**\n\nThe café is booked.\n",
+  });
+  const archived = "ltr_readArchived";
+  const archivedTool = path.join(here.home, "run/replies", archived);
+  write(archivedTool + ".alive", "");
+  write(path.join(here.home, "run/outbox/sending", archived + ".json"), JSON.stringify({
+    from: sender, to: archivedSession, text: "Read the conversation", peer: member.key, wait: true,
+    read: {}, at: Date.now(),
+  }));
+  const refused = await until(() => {
+    fs.utimesSync(archivedTool + ".alive", new Date(), new Date());
+    return fs.existsSync(archivedTool + ".json") && readJSON(archivedTool + ".json");
+  }, "The original tool did not receive the archived conversation refusal", 12000, 250);
+  assert.deepEqual(refused, {
+    failed: "It's archived, and only the conversation that started this work can read it.",
+  });
+  assert.ok(!there.engine.asked.some(call => call.method === "POST" && call.path.endsWith("/prompt")));
+  assert.equal(here.engine.messages.has(sender), false);
+});
+
 test("a letter that waits hears the authenticated answer after the sender restarts", { timeout: 55000 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("waiting-letter-source"), there = await computer("waiting-letter-target");

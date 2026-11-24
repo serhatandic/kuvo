@@ -170,7 +170,12 @@ export async function standInEngine(root, env) {
       if (route === "GET /api/provider") return send({ data: engine.providers });
       if (route === "GET /api/integration") return send({ data: engine.integrations });
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
-      if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
+      if (messages && request.method === "GET") {
+        const session = decodeURIComponent(messages[1]);
+        const pages = engine.messagePages?.get(session);
+        const page = pages?.get(url.searchParams.get("cursor"));
+        return send(page ?? { data: engine.messages.get(session) ?? [] });
+      }
       if (route === "GET /api/credential") return send({ data: engine.credentials });
       if (route === "POST /api/credential") {
         if (engine.blockCredentialImport) return send({ message: "The credential store is not ready." }, 503);

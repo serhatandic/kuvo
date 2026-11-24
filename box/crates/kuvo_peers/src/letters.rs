@@ -1,5 +1,6 @@
 //! Durable ordinary letters and notes. Resolve ownership again for each send
 //! and immediately before placing an incoming prompt on a local session.
+mod transcript;
 
 use std::{
     io,
@@ -21,7 +22,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::{
-    sync::broadcast,
+    sync::{broadcast, watch},
     task::{JoinHandle, JoinSet},
     time::{self, Instant, MissedTickBehavior},
 };
@@ -45,6 +46,7 @@ pub fn start(
     relay: RelayHandle,
     engine: Engine,
     ownership: Handle,
+    dispatcher: watch::Receiver<Option<kuvo_server::Dispatcher>>,
 ) -> io::Result<JoinHandle<()>> {
     let events = relay
         .subscribe()
@@ -55,6 +57,7 @@ pub fn start(
         relay,
         engine,
         ownership,
+        dispatcher,
         outbox: None,
         receipts: None,
         answers: JoinSet::new(),
@@ -67,6 +70,7 @@ struct Letters {
     relay: RelayHandle,
     engine: Engine,
     ownership: Handle,
+    dispatcher: watch::Receiver<Option<kuvo_server::Dispatcher>>,
     outbox: Option<Outbox>,
     receipts: Option<Receipts>,
     answers: JoinSet<Option<(Id, Letter)>>,
@@ -323,9 +327,7 @@ impl Letters {
     ) -> io::Result<Option<Delivered>> {
         let now = self.reader.now().max(0) as u64;
         // Remote work calls and seats own their own dispatch and receipts.
-        if envelope.letter.other.contains_key("call")
-            || envelope.letter.other.contains_key("seat")
-            || (envelope.letter.read.is_some() && envelope.letter.answers.is_none())
+        if envelope.letter.other.contains_key("call") || envelope.letter.other.contains_key("seat")
         {
             return Ok(None);
         }
@@ -358,6 +360,9 @@ impl Letters {
                 .accepted(&id, note.is_some(), now)
                 .map_err(io::Error::other)?;
             return Ok(Some(delivered(id)));
+        }
+        if letter.read.is_some() {
+            return self.read_transcript(key, id, letter, now).await.map(Some);
         }
         let scope = self
             .ownership
@@ -406,12 +411,7 @@ impl Letters {
         let seat = session
             .pointer("/metadata/kuvo/seat")
             .is_some_and(|seat| !seat.is_null());
-        let archived = session.pointer("/metadata/kuvo.archived") == Some(&Value::Bool(true))
-            || session.pointer("/metadata/kuvo/archived") == Some(&Value::Bool(true))
-            || session
-                .pointer("/time/archived")
-                .and_then(Value::as_u64)
-                .is_some_and(|at| at != 0);
+        let archived = archived(&session);
         if archived && !child && !seat && note.is_some() {
             return Ok(Some(refused(
                 id,
@@ -524,6 +524,145 @@ impl Letters {
         }
     }
 
+    async fn read_transcript(
+        &mut self,
+        key: ComputerKey,
+        id: Id,
+        request: Letter,
+        now: u64,
+    ) -> io::Result<Delivered> {
+        const MOVING_READ: &str = "It's moving to another computer: it's read once it's there.";
+        let Some(from) = request.from.filter(|from| {
+            from.strip_prefix("ses_").is_some_and(|suffix| {
+                (1..=60).contains(&suffix.len())
+                    && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            })
+        }) else {
+            return Ok(refused(id, "Its answer has nowhere to go.", false, None));
+        };
+        let moving = |to: &str| {
+            self.ownership
+                .scope(to, None)
+                .map(|scope| {
+                    scope.held
+                        || scope.owner.is_some_and(|owner| !owner.local)
+                        || scope
+                            .letter_home
+                            .is_some_and(|home| Some(home) != scope.here)
+                })
+                .map_err(io::Error::other)
+        };
+        if moving(&request.to)? {
+            return Ok(refused(id, MOVING_READ, true, None));
+        }
+        let dispatcher = self.dispatcher.borrow().clone();
+        let Some(dispatcher) = dispatcher else {
+            return Ok(refused(
+                id,
+                "The conversation’s engine isn’t answering.",
+                true,
+                None,
+            ));
+        };
+        let result = self
+            .transcript(
+                &dispatcher,
+                &request.to,
+                &from,
+                request
+                    .read
+                    .as_ref()
+                    .and_then(|read| read.get("query"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
+            )
+            .await;
+        let words = match result {
+            Ok(words) => words,
+            Err(error) => return Ok(refused(id, &error.message, error.retry, None)),
+        };
+        if moving(&request.to)? {
+            return Ok(refused(id, MOVING_READ, true, None));
+        }
+        let hash = Sha256::digest(format!("{} read by {}", id.as_str(), encode(&key)));
+        let answer =
+            Id::try_from(format!("ltr_{}", &encode(&hash)[..22])).map_err(io::Error::other)?;
+        self.leave_answer(
+            &answer,
+            Letter {
+                to: from,
+                from: Some(request.to),
+                text: words,
+                at: None,
+                peer: Some(encode(&key)),
+                sent_to: None,
+                wait: false,
+                answers: Some(id.clone()),
+                read: Some(Default::default()),
+                note: None,
+                refused: false,
+                other: Default::default(),
+            },
+        )?;
+        self.receipts()?
+            .accepted(&id, false, now)
+            .map_err(io::Error::other)?;
+        Ok(delivered(id))
+    }
+
+    async fn transcript(
+        &self,
+        dispatcher: &kuvo_server::Dispatcher,
+        session: &str,
+        from: &str,
+        query: Option<&str>,
+    ) -> Result<String, transcript::Error> {
+        let unavailable = |error: kuvo_engine::MoveEngineError| transcript::Error {
+            message: format!("It couldn't be read: {error}"),
+            retry: true,
+        };
+        let engine = self.engine.session_move().await.map_err(unavailable)?;
+        let info = engine
+            .lookup(session)
+            .await
+            .map_err(unavailable)?
+            .ok_or_else(|| transcript::Error {
+                message: "Its coding agents aren't running here now: it comes again once they are."
+                    .into(),
+                retry: true,
+            })?;
+        let refuse = |message: &str| transcript::Error {
+            message: message.into(),
+            retry: false,
+        };
+        if info["parentID"].as_str().is_some_and(|s| !s.is_empty()) {
+            return Err(refuse("It's a subagent's conversation."));
+        }
+        if info
+            .pointer("/metadata/kuvo/seat")
+            .is_some_and(|seat| !seat.is_null())
+        {
+            return Err(refuse("It's a seat in a group chat."));
+        }
+        if archived(&info)
+            && (engine.lookup(from).await.map_err(unavailable)?.is_some()
+                || !started_under(&engine, &info, from)
+                    .await
+                    .map_err(unavailable)?)
+        {
+            return Err(refuse(
+                "It's archived, and only the conversation that started this work can read it.",
+            ));
+        }
+        transcript::read(dispatcher, session, &info, query)
+            .await
+            .map_err(|mut error| {
+                error.message = format!("It couldn't be read: {}", error.message);
+                error
+            })
+    }
+
     fn sender<'a>(
         &self,
         view: &'a View,
@@ -594,6 +733,47 @@ impl Letters {
             })
             .map_err(io::Error::other)
     }
+}
+
+fn archived(info: &Value) -> bool {
+    info.pointer("/metadata/kuvo.archived") == Some(&Value::Bool(true))
+        || info.pointer("/metadata/kuvo/archived") == Some(&Value::Bool(true))
+        || info
+            .pointer("/time/archived")
+            .and_then(Value::as_u64)
+            .is_some_and(|at| at != 0)
+}
+
+async fn started_under(
+    engine: &SessionMove,
+    info: &Value,
+    lead: &str,
+) -> Result<bool, kuvo_engine::MoveEngineError> {
+    let mut above = info.clone();
+    for _ in 0..20 {
+        let metadata = &above["metadata"]["kuvo"];
+        let Some(parent) = metadata["startedBy"].as_str().filter(|id| !id.is_empty()) else {
+            return Ok(false);
+        };
+        let contains_lead = metadata["line"].as_array().map_or(parent == lead, |line| {
+            line.iter()
+                .rev()
+                .filter_map(Value::as_str)
+                .take(20)
+                .any(|id| id == lead)
+        });
+        if contains_lead {
+            return Ok(true);
+        }
+        let Some(parent) = engine.lookup(parent).await? else {
+            return Ok(false);
+        };
+        if parent["parentID"].as_str().is_some_and(|id| !id.is_empty()) {
+            return Ok(false);
+        }
+        above = parent;
+    }
+    Ok(false)
 }
 
 fn letter_hint(address: &str, waiting: bool) -> std::borrow::Cow<'_, str> {

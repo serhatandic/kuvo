@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers answer conversation reads from your other computers.
 - A move carries forwarding decisions saved while the conversation is on its way.
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
