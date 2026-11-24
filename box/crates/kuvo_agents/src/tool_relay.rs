@@ -660,6 +660,10 @@ impl Program {
         cwd: Option<PathBuf>,
         name: String,
     ) -> io::Result<Arc<Self>> {
+        let mut env = env;
+        // (Windows keeps each drive's folder in variables named `=C:`: not
+        // a program's to be given.)
+        env.retain(|name, _| !name.is_empty() && !name.as_encoded_bytes().contains(&b'='));
         let mut spawn = Spawn::new(command, env);
         spawn.args = args;
         spawn.cwd = cwd;
