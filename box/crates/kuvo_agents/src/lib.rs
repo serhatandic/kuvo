@@ -18,6 +18,7 @@ pub mod session_store;
 pub mod session_view;
 pub mod sign_in;
 pub mod tool_forwarder;
+pub mod tool_relay;
 mod turn_projection;
 pub mod turn_runtime;
 pub mod turn_setup;
