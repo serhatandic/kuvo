@@ -743,7 +743,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
             .then(|| env::var("KUVO_TEST_RELEASE_KEY").ok())
             .flatten();
         let key = key.as_deref().unwrap_or(kuvo_keeper::manifest::UPDATE_KEY);
-        if let Err(error) = kuvo_keeper::staging::check_install_media(media, key) {
+        if let Err(error) = kuvo_keeper::staging::check_install_media(&home, media, key) {
             println!(
                 "{}",
                 serde_json::json!({"result":"failed","message":error.to_string()})

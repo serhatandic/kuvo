@@ -127,7 +127,7 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         judgement.verdict
     };
     if verb == "status" {
-        staging::check_install_media(source, key)?;
+        staging::check_install_media(&home, source, key)?;
         let suggested = if pending {
             Some(install::Verb::New)
         } else {
