@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Deleting a conversation while its agent is stopping no longer causes a transcript write error.
+- Undo waits for file recovery when it is the first action after a restart.
+
 - Coding agents receive readable tool replies when an older desktop connection returns an unexpected reply format.
 
 - A project marked removed by hand in its settings file is listed the same way it's treated.
