@@ -97,6 +97,24 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Engine {
+    /// The engine's JSON answer while it runs, never started for it: what
+    /// another part of the box reads of its settings.
+    pub async fn call_running(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        wait: Duration,
+    ) -> Result<Value, String> {
+        let lease = self
+            .acquire(Demand::Existing)
+            .await
+            .ok_or_else(|| "The engine isn't running.".to_owned())?;
+        self.call_raw(&lease, method, path, body, wait)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub(crate) async fn call<T: DeserializeOwned>(
         &self,
         lease: &Lease,

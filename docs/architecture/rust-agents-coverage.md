@@ -387,10 +387,41 @@ operation. While the box's address is replaced, the agent's forwarder gets
 a 503 and sends the call again, so the tool runs once (toolrelay case 8,
 through the real forwarder).
 
-Still open in 4.1c: wiring the relay into the resident. The relay is wired
-in with the adapters that give agents their tools and the host that reads
-the engine's servers. The sandbox note (case 9) goes with 6.1, and
-`engine-own-tools` with 6.4.
+The resident starts the relay with its address and keys in
+`run/agents/relay.json`. On a computer it listens at once where it was,
+keeping only the keys of the conversations whose agents it took up; the
+update case checks that it keeps its port. The computer's servers come from
+the engine while it runs (never started for them): its settings for the
+conversation's folder, in the engine's order, without Kuvo Code's own,
+those turned off or a marketplace app the folder's scope leaves out, with
+your sign-ins added and renewed as they run out. They're read again at most
+every few seconds, and the last known stay while the engine can't say. A
+refused sign-in connects the server again for the folder and for the
+engine. Kuvo Code's own tools are the program the engine's settings name
+(`kuvo-browser`). An agent in the sandbox reaches them through the relay;
+where the box keeps agents through its updates, it reaches them through
+`kuvo-box mcp`, which waits for the relay. Three scenarios cover the
+engine's servers, connecting again and what an agent is given.
+
+What later rows plug in:
+
+- **4.2–4.5 (each adapter):** the factory takes the resident's `ToolRelay`.
+  For each thread it calls `agent_tools(session, holder, fenced)` for Kuvo
+  Code's tools, `computer_servers(directory)` and
+  `relayed_servers(session, holder, directory, &found, brief)` for the
+  computer's (`brief` for ACP agents), and `servers_key` at each turn to
+  decide whether to start its agent again. It calls `drop_relayed` when the
+  thread ends.
+- **6.1 (sandbox):** a `Sandbox` launcher given to `EngineServers::new`
+  runs a command's server in the box's sandbox (toolrelay case 9). Until
+  then a command's server runs as it is.
+- **6.4 (browser keeper):** the engine's start settings name the
+  `kuvo-browser` program (`ToolPlaces::set_program_settings`), with
+  `engine-own-tools`.
+- **The box's own tools routes** (`kuvo/agent-tools`, work queue, vault,
+  sandbox asks): write `run/tool-http.json` on a desktop for the
+  compatibility path. No app sets an app tools server today
+  (`ToolPlaces::set_server`, the bridge's `PUT kuvo/tools`).
 
 ## TypeScript scenario inventory
 

@@ -10,8 +10,12 @@
 //! same address with the same key. The next resident keeps only the keys of
 //! the conversations whose agents it took up.
 
+mod engine_servers;
+mod places;
 mod servers;
 
+pub use engine_servers::{EngineApi, EngineServers, Sandbox};
+pub use places::{TOOL_SERVER_NAME, ToolPlaces, ToolServer};
 pub use servers::{
     ComputerServer, ComputerServers, Launch, RelayedServer, ServerHost, ServerKind,
 };
@@ -26,7 +30,7 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use kuvo_os::{
-    platform::{Environment, Executable},
+    platform::{Environment, Executable, which},
     process::{ChildGroup, Spawn, Stdio},
 };
 use kuvo_store::files;
@@ -89,6 +93,29 @@ pub struct RelayedTools {
     pub timeout: Duration,
 }
 
+/// Kuvo Code's tools as an agent is given them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentTools {
+    /// Over MCP's HTTP, with these headers.
+    Http {
+        key: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        timeout: Duration,
+    },
+    /// A program the agent starts.
+    Stdio {
+        key: String,
+        command: PathBuf,
+        args: Vec<OsString>,
+        env: Environment,
+        timeout: Duration,
+    },
+}
+
+/// How long the forwarder waits for a relay that's restarting, on top of a call's time.
+const FORWARDER_WAITS: Duration = Duration::from_secs(80);
+
 /// How long a server has to start for an agent that gives up its whole
 /// session over one (ACP's), a command's longer as it may fetch its package
 /// the first time; how long an agent's next message waits to hear whether
@@ -143,6 +170,9 @@ struct State {
     /// Where the desktop's box says its own tools' address is (its run
     /// folder): their calls go to its routes.
     compatibility: Option<PathBuf>,
+    /// The box's program, whose `mcp` forwards an agent's tools to the
+    /// relay and waits for it through an update.
+    forwarder: Option<PathBuf>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -212,6 +242,56 @@ impl ToolRelay {
     /// folder where it says where (`tool-http.json`).
     pub fn set_compatibility_run(&self, run: Option<PathBuf>) {
         self.state().compatibility = run;
+    }
+
+    /// Where the box keeps agents through its updates (a computer's, or a
+    /// desktop's with its own tools): `program mcp` forwards to the relay.
+    pub fn set_forwarder(&self, program: Option<PathBuf>) {
+        self.state().forwarder = program;
+    }
+
+    /// Kuvo Code's tools as `session`'s agent is given them, held by
+    /// `holder`: through the relay for one in the sandbox (`fenced`), and by
+    /// the forwarder where the box keeps agents through its updates; as
+    /// they are otherwise. None until the box knows where they are.
+    pub async fn agent_tools(&self, session: &str, holder: Holder, fenced: bool) -> io::Result<Option<AgentTools>> {
+        let (forwarder, compatibility) = {
+            let state = self.state();
+            (state.forwarder.clone(), state.compatibility.is_some())
+        };
+        if !fenced && !compatibility {
+            return Ok(self.0.source.tools(session).map(|tools| match tools {
+                Tools::Http { url, headers, timeout } => AgentTools::Http { key: url.clone(), url, headers, timeout },
+                Tools::Program { key, command, args, env, timeout } => {
+                    AgentTools::Stdio { key, command, args, env, timeout }
+                }
+            }));
+        }
+        let Some(relayed) = self.relayed_tools(session, holder).await? else {
+            return Ok(None);
+        };
+        let key = match self.0.source.tools(session) {
+            Some(Tools::Http { url, .. }) => url,
+            Some(Tools::Program { key, .. }) => key,
+            None => String::new(),
+        };
+        let RelayedTools { url, authorization, timeout } = relayed;
+        let Some(command) = forwarder else {
+            let headers = vec![("Authorization".into(), authorization)];
+            return Ok(Some(AgentTools::Http { key, url, headers, timeout }));
+        };
+        let env = [
+            ("KUVO_TOOL_RELAY", url),
+            ("KUVO_TOOL_RELAY_KEY", authorization),
+            ("KUVO_TOOL_TIMEOUT", timeout.as_millis().to_string()),
+        ];
+        Ok(Some(AgentTools::Stdio {
+            key: format!("forward:{key}"),
+            command,
+            args: vec!["mcp".into()],
+            env: env.into_iter().map(|(name, value)| (name.into(), value.into())).collect(),
+            timeout: timeout + FORWARDER_WAITS,
+        }))
     }
 
     /// The relay's port, listening from then on: the one it had before when
@@ -519,7 +599,9 @@ impl ToolRelay {
                             if let Some(old) = state.programs.remove(session) {
                                 old.stop();
                             }
-                            let launch = Launch { command: Executable::Native(command), args, env };
+                            // (By its name on the PATH, as the engine starts it.)
+                            let command = which(command.as_os_str(), &env, &[]).unwrap_or(Executable::Native(command));
+                            let launch = Launch { command, args, env };
                             match Program::start(key, launch, None, TOOLS.into()) {
                                 Ok(program) => {
                                     state.programs.insert(session.to_owned(), program.clone());
