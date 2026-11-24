@@ -19,7 +19,7 @@ use kuvo_keeper::{
 };
 use kuvo_peers::{
     directory::{PreparedRelease, UpdateFacts},
-    setup_lists::{BridgeUpdate, ResidentPeers, View},
+    setup_lists::{BridgeUpdate, ResidentPeers, UpdatePublication, View},
 };
 use kuvo_setup::SetupHandle;
 use kuvo_store::{files, home::Home};
@@ -234,7 +234,7 @@ struct Fleet {
     bridge_fetch: Option<JoinHandle<io::Result<()>>>,
     next_bridge: Instant,
     released_machines: released_machines::Checks,
-    last_sent: Option<(UpdateFacts, Option<BridgeUpdate>)>,
+    last_sent: Option<Arc<UpdatePublication>>,
     attempted: Option<PreparedRelease>,
     pending: Option<JoinHandle<Result<(), retry::Failure>>>,
     mail: Option<mail::Mail>,
@@ -532,12 +532,36 @@ impl Fleet {
         } else {
             None
         };
-        let publication = (facts, bridge);
-        if self.last_sent.as_ref() != Some(&publication) {
-            self.last_sent = Some(publication.clone());
-            self.peers
-                .announce_update(publication.0, publication.1)
-                .await;
+        let signed_release = candidate.as_ref().or(running.as_ref());
+        let peer_rows = view
+            .roster
+            .members
+            .iter()
+            .filter_map(|peer| {
+                let (away, facts) = view.peer_updates(&peer.key, now);
+                let failure = retry::signed_failure(&facts, signed_release?)?;
+                let can_retry = self.mail.is_some() && peer.host().is_some();
+                (!away).then(|| {
+                    (
+                        peer.key,
+                        failure.row(
+                            facts.kuvo.clone(),
+                            facts.installed_sha256.clone(),
+                            can_retry,
+                        ),
+                    )
+                })
+            })
+            .collect();
+        let publication = UpdatePublication {
+            facts,
+            bridge,
+            peer_rows,
+        };
+        if self.last_sent.as_deref() != Some(&publication) {
+            let publication = Arc::new(publication);
+            self.last_sent = Some(Arc::clone(&publication));
+            self.peers.announce_update(publication).await;
         }
 
         if let Some(candidate) = candidate {

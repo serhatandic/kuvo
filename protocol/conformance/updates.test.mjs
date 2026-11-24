@@ -362,6 +362,15 @@ test("the main can ask a reachable member to retry its failed fleet download", {
   const release = `versions/${version}-${hash.slice(0, 12)}`;
   write(path.join(main.home, release, "boxes.json"), signed);
   write(path.join(main.home, "active-release"), `${release}/bin`);
+  const row = await until(async () => {
+    const answer = await request(first, "GET", "kuvo/computers");
+    return answer.status === 200 && answer.json.computers.find(row => row.key === key)?.fleetUpdate;
+  }, "the member row must show the signed failure");
+  assert.deepEqual(row, {
+    current: "0.8.0-beta.1", target: version, targetSha256: hash, state: "cannot",
+    reason: peerFailure.reason, fixable: true, canRetry: true,
+    line: { words: `beta.1 · ${peerFailure.reason}`, tone: "warning", short: "Can’t update" },
+  });
   const stale = await request(first, "POST", "kuvo/update/retry", { target: version, targetSha256: digest("older offer"), key });
   assert.equal(stale.status, 409, stale.text);
   const retry = await request(first, "POST", "kuvo/update/retry", { target: version, targetSha256: hash, key });
@@ -370,6 +379,32 @@ test("the main can ask a reachable member to retry its failed fleet download", {
   await until(() => downloaded() === 3 && initial(memberFailure) && initial(memberFailure) !== oldMember,
     "the member must try its signed target again");
   assert.equal(initial(mainFailure), oldMain);
+});
+
+test("the computers list shows a retryable failure for the signed fleet target", { timeout: 30000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { computer } = await bench(t);
+  const here = await computer("Standalone", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const { version, hash, updateEnv } = await failedFleetDownload(t);
+  const installed = "0.8.0-beta.1";
+  write(path.join(here.home, "bin/box-version"), installed + "\n");
+  const resident = await here.start(binary, updateEnv).ready();
+  const failed = path.join(here.home, "run/fleet-cannot.json");
+  await until(() => fs.existsSync(failed), "the updater must record its failure");
+  const { reason } = readJSON(failed);
+  const progress = await until(async () => {
+    const answer = await request(resident, "GET", "kuvo/computers");
+    return answer.status === 200 && answer.json.computers.find(row => row.here)?.fleetUpdate;
+  }, "the computer row must include the retryable failure");
+  assert.deepEqual(progress, {
+    current: installed, target: version, targetSha256: hash, state: "cannot",
+    reason, fixable: true, canRetry: true,
+    line: { words: `beta.1 · ${reason}`, tone: "warning", short: "Can’t update" },
+  });
 });
 
 test("a machine refuses the Mac Helper's Stop request", async t => {

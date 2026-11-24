@@ -2,11 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use kuvo_protocol::json::{Null, Nullable};
 use kuvo_protocol::routes::types::{
     GetKuvoComputersStatus200ComputersItemAgents as ComputerAgents,
     GetKuvoComputersStatus200ComputersItemAgentsState4 as AgentState,
     GetKuvoComputersStatus200ComputersItemAtWorkItem as AtWork,
     GetKuvoSetupOutputsStatus200PendingComputersItem as Computer,
+    PostKuvoUpdateRetryStatus202 as FleetRow, PostKuvoUpdateRetryStatus202Cannot as CannotRow,
+    PostKuvoUpdateRetryStatus202CannotState as CannotState,
+    PostKuvoUpdateRetryStatus202UpToDateLine as FleetLine,
+    PostKuvoUpdateRetryStatus202UpToDateLineTone2 as FleetTone,
 };
 use kuvo_wire::keys::{Address, Host, encode};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -183,6 +188,52 @@ pub struct CannotUpdate {
     pub release: PreparedRelease,
     pub reason: String,
     pub fixable: bool,
+}
+
+impl CannotUpdate {
+    pub fn row(
+        &self,
+        current: Option<String>,
+        current_sha256: Option<String>,
+        can_retry: bool,
+    ) -> FleetRow {
+        let mut words = match &current {
+            Some(version) => {
+                let short = version
+                    .split_once('-')
+                    .map_or(version.as_str(), |(_, short)| short);
+                format!("{short} · {}", self.reason)
+            }
+            None => self.reason.clone(),
+        };
+        let (tone, short) = if self.fixable {
+            (FleetTone::Warning, Some("Can’t update".into()))
+        } else {
+            words.push_str(" · Updates with the next release");
+            (FleetTone::Blocked, None)
+        };
+        FleetRow::Cannot(CannotRow {
+            can_retry: self.fixable && can_retry,
+            current: current.map_or(Nullable::Null(Null), Nullable::Value),
+            current_sha256,
+            fill: None,
+            fixable: self.fixable,
+            last_failure_at: None,
+            line: Some(FleetLine {
+                words,
+                tone,
+                short,
+                phase: None,
+                fill: None,
+            }),
+            reason: self.reason.clone(),
+            requires_update: None,
+            seen: None,
+            state: CannotState::Cannot,
+            target: self.release.version.clone(),
+            target_sha256: Some(self.release.sha256.clone()),
+        })
+    }
 }
 
 impl ComputerFacts {
