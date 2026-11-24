@@ -10,6 +10,12 @@
 //! same address with the same key. The next resident keeps only the keys of
 //! the conversations whose agents it took up.
 
+mod servers;
+
+pub use servers::{
+    ComputerServer, ComputerServers, Launch, RelayedServer, ServerHost, ServerKind,
+};
+
 use crate::rpc::RpcError;
 use futures_util::{StreamExt, future::join_all};
 use http::{HeaderValue, Method, Request, Response, StatusCode, header};
@@ -93,6 +99,7 @@ struct Inner {
     listening: OnceCell<(u16, JoinHandle<()>)>,
     stop: CancellationToken,
     client: reqwest::Client,
+    host: Arc<dyn ServerHost>,
 }
 
 #[derive(Default)]
@@ -101,6 +108,7 @@ struct State {
     sessions: HashMap<String, String>,
     holders: HashMap<String, HashSet<Holder>>,
     programs: HashMap<String, Arc<Program>>,
+    servers: servers::Servers,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -120,6 +128,16 @@ impl ToolRelay {
     /// A relay keeping its address and keys in `record` (none: kept only
     /// while it runs). It listens once something first holds a key.
     pub fn new(record: Option<PathBuf>, source: Arc<dyn ToolSource>) -> io::Result<Self> {
+        Self::with_host(record, source, Arc::new(servers::NoHost))
+    }
+
+    /// A relay for Kuvo Code's tools and the computer's servers, which
+    /// `host` reads, renews and runs.
+    pub fn with_host(
+        record: Option<PathBuf>,
+        source: Arc<dyn ToolSource>,
+        host: Arc<dyn ServerHost>,
+    ) -> io::Result<Self> {
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -148,6 +166,7 @@ impl ToolRelay {
             listening: OnceCell::new(),
             stop: CancellationToken::new(),
             client,
+            host,
         })))
     }
 
@@ -276,9 +295,11 @@ impl ToolRelay {
             if let Some(key) = state.keys.remove(session) {
                 state.sessions.remove(&key);
             }
-            state.programs.remove(session)
+            let mut stopping = state.servers.forget(session);
+            stopping.extend(state.programs.remove(session));
+            stopping
         };
-        if let Some(program) = program {
+        for program in program {
             program.stop();
         }
         self.keep();
@@ -287,8 +308,13 @@ impl ToolRelay {
     /// Stop listening, and stop the programs. The record stays for the next.
     pub async fn shutdown(&self) {
         self.0.stop.cancel();
-        let programs = std::mem::take(&mut self.state().programs);
-        for program in programs.into_values() {
+        let programs = {
+            let mut state = self.state();
+            let mut all = std::mem::take(&mut state.programs).into_values().collect::<Vec<_>>();
+            all.extend(state.servers.stop_all());
+            all
+        };
+        for program in programs {
             program.stop();
         }
         if let Some((_, accepting)) = self.0.listening.get() {
@@ -379,9 +405,21 @@ impl ToolRelay {
         let Some(session) = key.and_then(|key| self.state().sessions.get(key).cloned()) else {
             return text(StatusCode::UNAUTHORIZED, "Not allowed.");
         };
-        if request.uri().path().starts_with("/mcp/") {
-            // (The computer's own servers are relayed in a later part.)
-            return text(StatusCode::NOT_FOUND, "No such server here.");
+        if let Some(named) = request.uri().path().strip_prefix("/mcp/") {
+            let Ok(name) = percent_encoding::percent_decode_str(named).decode_utf8() else {
+                return text(StatusCode::NOT_FOUND, "No such server here.");
+            };
+            let name = name.into_owned();
+            let (parts, incoming) = request.into_parts();
+            let body = if parts.method == Method::POST {
+                match Limited::new(incoming, BODY_LIMIT).collect().await {
+                    Ok(bytes) => Some(bytes.to_bytes()),
+                    Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "Too much at once."),
+                }
+            } else {
+                None
+            };
+            return self.answer_server(parts, body, &session, &name).await;
         }
         let Some(tools) = self.0.source.tools(&session) else {
             return text(StatusCode::SERVICE_UNAVAILABLE, "Kuvo Code's tools aren't here now.");
@@ -434,7 +472,7 @@ impl ToolRelay {
                             if let Some(old) = state.programs.remove(&session) {
                                 old.stop();
                             }
-                            match Program::start(key, command, args, env, TOOLS) {
+                            match Program::start(key, command, args, env, None, TOOLS.into()) {
                                 Ok(program) => {
                                     state.programs.insert(session.clone(), program.clone());
                                     program
@@ -473,21 +511,7 @@ impl ToolRelay {
                         .map(|message| program.send(message, timeout, &connection)),
                 )
                 .await;
-                let said = answers.into_iter().flatten().collect::<Vec<_>>();
-                let started = starts.then_some(connection.as_str());
-                if said.is_empty() {
-                    let mut reply = text(StatusCode::ACCEPTED, "");
-                    if let Some(connection) = started.and_then(|name| HeaderValue::from_str(name).ok()) {
-                        reply.headers_mut().insert("mcp-session-id", connection);
-                    }
-                    return reply;
-                }
-                let answer = if body.is_array() {
-                    Value::Array(said)
-                } else {
-                    said.into_iter().next().unwrap_or(Value::Null)
-                };
-                json_reply(StatusCode::OK, &answer, started)
+                servers::replies(&body, answers, starts.then_some(connection.as_str()))
             }
         }
     }
@@ -612,7 +636,7 @@ fn full(bytes: Bytes) -> Body {
 /// never meet.
 struct Program {
     key: String,
-    name: &'static str,
+    name: String,
     input: mpsc::UnboundedSender<String>,
     calls: Mutex<Calls>,
     group: Mutex<Option<ChildGroup>>,
@@ -633,10 +657,12 @@ impl Program {
         command: PathBuf,
         args: Vec<OsString>,
         env: Environment,
-        name: &'static str,
+        cwd: Option<PathBuf>,
+        name: String,
     ) -> io::Result<Arc<Self>> {
         let mut spawn = Spawn::new(command, env);
         spawn.args = args;
+        spawn.cwd = cwd;
         spawn.stdin = Stdio::Pipe;
         spawn.stdout = Stdio::Pipe;
         // (What it says on stderr isn't kept: a server's own can have its keys in it.)
@@ -749,7 +775,7 @@ impl Program {
         let id = {
             let mut calls = self.calls();
             if calls.stopped {
-                return Some(stopped(&original, self.name));
+                return Some(stopped(&original, &self.name));
             }
             let id = calls.next;
             calls.next += 1;
@@ -763,7 +789,7 @@ impl Program {
         self.calls().ours.remove(&known);
         match answer {
             Ok(Ok(answer)) => Some(answer),
-            Ok(Err(_)) => Some(stopped(&original, self.name)),
+            Ok(Err(_)) => Some(stopped(&original, &self.name)),
             Err(_) => {
                 self.calls().waiting.remove(&id);
                 self.write(&json!({"jsonrpc":"2.0","method":"notifications/cancelled",
@@ -783,7 +809,7 @@ impl Program {
             std::mem::take(&mut calls.waiting)
         };
         for (_, (original, done)) in waiting {
-            let _ = done.send(stopped(&original, self.name));
+            let _ = done.send(stopped(&original, &self.name));
         }
         let group = self
             .group

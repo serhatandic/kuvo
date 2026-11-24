@@ -2,7 +2,11 @@
 //! probe) and an app server. Each case names the bridge's
 //! `toolrelay.test.ts` case it ports.
 
-use kuvo_agents::tool_relay::{RelayedTools, ToolRelay, ToolSource, Tools};
+use futures_util::{FutureExt, future::BoxFuture};
+use kuvo_agents::tool_relay::{
+    ComputerServer, ComputerServers, RelayedServer, RelayedTools, ServerHost, ServerKind,
+    ToolRelay, ToolSource, Tools,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
@@ -36,6 +40,14 @@ fn relay_program_probe() {
                 Some(answer(session))
             }
             ("holds", Some("initialize")) => Some(json!({"jsonrpc":"2.0","id":message["id"],"result":{}})),
+            ("server", Some("initialize")) => Some(json!({"jsonrpc":"2.0","id":message["id"],"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}}}})),
+            ("server", Some("tools/call")) => Some(answer(json!(format!(
+                "{} {} {}",
+                std::env::var("OPENCODE_SESSION_ID").unwrap_or_default(),
+                std::env::var("SERVER_KEY").unwrap_or_default(),
+                std::process::id()
+            )))),
+            ("refuses", Some("initialize")) => Some(json!({"jsonrpc":"2.0","id":message["id"],"error":{"code":-32000,"message":"no token"}})),
             ("holds", Some("tools/call")) => {
                 held.insert(message["id"].clone());
                 if let Some(path) = &holding {
@@ -318,5 +330,234 @@ async fn each_call_goes_to_the_apps_server_with_its_password_and_own_conversatio
         *seen.lock().unwrap(),
         [json!({"authorization":"Bearer app-password","session":"ses_one","claims":"ses_one"})]
     );
+    relay.shutdown().await;
+}
+
+/// A stand-in app or URL server: each request's headers and body, and what
+/// `answer` says to it.
+async fn http_server(
+    answer: impl Fn(&str, &Value) -> (u16, Value) + Send + Sync + 'static,
+) -> u16 {
+    let app = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = app.local_addr().unwrap().port();
+    let answer = Arc::new(answer);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = app.accept().await else { return };
+            let answer = answer.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                let mut buffer = [0; 4096];
+                let (head, body) = loop {
+                    let Ok(read) = socket.read(&mut buffer).await else { return };
+                    if read == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    let text = String::from_utf8_lossy(&request).into_owned();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let length = head
+                            .lines()
+                            .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length: ").map(str::to_owned))
+                            .and_then(|length| length.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            break (head.to_owned(), body.to_owned());
+                        }
+                    }
+                };
+                let (status, said) = answer(&head, &serde_json::from_str(&body).unwrap_or(Value::Null));
+                let said = said.to_string();
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{said}",
+                    said.len()
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    port
+}
+
+async fn post(server: &RelayedServer, body: Value, connection: Option<&str>) -> (u16, Option<String>, Value) {
+    let mut request = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(&server.url)
+        .header("Authorization", &server.authorization)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream");
+    if let Some(connection) = connection {
+        request = request.header("mcp-session-id", connection);
+    }
+    let answer = request.body(body.to_string()).send().await.unwrap();
+    let connection = answer
+        .headers()
+        .get("mcp-session-id")
+        .map(|value| value.to_str().unwrap().to_owned());
+    (answer.status().as_u16(), connection, answer.json().await.unwrap_or(Value::Null))
+}
+
+fn initialize() -> Value {
+    json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}})
+}
+
+fn tool_call(id: u64) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"look","arguments":{}}})
+}
+
+fn remote(name: &str, port: u16, token: &str) -> ComputerServer {
+    ComputerServer {
+        name: name.into(),
+        timeout: Duration::from_secs(10),
+        kind: ServerKind::Remote {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            headers: vec![("Authorization".into(), format!("Bearer {token}"))],
+            expires: None,
+        },
+    }
+}
+
+#[derive(Default)]
+struct Host {
+    /// The server as the host has it now, after a reconnect.
+    now: Mutex<Option<ComputerServer>>,
+    reconnects: Mutex<u32>,
+}
+
+impl ServerHost for Host {
+    fn renewed<'a>(&'a self, _: &'a Path, _: &'a str) -> BoxFuture<'a, Option<ComputerServer>> {
+        async { self.now.lock().unwrap().clone() }.boxed()
+    }
+
+    fn reconnect<'a>(&'a self, _: &'a Path, _: &'a str) -> BoxFuture<'a, ()> {
+        async { *self.reconnects.lock().unwrap() += 1 }.boxed()
+    }
+}
+
+#[tokio::test]
+async fn a_server_that_cant_be_reached_is_a_stand_in_whose_words_say_why() {
+    let closed = TcpListener::bind(("127.0.0.1", 0)).await.unwrap().local_addr().unwrap().port();
+    let relay = ToolRelay::new(None, program("said", None)).unwrap();
+    let found = ComputerServers { servers: vec![remote("docs", closed, "t")], key: "docs".into() };
+    let scratch = tempfile::tempdir().unwrap();
+    let servers = relay.relayed_servers("ses_one", 1, scratch.path(), &found, true).await.unwrap();
+    assert_eq!(servers.len(), 1);
+    assert!(servers[0].url.ends_with("/mcp/docs"), "{}", servers[0].url);
+    let (status, connection, started) = post(&servers[0], initialize(), None).await;
+    assert_eq!(status, 200);
+    let connection = connection.unwrap();
+    assert!(connection.starts_with("unavailable-"));
+    assert_eq!(started["result"]["serverInfo"]["name"], "unavailable");
+    assert_eq!(
+        started["result"]["instructions"],
+        "The docs server couldn't be reached (no answer), so its tools aren't available for now."
+    );
+    let (_, _, listed) = post(&servers[0], json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}), Some(&connection)).await;
+    assert_eq!(listed["result"]["tools"], json!([]));
+    let (_, _, called) = post(&servers[0], tool_call(2), Some(&connection)).await;
+    assert_eq!(called["result"]["isError"], true);
+    // Another conversation's key can't reach this one's servers.
+    let other = relay.relayed_tools("ses_two", 1).await.unwrap().unwrap();
+    let theirs = RelayedServer { authorization: other.authorization, ..servers[0].clone() };
+    assert_eq!(post(&theirs, initialize(), None).await.0, 404);
+    relay.shutdown().await;
+}
+
+// relay-live.test.ts: "the agent starts with a stand-in saying to sign in
+// again, the engine finds it needs signing in, and signed in again the
+// agent reaches it"
+#[tokio::test]
+async fn a_server_that_turns_down_its_sign_in_is_asked_again_once_and_reached_once_signed_in() {
+    let port = http_server(|head, body| {
+        if head.contains("Bearer good") {
+            (200, json!({"jsonrpc":"2.0","id":body["id"],"result":{"protocolVersion":"2025-06-18","capabilities":{}}}))
+        } else {
+            (401, json!({"error":"sign in"}))
+        }
+    })
+    .await;
+    let host = Arc::new(Host::default());
+    let relay = ToolRelay::with_host(None, program("said", None), host.clone()).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let before = ComputerServers { servers: vec![remote("notes", port, "old")], key: "notes".into() };
+    let servers = relay.relayed_servers("ses_one", 1, scratch.path(), &before, false).await.unwrap();
+    let (status, connection, started) = post(&servers[0], initialize(), None).await;
+    assert_eq!(status, 200);
+    assert!(connection.unwrap().starts_with("unavailable-"));
+    assert!(started["result"]["instructions"].as_str().unwrap().contains("turned down its sign-in"));
+    // The host is asked to connect it again, once for how it's set up.
+    for _ in 0..100 {
+        if *host.reconnects.lock().unwrap() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    post(&servers[0], initialize(), None).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(*host.reconnects.lock().unwrap(), 1);
+    assert_eq!(relay.servers_key("ses_one", &before), "notes");
+    // Signed in again: its agent is given it afresh, and reaches it.
+    let after = ComputerServers { servers: vec![remote("notes", port, "good")], key: "notes".into() };
+    assert_ne!(relay.servers_key("ses_one", &after), "notes");
+    let again = relay.relayed_servers("ses_one", 1, scratch.path(), &after, false).await.unwrap();
+    assert!(again[0].url.ends_with("/mcp/notes?again=1"), "{}", again[0].url);
+    let (status, connection, started) = post(&again[0], initialize(), None).await;
+    assert_eq!(status, 200);
+    assert!(connection.is_none());
+    assert_eq!(started["result"]["protocolVersion"], "2025-06-18");
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_command_server_starts_for_each_connection_with_its_keys_and_stops_when_left() {
+    let relay = ToolRelay::new(None, program("said", None)).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut env = kuvo_os::platform::Environment::new();
+    env.insert("RELAY_PROBE".into(), "server".into());
+    env.insert("SERVER_KEY".into(), "k1".into());
+    let mut command: Vec<std::ffi::OsString> = vec![std::env::current_exe().unwrap().into()];
+    command.extend(["--exact", "relay_program_probe", "--ignored", "--nocapture", "--test-threads=1"].map(Into::into));
+    let local = |name: &str, env: kuvo_os::platform::Environment| ComputerServer {
+        name: name.into(),
+        timeout: Duration::from_secs(10),
+        kind: ServerKind::Local { command: command.clone(), env, cwd: None },
+    };
+    let mut refusing = env.clone();
+    refusing.insert("RELAY_PROBE".into(), "refuses".into());
+    let found = ComputerServers {
+        servers: vec![local("files", env), local("broken", refusing)],
+        key: "files broken".into(),
+    };
+    let servers = relay.relayed_servers("ses_one", 1, scratch.path(), &found, false).await.unwrap();
+    let (status, first, _) = post(&servers[0], initialize(), None).await;
+    assert_eq!(status, 200);
+    let first = first.unwrap();
+    let (_, second, _) = post(&servers[0], initialize(), None).await;
+    let second = second.unwrap();
+    assert_ne!(first, second);
+    let said = |answer: Value| answer["result"]["content"][0]["text"].as_str().unwrap().to_owned();
+    let one = said(post(&servers[0], tool_call(1), Some(&first)).await.2);
+    let two = said(post(&servers[0], tool_call(1), Some(&second)).await.2);
+    let (one, two) = (one.split(' ').collect::<Vec<_>>(), two.split(' ').collect::<Vec<_>>());
+    assert_eq!(one[..2], ["ses_one", "k1"]);
+    assert_eq!(two[..2], ["ses_one", "k1"]);
+    assert_ne!(one[2], two[2], "each connection has a server of its own");
+    // Left: that connection's server stops; the agent connects again.
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let left = client
+        .delete(&servers[0].url)
+        .header("Authorization", &servers[0].authorization)
+        .header("mcp-session-id", &first)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(left.status(), 200);
+    assert_eq!(post(&servers[0], tool_call(2), Some(&first)).await.0, 404);
+    // One that says no as it starts is a stand-in saying so.
+    let (_, connection, refused) = post(&servers[1], initialize(), None).await;
+    assert!(connection.unwrap().starts_with("unavailable-"));
+    assert_eq!(refused["result"]["instructions"], "The broken server couldn't start: no token.");
     relay.shutdown().await;
 }
