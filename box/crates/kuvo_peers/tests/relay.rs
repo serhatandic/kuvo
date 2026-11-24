@@ -71,11 +71,21 @@ impl TestRelay {
     }
 
     async fn welcome(change: impl FnOnce(&mut Config)) -> (Relay, Self, Address) {
+        let (relay, test, address, _) = Self::reconnecting(change).await;
+        (relay, test, address)
+    }
+
+    async fn reconnecting(change: impl FnOnce(&mut Config)) -> (Relay, Self, Address, TcpListener) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut config = config(format!("ws://{}", listener.local_addr().unwrap()));
         change(&mut config);
         let secret = config.secret;
         let relay = Relay::start(config);
+        let test = Self::accept(&listener, secret).await;
+        (relay, test, keys::address_of(&secret), listener)
+    }
+
+    async fn accept(listener: &TcpListener, secret: [u8; 32]) -> Self {
         let mut test = Self(
             accept_async(listener.accept().await.unwrap().0)
                 .await
@@ -84,7 +94,7 @@ impl TestRelay {
         assert_eq!(test.binary().await, frames::relay_hello(&secret));
         let address = keys::address_of(&secret);
         test.send([&[1], &address[..]].concat()).await;
-        (relay, test, address)
+        test
     }
 
     async fn send(&mut self, bytes: Vec<u8>) {
@@ -2028,12 +2038,18 @@ async fn an_undriven_move_can_wait_half_an_hour_without_a_hold_time() {
     source_deadline(SourceDeadline::Undriven).await;
 }
 
+#[tokio::test]
+async fn a_part_rejected_by_the_disconnected_relay_goes_on_the_next_round() {
+    source_deadline(SourceDeadline::RejectedPart).await;
+}
+
 #[derive(PartialEq)]
 enum SourceDeadline {
     Parts,
     Preparation,
     SecondOffer,
     Undriven,
+    RejectedPart,
 }
 
 async fn source_deadline(deadline: SourceDeadline) {
@@ -2084,6 +2100,8 @@ async fn source_deadline(deadline: SourceDeadline) {
     let permit = export_allowed.clone();
     let changed = Arc::new(AtomicBool::new(false));
     let needs_second_offer = changed.clone();
+    let hold_check = Arc::new(AtomicBool::new(false));
+    let blocks_check = hold_check.clone();
     let slow_exports = deadline == SourceDeadline::Preparation;
     let server = tokio::spawn(async move {
         while let Ok((socket, _)) = listener.accept().await {
@@ -2098,6 +2116,10 @@ async fn source_deadline(deadline: SourceDeadline) {
             }
             let route = request.split_whitespace().nth(1).unwrap_or_default();
             assert!(!request.starts_with("DELETE"));
+            if route == "/api/session/active" && blocks_check.swap(false, Ordering::Relaxed) {
+                exported.send(()).unwrap();
+                permit.acquire().await.unwrap().forget();
+            }
             let body = if let Some(session_id) = route
                 .strip_prefix("/api/experimental/session/")
                 .and_then(|route| route.strip_suffix("/export"))
@@ -2133,7 +2155,7 @@ async fn source_deadline(deadline: SourceDeadline) {
             let _ = socket.write_all(response.as_bytes()).await;
         }
     });
-    let (relay, mut wire, _) = TestRelay::welcome(|_| {}).await;
+    let (relay, mut wire, _, listener) = TestRelay::reconnecting(|_| {}).await;
     let clock = Arc::new(AtomicI64::new(1_000_000));
     let mut resident = ResidentPeers::start(
         home.path(),
@@ -2279,6 +2301,66 @@ async fn source_deadline(deadline: SourceDeadline) {
         json!({"id":id,"op":op,"hash":offer["hash"],"generation":offer["generation"],
         "safeSwitch":true,"verifyPayloads":true,"typedAttachmentPaths":true})
     };
+    if deadline == SourceDeadline::RejectedPart {
+        hold_check.store(true, Ordering::Relaxed);
+        wire.send(mail(
+            json!({"id":"mov_blockingCheck","op":"check","kind":"chat","name":"Check"}),
+        ))
+        .await;
+        tokio::time::timeout(Duration::from_secs(10), exports.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // The resident receives ready while its queue is occupied. It can
+        // only act on ready once the real relay connection has closed.
+        wire.send(mail(step("ready"))).await;
+        drop(wire);
+        let mut reader = resident.reader();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while reader.view().relay_connected {
+                reader.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        export_allowed.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let row: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+                if row["step"] == "parts" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let mut wire = tokio::time::timeout(
+            Duration::from_secs(7),
+            TestRelay::accept(&listener, RUST_SECRET),
+        )
+        .await
+        .unwrap();
+        let part = tokio::time::timeout(Duration::from_secs(5), wire.move_step("part"))
+            .await
+            .unwrap();
+        assert_eq!(part["i"], 0);
+        assert_eq!(part["hash"], offer["hash"]);
+        let mut got = step("got");
+        got["i"] = 0.into();
+        wire.send(mail(got)).await;
+        wire.send(mail(step("arrived"))).await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), wire.move_step("switch"))
+                .await
+                .unwrap()["hash"],
+            offer["hash"]
+        );
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        return;
+    }
     wire.send(mail(step("ready"))).await;
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(10), wire.move_step("part"))
