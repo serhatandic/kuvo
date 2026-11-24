@@ -329,9 +329,26 @@ and golden-home compatibility are still open.
 use the same Claude CLI stand-in with both residents. They exercise a signed-out
 account, code submission and confirmation, account-specific default models,
 a retained Console directory, and replacement of a saved setup token after
-native sign-in. All six cases pass through both binaries on macOS. The model
-catalog uses Claude's initialize reply directly.
+native sign-in. The model catalog uses Claude's initialize reply directly.
 It provides a provisional list while that reply is pending.
+
+Two more cases run a saved conversation through each resident. One starts a
+new Claude conversation and saves its native ID in the agent's slot of the
+session record. The other starts from a record in the slot shape
+(`threads["claude-code"].state`, beside another agent's slot): both boxes
+resume that Claude conversation and keep the other slot. A Rust-only case
+switches the keeper between two Rust releases during a turn; the
+replacement resident finishes it with the same holder and Claude process.
+The TypeScript reference passes eight cases and skips the release switch;
+the Rust box passes all nine.
+
+The [live case](../../protocol/conformance/agents-claude-live.test.mjs)
+(area `agents-claude-live`) runs only when `KUVO_CONFORMANCE_CLAUDE` names
+a launcher for a signed-in, isolated Claude Code. A real Haiku turn waits on
+an approval to run a harmless command while the keeper switches Rust
+releases. The replacement resident shows the same approval again and
+answers it. The same holder and Claude process run the command and finish
+the turn.
 
 4.4b's [holder scenario](../../box/crates/kuvo-box/tests/claude_threads.rs)
 runs two Rust runtimes against the same external fixture. It verifies the
@@ -340,7 +357,14 @@ withdraws an old hook, redelivers one open approval, and persists an
 Allow Always suggestion only for the session. It also completes a late
 steered message, withdraws an ask on cancellation or Stop, stores the native
 ID from `/clear`, resumes that ID after process shutdown, and redacts a
-credential from the departing process's diagnostics. It passed on macOS.
+credential from the departing process's diagnostics.
+
+A message handed to a running turn has a receipt before it is sent: the
+UUID Claude acknowledges it by. The receipt stays unresolved while a live or
+recovered turn hasn't acknowledged the message. After that, the message
+counts as delivered only if Claude's transcript has it. The TypeScript
+adapter has no receipts. It reports unacknowledged messages as missed when
+the turn ends, and Rust keeps that path.
 
 ### TypeScript scenarios
 
@@ -351,7 +375,7 @@ The two rows expanded from the bot and session steering loop count separately.
 |---|---|
 | 1–7 | 4.4b stream events, cancellation before launch, limit scope, error messages and expired sign-in. Skill resolution and startup cancellation also need 4.1b/c. |
 | 8–10 | 4.1b route and queue recovery, including a late cancelled handoff and steering across resident reconnect. 4.4b owns the Claude stream and message acknowledgements. |
-| 11–13 | The holder scenario covers 11, a late steered result. 4.4b owns the other steering and missed-message cases, and 4.1b owns retry of missed messages. |
+| 11–13 | The holder scenario covers 11, a late steered result, and its receipt. 4.4b owns the other steering and missed-message cases, and 4.1b owns retry of missed messages. |
 | 14–28 | 4.4b Claude task lifecycle and holder reuse. 4.1b owns resident background projection, wake-up, staged Undo, account deletion and restarting the session. 4.6 owns projection of agent-initiated turns. |
 | 29–42 | 4.6 subagent sessions, background lanes, messaging and handover. 4.4b supplies Claude's wire events. |
 | 43–50 | 4.4b context and compaction settings, usage, images, tool results, native notices and model windows. 4.1c owns MCP tool transport. |

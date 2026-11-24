@@ -1031,7 +1031,14 @@ impl Actor {
             return Ok(());
         };
         let missed: Vec<_> = turn.steered.into_iter().map(|sent| sent.kuvo).collect();
-        let keep = missed.is_empty();
+        // Claude turned its sign-in away: the next message starts a Claude Code that reads the
+        // sign-in as it is then.
+        let turned_away = matches!(&outcome, Outcome::Failed(error) if error.kind == "signin");
+        if turned_away {
+            let program = self.program.clone();
+            tokio::task::spawn_blocking(move || program.turn_away()).await?;
+        }
+        let keep = missed.is_empty() && !turned_away;
         turn.sink
             .event(envelope(
                 position,

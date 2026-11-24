@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use kuvo_agents::{
@@ -113,6 +113,8 @@ fn stop_fixture_holders(root: &Path) {
 fn write_launcher(bin: &Path) {
     let program = env::current_exe().unwrap();
     let args = "--exact claude_wire_fixture --ignored --nocapture";
+    // `claude auth status`: signed in, as Claude Code says even after a run's sign-in was refused.
+    let status = r#"{"loggedIn":true,"authMethod":"claude.ai"}"#;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -120,7 +122,7 @@ fn write_launcher(bin: &Path) {
         fs::write(
             &file,
             format!(
-                "#!/bin/sh\nexec '{}' {args} -- \"$@\"\n",
+                "#!/bin/sh\nif [ \"$1\" = auth ]; then echo '{status}'; exit 0; fi\nexec '{}' {args} -- \"$@\"\n",
                 program.display().to_string().replace('\'', "'\\''")
             ),
         )
@@ -130,7 +132,10 @@ fn write_launcher(bin: &Path) {
     #[cfg(windows)]
     fs::write(
         bin.join("claude.cmd"),
-        format!("@\"{}\" {args} -- %*\r\n", program.display()),
+        format!(
+            "@if \"%1\"==\"auth\" (echo {status}& exit /b 0)\r\n@\"{}\" {args} -- %*\r\n",
+            program.display()
+        ),
     )
     .unwrap();
 }
@@ -356,6 +361,43 @@ async fn scenario(root: PathBuf) {
         ),
         "{end:?}"
     );
+
+    // `claude auth status` still says signed in after Claude turned the sign-in away in a run.
+    assert!(restored.probe_account().await.unwrap().signed_in);
+    let (sink, mut refused, _) = Sink::new();
+    holder
+        .start(
+            input(
+                "turn_refused",
+                TurnKind::Prompt(prompt("msg_refused", "turn the sign-in away")),
+            ),
+            sink,
+        )
+        .await
+        .unwrap();
+    let end = finish(&mut refused).await;
+    assert!(
+        matches!(&end.last().unwrap().event, TurnEvent::Finished(result) if
+            matches!(&result.outcome, Outcome::Failed(error) if error.kind == "signin")),
+        "{end:?}"
+    );
+    assert!(!end.iter().any(|event| matches!(
+        &event.event, TurnEvent::TextDelta { delta, .. } if delta.contains("Failed to authenticate")
+    )));
+    // That Claude Code goes, and the account needs a sign-in until it's written again.
+    let gone = Instant::now();
+    while !runtime.holders().records().await.unwrap().is_empty() {
+        assert!(
+            gone.elapsed() < Duration::from_secs(5),
+            "the turned-away Claude Code stayed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let account = restored.probe_account().await.unwrap();
+    assert!(!account.signed_in && account.ended, "{account:?}");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    fs::write(root.join(".claude/.credentials.json"), "{}").unwrap();
+    assert!(restored.probe_account().await.unwrap().signed_in);
     restored.shutdown().await.unwrap();
     assert!(events.try_recv().is_ok());
 }
@@ -587,6 +629,18 @@ fn claude_wire_fixture() {
                     "exit with error" => {
                         eprintln!("Could not authenticate with Bearer fixture.secret");
                         std::process::exit(1);
+                    }
+                    "turn the sign-in away" => {
+                        let words = "Failed to authenticate: OAuth session expired and could not be refreshed";
+                        emit(
+                            json!({"type":"assistant","error":"authentication_failed","message":{
+                                "id":"refused","model":"haiku","content":[{"type":"text","text":words}]
+                            }}),
+                        );
+                        emit(
+                            json!({"type":"result","subtype":"success","is_error":true,"result":words,
+                            "user_message_uuids":[message["uuid"]]}),
+                        );
                     }
                     "resume" => {
                         assistant("resume", &format!("resumed {}", resume.as_deref().unwrap()));
