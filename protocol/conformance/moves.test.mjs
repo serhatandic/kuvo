@@ -461,7 +461,7 @@ test("a restarted source drives a request saved before its first check", { timeo
 });
 
 test("a switched move keeps the original until its backup can be written", {
-  timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 115000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("cleanup-source"), there = await computer("cleanup-target");
@@ -525,15 +525,14 @@ test("a switched move keeps the original until its backup can be written", {
   await until(() => checked, "The source did not reach its next move round");
   assert.equal(exports() - beforeCleanup, 1, "The next round must not immediately retry the failed export");
   fs.unlinkSync(probeFile);
-  await sourceProcess.stop();
   here.engine.refuseExport = undefined;
-  const restarted = here.start();
-  const resident = await restarted.ready();
-  await moveRetired(here, id, () => restarted.log() + "\n" + targetProcess.log());
+  await until(() => !fs.existsSync(path.join(here.home, "run/moves", id + ".json")),
+    () => "The same resident did not retry the failed backup\n" + sourceProcess.log() + "\n" + targetProcess.log(), 85000);
+  assert.equal(exports() - beforeCleanup, 2);
   assert.equal(here.engine.sessions.some(record => record.id === session), false);
   const backup = readJSON(path.join(here.home, "run/moves/left.json")).find(row => row.id === id);
   assert.equal(readJSON(path.join(backup.trash, "conversation.json"))[0].info.id, session);
-  const final = await request(resident, "GET", "kuvo/moves/receipt?id=" + id);
+  const final = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
   assert.equal(final.status, 200, final.text);
   assert.equal(final.json.state, "done", final.text);
   assert.equal(final.json.note, undefined, final.text);
