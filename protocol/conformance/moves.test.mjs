@@ -781,6 +781,52 @@ test("a destination resumes a partial move after restarting", {
   assert.deepEqual(fs.readFileSync(path.join(there.home, folder, "wake.txt")), bytes);
 });
 
+test("a move carries replay evidence saved after the first offer", {
+  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("evidence-source"), there = await computer("evidence-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_lateEvidence", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  const setup = readJSON(path.join(here.home, "run/link.json")).setup.id;
+  const draft = "msg_lateEvidence";
+  const address = createHash("sha256").update(JSON.stringify(["typed-draft", setup, session, draft])).digest("base64url");
+  const evidence = { formatVersion: 1, digest: "scoped:" + "C".repeat(43),
+    draftReplayFence: { setup, session, id: draft } };
+  const file = path.join("run/owned-data/mutations", address + ".json");
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const [from, to] = [main, member].map(peer => Buffer.from(peer.address, "base64url"));
+  const generations = new Set();
+  t.after(relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), Buffer.from(main.key, "base64url"));
+    const move = JSON.parse(payload).move;
+    if (move?.op === "offer") {
+      if (!generations.size) write(path.join(here.home, file), JSON.stringify(evidence));
+      generations.add(move.generation);
+    }
+    return false;
+  }));
+  const sourceProcess = here.start(), destinationProcess = there.start();
+  const [source] = await Promise.all([sourceProcess.ready(), destinationProcess.ready()]);
+  await until(() => {
+    try { return readJSON(path.join(here.home, "run/peer-agents.json"))[member.key]?.features?.includes("data.forward-evidence"); }
+    catch { return false; }
+  }, "The destination did not announce support for forwarding evidence");
+  await readyToMove(source, session, member);
+  const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const { id } = begun.json.move;
+  await moveRetired(here, id, () => sourceProcess.log() + "\n" + destinationProcess.log());
+  const receipt = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(receipt.json.state, "done", receipt.text);
+  assert.deepEqual([...generations], [1, 2], "An offer prepared before the decision must be rebuilt");
+  assert.deepEqual(readJSON(path.join(there.home, file)), evidence);
+});
+
 test("an older incoming copy without import proof stays held after a drop", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

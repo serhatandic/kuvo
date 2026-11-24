@@ -903,10 +903,17 @@ impl Driver {
             .map_err(io::Error::other)?;
         let (exports, queues) = snapshot(&session, row).await?;
         let before = sending.manifest.queues.clone().unwrap_or_default();
+        let setup = self
+            .ownership
+            .scope(&row.thing, None)
+            .map_err(io::Error::other)?
+            .setup;
         self.check_payloads(row)?;
         if conversation(&exports) != conversation(&sending.manifest.exports)
             || without_clocks(&queues)? != without_clocks(&before)?
             || session_notes::pack(self.run_dir(), &row.sessions)? != sending.manifest.session_notes
+            || forward_evidence::pack(self.run_dir(), setup.as_deref(), &row.sessions)?
+                != sending.manifest.forward_evidence
         {
             if row.bundle.generation.unwrap_or_default() >= 3 {
                 return Err(io::Error::other(format!(
