@@ -609,7 +609,10 @@ test("work queue views merge live and deleted rows by their owning computer", { 
   const file = await main("GET", `${items}/${id}/files/proof.txt`, undefined, app);
   assert.equal(file.status, 200, file.text);
   assert.equal(file.text, "bytes");
-  const deleted = await member("DELETE", `${items}/${id}`, undefined, app);
+  const edited = await main("PATCH", `${items}/${id}`, { priority: "high" }, app);
+  assert.equal(edited.status, 200, edited.text);
+  assert.equal(edited.json.item.priority, "high");
+  const deleted = await main("DELETE", `${items}/${id}`, undefined, app);
   assert.equal(deleted.status, 200, deleted.text);
   await until(async () => {
     const answer = await main("GET", route);
@@ -617,7 +620,7 @@ test("work queue views merge live and deleted rows by their owning computer", { 
     return answer.json.removed.some(item => item.id === id && item.computer.key === seen.item.computer.key)
       && !answer.json.items.some(item => item.id === id);
   }, "Studio did not receive the Lab deletion.", 30000);
-  const restored = await member("POST", `${items}/${id}/restore`, {}, app);
+  const restored = await main("POST", `${items}/${id}/restore`, {}, app);
   assert.equal(restored.status, 200, restored.text);
   await until(async () => {
     const answer = await main("GET", route);
@@ -625,4 +628,8 @@ test("work queue views merge live and deleted rows by their owning computer", { 
     return answer.json.items.some(item => item.id === id && item.computer.key === seen.item.computer.key)
       && !answer.json.removed.some(item => item.id === id);
   }, "Studio did not receive the Lab restore.", 30000);
+  const onKeeper = await member("GET", `${items}/${id}`);
+  assert.equal(onKeeper.status, 200, onKeeper.text);
+  assert.equal(onKeeper.json.item.priority, "high");
+  assert.deepEqual(onKeeper.json.item.events.slice(-2).map(event => event.kind), ["deleted", "restored"]);
 });

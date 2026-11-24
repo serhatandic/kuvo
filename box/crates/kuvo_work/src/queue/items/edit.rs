@@ -15,7 +15,7 @@ impl Writer {
                 let fields = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
                 typed(
                     writer
-                        .edit(
+                        .edit_for_client(
                             reference,
                             fields,
                             local_work_queue_app(&call.request.caller),
@@ -26,7 +26,12 @@ impl Writer {
         });
     }
 
-    async fn edit(&self, reference: String, fields: Value, local: bool) -> Result<Value, Refusal> {
+    pub(super) async fn edit(
+        &self,
+        reference: String,
+        fields: Value,
+        local: bool,
+    ) -> Result<Value, Refusal> {
         let (fields, staged) =
             if fields.get("itemRelation").is_some() || fields.get("files").is_none() {
                 (fields, Staged::default())

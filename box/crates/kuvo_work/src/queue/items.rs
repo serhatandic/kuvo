@@ -1,14 +1,17 @@
 //! Client creation and local deletion/restore through the queue's writer lock.
 
 mod edit;
+mod peer_actions;
 
 use super::{
     assignees::Assignees,
     attachments::staging::{ClientFiles, Staged},
+    forward::{Forward, records::Act},
     labels,
     mentions::Index,
     migration,
     numbers::Numbers,
+    peer_reads::PeerReads,
     refs::{Reference, References},
     routes::{blocking, internal, local_work_queue_app, storage_refusal, typed, work_queue_client},
     status::{self, PRIORITIES, STATUSES},
@@ -20,6 +23,7 @@ use jiff::Timestamp;
 use kuvo_engine::LocalSessions;
 use kuvo_peers::{
     directory::RecordScope,
+    ownership,
     relay::{RelayEvent, RelayHandle},
     setup_lists::Reader,
 };
@@ -70,6 +74,8 @@ struct Writer {
     numbers: Numbers,
     files: Arc<ClientFiles>,
     sessions: LocalSessions,
+    reads: PeerReads,
+    forward: Forward,
 }
 
 pub(super) fn register(
@@ -80,11 +86,15 @@ pub(super) fn register(
     refs: Arc<References>,
     sessions: LocalSessions,
     relay: Option<RelayHandle>,
+    reads: PeerReads,
+    owners: ownership::Handle,
 ) -> Runtime {
     let writer = Writer {
         numbers: Numbers::new(&store, setup.clone(), peers.clone()),
         files: Arc::new(ClientFiles::new()),
+        forward: Forward::new(store.clone(), owners, relay.clone()),
         sessions,
+        reads,
         store,
         setup,
         peers,
@@ -116,7 +126,14 @@ pub(super) fn register(
             if !work_queue_client(&call.request.caller) {
                 return Err(Refusal::new(StatusCode::FORBIDDEN, CLIENT));
             }
-            typed(here.change(name, Removal::Delete).await?)
+            typed(
+                here.change_for_client(
+                    name,
+                    Removal::Delete,
+                    local_work_queue_app(&call.request.caller),
+                )
+                .await?,
+            )
         }
     });
     let here = writer.clone();
@@ -127,7 +144,14 @@ pub(super) fn register(
             if !work_queue_client(&call.request.caller) {
                 return Err(Refusal::new(StatusCode::FORBIDDEN, CLIENT));
             }
-            typed(here.change(name, Removal::Restore).await?)
+            typed(
+                here.change_for_client(
+                    name,
+                    Removal::Restore,
+                    local_work_queue_app(&call.request.caller),
+                )
+                .await?,
+            )
         }
     });
     writer.register_edits(registry);
@@ -252,6 +276,30 @@ impl Writer {
         };
         let by = kuvo_wire::keys::encode(key);
         let now = Timestamp::now().as_millisecond();
+        if queue.get("scopedAct").is_none()
+            && self.forward.admits(*key)
+            && let Some(act) = queue.get("act").and_then(Act::parse)
+        {
+            let id = act.id.clone();
+            let answer = match self.respond_to_act(&by, act, now).await {
+                Ok(answer) => answer,
+                Err(error) => {
+                    eprintln!("Work Queue forwarded action: {error}");
+                    super::forward::records::Reply {
+                        status: 503,
+                        value: json!({"message":"This computer couldn’t persist the operation’s outcome. Check the record before retrying."}),
+                    }
+                }
+            };
+            if let Some(mails) = kuvo_peers::work_queue_mails(
+                json!({"acted":{"id":id,"status":answer.status,"value":answer.value}}),
+                now,
+            ) {
+                for mail in mails {
+                    let _ = relay.sender.mail(peer.clone(), mail).await;
+                }
+            }
+        }
         if let Some(had) = queue["had"].as_str() {
             snapshots.acknowledge(key, had);
         }

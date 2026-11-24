@@ -35,6 +35,7 @@ pub const FEATURES: &[&str] = &[
     "phones",
     "sessions.location",
     crate::WORK_QUEUE_SNAPSHOTS,
+    "work-queue.forward",
 ];
 
 const NOT_READY: &str = "The session list isn’t ready.";

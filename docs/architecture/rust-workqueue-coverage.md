@@ -9,8 +9,9 @@ references, and stages client attachments with stable anchors and collision-safe
 names. Inline picture markers can be removed separately from their files. The
 peer snapshot capability exchanges combined views, retained deletions and
 reference chips. Whole items and attachments can be read quietly from their
-keeper through the same transport as setup search. The full client feature is
-still gated on the remaining routes.
+keeper through the same transport as setup search. A computer can send an item
+edit, delete or restore to its keeper through the tracked request and receipt
+exchange. The full client feature is still gated on the remaining routes.
 
 Case numbers follow declaration order in each TypeScript file. Partial means a
 conformance scenario exercises part of the TypeScript case. Open cases are
@@ -20,10 +21,10 @@ assigned to the indicated row for the rest of the port.
 |---|---:|---|
 | [work-queue](../../box/bridge-tests/work-queue.test.js) | 1, 5, 10, 16, 23, 25, 28, 57 | Partial, 5.2. Creation retry, summary counts and order, local delete and restore, label writes, saved attachment download and a view change written by another process. |
 | | 2–4, 6–9, 11–15, 17–22, 24, 26–27, 29–56, 58–60 | Open, 5.2. Agent operations, live session variations, edits, imports, staging, recovery and handoff. |
-| [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1, 4 | Partial, 5.2. Authenticated snapshots and acknowledgements carry remote rows and chips through the relay, retain the snapshot on disk, and the shared memory transport reads the keeper's full item and file. Mixed peers, retry timing, multipart scenarios and writes through another computer remain open. |
-| | 2–3, 5–32 | Open, 5.2 and 2.4. Numbering and leases, further projections, forwarding, handoff and deduplication. Retain retired ranked numbering checks in TS. |
+| [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1, 4, 20, 24 | Partial, 5.2. Authenticated snapshots and acknowledgements carry remote rows and chips through the relay. The shared memory transport reads the keeper's full item and file. Edits, deletes and restores reach the keeper through another computer. Mixed peers, partition and receipt replay cases, scoped forwarding and attachments still need scenarios. |
+| | 2–3, 5–19, 21–23, 25–32 | Open, 5.2 and 2.4. Numbering and leases, further projections, forwarding, handoff and deduplication. Retain retired ranked numbering checks in TS. |
 | [work-queue-two-boxes](../../box/bridge-tests/work-queue-two-boxes.test.js) | 1 | Partial, 5.2. A member spends an ordinary block from the main after it goes away and the main's combined view shows the member's rows. Handoff remains open. |
-| | 2 | Partial, 5.2. A delete and restore on the keeper both reach the other computer, which can also read the full item and its file. Initiating the changes through that computer remains open. |
+| | 2 | Partial, 5.2. Both computers see deletion and restoration. Either computer can initiate the changes, and the keeper preserves their history. The other computer can read the full item and its file and change its priority. Partition and mixed-peer cases remain open. |
 | [work-queue-statuses](../../box/bridge-tests/work-queue-statuses.test.js) | 1, 3, 9–10, 13–15 | Partial, 5.2. Local migration, retry, creation, search, one filter, label saves and a local move between statuses. Remaining edit, filter and view variants need scenarios. |
 | | 2, 4–8, 11–12, 16 | Open, 5.2. Settling active work after migration, writer locks and recovery, reassignment to a bot queue, action limits and agent tools. |
 | [work-queue-github](../../box/bridge-tests/work-queue-github.test.js) | 2, 9 | Partial, 5.2. The saved closure changes the projection on a glance and preserves the item bytes. Freshness, reconnect and reopening need the signed-in reader. |
@@ -38,7 +39,7 @@ assigned to the indicated row for the rest of the port.
 | | 9, 11 | Open, 5.2. Purge pruning and dispatch responsiveness with a held writer lock. |
 | [queue-live](../../box/bridge-tests/queue-live.test.js), [queue-stop](../../box/test/queue-stop.test.ts), [queue-items](../../box/test/queue-items.test.ts) | 1, 1–6, 1–25 respectively | Conversation message queues. See the case-by-case [engine map](rust-engine-coverage.md) for status and rows 3.2, 4.1 and 5.1. |
 
-Of the 182 directly named cases, 2 are covered, 34 are partial, 114 are open in
+Of the 182 directly named cases, 2 are covered, 36 are partial, 112 are open in
 Work Queue and 32 are tracked in the engine map. The Work Queue conformance area also
 checks the initial migration and future-format refusal through a real resident.
 

@@ -13,6 +13,7 @@ async-stream = "0.3"
 base64 = "0.22"
 getrandom = "0.4"
 http = "1"
+http-body-util = "0.1"
 icu_collator = "2"
 kuvo_engine = { path = "../kuvo_engine" }
 kuvo_os = { path = "../kuvo_os" }

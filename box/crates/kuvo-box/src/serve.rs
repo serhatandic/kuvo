@@ -133,7 +133,7 @@ pub async fn run(
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
     let owner_requests = tokio::spawn(super::session_ownership::serve(
-        owners,
+        owners.clone(),
         engine.clone(),
         sessions.clone(),
     ));
@@ -151,6 +151,7 @@ pub async fn run(
         setup.handle(),
         peers.relay_handle(),
         memory.clone(),
+        owners,
     )
     .await?;
     let queue_reads = work_queue.peer_reads();

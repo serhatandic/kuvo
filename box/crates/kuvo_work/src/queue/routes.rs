@@ -11,7 +11,9 @@ use super::{
 use http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
 use kuvo_engine::LocalSessions;
 use kuvo_os::watch::{Options, Subscription, WatchHub};
-use kuvo_peers::{memory_read::Handle as MemoryRead, relay::RelayHandle, setup_lists::Reader};
+use kuvo_peers::{
+    memory_read::Handle as MemoryRead, ownership, relay::RelayHandle, setup_lists::Reader,
+};
 use kuvo_protocol::{
     JsonStatus,
     routes::{
@@ -36,6 +38,7 @@ pub async fn register(
     setup: SetupHandle,
     relay: Option<RelayHandle>,
     memory: MemoryRead,
+    owners: ownership::Handle,
 ) -> Result<Runtime, Box<dyn std::error::Error>> {
     let store = Store::new(home);
     let startup = store.clone();
@@ -79,6 +82,8 @@ pub async fn register(
         references.clone(),
         sessions.clone(),
         relay,
+        reads.clone(),
+        owners,
     );
 
     let here = lists.clone();

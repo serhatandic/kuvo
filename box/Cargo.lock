@@ -1567,6 +1567,7 @@ dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
  "http",
+ "http-body-util",
  "icu_collator",
  "jiff",
  "kuvo_engine",

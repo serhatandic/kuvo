@@ -2,6 +2,7 @@
 
 mod assignees;
 mod attachments;
+mod forward;
 mod github;
 mod items;
 mod labels;

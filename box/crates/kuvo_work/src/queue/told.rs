@@ -919,3 +919,74 @@ fn fs_birth(path: &std::path::Path) -> Option<i64> {
         .ok()?;
     i64::try_from(since.as_millis()).ok()
 }
+
+/// Apply the keeper's acknowledged mutation to its saved snapshot, unless a newer one arrived first.
+pub(super) fn apply_reply(
+    store: &Store,
+    sender: &ComputerKey,
+    item: &Value,
+    deleted: bool,
+) -> Result<(), Error> {
+    let Some(fresh) = summary(item, i64::MAX, deleted) else {
+        return Ok(());
+    };
+    let Some(id) = fresh["id"].as_str() else {
+        return Ok(());
+    };
+    let _lock = StaleLock::acquire(
+        &store.root.join(".told.lock"),
+        Duration::from_secs(10),
+        Duration::from_secs(3),
+        OnBusy::Refuse,
+    )?;
+    let file = path(store, sender);
+    let Some(mut fields) = store::read(&file, FORMAT)? else {
+        return Ok(());
+    };
+    let formerly = store::array(fields.get("items"));
+    let formerly_deleted = store::array(fields.get("removed"));
+    let previous = formerly
+        .iter()
+        .chain(formerly_deleted)
+        .find(|row| row["id"] == id);
+    let changed = |row: &Value| at(&row["updated"]["at"]).max(at(&row["removed"]["at"]));
+    if previous.is_some_and(|previous| changed(previous) > changed(&fresh)) {
+        return Ok(());
+    }
+    let mut items: Vec<_> = formerly
+        .iter()
+        .filter(|item| item["id"] != id)
+        .cloned()
+        .collect();
+    let mut removed: Vec<_> = formerly_deleted
+        .iter()
+        .filter(|item| item["id"] != id)
+        .cloned()
+        .collect();
+    if deleted {
+        removed.insert(0, fresh);
+        removed.truncate(MOST_ITEMS);
+    } else if let Some(previous) = previous.and_then(Value::as_object) {
+        let mut kept = previous.clone();
+        let unchanged = |key: &str| {
+            matches!(key, "sessions" | "progress" | "handedFrom") && previous.contains_key(key)
+        };
+        kept.extend(
+            fresh
+                .as_object()
+                .expect("clean peer item")
+                .iter()
+                .filter(|(key, _)| !unchanged(key))
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        kept.remove("removed");
+        items.push(kept.into());
+    } else {
+        items.push(fresh);
+    }
+    fields.insert("items".into(), json!(items));
+    fields.insert("removed".into(), json!(removed));
+    let bytes = serde_json::to_vec(&FORMAT.encode(fields)).map_err(io::Error::other)?;
+    files::write_secret(&file, &bytes)?;
+    Ok(())
+}

@@ -42,7 +42,48 @@ struct Target {
     deleted: bool,
 }
 
+pub(super) struct QueueTarget {
+    pub key: ComputerKey,
+    pub computer: Value,
+    pub id: String,
+}
+
 impl PeerReads {
+    pub(super) async fn forward_target(
+        &self,
+        name: String,
+        restoring: bool,
+    ) -> Result<Option<QueueTarget>, Refusal> {
+        let here = self.clone();
+        let lookup = name.clone();
+        let (try_elsewhere, target) = blocking(move || {
+            let Some(reference) = here.refs.parse(&lookup) else {
+                return Ok((false, None));
+            };
+            let all = here.store.items()?;
+            if here.refs.find(&all, &reference).is_some() {
+                return Ok((false, None));
+            }
+            Ok((true, here.told(&all, &reference, restoring)?))
+        })
+        .await?;
+        if let Some(target) = target {
+            return Ok(Some(QueueTarget {
+                key: target.key,
+                computer: target.computer,
+                id: target.item["id"].as_str().unwrap_or_default().to_owned(),
+            }));
+        }
+        if !try_elsewhere {
+            return Ok(None);
+        }
+        Ok(self.seek(name).await?.map(|(peer, answer)| QueueTarget {
+            key: peer.key,
+            computer: computer(&peer),
+            id: answer["item"]["id"].as_str().unwrap_or_default().to_owned(),
+        }))
+    }
+
     /// The shared memory transport only calls this for a GET from an accepted computer.
     pub async fn answer(&self, read: Read) -> Answer {
         let here = self.clone();
@@ -127,14 +168,7 @@ impl PeerReads {
             }
             let peer = self.peers.view();
             let away = peer.standing(target.key, self.peers.now()).away();
-            let name = target.computer["name"].as_str().unwrap_or_default();
-            let why = if away {
-                format!(
-                    "{name} isn't answering now (it may be asleep, off or offline): it can be changed once it's back."
-                )
-            } else {
-                format!("It's on {name}: change it there.")
-            };
+            let can = view::can_elsewhere(&target.item, &peer, away, client);
             let fields = target.item.as_object_mut().expect("peer's item summary");
             fields.remove("handedFrom");
             for key in ["notes", "events", "files", "links", "handed"] {
@@ -142,7 +176,7 @@ impl PeerReads {
             }
             fields.insert("body".into(), "".into());
             fields.insert("told".into(), true.into());
-            fields.insert("can".into(), json!({"edit":false,"set":false,"assign":false,"close":false,"delete":false,"restore":false,"attach":false,"why":why}));
+            fields.insert("can".into(), can);
             return Ok(json!({"item":target.item}));
         }
         if !client {

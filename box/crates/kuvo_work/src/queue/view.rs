@@ -278,19 +278,10 @@ pub(super) fn list(
     }
     let remote = |mut row: Value| {
         row.as_object_mut().expect("peer item").remove("handedFrom");
-        let name = row["computer"]["name"].as_str().unwrap_or_default();
-        let computer = elsewhere
-            .computers
-            .iter()
-            .find(|computer| computer["key"] == row["computer"]["key"]);
-        let why = if computer.is_some_and(|computer| computer.get("away").is_some()) {
-            format!(
-                "{name} isn't answering now (it may be asleep, off or offline): it can be changed once it's back."
-            )
-        } else {
-            format!("It's on {name}: change it there.")
-        };
-        row["can"] = json!({"edit":false,"set":false,"assign":false,"close":false,"delete":false,"restore":false,"attach":false,"why":why});
+        let away = elsewhere.computers.iter().any(|computer| {
+            computer["key"] == row["computer"]["key"] && computer.get("away").is_some()
+        });
+        row["can"] = can_elsewhere(&row, peers, away, true);
         row["labels"] = json!(
             array(row.get("labels"))
                 .iter()
@@ -708,6 +699,30 @@ pub(super) fn references<'a>(
         answer["aliases"] = aliases.into();
     }
     answer
+}
+
+pub(super) fn can_elsewhere(row: &Value, peers: &View, away: bool, client: bool) -> Value {
+    let key = row["computer"]["key"]
+        .as_str()
+        .and_then(kuvo_wire::keys::decode_exact::<32>);
+    let has = |feature| key.is_some_and(|key| peers.advertises(&key, feature));
+    let there = row["computer"]["name"].as_str().unwrap_or("Its computer");
+    let blocked = if away {
+        Some(format!(
+            "{there} isn't answering now (it may be asleep, off or offline): it can be changed once it's back."
+        ))
+    } else if !client || !has("work-queue.forward") {
+        Some(format!("It's on {there}: change it there."))
+    } else {
+        None
+    };
+    if let Some(why) = blocked {
+        return json!({"edit":false,"set":false,"assign":false,"close":false,"delete":false,"restore":false,"attach":false,"why":why});
+    }
+    let mut can = can(row);
+    can["assign"] = false.into();
+    can["attach"] = (can["attach"] == true && has("work-queue.attachments")).into();
+    can
 }
 
 fn can(row: &Value) -> Value {
