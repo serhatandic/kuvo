@@ -261,7 +261,7 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 | Test | Cases | Rust |
 |---|---|---|
 | [bots-projects](../../box/bridge-tests/bots-projects.test.js) | 222, 236 a projects folder picked, only a real one | `work` scenarios; `WorkSettings::change` |
-| | 100–208, 250–338 asking to make or clone a project, answering, Always, `kuvo/projects/new` | 5.1c, with the work tools: open |
+| | 100–208, 250–338 asking to make or clone a project, answering, Always, `kuvo/projects/new` | answering and `kuvo/projects/new`: 5.1c-4; asking (the make_project tool): 5.1e |
 | `own-mac` (Keep This Mac Awake) | the setting and whether it holds now | `WorkSettings::keep_awake`: `caffeinate -i -w` while agents work, `run/work-awake.json`; only on a Mac box on macOS |
 
 ### Deliberate differences from TypeScript
@@ -271,3 +271,137 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   say holds as nothing at work.
 - **Followed lists** (`kuvo/work/events`, oversight and asks events) look again as the session list
   changes and every two seconds, rather than watching files.
+
+## 5.1c-3 — a bot's work from the session list
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_engine` session list, `work` beside each row (`session_list::work::listed_work`) | `work/listed-work.ts` (`listedWork`), `answersOn`, `depthOf`, `isHiddenRun` |
+| `kuvo_work::work::bot` (`Work::bot_work`) | `areas/work.ts` `botWorkSummary` and `kuvo/work`'s route; `workRow`, `finishedState`, `readAsks`, `readStopped`, `botLimits`, `startOfDay` |
+| `ApprovalService::keep` pacing | `keepApprovals`' two-second interval |
+
+### Proof
+
+- `work` scenarios add a bot's work for a new bot and the refusals (no bot named, none here): both
+  boxes on macOS; the Rust box on native Windows and Linux (WSL, static musl).
+- The session list's `work` field is additive: `engine-sessions` passes 81/81 against both boxes
+  on macOS and against the Rust box on Linux; on Windows three runs of four passed, one failed
+  "session list cursors carry changes and tombstones" with the other session listed as changed
+  (not seen in twelve macOS runs of that case alone).
+- Seen once under load, open: that failure didn't come back in 10 Windows runs of the case alone
+  and 6 of the area against `main`, nor 10 of each against this part; the case now writes both
+  answers and `sessions.json` to its output when it fails.
+- `session_list::work::tests` (2): a bot's work keeps what it ran on, how it went and its asks
+  answered; a subagent keeps where it ran; your own conversation and a hidden run keep none.
+- Side by side, 16 requests (with `kuvo/work?bot=` and `kuvo/sessions`): every answer matches.
+- Size: about 12,400 characters of Rust for about 10,500 of TypeScript: 1.18×.
+- The approval round runs at most every two seconds, the first two seconds after the engine starts,
+  as TypeScript's interval does: run the moment the engine was up, it took writes and list reads
+  that `engine-sessions` holds for its own cases.
+
+### Deliberate differences from TypeScript
+
+- **A phone's `kuvo/work?bot=`** is answered from the session list, as every other client's is;
+  TypeScript asked the engine again for a phone's (each session's ask and last reply).
+
+## 5.1c-4 — making a project, and answering what's asked
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::work::projects` (`make_project`, `made_words`, `cloneable`, `shown_path`, `first_commit`) | `work/projects.ts` (`makeProject`, `madeWords`, `cloneable`, `namedPlace`, `shownPath`, `cloneInto`); `git.ts` `firstCommit`, `gitLater` |
+| `kuvo_work::work::answers` (`Work::answer_work`, `change_asks`, `allow_always`, `do_work`, `tell_late`) | `work/asks.ts` (`answerWork`, `changeKept`, `allowAlways`, `doWork`, `tellLate`) |
+| `kuvo_services::git::change_projects` (beside `read_projects`) | `areas/projects.ts` `changeProjects` |
+| `WakeEngine::tell` (a wake-up's `deliver` goes through it) | `engine/queue.ts` `sendInto` to the engine, with `boxNote` |
+| `POST kuvo/projects/new`, `POST kuvo/work/asks/:id` in `Work::register` | `areas/work.ts` `newProjectRoute`, `workAsksRoute` |
+
+### Proof
+
+- `work` scenarios (3 new, 8 in all): a client makes a project (refusals: no name, no projects
+  folder with `needs`, a folder not given in full, a name that makes no folder, addresses git won't
+  clone, a folder with files in it, a project there already; a plain folder and a git repository
+  made); what's asked answered (not asked, a wrong answer, the projects folder picked with the
+  first allow, answered once, deny, deny overnight for a clone); and an answer given after its
+  tool stopped waiting told to its conversation (`[The user answered] …`, marked "Your answer").
+  8/8 against both boxes on macOS; against the Rust box on native Windows and on Linux (WSL, static
+  musl). `bots` stays 40/40 on all three (wake-ups now deliver through `WakeEngine::tell`).
+- `work::projects::tests` (3): which addresses git clones without asking; `~` for paths under your
+  home only; a new repository's empty first commit, with nothing left over, made once.
+- Side by side, 21 requests (`kuvo/projects/new`, `kuvo/work/asks/:id`, `kuvo/work/asks`,
+  `kuvo/projects`, `kuvo/work/settings`): every answer matches. The projects, asks and settings
+  files match too, except as below.
+- Size: about 30,700 characters of Rust for about 23,500 of TypeScript: 1.30× as the files stand;
+  1.14× without each line's indentation (Rust indents by four, TypeScript by two, and rustfmt
+  breaks a chain over 60 characters into lines of its own).
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bots-projects](../../box/bridge-tests/bots-projects.test.js) | 236 a client makes a project in the projects folder | `work` scenarios |
+| | 250 a new project starts with a commit, by Kuvo Code where no one's set | `work::projects::tests`; the scenarios' runs set who commits, so Kuvo Code's own name is the unit test's fallback: open for 5.1e's tool scenarios |
+| | 162, 290 what would fail anyway (a folder with files in it, a project there already, an address that isn't a repository's) | `work` scenarios, as refusals of `kuvo/projects/new`; not asking first is the tool's: 5.1e |
+| | 208 an answer given after its tool stopped waiting reaches its conversation; a second answer finds it gone | `work` scenarios |
+| | 222 allowing needs a projects folder, and only a real one; a no doesn't | `work` scenarios |
+| | 132 Always kept with the bot | `allow_always`; its scenario needs the tool asking first: 5.1e |
+| | 299, 338 a project that can't be made is the answer ("Couldn't do it") | `do_work`; read-only folders aren't set up in the shared scenarios: 5.1e's tool cases |
+
+### Gaps and owners
+
+- **A plan's reset answered** (`resetLimits`): the coding agents' `spendReset` isn't in this box;
+  Rust answers that the reset wasn't used. 5.4 (usage and limits).
+- **`box/found-folders.json`**: TypeScript notes a made project's folder as first found there
+  (`noteFolderFound`, for Auto's reviewer). 6.3, with the folders it lists.
+- **A late answer to a conversation elsewhere**: one the coding agents run, or one that moved to
+  another computer since (a letter, `tellMovedAway`), stays untold here. The agents' sessions: 4.4;
+  letters: 5.1e with the work tools. Telling those left untold as the box starts and every few
+  minutes (`tellLateAnswers`): the work watcher, next in 5.1c.
+
+### Deliberate differences from TypeScript
+
+- **The session list** lists a made project at once; TypeScript's saved list caught up later (side
+  by side, at shutdown its `run/lists/sessions.json` didn't have them yet).
+
+## 5.1c-5 — models that can't answer now
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::work::unanswering` (`Unanswerings`: `note_failed`, `note_answered`, `failed_on`, `answered_on`, `follow`, `list`; `hold_of`, `hold_words`, `error_of`, `scope_of`, `reset_of`, `is_free`) | `work/unanswering.ts` |
+| `GET kuvo/work/unanswering`, `Work::watch` (follows the engine's events) | `areas/work.ts` `workAsksRoute`'s first branch; `followUnanswering` in `workWatcher` |
+| `kuvo_engine::Engine::events` (`EngineEvent`), additive: the feed sends each event it reads, only while someone listens | the work watcher's own engine connection |
+| `kuvo_engine::{limit_reached, resets_in, reset_time}` (the queue's limit words, now shared) | `shared/limits.ts` `isLimit`, `resetsIn`, `resetTime` |
+
+### Proof
+
+- `work` scenario (1 new, 9 in all): none held on a new box; holds kept (one over by now left
+  out; an account's paid ones naming the models they cover, out of the engine's; one model's); a
+  new key for one account offers its models again while the bare `credential.updated` says nothing;
+  a paid model's session answering clears its account. 9/9 against both boxes on macOS; against
+  the Rust box on native Windows and Linux (WSL, static musl).
+- `work::unanswering::tests` (3): funds hold an account's paid models for half an hour and a free
+  one alone, and which answer clears which; only a limit holds a model back (not "Overloaded"), a
+  rate limit for three minutes, a named reset as named; a hold kept under another name marks the
+  model it stands for (`model-aliases.test.ts`).
+- The limit line's refactor: `engine-sessions`' four limit cases and `engine-delivery` pass against
+  the Rust box.
+- Side by side, seeded holds (paid, free, one model's, one over, one malformed) and three requests:
+  every answer and the file match.
+- Size: about 16,800 characters of Rust for about 14,000 of TypeScript, without indentation: 1.20×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bots-dead-models](../../box/bridge-tests/bots-dead-models.test.js) | 191 a client's model picker reads the same | `work` scenario |
+| | 199, 214 which answer or account change clears which hold | `work` scenario, `work::unanswering::tests` |
+| | 222 a model that's only busy isn't held back | `work::unanswering::tests` |
+| | 245 free usage holds an account's free ones, until a free one answers | `work::unanswering::tests`; through a failed session: the work watcher, next |
+| | 163, 231 a failure tells its bot why, and holds the account | the work watcher (`failed_on`, `hold_words`), next in 5.1c |
+| | list_models and start_session leaving out or warning of held models (163, 264) | the work tools, 5.1e (`hold_of`) |
+| [model-aliases](../../box/test/model-aliases.test.ts) | a hold kept on `claude-code/default` marks the model it stands for | `work::unanswering::tests` |
+

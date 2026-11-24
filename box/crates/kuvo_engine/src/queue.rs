@@ -35,7 +35,7 @@ use crate::{
 const ARRIVING_FOR: u64 = 120_000;
 
 mod handoff;
-mod limit;
+pub(crate) mod limit;
 mod target;
 mod views;
 

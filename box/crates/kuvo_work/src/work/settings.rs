@@ -20,6 +20,7 @@ const CHANGED_SINCE: &str = "It changed since you read it.";
 pub struct WorkSettings {
     file: PathBuf,
     account: PathBuf,
+    is_mac: bool,
     /// Whether this box keeps its Mac awake while agents work (a Mac's, on macOS).
     pub keeps_mac_awake: bool,
     awake_file: PathBuf,
@@ -34,6 +35,7 @@ impl WorkSettings {
         Self {
             file: home.join("box/work.json"),
             account: account.to_owned(),
+            is_mac,
             keeps_mac_awake: is_mac && cfg!(target_os = "macos"),
             awake_file: home.join("run/work-awake.json"),
         }
@@ -44,6 +46,20 @@ impl WorkSettings {
             .and_then(|text| serde_json::from_str::<Value>(&text).ok())
             .and_then(|value| value.as_object().cloned())
             .unwrap_or_default()
+    }
+
+    /// Your home folder here.
+    pub fn account(&self) -> &Path {
+        &self.account
+    }
+
+    /// This computer in a sentence: "this Mac" or "this machine".
+    pub fn here(&self) -> &'static str {
+        if self.is_mac {
+            "this Mac"
+        } else {
+            "this machine"
+        }
     }
 
     /// The folder new projects go in here, or none until you pick one (or once it's gone).
@@ -240,7 +256,7 @@ impl WorkSettings {
 }
 
 /// A path with `.` and `..` worked out, as `path.resolve` does.
-fn normalized(path: &Path) -> PathBuf {
+pub(super) fn normalized(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {

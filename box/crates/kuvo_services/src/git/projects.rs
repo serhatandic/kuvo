@@ -16,12 +16,12 @@ const PROJECT_LIST_VERSION: u32 = 1;
 const WORKTREE_RECORDS: ObjectFormat = ObjectFormat::additive("Worktree records");
 
 /// A record this box can't read: one written by a newer box.
-pub(crate) type Unsupported = format::Error;
+pub type Unsupported = format::Error;
 
 /// The projects `box/projects.json` keeps, each with a full path for its folder, its other folders
 /// those named by text, and without the retired terminal setting. A file that can't be read is
 /// none; one in a newer format is refused.
-pub(crate) fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, Unsupported> {
+pub fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, Unsupported> {
     let Ok(bytes) = std::fs::read(box_home.join("box/projects.json")) else {
         return Ok(Vec::new());
     };
@@ -64,6 +64,39 @@ pub(crate) fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, 
             project
         })
         .collect())
+}
+
+/// Why the projects weren't changed.
+#[derive(Debug, thiserror::Error)]
+pub enum ChangeFailed {
+    #[error(transparent)]
+    Unsupported(#[from] Unsupported),
+    #[error("Could not lock the file for writing")]
+    Busy,
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// The list as `change` makes it, read again just before, under its lock (`box/projects.json.lock`,
+/// shared with the TS box); the session list sees the file change.
+pub fn change_projects<T>(
+    box_home: &Path,
+    change: impl FnOnce(&mut Vec<Map<String, Value>>) -> T,
+) -> Result<T, ChangeFailed> {
+    let file = box_home.join("box/projects.json");
+    let _lock = kuvo_store::locks::StaleLock::acquire(
+        &box_home.join("box/projects.json.lock"),
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(3),
+        kuvo_store::locks::OnBusy::Refuse,
+    )?
+    .ok_or(ChangeFailed::Busy)?;
+    let mut projects = read_projects(box_home)?;
+    let made = change(&mut projects);
+    let kept = serde_json::json!({ "version": PROJECT_LIST_VERSION, "projects": projects });
+    let text = serde_json::to_string_pretty(&kept).map_err(std::io::Error::other)?;
+    kuvo_store::files::write_secret(&file, text.as_bytes())?;
+    Ok(made)
 }
 
 /// Whether a folder is named by a full path, as Node's `path.isAbsolute` reads it here: on Windows,

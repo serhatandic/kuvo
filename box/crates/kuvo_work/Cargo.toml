@@ -25,6 +25,7 @@ jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 kuvo_peers = { path = "../kuvo_peers" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
+kuvo_services = { path = "../kuvo_services" }
 kuvo_setup = { path = "../kuvo_setup" }
 kuvo_store = { path = "../kuvo_store" }
 kuvo_wire = { path = "../kuvo_wire" }

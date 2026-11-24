@@ -91,35 +91,50 @@ impl Classifier {
 }
 
 pub(super) fn line(home: &Path, stop: &LimitStop) -> String {
-    let reset = stop
-        .resets_at
-        .and_then(|at| i64::try_from(at).ok())
-        .and_then(|at| Timestamp::from_millisecond(at).ok());
-    match reset {
-        Some(at) => {
-            // Setup writes its accepted zone here, for both standalone and member computers.
-            let accepted = std::fs::read_to_string(home.join("wakes/timezone")).ok();
-            let local = std::fs::read(home.join("box/time-zone.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                .and_then(|value| value["zone"].as_str().map(str::to_owned));
-            let given = std::env::var("KUVO_TZ").ok();
-            let zone = [accepted, local, given]
-                .into_iter()
-                .flatten()
-                .find_map(|name| TimeZone::get(name.trim()).ok())
-                .unwrap_or_else(TimeZone::system);
-            let now = Timestamp::now().to_zoned(zone.clone());
-            let at = at.to_zoned(zone);
-            let time = if now.date() == at.date() {
-                at.strftime("%-I:%M %p").to_string()
-            } else {
-                at.strftime("%b %-d, %-I:%M %p").to_string()
-            };
-            format!("{} It resets at {time}.", stop.message)
-        }
+    match stop.resets_at.and_then(|at| reset_time(home, at)) {
+        Some(time) => format!("{} It resets at {time}.", stop.message),
         None => format!("{} The provider didn't say when it resets.", stop.message),
     }
+}
+
+/// When a limit resets (ms), in your time zone: "4:30 PM", or "Oct 21, 9:00 AM" when it isn't
+/// today.
+pub fn reset_time(home: &Path, at: u64) -> Option<String> {
+    let at = Timestamp::from_millisecond(i64::try_from(at).ok()?).ok()?;
+    // Setup writes its accepted zone here, for both standalone and member computers.
+    let accepted = std::fs::read_to_string(home.join("wakes/timezone")).ok();
+    let local = std::fs::read(home.join("box/time-zone.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value["zone"].as_str().map(str::to_owned));
+    let given = std::env::var("KUVO_TZ").ok();
+    let zone = [accepted, local, given]
+        .into_iter()
+        .flatten()
+        .find_map(|name| TimeZone::get(name.trim()).ok())
+        .unwrap_or_else(TimeZone::system);
+    let now = Timestamp::now().to_zoned(zone.clone());
+    let at = at.to_zoned(zone);
+    let format = if now.date() == at.date() {
+        "%-I:%M %p"
+    } else {
+        "%b %-d, %-I:%M %p"
+    };
+    Some(at.strftime(format).to_string())
+}
+
+static WORDS: std::sync::LazyLock<Classifier> = std::sync::LazyLock::new(Classifier::new);
+
+/// Whether an error's words say a model's limit was reached (a plan's window, a rate limit, a 429),
+/// which resets, rather than that it's busy, overloaded or at capacity.
+pub fn limit_reached(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    WORDS.usage.is_match(message) && !lower.contains("overloaded") && !lower.contains("capacity")
+}
+
+/// When a limit an error's words name resets (ms), as they say it ("try again in 5 minutes").
+pub fn resets_in(message: &str, at: u64) -> Option<u64> {
+    WORDS.relative_reset(message, at)
 }
 
 pub(super) fn watch(engine: Engine, stop: CancellationToken) -> tokio::task::JoinHandle<()> {
@@ -203,7 +218,15 @@ async fn release(engine: &Engine, session: &str, reset: u64) -> io::Result<()> {
     let rows = inbox(engine, super::Target::Engine(&lease), session)
         .await
         .map_err(io::Error::other)?;
-    if drain(engine, super::Target::Engine(&lease), session, &saved, &rows).await? {
+    if drain(
+        engine,
+        super::Target::Engine(&lease),
+        session,
+        &saved,
+        &rows,
+    )
+    .await?
+    {
         engine
             .queues
             .put(session, |state| {

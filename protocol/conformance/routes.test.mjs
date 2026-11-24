@@ -92,7 +92,7 @@ async function run(t, scenario, kind) {
       let answer = await ask();
       // These reads show projections updated by the engine stream and filesystem watches.
       // Wait for the expected projection once it can answer, without replaying mutations.
-      if (method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees"].includes(route.split("?")[0])
+      if (method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering"].includes(route.split("?")[0])
         && answer.status === expect.status && mismatch(expect.json, answer.json)) {
         await until(async () => {
           answer = await ask();

@@ -1,5 +1,5 @@
 {
- "about": "Where new projects go on a box (PROTOCOL.md, \"Work\"): none until you pick a folder, a folder checked before it's kept, and a change made only while it's still as you read it.",
+ "about": "Where new projects go on a box (PROTOCOL.md, \"Work\"): none until you pick a folder, a folder checked before it's kept, and a change made only while it's still as you read it; a project made there, and what's asked before a bot does something answered.",
  "scenarios": [
   {
    "name": "where new projects go: none at first, a folder that isn't one refused, one picked kept, and a change on what was read",
@@ -150,6 +150,673 @@
       "status": 200,
       "json": {
        "asks": []
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a bot's work: none yet for a new bot, and a bot that isn't named or isn't here",
+   "steps": [
+    {
+     "given": {
+      "bot": {
+       "id": "bot_ada",
+       "name": "Ada",
+       "session": "ses_ada"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work?bot=bot_ada",
+     "expect": {
+      "status": 200,
+      "json": {
+       "bot": "bot_ada",
+       "sessions": [],
+       "answered": [],
+       "today": {
+        "started": 0,
+        "answered": 0,
+        "working": 0,
+        "tokens": 0,
+        "cost": "<absent>"
+       },
+       "limits": null,
+       "asks": [],
+       "projects": [],
+       "activity": {
+        "working": 0,
+        "asking": 0,
+        "sessions": []
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work",
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Name the bot: kuvo/work?bot=<id>."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work?bot=bot_nobody",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "There's no such bot here."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a client makes a project where new projects go: a git repository or a plain folder, and what won't do refused",
+   "steps": [
+    {
+     "send": "POST kuvo/projects/new",
+     "body": [],
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Send {name}, and git or clone."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "  "
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Say what it's called (name)."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tidepool"
+     },
+     "why": "No projects folder picked yet.",
+     "expect": {
+      "status": 403,
+      "json": {
+       "message": "There's no projects folder here yet: the user picks one.",
+       "needs": "projectsFolder"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tidepool",
+      "folder": "projects/tidepool"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Give the folder as a full path, like ~/projects/tidepool."
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/notes/todo.md",
+       "text": "mine\n"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "???"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "??? can't be a folder's name: use letters or numbers."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Sneaky",
+      "clone": "--upload-pack=touch x"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "--upload-pack=touch x isn't a repository address git can clone: give an https or ssh one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Local",
+      "clone": "/etc"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "/etc isn't a repository address git can clone: give an https or ssh one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Notes"
+     },
+     "why": "A folder with files in it already.",
+     "expect": {
+      "status": 409,
+      "json": {
+       "message": {
+        "<contains>": "already, with files in it. Pick another name."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tide Pool",
+      "git": false
+     },
+     "expect": {
+      "status": 201,
+      "json": {
+       "project": {
+        "directory": "<string>",
+        "folders": [],
+        "addedByBox": true,
+        "name": "Tide Pool",
+        "madeBy": "<absent>"
+       },
+       "text": {
+        "<contains>": ", a plain folder, on this machine. It's in the sidebar; start sessions in it with start_session (project: \"Tide Pool\")."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tide Pool"
+     },
+     "expect": {
+      "status": 409,
+      "json": {
+       "message": {
+        "<contains>": "already: Tide Pool."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "lighthouse"
+     },
+     "expect": {
+      "status": 201,
+      "json": {
+       "project": {
+        "directory": "<string>",
+        "folders": [],
+        "addedByBox": true,
+        "name": "<absent>"
+       },
+       "text": {
+        "<contains>": ", a new git repository, on this machine."
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/projects",
+     "expect": {
+      "status": 200
+     }
+    }
+   ]
+  },
+  {
+   "name": "what's asked answered: allow with the projects folder picked, deny, and one answered or not asked",
+   "steps": [
+    {
+     "send": "POST kuvo/work/asks/wak_none",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "That's been answered, or it isn't asked any more."
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_harbor",
+       "session": "ses_chat",
+       "project": "Harbor",
+       "git": false
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_reef",
+       "session": "ses_chat",
+       "project": "Reef"
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_clone",
+       "session": "ses_chat",
+       "project": "B",
+       "action": "cloneProject",
+       "clone": "https://example.com/a/b"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/asks",
+     "expect": {
+      "status": 200,
+      "json": {
+       "asks": {
+        "<length>": 3,
+        "<includes>": [
+         {
+          "id": "wak_harbor",
+          "action": "makeProject",
+          "project": "Harbor",
+          "folder": null,
+          "given": "<absent>"
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "maybe"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Answer allow, always or deny."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Pick the folder new projects go in."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow",
+      "folder": "relative"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Give a full path to the folder."
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/README.md",
+       "text": "Projects\n"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow",
+      "folder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "allow",
+       "isError": false,
+       "text": {
+        "<contains>": ", a plain folder, on this machine."
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/settings",
+     "why": "The folder picked with the answer is where new projects go now.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": "<string>"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow"
+     },
+     "why": "Answered once: another client finds it gone.",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "That's been answered, or it isn't asked any more."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_reef",
+     "body": {
+      "answer": "deny"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "deny",
+       "isError": true,
+       "text": "The user said no to making Reef. Don't ask again for it: go on without it, or ask them in a line what they'd like instead."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_clone",
+     "body": {
+      "answer": "deny",
+      "overnight": true
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "deny",
+       "isError": true,
+       "text": "No one could answer cloning https://example.com/a/b as B overnight, so it's no for now. Go on without it; it waits for the user in the morning report."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/asks",
+     "expect": {
+      "status": 200,
+      "json": {
+       "asks": []
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "an answer given after its tool stopped waiting is told to its conversation",
+   "steps": [
+    {
+     "given": {
+      "session": {
+       "id": "ses_late",
+       "title": "Planning"
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/README.md",
+       "text": "Projects\n"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_late",
+       "session": "ses_late",
+       "project": "Late",
+       "git": false,
+       "late": true
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_late",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "allow",
+       "isError": false
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_late/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[The user answered] Made Late at "
+       },
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "from": "Your answer",
+          "line": {
+           "<contains>": "You answered: Made Late at "
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "what can't answer now: an account's paid models and one model held, until its account changes or a session on it answers",
+   "steps": [
+    {
+     "send": "GET kuvo/work/unanswering",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": []
+      }
+     }
+    },
+    {
+     "given": {
+      "models": [
+       {
+        "id": "opus",
+        "providerID": "opencode",
+        "name": "Opus",
+        "cost": [
+         {
+          "input": 5,
+          "output": 25
+         }
+        ]
+       },
+       {
+        "id": "flash-free",
+        "providerID": "opencode",
+        "name": "Flash Free",
+        "cost": [
+         {
+          "input": 0,
+          "output": 0
+         }
+        ]
+       },
+       {
+        "id": "flash",
+        "providerID": "opencode-go",
+        "name": "Flash",
+        "cost": [
+         {
+          "input": 0.2,
+          "output": 0.8
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_paid",
+       "title": "Build",
+       "model": {
+        "providerID": "opencode",
+        "id": "opus"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{home}}/run/work/unanswering.json",
+       "text": "[{\"key\": \"opencode\", \"scope\": \"provider\", \"paid\": true, \"why\": \"Insufficient account funds\", \"at\": 1000, \"until\": 9999999999999}, {\"key\": \"opencode-go/flash\", \"scope\": \"model\", \"why\": \"Rate limited\", \"at\": 1000, \"until\": 9999999999999}, {\"key\": \"gone\", \"scope\": \"provider\", \"why\": \"Over\", \"at\": 1, \"until\": 2}]"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "One over by now isn't held; a hold on an account's paid ones names the models it covers.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": [
+        {
+         "provider": "opencode",
+         "model": "<absent>",
+         "only": "paid",
+         "models": [
+          "opus"
+         ],
+         "why": "Insufficient account funds",
+         "since": 1000,
+         "until": 9999999999999
+        },
+        {
+         "provider": "opencode-go",
+         "model": "flash",
+         "only": "<absent>",
+         "models": "<absent>",
+         "why": "Rate limited",
+         "since": 1000,
+         "until": 9999999999999
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "credential.updated",
+       "data": null
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "credential.switched",
+       "data": {
+        "integrationID": "opencode-go",
+        "credentialID": "cred_1"
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "A new key for that account offers its models again; the bare credential.updated says nothing.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": [
+        {
+         "provider": "opencode",
+         "only": "paid"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_paid"
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "A paid model of it answering: the account can again.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": []
       }
      }
     }

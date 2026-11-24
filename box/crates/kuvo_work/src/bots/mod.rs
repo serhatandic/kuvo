@@ -327,4 +327,8 @@ impl Bots {
     pub fn bots_folder(&self) -> &Path {
         &self.inner.bots
     }
+
+    pub fn engine(&self) -> &Engine {
+        &self.inner.engine
+    }
 }

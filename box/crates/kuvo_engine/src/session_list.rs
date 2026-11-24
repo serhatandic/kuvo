@@ -2,6 +2,7 @@
 
 mod activity;
 mod engine_facts;
+mod work;
 
 use engine_facts::EngineFacts;
 
@@ -438,6 +439,9 @@ struct Listed {
     seq: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     place: Option<String>,
+    /// A bot's work's or a subagent's work fields (`work::listed_work`), beside its facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    work: Option<Value>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -465,6 +469,9 @@ struct Facts {
     updated: u64,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
+    /// Kept beside the facts in the list (`Listed::work`), never among them.
+    #[serde(skip)]
+    work: Option<Value>,
 }
 
 impl Facts {
@@ -656,6 +663,7 @@ impl Snapshot {
             self.sessions.insert(
                 id,
                 Listed {
+                    work: facts.work.clone(),
                     facts,
                     seq: next,
                     place: Some(place.into()),
@@ -820,6 +828,9 @@ async fn load(home: &Path) -> Option<Snapshot> {
             .ok()?,
     )
     .ok()?;
+    for row in saved.sessions.values_mut() {
+        row.facts.work.clone_from(&row.work);
+    }
     for project in saved.projects.values_mut().filter_map(Value::as_object_mut) {
         for field in ["asking", "working"] {
             project.entry(field).or_insert_with(|| json!(0));
@@ -1296,6 +1307,7 @@ fn facts(session: &Session, home: &Path, filing: &Filing<'_>, running: bool) -> 
             .or(session.time.updated)
             .unwrap_or_default(),
         extra: BTreeMap::new(),
+        work: work::listed_work(session),
     };
     let mut set = |key: &str, value: Value| {
         facts.extra.insert(key.to_owned(), value);
