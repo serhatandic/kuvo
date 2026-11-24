@@ -2405,6 +2405,67 @@ test("the Mac installer keeps an existing machine in place", t => {
   assert.deepEqual(fs.readdirSync(home).sort(), ["bin", "box", "workspace"]);
 });
 
+test("the Mac installer leaves a fresh home alone when asked to move", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac move action.");
+  const fixture = box(t);
+  const home = path.join(fixture.env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(fixture.env.HOME, "run.kuvo.code.fresh-fixture");
+  const [code, status] = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(code, 0);
+  assert.deepEqual([status.verdict, status.verb], ["fresh", "new"]);
+  assert.deepEqual(macInstallerRequest(fixture, bundle, "move"), [1, {
+    result: "refused", verdict: "fresh", status: status.status,
+    message: "There's nothing of an earlier Kuvo Code's on this Mac to move.",
+  }]);
+  assert.equal(fs.existsSync(home), false);
+});
+
+test("the Mac installer keeps a home whose sessions were moved back", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac move record.");
+  const fixture = box(t);
+  const home = path.join(fixture.env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(fixture.env.HOME, "run.kuvo.code.moved-back-fixture");
+  const record = path.join(home, "updates/rehome/state.json");
+  const saved = '{"state":"back","way":"back","movedBack":true}';
+  write(record, saved);
+  const [code, status] = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(code, 0);
+  assert.deepEqual([status.verdict, status.verb], ["back", null]);
+  for (const verb of ["move", "new"]) {
+    assert.deepEqual(macInstallerRequest(fixture, bundle, verb), [1, {
+      result: "refused", verdict: "back", status: status.status,
+      message: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
+    }]);
+  }
+  assert.equal(fs.readFileSync(record, "utf8"), saved);
+  assert.deepEqual(fs.readdirSync(path.join(home, "updates")), ["rehome"]);
+});
+
+test("the Mac installer keeps a saved move when asked for new setup", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac move journal.");
+  const fixture = box(t);
+  const home = path.join(fixture.env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(fixture.env.HOME, "run.kuvo.code.saved-move-fixture");
+  const journal = path.join(home, "updates/rehome/journal.json");
+  const cases = [
+    ["clone", "moving", "Kuvo is moving your sessions to their new place on this Mac: that's finished first."],
+    ["clear", "stuck", "Kuvo was moving your sessions to their new place on this Mac and stopped part way: that's finished first."],
+  ];
+  for (const [step, verdict, message] of cases) {
+    const saved = JSON.stringify({ v: 1, way: "move", began: 1, step,
+      from: path.join(fixture.env.HOME, "earlier"), to: home, placements: [], clearing: [] });
+    write(journal, saved);
+    const [code, status] = macInstallerRequest(fixture, bundle, "status");
+    assert.equal(code, 0);
+    assert.deepEqual([status.verdict, status.verb, status.status.step], [verdict, "move", step]);
+    assert.deepEqual(macInstallerRequest(fixture, bundle, "new"), [1, {
+      result: "refused", verdict, status: status.status, message,
+    }]);
+    assert.equal(fs.readFileSync(journal, "utf8"), saved);
+    assert.deepEqual(fs.readdirSync(path.join(home, "updates")), ["rehome"]);
+  }
+});
+
 test("the Mac installer waits for a live move", async t => {
   if (process.platform !== "darwin") return t.skip("Uses the Mac move lock.");
   const fixture = box(t);
