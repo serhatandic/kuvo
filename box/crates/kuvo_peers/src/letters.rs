@@ -5,6 +5,7 @@ mod transcript;
 
 use std::{
     borrow::Cow,
+    collections::{HashMap, HashSet},
     io,
     path::Path,
     sync::Arc,
@@ -30,9 +31,11 @@ use tokio::{
 };
 
 use crate::{
-    directory::ComputerKey,
+    directory::{Announcement, ComputerKey},
     moves::{is_mac, plain_name},
-    outbox::{Delivered, Delivery, FailureContext, Id, IncomingLetter, Letter, Outbox, Receipts},
+    outbox::{
+        Delivered, Delivery, FailureContext, Id, IncomingLetter, Letter, Outbox, Pending, Receipts,
+    },
     ownership::Handle,
     relay::{RelayEvent, RelayHandle},
     setup_lists::{Reader, View},
@@ -42,6 +45,8 @@ const MOVED: &str = "It's moving to another computer: it comes again once it's t
 const LIMIT: u64 = 600_000;
 const ANSWER_TEXT: usize = 8000;
 const READ_BY_MAIL: usize = 20_000;
+const INTRODUCING_FOR: Duration = Duration::from_secs(60);
+const PUBLISHING_FOR: Duration = Duration::from_secs(2);
 
 pub fn start(
     reader: Reader,
@@ -63,6 +68,8 @@ pub fn start(
         outbox: None,
         receipts: None,
         answers: JoinSet::new(),
+        introductions: HashMap::new(),
+        incoming_lists: HashMap::new(),
     };
     Ok(tokio::spawn(post.run(events)))
 }
@@ -76,6 +83,13 @@ struct Letters {
     outbox: Option<Outbox>,
     receipts: Option<Receipts>,
     answers: JoinSet<Option<(Id, Letter)>>,
+    introductions: HashMap<Id, Introduction>,
+    incoming_lists: HashMap<ComputerKey, Announcement>,
+}
+
+struct Introduction {
+    since: Instant,
+    listed: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -187,6 +201,8 @@ impl Letters {
                 .map_err(io::Error::other)?;
         }
         let pending = outbox.due(now, true).map_err(io::Error::other)?;
+        let due: HashSet<_> = pending.iter().map(|each| &each.id).collect();
+        self.introductions.retain(|id, _| due.contains(id));
         let homes = if pending.iter().any(|each| each.letter.note.is_some()) {
             homes::read(&run)?
         } else {
@@ -224,6 +240,9 @@ impl Letters {
             if !here && (!view.relay_connected || host.is_none()) {
                 continue;
             }
+            if !here && !self.introduced(&key, &each).await {
+                continue;
+            }
             let Some(mail) = self
                 .outbox
                 .as_mut()
@@ -247,6 +266,57 @@ impl Letters {
             }
         }
         Ok(())
+    }
+
+    async fn introduced(&mut self, peer: &ComputerKey, pending: &Pending) -> bool {
+        let Some(sender) = pending
+            .letter
+            .from
+            .as_deref()
+            .filter(|sender| !sender.is_empty())
+        else {
+            return true;
+        };
+        let sent = self.reader.agent_sent_to(peer, sender);
+        if sent == Some(true) {
+            return true;
+        }
+        let introduction = self
+            .introductions
+            .entry(pending.id.clone())
+            .or_insert_with(|| Introduction {
+                since: Instant::now(),
+                listed: None,
+            });
+        if introduction.since.elapsed() >= INTRODUCING_FOR {
+            return true;
+        }
+        // An older list can omit a newly created root while the engine has
+        // it already. Check once before treating a missing name as unknown.
+        if introduction.listed.is_none() {
+            let fresh = time::timeout(Duration::from_secs(10), async {
+                self.engine.session_move().await?.lookup(sender).await
+            })
+            .await;
+            if let Ok(Ok(Some(info))) = &fresh
+                && let Some(imported) = info
+                    .pointer("/metadata/kuvo.moveImport")
+                    .and_then(Value::as_str)
+                && crate::moves::receipt::Receipts::open(&self.reader.run)
+                    .introduced_by_move(sender, peer, imported)
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+            let now = self.reader.now();
+            introduction.listed = Some(matches!(fresh, Ok(Ok(Some(info))) if !archived(&info)
+                && info["parentID"].is_null()
+                && info.pointer("/metadata/kuvo/seat").is_none_or(Value::is_null)
+                && info["title"].as_str().is_some_and(|title| !title.trim().is_empty())
+                && info.pointer("/time/created").and_then(Value::as_i64)
+                    .is_some_and(|created| now.saturating_sub(created) < INTRODUCING_FOR.as_millis() as i64)));
+        }
+        sent == Some(false) && introduction.listed == Some(false)
     }
 
     fn recover_replies(&mut self, view: &View, now: u64) -> io::Result<()> {
@@ -340,9 +410,25 @@ impl Letters {
 
     async fn receive(&mut self, key: ComputerKey, envelope: &Envelope) -> io::Result<()> {
         let view = self.reader.view();
-        let Some(host) = view.roster.member(&key).and_then(|peer| peer.host()) else {
+        let Some(peer) = view.roster.member(&key) else {
             return Ok(());
         };
+        let key_text = encode(&key);
+        let published = view.announced.get(&key_text).map_or(0, |entry| entry.at);
+        self.incoming_lists.retain(|key, entry| {
+            view.roster.member(key).is_some()
+                && view.announced.get(&encode(key)).map_or(0, |list| list.at) < entry.at
+        });
+        if let Some(agents) = envelope.0.get("agents").cloned()
+            && let Some(agents) = Announcement::received(agents, peer, self.reader.now())
+            && agents.at > published
+            && self
+                .incoming_lists
+                .get(&key)
+                .is_none_or(|seen| agents.at > seen.at)
+        {
+            self.incoming_lists.insert(key, agents);
+        }
         let now = self.reader.now().max(0) as u64;
         if let Some(delivered) = envelope_field::<Delivered>(envelope, "delivered")
             && let Some(outbox) = self.open_outbox()?
@@ -351,12 +437,44 @@ impl Letters {
                 .settle(&key, &delivered, now)
                 .map_err(io::Error::other)?;
         }
-        if let Some(letter) = envelope_field::<IncomingLetter>(envelope, "letter")
+        let Some(letter) = envelope_field::<IncomingLetter>(envelope, "letter") else {
+            return Ok(());
+        };
+        // Both actors see authenticated mail in relay order. If the preceding list
+        // named this sender, give the directory time to publish that precise list.
+        let view = match self.incoming_lists.get(&key) {
+            Some(list)
+                if letter.letter.from.as_ref().is_some_and(|sender| {
+                    list.list.iter().any(|agent| &agent.session == sender)
+                }) =>
+            {
+                self.after_announcement(&key_text, list.at).await
+            }
+            _ => view,
+        };
+        if let Some(host) = view.roster.member(&key).and_then(|peer| peer.host())
             && let Some(reply) = self.take(&view, key, letter).await?
         {
             let _ = self.relay.sender.mail(host, reply.envelope(now)).await;
         }
         Ok(())
+    }
+
+    async fn after_announcement(&mut self, key: &str, at: i64) -> Arc<View> {
+        let _ = time::timeout(PUBLISHING_FOR, async {
+            while self
+                .reader
+                .view()
+                .announced
+                .get(key)
+                .is_none_or(|list| list.at < at)
+            {
+                self.reader.changed().await?;
+            }
+            Ok::<(), watch::error::RecvError>(())
+        })
+        .await;
+        self.reader.view()
     }
 
     async fn take(

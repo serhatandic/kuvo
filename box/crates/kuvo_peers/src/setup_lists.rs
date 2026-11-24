@@ -346,6 +346,7 @@ pub fn system_clock() -> Millis {
 #[derive(Clone)]
 pub struct Reader {
     views: watch::Receiver<Arc<View>>,
+    agent_mail: watch::Receiver<AgentMail>,
     clock: Clock,
     pub(crate) run: Arc<PathBuf>,
 }
@@ -360,6 +361,25 @@ impl Reader {
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
         self.views.changed().await
     }
+
+    /// Whether this computer's agent publication named the sender to this peer.
+    pub(crate) fn agent_sent_to(&self, peer: &ComputerKey, session: &str) -> Option<bool> {
+        let sent = self.agent_mail.borrow();
+        let list = sent.get(peer)?;
+        if list.sessions.contains(session) {
+            Some(true)
+        } else {
+            list.complete.then_some(false)
+        }
+    }
+}
+
+type AgentMail = BTreeMap<ComputerKey, SentAgents>;
+
+#[derive(PartialEq, Eq)]
+struct SentAgents {
+    sessions: Arc<BTreeSet<String>>,
+    complete: bool,
 }
 
 enum Change {
@@ -417,6 +437,7 @@ impl ResidentPeers {
             tokio::task::spawn_blocking(move || Resident::load(run, roster, telling, endpoint))
                 .await?;
         let (publish, views) = watch::channel(Arc::new(resident.view.clone()));
+        let (sent_agents, agent_mail) = watch::channel(AgentMail::new());
         let (changes, change_rx) = mpsc::channel(16);
         let (move_waiting, waiting_updates) = watch::channel(resident.view.move_waiting.clone());
         let handle = relay.as_ref().map(Relay::handle);
@@ -427,10 +448,12 @@ impl ResidentPeers {
             change_rx,
             waiting_updates,
             clock.clone(),
+            sent_agents,
         ));
         Ok(Self {
             reader: Reader {
                 views,
+                agent_mail,
                 clock,
                 run: files,
             },
@@ -617,6 +640,7 @@ impl Resident {
         mut changes: mpsc::Receiver<Change>,
         mut waiting_updates: watch::Receiver<Arc<BTreeSet<String>>>,
         clock: Clock,
+        sent_agents: watch::Sender<AgentMail>,
     ) {
         let mut paired = relay_routes::Routes::default();
         let mut dispatch = None;
@@ -624,7 +648,7 @@ impl Resident {
         round.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
-            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone()));
+            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
         let mut pending_trust = None;
         let mut setup_rosters = None;
@@ -1010,7 +1034,7 @@ impl Drop for Publisher {
 }
 
 impl Publisher {
-    fn start(relay: relay::Sender, run: PathBuf) -> Self {
+    fn start(relay: relay::Sender, run: PathBuf, sent_agents: watch::Sender<AgentMail>) -> Self {
         let (tx, mut rx) = mpsc::channel::<(View, Millis, Refresh)>(16);
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
@@ -1033,6 +1057,7 @@ impl Publisher {
                     refresh,
                     &mut previous,
                     &mut announcements,
+                    &sent_agents,
                 )
                 .await;
             }
@@ -1052,6 +1077,7 @@ async fn publish_round(
     refresh: Refresh,
     previous: &mut BTreeMap<(ComputerKey, &'static str), ([u8; 32], Millis)>,
     announcements: &mut BTreeMap<ComputerKey, ([u8; 32], Millis)>,
+    sent_agents: &watch::Sender<AgentMail>,
 ) {
     let lists = &view.local_lists;
     let mut older_lists = None;
@@ -1096,6 +1122,12 @@ async fn publish_round(
     let owns: String = owned.into_iter().take(5000).map(owned_digest).collect();
     let features = view.features();
     let agents = view.announced_agents();
+    let sessions = Arc::new(
+        agents
+            .iter()
+            .map(|agent| agent.session.clone())
+            .collect::<BTreeSet<_>>(),
+    );
     let mut active = view.at_work();
     let working = active.len();
     active.truncate(20);
@@ -1137,6 +1169,22 @@ async fn publish_round(
             if relay.mail(host.clone(), envelope(fields)).await.is_ok() {
                 announcements.insert(peer.key, (announcement_digest, at));
             }
+        }
+        if announcements
+            .get(&peer.key)
+            .is_some_and(|(digest, _)| *digest == announcement_digest)
+        {
+            let sent = SentAgents {
+                sessions: sessions.clone(),
+                complete: lists.is_some(),
+            };
+            sent_agents.send_if_modified(|known| {
+                if known.get(&peer.key) == Some(&sent) {
+                    return false;
+                }
+                known.insert(peer.key, sent);
+                true
+            });
         }
         let activity_key = (peer.key, "activity");
         let before = previous.get(&activity_key);

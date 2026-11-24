@@ -14,7 +14,7 @@ use super::{
     manifest::{QueueFile, SessionFile},
     move_id, read_json,
 };
-use crate::reach::Millis;
+use crate::{directory::ComputerKey, reach::Millis};
 
 const RECEIPT: ObjectFormat = ObjectFormat::additive("Move ownership receipt");
 const HINT: ObjectFormat = ObjectFormat::additive("Move routing hint");
@@ -92,6 +92,49 @@ impl<'a> Receipts<'a> {
             .read(id)?
             .map(|(decision, _)| decision)
             .filter(|decision| decision.peer.as_deref().is_none_or(|key| peer == key)))
+    }
+
+    /// The sender's previous computer already knows it from the switch.
+    pub(crate) fn introduced_by_move(
+        &self,
+        session: &str,
+        peer: &ComputerKey,
+        imported: &str,
+    ) -> Result<bool, Error> {
+        let Some((id, bundle)) = imported.split_once(':') else {
+            return Ok(false);
+        };
+        let Some((generation, hash)) = bundle.split_once(':') else {
+            return Ok(false);
+        };
+        let Ok(generation) = generation.parse() else {
+            return Ok(false);
+        };
+        let peer = kuvo_wire::keys::encode(peer);
+        let Some(receipt) = self.for_peer(id, &peer)? else {
+            return Ok(false);
+        };
+        if receipt.decided != Decided::Switched
+            || receipt.peer.as_deref() != Some(peer.as_str())
+            || receipt.bundle.generation != Some(generation)
+            || receipt.bundle.hash.as_deref() != Some(hash)
+        {
+            return Ok(false);
+        }
+        let hint = self
+            .run
+            .join("moves/decision-hints")
+            .join(format!("{id}.json"));
+        let Some(hint) = HINT.read(&hint)? else {
+            return Ok(false);
+        };
+        Ok(hint
+            .fields
+            .get("sessions")
+            .and_then(Value::as_array)
+            .and_then(|sessions| sessions.first())
+            .and_then(Value::as_str)
+            == Some(session))
     }
 
     /// Seal an existing decision before answering a replay. A rename may have
