@@ -1682,7 +1682,7 @@ esac
     });
     assert.equal(stopped.status, 0, stopped.stderr);
   };
-  const begin = verb => launch("/bin/sh", [entry, verb], fixtureEnv, env.HOME);
+  const begin = (verb, stdout) => launch("/bin/sh", [entry, verb], fixtureEnv, env.HOME, stdout);
   return { env, home, cron, cronBefore, version, pack, media, install, begin, stop };
 }
 
@@ -1704,11 +1704,33 @@ function damagedInstallerStatus(install, media, home) {
   }
 }
 
+async function concurrentInstallStatus(start, home) {
+  const children = Array.from({ length: 4 }, start);
+  try {
+    const replies = await Promise.all(children.map(async child => {
+      let output = "";
+      child.child.stdout.setEncoding("utf8");
+      child.child.stdout.on("data", text => { output += text; });
+      const exited = await child.exited;
+      assert.equal(exited.code, 0, exited.error?.message ?? output + child.log());
+      return JSON.parse(output);
+    }));
+    for (const reply of replies) {
+      assert.deepEqual([reply.verdict, reply.verb], ["fresh", "new"]);
+      assert.deepEqual(reply, replies[0]);
+    }
+    assert.equal(fs.existsSync(home), false);
+  } finally {
+    await Promise.all(children.map(child => child.stop()));
+  }
+}
+
 test("signed Linux installer makes a fresh machine and keeps unrelated reboot jobs", { timeout: 120000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
-  const { env, home, cron, cronBefore, version, pack, media, install, stop } = await freshLinuxInstaller(t, binary);
+  const { env, home, cron, cronBefore, version, pack, media, install, begin, stop } = await freshLinuxInstaller(t, binary);
   damagedInstallerStatus(install, media, home);
+  await concurrentInstallStatus(() => begin("status", "pipe"), home);
   const status = install("status");
   assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
   const { verdict, verb } = JSON.parse(status.stdout);
@@ -2124,14 +2146,14 @@ case "$1" in
 esac
 `, { mode: 0o700 });
     const original = fs.readFileSync(path.join(app.S, "Chats/c1/notes.md"), "utf8");
-    const install = (verb, account = app.home, launchTools = tools, extra = []) => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb, "--app", app.bundle, ...extra], {
-      cwd: account,
-      env: {
-        ...environment, HOME: account, TMPDIR: path.join(account, "tmp"),
-        PATH: `${launchTools}${path.delimiter}${environment.PATH}`,
-        KUVO_TEST_RELEASE_KEY: key.key, KUVO_TEST_UNINSTALL_TOOLS: launchTools,
-      },
-      encoding: "utf8", timeout: 150000,
+    const installArgs = (verb, extra = []) => [path.join(media, "kuvo-install"), verb, "--app", app.bundle, ...extra];
+    const installEnv = (account, launchTools) => ({
+      ...environment, HOME: account, TMPDIR: path.join(account, "tmp"),
+      PATH: `${launchTools}${path.delimiter}${environment.PATH}`,
+      KUVO_TEST_RELEASE_KEY: key.key, KUVO_TEST_UNINSTALL_TOOLS: launchTools,
+    });
+    const install = (verb, account = app.home, launchTools = tools, extra = []) => spawnSync("/bin/sh", installArgs(verb, extra), {
+      cwd: account, env: installEnv(account, launchTools), encoding: "utf8", timeout: 150000,
     });
     const installedRelease = home => {
       const selected = fs.readlinkSync(path.join(home, "bin"));
@@ -2146,7 +2168,11 @@ esac
       fs.mkdirSync(path.join(fresh, "tmp"), { recursive: true });
       fs.cpSync(tools, freshTools, { recursive: true });
       const starts = performance.now();
-      damagedInstallerStatus(verb => install(verb, fresh, freshTools), media, path.join(fresh, ".kuvo-code"));
+      const futureHome = path.join(fresh, ".kuvo-code");
+      damagedInstallerStatus(verb => install(verb, fresh, freshTools), media, futureHome);
+      await concurrentInstallStatus(
+        () => launch("/bin/sh", installArgs("status"), installEnv(fresh, freshTools), fresh, "pipe"), futureHome,
+      );
       const status = install("status", fresh, freshTools);
       assert.equal(status.status, 0, status.stderr);
       assert.equal(JSON.parse(status.stdout).verb, "new");
