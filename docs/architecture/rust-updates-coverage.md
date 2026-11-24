@@ -16,7 +16,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | --- | --- |
 | U1 | `update --phase prepare` rejects a foreign key, a forged signature, and edited manifest bytes. |
 | U2 | The same command rejects a changed pack while preserving the selected release. |
-| U3 | The same command declines an older release and a release without `spreads: true`. |
+| U3 | The same command declines an older release, a same-version pack with a different digest, and a release without `spreads: true`. Numeric minor and beta versions compare in release order. |
 | U4 | The release signer emits one signed descriptor per target. The Rust updater validates the local pack and engine, probes its programs, and can retry preparation while the old resident keeps serving. An explicit native-keeper selection starts and confirms the prepared release. |
 | U5 | The shell keeper answers an SSH request using Rust after the previous stager's bin-only move. It restores `box.json` on disk. |
 | U6 | `GET kuvo/update` reports the installed version, running engine, latest known version, and the keeper's failed trial. |
@@ -113,7 +113,7 @@ or desktop updater, and 22 are open. The inherited and live-proof table has
 
 | Source and case | Status | Remaining owner |
 | --- | --- | --- |
-| [updates](../../box/bridge-tests/updates.test.js), version order | Partial. U3 checks an older release and the beta-to-final ordering in U4. Numeric components, same version with a new digest, and already-ahead peers need coverage. | 7.2 |
+| [updates](../../box/bridge-tests/updates.test.js), version order | Partial. U3 covers numeric ordering and refuses a different digest at the installed version. U4 covers beta-to-final ordering. An already-ahead fleet member remains open. | 7.2 |
 | Same, pinned signatures and signed bytes | Covered by U1. | — |
 | Same, stale Mac launcher marks | Open. | 7.2 |
 | Same, partial rollback reported once | Partial. 7.1 writes the refusal record and U6 reads it. The interrupted in-place restore and its one-time settlement need the predecessor fixture. | 7.2 |

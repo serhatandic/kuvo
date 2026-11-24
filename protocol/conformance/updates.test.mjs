@@ -103,13 +103,23 @@ test("the signed digest rejects a changed pack and preserves the selected releas
 });
 
 test("an update cannot move to an earlier release or spread a private build", t => {
-  const { key, body, update } = box(t);
+  const { home, key, body, update } = box(t);
   assert.deepEqual(update(envelope({ ...body, version: "0.7.2" }, key)), {
     result: "current", version: "0.8.0-beta.1",
   });
   assert.deepEqual(update(envelope({ ...body, spreads: false }, key)), {
     result: "failed", message: "This release cannot be shared with your setup.",
   });
+  const installed = "0.10.0-beta.10";
+  write(path.join(home, "bin/box-version"), installed + "\n");
+  write(path.join(home, "updates/installed.json"), encode({
+    formatVersion: 1, version: installed, sha256: digest("the installed pack"), files: {},
+  }));
+  for (const version of ["0.9.99", "0.10.0-beta.9", installed]) {
+    assert.deepEqual(update(envelope({ ...body, version }, key)), {
+      result: "current", version: installed,
+    });
+  }
 });
 
 test("the update status reports the installed release and a keeper's failed trial", async t => {
