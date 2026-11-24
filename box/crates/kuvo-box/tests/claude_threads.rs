@@ -133,7 +133,7 @@ fn write_launcher(bin: &Path) {
     fs::write(
         bin.join("claude.cmd"),
         format!(
-            "@if \"%1\"==\"auth\" (echo {status}& exit /b 0)\r\n@\"{}\" {args} -- %*\r\n",
+            "@if \"%~1\"==\"auth\" (echo {status}& exit /b 0)\r\n@\"{}\" {args} -- %*\r\n",
             program.display()
         ),
     )

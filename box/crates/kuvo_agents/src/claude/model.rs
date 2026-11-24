@@ -119,6 +119,10 @@ fn initialize(program: Program) -> io::Result<Value> {
     let executable = program
         .executable(&env)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Claude Code isn't installed."))?;
+    // A file rather than JSON on the command line: a Claude Code installed as a `.cmd` script
+    // can't be given quotes.
+    let settings = program.scratch().join("claude/catalog-settings.json");
+    kuvo_store::files::write_atomic(&settings, br#"{"disableAllHooks":true}"#)?;
     let mut spawn = Spawn::new(executable.path(), env);
     spawn.executable = executable;
     spawn.cwd = Some(program.home.run());
@@ -133,10 +137,10 @@ fn initialize(program: Program) -> io::Result<Value> {
         "--no-session-persistence",
         "--strict-mcp-config",
         "--settings",
-        r#"{"disableAllHooks":true}"#,
     ]
     .into_iter()
     .map(Into::into)
+    .chain([settings.into_os_string()])
     .collect();
     let mut child = spawn.spawn()?;
     let mut stdin = child.stdin.take().expect("requested stdin");
