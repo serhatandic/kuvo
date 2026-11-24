@@ -1,32 +1,48 @@
 //! Claude Code's command line and stream-json protocol.
 
+mod diagnostic;
 mod model;
+mod permissions;
 mod program;
+mod projection;
+mod thread;
 mod wire;
 
-use std::{collections::BTreeMap, io, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io,
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, join_all};
 use kuvo_store::home::Home;
+use tokio::sync::Mutex;
 
 use crate::{
     account_check::{AccountStatus, CheckFailure},
     accounts::Account,
     catalog::Models,
-    hold::{Controller, Record, TurnNote},
+    hold::{Controller, HoldKind, Record, TurnNote},
     roster::{Agent, Factory},
     runtime::{AdapterCall, Adoption},
+    session::{SessionContext, Thread},
     sign_in::{Attempt, Request},
 };
 
 #[derive(Clone)]
 pub struct ClaudeFactory {
     home: Home,
+    holder_binary: PathBuf,
 }
 
 impl ClaudeFactory {
-    pub fn new(home: Home) -> Self {
-        Self { home }
+    pub fn new(home: Home, holder_binary: PathBuf) -> Self {
+        Self {
+            home,
+            holder_binary,
+        }
     }
 }
 
@@ -68,7 +84,14 @@ pub async fn adopt_console_folder(home: &Home) -> io::Result<()> {
 impl Factory for ClaudeFactory {
     fn create(&self, account: &Account, home: Option<PathBuf>) -> io::Result<Arc<dyn Agent>> {
         Ok(Arc::new(Claude {
-            program: program::Program::new(self.home.clone(), account.id.clone(), home),
+            program: program::Program::new(
+                self.home.clone(),
+                self.holder_binary.clone(),
+                account.id.clone(),
+                home,
+            ),
+            provider: account.provider().to_string(),
+            threads: Mutex::new(Threads::default()),
             models: model::Catalog::new()?,
         }))
     }
@@ -77,6 +100,37 @@ impl Factory for ClaudeFactory {
 struct Claude {
     program: program::Program,
     models: model::Catalog,
+    provider: String,
+    threads: Mutex<Threads>,
+}
+
+#[derive(Default)]
+struct Threads {
+    open: HashMap<String, Arc<thread::Conversation>>,
+    held: HashMap<String, thread::Recovery>,
+}
+
+impl Claude {
+    async fn stop_threads(&self, shutdown: bool) -> io::Result<()> {
+        let (open, held) = {
+            let mut threads = self.threads.lock().await;
+            let open: Vec<_> = if shutdown {
+                threads.open.drain().map(|(_, thread)| thread).collect()
+            } else {
+                threads.open.values().cloned().collect()
+            };
+            (open, std::mem::take(&mut threads.held))
+        };
+        let mut failures = join_all(open.iter().map(|thread| thread.stop(shutdown)))
+            .await
+            .into_iter()
+            .filter_map(Result::err);
+        let held = join_all(held.into_values().map(thread::Recovery::stop)).await;
+        failures
+            .next()
+            .or_else(|| held.into_iter().find_map(Result::err))
+            .map_or(Ok(()), Err)
+    }
 }
 
 impl Agent for Claude {
@@ -115,6 +169,7 @@ impl Agent for Claude {
 
     fn sign_out(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
+            self.stop_threads(false).await?;
             self.program.logout().await?;
             self.models.clear().await;
             Ok(())
@@ -130,22 +185,94 @@ impl Agent for Claude {
     }
 
     fn shutdown(&self) -> AdapterCall<'_, ()> {
-        Box::pin(async { Ok(()) })
+        Box::pin(self.stop_threads(true))
+    }
+
+    fn prepare_replacement(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async {
+            let threads: Vec<_> = self.threads.lock().await.open.values().cloned().collect();
+            join_all(threads.iter().map(|thread| thread.prepare()))
+                .await
+                .into_iter()
+                .find_map(Result::err)
+                .map_or(Ok(()), Err)
+        })
+    }
+
+    fn open_thread(&self, context: SessionContext) -> AdapterCall<'_, Arc<dyn Thread>> {
+        Box::pin(async move {
+            let mut threads = self.threads.lock().await;
+            if let Some(thread) = threads.open.get(&context.session_id) {
+                return Ok(thread.clone() as Arc<dyn Thread>);
+            }
+            let session = context.session_id.clone();
+            let recovery = threads.held.remove(&session);
+            let thread = Arc::new(thread::Conversation::spawn(
+                self.program.clone(),
+                self.provider.clone(),
+                context,
+                recovery,
+            ));
+            threads.open.insert(session, thread.clone());
+            Ok(thread as Arc<dyn Thread>)
+        })
     }
 }
 
 impl Adoption for Claude {
-    fn accepts(&self, _: &Record, _: &BTreeMap<String, TurnNote>) -> bool {
-        false
+    fn accepts(&self, record: &Record, turns: &BTreeMap<String, TurnNote>) -> bool {
+        record.kind == HoldKind::ControlJson
+            && record
+                .meta
+                .get("claudeAdapter")
+                .and_then(serde_json::Value::as_u64)
+                == Some(1)
+            && record
+                .meta
+                .get("provider")
+                .and_then(serde_json::Value::as_str)
+                == Some(&self.provider)
+            && record.meta.get("claudeReconnect") == Some(&serde_json::Value::Bool(true))
+            && holder_session(record).is_some_and(|session| {
+                (turns.is_empty() && record.exited.is_none())
+                    || turns.len() == 1
+                        && turns
+                            .get("main")
+                            .is_some_and(|note| note.session == session)
+            })
     }
 
     fn attach<'a>(
         &'a self,
         _: &'a Account,
-        _: Record,
-        _: BTreeMap<String, TurnNote>,
-        _: Controller,
+        record: Record,
+        mut turns: BTreeMap<String, TurnNote>,
+        controller: Controller,
     ) -> AdapterCall<'a, ()> {
-        Box::pin(async { Err(io::Error::from(io::ErrorKind::Unsupported)) })
+        Box::pin(async move {
+            let session = holder_session(&record)
+                .ok_or_else(|| io::Error::other("Claude Code holder has no saved session."))?;
+            let note = turns.remove("main");
+            let mut threads = self.threads.lock().await;
+            if threads.open.contains_key(session) || threads.held.contains_key(session) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "This conversation already has a Claude Code holder.",
+                ));
+            }
+            threads
+                .held
+                .insert(session.into(), thread::Recovery::new(controller, note));
+            Ok(())
+        })
     }
+}
+
+fn holder_session(record: &Record) -> Option<&str> {
+    let id = record.meta.get("session")?.as_str()?;
+    (id.starts_with("ses_")
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')))
+    .then_some(id)
 }

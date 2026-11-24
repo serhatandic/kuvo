@@ -43,7 +43,10 @@ pub(super) async fn factories(home: &std::path::Path) -> HashMap<AgentKind, Arc<
     if let Err(error) = adopt_console_folder(&home).await {
         eprintln!("Kuvo could not register the previous Claude Code account: {error}");
     }
-    let claude: Arc<dyn Factory> = Arc::new(ClaudeFactory::new(home));
+    let Ok(binary) = std::env::current_exe() else {
+        return HashMap::new();
+    };
+    let claude: Arc<dyn Factory> = Arc::new(ClaudeFactory::new(home, binary));
     HashMap::from([(AgentKind::Claude, claude)])
 }
 

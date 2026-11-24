@@ -24,6 +24,7 @@ use super::model::Catalog;
 #[derive(Clone)]
 pub(super) struct Program {
     pub home: Home,
+    pub holder_binary: PathBuf,
     account: String,
     managed: Option<PathBuf>,
 }
@@ -43,9 +44,15 @@ struct Legacy {
 }
 
 impl Program {
-    pub fn new(home: Home, account: String, managed: Option<PathBuf>) -> Self {
+    pub fn new(
+        home: Home,
+        holder_binary: PathBuf,
+        account: String,
+        managed: Option<PathBuf>,
+    ) -> Self {
         Self {
             home,
+            holder_binary,
             account,
             managed,
         }

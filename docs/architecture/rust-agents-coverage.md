@@ -163,6 +163,15 @@ native sign-in. All six cases pass through both binaries on macOS. The model
 catalog uses Claude's initialize reply directly.
 It provides a provisional list while that reply is pending.
 
+4.4b's [holder scenario](../../box/crates/kuvo-box/tests/claude_threads.rs)
+runs two Rust runtimes against the same external fixture. It verifies the
+holder and child PIDs across adoption, replays text with its holder position,
+withdraws an old hook, redelivers one open approval, and persists an
+Allow Always suggestion only for the session. It also completes a late
+steered message, withdraws an ask on cancellation or Stop, stores the native
+ID from `/clear`, resumes that ID after process shutdown, and redacts a
+credential from the departing process's diagnostics. It passed on macOS.
+
 ### TypeScript scenarios
 
 Numbers follow source order in [claude.test.ts](../../box/test/agents/claude.test.ts).
@@ -172,7 +181,7 @@ The two rows expanded from the bot and session steering loop count separately.
 |---|---|
 | 1–7 | 4.4b stream events, cancellation before launch, limit scope, error messages and expired sign-in. Skill resolution and startup cancellation also need 4.1b/c. |
 | 8–10 | 4.1b route and queue recovery, including a late cancelled handoff and steering across resident reconnect. 4.4b owns the Claude stream and message acknowledgements. |
-| 11–13 | 4.4b steering, late results and reporting messages that Claude never took. 4.1b owns retry of the missed messages. |
+| 11–13 | The holder scenario covers 11, a late steered result. 4.4b owns the other steering and missed-message cases, and 4.1b owns retry of missed messages. |
 | 14–28 | 4.4b Claude task lifecycle and holder reuse. 4.1b owns resident background projection, wake-up, staged Undo, account deletion and restarting the session. 4.6 owns projection of agent-initiated turns. |
 | 29–42 | 4.6 subagent sessions, background lanes, messaging and handover. 4.4b supplies Claude's wire events. |
 | 43–50 | 4.4b context and compaction settings, usage, images, tool results, native notices and model windows. 4.1c owns MCP tool transport. |
@@ -193,7 +202,7 @@ The two rows expanded from the bot and session steering loop count separately.
 | Other TypeScript source | Coverage and remaining owner |
 |---|---|
 | [claude-mac-update.test.ts](../../box/test/agents/claude-mac-update.test.ts), 3 | Cases 1–2 have 4.4a binary conformance for setup-token replacement and in-place Console import. Empty unused directories are removed. The Rust migration keeps unfamiliar files in a folder with neither marker. |
-| [hold-claude.test.ts](../../box/test/agents/hold-claude.test.ts), 1 | H3 covers holder replay suppression. 4.4b owns reinitialization and open-ask reconciliation. |
+| [hold-claude.test.ts](../../box/test/agents/hold-claude.test.ts), 1 | H3 covers holder replay suppression. The 4.4b holder scenario covers reinitialization, cancellation of an old hook, and redelivery of a pending approval. |
 | [claude-code.test.js](../../box/bridge-tests/claude-code.test.js), 7 | 4.6 owns the import of local Claude subagent definitions. The scanner must preserve the existing name, type, link and size limits. |
 | [sessions.test.ts](../../box/test/agents/sessions.test.ts), late completion after delete and first Undo after a quit | 4.1b owns session guards and transcript loading. 4.4b provides held results and awaits durable sink events. |
 
