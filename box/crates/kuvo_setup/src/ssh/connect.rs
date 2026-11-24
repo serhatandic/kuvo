@@ -15,11 +15,12 @@ use tokio::sync::oneshot;
 use super::{
     AddError, Computer, Job, Progress, WindowsMode,
     address::Address,
+    fresh::{self, Fresh},
     local_name,
-    transport::{self, Connection, Ran},
+    transport::{self, Connection, Input, Ran, SeedTransfer},
 };
 
-mod reservation;
+pub(super) mod reservation;
 mod windows;
 
 pub(super) use reservation::Reservation;
@@ -44,6 +45,47 @@ pub(super) struct Destination {
 pub(super) struct Existing {
     pub(super) identity: Option<String>,
     pub(super) key: Option<String>,
+}
+
+pub(super) struct AccountState {
+    pub(super) existing: Option<Existing>,
+    pub(super) fresh: Option<Fresh>,
+    pub(super) pristine: bool,
+}
+
+#[derive(Deserialize)]
+pub(super) struct CopiedCredentials {
+    keys: usize,
+    taken: usize,
+}
+
+impl CopiedCredentials {
+    pub(super) fn detail(&self, name: &str, renewing: usize) -> String {
+        let count = |n, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let copied = [
+            (self.keys > 0).then(|| count(self.keys, "key", "keys")),
+            (self.taken > 0).then(|| count(self.taken, "account", "accounts")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" and ");
+        let mut message = if copied.is_empty() {
+            "Copied your settings.".into()
+        } else {
+            format!("Copied {copied}.")
+        };
+        match renewing {
+            0 => (),
+            1 => message.push_str(&format!(
+                " One sign-in renews itself, so sign in to it on {name}."
+            )),
+            _ => message.push_str(&format!(
+                " {renewing} sign-ins renew themselves, so sign in to those on {name}."
+            )),
+        }
+        message
+    }
 }
 
 impl Existing {
@@ -230,16 +272,29 @@ fi
         Ok(candidate)
     }
 
-    pub(super) async fn inspect_existing(
+    pub(super) async fn inspect_account(
         &self,
         account: Option<&mut Reservation<'_>>,
-    ) -> Result<Option<Existing>, AddError> {
+    ) -> Result<AccountState, AddError> {
         let Some(account) = account else {
-            return Ok(self.existing.clone());
+            return Ok(AccountState {
+                existing: self.existing.clone(),
+                fresh: None,
+                pristine: false,
+            });
         };
         let probe = format!(
             r#"
 K="$HOME/{root}"
+[ ! -L "$K" ] && [ ! -L "$K/bin" ] && [ ! -L "$K/run" ] || exit {OCCUPIED_ACCOUNT}
+M="$K/{fresh_file}"
+if [ -e "$M" ] || [ -L "$M" ]; then
+  if [ -f "$M" ] && [ ! -L "$M" ]; then printf 'fresh %s\n' "$(head -c 143 "$M")"; else echo invalid-fresh; fi
+elif [ ! -e "$K/machine-id" ] && [ ! -e "$K/folder-version.json" ] && [ ! -e "$K/bin/kuvo-box" ] &&
+     [ ! -e "$K/box" ] && [ ! -L "$K/box" ] && [ ! -e "$K/data" ] && [ ! -L "$K/data" ] &&
+     [ ! -e "$K/agents" ] && [ ! -L "$K/agents" ]; then
+  echo pristine
+fi
 if [ -e "$K/run/setup-card.json" ] || [ -e "$K/run/link.json" ] || [ -e "$K/bin/kuvo-link.js" ]; then
   echo installed
   if [ -f "$K/machine-id" ] && [ ! -L "$K/machine-id" ]; then printf 'kuvo id %s\n' "$(head -c 34 "$K/machine-id")"; fi
@@ -260,9 +315,13 @@ if [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
 fi
 "#,
             root = self.root,
+            fresh_file = fresh::FILE,
             app_markers = crate::discovery::OWN_BOX_RAN.join(" ")
         );
         let ran = account.run(&probe, Vec::new(), 30).await?;
+        if ran.status.code() == Some(OCCUPIED_ACCOUNT) {
+            return Err(AddError::occupied(self.name()));
+        }
         if !ran.status.success() {
             return Err(unreachable(&self.name).into());
         }
@@ -275,13 +334,76 @@ fi
                 self.name
             )));
         }
-        Ok(existing)
+        let fresh = lines
+            .iter()
+            .find_map(|line| line.strip_prefix("fresh "))
+            .and_then(Fresh::read);
+        if existing.is_none()
+            && fresh.is_none()
+            && lines
+                .iter()
+                .any(|line| line.starts_with("fresh ") || *line == "invalid-fresh")
+        {
+            return Err("This OS account still has an interrupted add. Finish that attempt or remove the interrupted installation first.".into());
+        }
+        Ok(AccountState {
+            existing,
+            pristine: lines.contains(&"pristine"),
+            fresh,
+        })
+    }
+
+    pub(super) async fn stage_fresh(
+        &self,
+        account: &mut Reservation<'_>,
+        before: Option<&Fresh>,
+        after: &Fresh,
+    ) -> Result<(), AddError> {
+        let expected = before.map_or_else(
+            || "[ ! -e \"$M\" ] && [ ! -L \"$M\" ]".into(),
+            |before| {
+                format!(
+                    "[ -f \"$M\" ] && [ ! -L \"$M\" ] && [ \"$(head -c 143 \"$M\")\" = '{before}' ]"
+                )
+            },
+        );
+        let script = format!(
+            r#"
+set -eu
+umask 077
+K="$HOME/{root}"
+[ ! -L "$K" ] && [ ! -L "$K/run" ] || exit {OCCUPIED_ACCOUNT}
+M="$K/{fresh_file}"
+[ ! -e "$K/run/link.json" ] && [ ! -L "$K/run/link.json" ] && [ ! -e "$K/run/setup-card.json" ] && [ ! -L "$K/run/setup-card.json" ] || exit {OCCUPIED_ACCOUNT}
+{expected} || exit {OCCUPIED_ACCOUNT}
+mkdir -p "$K/run"
+T=$(mktemp "$K/run/.fresh-add.XXXXXXXX")
+trap 'rm -f -- "$T"' EXIT INT TERM
+printf '%s\n' '{after}' > "$T"
+mv -f "$T" "$M"
+"#,
+            root = self.root,
+            fresh_file = fresh::FILE
+        );
+        let ran = account.run(&script, Vec::new(), 30).await?;
+        if ran.status.code() == Some(OCCUPIED_ACCOUNT) {
+            return Err(AddError::occupied(self.name()));
+        }
+        if !ran.status.success() {
+            return Err(format!(
+                "Kuvo couldn’t save the installation choice on {}.",
+                self.name
+            )
+            .into());
+        }
+        Ok(())
     }
 
     pub(super) async fn install(
         &self,
         job: &Job,
         account: Option<&mut Reservation<'_>>,
+        resume: bool,
     ) -> Result<(), String> {
         let root = job.files.root().to_owned();
         let target = self.target;
@@ -305,6 +427,11 @@ trap 'rm -f -- "$T"' EXIT INT TERM
 cat >"$T"
 if command -v sha256sum >/dev/null 2>&1; then sum=$(sha256sum <"$T"); else sum=$(shasum -a 256 <"$T"); fi
 [ "${{sum%% *}}" = '{digest}' ] || exit 1
+if [ '{resume}' = true ] && [ -f "$K/bin/kuvo-box" ] && [ ! -L "$K/bin/kuvo-box" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then sum=$(sha256sum <"$K/bin/kuvo-box"); else sum=$(shasum -a 256 <"$K/bin/kuvo-box"); fi
+  [ "${{sum%% *}}" = '{digest}' ] || exit 78
+  exit 0
+fi
 chmod 700 "$T"
 # Publish a new executable without replacing an existing installation.
 ln "$T" "$K/bin/kuvo-box"
@@ -322,6 +449,87 @@ ln "$T" "$K/bin/kuvo-box"
             ));
         }
         Ok(())
+    }
+
+    pub(super) async fn copy_seed(
+        &self,
+        job: &Job,
+        account: &mut Reservation<'_>,
+        fresh: &Fresh,
+        seed: crate::seed::source::SshSeed,
+    ) -> Result<CopiedCredentials, AddError> {
+        let script = format!(
+            r#"
+K="$HOME/{root}"
+M="$K/{fresh_file}"
+[ -f "$M" ] && [ ! -L "$M" ] && [ "$(head -c 143 "$M")" = '{fresh}' ] || exit {OCCUPIED_ACCOUNT}
+KUVO_HOME="$K" KUVO_SSH_ACCOUNT_TOKEN='{token}' exec "$K/bin/kuvo-box" ssh-copy-seed
+"#,
+            root = self.root,
+            fresh_file = fresh::FILE,
+            token = account.token()
+        );
+        let runtime = tokio::runtime::Handle::current();
+        let job = job.clone();
+        let input = SeedTransfer {
+            settings: seed.settings,
+            sign_ins: seed.sign_ins,
+            before_sign_ins: Box::new(move || {
+                runtime.block_on(async {
+                    job.admit().await?;
+                    job.step("engine", super::StepState::Done, "").await?;
+                    job.step("starting", super::StepState::Done, "").await?;
+                    job.step("seeding", super::StepState::Now, "").await?;
+                    job.admit().await
+                })
+            }),
+        };
+        let ran = account.run_seed(&script, input, 600).await?;
+        if let Some(error) = ran.refused_input {
+            return Err(error.into());
+        }
+        if ran.status.code() == Some(OCCUPIED_ACCOUNT) {
+            return Err(AddError::occupied(self.name()));
+        }
+        if !ran.status.success() {
+            eprintln!(
+                "Kuvo couldn't copy sign-ins and keys on {}: {}",
+                self.name,
+                ran.stderr.lines().last().unwrap_or_default()
+            );
+            return Err(format!(
+                "The selected sign-ins and keys couldn’t be saved on {}.",
+                self.name
+            )
+            .into());
+        }
+        let reply = String::from_utf8_lossy(&ran.stdout);
+        serde_json::from_str(reply.lines().last().unwrap_or_default()).map_err(|_| {
+            format!(
+                "The selected sign-ins and keys couldn’t be saved on {}.",
+                self.name
+            )
+            .into()
+        })
+    }
+
+    pub(super) async fn rollback_seed(&self, account: &mut Reservation<'_>, fresh: &Fresh) -> bool {
+        let script = format!(
+            r#"
+K="$HOME/{root}"
+M="$K/{fresh_file}"
+[ ! -L "$K" ] && [ ! -L "$K/run" ] && [ ! -L "$K/bin" ] || exit {OCCUPIED_ACCOUNT}
+[ -f "$M" ] && [ ! -L "$M" ] && [ "$(head -c 143 "$M")" = '{fresh}' ] || exit {OCCUPIED_ACCOUNT}
+KUVO_HOME="$K" KUVO_SSH_ACCOUNT_TOKEN='{token}' exec "$K/bin/kuvo-box" ssh-rollback-seed
+"#,
+            root = self.root,
+            fresh_file = fresh::FILE,
+            token = account.token()
+        );
+        account
+            .run_cleanup(&script, 600)
+            .await
+            .is_ok_and(|ran| ran.status.success())
     }
 
     pub(super) async fn enroll(
@@ -378,14 +586,24 @@ KUVO_HOME="$K" KUVO_SSH_ACCOUNT_TOKEN='{}' exec "$K/bin/kuvo-box" ssh-enroll '{q
         &self,
         stop: Arc<AtomicBool>,
         script: &str,
-        mut input: Vec<u8>,
+        input: Vec<u8>,
+        seconds: u64,
+    ) -> Result<Ran, String> {
+        self.shell_input(stop, script, Input::Bytes(input), seconds)
+            .await
+    }
+
+    async fn shell_input(
+        &self,
+        stop: Arc<AtomicBool>,
+        script: &str,
+        mut input: Input,
         seconds: u64,
     ) -> Result<Ran, String> {
         let command = if let Some(distro) = &self.distro {
             let mut header = STANDARD.encode(script).into_bytes();
             header.push(b'\n');
-            header.append(&mut input);
-            input = header;
+            input.prepend(header);
             format!("wsl.exe -d {distro} --cd ~ --exec /usr/bin/python3 -c \"{WSL_READ}\"")
         } else {
             transport::sh(script)
@@ -401,19 +619,19 @@ async fn run(
     input: Vec<u8>,
     seconds: u64,
 ) -> Result<Ran, String> {
-    run_with_stop(ssh, job.stop.clone(), command, input, seconds).await
+    run_with_stop(ssh, job.stop.clone(), command, Input::Bytes(input), seconds).await
 }
 
 async fn run_with_stop(
     ssh: &Connection,
     stop: Arc<AtomicBool>,
     command: String,
-    input: Vec<u8>,
+    input: Input,
     seconds: u64,
 ) -> Result<Ran, String> {
     let ssh = ssh.clone();
     tokio::task::spawn_blocking(move || {
-        ssh.run(&command, input, Duration::from_secs(seconds), &stop)
+        ssh.run_input(&command, input, Duration::from_secs(seconds), &stop)
     })
     .await
     .map_err(|_| "The SSH command stopped.".to_owned())?
@@ -454,10 +672,12 @@ fn scratch_root(home: &Path) -> Result<String, String> {
         return Ok(".kuvo-code".into());
     };
     if scratch(home)
-        && !matches!(root.as_str(), "" | "." | ".." | ".kuvo-code")
-        && root
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        && root.split('/').all(|component| {
+            !matches!(component, "" | "." | ".." | ".kuvo-code")
+                && component
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        })
     {
         Ok(root)
     } else {

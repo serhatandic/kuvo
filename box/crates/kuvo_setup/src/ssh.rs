@@ -3,11 +3,15 @@
 
 mod address;
 mod connect;
+mod fresh;
+mod local_reservation;
 mod transport;
 mod uninstall;
 
 #[cfg(unix)]
 pub(crate) use connect::is_reservation_token;
+pub(crate) use fresh::finish as finish_seed_for_member;
+pub(crate) use local_reservation::LocalReservation;
 
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
@@ -31,6 +35,7 @@ use crate::{
     edits::Submitter,
     preferences,
     routes::{response_refusal, submitter, typed},
+    seed::source::Selection,
     storage::Files,
 };
 
@@ -80,6 +85,8 @@ struct AddError {
 
 enum FailureOutcome {
     Operation,
+    AccountOccupied,
+    RollbackUnconfirmed,
     ReservationCleanup(Option<Completed>),
 }
 
@@ -92,9 +99,12 @@ impl AddError {
     }
 
     fn occupied(name: &str) -> Self {
-        Self::permanent(format!(
-            "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
-        ))
+        Self {
+            outcome: FailureOutcome::AccountOccupied,
+            ..Self::permanent(format!(
+                "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
+            ))
+        }
     }
 
     fn permanent(message: String) -> Self {
@@ -153,6 +163,8 @@ struct Attempt {
     title: String,
     steps: Vec<Step>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    credentials: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure: Option<Failure>,
@@ -190,6 +202,7 @@ impl Attempt {
             title: format!("Adding {name}…"),
             name,
             steps,
+            credentials: None,
             state: State::Working,
             question: None,
             failure: None,
@@ -220,6 +233,7 @@ impl Attempt {
                 detail: None,
             })
             .collect(),
+            credentials: None,
             question: None,
             failure: None,
             computer: None,
@@ -255,6 +269,7 @@ impl Attempt {
 
 struct Active {
     seen: Attempt,
+    selection: Option<[u8; 32]>,
     stop: Arc<AtomicBool>,
     answer: Option<oneshot::Sender<()>>,
     done: watch::Receiver<()>,
@@ -334,7 +349,7 @@ impl Action {
 }
 
 enum Change {
-    Start(Address, Submitter, WindowsMode),
+    Start(Address, Submitter, WindowsMode, Selection),
     Uninstall(uninstall::Target, Submitter),
     Answer(String, Value),
     Cancel(String),
@@ -349,6 +364,7 @@ enum WindowsMode {
 enum Progress {
     Step(&'static str, StepState, String),
     Name(String),
+    ChosenCredentials(Vec<String>),
     HostKey(Vec<HostKey>, bool, oneshot::Sender<()>),
     RecoverAccount(String, oneshot::Sender<()>),
     UninstallCommitted(Option<crate::Receipt>),
@@ -356,7 +372,7 @@ enum Progress {
 }
 
 enum Work {
-    Add(Address, RemovalRevisions),
+    Add(Address, RemovalRevisions, Selection),
     Uninstall(uninstall::Target, Option<watch::Receiver<()>>),
 }
 
@@ -699,8 +715,13 @@ impl Owner {
     ) {
         let stop = Arc::new(AtomicBool::new(false));
         let (ended, done) = watch::channel(());
+        let selection = match &work {
+            Work::Add(_, _, selection) => Some(selection.ssh_hash()),
+            Work::Uninstall(_, _) => None,
+        };
         self.active.push(Active {
             seen: seen.clone(),
+            selection,
             stop: stop.clone(),
             answer: None,
             done,
@@ -718,7 +739,9 @@ impl Owner {
         };
         tokio::spawn(async move {
             let result = match work {
-                Work::Add(destination, revisions) => job.add(destination, revisions).await,
+                Work::Add(destination, revisions, selection) => {
+                    job.add(destination, revisions, selection).await
+                }
                 Work::Uninstall(target, after) => {
                     if let Some(mut after) = after {
                         let _ = after.changed().await;
@@ -733,7 +756,7 @@ impl Owner {
 
     fn change(&mut self, change: Change, out: &mpsc::WeakSender<Message>) -> Result<Value, Denied> {
         match change {
-            Change::Start(destination, by, windows) => {
+            Change::Start(destination, by, windows, selection) => {
                 if let Some(now) = self
                     .active
                     .iter()
@@ -749,13 +772,32 @@ impl Owner {
                             ),
                         ));
                     }
+                    if now
+                        .selection
+                        .is_some_and(|saved| saved != selection.ssh_hash())
+                    {
+                        return Err(refuse(
+                            409,
+                            "An add with a different choice of sign-ins and keys is already in progress for this computer.",
+                        ));
+                    }
                     return Ok(json!({"try": now.seen}));
                 }
                 let id = format!(
                     "add_{}",
                     hex::encode(crate::random::<12>().map_err(|_| unavailable())?)
                 );
-                let seen = Attempt::new(id, &destination);
+                let mut seen = Attempt::new(id, &destination);
+                seen.credentials = self
+                    .finished
+                    .iter()
+                    .find(|attempt| {
+                        attempt.kind == "add"
+                            && attempt.state == State::Failed
+                            && attempt.destination == destination.as_str()
+                    })
+                    .and_then(|attempt| attempt.credentials.clone())
+                    .or_else(|| Some(selection.ids().to_vec()));
                 let revisions = self
                     .files
                     .read::<crate::model::Link>(crate::actor::LINK)
@@ -770,7 +812,7 @@ impl Owner {
                     by,
                     windows,
                     out,
-                    Work::Add(destination, revisions),
+                    Work::Add(destination, revisions, selection),
                 );
                 Ok(json!({"try": seen}))
             }
@@ -862,6 +904,7 @@ impl Owner {
                 now.seen.title = format!("Adding {name}…");
                 now.seen.name = name;
             }
+            Progress::ChosenCredentials(ids) => now.seen.credentials = Some(ids),
             Progress::Step(id, state, detail) => {
                 for step in &mut now.seen.steps {
                     if step.id == id {
@@ -979,6 +1022,7 @@ impl Owner {
     }
 }
 
+#[derive(Clone)]
 struct Job {
     id: String,
     messages: mpsc::WeakSender<Message>,
@@ -1035,6 +1079,7 @@ impl Job {
         &self,
         destination: Address,
         revisions: RemovalRevisions,
+        selection: Selection,
     ) -> Result<Completed, AddError> {
         let name = preferences::truncate(destination.as_str(), 100);
         self.step("checking", StepState::Now, &format!("Connecting to {name}"))
@@ -1043,7 +1088,13 @@ impl Job {
         self.admit().await?;
         let mut account = remote.reserve(self).await?;
         let result = self
-            .add_at(&remote, &destination, account.as_mut(), revisions)
+            .add_at(
+                &remote,
+                &destination,
+                account.as_mut(),
+                revisions,
+                &selection,
+            )
             .await;
         if let Some(account) = account
             && let Err(message) = account.release(result.as_ref().err()).await
@@ -1064,9 +1115,11 @@ impl Job {
         destination: &Address,
         mut account: Option<&mut connect::Reservation<'_>>,
         revisions: RemovalRevisions,
+        selection: &Selection,
     ) -> Result<Completed, AddError> {
         let name = remote.name();
-        if let Some(existing) = remote.inspect_existing(account.as_deref_mut()).await? {
+        let state = remote.inspect_account(account.as_deref_mut()).await?;
+        if let Some(existing) = state.existing {
             if let Some(identity) = &existing.identity {
                 let result = self
                     .setup
@@ -1098,34 +1151,86 @@ impl Job {
             }
             return Err(AddError::occupied(name));
         }
+        let copy = if let Some(account) = account.as_deref_mut() {
+            let (setup_id, primary) = {
+                let view = self.setup.views.borrow();
+                (
+                    view.setup["setup"].as_str().unwrap_or_default().to_owned(),
+                    view.setup["primary"]["key"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+            };
+            let mut fresh = fresh::Fresh::new(&setup_id, &primary, selection);
+            if let Some(before) = &state.fresh {
+                if !before.same_scope(&fresh) {
+                    return Err("This OS account still has an interrupted add. Finish that attempt or remove the interrupted installation first.".into());
+                }
+                if before.phase == fresh::Phase::Copying && !before.same_selection(&fresh) {
+                    return Err("The interrupted add had a different choice of sign-ins and keys. Resume with that choice or remove the interrupted installation first.".into());
+                }
+                fresh.phase = before.phase;
+            }
+            if state.pristine || state.fresh.is_some() {
+                let seed = crate::seed::source::capture_ssh(&self.files, selection).await
+                    .map_err(|(_, message)| if message == crate::seed::source::MISSING {
+                        "Some selected sign-ins or keys are no longer available. Open the checklist again and retry."
+                    } else { message })?;
+                self.admit().await?;
+                self.send(Progress::ChosenCredentials(selection.ids().to_vec()))
+                    .await?;
+                remote
+                    .stage_fresh(account, state.fresh.as_ref(), &fresh)
+                    .await?;
+                Some((fresh, seed))
+            } else {
+                None
+            }
+        } else if !selection.empty() {
+            return Err("The release has no engine for this machine.".into());
+        } else {
+            None
+        };
         if name != preferences::truncate(destination.as_str(), 100) {
             self.send(Progress::Name(name.to_owned())).await?;
         }
         self.admit().await?;
         self.step("files", StepState::Now, "").await?;
-        remote.install(self, account.as_deref_mut()).await?;
-        self.admit().await?;
-        self.step("engine", StepState::Done, "").await?;
-        self.step("starting", StepState::Done, "").await?;
-        self.step("seeding", StepState::Done, "Nothing to copy.")
+        remote
+            .install(self, account.as_deref_mut(), state.fresh.is_some())
             .await?;
-        self.step("joining", StepState::Now, "").await?;
-        let invite = self
-            .setup
-            .request_command(Command::InstallerCode(None, self.by.clone()))
-            .await
-            .map_err(|error| error.to_string())?;
-        let code = invite.value["code"].as_str().ok_or_else(|| {
-            invite.value["message"]
-                .as_str()
-                .unwrap_or("Your main computer could not issue an installer code.")
-                .to_owned()
-        })?;
-        let invitation = crate::installer::Code::read(code)
-            .map(|(code, _)| crate::installer::hash(&code.token))
-            .ok_or("Your main computer could not issue an installer code.")?;
-        self.admit().await?;
-        let (computer, identity) = remote.enroll(self, account, name, code).await?;
+        let mut started = None;
+        let enrolled = self
+            .finish_enrollment(remote, account.as_deref_mut(), copy, &mut started)
+            .await;
+        let (computer, identity, invitation) = match enrolled {
+            Ok(enrolled) => enrolled,
+            Err(mut error) => {
+                if !matches!(error.outcome, FailureOutcome::AccountOccupied)
+                    && let (Some(fresh), Some(account)) = (started, account)
+                {
+                    let settled = account.can_cleanup();
+                    let cleaned = settled && remote.rollback_seed(account, &fresh).await;
+                    let stopped = self.stop.load(Ordering::Acquire);
+                    if stopped && !cleaned {
+                        error = AddError {
+                            title: Some(format!("{name} is still running Kuvo Code")),
+                            message: format!(
+                                "This was stopped after Kuvo Code had started on {name}, and it couldn’t be stopped there again. Kuvo Code may still be running on {name}, with the keys and sign-ins copied there. Add {name} again, then uninstall it from its page."
+                            ),
+                            outcome: FailureOutcome::RollbackUnconfirmed,
+                            again: true,
+                        };
+                    } else if cleaned && !stopped {
+                        error.message.push_str(&format!(" Kuvo Code was stopped on {name} again, and the keys and sign-ins copied there were deleted."));
+                    } else if settled && !cleaned {
+                        error.message.push_str(&format!(" Kuvo Code may still be running on {name}, with the keys and sign-ins copied there. Add {name} again, then uninstall it from its page."));
+                    }
+                }
+                return Err(error);
+            }
+        };
         let done = self
             .setup
             .request_command(Command::SshAddress {
@@ -1145,6 +1250,60 @@ impl Job {
                 .into());
         }
         Ok(Completed::New(computer))
+    }
+
+    async fn finish_enrollment(
+        &self,
+        remote: &Destination,
+        mut account: Option<&mut connect::Reservation<'_>>,
+        copy: Option<(fresh::Fresh, crate::seed::source::SshSeed)>,
+        started: &mut Option<fresh::Fresh>,
+    ) -> Result<(Computer, String, String), AddError> {
+        let name = remote.name();
+        self.admit().await?;
+        if let Some((mut fresh, seed)) = copy {
+            let account = account
+                .as_deref_mut()
+                .ok_or("The SSH account is no longer reserved.")?;
+            self.step("starting", StepState::Now, "").await?;
+            let previous = fresh.clone();
+            fresh.phase = fresh::Phase::Copying;
+            remote.stage_fresh(account, Some(&previous), &fresh).await?;
+            self.admit().await?;
+            *started = Some(fresh.clone());
+            let renewing = seed.renewing;
+            let copied = remote.copy_seed(self, account, &fresh, seed).await?;
+            self.admit().await?;
+            self.step("seeding", StepState::Done, &copied.detail(name, renewing))
+                .await?;
+        } else {
+            self.step("engine", StepState::Done, "").await?;
+            self.step("starting", StepState::Done, "").await?;
+            let detail = if account.is_some() {
+                "It keeps its own"
+            } else {
+                "Nothing to copy."
+            };
+            self.step("seeding", StepState::Done, detail).await?;
+        }
+        self.step("joining", StepState::Now, "").await?;
+        let invite = self
+            .setup
+            .request_command(Command::InstallerCode(None, self.by.clone()))
+            .await
+            .map_err(|error| error.to_string())?;
+        let code = invite.value["code"].as_str().ok_or_else(|| {
+            invite.value["message"]
+                .as_str()
+                .unwrap_or("Your main computer could not issue an installer code.")
+                .to_owned()
+        })?;
+        let invitation = crate::installer::Code::read(code)
+            .map(|(code, _)| crate::installer::hash(&code.token))
+            .ok_or("Your main computer could not issue an installer code.")?;
+        self.admit().await?;
+        let (computer, identity) = remote.enroll(self, account, name, code).await?;
+        Ok((computer, identity, invitation))
     }
 }
 
@@ -1315,19 +1474,13 @@ fn start(value: Value, by: Submitter) -> Result<Change, Denied> {
     }
     let destination = Address::read(value["destination"].as_str().unwrap_or(""))
         .map_err(|message| refuse(400, message))?;
-    let selection = crate::seed::source::Selection::read(value.get("credentials").cloned())
+    let selection = Selection::read(value.get("credentials").cloned())
         .ok_or_else(|| refuse(400, "Choose sign-ins and keys by their checklist IDs."))?;
-    if !selection.empty() {
-        return Err(refuse(
-            503,
-            "Some selected sign-ins or keys are no longer available. Open the checklist again.",
-        ));
-    }
     let windows = match value.get("windows") {
         None => WindowsMode::Wsl,
         Some(value) if value == "native" => WindowsMode::Native,
         Some(value) if value == "wsl" => WindowsMode::Wsl,
         Some(_) => return Err(refuse(400, "Choose native Windows or WSL.")),
     };
-    Ok(Change::Start(destination, by, windows))
+    Ok(Change::Start(destination, by, windows, selection))
 }

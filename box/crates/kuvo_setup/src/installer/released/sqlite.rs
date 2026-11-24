@@ -13,6 +13,57 @@ use sha2::{Digest, Sha256};
 
 const SCAN_TIME: Duration = Duration::from_millis(1500);
 
+/// The engine makes a database before a fresh SSH applicant has joined. A
+/// read-only snapshot distinguishes its imported sign-ins from saved sessions.
+pub(in crate::installer) fn staged_database_is_empty(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    for directory in [Some(parent), parent.parent()].into_iter().flatten() {
+        if !directory
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            return false;
+        }
+    }
+    if !path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.is_file())
+    {
+        return false;
+    }
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        match std::fs::symlink_metadata(sidecar) {
+            Ok(metadata) if metadata.is_file() => (),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            _ => return false,
+        }
+    }
+    let read = || -> rusqlite::Result<bool> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let mut db = Connection::open_with_flags(path, flags)?;
+        db.busy_timeout(Duration::ZERO)?;
+        db.pragma_update(None, "trusted_schema", false)?;
+        let tx = db.transaction()?;
+        for table in ["session", "message", "part"] {
+            if tx.query_row(
+                &format!("SELECT EXISTS (SELECT 1 FROM {table})"),
+                [],
+                |row| row.get::<_, bool>(0),
+            )? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    };
+    read().unwrap_or(false)
+}
+
 fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }

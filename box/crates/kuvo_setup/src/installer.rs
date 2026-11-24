@@ -18,6 +18,7 @@ use crate::{
     model::{ComputerKind, Entry, Link, Membership, Peer, SharedKind, safe_token},
 };
 
+pub(crate) use join::open_staged_home_at;
 pub use join::{
     Joined, cancellation_receipts, join, join_ssh, open_staged_home, validate_join_code,
 };
@@ -29,6 +30,9 @@ pub fn enrolled_ssh_identity(home: &Home) -> Result<(String, String), Error> {
         return Err(Error::Conflict);
     }
     let own = crate::model::Identity::read(&link)?.public;
+    if let Err(error) = crate::ssh::finish_seed_for_member(home.root(), &link, &own) {
+        eprintln!("retiring the SSH credential copy: {error}");
+    }
     let path = files.path("machine-id");
     let machine = match std::fs::read_to_string(&path) {
         Ok(text) if text.len() == 32 && text.bytes().all(|b| b.is_ascii_hexdigit()) => text,

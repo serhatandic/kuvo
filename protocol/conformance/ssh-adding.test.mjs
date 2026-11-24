@@ -1,17 +1,33 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { addSshStandIn } from "../../box/bridge-tests/add-ssh-stand-in.js";
-import { boxBinary, boxCommand, isolatedEnv, launch, privateHome, readJSON, request, scratch, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, holdWindowsFile, isolatedEnv, launch, privateHome, readJSON, relayAddress, request, scratch, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 
 const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+
+async function loadWire(home, env) {
+  const fixtureEnv = { ...env, KUVO_HOME: home };
+  const previous = Object.fromEntries(Object.keys(fixtureEnv).map(key => [key, process.env[key]]));
+  Object.assign(process.env, fixtureEnv);
+  try {
+    return await import(pathToFileURL(wireFixture).href);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 test("a transient addressed SSH Add refuses start, answer and cancel after authenticating", {
   skip: process.platform !== "darwin" || !fs.existsSync(wireFixture) && "Build the reference Noise fixture",
@@ -41,18 +57,7 @@ test("a transient addressed SSH Add refuses start, answer and cancel after authe
     fs.rmSync(root, { recursive: true, force: true });
   });
   const relay = { url: "ws://127.0.0.1:1" };
-  const fixtureEnv = { ...env, KUVO_HOME: home };
-  const previous = Object.fromEntries(Object.keys(fixtureEnv).map(key => [key, process.env[key]]));
-  Object.assign(process.env, fixtureEnv);
-  let wire;
-  try {
-    wire = await import(pathToFileURL(wireFixture).href);
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
+  const wire = await loadWire(home, env);
   const device = Buffer.alloc(32, 81);
   const pairedDevice = { key: wire.publicOf(device).toString("base64url"), name: "Paired desktop", kind: "desktop", pairing: "fixture" };
   const { main } = seedPeerSetup(home, relay.url, 1, 2, roster => {
@@ -148,7 +153,37 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.deepEqual((await page()).json, { can: true, hosts: ["lab", "second"], tries: [] });
   const invalid = await ask("POST", "kuvo/computers/add", { destination: "-oProxyCommand=sh" }, headers);
   assert.equal(invalid.status, 400, invalid.text);
-  const begun = await ask("POST", "kuvo/computers/add", { destination: "lab" }, headers);
+  const selectedKey = "KUVO_KEY_SSH_SAMPLE";
+  write(path.join(main.home, "box", "keys", selectedKey), "selected fixture key", { mode: 0o600 });
+  write(path.join(main.home, "box", "keys", "KUVO_KEY_UNSELECTED"), "leave this key on Studio", { mode: 0o600 });
+  const catalogKey = "KUVO_KEY_GITHUB_TOKEN";
+  write(path.join(main.home, "box", "keys", catalogKey), "selected catalog key", { mode: 0o600 });
+  write(path.join(main.home, "bin", "integrations.json"), JSON.stringify({ integrations: [{
+    id: "github", variables: { TOKEN: catalogKey }, settings: {
+      type: "remote", url: "https://api.githubcopilot.com/mcp/", oauth: false, codemode: false,
+      headers: { Authorization: `Bearer {file:~/.kuvo-code/box/keys/${catalogKey}}` },
+    },
+  }] }));
+  write(path.join(main.home, "box", "opencode.json"), JSON.stringify({ model: "anthropic/claude", shell: "/private/local-shell", worktree: "/private/worktree", mcp: {
+    github: { type: "remote", url: "https://untrusted.invalid", disabled: true, headers: { Authorization: "inline-secret" } },
+    permitted: { type: "local", command: ["fixture"], environment: { TOKEN: `{file:/source/home/keys/${selectedKey}}` } },
+    excluded: { type: "local", command: ["fixture"], environment: { TOKEN: "inline-secret-do-not-copy" } },
+  } }));
+  main.engine.integrations.push({ id: "anthropic" }, { id: "github-copilot" }, { id: "openai" }, { id: "notion", metadata: { source: "mcp" } });
+  main.engine.credentials.push(
+    { id: "fixture-key", integrationID: "anthropic", label: "Selected", active: true, value: { type: "api", key: "selected fixture sign-in" } },
+    { id: "fixture-stale", integrationID: "anthropic", label: "Inactive", active: false, value: { type: "api", key: "inactive fixture sign-in" } },
+    { id: "fixture-renews", integrationID: "openai", label: "Renewing", active: true, value: { type: "oauth", access: "fixture", refresh: "fixture" } },
+    { id: "fixture-mcp", integrationID: "notion", label: "MCP", active: true, value: { type: "oauth", access: "fixture" } },
+    { id: "fixture-stable", integrationID: "github-copilot", label: "Copilot", active: true, value: { type: "oauth", access: "fixture", refresh: "stable fixture" } },
+  );
+  const checklist = await ask("GET", "kuvo/computers/add/credentials", undefined, headers);
+  assert.equal(checklist.status, 200, checklist.text);
+  const credentials = checklist.json.items.filter(item => [selectedKey, catalogKey, "Selected", "Copilot"].includes(item.label)).map(item => item.id);
+  assert.equal(credentials.length, 4);
+  assert.equal(checklist.json.renewing, 1);
+  assert.equal(checklist.json.items.some(item => ["Inactive", "Renewing", "MCP"].includes(item.label)), false);
+  const begun = await ask("POST", "kuvo/computers/add", { destination: "lab", credentials }, headers);
   assert.equal(begun.status, 202, begun.text);
   const id = begun.json.try.id;
   const readTry = async () => (await page()).json.tries.find(attempt => attempt.id === id);
@@ -161,6 +196,7 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.equal(found.question.title, "Is this lab?");
   assert.match(found.question.facts[1].value, /^SHA256:/);
   assert.deepEqual(fs.readdirSync(remote), []);
+  const engineCopy = stageEngine(t, path.join(remote, "box"));
   const oldCache = path.join(remote, "Library", "Application Support", "run.kuvo.code", "Caches", "old-cache");
   write(oldCache, "cache from an earlier install");
   const answer = at => ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at }, headers);
@@ -194,6 +230,25 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
     return attempt?.state === "done" && attempt;
   }, "SSH Add did not complete.", 35000);
   assert.equal(done.computer.name, "lab");
+  assert.deepEqual(done.credentials, credentials);
+  const engine = readJSON(engineCopy.imported);
+  assert.equal(engine.joined, false, "the guarded engine imports before the installer writes membership");
+  assert.equal(engine.keys, "selected fixture key");
+  assert.deepEqual(engine.credentials, [
+    { integrationID: "anthropic", label: "Selected", value: { type: "api", key: "selected fixture sign-in" }, activate: true },
+    { integrationID: "github-copilot", label: "Copilot", value: { type: "oauth", access: "fixture", refresh: "stable fixture" }, activate: true },
+  ]);
+  assert.equal(engine.settings.model, "anthropic/claude");
+  assert.deepEqual(Object.keys(engine.settings.mcp).sort(), ["github", "permitted"]);
+  assert.equal(engine.settings.mcp.github.url, "https://api.githubcopilot.com/mcp/");
+  assert.equal(engine.settings.mcp.github.disabled, true);
+  assert.ok(engine.settings.mcp.github.headers.Authorization.endsWith(`/box/keys/${catalogKey}}`));
+  assert.equal(fs.readFileSync(path.join(remote, "box", "box", "keys", catalogKey), "utf8"), "selected catalog key");
+  assert.ok(engine.settings.mcp.permitted.environment.TOKEN.endsWith(`/box/keys/${selectedKey}}`));
+  assert.equal(engine.settings.shell, undefined);
+  assert.equal(engine.settings.worktree, undefined);
+  assert.equal(fs.existsSync(path.join(remote, "box/box/keys/KUVO_KEY_UNSELECTED")), false);
+  assert.equal(fs.existsSync(path.join(remote, "box/run/.ssh-fresh-add")), false);
   assert.equal(fs.readFileSync(oldCache, "utf8"), "cache from an earlier install");
   assert.equal(fs.readFileSync(path.join(main.home, "ssh", "known_hosts"), "utf8"), `lab ssh-ed25519 ${key}\n`);
   assert.deepEqual((await page()).json.hosts, ["second"]);
@@ -367,8 +422,89 @@ function addRelease(installed, implementation) {
   return release;
 }
 
+function stageEngine(t, home, { holdReady = false, holdImport = false, verifiedProcess = false } = {}) {
+  const version = readJSON(new URL("../../box/src/shared/engine-pin.json", import.meta.url)).version;
+  const folder = fs.realpathSync(scratch());
+  const fixture = path.join(folder, "ssh-engine.mjs");
+  const started = path.join(folder, "ssh-engine-pids");
+  const imported = path.join(folder, "imported.json");
+  const program = path.join(home, "engine", version, "opencode");
+  const gate = path.join(folder, "hold-engine-ready");
+  const importing = path.join(folder, "importing");
+  const importGate = path.join(folder, "hold-engine-import");
+  if (holdReady) write(gate, "");
+  if (holdImport) write(importGate, "");
+  const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+  write(fixture, `import fs from "node:fs";
+import http from "node:http";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+if (process.argv.includes("--version")) {
+  console.log(${JSON.stringify(version)});
+  process.exit(0);
+}
+const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+const home = process.env.KUVO_HOME;
+const credentials = [];
+const server = http.createServer(async (req, res) => {
+  if (req.headers.authorization !== "Basic " + Buffer.from("opencode:" + process.env.OPENCODE_PASSWORD).toString("base64")) return res.writeHead(401).end();
+  if (req.url === "/api/session" && fs.existsSync(${JSON.stringify(gate)})) return res.writeHead(503).end();
+  if (req.method === "POST" && req.url === "/api/credential") {
+    const input = [];
+    for await (const chunk of req) input.push(chunk);
+    const credential = JSON.parse(Buffer.concat(input));
+    fs.writeFileSync(${JSON.stringify(importing)}, "");
+    while (fs.existsSync(${JSON.stringify(importGate)})) await new Promise(resolve => setTimeout(resolve, 25));
+    const data = path.join(home, "data/opencode");
+    fs.mkdirSync(data, { recursive: true });
+    const db = new DatabaseSync(path.join(data, "opencode.db"));
+    try {
+      db.exec("CREATE TABLE IF NOT EXISTS credential (value TEXT); CREATE TABLE IF NOT EXISTS session (id TEXT); CREATE TABLE IF NOT EXISTS message (id TEXT); CREATE TABLE IF NOT EXISTS part (id TEXT)");
+      db.prepare("INSERT INTO credential (value) VALUES (?)").run(JSON.stringify(credential));
+    } finally { db.close(); }
+    credentials.push(credential);
+    fs.writeFileSync(${JSON.stringify(imported)}, JSON.stringify({ credentials,
+      joined: fs.existsSync(path.join(home, "run/link.json")),
+      keys: fs.readFileSync(path.join(home, "box/keys/KUVO_KEY_SSH_SAMPLE"), "utf8"),
+      settings: JSON.parse(fs.readFileSync(path.join(home, "box/opencode.json"), "utf8")),
+    }));
+  }
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ data: req.url === "/api/credential" ? credentials : [] }));
+});
+server.listen(port, "127.0.0.1", () => fs.appendFileSync(${JSON.stringify(started)}, process.pid + "\\n"));
+`);
+  if (verifiedProcess) {
+    // Rollback starts in a new process and checks the spawned binary's identity.
+    fs.mkdirSync(path.dirname(program), { recursive: true });
+    execFileSync(typescriptRuntime(), ["build", "--compile", fixture, "--outfile", program], { cwd: folder, env: isolatedEnv(folder) });
+  } else {
+    write(program, `#!/bin/sh
+if [ "$1" = --version ]; then printf '%s\\n' ${quote(version)}; exit 0; fi
+exec ${quote(process.execPath)} ${quote(fixture)} "$@"
+`, { mode: 0o700 });
+  }
+  t.after(() => {
+    const pids = fs.existsSync(started) ? fs.readFileSync(started, "utf8").trim().split("\n").map(Number) : [];
+    for (const pid of pids) {
+      if (!Number.isSafeInteger(pid) || pid < 2) continue;
+      let command;
+      try { command = execFileSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }); }
+      catch { continue; }
+      if (command.includes(verifiedProcess ? program : fixture)) {
+        try { process.kill(pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      }
+    }
+    fs.rmSync(folder, { recursive: true, force: true });
+  });
+  return {
+    started, importing, imported,
+    release: () => fs.rmSync(gate, { force: true }),
+    finishImport: () => fs.rmSync(importGate, { force: true }),
+  };
+}
+
 async function addBench(t) {
-  const { computer, leases } = await bench(t);
+  const { computer, leases, relay } = await bench(t);
   const implementation = boxBinary();
   let fake, remote, account, releaseMarker;
   const main = await computer("Studio", implementation, folder => {
@@ -391,8 +527,308 @@ async function addBench(t) {
     assert.equal(answer.status, 200, answer.text);
     return answer.json;
   };
-  return { computer, main, ask, account, remote, fake, headers, page, releaseMarker };
+  return { computer, main, ask, account, remote, fake, headers, page, relay, releaseMarker };
 }
+
+async function selectedSshCredentials({ main, ask, headers }) {
+  const selectedKey = "KUVO_KEY_SSH_SAMPLE";
+  write(path.join(main.home, "box", "keys", selectedKey), "selected fixture key", { mode: 0o600 });
+  main.engine.integrations.push({ id: "anthropic" });
+  main.engine.credentials.push({ id: "fixture-key", integrationID: "anthropic", label: "Fixture sign-in", active: true,
+    value: { type: "api", key: "fixture sign-in only" } });
+  const checklist = await ask("GET", "kuvo/computers/add/credentials", undefined, headers);
+  assert.equal(checklist.status, 200, checklist.text);
+  const credentials = checklist.json.items.filter(item => [selectedKey, "Fixture sign-in"].includes(item.label)).map(item => item.id);
+  assert.equal(credentials.length, 2);
+  return { selectedKey, credentials };
+}
+
+test("SSH Add stops sending sign-ins when its paired device is revoked during engine startup", {
+  skip: process.platform === "win32" || boxBinary().typescript || !fs.existsSync(wireFixture), timeout: 65_000,
+}, async t => {
+  const fixture = await addBench(t);
+  const { main, ask, remote, page, relay } = fixture;
+  const target = path.join(remote, ".kuvo-code");
+  const engine = stageEngine(t, target, { holdReady: true });
+  const { selectedKey, credentials } = await selectedSshCredentials(fixture);
+
+  const wire = await loadWire(main.home, main.env);
+  const secret = Buffer.alloc(32, 82);
+  const deviceKey = wire.publicOf(secret).toString("base64url");
+  const paired = await ask("POST", "kuvo/devices/pair", { key: deviceKey, kind: "desktop", name: "Add caller" }, { "x-kuvo-from": "app" });
+  assert.equal(paired.status, 200, paired.text);
+  const link = readJSON(path.join(main.home, "run", "link.json"));
+  const address = relayAddress(Buffer.from(link.secret, "base64url"));
+  const computer = Buffer.from((await ask("GET", "kuvo/setup")).json.you.key, "base64url");
+  const device = relay.device();
+  t.after(() => device.leave());
+  const session = 412;
+  const send = (kind, body) => device.send(address, wire.frame(kind, session, body));
+  const receive = async kind => {
+    const message = wire.readRelay(await device.next());
+    assert.equal(message.kind, "deliver");
+    const frame = wire.readFrame(message.payload);
+    assert.equal(frame.session, session);
+    assert.equal(frame.kind, kind);
+    return frame.body;
+  };
+  const initiator = new wire.IKInitiator(secret, computer, wire.PROLOGUE);
+  send(wire.Frame.handshake1, initiator.writeMessage1(Buffer.from(JSON.stringify({ v: 1, app: "1.0.0", client: "desktop", pairing: paired.json.pairing }))));
+  const opened = initiator.readMessage2(await receive(wire.Frame.handshake2));
+  let requestId = 0;
+  const fromDevice = async (route, body) => {
+    const id = ++requestId;
+    const header = { t: "req", id, m: "POST", p: route, h: { "content-type": "application/json" } };
+    for (const part of wire.pieces(header, Buffer.from(JSON.stringify(body)), true)) {
+      send(wire.Frame.transport, opened.transport.seal(part));
+    }
+    const head = wire.decodeMessage(opened.transport.open(await receive(wire.Frame.transport)));
+    assert.equal(head.head.id, id);
+    const chunks = [head.body];
+    let last = head;
+    while (last.head.end !== true) {
+      last = wire.decodeMessage(opened.transport.open(await receive(wire.Frame.transport)));
+      assert.equal(last.head.id, id);
+      chunks.push(last.body);
+    }
+    return { status: head.head.s, json: JSON.parse(Buffer.concat(chunks)) };
+  };
+  const begun = await fromDevice("kuvo/computers/add", { destination: "lab", credentials });
+  assert.equal(begun.status, 202, JSON.stringify(begun.json));
+  const id = begun.json.try.id;
+  const current = async () => (await page()).tries.find(attempt => attempt.id === id);
+  const question = await until(async () => (await current())?.question, "SSH did not show the host key.");
+  assert.equal(question.id, "hostKey");
+  const trusted = await fromDevice(`kuvo/computers/add/${id}/answer`, { answer: "trust", at: question.at });
+  assert.equal(trusted.status, 200, JSON.stringify(trusted.json));
+  try {
+    await until(() => fs.existsSync(engine.started), "The staged engine did not start.", 30_000);
+    assert.equal(fs.readFileSync(path.join(target, "box", "keys", selectedKey), "utf8"), "selected fixture key");
+    assert.equal(fs.existsSync(engine.imported), false);
+    const revoked = await ask("POST", "kuvo/phones/remove", { phones: [{ key: deviceKey }] }, { "x-kuvo-from": "app" });
+    assert.equal(revoked.status, 200, revoked.text);
+  } finally {
+    engine.release();
+  }
+  const failed = await until(async () => {
+    const attempt = await current();
+    return attempt?.state === "failed" && attempt;
+  }, "The revoked device's Add did not stop.", 25_000);
+  assert.match(failed.failure.message, /device that started this add is no longer paired/);
+  assert.match(failed.failure.message, /keys and sign-ins copied there were deleted/);
+  assert.equal(fs.existsSync(engine.imported), false);
+  for (const relative of ["box/keys", "run/link.json", "run/.ssh-fresh-add", "run/ssh-engine.json"]) {
+    assert.equal(fs.existsSync(path.join(target, relative)), false, relative);
+  }
+});
+
+for (const disconnect of ["SIGTERM", "255"]) {
+  test(`SSH Add recovers only after a credential writer disconnected by ${disconnect} settles`, {
+    skip: process.platform === "win32" || boxBinary().typescript, timeout: 125_000,
+  }, async t => {
+    const fixture = await addBench(t);
+    const { main, ask, remote, fake, headers, page } = fixture;
+    const target = path.join(remote, ".kuvo-code");
+    const engine = stageEngine(t, target, { holdImport: true });
+    const { credentials } = await selectedSshCredentials(fixture);
+    const trace = path.join(fake, "trace");
+    const cut = path.join(fake, "drop-rust-seed-lab");
+    const writerEnded = path.join(fake, "writer-ended");
+    const reservation = path.join(remote, ".kuvo-code-adding");
+    const fresh = path.join(target, "run", ".ssh-fresh-add");
+    write(trace, "");
+    write(cut, disconnect);
+    write(path.join(main.home, "ssh", "known_hosts"), ["lab", "alias"].map(host => `${host} ssh-ed25519 ${key(8)}\n`).join(""));
+    write(path.join(fake, "drop-rust-seed"), `#!${process.execPath}
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+const remote = spawn("/bin/sh", ["-c", 'sh "$1"; printf done > "$2"', "credential-writer", process.argv[2], ${JSON.stringify(writerEnded)}],
+  { detached: true, stdio: ["pipe", "pipe", "ignore"] });
+process.stdin.pipe(remote.stdin);
+remote.stdout.pipe(process.stdout);
+const timer = setInterval(() => {
+  if (!fs.existsSync(${JSON.stringify(engine.importing)})) return;
+  if (process.argv[3] === "255") process.exit(255);
+  process.kill(process.pid, "SIGTERM");
+}, 25);
+remote.once("exit", () => { clearInterval(timer); process.exit(1); });
+remote.stdin.on("error", () => {});
+`, { mode: 0o700 });
+    t.after(() => engine.finishImport());
+
+    const attempt = async (destination, chosen = credentials) => {
+      const reply = await ask("POST", "kuvo/computers/add", { destination, credentials: chosen }, headers);
+      assert.equal(reply.status, 202, reply.text);
+      return reply.json.try.id;
+    };
+    const waitFor = (id, predicate, why) => until(async () => {
+      const entry = (await page()).tries.find(tried => tried.id === id);
+      return entry && predicate(entry) && entry;
+    }, why, 35_000);
+    const failure = entry => entry.state === "failed";
+    const first = await waitFor(await attempt("lab"), failure, "The disconnected writer did not stop Add.");
+    assert.match(first.failure.message, /lost contact.*during a change/i);
+    assert.deepEqual(fs.readFileSync(trace, "utf8").trim().split("\n").filter(line => /^lab (seed|join|uninstall|release)$/.test(line)), ["lab seed"]);
+    assert.match(fs.readFileSync(fresh, "utf8"), / copying\n$/);
+    const original = fs.readlinkSync(reservation);
+    const busy = await waitFor(await attempt("alias"), failure, "A second address did not report the remote writer.");
+    assert.match(busy.failure.message, /change is in progress/);
+    assert.equal(fs.readlinkSync(reservation), original);
+    assert.equal(fs.existsSync(writerEnded), false);
+
+    engine.finishImport();
+    await until(() => fs.existsSync(writerEnded), "The original remote writer did not finish.");
+    fs.unlinkSync(cut);
+    const different = disconnect === "255";
+    const recovered = await waitFor(await attempt("lab", different ? [] : credentials), entry => entry.question || failure(entry), "Add did not offer recovery.");
+    assert.equal(recovered.question?.id, "recoverAccount", recovered.failure?.message);
+    assert.equal(fs.readlinkSync(reservation), original);
+    const continued = await ask("POST", `kuvo/computers/add/${recovered.id}/answer`, { answer: "recover", at: recovered.question.at }, headers);
+    assert.equal(continued.status, 200, continued.text);
+    let final = recovered.id;
+    if (different) {
+      const refused = await waitFor(recovered.id, failure, "Recovery did not refuse the changed selection.");
+      assert.match(refused.failure.message, /different choice of sign-ins and keys/);
+      assert.deepEqual(refused.credentials, first.credentials);
+      assert.equal(fs.lstatSync(reservation, { throwIfNoEntry: false }), undefined);
+      final = await attempt("lab");
+    }
+    const finished = await waitFor(final, entry => entry.state === "done" || failure(entry), "The original selection did not finish enrollment.");
+    assert.equal(finished.state, "done", finished.failure?.message);
+    for (const file of [reservation, fresh]) assert.equal(fs.lstatSync(file, { throwIfNoEntry: false }), undefined);
+    assert.equal(readJSON(engine.imported).joined, false);
+    const db = new DatabaseSync(path.join(target, "data", "opencode", "opencode.db"), { readOnly: true });
+    try { assert.equal(db.prepare("SELECT COUNT(*) AS count FROM credential").get().count, 1); }
+    finally { db.close(); }
+    const service = readJSON(path.join(target, "run", "serve.json"));
+    t.after(() => { try { process.kill(service.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; } });
+    assert.equal((await request(service, "GET", "kuvo/setup")).json.you.key, finished.computer.key);
+  });
+}
+
+for (const shouldStop of [true, false]) test(shouldStop
+  ? "stopping SSH Add waits for the credential writer and rolls back the staged engine and keys"
+  : "SSH Add rolls back the staged engine and credentials if enrollment fails", {
+  skip: process.platform === "win32" || boxBinary().typescript, timeout: 65_000,
+}, async t => {
+  const fixture = await addBench(t);
+  const { main, ask, remote, fake, headers, page } = fixture;
+  const target = path.join(remote, ".kuvo-code");
+  const engine = stageEngine(t, target, { holdImport: true, verifiedProcess: true });
+  const { selectedKey, credentials } = await selectedSshCredentials(fixture);
+  write(path.join(main.home, "ssh", "known_hosts"), `lab ssh-ed25519 ${key(8)}\n`);
+  const added = await ask("POST", "kuvo/computers/add", { destination: "lab", credentials }, headers);
+  assert.equal(added.status, 202, added.text);
+  const id = added.json.try.id;
+  const current = async () => (await page()).tries.find(attempt => attempt.id === id);
+  const reservation = path.join(remote, ".kuvo-code-adding");
+  let pid;
+  try {
+    await until(() => fs.existsSync(engine.importing), "The credential writer did not reach the staged engine.", 30_000);
+    pid = Number(fs.readFileSync(engine.started, "utf8").trim());
+    assert.ok(Number.isSafeInteger(pid) && pid > 1);
+    assert.equal(fs.readFileSync(path.join(target, "box", "keys", selectedKey), "utf8"), "selected fixture key");
+    await until(async () => (await current()).steps.some(step => step.id === "seeding" && step.state === "now"),
+      "The Add page did not reach the credential copy.");
+    if (shouldStop) {
+      const stopped = await ask("DELETE", `kuvo/computers/add/${id}`, undefined, headers);
+      assert.equal(stopped.status, 200, stopped.text);
+    } else {
+      write(path.join(fake, "fail"), "ssh-enroll");
+    }
+    assert.equal(fs.lstatSync(reservation).isSymbolicLink(), true);
+    assert.doesNotThrow(() => process.kill(pid, 0));
+  } finally {
+    engine.finishImport();
+  }
+  await until(() => !fs.lstatSync(reservation, { throwIfNoEntry: false }), "Stop did not release the account after rollback.", 25_000);
+  if (shouldStop) {
+    await until(async () => (await current()) === undefined, "The stopped Add did not leave the page.");
+  } else {
+    const failed = await until(async () => {
+      const attempt = await current();
+      return attempt?.state === "failed" && attempt;
+    }, "The failed enrollment did not report its rollback.");
+    assert.match(failed.failure.message, /keys and sign-ins copied there were deleted/);
+  }
+  for (const relative of ["box/keys", "run/link.json", "run/.ssh-fresh-add", "run/ssh-engine.json"]) {
+    assert.equal(fs.existsSync(path.join(target, relative)), false, relative);
+  }
+  assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+  const db = new DatabaseSync(path.join(target, "data", "opencode", "opencode.db"), { readOnly: true });
+  try { assert.equal(db.prepare("SELECT COUNT(*) AS count FROM credential").get().count, 0); }
+  finally { db.close(); }
+});
+
+test("a failed SSH Add leaves a previously uninstalled computer's credentials and settings in place", {
+  skip: process.platform === "win32" || boxBinary().typescript, timeout: 30_000,
+}, async t => {
+  const fixture = await addBench(t);
+  const { main, ask, remote, fake, headers, page } = fixture;
+  const { selectedKey, credentials } = await selectedSshCredentials(fixture);
+  const target = path.join(remote, ".kuvo-code");
+  const retained = {
+    "machine-id": "0123456789abcdef0123456789abcdef",
+    "folder-version.json": '{"version":23}',
+    "run/off": "",
+    "box/opencode.json": '{"model":"its/own"}',
+    "box/keys/KUVO_KEY_ITS_OWN": "its own key",
+    "agents/codex/auth.json": "its own sign-in",
+  };
+  for (const [file, value] of Object.entries(retained)) write(path.join(target, file), value, { mode: 0o600 });
+  write(path.join(main.home, "ssh", "known_hosts"), `lab ssh-ed25519 ${key(8)}\n`);
+  write(path.join(fake, "fail"), "ssh-enroll");
+  const begun = await ask("POST", "kuvo/computers/add", { destination: "lab", credentials }, headers);
+  assert.equal(begun.status, 202, begun.text);
+  const failed = await until(async () => {
+    const entry = (await page()).tries.find(each => each.id === begun.json.try.id);
+    return entry?.state === "failed" && entry;
+  }, "The target's enrollment failure did not reach the source.", 20_000);
+  assert.equal(failed.steps.find(step => step.id === "seeding").detail, "It keeps its own");
+  assert.doesNotMatch(failed.failure.message, /sign-ins copied there were deleted/);
+  for (const [file, value] of Object.entries(retained)) assert.equal(fs.readFileSync(path.join(target, file), "utf8"), value);
+  for (const file of [`box/keys/${selectedKey}`, "run/.ssh-fresh-add", "run/engine.json"]) {
+    assert.equal(fs.existsSync(path.join(target, file)), false, file);
+  }
+});
+
+test("SSH Add keeps its selected checklist and refuses a missing key before writing", {
+  skip: process.platform === "win32", timeout: 20000,
+}, async t => {
+  const { main, ask, remote, headers, page } = await addBench(t);
+  const selected = path.join(main.home, "box", "keys", "KUVO_KEY_SAMPLE");
+  write(selected, "one selected key", { mode: 0o600 });
+  const list = await ask("GET", "kuvo/computers/add/credentials", undefined, headers);
+  assert.equal(list.status, 200, list.text);
+  const choice = list.json.items.find(item => item.label === "KUVO_KEY_SAMPLE");
+  assert.ok(choice);
+  const begin = credentials => ask("POST", "kuvo/computers/add", { destination: "lab", credentials }, headers);
+  const notified = await begin([choice.id]);
+  assert.equal(notified.status, 202, notified.text);
+  const id = notified.json.try.id;
+  const current = async () => (await page()).tries.find(attempt => attempt.id === id);
+  const waiting = await until(async () => {
+    const attempt = await current();
+    return attempt?.question?.id === "hostKey" && attempt;
+  }, "SSH did not ask for the new computer’s host key.");
+  assert.equal((await begin([choice.id, choice.id])).json.try.id, id);
+  const competing = await begin([]);
+  assert.equal(competing.status, 409, competing.text);
+  assert.equal(competing.json.message, "An add with a different choice of sign-ins and keys is already in progress for this computer.");
+  fs.unlinkSync(selected);
+  const approved = await ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at: waiting.question.at }, headers);
+  assert.equal(approved.status, 200, approved.text);
+  const failed = await until(async () => {
+    const attempt = await current();
+    return attempt?.state === "failed" && attempt;
+  }, "SSH Add did not refuse the removed key.");
+  assert.equal(failed.failure.message, "Some selected sign-ins or keys are no longer available. Open the checklist again and retry.");
+  for (const root of ["box", ".kuvo-code"]) {
+    for (const relative of ["bin", "box/keys", "run/link.json", "run/.ssh-fresh-add"]) {
+      assert.equal(fs.existsSync(path.join(remote, root, relative)), false, relative);
+    }
+  }
+});
 
 test("SSH Add asks again before replacing a changed key that Kuvo trusted", {
   skip: process.platform === "win32", timeout: 20000,
@@ -578,7 +1014,7 @@ test("uninstall from a saved SSH address commits a signed wipe and waits for con
 });
 
 test("unlink keeps its signed revocation when forgetting the SSH address fails", {
-  skip: process.platform === "win32" || process.getuid?.() === 0, timeout: 30000,
+  skip: process.getuid?.() === 0, timeout: 30000,
 }, async t => {
   const { computer, relay, leases } = await bench(t);
   const studio = await computer("Studio");
@@ -594,8 +1030,14 @@ test("unlink keeps its signed revocation when forgetting the SSH address fails",
   const route = `kuvo/computers/${member.key}/unlink`;
   const operation = Buffer.alloc(16, 67).toString("base64url");
   const link = () => readJSON(path.join(studio.home, "run", "link.json"));
-  const mode = fs.statSync(studio.home).mode & 0o777;
-  fs.chmodSync(studio.home, mode & ~0o200);
+  let restore;
+  if (process.platform === "win32") {
+    restore = await holdWindowsFile(t, path.join(studio.home, "machines.json"), path.join(studio.home, "run", "address-lock-ready"), studio.env);
+  } else {
+    const mode = fs.statSync(studio.home).mode & 0o777;
+    fs.chmodSync(studio.home, mode & ~0o200);
+    restore = () => fs.chmodSync(studio.home, mode);
+  }
   try {
     const blocked = await primary("POST", route, { operation }, headers);
     assert.equal(blocked.status, 503, blocked.text);
@@ -603,7 +1045,7 @@ test("unlink keeps its signed revocation when forgetting the SSH address fails",
     assert.equal(typeof blocked.json.proof.s, "string");
     assert.deepEqual(readJSON(path.join(studio.home, "machines.json")), addresses);
   } finally {
-    fs.chmodSync(studio.home, mode);
+    await restore();
   }
   const saved = link().shared.membershipAndAccess;
   assert.ok(saved.value.left.includes(member.key));
@@ -838,17 +1280,27 @@ test("SSH Add keeps older Mac data in place and asks that Mac to update", {
 test("SSH Add preserves an independent installation that appeared after the probe", {
   skip: boxBinary().typescript || process.platform === "win32", timeout: 45000,
 }, async t => {
-  const { computer, main, ask, remote, fake, headers, page } = await addBench(t);
+  const fixture = await addBench(t);
+  const { computer, main, ask, remote, fake, headers, page } = fixture;
   const independent = await computer("Independent");
   const existing = independent.connect(await independent.start().ready());
   const setup = (await existing("GET", "kuvo/setup")).json.setup;
   assert.notEqual(setup, (await ask("GET", "kuvo/setup")).json.setup);
   const destination = "enrolled-during-add";
+  const installed = path.join(remote, ".kuvo-code");
+  const engine = stageEngine(t, installed);
+  const { selectedKey } = await selectedSshCredentials(fixture);
+  write(path.join(main.home, "box", "opencode.json"), JSON.stringify({
+    model: "fixture/model", headers: { Authorization: "an inline token" }, mcp: {
+      local: { type: "local", command: ["fixture"], environment: { TOKEN: `{file:/source/home/keys/${selectedKey}}` } },
+      remote: { type: "remote", url: "https://fixture.invalid", headers: { Authorization: "an inline MCP token" } },
+    },
+  }));
   const hold = path.join(fake, `hold-${destination}`);
   write(hold, "ssh-enroll");
   t.after(() => fs.rmSync(hold, { force: true }));
   write(path.join(main.home, "ssh", "known_hosts"), `${destination} ssh-ed25519 ${key(8)}\n`);
-  const started = await ask("POST", "kuvo/computers/add", { destination }, headers);
+  const started = await ask("POST", "kuvo/computers/add", { destination, credentials: [] }, headers);
   assert.equal(started.status, 202, started.text);
   const readTry = async () => (await page()).tries.find(attempt => attempt.id === started.json.try.id);
   await until(async () => {
@@ -856,7 +1308,9 @@ test("SSH Add preserves an independent installation that appeared after the prob
     if (attempt?.state === "failed") throw new Error(attempt.failure.message);
     return attempt?.steps.some(step => step.id === "joining" && step.state === "now");
   }, "SSH Add did not reach enrollment.", 30000);
-  const installed = path.join(remote, ".kuvo-code");
+  assert.deepEqual(readJSON(path.join(installed, "box", "opencode.json")), { model: "fixture/model" });
+  assert.equal(fs.existsSync(engine.imported), false);
+  assert.equal(fs.existsSync(path.join(installed, "box", "keys", selectedKey)), false);
   const state = readJSON(path.join(independent.home, "run", "link.json"));
   assert.equal(state.setup.id, setup);
   const link = path.join(installed, "run", "link.json");

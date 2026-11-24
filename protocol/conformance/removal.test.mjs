@@ -7,7 +7,7 @@ import http from "node:http";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxBinary, boxCommand, isolatedEnv, launch, localRelay, readJSON, relayAddress, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, holdWindowsFile, isolatedEnv, launch, localRelay, readJSON, relayAddress, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 
@@ -399,7 +399,7 @@ test("uninstalling a stopped machine clears its desktop identity and sign-ins bu
 });
 
 test("uninstall reports the desktop identity failure first and can be retried", {
-  skip: process.platform === "win32" || process.getuid?.() === 0,
+  skip: process.getuid?.() === 0 || process.platform === "win32" && boxBinary().typescript,
 }, async t => {
   const { computer } = await bench(t);
   const local = await computer("Studio");
@@ -411,7 +411,13 @@ test("uninstall reports the desktop identity failure first and can be retried", 
   write(identity, "local desktop identity");
   write(work, "saved work");
   fs.mkdirSync(launch);
-  fs.chmodSync(desktop, 0o500);
+  let release;
+  if (process.platform === "win32") {
+    release = await holdWindowsFile(t, identity, path.join(local.home, "run", "identity-lock-ready"), local.env);
+  } else {
+    fs.chmodSync(desktop, 0o500);
+    release = () => fs.chmodSync(desktop, 0o700);
+  }
   try {
     const result = await local.command(["uninstall"]);
     assert.equal(result.code, 1, result.log);
@@ -423,7 +429,7 @@ test("uninstall reports the desktop identity failure first and can be retried", 
     assert.equal(fs.readFileSync(identity, "utf8"), "local desktop identity");
     assert.equal(fs.existsSync(path.join(local.home, "run", "off")), true);
   } finally {
-    fs.chmodSync(desktop, 0o700);
+    await release();
     fs.rmdirSync(launch);
   }
   const retried = await local.command(["uninstall"]);

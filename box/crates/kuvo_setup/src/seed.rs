@@ -34,6 +34,164 @@ pub struct Answer {
     message: Option<String>,
 }
 
+/// A selected copy can write only while the SSH command holds the proven account lock.
+pub struct SshSeedCopy {
+    files: Files,
+    account: crate::ssh::LocalReservation,
+    given: Value,
+    copy: OwnedLock,
+}
+
+#[derive(Serialize)]
+pub struct SshSeedReport {
+    keys: usize,
+    taken: usize,
+}
+
+impl SshSeedCopy {
+    pub const MAX_BYTES: usize = source::MAX_BYTES;
+
+    pub fn read(home: &Home, input: &[u8]) -> Result<Self, crate::Error> {
+        let given: Value = serde_json::from_slice(input)
+            .map_err(|_| crate::Error::Invalid("SSH credential copy"))?;
+        if input.len() > source::MAX_BYTES
+            || given["formatVersion"] != 1
+            || !given["keys"].is_object()
+            || !given["settings"].is_object()
+        {
+            return Err(crate::Error::Invalid("SSH credential copy"));
+        }
+        let copy = Self::open(home, given)?;
+        crate::installer::open_staged_home_at(home, Some(&copy.account))?;
+        Ok(copy)
+    }
+
+    pub fn resume_rollback(home: &Home) -> Result<Self, crate::Error> {
+        Self::open(home, Value::Null)
+    }
+
+    fn open(home: &Home, given: Value) -> Result<Self, crate::Error> {
+        let account = crate::ssh::LocalReservation::inherited(home.root())?
+            .ok_or(crate::Error::Invalid("SSH account reservation"))?;
+        account.check_seed(home.root())?;
+        let files = Files::new(home.root().to_owned());
+        let copy = lock(&files).map_err(|source| crate::Error::File {
+            action: "claiming credential copy at",
+            path: home.root().into(),
+            source,
+        })?;
+        let copy = Self {
+            files,
+            account,
+            given,
+            copy,
+        };
+        copy.check()?;
+        Ok(copy)
+    }
+
+    fn check(&self) -> Result<(), crate::Error> {
+        for relative in ["", "run", "bin", "box"] {
+            no_redirected_path(&self.files.path(relative)).map_err(|source| {
+                crate::Error::File {
+                    action: "checking SSH credential copy at",
+                    path: self.files.path(relative),
+                    source,
+                }
+            })?;
+        }
+        self.account.check_seed(self.files.root())?;
+        for name in [
+            crate::actor::LINK,
+            "run/setup-card.json",
+            "bin/kuvo-link.js",
+        ] {
+            let path = self.files.path(name);
+            match path.symlink_metadata() {
+                Ok(_) => return Err(crate::Error::Conflict),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                Err(source) => {
+                    return Err(crate::Error::File {
+                        action: "checking the SSH installation at",
+                        path,
+                        source,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn settings(&self) -> Result<usize, crate::Error> {
+        self.check()?;
+        let keys = self.given["keys"]
+            .as_object()
+            .ok_or(crate::Error::Invalid("SSH credential keys"))?;
+        let kept = take_keys(&self.files, keys).map_err(|source| crate::Error::File {
+            action: "copying selected keys at",
+            path: self.files.path("box/keys"),
+            source,
+        })?;
+        let _guard = settings_lock(&self.files).map_err(|source| crate::Error::File {
+            action: "claiming SSH settings at",
+            path: self.files.path(SETTINGS),
+            source,
+        })?;
+        no_redirected_path(&self.files.path(SETTINGS)).map_err(|source| crate::Error::File {
+            action: "checking SSH settings at",
+            path: self.files.path(SETTINGS),
+            source,
+        })?;
+        let mut selected = self.given["settings"].clone();
+        name_key_paths(
+            &mut selected,
+            &self.files.path("box/keys").to_string_lossy(),
+        );
+        let mut settings: Map<String, Value> = self.files.read(SETTINGS)?.unwrap_or_default();
+        for name in ["model", "mcp"] {
+            if let Some(value) = selected.get(name) {
+                settings
+                    .entry(name.to_owned())
+                    .or_insert_with(|| value.clone());
+            }
+        }
+        self.files.write(SETTINGS, &settings)?;
+        Ok(kept)
+    }
+
+    pub async fn import(&self, keys: usize, input: &[u8]) -> Result<SshSeedReport, crate::Error> {
+        self.check()?;
+        let given: Value = serde_json::from_slice(input)
+            .map_err(|_| crate::Error::Invalid("SSH credential copy"))?;
+        if input.len() > source::MAX_BYTES
+            || given["formatVersion"] != 1
+            || !given["credentials"].is_array()
+        {
+            return Err(crate::Error::Invalid("SSH credential copy"));
+        }
+        let answer = take_selected(&self.files, &given, true).await;
+        if answer.status != 200 {
+            return Err(crate::Error::Installer(answer.message.unwrap_or_else(
+                || "The selected sign-ins could not be saved.".into(),
+            )));
+        }
+        Ok(SshSeedReport {
+            keys,
+            taken: answer.taken.unwrap_or(0),
+        })
+    }
+
+    pub fn rollback(self) -> Result<(), crate::Error> {
+        self.check()?;
+        drop(self.copy);
+        crate::cleanup::clear(&self.files).map_err(|source| crate::Error::File {
+            action: "rolling back SSH credential copy at",
+            path: self.files.root().into(),
+            source,
+        })
+    }
+}
+
 impl Answer {
     fn refuse(status: u16, message: impl Into<String>) -> Self {
         Self {

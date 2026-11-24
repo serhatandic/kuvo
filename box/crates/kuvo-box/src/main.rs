@@ -8,6 +8,8 @@ mod session_ownership;
 mod setup_search;
 #[cfg(target_os = "macos")]
 mod sign_ins;
+#[cfg(unix)]
+mod ssh_copy;
 mod updates;
 mod vault_asks;
 
@@ -85,6 +87,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         (Some("ssh-enroll"), Some(name), 2) => Some(name),
         _ => None,
     };
+    let ssh_seed = cfg!(unix)
+        && args.len() == 1
+        && matches!(word(0), Some("ssh-copy-seed" | "ssh-rollback-seed"));
     let seed = (word(0), word(1), args.len()) == (Some("box"), Some("seed"), 2);
     let wipe = (word(0), args.len()) == (Some("wipe-member"), 1);
     let helper_resident = (word(0), word(1), args.len()) == (Some("serve"), Some("--resident"), 2);
@@ -131,6 +136,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         _ if serve || wipe => None,
         _ if join
             || ssh_enroll.is_some()
+            || ssh_seed
             || seed
             || recovery.is_some()
             || identity
@@ -238,6 +244,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     }
     if !join
         && ssh_enroll.is_none()
+        && !ssh_seed
         && !seed
         && recovery.is_none()
         && keeper.is_none()
@@ -253,6 +260,21 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
+        #[cfg(unix)]
+        if ssh_seed {
+            let worked = if word(0) == Some("ssh-copy-seed") {
+                match ssh_copy::apply(&home).await {
+                    Ok(report) => {
+                        println!("{}", serde_json::to_string(&report)?);
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            } else {
+                ssh_copy::rollback(&home).await
+            };
+            return worked.map_err(Into::into);
+        }
         #[cfg(windows)]
         if let Some(install) = startup {
             if install {
@@ -304,6 +326,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let (key, identity) = kuvo_setup::installer::enrolled_ssh_identity(&home)?;
                 #[cfg(not(windows))]
                 start_ssh_resident(&home, &identity).await?;
+                #[cfg(unix)]
+                if let Err(error) = kuvo_engine::Engine::finish_install_engine(home.root()) {
+                    eprintln!("retiring the staged engine receipt: {error}");
+                }
                 println!("{}", serde_json::json!({"setup": joined.setup, "primary": joined.primary, "key": key, "identity": identity}));
             } else {
                 let joined = kuvo_setup::installer::join(&home, name, &code).await?;

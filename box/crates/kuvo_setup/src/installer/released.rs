@@ -2,6 +2,8 @@
 
 mod sqlite;
 
+pub(super) use sqlite::staged_database_is_empty;
+
 use std::{
     fs::{self, File},
     io,

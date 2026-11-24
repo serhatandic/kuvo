@@ -61,9 +61,9 @@ if [ -f "$F/trace" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
   case "$text" in
     *'uname -sm'*) action=probe ;;
-    *'kuvo-link.js" box seed'*) action=seed ;;
-    *'kuvo-link.js" setup'*) action=join ;;
-    *'kuvo-link.js" uninstall'*) action=uninstall ;;
+    *'kuvo-link.js" box seed'*|*'kuvo-box" ssh-copy-seed'*) action=seed ;;
+    *'kuvo-link.js" setup'*|*'kuvo-box" ssh-enroll'*) action=join ;;
+    *'kuvo-link.js" uninstall'*|*'kuvo-box" ssh-rollback-seed'*) action=uninstall ;;
     *'then rm -f "$R"; fi'*|*'if [ "$prior" = '*'rm -f "$A"'*) action=release ;;
     *) action=other ;;
   esac
@@ -84,6 +84,9 @@ if [ -f "$F/trace" ]; then
       exit 255
     fi
     kill -TERM "$$"
+  fi
+  if [ "$action" = seed ] && [ -f "$F/drop-rust-seed-$dest" ]; then
+    HOME="$FAKE_SSH_HOME" exec "$F/drop-rust-seed" "$remote_script" "$(cat "$F/drop-rust-seed-$dest")"
   fi
 fi
 # Exercise a remote bridge that still returns the revoked credentials on SSH Add.

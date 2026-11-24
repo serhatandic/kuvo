@@ -1,12 +1,15 @@
-use std::sync::{Arc, atomic::AtomicBool};
+use std::{
+    io,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use tokio::sync::oneshot;
 
-use super::{Destination, Job, Progress, Ran};
+use super::{Destination, Input, Job, Progress, Ran, SeedTransfer};
 use crate::ssh::AddError;
 
-const BUSY: i32 = 8;
-const LOST: i32 = 73;
+pub(in crate::ssh) const BUSY: i32 = 8;
+pub(in crate::ssh) const LOST: i32 = 73;
 const BAD_ACCOUNT: i32 = 74;
 const RECOVER: i32 = 76;
 const OLD: i32 = 77;
@@ -28,10 +31,7 @@ impl Destination {
         if self.target.os == "windows" {
             return Ok(None);
         }
-        let token = format!(
-            "guarded-{}",
-            hex::encode(crate::random::<24>().map_err(|_| "Couldn’t reserve the SSH account.")?)
-        );
+        let token = new_token().map_err(|_| "Couldn’t reserve the SSH account.")?;
         job.reservations.lock().unwrap().insert(token.clone());
         let reservation = Reservation {
             remote: self,
@@ -101,37 +101,7 @@ impl Reservation<'_> {
     }
 
     async fn claim(&self, previous: Option<&str>) -> Result<Ran, String> {
-        let continuation = match previous {
-            Some(previous) => format!(
-                r#"
-  [ "$prior" = '{previous}' ] || exit {BUSY}
-  stage=$(mktemp -d "$A.recovery.XXXXXXXX") || exit {BAD_ACCOUNT}
-  trap 'rm -f "$stage/reservation"; rmdir "$stage"' EXIT
-  ln -s '{token}' "$stage/reservation" || exit {BAD_ACCOUNT}
-  case "$(uname -s)" in
-    Darwin) mv -fh "$stage/reservation" "$A" ;;
-    *) mv -fT "$stage/reservation" "$A" ;;
-  esac || exit {BAD_ACCOUNT}
-  exit 0
-else
-  exit {LOST}"#,
-                token = self.token
-            ),
-            None => format!(r#"printf '%s\n' "$prior"; exit {RECOVER}"#),
-        };
-        let script = self.locked(
-            0,
-            &format!(
-                r#"
-if claimed; then
-  prior=$(readlink "$A") || exit {BAD_ACCOUNT}
-  case "$prior" in guarded-*) ;; *) exit {OLD} ;; esac
-  {continuation}
-fi
-ln -s '{token}' "$A" || exit {BAD_ACCOUNT}"#,
-                token = self.token
-            ),
-        );
+        let script = claim_script(&self.remote.root, &self.token, previous, "");
         self.remote.shell(self.job, &script, Vec::new(), 30).await
     }
 
@@ -141,14 +111,63 @@ ln -s '{token}' "$A" || exit {BAD_ACCOUNT}"#,
         input: Vec<u8>,
         timeout: u64,
     ) -> Result<Ran, String> {
+        self.run_locked(script, Input::Bytes(input), timeout, self.job.stop.clone())
+            .await
+    }
+
+    pub(in crate::ssh) async fn run_seed(
+        &mut self,
+        script: &str,
+        input: SeedTransfer,
+        timeout: u64,
+    ) -> Result<Ran, String> {
+        // Once this writer starts, wait for its result before rolling back or releasing.
+        self.run_locked(
+            script,
+            Input::Seed(input),
+            timeout,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+    }
+
+    pub(in crate::ssh) async fn run_cleanup(
+        &mut self,
+        script: &str,
+        timeout: u64,
+    ) -> Result<Ran, String> {
+        self.run_locked(
+            script,
+            Input::Bytes(Vec::new()),
+            timeout,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+    }
+
+    pub(in crate::ssh) fn can_cleanup(&self) -> bool {
+        self.settled
+    }
+
+    async fn run_locked(
+        &mut self,
+        script: &str,
+        input: Input,
+        timeout: u64,
+        stop: Arc<AtomicBool>,
+    ) -> Result<Ran, String> {
         if !self.settled {
             return Err(self.interrupted());
         }
         self.settled = false;
-        let script = self.locked(5, &format!("{} || exit {LOST}\n{script}", self.owns()));
+        let script = locked_script(
+            &self.remote.root,
+            5,
+            &format!("{} || exit {LOST}\n{script}", owns(&self.token)),
+        );
         let ran = self
             .remote
-            .shell(self.job, &script, input, timeout)
+            .shell_input(stop, &script, input, timeout)
             .await
             .map_err(|_| self.interrupted())?;
         let Some(code) = ran.status.code().filter(|code| *code != 255) else {
@@ -170,17 +189,7 @@ ln -s '{token}' "$A" || exit {BAD_ACCOUNT}"#,
         if !self.settled {
             return Ok(());
         }
-        let script = self.locked(
-            5,
-            &format!(
-                r#"
-if claimed; then
-  prior=$(readlink "$A") || exit {BAD_ACCOUNT}
-  if [ "$prior" = '{}' ]; then rm -f "$A"; fi
-fi"#,
-                self.token
-            ),
-        );
+        let script = release_script(&self.remote.root, &self.token);
         let released = self
             .remote
             .shell_with_stop(Arc::new(AtomicBool::new(false)), &script, Vec::new(), 15)
@@ -208,48 +217,6 @@ fi"#,
         })
     }
 
-    fn locked(&self, wait: u8, script: &str) -> String {
-        let root = &self.remote.root;
-        let (marker, prepare) = if root == ".kuvo-code" {
-            (".kuvo-code-adding".to_owned(), String::new())
-        } else {
-            (
-                format!("{root}/run/ssh-adding"),
-                format!(
-                    r#"[ ! -L "$HOME/{root}" ] && [ ! -L "$HOME/{root}/run" ] || exit {BAD_ACCOUNT}
-(umask 077; mkdir -p "$HOME/{root}/run") || exit {BAD_ACCOUNT}"#
-                ),
-            )
-        };
-        format!(
-            r#"{prepare}
-A="$HOME/{marker}"
-claimed() {{ [ -e "$A" ] || [ -L "$A" ]; }}
-if [ -L "$A.lock" ] || {{ [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }}; then
-  echo 'The Kuvo Code account lock must be a regular file.' >&2
-  exit {BAD_ACCOUNT}
-fi
-(umask 077; : >>"$A.lock") || exit {BAD_ACCOUNT}
-(
-  case "$(uname -s)" in
-    Darwin) /usr/bin/lockf -t {wait} 9 ;;
-    *) flock -w {wait} -E 75 9 ;;
-  esac
-  status=$?
-  if [ "$status" -ne 0 ]; then
-    if [ "$status" -eq 75 ] && claimed; then exit {BUSY}; fi
-    exit {BAD_ACCOUNT}
-  fi
-  trap '' HUP
-  {script}
-) 9<>"$A.lock""#
-        )
-    }
-
-    fn owns(&self) -> String {
-        format!("[ \"$(readlink \"$A\" 2>/dev/null)\" = '{}' ]", self.token)
-    }
-
     fn busy(&self) -> String {
         format!(
             "Another Kuvo Code change is in progress on {}. Try again once it finishes.",
@@ -273,13 +240,116 @@ fi
     }
 
     fn log(&self, action: &str, ran: &Ran) {
-        let status = ran.status.code().map_or_else(|| "null".into(), |code| code.to_string());
+        let status = ran
+            .status
+            .code()
+            .map_or_else(|| "null".into(), |code| code.to_string());
         eprintln!(
             "Kuvo couldn't {action} on {} (status {status}): {}",
             self.remote.name(),
             ran.stderr.lines().last().unwrap_or_default()
         );
     }
+}
+
+pub(in crate::ssh) fn new_token() -> io::Result<String> {
+    Ok(format!(
+        "guarded-{}",
+        hex::encode(crate::random::<24>().map_err(io::Error::other)?)
+    ))
+}
+
+pub(in crate::ssh) fn claim_script(
+    root: &str,
+    token: &str,
+    previous: Option<&str>,
+    preflight: &str,
+) -> String {
+    let continuation = match previous {
+        Some(previous) => format!(
+            r#"
+  [ "$prior" = '{previous}' ] || exit {BUSY}
+  stage=$(mktemp -d "$A.recovery.XXXXXXXX") || exit {BAD_ACCOUNT}
+  trap 'rm -f "$stage/reservation"; rmdir "$stage"' EXIT
+  ln -s '{token}' "$stage/reservation" || exit {BAD_ACCOUNT}
+  case "$(uname -s)" in
+    Darwin) mv -fh "$stage/reservation" "$A" ;;
+    *) mv -fT "$stage/reservation" "$A" ;;
+  esac || exit {BAD_ACCOUNT}
+  exit 0
+else
+  exit {LOST}"#,
+        ),
+        None => format!(r#"printf '%s\n' "$prior"; exit {RECOVER}"#),
+    };
+    locked_script(
+        root,
+        0,
+        &format!(
+            r#"{preflight}
+if claimed; then
+  prior=$(readlink "$A") || exit {BAD_ACCOUNT}
+  case "$prior" in guarded-*) ;; *) exit {OLD} ;; esac
+  {continuation}
+fi
+ln -s '{token}' "$A" || exit {BAD_ACCOUNT}"#
+        ),
+    )
+}
+
+pub(in crate::ssh) fn release_script(root: &str, token: &str) -> String {
+    locked_script(
+        root,
+        5,
+        &format!(
+            r#"
+if claimed; then
+  prior=$(readlink "$A") || exit {BAD_ACCOUNT}
+  if [ "$prior" = '{token}' ]; then rm -f "$A"; fi
+fi"#
+        ),
+    )
+}
+
+pub(in crate::ssh) fn locked_script(root: &str, wait: u8, script: &str) -> String {
+    let (marker, prepare) = if root == ".kuvo-code" {
+        (".kuvo-code-adding".to_owned(), String::new())
+    } else {
+        (
+            format!("{root}/run/ssh-adding"),
+            format!(
+                r#"[ ! -L "$HOME/{root}" ] && [ ! -L "$HOME/{root}/run" ] || exit {BAD_ACCOUNT}
+(umask 077; mkdir -p "$HOME/{root}/run") || exit {BAD_ACCOUNT}"#
+            ),
+        )
+    };
+    format!(
+        r#"{prepare}
+A="$HOME/{marker}"
+claimed() {{ [ -e "$A" ] || [ -L "$A" ]; }}
+if [ -L "$A.lock" ] || {{ [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }}; then
+  echo 'The Kuvo Code account lock must be a regular file.' >&2
+  exit {BAD_ACCOUNT}
+fi
+(umask 077; : >>"$A.lock") || exit {BAD_ACCOUNT}
+(
+  case "$(uname -s)" in
+    Darwin) /usr/bin/lockf -t {wait} 9 ;;
+    *) flock -w {wait} -E 75 9 ;;
+  esac
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 75 ] && claimed; then exit {BUSY}; fi
+    exit {BAD_ACCOUNT}
+  fi
+  trap '' HUP
+  {script}
+) 9<>"$A.lock""#
+    )
+}
+
+pub(in crate::ssh) fn owns(token: &str) -> String {
+    format!("[ \"$(readlink \"$A\" 2>/dev/null)\" = '{token}' ]")
 }
 
 pub(crate) fn valid_token(token: &str) -> bool {

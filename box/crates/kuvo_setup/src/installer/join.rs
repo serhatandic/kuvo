@@ -112,7 +112,7 @@ pub fn cancellation_receipts(home: &Home) -> Result<Vec<String>, Error> {
         && let Some(receipt) = claim.cancellation()
         && (claim.cancel_pending
             || claim.until <= lease::wall()
-            || has_work(&files, &link).unwrap_or(true))
+            || has_work(&files, &link, false).unwrap_or(true))
     {
         if !claim.cancel_pending {
             claim.cancel_pending = true;
@@ -262,7 +262,7 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         return Err(refused(message));
     }
     let ssh_account = if staged {
-        SshAccount::inherited(home.root())?
+        crate::ssh::LocalReservation::inherited(home.root())?
     } else {
         None
     };
@@ -654,7 +654,10 @@ pub fn open_staged_home(home: &Home) -> Result<(), Error> {
     open_staged_home_at(home, None)
 }
 
-fn open_staged_home_at(home: &Home, ssh_account: Option<&SshAccount>) -> Result<(), Error> {
+pub(crate) fn open_staged_home_at(
+    home: &Home,
+    ssh_account: Option<&crate::ssh::LocalReservation>,
+) -> Result<(), Error> {
     use std::fs;
 
     if layout::inspect(home)? != layout::Layout::Unmarked {
@@ -677,8 +680,7 @@ fn open_staged_home_at(home: &Home, ssh_account: Option<&SshAccount>) -> Result<
                     if fs::read_dir(entry.path()).ok()?.all(|file| {
                         file.is_ok_and(|file| {
                             ssh_account.is_some_and(|account| {
-                                let path = file.path();
-                                path == account.marker || path == account.lock
+                                account.owns_layout_file(home.root(), &file.path())
                             })
                         })
                     }) =>
@@ -697,6 +699,7 @@ fn open_staged_home_at(home: &Home, ssh_account: Option<&SshAccount>) -> Result<
                 {
                     ()
                 }
+                "engine" if ssh_account.is_some() && only_cached_engine(&entry.path()) => (),
                 _ => return None,
             }
         }
@@ -708,6 +711,32 @@ fn open_staged_home_at(home: &Home, ssh_account: Option<&SshAccount>) -> Result<
         ));
     }
     Ok(layout::publish(home)?)
+}
+
+fn only_cached_engine(folder: &std::path::Path) -> bool {
+    std::fs::read_dir(folder).is_ok_and(|mut versions| {
+        versions.all(|version| {
+            version.is_ok_and(|version| {
+                let name = version.file_name();
+                version.file_type().is_ok_and(|kind| kind.is_dir())
+                    && name.to_str().is_some_and(|name| {
+                        name.split('.').count() == 3
+                            && name.split('.').all(|number| {
+                                !number.is_empty()
+                                    && number.bytes().all(|byte| byte.is_ascii_digit())
+                            })
+                    })
+                    && std::fs::read_dir(version.path()).is_ok_and(|mut files| {
+                        files.all(|file| {
+                            file.is_ok_and(|file| {
+                                file.file_name() == "opencode"
+                                    && file.file_type().is_ok_and(|kind| kind.is_file())
+                            })
+                        })
+                    })
+            })
+        })
+    })
 }
 
 struct SavedLink<'a> {
@@ -742,97 +771,13 @@ impl SavedLink<'_> {
     }
 }
 
-struct SshAccount {
-    marker: std::path::PathBuf,
-    lock: std::path::PathBuf,
-    token: String,
-}
-
-impl SshAccount {
-    #[cfg(unix)]
-    fn inherited(root: &std::path::Path) -> Result<Option<Self>, Error> {
-        use std::os::unix::fs::MetadataExt as _;
-
-        let Some(token) = std::env::var_os("KUVO_SSH_ACCOUNT_TOKEN") else {
-            return Ok(None);
-        };
-        let token = token
-            .into_string()
-            .ok()
-            .filter(|value| crate::ssh::is_reservation_token(value))
-            .ok_or(Error::Invalid("SSH account reservation"))?;
-        let (marker, lock) = if root.file_name().is_some_and(|name| name == ".kuvo-code") {
-            (
-                root.with_file_name(".kuvo-code-adding"),
-                root.with_file_name(".kuvo-code-adding.lock"),
-            )
-        } else {
-            (
-                root.join("run/ssh-adding"),
-                root.join("run/ssh-adding.lock"),
-            )
-        };
-        let meta = std::fs::symlink_metadata(&lock).map_err(|source| Error::File {
-            action: "checking the SSH account lock at",
-            path: lock.clone(),
-            source,
-        })?;
-        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // The reservation shell passes FD 9. Verify its inode before marking
-        // it close-on-exec so a detached resident can't keep the writer lock.
-        let matches_lock = meta.is_file()
-            && unsafe {
-                if libc::fstat(9, stat.as_mut_ptr()) == 0 {
-                    let stat = stat.assume_init();
-                    stat.st_dev as u64 == meta.dev() && stat.st_ino as u64 == meta.ino()
-                } else {
-                    false
-                }
-            };
-        if !matches_lock {
-            return Err(Error::Invalid("SSH account reservation lock"));
-        }
-        if unsafe { libc::fcntl(9, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
-            return Err(Error::File {
-                action: "keeping the SSH account lock private at",
-                path: marker,
-                source: std::io::Error::last_os_error(),
-            });
-        }
-        let account = Self {
-            marker,
-            lock,
-            token,
-        };
-        account.check()?;
-        Ok(Some(account))
-    }
-
-    #[cfg(not(unix))]
-    fn inherited(_: &std::path::Path) -> Result<Option<Self>, Error> {
-        Ok(None)
-    }
-
-    fn check(&self) -> Result<(), Error> {
-        if std::fs::read_link(&self.marker)
-            .is_ok_and(|token| token.as_os_str() == self.token.as_str())
-        {
-            Ok(())
-        } else {
-            Err(refused(
-                "The SSH account was cleared for another attempt. Try again.",
-            ))
-        }
-    }
-}
-
 fn check_join(
     files: &Files,
     link: &Link,
     code: &Code,
     id: &str,
     claim: Option<&LocalClaim>,
-    ssh_account: Option<&SshAccount>,
+    ssh_account: Option<&crate::ssh::LocalReservation>,
 ) -> Result<(), Error> {
     if link
         .setup
@@ -858,11 +803,9 @@ fn check_join(
     {
         return Err(refused("This computer is already your main computer."));
     }
-    if has_work(files, link).unwrap_or(true) {
-        return Err(refused(HAS_WORK));
-    }
-    if let Some(ssh_account) = ssh_account {
+    let staged = if let Some(ssh_account) = ssh_account {
         ssh_account.check()?;
+        ssh_account.copying_for(files.root(), &code.setup, &code.primary)
     } else {
         let adding = files.path("../.kuvo-code-adding");
         match adding.symlink_metadata() {
@@ -880,6 +823,10 @@ fn check_join(
                 });
             }
         }
+        false
+    };
+    if has_work(files, link, staged).unwrap_or(true) {
+        return Err(refused(HAS_WORK));
     }
     let now = lease::wall();
     if let Some(claim) = claim {
@@ -907,7 +854,7 @@ fn check_join(
 
 // Until the move reader is available, conservatively keep homes with existing
 // work in place. The installer only replaces an empty setup's identity.
-fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
+fn has_work(files: &Files, link: &Link, staged: bool) -> Result<bool, Error> {
     let now = lease::wall();
     if link.installer_invites.values().any(|entry| entry.live(now))
         || (!link.shared.is_empty() && !bootstrap_only(link))
@@ -983,10 +930,19 @@ fn has_work(files: &Files, link: &Link) -> Result<bool, Error> {
             return Ok(true);
         }
     }
-    Ok(files
-        .names("data/opencode")?
-        .iter()
-        .any(|name| name.starts_with("opencode") && name.ends_with(".db")))
+    let databases = files.names("data/opencode")?;
+    for name in databases {
+        if name.starts_with("opencode")
+            && name.ends_with(".db")
+            && (!staged
+                || !super::released::staged_database_is_empty(
+                    &files.path("data/opencode").join(name),
+                ))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn bootstrap_only(link: &Link) -> bool {

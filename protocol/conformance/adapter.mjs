@@ -75,6 +75,21 @@ export function launch(command, args, env, cwd, stdout = "ignore") {
   return { child, exited, stop, log: () => log };
 }
 
+/** Allow reads while refusing delete or replacement until the fixture releases the file. */
+export async function holdWindowsFile(t, file, ready, env) {
+  const holder = launch("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = 'Stop'
+$held = [IO.File]::Open($env:KUVO_TEST_LOCK_FILE, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+  [IO.File]::WriteAllText($env:KUVO_TEST_LOCK_READY, 'held')
+  [Console]::ReadLine() | Out-Null
+} finally { $held.Dispose() }
+`], { ...env, KUVO_TEST_LOCK_FILE: file, KUVO_TEST_LOCK_READY: ready }, path.dirname(file));
+  t.after(() => holder.stop());
+  await until(() => fs.existsSync(ready), () => `Windows did not hold the fixture file: ${holder.log()}`);
+  return async () => { holder.child.stdin.end(); await holder.exited; };
+}
+
 export async function until(check, why, timeout = 10000, interval = 15) {
   const deadline = performance.now() + timeout;
   for (;;) {
