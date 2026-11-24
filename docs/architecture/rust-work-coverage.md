@@ -290,6 +290,9 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   on macOS and against the Rust box on Linux; on Windows three runs of four passed, one failed
   "session list cursors carry changes and tombstones" with the other session listed as changed
   (not seen in twelve macOS runs of that case alone).
+- Seen once under load, open: that failure didn't come back in 10 Windows runs of the case alone
+  and 6 of the area against `main`, nor 10 of each against this part; the case now writes both
+  answers and `sessions.json` to its output when it fails.
 - `session_list::work::tests` (2): a bot's work keeps what it ran on, how it went and its asks
   answered; a subagent keeps where it ran; your own conversation and a hidden run keep none.
 - Side by side, 16 requests (with `kuvo/work?bot=` and `kuvo/sessions`): every answer matches.

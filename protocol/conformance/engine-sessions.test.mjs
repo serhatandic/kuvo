@@ -2208,11 +2208,19 @@ test("session list cursors carry changes and tombstones, then read whole after a
     const answer = await list(newest.at);
     return answer.json?.sessions?.[kept]?.title === "After" && answer.json;
   }, "The recorded cursor did not receive the session change.");
-  assert.equal(changed.full, undefined);
-  assert.deepEqual(Object.keys(changed.sessions), [kept]);
   const streamed = (await changes.next()).value;
-  assert.equal(streamed.full, undefined);
-  assert.deepEqual(streamed.sessions, changed.sessions);
+  try {
+    assert.equal(changed.full, undefined);
+    assert.deepEqual(Object.keys(changed.sessions), [kept]);
+    assert.equal(streamed.full, undefined);
+    assert.deepEqual(streamed.sessions, changed.sessions);
+  } catch (error) {
+    // (Seen once on Windows under load: what each answer and the kept list held.)
+    t.diagnostic(`listed since ${newest.at}: ${JSON.stringify(changed)}`);
+    t.diagnostic(`streamed: ${JSON.stringify(streamed)}`);
+    t.diagnostic(`sessions.json: ${fs.existsSync(savedList) ? fs.readFileSync(savedList, "utf8") : "(none)"}`);
+    throw error;
+  }
   assert.equal((await request(record, "DELETE", `kuvo/sessions/${gone}`)).status, 200);
   const removed = await until(async () => {
     const answer = await list(changed.at);
