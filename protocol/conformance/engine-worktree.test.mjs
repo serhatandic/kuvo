@@ -76,6 +76,29 @@ test("a new worktree is recorded under its project before the conversation is re
   assert.deepEqual(stored.worktrees.map(({ root, project }) => ({ root, project })), [{ root: worktree.root, project }]);
 });
 
+test("a linked project subfolder starts the conversation in that subfolder of its new worktree", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("nested-linked-project");
+  const repository = path.join(here.home, "repository");
+  const sources = path.join(repository, "nested");
+  const project = path.join(here.home, "project-link");
+  const env = isolatedEnv(path.dirname(here.home));
+  write(path.join(sources, "notes.md"), "In this project's folder.");
+  git(env, repository, "init", "-q");
+  git(env, repository, "add", "nested/notes.md");
+  git(env, repository, "commit", "-qm", "Fixture");
+  fs.symlinkSync(sources, project, process.platform === "win32" ? "junction" : "dir");
+  write(path.join(here.home, "box", "projects.json"), JSON.stringify({ projects: [{ directory: project, name: "Nested project" }] }));
+  const record = await here.start().ready();
+  const started = await request(record, "POST", "kuvo/sessions", { project: "Nested project", worktree: true });
+  assert.equal(started.status, 200, started.text);
+  const { worktree, session } = started.json;
+  assert.equal(worktree.project, project);
+  assert.equal(started.json.folder, path.join(worktree.root, "nested"));
+  assert.equal(fs.readFileSync(path.join(started.json.folder, "notes.md"), "utf8"), "In this project's folder.");
+  assert.equal(here.engine.sessions.find(row => row.id === session).location.directory, started.json.folder);
+});
+
 test("a sibling project folder files both explicit and delegated starts under that project", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const { home, engine, start } = await computer("session-sibling-folder");

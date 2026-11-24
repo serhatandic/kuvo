@@ -173,6 +173,19 @@ test("a stopped queue refuses Add when the payload cannot be saved and accepts a
   assert.deepEqual(readJSON(saved)[session].waiting ?? [], []);
   assert.equal(here.engine.asked.some(call => call.method === "POST" && call.path.endsWith("/prompt")), false);
   fs.rmdirSync(file);
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const run = path.dirname(saved);
+    const before = fs.statSync(run).mode & 0o777;
+    fs.chmodSync(run, 0o500);
+    try {
+      const refused = await add();
+      assert.equal(refused.status, 500, refused.text);
+      assert.deepEqual(readJSON(saved)[session].waiting ?? [], []);
+      if (fs.existsSync(file)) assert.match(readJSON(file).text, /Save it/);
+    } finally {
+      fs.chmodSync(run, before);
+    }
+  }
   const retried = await add();
   assert.equal(retried.status, 200, retried.text);
   assert.equal(retried.json.waits, true);
@@ -225,6 +238,7 @@ test("rename and archive keep session notes, and a subagent goes with its conver
   );
   const resident = await here.start().ready();
   const route = "kuvo/sessions/ses_project";
+  assert.equal((await request(resident, "GET", "kuvo/sessions/ses%E0/actions")).status, 403);
   const rename = await request(resident, "POST", route + "/rename", { title: "  After  " });
   assert.equal(rename.status, 200);
   assert.equal(rename.json.info.title, "After");
@@ -2237,13 +2251,18 @@ test("a project file change refiles the saved inventory without another engine r
   const projects = path.join(here.home, "box", "projects.json");
   const list = folders => JSON.stringify({ version: 1, projects: [{ directory: project, name: "Work", folders }] });
   write(projects, list([]));
-  here.engine.sessions.push(sessionOf({ id: session, directory: tree }));
+  const observed = sessionOf({ id: session, directory: tree });
+  here.engine.sessions.push(observed);
   const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the engine");
+  // Establish the baseline after the initial passive adoption and a complete event-driven read.
+  observed.title = "Ready to refile";
+  here.engine.emit({ type: "session.renamed", data: { sessionID: session, info: observed } });
   const before = await until(async () => {
     const reply = await request(record, "GET", "kuvo/sessions/list");
-    return reply.json?.sessions?.[session]?.project === tree && reply.json;
+    const found = reply.json?.sessions?.[session];
+    return found?.project === tree && found.title === observed.title && reply.json;
   }, "the initial project filing");
-  await until(() => here.engine.subscribers() > 0, "the resident to follow the engine");
   const calls = () => here.engine.inventoryReads ?? 0;
   const readBefore = calls();
   const release = Promise.withResolvers();
