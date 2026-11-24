@@ -1116,7 +1116,9 @@ impl Driver {
                     .iter()
                     .any(|active| active.live() && active.thing == row.thing)
             {
-                left::forget(self.run_dir(), &row.id)?;
+                if let Err(error) = left::expire(self.run_dir(), &row) {
+                    eprintln!("Removing an expired move backup {}: {error}", row.id);
+                }
             } else if ask
                 && row.ran_at.is_none()
                 && let (Some(peer), Some(session)) = (decode_exact(&row.to), row.sessions.first())

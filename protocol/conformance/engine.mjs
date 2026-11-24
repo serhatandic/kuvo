@@ -176,7 +176,13 @@ export async function standInEngine(root, env) {
         const session = decodeURIComponent(messages[1]);
         const pages = engine.messagePages?.get(session);
         const page = pages?.get(url.searchParams.get("cursor"));
-        return send(page ?? { data: engine.messages.get(session) ?? [] });
+        if (page) return send(page);
+        const history = engine.messages.get(session) ?? [];
+        if (url.searchParams.get("order") === "desc") {
+          if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
+          return send({ data: history.toReversed().slice(0, Number(url.searchParams.get("limit")) || history.length) });
+        }
+        return send({ data: history });
       }
       if (route === "GET /api/credential") return send({ data: engine.credentials });
       if (route === "POST /api/credential") {

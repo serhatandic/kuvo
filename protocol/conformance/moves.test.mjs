@@ -485,21 +485,22 @@ async function moveMail(t, relay, main, remote = 2) {
   t.after(() => sender.leave());
   const { sealOneWay, openOneWay, readFrame, frame, Frame } = await testMail(t, boxBinary(wireFixture));
   const receive = async () => {
-    const datagram = readFrame((await sender.next(15000)).subarray(17));
+    const datagram = readFrame((await sender.next(20000)).subarray(17));
     return datagram?.kind === Frame.mail && JSON.parse(openOneWay(datagram.body, from, to).payload);
   };
   let welcomed = false;
-  return async movement => {
+  return async (movement, expectReply = true) => {
     if (!welcomed) {
       await until(async () => (await receive())?.agents, "The destination did not announce itself to the peer", 15000);
       welcomed = true;
     }
     const { message } = sealOneWay(Buffer.from(JSON.stringify({ formatVersion: 1, at: Date.now(), move: movement })), from, to);
     sender.send(address, frame(Frame.mail, 0, message));
+    if (!expectReply) return;
     return until(async () => {
       const answer = (await receive())?.move;
       return answer?.id === movement.id && answer;
-    }, () => "The destination never answered " + movement.id);
+    }, () => "The destination never answered " + movement.id, 20000);
   };
 }
 
@@ -529,7 +530,7 @@ test("a destination reports the same held copy and refuses an unknown arrival", 
 });
 
 test("a dropped copy stays held through an engine failure and a late switch", {
-  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("held-drop");
@@ -652,6 +653,97 @@ test("the week-long cleanup warning dates from the drop and keeps the copy held"
   }
   await until(() => here.engine.sessions.length === 0, "The held copies were not removed once the engine recovered");
   assert.equal(process.log().match(warning).length, 1);
+});
+
+test("a retired backup waits for its new owner's first run and any move back", {
+  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("retired-backup");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url, 1, 3);
+  const owner = await moveMail(t, relay, main), other = await moveMail(t, relay, main, 3);
+  const old = "mov_retiredBackup", session = "ses_returningBackup";
+  const recent = "mov_recentBackup", recentSession = "ses_recentBackup";
+  const at = Date.now() - 8 * 86_400_000, recentAt = Date.now() - 86_400_000;
+  const backup = (id, thing, at) => {
+    const trash = path.join(here.home, "trash", id, thing);
+    write(path.join(trash, "conversation.json"), "[]");
+    return { id, thing, to: member.key, kind: "chat", sessions: [thing], at, trash };
+  };
+  const saved = backup(old, session, at), fresh = backup(recent, recentSession, recentAt);
+  const left = "run/moves/left.json";
+  save(left, [saved, fresh]);
+  const rows = () => readJSON(path.join(here.home, left));
+  const processBox = here.start();
+  const resident = await processBox.ready();
+  await until(async () => (await request(resident, "GET", "api/session")).status === 200,
+    "The destination's engine did not become ready");
+  await other({ id: old, op: "ran", at }, false);
+  assert.equal((await other({ id: "mov_unrelatedCheck", op: "arrive", generation: 1, hash: "A".repeat(43) })).op, "failed");
+  assert.equal(rows().find(row => row.id === old).ranAt, undefined);
+  assert.ok(fs.existsSync(saved.trash), "Another computer cannot start the backup's expiry");
+
+  const move = { id: "mov_returningBackup", generation: 1, hash: Buffer.alloc(32, 1).toString("base64url") };
+  const offer = { ...move, op: "offer", kind: "chat", thing: session, name: "Returning chat",
+    size: 30000, safeSwitch: true, twoComputers: true };
+  const offered = await owner(offer);
+  assert.equal(offered.op, "ready", JSON.stringify(offered));
+  await owner({ id: old, op: "ran", at }, false);
+  await owner({ id: recent, op: "ran", at }, false);
+  await until(() => rows().every(row => row.ranAt !== undefined), "The source did not learn that the chats ran");
+  assert.equal(rows().find(row => row.id === recent).ranAt, recentAt, "A first run cannot predate the move");
+  assert.ok(fs.existsSync(saved.trash), "A move back still needs the old backup");
+  const blockDeletion = process.platform !== "win32" && process.getuid() !== 0;
+  const container = path.dirname(saved.trash);
+  if (blockDeletion) fs.chmodSync(container, 0o500);
+  try {
+    assert.equal((await owner({ ...move, op: "drop" })).op, "dropped");
+    if (blockDeletion) {
+      await until(() => /Permission denied|EACCES/.test(processBox.log()),
+        () => "The source did not attempt to remove the expired backup\n" + processBox.log());
+      assert.ok(rows().some(row => row.id === old), "A failed deletion leaves a record to retry");
+    }
+  } finally {
+    if (blockDeletion) fs.chmodSync(container, 0o700);
+  }
+  await until(() => !fs.existsSync(saved.trash) && !rows().some(row => row.id === old),
+    "An expired backup was not removed after the move back was dropped");
+  assert.ok(fs.existsSync(fresh.trash), "The backup remains until a week after its first run");
+});
+
+test("a destination reports its first local reply after the carried transcript", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("first-run");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const at = Date.now() - 3600_000;
+  const id = "mov_firstRun", session = "ses_importedFirstRun", gone = "mov_firstRunGone";
+  save("run/moves/ended.json", {
+    [id]: { as: "switched", peer: member.key, at, last: "msg_carriedLast" },
+    [gone]: { as: "switched", peer: member.key, at },
+  });
+  here.engine.sessions.push(sessionOf({ id: session, directory: path.join(here.home, "chats") }));
+  const message = (id, type, created) => ({ id, type, time: { created }, text: id });
+  const history = [message("msg_carriedLast", "assistant", at + 5_000_000)];
+  here.engine.messages.set(session, history);
+  const resident = await here.start().ready();
+  await until(async () => (await request(resident, "GET", "api/session/" + session)).status === 200,
+    "The destination's engine did not become ready");
+  const askRun = { op: "ran?", id, session };
+  const reads = () => here.engine.asked.filter(call => call.method === "GET"
+    && call.path === "/api/session/" + session + "/message").length;
+  const before = reads();
+  await ask(askRun, false);
+  await until(() => reads() > before, "The destination did not check the imported transcript");
+  history.push(message("msg_localQuestion", "user", at + 50), message("msg_localFirst", "assistant", at + 100),
+    message("msg_localSecond", "assistant", at + 500));
+  assert.deepEqual(await ask(askRun), { id, op: "ran", at: at + 100 });
+  const checkedAt = Date.now();
+  const absent = await ask({ op: "ran?", id: gone, session: "ses_absentFirstRun" });
+  assert.equal(absent.op, "ran");
+  assert.ok(absent.at >= checkedAt, "A conversation that no longer lives here starts the retention clock");
 });
 
 test("an expired partial copy is discarded without making a conversation", {
