@@ -157,7 +157,12 @@ pub async fn run(
     let mut routes = Registry::new();
     let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
     agents::sessions::register(sessions.clone(), &mut routes);
+    agents::background::register(home, sessions.background().clone(), &mut routes);
     let engine = if let Some((runtime, accounts)) = resident_agents {
+        // What its coding agents keep going, for the work routes and those that read the file.
+        let _published = sessions
+            .background()
+            .publish(home.join("run/work/background.json"));
         agents::register(accounts.clone(), &mut routes);
         let location = if kind == ComputerKind::Mac {
             kuvo_agents::permissions::ConfigLocation::Desktop

@@ -204,6 +204,16 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
       finish(held);
       held = undefined;
     }
+  } else if (scriptedTurns && subtype === "get_task_output") {
+    // What a command it left running printed so far, as the test says (\`<root>/claude-task-output.json\`).
+    const outputs = ${JSON.stringify(path.join(root, "claude-task-output.json"))};
+    const output = (fs.existsSync(outputs) ? JSON.parse(fs.readFileSync(outputs, "utf8")) : {})[message.request.task_id] ?? "";
+    answer(message.request_id, { subtype: "success", response: { output, total_bytes: Buffer.byteLength(output) } });
+  } else if (scriptedTurns && subtype === "stop_task") {
+    // Stopped: it says so, and that nothing's left going.
+    answer(message.request_id, { subtype: "success", response: {} });
+    send({ type: "system", subtype: "task_notification", task_id: message.request.task_id, status: "stopped", summary: "stopped", session_id: native });
+    send({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: native });
   } else if (scriptedTurns && ["set_model", "set_permission_mode", "apply_flag_settings", "interrupt"].includes(subtype)) {
     answer(message.request_id, { subtype: "success", response: {} });
     if (held && subtype === "interrupt") { finish(held, true); held = undefined; }

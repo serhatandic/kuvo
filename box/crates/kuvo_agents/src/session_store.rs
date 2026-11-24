@@ -68,11 +68,21 @@ impl SessionHeader {
 #[derive(Clone)]
 pub struct SessionStore {
     root: PathBuf,
+    /// What the agents keep going besides each conversation's turn, given to each thread.
+    background: crate::background::Background,
 }
 
 impl SessionStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            background: crate::background::Background::default(),
+        }
+    }
+
+    /// What the agents keep going besides each conversation's own turn.
+    pub fn background(&self) -> &crate::background::Background {
+        &self.background
     }
 
     pub async fn read(&self, id: &str) -> io::Result<Option<SessionHeader>> {
@@ -117,6 +127,7 @@ impl SessionStore {
         };
         let id = id.to_owned();
         let provider = provider.to_owned();
+        let background = self.background.clone();
         tokio::task::spawn_blocking(move || {
             let Some(header) = read_header(&folder, &id)? else {
                 return Ok(None);
@@ -132,6 +143,7 @@ impl SessionStore {
                 session_id: id,
                 directory: PathBuf::from(directory),
                 state,
+                background,
             }))
         })
         .await?

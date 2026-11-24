@@ -16,6 +16,9 @@ pub struct SessionContext {
     pub session_id: String,
     pub directory: PathBuf,
     pub state: VendorState,
+    /// Where its agent says what it keeps going besides its turn: commands it left running, and
+    /// other tasks.
+    pub background: crate::background::Background,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
