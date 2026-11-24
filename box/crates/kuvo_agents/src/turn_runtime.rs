@@ -2,7 +2,10 @@
 
 use crate::{
     runtime::AdapterCall,
-    session::{ActiveTurn, EventEnvelope, Prompt, Steer, Thread, TurnEvent, TurnInput},
+    session::{
+        ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, Thread, TurnEvent,
+        TurnInput,
+    },
     turn_sink::{EventWrite, ResidentSink},
 };
 use std::{
@@ -19,7 +22,9 @@ pub trait TurnWriter: Send {
 enum State {
     Starting,
     Active(Arc<dyn ActiveTurn>),
-    Done(Result<(), Arc<io::Error>>),
+    /// How the turn ended, as its agent said; none when it stopped without
+    /// saying.
+    Done(Result<Option<Outcome>, Arc<io::Error>>),
 }
 
 #[derive(Clone)]
@@ -58,7 +63,7 @@ impl RunningTurn {
             .wait_for(|state| !matches!(state, State::Starting))
             .await;
         match latest.as_deref() {
-            Ok(State::Active(_) | State::Done(Ok(()))) => Ok(()),
+            Ok(State::Active(_) | State::Done(Ok(_))) => Ok(()),
             Ok(State::Done(Err(error))) => Err(io::Error::new(error.kind(), error.to_string())),
             _ => Err(io::Error::new(
                 ErrorKind::BrokenPipe,
@@ -71,17 +76,21 @@ impl RunningTurn {
         self.active().await?.steer(prompt).await
     }
 
+    pub async fn steer_receipt(&self, prompt: &Prompt) -> Option<SteerReceipt> {
+        self.active().await.ok()?.steer_receipt(prompt)
+    }
+
     pub async fn interrupt(&self) -> io::Result<()> {
         self.active().await?.interrupt().await
     }
 
-    pub async fn finished(&self) -> io::Result<()> {
+    pub async fn finished(&self) -> io::Result<Option<Outcome>> {
         let mut state = self.state.clone();
         let latest = state
             .wait_for(|state| matches!(state, State::Done(_)))
             .await;
         match latest.as_deref() {
-            Ok(State::Done(Ok(()))) => Ok(()),
+            Ok(State::Done(Ok(outcome))) => Ok(outcome.clone()),
             Ok(State::Done(Err(error))) => Err(io::Error::new(error.kind(), error.to_string())),
             _ => Err(io::Error::new(
                 ErrorKind::BrokenPipe,
@@ -121,7 +130,10 @@ async fn run(
                         "The adapter stopped reporting its turn.",
                     )));
                 };
-                let last = matches!(update.event.event, TurnEvent::Finished(_));
+                let last = match &update.event.event {
+                    TurnEvent::Finished(result) => Some(result.outcome.clone()),
+                    _ => None,
+                };
                 let result = writer.apply(&update.event).await;
                 let error = result.as_ref().err()
                     .map(|error| Arc::new(io::Error::new(error.kind(), error.to_string())));
@@ -129,8 +141,8 @@ async fn run(
                 if let Some(error) = error {
                     break Err(error);
                 }
-                if last {
-                    break Ok(());
+                if let Some(outcome) = last {
+                    break Ok(Some(outcome));
                 }
             }
         }

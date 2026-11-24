@@ -92,6 +92,12 @@ pub trait Thread: Send + Sync {
         false
     }
 
+    /// Whether its turns take a message partway through. Messages sent to one
+    /// that doesn't wait for the turn's end.
+    fn takes_steers(&self) -> bool {
+        true
+    }
+
     /// Look for a previously uncertain delivery in the native conversation.
     /// Return `None` while it is still uncertain.
     fn resolve_steer(&self, _receipt: SteerReceipt) -> AdapterCall<'_, Option<bool>> {
@@ -100,6 +106,13 @@ pub trait Thread: Send + Sync {
 }
 
 pub trait ActiveTurn: Send + Sync {
+    /// The receipt a message handed to this turn will have, known before it
+    /// is sent. The resident saves it first, so after a crash it settles the
+    /// message through `Thread::resolve_steer` instead of sending it again.
+    fn steer_receipt(&self, _prompt: &Prompt) -> Option<SteerReceipt> {
+        None
+    }
+
     fn steer(&self, _prompt: Prompt) -> AdapterCall<'_, Steer> {
         Box::pin(async { Ok(Steer::Declined) })
     }

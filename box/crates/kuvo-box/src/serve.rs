@@ -172,7 +172,7 @@ pub async fn run(
             home: home.to_owned(),
             agents: Some(accounts.clone()),
         };
-        agents::turns::register(runs, sessions, home.to_owned(), &mut routes);
+        agents::turns::register(runs, &mut routes);
         engine
             .with_agent_model_source(Arc::new(agents::Models {
                 runtime,
