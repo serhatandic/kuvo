@@ -1,5 +1,6 @@
 // Both residents read the same move journals and outcomes through the client routes.
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -559,7 +560,7 @@ async function moveMail(t, relay, main, remote = 2) {
     if (!expectReply) return;
     return until(async () => {
       const answer = (await receive())?.move;
-      return answer?.id === movement.id && answer;
+      return answer?.id === movement.id && (expectReply === true || answer.op === expectReply) && answer;
     }, () => "The destination never answered " + movement.id, 20000);
   };
 }
@@ -682,6 +683,49 @@ test("a second computer cannot take over a held incoming move", {
   assert.equal(refused.message, `Notes is on ${main.name} already.`);
   assert.equal(fs.existsSync(path.join(here.home, "run/moves", overwrite + ".json")), false);
   assert.deepEqual(here.engine.sessions, [kept]);
+});
+
+test("an incoming bundle cannot replace a local conversation or claim an unrelated tree", {
+  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("owned-import");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const local = "ses_importIndependent", directory = path.join(here.home, "chats");
+  const original = sessionOf({ id: local, title: "Original chat", directory });
+  here.engine.sessions.push(original);
+  const resident = await here.start().ready();
+  await until(async () => (await request(resident, "GET", "api/session/" + local)).status === 200,
+    "The original conversation did not become ready");
+  const records = scratch();
+  t.after(() => fs.rmSync(records, { recursive: true, force: true }));
+  const cases = [
+    ["mov_claimLocal", "ses_claimLocal", [{ id: "ses_claimLocal" }, { id: local, parentID: "ses_claimLocal" }]],
+    ["mov_wrongRoot", "ses_wrongRoot", [{ id: "ses_notTheRoot" }]],
+    ["mov_badAncestor", "ses_badAncestor", [{ id: "ses_badAncestor" }, { id: "ses_unrelatedChild", parentID: local }]],
+    ["mov_badCycle", "ses_badCycle", [{ id: "ses_badCycle", parentID: "ses_cycleChild" },
+      { id: "ses_cycleChild", parentID: "ses_badCycle" }]],
+  ];
+  for (const [id, thing, tree] of cases) {
+    const name = "Notes";
+    write(path.join(records, "move.json"), JSON.stringify({
+      formatVersion: 1, kind: "chat", thing, name,
+      exports: tree.map(({ id, parentID }) => ({ info: sessionOf({ id, directory, parent: parentID }), messages: [] })),
+    }));
+    const archive = path.join(records, id + ".tgz");
+    const packed = spawnSync("tar", ["-czf", archive, "-C", records, "move.json"], { encoding: "utf8", timeout: 5000 });
+    assert.equal(packed.status, 0, packed.stderr);
+    const bundle = fs.readFileSync(archive);
+    assert.ok(bundle.length < 30000);
+    const identity = { id, hash: createHash("sha256").update(bundle).digest("base64url"), generation: 1 };
+    assert.equal((await ask({ ...identity, op: "offer", from: member.key, kind: "chat", thing, name,
+      size: bundle.length, safeSwitch: true, twoComputers: true })).op, "ready");
+    assert.equal((await ask({ ...identity, op: "part", i: 0, of: 1, d: bundle.toString("base64url") })).op, "got");
+    const failed = await ask({ ...identity, op: "arrive" }, "failed");
+    assert.equal(failed.op, "failed", JSON.stringify(failed));
+    assert.deepEqual(here.engine.sessions, [original]);
+  }
 });
 
 test("the week-long cleanup warning dates from the drop and keeps the copy held", {
@@ -1381,6 +1425,31 @@ test("move destinations show the other computer and wait for a running turn", { 
   assert.equal(away.status, 200, away.text);
   assert.deepEqual(away.json, { places: [{ key: member.key, name: member.name, kind: "machine", ok: false,
     why: `${member.name} isn’t connected. Connect to it, then try again.`, note: "Can’t be reached" }] });
+});
+
+test("a computer that predates moves is listed as needing an update and refuses admission", { timeout: 35000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("new-move-source");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const id = "ses_needsMoveSupport", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id, title: "Trip plans", directory }));
+  save("run/peer-agents.json", { [member.key]: { at: Date.now(), kind: "machine", list: [], features: ["sessions", "bots"] } });
+  const old = relay.device(Buffer.alloc(32, 52));
+  t.after(() => old.leave());
+  const source = await here.start().ready();
+  await until(() => relay.has(Buffer.from(main.address, "base64url")), "The source did not join the relay");
+  await until(async () => (await request(source, "GET", "api/session/" + id)).status === 200,
+    "The local conversation did not become ready");
+  const places = await request(source, "GET", "kuvo/moves/places?kind=chat&id=" + id);
+  const message = `${member.name} needs a newer Kuvo Code before things can move to or from it.`;
+  assert.deepEqual(places.json.places.find(place => place.key === member.key), {
+    key: member.key, name: member.name, kind: "machine", ok: false, why: message, note: "Needs a newer Kuvo Code",
+  });
+  const refused = await request(source, "POST", "kuvo/moves", { kind: "chat", id, to: member.key, receipt: true });
+  assert.equal(refused.status, 409, refused.text);
+  assert.deepEqual(refused.json, { message });
+  assert.equal(here.engine.sessions[0].id, id);
 });
 
 test("move choices say which delegated work and unanswered questions stay home", { timeout: 45000 }, async t => {
