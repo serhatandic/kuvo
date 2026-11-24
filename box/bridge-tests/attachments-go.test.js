@@ -212,6 +212,20 @@ test("a branch, a handoff or a carried-on conversation keeps the files its words
   }
 });
 
+test("a branch keeps an attachment referred to by its Windows path", async () => {
+  const engine = await place({ ses_windows: {}, ses_windowsBranch: { metadata: { kuvo: { branchedFrom: "ses_windows" } } } });
+  const bridge = await place({});
+  const attachment = await sent(engine, "ses_windows", "review.png");
+  const words = "See " + attachment.replaceAll("/", "\\");
+  engine.sessions.ses_windowsBranch.messages = [{ id: "msg_win", parts: [{ type: "text", text: words }] }];
+  delete engine.sessions.ses_windows;
+  await link.letAttachmentsGo({ engine: engine.target, bridge: bridge.target }, "ses_windows");
+  assert.ok(fs.existsSync(attachment), "the surviving branch still shows the attachment");
+  delete engine.sessions.ses_windowsBranch;
+  await link.letAttachmentsGo({ engine: engine.target, bridge: bridge.target });
+  assert.equal(fs.existsSync(attachment), false);
+});
+
 test("what a session left while the box wasn't listening goes as it finds its engine again, only once both its places say it's gone; this Mac's box leaves the Mac app's folder to the app there", async t => {
   const engine = await place({ ses_here1: {} });
   const bridge = await place({ ses_agents1: {} });

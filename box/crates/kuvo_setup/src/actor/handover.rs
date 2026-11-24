@@ -47,6 +47,9 @@ impl Owner {
             }
             Some("device-save") => self.receive_device_change(from, value).await?,
             Some("device-saved") => self.receive_device_result(from, value)?,
+            Some("model-star") => self.receive_model_star(from, value).await?,
+            Some("model-star-saved") => self.receive_model_stars(from, value)?,
+            Some("model-stars-copy") => self.receive_model_star_copy(from, value).await?,
             Some("handover-request")
                 if setup.role == Role::Primary && epoch == Some(setup.position.epoch) =>
             {

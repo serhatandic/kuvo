@@ -1,5 +1,11 @@
 //! Shared treatment of stored and streaming conversation summaries.
 
+mod reasoning;
+mod summary;
+pub(crate) mod tool_words;
+
+use std::{collections::BTreeSet, sync::Arc};
+
 use serde_json::{Value, json};
 
 pub(crate) fn compaction_page(page: &mut Value) {
@@ -70,17 +76,25 @@ struct Event {
 pub(crate) fn watch(
     engine: crate::Engine,
     refresh: tokio::sync::mpsc::WeakSender<()>,
-    ask_updates: tokio::sync::watch::Sender<std::sync::Arc<crate::asks::Book>>,
+    inventory_changed: tokio::sync::watch::Sender<u64>,
+    ask_updates: tokio::sync::watch::Sender<Arc<crate::asks::Book>>,
+    models_changed: tokio::sync::mpsc::Sender<()>,
+    thinking: tokio::sync::watch::Sender<Arc<BTreeSet<String>>>,
     stop: tokio_util::sync::CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
     use http::Method;
     use tokio::time::{Duration, sleep};
 
+    let attachments = crate::attachment_retention::watch(engine.clone());
+    let worktrees = crate::worktree_notes::watch(engine.clone(), stop.clone());
     tokio::spawn(async move {
         let mut states = engine.states();
         let mut asks = crate::asks::Book::new();
+        let mut reasoning = reasoning::Reasoning::default();
         let mut generation = None;
+        let mut queues = crate::queue::QueueEvents::default();
+        let mut scan = None::<tokio::task::JoinHandle<()>>;
         loop {
             let Some(keep) = refresh.upgrade() else {
                 break;
@@ -97,6 +111,7 @@ pub(crate) fn watch(
                 }
                 continue;
             };
+            let lease = Arc::new(lease);
             states.borrow_and_update();
             let pin = (lease.record.pid, lease.record.port);
             if generation.is_none() {
@@ -104,12 +119,18 @@ pub(crate) fn watch(
                 if !asks.is_empty() {
                     ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
                 }
-            } else if generation != Some(pin) && !asks.is_empty() {
+            } else if generation != Some(pin) {
                 asks.clear();
+                reasoning = reasoning::Reasoning::default();
+                thinking.send_replace(Arc::new(BTreeSet::new()));
+                queues = crate::queue::QueueEvents::default();
                 ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
-                crate::asks::checkpoint(&engine, pin, &asks).await;
             }
-            generation = Some(pin);
+            let new_generation = generation != Some(pin);
+            if new_generation {
+                crate::asks::checkpoint(&engine, pin, &asks).await;
+                let _ = models_changed.try_send(());
+            }
             let request = engine
                 .upstream
                 .request(&lease.record, Method::GET, "api/event");
@@ -117,11 +138,50 @@ pub(crate) fn watch(
             if let Ok(Ok(response)) = connected
                 && response.status().is_success()
             {
+                engine.catalogs.invalidate(false);
+                if new_generation {
+                    generation = Some(pin);
+                    if let Some(previous) = scan.take() {
+                        previous.abort();
+                    }
+                    let engine = engine.clone();
+                    let stopped = stop.clone();
+                    scan = Some(tokio::spawn(async move {
+                        let Some(lease) = engine
+                            .acquire(crate::lifetime::Demand::Passive)
+                            .await
+                            .filter(|lease| (lease.record.pid, lease.record.port) == pin)
+                        else {
+                            return;
+                        };
+                        tokio::select! {
+                            () = stopped.cancelled() => {},
+                            result = crate::queue::scan(&engine, &lease) => if let Err(error) = result {
+                                eprintln!("Checking the engine's saved queues: {error}");
+                            }
+                        }
+                    }));
+                }
+                if let Some(attachments) = &attachments {
+                    let _ = attachments.send(None);
+                }
                 let mut chunks = response.bytes_stream();
+                let mut summaries = tokio::task::JoinSet::new();
                 let mut line = Vec::new();
                 loop {
                     let next = tokio::select! {
                         next = chunks.next() => next,
+                        _ = summaries.join_next(), if !summaries.is_empty() => continue,
+                        () = async {
+                            match reasoning.next() {
+                                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                                None => std::future::pending().await,
+                            }
+                        } => {
+                            reasoning.advance();
+                            thinking.send_replace(Arc::new(reasoning.visible()));
+                            continue;
+                        },
                         _ = states.changed() => break,
                         _ = sleep(Duration::from_secs(60)) => break,
                     };
@@ -143,13 +203,23 @@ pub(crate) fn watch(
                             .strip_prefix(b"data:")
                             .and_then(|data| serde_json::from_slice::<Event>(data).ok())
                         {
+                            engine.catalogs.event(&event.kind, &event.data);
+                            if event.kind == "session.deleted"
+                                && let Some(attachments) = &attachments
+                                && let Some(session) = event.data["sessionID"].as_str()
+                            {
+                                let _ = attachments.send(Some(session.to_owned()));
+                            }
+                            if crate::model_refresh::work_ended(&event.kind) {
+                                let _ = models_changed.try_send(());
+                            }
                             if crate::asks::note(&mut asks, &event.kind, &event.data) {
                                 ask_updates.send_replace(std::sync::Arc::new(asks.clone()));
                                 crate::asks::checkpoint(&engine, pin, &asks).await;
                             }
-                            if event.kind.starts_with("session.")
-                                && !event.kind.starts_with("session.inbox.")
-                            {
+                            if changes_inventory(&event.kind) {
+                                inventory_changed
+                                    .send_modify(|revision| *revision = revision.wrapping_add(1));
                                 let _ = list.try_send(());
                             }
                             if let Some(session) = event.data["sessionID"]
@@ -157,7 +227,21 @@ pub(crate) fn watch(
                                 .or_else(|| event.data["info"]["id"].as_str())
                                 .filter(|id| crate::sessions::valid_id(id))
                             {
-                                crate::queue::engine_event(
+                                if event.kind == "session.created" {
+                                    let _ = worktrees.send(session.to_owned());
+                                }
+                                if event.kind == "session.execution.succeeded" {
+                                    let worker = engine.clone();
+                                    let lease = lease.clone();
+                                    let session = session.to_owned();
+                                    summaries.spawn(async move {
+                                        let _ = summary::keep_read(&worker, &lease, &session).await;
+                                    });
+                                }
+                                if reasoning.hear(session, &event.kind) {
+                                    thinking.send_replace(Arc::new(reasoning.visible()));
+                                }
+                                queues.hear(
                                     &engine,
                                     session,
                                     &event.kind,
@@ -173,4 +257,27 @@ pub(crate) fn watch(
             sleep(Duration::from_millis(250)).await;
         }
     })
+}
+
+fn changes_inventory(kind: &str) -> bool {
+    matches!(
+        kind,
+        "session.created"
+            | "session.deleted"
+            | "session.renamed"
+            | "session.updated"
+            | "session.metadata.updated"
+            | "session.moved"
+            | "session.viewed"
+            | "session.revert.staged"
+            | "session.revert.cleared"
+            | "session.revert.committed"
+            | "session.shell.started"
+            | "session.shell.ended"
+            | "session.idle"
+            | "session.execution.started"
+            | "session.execution.succeeded"
+            | "session.execution.failed"
+            | "session.execution.interrupted"
+    )
 }

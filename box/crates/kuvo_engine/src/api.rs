@@ -1,8 +1,8 @@
 //! Requests made by the resident to its own engine.
 
-use std::{fmt, time::Duration};
+use std::{error::Error as _, fmt, io, time::Duration};
 
-use http::{Method, StatusCode};
+use http::{HeaderMap, Method, StatusCode};
 use kuvo_server::Refusal;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::de::DeserializeOwned;
@@ -29,6 +29,25 @@ pub(crate) fn segment(id: &str) -> String {
     utf8_percent_encode(id, COMPONENT).to_string()
 }
 
+pub(crate) fn folder_header(folder: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if !folder.is_empty() {
+        headers.insert(
+            "x-opencode-directory",
+            segment(folder).parse().expect("encoded folder"),
+        );
+    }
+    headers
+}
+
+pub(crate) fn active_ids(data: &Value) -> Option<Vec<&str>> {
+    match data {
+        Value::Array(ids) => Some(ids.iter().filter_map(Value::as_str).collect()),
+        Value::Object(ids) => Some(ids.keys().map(String::as_str).collect()),
+        _ => None,
+    }
+}
+
 pub(crate) async fn start(engine: &Engine) -> Result<Lease, Refusal> {
     engine
         .acquire(Demand::Start)
@@ -46,6 +65,23 @@ pub(crate) enum Error {
 impl Error {
     pub(crate) fn missing(&self) -> bool {
         matches!(self, Self::Status(StatusCode::NOT_FOUND, _))
+    }
+
+    pub(crate) fn connection_refused(&self) -> bool {
+        let Self::Transport(error) = self else {
+            return false;
+        };
+        let mut source = error.source();
+        while let Some(cause) = source {
+            if cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|io| io.kind() == io::ErrorKind::ConnectionRefused)
+            {
+                return true;
+            }
+            source = cause.source();
+        }
+        false
     }
 }
 
@@ -84,9 +120,23 @@ impl Engine {
         body: Option<&Value>,
         wait: Duration,
     ) -> Result<Value, Error> {
+        self.call_with_headers(lease, method, path, body, wait, HeaderMap::new())
+            .await
+    }
+
+    pub(crate) async fn call_with_headers(
+        &self,
+        lease: &Lease,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        wait: Duration,
+        headers: HeaderMap,
+    ) -> Result<Value, Error> {
         let mut request = self
             .upstream
             .request(&lease.record, method, path)
+            .headers(headers)
             .timeout(wait);
         if let Some(body) = body {
             request = request.json(body);

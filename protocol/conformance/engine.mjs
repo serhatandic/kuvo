@@ -9,6 +9,11 @@ export const git = (env, cwd, ...args) => execFileSync("git", args, { cwd, env, 
 export async function standInEngine(root, env) {
   // Its sessions (`given.session`), which run, its sign-ins, and every request it got.
   const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), permissions: new Map(), forms: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
+  engine.open = new Set();
+  engine.closed = [];
+  engine.terminals = new Set();
+  engine.globalForms = new Map();
+  engine.dismissedGlobalForms = [];
   const folderOf = request => {
     try { return decodeURIComponent(request.headers["x-opencode-directory"] ?? ""); } catch { return ""; }
   };
@@ -25,6 +30,12 @@ export async function standInEngine(root, env) {
       try { given = body ? JSON.parse(body) : {}; } catch {}
       engine.asked.push({ method: request.method, path: url.pathname, json: given });
       const send = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+      const paged = (rows, size) => {
+        const start = Number(url.searchParams.get("cursor") ?? 0);
+        const take = Number(url.searchParams.get("limit") ?? size);
+        const next = start + take;
+        return { data: rows.slice(start, next), cursor: next < rows.length ? { next: String(next) } : null };
+      };
       const route = `${request.method} ${url.pathname}`;
       if (route === "GET /api/event") {
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -34,26 +45,40 @@ export async function standInEngine(root, env) {
         return;
       }
       if (route === "GET /api/session") {
+        if (engine.sessionListUnavailable) return send({ message: "The list is unavailable." }, 503);
         const parent = url.searchParams.get("parentID");
-        const data = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
-        const limit = Number(url.searchParams.get("limit"));
-        if (parent && parent !== "null" && limit > 0) {
-          const start = Number(url.searchParams.get("cursor"));
-          const end = start + limit;
-          return send({ data: data.slice(start, end), ...(end < data.length ? { cursor: { next: String(end) } } : {}) });
+        if (parent === null && url.searchParams.get("limit") !== "1") engine.inventoryReads = (engine.inventoryReads ?? 0) + 1;
+        const rows = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
+        const descendants = parent && parent !== "null" && Number(url.searchParams.get("limit")) > 0;
+        const page = engine.paged || descendants ? paged(rows, 100) : { data: rows };
+        if (engine.holdSessionList && url.searchParams.get("limit") !== "1") {
+          if (!parent) engine.heldInventories = (engine.heldInventories ?? 0) + 1;
+          void engine.holdSessionList.then(() => send(page));
+          return;
         }
+        return send(page);
+      }
+      if (route === "GET /api/session/active") {
+        if (engine.activeUnavailable) return send({}, 503);
+        const data = Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }]));
+        engine.activeRead?.();
         return send({ data });
       }
-      if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
       if (route === "POST /api/session") {
-        if (engine.failStart === "before") return send({ message: "Cut short." }, 500);
+        if (engine.failStart === "before") {
+          engine.startCutShort?.();
+          return send({ message: "Cut short." }, 500);
+        }
         const made = sessionOf({ id: `ses_made${++engine.made}`, title: given.title ?? "", directory: given.location?.directory ?? "" });
         for (const field of ["metadata", "permissions", "agent", "model", "parentID"]) {
           if (Object.hasOwn(given, field)) made[field] = given[field];
         }
         engine.sessions.push(made);
         publish({ type: "session.created", data: { sessionID: made.id, info: made } });
-        if (engine.failStart === "after") return send({ message: "Cut short." }, 500);
+        if (engine.failStart === "after") {
+          engine.startCutShort?.();
+          return send({ message: "Cut short." }, 500);
+        }
         return send({ data: made });
       }
       const one = url.pathname.match(/^\/api\/session\/([^/]+)$/);
@@ -79,17 +104,44 @@ export async function standInEngine(root, env) {
         }
         return send({ data: info });
       }
+      const instructions = url.pathname.match(/^\/api\/experimental\/session\/([^/]+)\/instructions\/entries\/kuvo\.worktree$/);
+      if (instructions && request.method === "PUT") {
+        return engine.sessions.some(row => row.id === decodeURIComponent(instructions[1])) ? send({}) : send({}, 404);
+      }
       if (one && request.method === "GET") {
-        const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
+        if (engine.unavailableSession === decodeURIComponent(one[1])) return send({ message: "Busy." }, 500);
+        const index = engine.sessions.findIndex(each => each.id === decodeURIComponent(one[1]));
+        const found = engine.sessions[index];
+        if (found && engine.delistOnRead === found.id) {
+          engine.delistOnRead = null;
+          engine.sessions.splice(index, 1);
+        }
+        if (found && engine.holdSessionRead?.when(found.id)) {
+          const held = engine.holdSessionRead;
+          engine.holdSessionRead = null;
+          held.accepted();
+          void held.release.then(() => send({ data: found }));
+          return;
+        }
         return found ? send({ data: found }) : send({ message: "No such session." }, 404);
       }
       // What's changed, kept, as the engine keeps it (each field given in place of its own).
       if (one && request.method === "PATCH") {
         const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
         if (!found) return send({ message: "No such session." }, 404);
-        Object.assign(found, given);
-        publish({ type: "session.updated", data: { sessionID: found.id, info: found } });
-        return send({ data: found });
+        const apply = () => {
+          Object.assign(found, given);
+          publish({ type: "session.updated", data: { sessionID: found.id, info: found } });
+          return send({ data: found });
+        };
+        if (engine.holdSessionPatch?.id === found.id) {
+          const held = engine.holdSessionPatch;
+          engine.holdSessionPatch = null;
+          held.accepted();
+          void held.release.then(() => held.status ? send({ message: "The write failed." }, held.status) : apply());
+          return;
+        }
+        return apply();
       }
       if (one && request.method === "DELETE") {
         const id = decodeURIComponent(one[1]);
@@ -103,12 +155,19 @@ export async function standInEngine(root, env) {
       const ask = url.pathname.match(/^\/api\/session\/([^/]+)\/(permission|form)(?:\/([^/]+)(?:\/reply)?)?$/);
       if (ask) {
         const [, id, type, key] = ask;
-        const items = type === "permission" ? engine.permissions : engine.forms;
-        if (request.method === "GET") return send({ data: items.get(id) ?? [] });
-        const pending = items.get(id) ?? [];
+        const global = id === "global" && type === "form";
+        const items = global ? engine.globalForms : type === "permission" ? engine.permissions : engine.forms;
+        const location = global ? folderOf(request) : id;
+        if (request.method === "GET") {
+          if (type === "permission" && url.searchParams.get("live") === "1") engine.beforeLivePermission?.();
+          return send({ data: items.get(location) ?? [] });
+        }
+        const pending = items.get(location) ?? [];
         const index = pending.findIndex(item => item.id === decodeURIComponent(key));
         if (index < 0) return send({}, 404);
+        if (engine.refusedAsk === decodeURIComponent(key)) return send({ message: "It can't take that now." }, 400);
         const [answered] = pending.splice(index, 1);
+        if (global && request.method === "DELETE") engine.dismissedGlobalForms.push({ id: answered.id, folder: location });
         publish({ type: type + (request.method === "DELETE" ? ".cancelled" : ".replied"),
           data: { sessionID: id, requestID: answered.id } });
         return send({});
@@ -117,15 +176,19 @@ export async function standInEngine(root, env) {
       if (prompt && request.method === "POST") {
         const session = decodeURIComponent(prompt[1]);
         if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
+        if (engine.refusePrompt?.id === given.id) {
+          const refusal = engine.refusePrompt;
+          refusal.seen?.();
+          engine.refusePrompt = null;
+          return send(refusal.body ?? { message: "Try the prompt again." }, refusal.status ?? 503);
+        }
+        if (engine.unconfirmedPrompt === given.id) return send({});
         const held = engine.holdPrompt?.id === given.id ? engine.holdPrompt : null;
         if (held) engine.holdPrompt = null;
-        if (held?.beforeAcceptance) {
-          held.accepted();
-          return;
-        }
-        const messages = engine.messages.get(session) ?? [];
-        const inbox = engine.inboxes.get(session) ?? [];
-        if (!messages.some(row => row.id === given.id) && !inbox.some(row => row.id === given.id)) {
+        const accept = () => {
+          const messages = engine.messages.get(session) ?? [];
+          const inbox = engine.inboxes.get(session) ?? [];
+          if (messages.some(row => row.id === given.id) || inbox.some(row => row.id === given.id)) return;
           if (engine.running.has(session)) {
             const { id, delivery, ...payload } = given;
             inbox.push({ id, delivery, type: "user", payload });
@@ -135,9 +198,20 @@ export async function standInEngine(root, env) {
             engine.messages.set(session, messages);
           }
           publish({ type: "session.inbox.updated", data: { sessionID: session, item: { id: given.id } } });
+          engine.afterPromptAccepted?.(session, given.id);
+        };
+        if (held?.beforeAcceptance) {
+          held.accepted();
+          if (held.release) void held.release.then(() => {
+            if (!held.status) accept();
+            send({}, held.status);
+          });
+          return;
         }
+        accept();
         if (held) {
           held.accepted();
+          if (held.release) void held.release.then(() => send({}, held.status));
           return;
         }
         return send({});
@@ -146,17 +220,38 @@ export async function standInEngine(root, env) {
       if (waiting) {
         const session = decodeURIComponent(waiting[1]);
         const inbox = engine.inboxes.get(session) ?? [];
-        if (!waiting[2] && request.method === "GET") return send({ data: inbox });
+        if (!waiting[2] && request.method === "GET") {
+          if (engine.inboxUnavailable?.has(session)) return send({}, 503);
+          const reply = engine.inboxReplies?.get(session);
+          if (reply) return send(reply.body, reply.status);
+          if (engine.holdInbox?.session === session) {
+            const held = engine.holdInbox;
+            engine.holdInbox = null;
+            const read = structuredClone(inbox);
+            held.accepted();
+            void held.release.then(() => send({ data: read }));
+            return;
+          }
+          return send({ data: inbox });
+        }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));
         if (index < 0) return send({}, 404);
-        if (request.method === "PATCH") Object.assign(inbox[index], given);
-        else if (request.method === "DELETE") inbox.splice(index, 1);
+        if (request.method === "PATCH") {
+          Object.assign(inbox[index], given);
+          engine.afterInboxPatch?.(session, inbox[index]);
+        }
+        else if (request.method === "DELETE") {
+          if (engine.refuseRemoval?.has(waiting[2])) return send({}, 503);
+          inbox.splice(index, 1);
+          engine.afterInboxRemoval?.(session, decodeURIComponent(waiting[2]));
+        }
         else return send({}, 404);
         publish({ type: "session.inbox.updated", data: { sessionID: session } });
         return send({});
       }
       const message = url.pathname.match(/^\/api\/session\/([^/]+)\/message\/([^/]+)$/);
       if (message && request.method === "GET") {
+        if (engine.messageUnavailable?.has(decodeURIComponent(message[2]))) return send({}, 503);
         const stored = engine.messages.get(decodeURIComponent(message[1]))?.find(row => row.id === decodeURIComponent(message[2]));
         return stored ? send({ data: stored }) : send({}, 404);
       }
@@ -165,12 +260,48 @@ export async function standInEngine(root, env) {
         engine.interrupted.push({ session: decodeURIComponent(interrupt[1]), resume: url.searchParams.get("resume") === "true" });
         return send({});
       }
-      if (route === "GET /api/model") return send({ data: engine.models });
-      if (route === "GET /api/model/default") return send({ data: engine.defaultModel });
-      if (route === "GET /api/provider") return send({ data: engine.providers });
-      if (route === "GET /api/integration") return send({ data: engine.integrations });
+      const view = url.pathname.match(/^\/api\/session\/([^/]+)\/view$/);
+      if (view && request.method === "POST") {
+        const found = engine.sessions.find(row => row.id === decodeURIComponent(view[1]));
+        if (!found || found.time?.idle !== given.idle) return send({}, 409);
+        found.time.viewed = given.idle;
+        return send({ data: found });
+      }
+      if (["GET /api/model", "GET /api/model/default", "GET /api/provider", "GET /api/integration"].includes(route)) {
+        const catalog = engine.catalogs?.get(path.normalize(folderOf(request))) ?? engine;
+        if (route === "GET /api/model") return send({ data: catalog.models });
+        if (route === "GET /api/model/default") {
+          if (catalog.defaultUnavailable) return send({ message: "The default is unavailable." }, 503);
+          return send({ data: catalog.defaultModel });
+        }
+        if (route === "GET /api/provider") return send({ data: catalog.providers });
+        return send({ data: catalog.integrations ?? [] });
+      }
+      if (request.method === "GET" && url.pathname.startsWith("/api/integration/")) {
+        const account = engine.integrations.find(each => each.id === decodeURIComponent(url.pathname.slice("/api/integration/".length)));
+        return account ? send({ data: account }) : send({}, 404);
+      }
+      if (route === "GET /api/debug/location") {
+        engine.locationsRead?.();
+        return send([...engine.open].map(directory => ({ directory })));
+      }
+      if (route === "DELETE /api/debug/location") {
+        const folder = url.searchParams.get("location[directory]");
+        if (engine.cantClose) return send({}, 405);
+        engine.open.delete(folder);
+        engine.closed.push(folder);
+        engine.locationClosed?.(folder);
+        response.writeHead(204).end();
+        return;
+      }
+      if (route === "GET /api/pty") return send({ data: engine.terminals.has(folderOf(request)) ? [{ id: "pty_here", status: "running" }] : [] });
+      if (["GET /api/form", "GET /api/permission/request", "GET /api/shell"].includes(route)) return send({ data: [] });
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
-      if (messages && request.method === "GET") return send({ data: engine.messages.get(decodeURIComponent(messages[1])) ?? [] });
+      if (messages && request.method === "GET") {
+        const rows = engine.messages.get(decodeURIComponent(messages[1])) ?? [];
+        engine.messagePageRead?.(decodeURIComponent(messages[1]), url.searchParams);
+        return send(engine.paged ? paged(rows, 200) : { data: rows });
+      }
       if (route === "GET /api/credential") return send({ data: engine.credentials });
       if (route === "POST /api/credential") {
         if (engine.blockCredentialImport) return send({ message: "The credential store is not ready." }, 503);

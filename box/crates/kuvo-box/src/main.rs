@@ -1,9 +1,13 @@
 #[cfg(target_os = "macos")]
 mod install_media;
+mod model_stars;
 mod serve;
+mod session_ownership;
+mod setup_search;
 #[cfg(target_os = "macos")]
 mod sign_ins;
 mod updates;
+mod vault_asks;
 
 use std::{env, io, path::PathBuf, process::ExitCode};
 
