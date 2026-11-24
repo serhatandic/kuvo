@@ -158,6 +158,11 @@ pub async fn run(
             })
         }
     });
+    crate::updates::register_helper_stop(
+        &mut routes,
+        kuvo_store::home::Home::new(home.to_owned())?,
+        kind == ComputerKind::Mac,
+    );
     let updates = crate::updates::start(
         kuvo_store::home::Home::new(home.to_owned())?,
         &account,

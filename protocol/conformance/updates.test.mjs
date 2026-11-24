@@ -133,6 +133,19 @@ test("the update status reports the installed release and a keeper's failed tria
   });
 });
 
+test("a machine refuses the Mac Helper's Stop request", async t => {
+  const { computer } = await bench(t);
+  const here = await computer("stop-machine", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const ready = await here.start().ready();
+  const answer = await request(ready, "POST", "kuvo/box/stop", {});
+  assert.equal(answer.status, 409, answer.text);
+  assert.deepEqual(answer.json, { message: "Only Kuvo on a Mac, run by Kuvo Helper, is stopped this way." });
+  assert.equal(fs.existsSync(path.join(here.home, "run/paused")), false);
+});
+
 const targets = {
   "darwin:arm64": "aarch64-apple-darwin",
   "darwin:x64": "x86_64-apple-darwin",
@@ -422,9 +435,15 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
   let peerOnly = false;
   let refusedPacks = 0;
   let downloads = 0;
+  let holdChecks = false;
+  let heldChecks = 0;
   const feed = createServer((req, res) => {
     const url = `http://127.0.0.1:${feed.address().port}/fleet.tar.gz`;
     if (req.url === "/boxes.json") {
+      if (holdChecks) {
+        heldChecks += 1;
+        return;
+      }
       const descriptor = { url, sha256: hash };
       const signed = envelope({ ...body, pack: descriptor, launch: "rust", packs: { [target]: descriptor } }, key);
       res.end(encode(signed));
@@ -499,7 +518,7 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
   const staged = peer => fs.existsSync(path.join(peer.home, "run/fleet-ready.json"));
   const confirmed = peer => active(peer) === selected && !fs.existsSync(path.join(peer.home, "run/previous"));
   const diagnose = () => [...keepers.keys()].map(peer => {
-    return ["serve.log", "update-start.log", "update.log", "repair.log"].map(name => {
+    return ["serve.log", "update-start.log", "update.log", "repair.log", "fleet-ready.json", "fleet-stage-clock.json", "peer-reach.json", "setup-relay-lease.json"].map(name => {
       const log = path.join(peer.home, "run", name);
       return fs.existsSync(log) ? `${peer.home} ${name}\n${fs.readFileSync(log, "utf8")}` : "";
     }).join("\n") + keepers.get(peer).log();
@@ -531,13 +550,22 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
     await reply("turn before release switch");
     let leader = main;
     if (failover) {
+      holdChecks = true;
       control(main, "off");
       await keepers.get(main).exited;
       assert.equal(active(main), initial);
       const offset = 130_000;
       for (const peer of [member, away]) write(path.join(peer.home, "run/test-setup-clock.json"), encode({ offset }));
       leases.advance(offset);
-      await until(() => leases.leaseFor(setup.json.setup)?.holder !== setup.json.you.key,
+      await until(async () => {
+        const lease = leases.leaseFor(setup.json.setup);
+        if (!lease || lease.holder === setup.json.you.key) return false;
+        try {
+          const resident = readJSON(path.join(member.home, "run/serve.json"));
+          const now = await request(resident, "GET", "kuvo/setup");
+          return now.json?.you?.role === "primary" && lease.holder === now.json.you.key;
+        } catch { return false; }
+      },
         "the remaining online computer must claim the lease", 30000);
       leader = member;
       t.diagnostic(`a new main claimed the lease ${Math.round(performance.now() - began)} ms after the first boot`);
@@ -546,9 +574,10 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
     hold = false;
     const released = performance.now();
     for (const res of waiting) res.end(pack);
-    await until(() => confirmed(leader), diagnose, 45000);
+    await until(() => confirmed(leader), diagnose, 75000);
+    if (failover) assert.ok(heldChecks > 0, "the new main checks the feed without waiting to activate");
     t.diagnostic(`main confirmed ${Math.round(performance.now() - released)} ms after member download resumed`);
-    await until(() => confirmed(member), diagnose, 45000);
+    await until(() => confirmed(member), diagnose, 75000);
     await reply("same turn after release switch");
     assert.equal(active(away), initial);
     t.diagnostic(`online member confirmed ${Math.round(performance.now() - released)} ms after its download resumed`);

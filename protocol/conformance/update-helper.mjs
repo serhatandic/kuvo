@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { boxBinary, isolatedEnv, launch, readJSON, request, scratch, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, launch, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 
 const read = file => { try { return fs.readFileSync(file, "utf8"); } catch { return ""; } };
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -192,6 +192,29 @@ test("the Mac keeper hands over a disposable Helper only when its release is set
       }
     });
   }
+});
+
+test("the Mac Helper can ask the local resident to pause its keeper", async t => {
+  const binary = boxBinary();
+  if (process.platform !== "darwin") return t.skip("Only the Mac Helper can pause Kuvo this way.");
+  const root = fs.realpathSync(scratch());
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const asked = path.join(env.HOME, "keeper-asked");
+  write(path.join(home, "box/kind"), "mac\n");
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "bin/kuvo-start"), `#!/bin/sh\nprintf '%s\\n' "$1" "$HOME" >"$HOME/keeper-asked"\n`, { mode: 0o700 });
+  const resident = startBox({ binary, home, env, relay: { url: "ws://127.0.0.1:1" }, mac: true });
+  t.after(async () => {
+    await resident.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const ready = await resident.ready();
+  const result = await request(ready, "POST", "kuvo/box/stop", {});
+  assert.equal(result.status, 202, result.text);
+  assert.deepEqual(result.json, { stopping: true });
+  await until(() => fs.existsSync(asked), "the keeper must receive pause");
+  assert.equal(read(asked), `pause\n${env.HOME}\n`);
 });
 
 test("the Mac Helper install writes a launchd job and can reload it once the old job goes", t => {

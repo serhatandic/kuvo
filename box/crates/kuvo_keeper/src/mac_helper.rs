@@ -20,6 +20,27 @@ const LABEL: &str = "run.kuvo.code.machine";
 const HELPER: &str = "Kuvo Helper.app";
 const AT_LOGIN: &str = "Kuvo Helper starts Kuvo on this Mac at login.";
 
+pub fn pause(home: &Home) -> io::Result<()> {
+    let keeper = home.bin().join("kuvo-start");
+    if !keeper.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "its keeper is missing.",
+        ));
+    }
+    let account = home
+        .root()
+        .parent()
+        .filter(|folder| home.root() == folder.join(".kuvo-code"))
+        .ok_or_else(|| io::Error::other("its keeper does not run from this folder."))?;
+    let mut task = kuvo_os::process::Spawn::new("/bin/sh", std::env::vars_os().collect());
+    task.env.insert("HOME".into(), account.as_os_str().into());
+    task.cwd = Some(home.root().to_owned());
+    task.args = vec![keeper.into_os_string(), "pause".into()];
+    task.spawn()?.leave_running_on_drop();
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub enum Started {
     Installed,

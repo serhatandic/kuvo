@@ -51,6 +51,7 @@ pub fn start(
         test_feed: scratch,
         next_check: Instant::now() + delay,
         fetcher: Fetcher::default(),
+        checking: None,
         last_sent: None,
         attempted: None,
         pending: None,
@@ -69,6 +70,41 @@ pub fn start(
     }))
 }
 
+pub fn register_helper_stop(routes: &mut kuvo_server::Registry, home: Home, mac: bool) {
+    use kuvo_protocol::routes::post_kuvo_box_stop as stop;
+    use kuvo_server::{Access, Caller, Refusal, RouteReply, Transport};
+
+    routes.register::<stop::Spec, _, _>(Access::Any, move |call| {
+        let home = home.clone();
+        async move {
+            if !matches!(call.request.caller, Caller::Local(Transport::Http { .. })) {
+                return Err(Refusal::new(
+                    http::StatusCode::FORBIDDEN,
+                    "Kuvo on this Mac is stopped only on this Mac.",
+                ));
+            }
+            if !cfg!(target_os = "macos") || !mac {
+                return Err(Refusal::new(
+                    http::StatusCode::CONFLICT,
+                    "Only Kuvo on a Mac, run by Kuvo Helper, is stopped this way.",
+                ));
+            }
+            #[cfg(target_os = "macos")]
+            kuvo_keeper::mac_helper::pause(&home).map_err(|error| {
+                Refusal::new(
+                    http::StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Kuvo on this Mac couldn't be stopped: {error}"),
+                )
+            })?;
+            #[cfg(not(target_os = "macos"))]
+            let _ = home;
+            Ok(RouteReply::json::<202>(stop::Status202 {
+                stopping: Default::default(),
+            }))
+        }
+    });
+}
+
 struct Fleet {
     home: Home,
     peers: Arc<ResidentPeers>,
@@ -78,6 +114,7 @@ struct Fleet {
     test_feed: bool,
     next_check: Instant,
     fetcher: Fetcher,
+    checking: Option<JoinHandle<io::Result<Candidate>>>,
     last_sent: Option<UpdateFacts>,
     attempted: Option<PreparedRelease>,
     pending: Option<JoinHandle<io::Result<()>>>,
@@ -87,6 +124,9 @@ struct Fleet {
 
 impl Drop for Fleet {
     fn drop(&mut self) {
+        if let Some(checking) = &self.checking {
+            checking.abort();
+        }
         if let Some(pending) = &self.pending {
             pending.abort();
         }
@@ -129,11 +169,10 @@ impl Fleet {
                     }
                 }
             }
-            if Instant::now() >= self.next_check
-                && (standalone || self.setup.may_switch_fleet().await)
+            if self.checking.as_ref().is_some_and(JoinHandle::is_finished)
+                && let Some(checking) = self.checking.take()
             {
-                self.next_check = Instant::now() + CHECK_EVERY;
-                match self.fetcher.candidate(&self.url, &self.key).await {
+                match checking.await.map_err(io::Error::other)? {
                     Ok(fetched) => {
                         if let Err(error) =
                             update_status::note_check(&self.home, fetched.version(), now)
@@ -147,7 +186,22 @@ impl Fleet {
                     Err(error) => eprintln!("Checking Kuvo's release: {error}"),
                 }
             }
+            if self.checking.is_none()
+                && Instant::now() >= self.next_check
+                && (standalone || self.setup.may_switch_fleet().await)
+            {
+                self.next_check = Instant::now() + CHECK_EVERY;
+                let (fetcher, url, key) =
+                    (self.fetcher.clone(), self.url.clone(), self.key.clone());
+                self.checking = Some(tokio::spawn(
+                    async move { fetcher.candidate(&url, &key).await },
+                ));
+            }
         } else if let Some(main) = main {
+            if let Some(checking) = self.checking.take() {
+                checking.abort();
+                self.next_check = Instant::now();
+            }
             candidate = None;
             let (away, facts) = view.peer_updates(&main, now);
             if !away {

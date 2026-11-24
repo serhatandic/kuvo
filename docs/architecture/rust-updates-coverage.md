@@ -22,7 +22,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U6 | `GET kuvo/update` reports the installed version, running engine, latest known version, and the keeper's failed trial. |
 | U7 | The prepared-pack scenario stops its keeper and uninstalls the standalone computer. It retains the home, clears the desktop identity, and leaves the scratch account and its temporary directory unchanged. |
 | U8 | Two Rust computers prepare while a third is offline. Holding the second download leaves both on the old selection. A recorded stand-in turn answers across the switch. The returning computer retries a transient download error, then switches and serves. |
-| U9 | The old main goes down while its member's pack download is held. Advancing the relay and computer test clocks expires the lease, and the new main completes the release. |
+| U9 | The old main goes down while its member's pack download is held. Advancing the relay and computer test clocks expires the lease. The new main completes the release even while its manifest request hangs. A returning computer pulls the retained pack from the new main. |
 | U10 | A returning TypeScript beta reads the Rust main's signed offer, stages its own target, and starts Rust through the shell keeper. The old home is copied before selection. |
 | U11 | The published v0.7.2 and v0.8.0-beta.1 Mac golden homes take signed Rust installer media through `kuvo-install` into the actual move. The resulting home retains the original notes and the Rust launch manifest. The installer starts the Helper through a scratch launchctl stand-in and recovers a missing registration through `status` and `new`. |
 | U12 | A TypeScript updater prepares the target-specific Rust pack while the old selection stays active. |
@@ -30,6 +30,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U14 | A disposable Mac Helper hands over once for each replacement of the sealed bundle. The resident waits through an update, falls back to opening the Helper after launchd refuses, records a Helper that remains old, honors Stop before and during handover, and leaves a self-renewing Helper alone. |
 | U15 | `helper install` writes the launch agent with its login item, keep-alive policy, and XML-escaped arguments. Loading waits for the previous job and retries a refused bootstrap. Status, existing-job start, disabled Login Items, and explicit restart after Stop use scratch launchctl and open stand-ins. |
 | U16 | An ad-hoc signed Swift Helper uses a disposable Keychain and a Rust resident. When its signed bundle changes, the Helper exits 75 for launchd without a Rust handover. |
+| U17 | The authenticated local Mac resident starts `kuvo-start pause` as a separate process with the scratch account as `HOME`. A machine returns the same refusal on both boxes and creates no pause marker. |
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -72,13 +73,14 @@ Their Helper restarts took 0.8 and 1.1 seconds through the launchctl
 stand-in. Those timings exclude generation of the golden homes.
 
 The static Linux musl rerun on Ubuntu 24.04 under WSL2 passed eight cases.
-Preparation and retry took 6.1 seconds, and selection and confirmation took
-1.3 seconds. On the shell-keeper fleet, the first computer prepared in
-2.8 seconds. The main and member confirmed 7.4 and 11.4 seconds after the
+Preparation and retry took 6.2 seconds, and selection and confirmation took
+1.4 seconds. On the shell-keeper fleet, the first computer prepared in
+2.9 seconds. The main and member confirmed 7.3 and 9.3 seconds after the
 held download resumed, and the returning computer took 12.2 seconds,
 including retrying a 503 response. The failover fixture elected a new main
 in 4.1 seconds with the relay clock advanced, confirmed in 5.9 seconds after
-the download resumed, and caught up the returning computer in 8.1 seconds.
+the download resumed, and caught up the returning computer in 14.0 seconds
+with the feed returning 404.
 
 With peer release mail enabled, native Windows passed six cases. Preparation
 with retry took 9.6 seconds and selection took 1.3 seconds. In the fleet case,
@@ -88,6 +90,16 @@ after the download resumed. The returning computer confirmed in 14.1 seconds
 after the feed returned 404. Enrollment, selection and uninstall stayed in
 scratch homes. This fixture registered no scheduled task.
 
+One macOS fleet run hit its 45-second test deadline after failover while
+another workspace was compiling. A focused rerun passed. Holding the next
+main's manifest request open then reproduced a failure after the new main
+held both the lease and the staged pack. With the request running separately
+from activation, first preparation took 24.4 seconds, the waiting member
+took over in 27.1 seconds from boot with the lease clock advanced, and it
+confirmed 22.9 seconds after its download resumed. The returning computer
+confirmed in 90.1 seconds via the new main. The check includes lease and
+stage records in its failure output.
+
 ## TypeScript reference cases
 
 `Covered` means the exposed behaviour is checked. `Partial` records which
@@ -95,8 +107,8 @@ underlying Rust path is proven and what the update or installer still owes.
 Bridge-specific checks only for unpublished TypeScript betas and desktop app
 update prompts follow the switch-over scope in [the design](rust-box.md#4-switch-over).
 The reference table groups related TypeScript cases into 58 rows. Two rows
-are covered, 30 have partial proof, three are specific to the TypeScript bridge
-or desktop updater, and 23 are open. The inherited and live-proof table has
+are covered, 31 have partial proof, three are specific to the TypeScript bridge
+or desktop updater, and 22 are open. The inherited and live-proof table has
 11 rows, nine with partial proof and two open.
 
 | Source and case | Status | Remaining owner |
@@ -105,7 +117,7 @@ or desktop updater, and 23 are open. The inherited and live-proof table has
 | Same, pinned signatures and signed bytes | Covered by U1. | — |
 | Same, stale Mac launcher marks | Open. | 7.2 |
 | Same, partial rollback reported once | Partial. 7.1 writes the refusal record and U6 reads it. The interrupted in-place restore and its one-time settlement need the predecessor fixture. | 7.2 |
-| Same, signed release with Helper kept for peers | Partial. U4 covers signing and selecting a target. Target pack assembly, Helper validation, and retaining the signed feed and pack for peers are open. | 7.2, 6.2 |
+| Same, signed release with Helper kept for peers | Partial. U4 covers signing and selecting a target. U9–U10 pull the signed pack from a peer. Assembling published target packs with a validated Helper remains open. | 7.2, 6.2, 9.3 |
 | Same, full packaged contents | Partial. U4 checks the shipped executable and manifest in isolation. Complete per-target artifacts remain open. | 7.2 |
 | [update-follows-peers](../../box/bridge-tests/update-follows-peers.test.js), installed version and app version | Partial. U8 and U10 follow the main's signed installed version. Installer and app offers remain open. | 7.2 |
 | Same, desktop looks for its own update | TypeScript reference and desktop updater. | — |
@@ -125,7 +137,7 @@ or desktop updater, and 23 are open. The inherited and live-proof table has
 | [resident-update-pilot](../../box/bridge-tests/resident-update-pilot.test.js), sandboxed live turn survives both outcomes | Open. | 7.2, 9.3 |
 | [fleet-switch](../../box/bridge-tests/fleet-switch.test.js), T1 prepare, commit, and offline catch-up | Partial. U8–U10 pass through the relay stand-in and keeper. U9 falls back to authenticated release mail when the feed returns 404. Before-rejoin work admission and the fleet status routes remain open. | 7.2 |
 | Same, T3 retry and five-minute limit | Partial. The keeper stores a five-minute barrier from first preparation. U8 retries a transient download and U9 pulls a retained pack from its new main. The elapsed deadline, mixed-target fallback and manual retry remain open. | 7.2 |
-| Same, ahead member offers its version | Open. | 7.2 |
+| Same, ahead member offers its version | Partial. The main accepts signed newer offers from reachable members. The ahead member scenario remains open. | 7.2 |
 | Same, Update Now chooses the immediate candidate | Open. | 7.2 |
 | Same, progress summary remains while switching and after settlement | Open. | 7.2 |
 | Same, row progress and retry | Open. | 7.2 |
@@ -178,8 +190,8 @@ or desktop updater, and 23 are open. The inherited and live-proof table has
 
 ## Mac Helper supervision from 6.2
 
-Twelve of the 18 groups below are covered, three have partial proof, and
-three are open. U14's seven handover branches took 23.9 seconds together.
+Twelve of the 18 groups below are covered, four have partial proof, and
+two are open. U14's seven handover branches took 23.9 seconds together.
 U15 took 5.8 seconds. U16 measured 0.3 seconds from replacement to exit.
 
 | Source and case | Status | Remaining owner |
@@ -197,8 +209,8 @@ U15 took 5.8 seconds. U16 measured 0.3 seconds from replacement to exit.
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L183), refuse another installation | U15 checks machine refusal, the missing Helper, and the disabled scratch adapter. | — |
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L202), unknown command and flags | U15 checks invalid app IDs, unknown commands, unknown flags, and trailing arguments. | — |
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L398), desktop's location for Open Kuvo | Open. | 7.1, 7.2 |
-| [Same](../../box/bridge-tests/own-box-helper.test.js#L416), at-work and Stop on this Mac | Partial. U14 checks the stop markers during handover. The routes and actual Stop command remain open. | 7.1, 7.2 |
-| [Same](../../box/bridge-tests/own-box-helper.test.js#L437), reject stopping a machine | Open. | 7.1, 7.2 |
+| [Same](../../box/bridge-tests/own-box-helper.test.js#L416), at-work and Stop on this Mac | Partial. U17 checks the local Stop command and U14 checks the stop markers during handover. The at-work facts and events remain open. | 7.1, 7.2 |
+| [Same](../../box/bridge-tests/own-box-helper.test.js#L437), reject stopping a machine | Partial. U17 checks the refusal. The at-work applicability flag remains open. | 7.1, 7.2 |
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L447), restart after Stop | U15 checks launchctl waiting for the old PID before kickstart. | — |
 | [Same](../../box/bridge-tests/own-box-helper.test.js#L470), Darwin machine's Files permission | Open. | 6.1, 7.1, 7.2 |
 | [helper-running](../../box/test/helper-running.test.ts), load or kickstart when necessary and leave a running Helper | Partial. U11 loads a missing registration and U15 starts an existing job. Actual process state under launchd remains open. | 9.3 |
