@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 219 of
-411 declarations are covered, 67 are partial and 125 are gaps.
-One gap is a retired phone scenario. Row 3.2 retains 43 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 236 of
+411 declarations are covered, 68 are partial and 107 are gaps.
+One gap is a retired phone scenario. Row 3.2 retains 12 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -106,26 +106,26 @@ owners on the same case each own the part described by their phase.
 | `box/test/message-parts.test.ts` (18) | 1–6, 8–18 | — | 7 | 4.1 · 7 |
 | `box/test/engine-context.test.ts` (1) | 1 | — | — | — |
 | `box/test/engine-swap-inboxes.test.ts` (2) | 1–2 | — | — | — |
-| `box/test/queue-stop.test.ts` (6) | 1–2, 4–6 | 3 | — | 3.2 · 3 |
-| `box/test/queue-items.test.ts` (25) | 2, 4–22, 24 | 1, 3, 23 | 25 | 3.2 · 1, 3, 23<br>4.1 · 25 |
+| `box/test/queue-stop.test.ts` (6) | 1–6 | — | — | — |
+| `box/test/queue-items.test.ts` (25) | 1–24 | — | 25 | 4.1 · 25 |
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
-| `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20, 23, 26 | 2, 6–8, 10–13, 15–19, 21–22, 24 | 3.2 · 6–8, 10, 15–16, 20, 24<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–23, 26<br>6.3 · 7–8, 15–16, 24 |
+| `box/test/session-actions.test.ts` (26) | 1, 4, 6–9, 14–16, 20, 24–25 | 3, 5, 10, 23, 26 | 2, 11–13, 17–19, 21–22 | 4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–23, 26 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
-| `box/test/session-lists.test.ts` (47) | 1, 3–12, 15–17, 19–22, 24, 26–28 | 23, 29, 46 | 2, 13–14, 18, 25, 30–45, 47 | 3.2 · 2, 13–14, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25, 29–45<br>6.3 · 46<br>2.4 · 45 |
-| `box/test/session-notes.test.ts` (8) | 1–6 | — | 7–8 | 3.2 · 7–8 |
-| `box/test/session-notes-writers.test.ts` (7) | 3, 5, 7 | 1, 6 | 2, 4 | 3.2 · 1–2, 4<br>7.3 · 6 |
-| `box/bridge-tests/queue.test.js` (56) | 1–2, 4–34, 36–39, 43, 51–56 | — | 3, 35, 40–42, 44–50 | 3.2 · 3<br>4.1 · 44–50<br>4.6 · 40–42<br>dropped: phone app retired · 35 |
-| `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
-| `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–5 | 2 | 3.2 · 1–2<br>5.1 · 2<br>6.3 · 3–5 |
+| `box/test/session-lists.test.ts` (47) | 1, 3–13, 15–17, 19–22, 24, 26–28, 47 | 14, 23, 29, 46 | 2, 18, 25, 30–45 | 3.2 · 2, 46<br>4.1 · 14<br>5.1 · 18, 23, 25, 29–45<br>6.3 · 46<br>2.4 · 45 |
+| `box/test/session-notes.test.ts` (8) | 1–8 | — | — | — |
+| `box/test/session-notes-writers.test.ts` (7) | 3–5, 7 | 1–2, 6 | — | 7.3 · 6<br>5.1 · 1<br>5.3 · 1–2<br>6.1 · 1 |
+| `box/bridge-tests/queue.test.js` (56) | 1–2, 4–34, 36–39, 43, 51–56 | 3 | 35, 40–42, 44–50 | 4.1 · 44–50<br>4.6 · 40–42<br>dropped: phone app retired · 35<br>5.1 · 3 |
+| `box/bridge-tests/queue-live.test.js` (1) | 1 | — | — | — |
+| `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–5 | 2 | 3.2 · 2<br>5.1 · 2<br>6.3 · 3–5<br>4.1 · 1 |
 | `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
 | `box/test/draft-orphan.test.ts` (5) | 1–4 | 5 | — | 2.4 · 5 |
 | `box/test/conversation.test.ts` (3) | 1–3 | — | — | — |
 | `box/test/conversation-activity.test.ts` (2) | — | 1 | 2 | 4.1 · 2<br>5.1 · 1–2 |
 | `box/test/message-words.test.ts` (11) | 1–6 | 7–9 | 10–11 | 5.1 · 8–10<br>5.2 · 7<br>5.3 · 11<br>6.1 · 7<br>6.4 · 7 |
 | `box/test/session-news-kinds.test.ts` (5) | — | — | 1–5 | 5.1 · 1–5 |
-| `box/test/projects-worktrees.test.ts` (6) | — | 1–4 | 5–6 | 3.2 · 1–4<br>6.3 · 1–6 |
+| `box/test/projects-worktrees.test.ts` (6) | — | 1–4 | 5–6 | 3.2 · 3–4<br>6.3 · 1–6 |
 | `box/test/start-cancelled-worktree.test.ts` (2) | 1–2 | — | — | — |
-| `box/bridge-tests/worktrees.test.js` (32) | 8 | 1, 9, 14 | 2–7, 10–13, 15–32 | 3.2 · 1, 13–14, 17–18, 24–30<br>4.1 · 12, 30<br>6.3 · 1–7, 9–32<br>7.3 · 15–16 |
+| `box/bridge-tests/worktrees.test.js` (32) | 8 | 1, 9, 13–14, 17–18 | 2–7, 10–12, 15–16, 19–32 | 3.2 · 24–30<br>4.1 · 12, 30<br>6.3 · 1–7, 9–32<br>7.3 · 15–16 |
 | `box/bridge-tests/worktrees-where.test.js` (12) | — | — | 1–12 | 6.3 · 1–11<br>5.5 · 12 |
 
 ### Additional 3.2b reference cases
@@ -146,7 +146,7 @@ Each row uses the same one-based numbering and ownership rule.
 | `box/test/attachment-paths.test.ts` (2) | — | 1–2 | — | 2.4 · 1–2<br>2.5 · 1–2<br>4.1 · 1 |
 | `box/test/add-address.test.ts` (3) | — | — | 1–3 | 2.3 · 1–3 |
 | `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
-| `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 3.2 · 1<br>4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
+| `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
 | `box/bridge-tests/search.test.js` (11) | 1–11 | — | — | — |
 | `box/bridge-tests/session-models.test.js` (33) | 1–5, 10, 12–14, 17, 19–20, 22, 25, 28–30, 33 | 9, 16, 18, 23–24, 26–27, 32 | 6–8, 11, 15, 21, 31 | 4.1 · 6–9, 11, 15–16, 18, 21, 23–24, 26–27, 31–32 |
 | `box/bridge-tests/models-refresh.test.js` (4) | 1–2, 4 | 3 | — | 6.1 · 3 |
@@ -160,6 +160,9 @@ can write while one is waiting on OpenCode. Forwarded session PATCH requests
 use the same turn as resident writers. The turn also claims the older
 per-session directory lock. The process test holds that lock and the
 earlier global lock, checks stale lock cleanup, and releases both in turn.
+The resident's `NoteWriter` keeps one guard across related edits. Its test
+changes nested and top-level notes and permissions while a separate client
+waits for its own turn. The note writer is shared by the feature owners.
 An owned permit serializes durable
 queue index replacement off the resident executor. Removal and Undo leave a spent token
 so a retry cannot take a new occurrence. An inbox Edit keeps its original
@@ -168,7 +171,11 @@ transcript ID before returning the recovery copy and avoids repeating a
 confirmed removal. Edit includes retained files alongside carried files.
 A queued handoff records its native POST in the queue index. A reply and
 matching inbox or transcript establish acceptance. The view hides a
-delivered message while its handoff backup persists. Direct sends journal
+delivered message while its handoff backup persists. The failure cases
+block the payload or index on disk, verify the refusal and retry, and
+check that an accepted handoff is offered only once. The shared file writer
+syncs both the temporary file and its parent before returning success.
+Direct sends journal
 the original request before posting. On retry the resident checks the saved answer, the
 box queue, the OpenCode inbox and then the exact transcript ID. The journal has
 its own `run/prompt-receipts` family. Fresh session facts publish to the peer
@@ -312,6 +319,10 @@ The line publishes the same changed rows and tombstones as a cursor read.
 Worktree creation sanitizes the computer's configured branch prefix, and
 new conversations in a recorded worktree receive its branch instructions.
 The worktree owner can call `Engine::tell_worktree` after recording a rename.
+Session Delete and Delete All read the live and restorable records, check
+which independent conversations use each tree, and tell the client what
+goes with their sessions. Delete checks the same confirmation inside its
+note turn. Phase 6.3 owns naming, removal, restore and project discovery.
 On execution success, a completed standalone summary preserves the read
 marker if the preceding turn was read. In-turn summaries and later replies
 preserve their unread state. A saved wake-up shows the same summary from
@@ -320,6 +331,9 @@ The retired phone app's Send Now with a paired phone prompt is dropped.
 The released Swift Mac clients use the engine inbox and the GPUI client
 uses the composer and Undo routes. The box keeper still uses queue Add with
 its saved wake-up text.
+The malformed session path is refused by both residents' shared route
+guard. Keeping the last coding-agent rows while their bridge starts
+belongs to that holder in 4.1. The local OpenCode list publishes independently.
 Message pages and single-message reads add the existing tool words and preserve
 the original failure details. The port uses the assistant vectors and the same
 56 tool labels. The MCP tool owners supply their `tools/list` descriptors.
@@ -368,6 +382,12 @@ publishes receipt changes through a watch channel.
 | WSL GNU | 75 deterministic Rust cases after merging the move fences, plus the earlier OpenCode Go live scenario, with Mac-built executables. The held-inventory, old waiting-list, and concurrent-delete scenarios also passed. |
 | Native Windows | 119 deterministic Rust cases at the post-enrollment checkpoint, including two-resident setup search, signed stars, scoped and multipart addressed delivery, vault asks, the native project key, attachment paths and the delete race. An early project watch scenario failed there and passed on macOS after the inventory change. The staged OpenCode pin reports version 2.2.6. |
 | Linux musl | 82 deterministic Rust cases with the Mac-built static executable under WSL. An earlier 35 cases passed on Lokum. |
+
+The additional OpenCode Go run passed on both macOS boxes and the GNU
+Rust build under WSL. It checks Stop during a live turn, an inbox draft and
+a resident draft waiting together, then one exact transcript entry for
+each draft with a completed turn between them. The scratch provider entry
+was deleted from both hosts after the runs.
 
 The signed star test makes a change from a member, reads it from both
 computers, then merges older local copies after an unstar. It verifies the
