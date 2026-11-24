@@ -219,6 +219,7 @@ impl Agent for Claude {
             let recovery = threads.held.remove(&session);
             let thread = Arc::new(thread::Conversation::spawn(
                 self.program.clone(),
+                self.models.clone(),
                 self.provider.clone(),
                 context,
                 recovery,

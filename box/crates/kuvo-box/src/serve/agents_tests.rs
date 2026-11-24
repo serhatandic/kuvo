@@ -75,6 +75,7 @@ impl Agent for Fixture {
                     hidden: false,
                     retiring: false,
                     provisional: false,
+                    context: None,
                 }],
             })
         })

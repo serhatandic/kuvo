@@ -90,7 +90,7 @@ if (scriptedTurns && native && fs.existsSync(startFile)) {
   if (start.stderr !== undefined) fs.writeSync(2, start.stderr);
   process.exit(start.exit ?? 1);
 }
-let held, step = 0, playing = false, hookID;
+let held, step = 0, playing = false, hookID, chosen;
 const waiting = [], queued = [];
 const waitFor = test => new Promise(resolve => waiting.push({ test, resolve }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -204,6 +204,15 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
       finish(held);
       held = undefined;
     }
+  } else if (!native && ["set_model", "get_context_usage"].includes(subtype)) {
+    // A probe asking how much each model holds: as the test says (\`windows\` in
+    // \`<root>/claude-catalog.json\`, by model), or, as an older Claude Code, it doesn't say.
+    const catalogFile = ${JSON.stringify(path.join(root, "claude-catalog.json"))};
+    const windows = (fs.existsSync(catalogFile) ? JSON.parse(fs.readFileSync(catalogFile, "utf8")) : {}).windows;
+    if (subtype === "set_model") chosen = message.request.model;
+    if (!windows) answer(message.request_id, { subtype: "error", error: "Not in this stand-in." });
+    else if (subtype === "set_model") answer(message.request_id, { subtype: "success", response: {} });
+    else answer(message.request_id, { subtype: "success", response: { maxTokens: windows[chosen] } });
   } else if (scriptedTurns && subtype === "get_task_output") {
     // What a command it left running printed so far, as the test says (\`<root>/claude-task-output.json\`).
     const outputs = ${JSON.stringify(path.join(root, "claude-task-output.json"))};
