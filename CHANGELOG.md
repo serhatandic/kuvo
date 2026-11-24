@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Moving a conversation to another computer carries its Work Queue, its attachments and saved decisions; a changed attachment keeps the move from switching.
 - Work Queue totals on Rust computers include older Done and Canceled items kept on other Rust computers, even when only recent items are listed.
 - The Rust box checks Claude Code sign-in and lists the models available to each account.
 - Allowing a coding agent's command works again after a while with only coding agents at work: it no longer fails with "Kuvo couldn't verify this computer's current permissions", and Full Access no longer asks about every command then.

@@ -55,6 +55,7 @@ pub(in crate::queue) enum RequestKind<'a> {
     Read,
     OfflineRead,
     LabelRestore,
+    LabelEdit,
     Agent,
     File(&'a str),
     Edit,
@@ -82,6 +83,7 @@ impl Act {
             }
             return match (self.method, self.item.as_str()) {
                 (Method::Get, "offline-edit") => Some(RequestKind::OfflineRead),
+                (Method::Post, crate::queue::labels::EDIT_ROUTE) => Some(RequestKind::LabelEdit),
                 (Method::Post, crate::queue::labels::RESTORE_ROUTE) => {
                     Some(RequestKind::LabelRestore)
                 }

@@ -31,7 +31,7 @@ use tokio::{
 use super::{
     Journal, Kind, Role, Stage, archive, background, forward_evidence, handoff, journals, left,
     listing,
-    manifest::{Manifest, Origin},
+    manifest::{Manifest, Origin, QueueFile},
     move_id, read_json,
     receipt::{self, Bundle, Decided, Decision, Payloads, Receipts},
     session_files, session_notes,
@@ -39,6 +39,7 @@ use super::{
         BundleSize, Flight, IncomingBundle, MAX_BUNDLE_BYTES, OutgoingBundle, PART_BYTES, Receiving,
     },
     wake_folder,
+    work_queue::{QueuePlacement, QueueSnapshot, WorkQueueTransfer},
 };
 use crate::{
     directory::ComputerKey,
@@ -97,6 +98,7 @@ pub(crate) fn start(
     engine: Engine,
     ownership: ownership::Handle,
     waiting: watch::Sender<Arc<BTreeSet<String>>>,
+    work_queue: Option<Arc<dyn WorkQueueTransfer>>,
 ) -> io::Result<(Handle, JoinHandle<()>)> {
     let events = relay
         .subscribe()
@@ -121,6 +123,7 @@ pub(crate) fn start(
         heard: HashMap::new(),
         looking_since: Instant::now(),
         waiting,
+        work_queue,
         asked_trash: None,
     };
     Ok((Handle(tx), tokio::spawn(driver.run(events, commands))))
@@ -128,6 +131,7 @@ pub(crate) fn start(
 
 struct Sending {
     manifest: Manifest,
+    queue: Option<QueueSnapshot>,
     bundle: OutgoingBundle,
     flight: Flight,
     since: Instant,
@@ -164,6 +168,7 @@ struct Driver {
     looking_since: Instant,
     waiting: watch::Sender<Arc<BTreeSet<String>>>,
     asked_trash: Option<Instant>,
+    work_queue: Option<Arc<dyn WorkQueueTransfer>>,
 }
 
 impl Driver {
@@ -872,24 +877,15 @@ impl Driver {
             .scope(&row.thing, None)
             .map_err(io::Error::other)?
             .setup;
-        let evidence =
-            self.forward_evidence
-                .pack(&self.reader.run, setup.as_deref(), &row.sessions)?;
-        if evidence.is_some()
-            && !view
-                .announced
-                .get(&row.peer)
-                .and_then(|entry| entry.features.as_ref())
-                .is_some_and(|features| {
-                    features
-                        .iter()
-                        .any(|feature| feature == "data.forward-evidence")
-                })
-        {
-            return Err(io::Error::other(
-                "Update the destination computer before moving these forwarded decisions.",
-            ));
-        }
+        let can_take_evidence = view
+            .announced
+            .get(&row.peer)
+            .and_then(|entry| entry.features.as_ref())
+            .is_some_and(|features| {
+                features
+                    .iter()
+                    .any(|feature| feature == "data.forward-evidence")
+            });
         let home = self.run_dir().parent().expect("resident has a home");
         let location = chats_dir(home);
         let wake = wake_folder::original(self.run_dir(), row)?;
@@ -910,7 +906,7 @@ impl Driver {
             group: None,
             decided: None,
             work_queue: None,
-            forward_evidence: evidence,
+            forward_evidence: None,
             session_notes: notes,
             extra: Default::default(),
         };
@@ -918,38 +914,71 @@ impl Driver {
         let home = home.to_owned();
         let id = row.id.clone();
         let sessions = row.sessions.clone();
-        let (manifest, path, size, hash) = tokio::task::spawn_blocking(move || {
-            let stage = directory.join("sending-files");
-            let path = directory.join("bundle.tgz");
-            files::remove_tree_synced(&stage)?;
-            let mut queues = manifest.queues.take().unwrap_or_default();
-            let packed = (|| {
-                let payloads = session_files::stage(
-                    &home,
-                    &id,
-                    &sessions,
-                    &mut manifest.exports,
-                    &mut queues,
-                    &stage,
-                    super::transfer::MAX_BUNDLE_BYTES,
-                )?;
-                manifest.queues = (!queues.is_empty()).then_some(queues);
-                manifest.session_files = Some(payloads);
-                archive::write_chat(&path, &manifest, Some(&stage), wake.as_deref()).map_err(
-                    |error| match error {
-                        archive::Error::TooLarge => io::ErrorKind::FileTooLarge.into(),
-                        other => io::Error::other(other),
-                    },
-                )
+        let work_queue = self.work_queue.clone();
+        let own = view.roster.here.as_ref().map(|key| encode(key));
+        let run = self.reader.run.clone();
+        let mut evidence_index = std::mem::take(&mut self.forward_evidence);
+        let (index, packed) = tokio::task::spawn_blocking(move || {
+            let result = (|| {
+                let stage = directory.join("sending-files");
+                let queue_stage = stage.join("queue-bytes");
+                let path = directory.join("bundle.tgz");
+                files::remove_tree_synced(&stage)?;
+                let mut queues = manifest.queues.take().unwrap_or_default();
+                let packed = (|| {
+                    let payloads = session_files::stage(
+                        &home,
+                        &id,
+                        &sessions,
+                        &mut manifest.exports,
+                        &mut queues,
+                        &stage,
+                        MAX_BUNDLE_BYTES,
+                    )?;
+                    let used = payloads.iter()
+                        .map(|file| file.proof.size)
+                        .fold(0u64, u64::saturating_add);
+                    let queue = work_queue.as_ref()
+                        .map(|port| port.stage(
+                            &sessions, own.as_deref(), &queue_stage,
+                            MAX_BUNDLE_BYTES.saturating_sub(used),
+                        ))
+                        .transpose()?
+                        .flatten()
+                        .map(|queue| {
+                            manifest.work_queue = Some(queue.carried);
+                            queue.snapshot
+                        });
+                    let records = queue.as_ref().map_or(&[][..], |queue| queue.records.as_slice());
+                    manifest.forward_evidence =
+                        evidence_index.pack(&run, setup.as_deref(), &sessions, records)?;
+                    if manifest.forward_evidence.is_some() && !can_take_evidence {
+                        return Err(io::Error::other(
+                            "Update the destination computer before moving these forwarded decisions.",
+                        ));
+                    }
+                    manifest.queues = (!queues.is_empty()).then_some(queues);
+                    manifest.session_files = Some(payloads);
+                    let staged = queue.as_ref()
+                        .map(|queue| (queue_stage.as_path(), queue.files.as_slice()));
+                    archive::write_chat(&path, &manifest, Some(&stage), wake.as_deref(), staged)
+                        .map_err(|error| match error {
+                            archive::Error::TooLarge => io::ErrorKind::FileTooLarge.into(),
+                            other => io::Error::other(other),
+                        })?;
+                    Ok::<_, io::Error>(queue)
+                })();
+                let cleaned = files::remove_tree_synced(&stage);
+                let queue = packed?;
+                cleaned?;
+                let (size, hash) = BundleSize::measure(&path)?;
+                Ok::<_, io::Error>((manifest, queue, path, size, hash))
             })();
-            let cleaned = files::remove_tree_synced(&stage);
-            packed?;
-            cleaned?;
-            let (size, hash) = BundleSize::measure(&path)?;
-            Ok::<_, io::Error>((manifest, path, size, hash))
+            (evidence_index, result)
         })
-        .await?
-        .map_err(|error| {
+        .await?;
+        self.forward_evidence = index;
+        let (manifest, queue, path, size, hash) = packed.map_err(|error| {
             if error.kind() == io::ErrorKind::FileTooLarge {
                 io::Error::new(error.kind(), too_large(row.display_name()))
             } else {
@@ -961,6 +990,7 @@ impl Driver {
         let now = Instant::now();
         let sender = Sending {
             manifest,
+            queue,
             bundle: OutgoingBundle::open(&path, bytes.clone())?,
             flight: Flight::new(&bytes),
             since: now,
@@ -970,12 +1000,17 @@ impl Driver {
             hash: Some(hash),
         };
         row.size = Some(size);
-        row.verify_payloads = sender
+        let session_files = sender
             .manifest
             .session_files
             .as_ref()
             .is_some_and(|files| !files.is_empty());
-        if row.verify_payloads {
+        row.verify_payloads = sender
+            .queue
+            .as_ref()
+            .is_some_and(|queue| !queue.files.is_empty())
+            || session_files;
+        if session_files {
             row.extra.insert("typedAttachmentPaths".into(), true.into());
         } else {
             row.extra.shift_remove("typedAttachmentPaths");
@@ -1054,13 +1089,33 @@ impl Driver {
             .map_err(io::Error::other)?
             .setup;
         self.check_payloads(row)?;
-        if conversation(&exports) != conversation(&sending.manifest.exports)
+        let queue_changed = if let Some(port) = self.work_queue.clone() {
+            let owners = row.sessions.clone();
+            let own = view.roster.here.as_ref().map(|key| encode(key));
+            tokio::task::spawn_blocking(move || port.source_fingerprint(&owners, own.as_deref()))
+                .await
+                .map_err(io::Error::other)??
+                .as_deref()
+                != sending
+                    .queue
+                    .as_ref()
+                    .map(|queue| queue.fingerprint.as_str())
+        } else {
+            false
+        };
+        if queue_changed
+            || conversation(&exports) != conversation(&sending.manifest.exports)
             || without_clocks(&queues)? != without_clocks(&before)?
             || session_notes::pack(self.run_dir(), &row.sessions)? != sending.manifest.session_notes
-            || self
-                .forward_evidence
-                .pack(&self.reader.run, setup.as_deref(), &row.sessions)?
-                != sending.manifest.forward_evidence
+            || self.forward_evidence.pack(
+                &self.reader.run,
+                setup.as_deref(),
+                &row.sessions,
+                sending
+                    .queue
+                    .as_ref()
+                    .map_or(&[][..], |queue| queue.records.as_slice()),
+            )? != sending.manifest.forward_evidence
         {
             if row.bundle.generation.unwrap_or_default() >= 3 {
                 return Err(io::Error::other(format!(
@@ -1086,6 +1141,17 @@ impl Driver {
                 .as_deref()
                 .unwrap_or_default(),
         )?;
+        if let Some(queue) = sending
+            .queue
+            .as_ref()
+            .filter(|queue| !queue.files.is_empty())
+        {
+            let port = self.work_queue.clone().ok_or_else(no_work_queue)?;
+            let files = queue.files.clone();
+            tokio::task::spawn_blocking(move || port.verify(&files))
+                .await
+                .map_err(io::Error::other)??;
+        }
         row.stage = Stage::Switching;
         row.extra
             .insert("switchSince".into(), self.reader.now().into());
@@ -1228,6 +1294,12 @@ impl Driver {
             session.remove_retired(id).await.map_err(io::Error::other)?;
         }
         session_notes::discard(self.run_dir(), &row.sessions, None)?;
+        if let Some(port) = self.work_queue.clone() {
+            let owners = row.sessions.clone();
+            tokio::task::spawn_blocking(move || port.retire(&owners))
+                .await
+                .map_err(io::Error::other)??;
+        }
         left::keep(self.run_dir(), row, &backup, self.reader.now())
     }
 
@@ -1339,6 +1411,9 @@ impl Driver {
                 return Err(io::Error::other(
                     "The move’s Autopilot decisions could not be prepared.",
                 ));
+            }
+            if self.work_queue.is_some() {
+                continue;
             }
             let queue = read_json(
                 &run.join("work-queue/queues")
@@ -1778,7 +1853,7 @@ impl Driver {
                 .as_deref()
                 .is_some_and(|folder| folder != row.thing)
             || manifest.lane.is_some()
-            || manifest.work_queue.is_some()
+            || (manifest.work_queue.is_some() && self.work_queue.is_none())
         {
             return Err(io::Error::other("What came isn’t a move."));
         }
@@ -1793,8 +1868,19 @@ impl Driver {
             .folder
             .as_deref()
             .map(|folder| (folder, staged_wake.as_path()));
-        archive::unpack_chat_files(bundle, &staged_files, &payloads, wake)
-            .map_err(io::Error::other)?;
+        let queue_staged = self.staged(&row.id).join("received-queue");
+        let queue_received = if let Some(carried) = manifest.work_queue.as_ref() {
+            let port = self.work_queue.as_ref().ok_or_else(no_work_queue)?;
+            Some((
+                queue_staged.as_path(),
+                port.expected_files(carried, &sessions, row.verify_payloads)?,
+            ))
+        } else {
+            None
+        };
+        let queue_files =
+            archive::unpack_chat_files(bundle, &staged_files, &payloads, wake, queue_received)
+                .map_err(io::Error::other)?;
         let mut queues = manifest.queues.take().unwrap_or_default();
         session_files::rewrite(home, &payloads, &mut manifest.exports, &mut queues)?;
         let engine = self.engine.session_move().await.map_err(io::Error::other)?;
@@ -1813,7 +1899,7 @@ impl Driver {
         }
         row.payloads = Some(Payloads {
             sessions: payloads,
-            queue: vec![],
+            queue: queue_files,
         });
         if let Some(was) = manifest.was {
             row.extra.insert("was".into(), serde_json::to_value(was)?);
@@ -1851,13 +1937,39 @@ impl Driver {
         if let Some(notes) = manifest.session_notes {
             session_notes::place(self.run_dir(), &row.sessions, notes, &receipt)?;
         }
+        let mut queue_records = Vec::new();
+        if let Some(queue) = manifest.work_queue {
+            let port = self.work_queue.as_ref().ok_or_else(no_work_queue)?;
+            let files = row.payloads.as_ref().expect("move payloads").queue.clone();
+            let owners = row.sessions.clone();
+            let movement = row.id.clone();
+            port.install(
+                queue,
+                &owners,
+                &queue_staged,
+                &files,
+                &movement,
+                &mut |placement| {
+                    queue_records = placement.records();
+                    row.extra
+                        .insert("queuePlacement".into(), serde_json::to_value(placement)?);
+                    row.save(self.run_dir())
+                },
+            )?;
+        }
         if let Some(evidence) = manifest.forward_evidence {
             let setup = self
                 .ownership
                 .scope(&row.thing, None)
                 .map_err(io::Error::other)?
                 .setup;
-            forward_evidence::place(self.run_dir(), setup.as_deref(), &row.sessions, evidence)?;
+            forward_evidence::place(
+                self.run_dir(),
+                setup.as_deref(),
+                &row.sessions,
+                &queue_records,
+                evidence,
+            )?;
         }
         Ok(())
     }
@@ -1867,6 +1979,7 @@ impl Driver {
             let home = self.run_dir().parent().expect("resident has a home");
             if session_files::validate(&row.id, &row.sessions, &payloads.sessions)
                 .and_then(|()| session_files::verify(home, &payloads.sessions))
+                .and_then(|()| self.verify_queue_files(&payloads.queue))
                 .is_err()
             {
                 self.tell(
@@ -1921,6 +2034,7 @@ impl Driver {
                 let home = self.run_dir().parent().expect("resident has a home");
                 session_files::validate(&row.id, &row.sessions, &payloads.sessions)?;
                 session_files::verify(home, &payloads.sessions)?;
+                self.verify_queue_files(&payloads.queue)?;
             }
             let engine = self.engine.session_move().await.map_err(io::Error::other)?;
             let needed = row
@@ -1946,6 +2060,7 @@ impl Driver {
             wake_folder::release(self.run_dir(), row)?;
             handoff::commit_destination(self.run_dir(), row)?;
         }
+        self.finish_queue(row, false)?;
         handoff::remove_completed(self.run_dir(), row)?;
         self.retire_memory(&row.id);
         self.answer_decision(view, key, row).await?;
@@ -2052,6 +2167,7 @@ impl Driver {
     }
 
     async fn clear_copy(&self, row: &Journal) -> io::Result<()> {
+        self.finish_queue(row, true)?;
         if row.sessions.is_empty() {
             return Ok(());
         }
@@ -2086,6 +2202,30 @@ impl Driver {
             }
         }
         wake_folder::discard(self.run_dir(), row)
+    }
+
+    fn verify_queue_files(&self, files: &[QueueFile]) -> io::Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        self.work_queue
+            .as_ref()
+            .ok_or_else(no_work_queue)?
+            .verify(files)
+    }
+
+    fn finish_queue(&self, row: &Journal, roll_back: bool) -> io::Result<()> {
+        let Some(saved) = row.extra.get("queuePlacement") else {
+            return Ok(());
+        };
+        let placement: QueuePlacement = serde_json::from_value(saved.clone())?;
+        let payloads = row.payloads.as_ref().ok_or_else(no_work_queue)?;
+        self.work_queue.as_ref().ok_or_else(no_work_queue)?.finish(
+            &row.id,
+            &placement,
+            &payloads.queue,
+            roll_back,
+        )
     }
 
     async fn answer_decision(
@@ -2279,6 +2419,10 @@ fn tree(exports: &[Value], root: &str) -> io::Result<Vec<String>> {
         return Err(invalid());
     }
     Ok(sessions)
+}
+
+fn no_work_queue() -> io::Error {
+    io::Error::other("The session’s Work Queue could not be prepared for the move.")
 }
 
 fn without_clocks(queues: &std::collections::BTreeMap<String, Value>) -> io::Result<Value> {

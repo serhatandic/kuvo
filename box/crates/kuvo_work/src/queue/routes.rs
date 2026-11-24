@@ -115,7 +115,12 @@ pub async fn register(
         sessions: sessions.clone(),
         transport: memory,
     };
-    labels::register(registry, store.clone(), setup.clone());
+    labels::register(
+        registry,
+        store.clone(),
+        setup.clone(),
+        super::forward::Forward::new(store.clone(), owners.clone(), relay.clone()),
+    );
     let runtime = items::register(registry, setup, engine, relay, reads.clone(), owners);
 
     let here = lists.clone();

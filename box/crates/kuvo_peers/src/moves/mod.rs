@@ -16,6 +16,7 @@ mod session_notes;
 pub mod transfer;
 mod wake_archive;
 mod wake_folder;
+pub mod work_queue;
 
 use std::{collections::BTreeSet, io, path::Path};
 

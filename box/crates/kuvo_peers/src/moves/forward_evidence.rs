@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 const OWNED: ObjectFormat = ObjectFormat::additive("Owned data");
 const INDEX_BATCH: usize = 128;
-const INDEX_FILE: &str = "receipt-index-v1/move-addresses.json";
+const INDEX_FILE: &str = "receipt-index-v1/move-addresses-v2.json";
 
 #[derive(Deserialize)]
 struct DraftFence {
@@ -67,10 +67,10 @@ enum Scope {
 }
 
 impl Scope {
-    fn follows(&self, setup: &str, sessions: &[String], item: Option<&str>) -> bool {
+    fn follows(&self, setup: &str, sessions: &[String], items: &[String]) -> bool {
         match self {
             Self::Session { setup: family, id } => family == setup && sessions.contains(id),
-            Self::QueueItem { setup: family, id } => family == setup && item == Some(id.as_str()),
+            Self::QueueItem { setup: family, id } => family == setup && items.contains(id),
             Self::Other => false,
         }
     }
@@ -184,6 +184,7 @@ impl Index {
         run: &Path,
         setup: Option<&str>,
         sessions: &[String],
+        items: &[String],
     ) -> io::Result<Option<BTreeMap<String, Value>>> {
         let Some(setup) = setup else {
             return Ok(None);
@@ -199,7 +200,7 @@ impl Index {
         if !self.current(&root)? {
             return Err(indexing());
         }
-        let packed = pack(&root, setup, sessions, &self.checkpoint)?;
+        let packed = pack(&root, setup, sessions, items, &self.checkpoint)?;
         // Each result comes from the current receipt. A new record can
         // invalidate the checkpoint between reading its keys and records.
         if !self.current(&root)? {
@@ -240,8 +241,8 @@ impl Index {
             .mutations
             .scan(&mutations, &mut left, |key, fields| {
                 Ok(match address(key, fields)? {
-                    Scope::Session { id, .. } => Some(id),
-                    Scope::QueueItem { .. } | Scope::Other => None,
+                    Scope::Session { id, .. } | Scope::QueueItem { id, .. } => Some(id),
+                    Scope::Other => None,
                 })
             })?;
         self.checkpoint
@@ -282,6 +283,7 @@ pub fn pack_queue_evidence(
     let root = run.join("owned-data");
     let _guard = OwnedLock::acquire(&root.join(".mutations.lock"), Duration::from_secs(3))?;
     let mut entries = BTreeMap::new();
+    let items = [item.to_owned()];
     let mutations = root.join("mutations");
     for key in records(&mutations)? {
         let Some(object) = OWNED
@@ -290,7 +292,7 @@ pub fn pack_queue_evidence(
         else {
             continue;
         };
-        if address(&key, &object.fields)?.follows(setup, &[], Some(item)) {
+        if address(&key, &object.fields)?.follows(setup, &[], &items) {
             entries.insert(key, OWNED.encode(object.fields));
         }
     }
@@ -301,19 +303,24 @@ fn pack(
     root: &Path,
     setup: &str,
     sessions: &[String],
+    items: &[String],
     checkpoint: &Checkpoint,
 ) -> io::Result<Option<BTreeMap<String, Value>>> {
     let mut entries = BTreeMap::new();
     let mutations = root.join("mutations");
     let submissions = root.join("submissions");
-    for key in checkpoint.mutations.keys(sessions) {
+    for key in checkpoint
+        .mutations
+        .keys(sessions)
+        .chain(checkpoint.mutations.keys(items))
+    {
         let Some(object) = OWNED
             .read(&record_path(&mutations, key))
             .map_err(io::Error::other)?
         else {
             continue;
         };
-        if address(key, &object.fields)?.follows(setup, sessions, None) {
+        if address(key, &object.fields)?.follows(setup, sessions, items) {
             entries.insert(key.to_owned(), OWNED.encode(object.fields));
         }
     }
@@ -383,9 +390,10 @@ pub(super) fn place(
     run: &Path,
     setup: Option<&str>,
     sessions: &[String],
+    items: &[String],
     records: BTreeMap<String, Value>,
 ) -> io::Result<()> {
-    place_for(run, setup, sessions, None, records)
+    place_for(run, setup, sessions, items, records)
 }
 
 pub fn place_queue_evidence(
@@ -394,14 +402,14 @@ pub fn place_queue_evidence(
     item: &str,
     records: BTreeMap<String, Value>,
 ) -> io::Result<()> {
-    place_for(run, setup, &[], Some(item), records)
+    place_for(run, setup, &[], &[item.to_owned()], records)
 }
 
 fn place_for(
     run: &Path,
     setup: Option<&str>,
     sessions: &[String],
-    item: Option<&str>,
+    items: &[String],
     records: BTreeMap<String, Value>,
 ) -> io::Result<()> {
     let setup = setup.ok_or_else(invalid)?;
@@ -413,7 +421,7 @@ fn place_for(
             return Err(invalid());
         }
         let incoming = OWNED.decode(raw).map_err(io::Error::other)?.fields;
-        if !address(&key, &incoming)?.follows(setup, sessions, item) {
+        if !address(&key, &incoming)?.follows(setup, sessions, items) {
             return Err(io::Error::other(
                 "The move includes a forwarded decision for another record.",
             ));

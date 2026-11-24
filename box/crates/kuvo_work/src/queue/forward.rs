@@ -106,6 +106,19 @@ impl Forward {
         .await
     }
 
+    pub fn legacy_label_main(&self, main: &str) -> Option<(ComputerKey, Value)> {
+        let peer = kuvo_wire::keys::decode_exact(main)?;
+        let (view, _, _) = self.owners.work_queue_destination(peer).ok()?;
+        if !view.advertises(&peer, "data.ownership") {
+            return None;
+        }
+        let computer = view.roster.member(&peer)?;
+        Some((
+            peer,
+            json!({"key":main,"name":computer.name,"kind":computer.kind}),
+        ))
+    }
+
     pub async fn owner_write(
         &self,
         peer: ComputerKey,

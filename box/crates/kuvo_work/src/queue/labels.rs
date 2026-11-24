@@ -22,6 +22,8 @@ use serde_json::{Value, json};
 use std::{collections::HashSet, time::Duration};
 use unicode_normalization::UnicodeNormalization;
 
+pub(super) const EDIT_ROUTE: &str = "kuvo/work-queue/labels";
+
 struct Kept {
     library: QueueLabelLibrary,
     metadata: Fields,
@@ -488,13 +490,13 @@ fn changed_library(
     Ok((library, changed))
 }
 
-async fn managed_save(
+async fn managed_value(
     store: Store,
     setup: SetupHandle,
     selected: QueueSetup,
-    caller: Caller,
+    caller: Option<Caller>,
     edit: Edit,
-) -> Result<RouteReply<post::Spec>, Refusal> {
+) -> Result<Value, Refusal> {
     let removal = edit.removal();
     let fixture = store.clone();
     let selection = selected.clone();
@@ -502,29 +504,68 @@ async fn managed_save(
         tokio::task::spawn_blocking(move || changed_library(&fixture, selection, edit))
             .await
             .map_err(super::routes::internal)??;
-    let receipt = setup
-        .save_queue_labels(&caller, &selected, library.clone())
-        .await?;
+    let receipt = if let Some(caller) = caller {
+        setup
+            .save_queue_labels(&caller, &selected, library.clone())
+            .await?
+    } else {
+        setup
+            .save_queue_labels_on_this_computer(&selected, library.clone())
+            .await?
+    };
     if removal {
         let gone = done.id.clone();
         super::routes::blocking(move || strip(&store, &[gone])).await?;
     }
-    let response: post::Status200 = serde_json::from_value(answer(library.labels, done, removal))
-        .map_err(super::routes::internal)?;
-    RouteReply::json_with::<200>(
-        response,
-        [
-            ("setup", receipt.setup.into()),
-            ("epoch", receipt.epoch.into()),
-            ("operation", receipt.operation.into()),
-            ("status", receipt.status.into()),
-            ("proof", json!(receipt.proof)),
-        ],
-    )
-    .map_err(super::routes::internal)
+    let mut response = answer(library.labels, done, removal);
+    let fields = response.as_object_mut().expect("Work Queue label reply");
+    fields.extend([
+        ("setup".into(), receipt.setup.into()),
+        ("epoch".into(), receipt.epoch.into()),
+        ("operation".into(), receipt.operation.into()),
+        ("status".into(), receipt.status.into()),
+        ("proof".into(), json!(receipt.proof)),
+    ]);
+    Ok(response)
 }
 
-pub(super) fn register(registry: &mut Registry, store: Store, setup: SetupHandle) {
+fn with_receipt(mut value: Value) -> Result<RouteReply<post::Spec>, Refusal> {
+    let fields = value
+        .as_object_mut()
+        .ok_or_else(|| super::routes::internal("Invalid Work Queue label answer."))?;
+    let receipt: Vec<_> = ["setup", "epoch", "operation", "status", "proof"]
+        .into_iter()
+        .filter_map(|key| Some((key, fields.remove(key)?)))
+        .collect();
+    let typed =
+        serde_json::from_value::<post::Status200>(value).map_err(super::routes::internal)?;
+    RouteReply::json_with::<200>(typed, receipt).map_err(super::routes::internal)
+}
+
+pub(super) async fn peer_edit(
+    store: &Store,
+    setup: &SetupHandle,
+    body: Value,
+) -> Result<Value, Refusal> {
+    let selected = setup
+        .queue_setup()
+        .filter(|setup| setup.main_here)
+        .ok_or_else(|| {
+            Refusal::new(
+                StatusCode::CONFLICT,
+                "This computer couldn’t confirm it owns that record.",
+            )
+        })?;
+    let edit = Edit::parse(&body).map_err(bad)?;
+    managed_value(store.clone(), setup.clone(), selected, None, edit).await
+}
+
+pub(super) fn register(
+    registry: &mut Registry,
+    store: Store,
+    setup: SetupHandle,
+    forward: super::forward::Forward,
+) {
     let here = store.clone();
     let accepted = setup.clone();
     registry.register::<get::Spec, _, _>(Access::Any, move |_| {
@@ -542,6 +583,7 @@ pub(super) fn register(registry: &mut Registry, store: Store, setup: SetupHandle
     registry.register::<post::Spec, _, _>(Access::Any, move |call| {
         let store = store.clone();
         let setup = setup.clone();
+        let forward = forward.clone();
         async move {
             let caller = call.request.caller;
             if !super::routes::work_queue_client(&caller) {
@@ -551,7 +593,14 @@ pub(super) fn register(registry: &mut Registry, store: Store, setup: SetupHandle
             let body = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
             let edit = Edit::parse(&body).map_err(bad)?;
             if let Some(selected) = setup.queue_setup() {
-                return managed_save(store, setup, selected, caller, edit).await;
+                if !selected.main_here
+                    && super::routes::local_work_queue_app(&caller)
+                    && let Some((main, computer)) = forward.legacy_label_main(&selected.primary)
+                {
+                    let saved = forward.owner_write(main, computer, EDIT_ROUTE, body).await?;
+                    return with_receipt(saved);
+                }
+                return with_receipt(managed_value(store, setup, selected, Some(caller), edit).await?);
             }
             tokio::task::spawn_blocking(move || local_save(&store, edit)).await
                 .map_err(super::routes::internal)?.and_then(super::routes::typed)

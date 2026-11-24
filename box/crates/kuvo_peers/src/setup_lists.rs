@@ -667,6 +667,15 @@ impl ResidentPeers {
         engine: kuvo_engine::Engine,
         ownership: crate::ownership::Handle,
     ) -> io::Result<()> {
+        self.attach_moves_with_queue(engine, ownership, None).await
+    }
+
+    pub async fn attach_moves_with_queue(
+        &mut self,
+        engine: kuvo_engine::Engine,
+        ownership: crate::ownership::Handle,
+        queue: Option<Arc<dyn crate::moves::work_queue::WorkQueueTransfer>>,
+    ) -> io::Result<()> {
         let Some(relay) = self.relay_handle() else {
             return Ok(());
         };
@@ -680,6 +689,7 @@ impl ResidentPeers {
             engine.clone(),
             ownership.clone(),
             self.move_waiting.clone(),
+            queue,
         )?);
         self.letters = Some(crate::letters::start(
             self.reader(),

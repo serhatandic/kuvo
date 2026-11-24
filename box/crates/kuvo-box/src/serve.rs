@@ -139,7 +139,13 @@ pub async fn run(
         devices.clone(),
         move || authority.ownership_state(),
     );
-    peers.attach_moves(engine.clone(), owners.clone()).await?;
+    peers
+        .attach_moves_with_queue(
+            engine.clone(),
+            owners.clone(),
+            Some(kuvo_work::queue::move_transfer(home, setup.handle())),
+        )
+        .await?;
     let peers = Arc::new(peers);
     peers.follow_setup_roster(setup.handle().rosters()).await;
     let vault = kuvo_services::vault::Resident::new(
