@@ -101,6 +101,11 @@ pub async fn run(
             }
         }
     };
+    let machine = kind != ComputerKind::Mac;
+    let tools = agents::tools::relay(home, machine, engine.clone())?;
+    if machine && let Some((runtime, _)) = &resident_agents {
+        agents::tools::take_up(&tools, runtime).await;
+    }
     let info = info(
         home,
         &roster.name,
@@ -446,6 +451,7 @@ pub async fn run(
     if let Some((runs, runtime)) = agent_handover {
         agents::hand_over(home, &runs, &runtime).await;
     }
+    tools.shutdown().await;
     if let Some(agents) = agent_shutdown {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),

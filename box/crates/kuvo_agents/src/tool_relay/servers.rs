@@ -90,14 +90,11 @@ pub struct Launch {
 /// Where the computer's servers come from: the engine reads them, renews
 /// their sign-ins and connects them again; the sandbox runs their commands.
 pub trait ServerHost: Send + Sync + 'static {
-    /// The server named `name` for `directory` as the host has it now, its
-    /// sign-in renewed if it can be.
-    fn renewed<'a>(
-        &'a self,
-        _directory: &'a Path,
-        _name: &'a str,
-    ) -> BoxFuture<'a, Option<ComputerServer>> {
-        async { None }.boxed()
+    /// The servers for a conversation's `directory` as the host has them,
+    /// read `fresh` (your sign-ins renewed where they ran out) or as it last
+    /// knew them.
+    fn servers<'a>(&'a self, _directory: &'a Path, _fresh: bool) -> BoxFuture<'a, ComputerServers> {
+        async { ComputerServers::default() }.boxed()
     }
 
     /// Connect it again: the host renews your sign-in if it can, or finds it
@@ -269,6 +266,12 @@ impl Servers {
 }
 
 impl ToolRelay {
+    /// The computer's servers for a conversation's `directory`, as the host
+    /// last read them (every few seconds).
+    pub async fn computer_servers(&self, directory: &Path) -> ComputerServers {
+        self.0.host.servers(directory, false).await
+    }
+
     /// The computer's servers for `session`, whose commands run in
     /// `directory`, as its agent reaches them through the relay, held by
     /// `holder`. `brief`: its agent gives up its whole session when one
@@ -513,17 +516,22 @@ impl ToolRelay {
         let start_in = if brief { entry.timeout.min(self.timing().starts) } else { entry.timeout };
         let deadline = Instant::now() + start_in;
         let host = self.0.host.clone();
+        // A URL's server as the host has it now (your sign-in renewed), for
+        // the rest of its calls.
         let renewing = || {
-            let host = host.clone();
-            let directory = served.directory.clone();
-            let name = name.to_owned();
+            let (relay, host) = (self.clone(), host.clone());
+            let (directory, name, session) = (served.directory.clone(), name.to_owned(), session.to_owned());
             async move {
-                let renewed = if brief {
-                    tokio::time::timeout_at(deadline, host.renewed(&directory, &name)).await.ok().flatten()
-                } else {
-                    host.renewed(&directory, &name).await
-                };
-                renewed.filter(|server| matches!(server.kind, ServerKind::Remote { .. }))
+                let found = host.servers(&directory, true);
+                let found = if brief { tokio::time::timeout_at(deadline, found).await.ok()? } else { found.await };
+                let renewed = found.servers.into_iter().find(|server| server.name == name)?;
+                let ServerKind::Remote { .. } = renewed.kind else { return None };
+                let mut state = relay.state();
+                let now = state.servers.served.get_mut(&session).filter(|now| now.directory == directory);
+                if let Some(now) = now {
+                    now.servers.insert(name, renewed.clone());
+                }
+                Some(renewed)
             }
         };
         // Your sign-in to it running out (in a long turn): renewed first.

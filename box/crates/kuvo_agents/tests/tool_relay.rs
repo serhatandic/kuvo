@@ -437,8 +437,9 @@ struct Host {
 }
 
 impl ServerHost for Host {
-    fn renewed<'a>(&'a self, _: &'a Path, _: &'a str) -> BoxFuture<'a, Option<ComputerServer>> {
-        async { self.now.lock().unwrap().clone() }.boxed()
+    fn servers<'a>(&'a self, _: &'a Path, _: bool) -> BoxFuture<'a, ComputerServers> {
+        let servers = self.now.lock().unwrap().clone().into_iter().collect();
+        async { ComputerServers { servers, key: String::new() } }.boxed()
     }
 
     fn reconnect<'a>(&'a self, _: &'a Path, _: &'a str) -> BoxFuture<'a, ()> {

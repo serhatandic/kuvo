@@ -190,12 +190,18 @@ test("a resident replaced while its agent asks: the next shows the ask once, ref
       const asked = await until(async () => (await call("GET", "/permission")).json.data[0],
         "The held stand-in did not ask.");
       assert.deepEqual(asked.resources, ["held.txt"]);
+      // On a computer the tools relay listens from the start, and the next
+      // resident listens where it was, for the agents it takes up.
+      const relayRecord = path.join(home, "run", "agents", "relay.json");
+      const relayPort = await until(() => existsSync(relayRecord) && readJSON(relayRecord).port,
+        "The tools relay never listened.");
       const queued = await call("POST", "/prompt", { id: "msg_held_update_2", text: "next", delivery: "queue" });
       assert.equal(queued.status, 200, queued.text);
       // The update: this resident makes way, the next takes the turn up. (Its
       // agent's lines come a second late: the first read waits for the ask.)
       write(path.join(home, "run", "agent-fixture-slow-replay"), "");
       listener = await restart();
+      await until(() => readJSON(relayRecord).port === relayPort, "The tools relay moved.");
       const shown = process.platform === "win32"
         // (A forced stop hands nothing over: the ask still comes again.)
         ? await until(async () => (await call("GET", "/permission")).json.data.length && (await call("GET", "/permission")).json.data,
