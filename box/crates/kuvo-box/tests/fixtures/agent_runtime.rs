@@ -33,7 +33,7 @@ mod held;
 const ASK: &str = r#"{"id":17,"method":"fixture/approve"}"#;
 const REPLY: &str = r#"{"id":17,"result":{"allow":true}}"#;
 
-pub(super) fn for_home(root: &Path) -> Option<Arc<dyn Factory>> {
+pub(super) fn for_home(root: &Path, relay: kuvo_agents::tool_relay::ToolRelay) -> Option<Arc<dyn Factory>> {
     let path = root.join("run/agent-fixture-program");
     let program = PathBuf::from(fs::read_to_string(path).ok()?);
     if !program.is_absolute() || !program.is_file() {
@@ -46,6 +46,7 @@ pub(super) fn for_home(root: &Path) -> Option<Arc<dyn Factory>> {
         recovered: Arc::new(tokio::sync::Mutex::new(None)),
         parked: Arc::default(),
         provider: String::new(),
+        relay,
     }))
 }
 
@@ -56,6 +57,7 @@ struct Fixture {
     recovered: Arc<tokio::sync::Mutex<Option<Controller>>>,
     parked: held::Parked,
     provider: String,
+    relay: kuvo_agents::tool_relay::ToolRelay,
 }
 
 impl Factory for Fixture {
@@ -101,6 +103,7 @@ impl Agent for Fixture {
                     session: context.session_id,
                     provider: self.provider.clone(),
                     parked: self.parked.clone(),
+                    relay: self.relay.clone(),
                 })
             } else {
                 Arc::new(turn::FixtureThread)
