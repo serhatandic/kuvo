@@ -2010,6 +2010,15 @@ async fn dropped_copies_retry_each_minute_then_each_hour() {
 
 #[tokio::test]
 async fn a_quiet_peer_keeps_the_original_until_the_transfer_deadline() {
+    source_deadline(false).await;
+}
+
+#[tokio::test]
+async fn a_slow_preparation_releases_the_original_at_the_move_deadline() {
+    source_deadline(true).await;
+}
+
+async fn source_deadline(slow_exports: bool) {
     use kuvo_engine::{Engine, Timing};
     use kuvo_peers::{
         devices::Devices,
@@ -2034,6 +2043,9 @@ async fn a_quiet_peer_keeps_the_original_until_the_transfer_deadline() {
     let port = listener.local_addr().unwrap().port();
     let session = "ses_waitingSource";
     let id = "mov_waitingSource";
+    let wake = home.path().join("wakes").join(session);
+    std::fs::create_dir_all(&wake).unwrap();
+    std::fs::write(wake.join("answer"), b"keep this").unwrap();
     let endpoint =
         json!({"pid":std::process::id(),"port":port,"password":"fixture","version":"fixture"});
     files::write_atomic(
@@ -2049,6 +2061,9 @@ async fn a_quiet_peer_keeps_the_original_until_the_transfer_deadline() {
         "twoComputers":true,
     });
     files::write_atomic(&journal, &serde_json::to_vec(&row).unwrap()).unwrap();
+    let (exported, mut exports) = tokio::sync::mpsc::unbounded_channel();
+    let export_allowed = Arc::new(tokio::sync::Semaphore::new(0));
+    let permit = export_allowed.clone();
     let server = tokio::spawn(async move {
         while let Ok((socket, _)) = listener.accept().await {
             let mut socket = BufReader::new(socket);
@@ -2062,14 +2077,28 @@ async fn a_quiet_peer_keeps_the_original_until_the_transfer_deadline() {
             }
             let route = request.split_whitespace().nth(1).unwrap_or_default();
             assert!(!request.starts_with("DELETE"));
-            let body =
-                if route.starts_with("/api/experimental/session/") && route.ends_with("/export") {
-                    json!({"data":{"info":{"id":session,"title":"Quiet chat"},"messages":[]}})
-                } else if route == format!("/api/session/{session}") {
-                    json!({"data":{"id":session,"title":"Quiet chat"}})
-                } else {
-                    json!({"data":[]})
-                };
+            let body = if let Some(session_id) = route
+                .strip_prefix("/api/experimental/session/")
+                .and_then(|route| route.strip_suffix("/export"))
+            {
+                if slow_exports {
+                    exported.send(()).unwrap();
+                    permit.acquire().await.unwrap().forget();
+                }
+                let mut info = json!({"id":session_id, "title":"Quiet chat"});
+                if session_id != session {
+                    info["parentID"] = session.into();
+                }
+                json!({"data":{"info":info,"messages":[]}})
+            } else if slow_exports
+                && route.starts_with(&format!("/api/session?parentID={session}&"))
+            {
+                json!({"data":[{"id":"ses_slowerOne"},{"id":"ses_slowerTwo"},{"id":"ses_slowerThree"}]})
+            } else if route == format!("/api/session/{session}") {
+                json!({"data":{"id":session,"title":"Quiet chat"}})
+            } else {
+                json!({"data":[]})
+            };
             let body = body.to_string();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -2134,6 +2163,46 @@ async fn a_quiet_peer_keeps_the_original_until_the_transfer_deadline() {
     assert_eq!(check["id"], id);
     wire.send(mail(json!({"id":id,"op":"checked","ok":true})))
         .await;
+    let outcome = run.join("moves").join(format!("{id}.outcome.json"));
+    if slow_exports {
+        tokio::time::timeout(Duration::from_secs(10), exports.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(wake.join("paused")).unwrap(),
+            format!("moving:{id}")
+        );
+        tokio::time::pause();
+        for _ in 0..3 {
+            tokio::time::advance(Duration::from_secs(500)).await;
+            export_allowed.add_permits(1);
+            tokio::time::timeout(Duration::from_secs(2), exports.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        tokio::time::advance(Duration::from_secs(301)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !outcome.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("The move did not stop after thirty minutes of preparation");
+        let failed: Value = serde_json::from_slice(&std::fs::read(outcome).unwrap()).unwrap();
+        assert_eq!(failed["status"], 409);
+        assert_eq!(
+            failed["message"],
+            "Quiet chat took too long to get ready to move on this machine, so it stayed here. Try again in a moment."
+        );
+        assert!(!wake.join("paused").exists());
+        assert_eq!(std::fs::read(wake.join("answer")).unwrap(), b"keep this");
+        assert!(!run.join("moves").join(id).join("bundle.tgz").exists());
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        return;
+    }
     let offer = tokio::time::timeout(Duration::from_secs(10), wire.move_step("offer"))
         .await
         .unwrap();
@@ -2173,7 +2242,6 @@ async fn a_quiet_peer_keeps_the_original_until_the_transfer_deadline() {
     .await
     .unwrap();
 
-    let outcome = run.join("moves").join(format!("{id}.outcome.json"));
     clock.store(1_699_000, Ordering::Relaxed);
     wire.send(vec![0]).await;
     tokio::time::advance(Duration::from_secs(605)).await;

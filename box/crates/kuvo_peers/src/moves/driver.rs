@@ -54,6 +54,7 @@ const STARTING_ON_RESTART: Millis = 30_000;
 const STEP_AGAIN: Millis = 60_000;
 const NO_OFFER_ANSWER: Duration = Duration::from_secs(30);
 const QUIET_BEFORE_SWITCH: Duration = Duration::from_secs(10 * 60);
+const PREPARE_AT_MOST: Duration = Duration::from_secs(30 * 60);
 const SET_UP_AT_MOST: Duration = Duration::from_secs(30 * 60);
 const WAITING_AFTER: Duration = Duration::from_secs(90);
 const WAITING_FOR_SWITCH: Duration = Duration::from_secs(150);
@@ -476,12 +477,25 @@ impl Driver {
                 self.tell(view, key, row, "check", check).await;
             }
         } else if row.stage == Stage::Holding {
-            if let Err(error) = self.pack(view, row).await {
-                return self
-                    .fail_source(view, key, row, error.to_string(), 409)
-                    .await;
-            }
-            self.offer(view, key, row).await;
+            let message = match time::timeout(PREPARE_AT_MOST, self.pack(view, row)).await {
+                Ok(Ok(())) => {
+                    self.offer(view, key, row).await;
+                    return Ok(());
+                }
+                Ok(Err(error)) => error.to_string(),
+                Err(_) => {
+                    let place = if listing::is_mac(self.run_dir()) {
+                        "this Mac"
+                    } else {
+                        "this machine"
+                    };
+                    format!(
+                        "{} took too long to get ready to move on {place}, so it stayed here. Try again in a moment.",
+                        row.display_name()
+                    )
+                }
+            };
+            return self.fail_source(view, key, row, message, 409).await;
         } else {
             let step = row.step.as_deref();
             let tries = row

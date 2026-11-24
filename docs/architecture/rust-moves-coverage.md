@@ -103,7 +103,7 @@ also ran on native Windows, WSL2 GNU and static Linux musl. The delivery and
 move records matched in the separate side-by-side run. Startup and unrelated
 home files still differ.
 
-The later macOS move-area runs passed 53 Rust and 51 applicable TypeScript scenarios,
+The later macOS move-area runs passed 58 Rust and 56 applicable TypeScript scenarios,
 including the two-binary reach comparison. Focused checks added afterward passed on
 both residents. Native Windows passed nine focused cases on its latest build. The
 latest WSL2 GNU and static Linux musl builds each passed four focused queue, letter
@@ -138,8 +138,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Eighty-two have full scenario coverage, 18 have partial proof,
-and 112 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Eighty-three have full scenario coverage, 18 have partial proof,
+and 111 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -217,7 +217,8 @@ separately where they appear.
 | | 17 | Covered by the overdue drop warning once and staying held, followed by hourly retry and cleanup. |
 | | 19–20 | Covered by a reply from a local conversation following its held caller to the new owner, and by a resident delivering a saved reply to its local conversation. |
 | | 23–24 | Covered by queued notices retaining their text, author and presentation on the new computer and after a return home. |
-| | 8–9 | Open, 2.4 replay and rollback, with engine effects from 3.2. |
+| | 8 | Open, 2.4 retry and rollback when the destination goes quiet during a second offer. |
+| | 9 | Covered by a resident with successive slow engine exports, releasing the original and its wake-up marker at the thirty-minute deadline before the first offer. |
 | | 13–14 | Open, 2.4 ordinary letters, notes and delayed delivery, including forwarding after a move. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 1–3 | Work Queue creation, forwarded claims and edits owned by 5.2. |
 | | 15–16 | Partial, the final move snapshot is rebuilt when a replay fence is saved after an offer. The destination preserves a settled decision and rolls back a conflicting handoff. Submission receipt lookup, page recovery and effects remain 2.4 and 3.2. |
