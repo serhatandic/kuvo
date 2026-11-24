@@ -7,6 +7,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - The Rust box can reopen Work Queue items and attachments, recover an interrupted status migration, and use the main computer’s signed labels and number grants.
+- Coding agents receive readable tool replies when an older desktop connection returns an unexpected reply format.
+
 - Windows uninstall completes when there is no sign-in task to remove.
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.

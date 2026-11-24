@@ -20,7 +20,7 @@ import { Snapshots } from "../../src/agents/snapshots"
 import { Store } from "../../src/agents/store"
 import { transcriptDatabase } from "../../src/agents/transcript"
 import type { Turn } from "../../src/agents/turn"
-import type { Message, Model, ServerEvent } from "../../src/agents/wire"
+import type { Message, Model, ServerEvent, Session } from "../../src/agents/wire"
 
 type Script = (input: RunInput, turn: Turn, hooks: TurnHooks, thread: FakeThread) => Promise<RunResult>
 
@@ -159,20 +159,21 @@ afterEach(() => {
   timing.shellGrace = 5_000
 })
 
-async function readSessionRoute(path: string, method = "GET", body?: unknown) {
+async function readSessionRoute<T = unknown>(path: string, method = "GET", body?: unknown): Promise<T> {
   const serve = handler({ sessions, password: "pw" } as Parameters<typeof handler>[0])
   const response = await serve(new Request(`http://box/api/session${path}`, {
     method, headers: { authorization: "Basic " + btoa("opencode:pw"), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   }))
   expect(response.status).toBe(200)
-  return (await response.json()).data
+  const answer = await response.json() as { data: T }
+  return answer.data
 }
 
 test("a conversation keeps its window when the agent sends usage without a size after a restart", async () => {
   a.listed = [model("alpha", "one", "One", { context: 1_000_000, aliases: ["alias"] })]
   const id = create({ providerID: "alpha", id: "alias" })
-  const read = () => readSessionRoute(`/${id}`)
+  const read = () => readSessionRoute<Session>(`/${id}`)
   const beforeFirstTurn = (await read()).contextWindow
 
   const reply = async (used: number, window?: number, summarized = false) => {
@@ -218,8 +219,8 @@ test("an old conversation stays below newer replies after migration, a checkpoin
   }
   make()
   const expectOrder = async () => {
-    const list = await readSessionRoute("")
-    expect(list.map((session: any) => [session.id, session.time.activity])).toEqual([[newer, 500], [id, 100]])
+    const list = await readSessionRoute<Session[]>("")
+    expect(list.map(session => [session.id, session.time.activity])).toEqual([[newer, 500], [id, 100]])
   }
   await expectOrder()
   await readSessionRoute(`/${id}/message`)

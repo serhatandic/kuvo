@@ -2,8 +2,8 @@
 // it, and both scratch homes.
 import assert from "node:assert/strict"
 import { writeSync } from "node:fs"
-import { createRelay } from "../../../relay/src/relay"
-import { Registrations } from "../../../relay/src/registrations"
+import { createRelay } from "../../../relay/src/relay.ts"
+import { Registrations } from "../../../relay/src/registrations.ts"
 
 assert(process.env.KUVO_HOME?.endsWith("/ts-peer"), "requires a private peer home")
 const relay = createRelay({ registrations: new Registrations() })
