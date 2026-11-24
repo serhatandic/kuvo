@@ -7,7 +7,8 @@ The Rust side is `box/crates/kuvo_services/src/git/`: `projects.rs` (the project
 `box/projects.json` keeps it, and the project each worktree's folder and each other folder is filed
 under), `trees.rs` (a project's linked worktrees, read from what git keeps as small regular files,
 never by running git, looked for again off the request path each 15 seconds as `linkedTrees` does),
-`mod.rs` (the routes). The resident registers it in `box/crates/kuvo-box/src/serve.rs`.
+`safe.rs` (the safe git layer, `shared/git.ts`: `EVERY`, `OWN`, `GIT_QUIET`, `own_args`,
+`asked_args`), `mod.rs` (the routes). The resident registers it in `box/crates/kuvo-box/src/serve.rs`.
 
 ## Proof so far
 
@@ -29,6 +30,49 @@ never by running git, looked for again off the request path each 15 seconds as `
   `path.isAbsolute` reads it there.
 - Unit tests in `kuvo_services`: reading the list (versions, filtering), filing other folders and
   worktrees, a project's linked worktrees naming it back.
+
+## The safe git layer (6.3b2)
+
+`kuvo_services::git::safe` ports `ownArgs` and `askedArgs` with everything they call: the same
+arguments in the same order, the same refusals (`Err(Refused::…)` where TS answers `undefined`),
+the same budget (whole milliseconds left, none left refused before git runs) and the same
+environment (yours, with `GIT_TERMINAL_PROMPT=0`). No route uses it yet, so there's no conformance
+or differential case; the proof is unit and scenario tests in `safe_tests.rs`:
+
+- The arguments against the TS box's for the same inputs: 100 rows (`ownArgs`/`askedArgs` for 25
+  commands in four repositories: none named, filters/converter/hook/watcher named, a filter and a
+  hook whose names have `=`), the expected arrays as TS printed them.
+- A hostile repository (`hostile`; the same case in TS, `box/test/git-hostile.test.ts`): its
+  settings and an included file name core.hooksPath with hooks, a hook in settings, core.fsmonitor,
+  core.pager, core.editor, diff.external, a diff driver with textconv and command, a merge driver,
+  a required filter, credential.helper, protocol.ext with an `ext::` remote, core.sshCommand with an
+  ssh remote, gpg.program with commit and tag signing, and an alias to `!cmd`. A control shows git
+  itself runs them; 22 commands the box runs by itself (Changes reads, staging, write-tree, a commit,
+  a tag, a branch, a checkout, `gc --auto`, `credential fill`) through `own_args` start none; what
+  you ask for runs its hooks but no fsmonitor, pager, diff program or signature check. Both pass.
+- Where they differ from TS, deliberately: one blocking call (no `…Later` twin: an async route runs
+  it on a blocking thread); the TS twins differ in one place, `strayCommonLater` treating git that
+  can't start or runs out of time as "not in a repository", where the sync one refuses: the Rust layer
+  always refuses. Where git-lfs and git-crypt are installed is looked up each time, not kept per
+  `PATH`. `PATH` is split as the system splits it (`;` on Windows). git's stderr is dropped, not read.
+- A TS bug fixed in both: `write-tree` was counted a plain read, so its settings weren't read first,
+  but it writes the index: a hook named in settings (`post-index-change`) ran, and a file that looked
+  changed since went through the repository's clean filter. Snapshots (Undo) and worktree saves run
+  it. The hostile case fails on the old TS.
+- Not covered by the layer, as in TS (no caller runs one): commands that reach a remote. `OWN`
+  doesn't switch off `protocol.ext.allow`, `core.sshCommand`, `remote.*.uploadpack` or `url.*.insteadOf`,
+  so `fetch origin` or `ls-remote` through `own_args` would run them. The box fetches only from local
+  paths by itself; Push and Pull are asked for (`asked_args`), which runs them as your terminal would.
+
+| TS case | Status |
+| --- | --- |
+| git-programs 1: the repository's programs are really there | `hostile::the_repositorys_programs_are_really_there…` |
+| git-programs 2–7: Changes, the branch menu, switching branches, a review, Undo, backups start none | Layer half: `hostile::what_the_box_runs_by_itself…`, `…what_you_ask_for…` (the commands they run); the routes **left** |
+| git-programs 8: what you stage and commit runs its filters and hooks | `hostile::what_you_ask_for…`; the route **left** |
+| git-programs 9: git-lfs as installed stays on, one of the same name elsewhere doesn't | `hostile::a_file_git_lfs_keeps…`; Changes showing it unchanged **left** |
+| git-programs 10: a program name settings can't switch off isn't read | `hostile::one_whose_program_has_a_name…`, table (`unswitchable`, `hookeq`) |
+| git-programs 11: git's own watcher on a Mac | `hostile::gits_own_watcher…` |
+| git-common 1–3: commondir elsewhere, a bare repository made around a broken `.git`, own/none/worktree as ever | `common::…` (the layer's refusals); Changes' Commit **left** |
 
 ## The TypeScript cases
 
