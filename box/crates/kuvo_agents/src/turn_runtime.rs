@@ -10,7 +10,10 @@ use crate::{
 };
 use std::{
     io::{self, ErrorKind},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::sync::{mpsc, watch};
 
@@ -20,6 +23,12 @@ pub trait TurnWriter: Send {
     /// The turn ended without its agent saying how: it couldn't start, or
     /// stopped reporting. Write it as failed with `error`.
     fn abandon<'a>(&'a mut self, _error: &'a io::Error) -> AdapterCall<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// The turn was stopped before its agent started it, and couldn't
+    /// start: write it as stopped.
+    fn stopped(&mut self) -> AdapterCall<'_, ()> {
         Box::pin(async { Ok(()) })
     }
 }
@@ -36,6 +45,8 @@ enum State {
 #[derive(Clone)]
 pub struct RunningTurn {
     state: watch::Receiver<State>,
+    /// Stop was asked for, maybe before the agent started the turn.
+    stop: Arc<AtomicBool>,
 }
 
 impl RunningTurn {
@@ -47,8 +58,17 @@ impl RunningTurn {
         writer: impl TurnWriter + 'static,
     ) -> Self {
         let (publish, state) = watch::channel(State::Starting);
-        tokio::spawn(run(thread, input, sink, writes, writer, publish));
-        Self { state }
+        let stop = Arc::new(AtomicBool::new(false));
+        tokio::spawn(run(
+            thread,
+            input,
+            sink,
+            writes,
+            writer,
+            publish,
+            stop.clone(),
+        ));
+        Self { state, stop }
     }
 
     async fn active(&self) -> io::Result<Arc<dyn ActiveTurn>> {
@@ -86,8 +106,22 @@ impl RunningTurn {
         self.active().await.ok()?.steer_receipt(prompt)
     }
 
+    /// Stop it. One its agent couldn't start after all, asked to stop as it
+    /// started, ends stopped.
     pub async fn interrupt(&self) -> io::Result<()> {
-        self.active().await?.interrupt().await
+        self.stop.store(true, Ordering::SeqCst);
+        match self.active().await {
+            Ok(turn) => turn.interrupt().await,
+            Err(_)
+                if matches!(
+                    *self.state.borrow(),
+                    State::Done(Ok(Some(Outcome::Interrupted)))
+                ) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Whether the turn has ended (its end written), though the resident may
@@ -119,6 +153,7 @@ async fn run(
     mut writes: mpsc::Receiver<EventWrite>,
     mut writer: impl TurnWriter,
     publish: watch::Sender<State>,
+    stop: Arc<AtomicBool>,
 ) {
     let retirement = sink.retirement();
     let start = thread.start(input, sink);
@@ -132,20 +167,28 @@ async fn run(
                         started = true;
                         publish.send_replace(State::Active(turn));
                     }
-                    Err(error) => {
-                        if let Err(unwritten) = writer.abandon(&error).await {
-                            eprintln!("Kuvo could not write a turn that failed to start: {unwritten}");
-                        }
-                        break Err(Arc::new(error));
-                    }
+                    Err(error) => break couldnt_start(&mut writer, error, &stop).await,
                 }
             }
             update = writes.recv() => {
                 let Some(update) = update else {
-                    let error = io::Error::new(
+                    let quiet = || io::Error::new(
                         ErrorKind::BrokenPipe,
                         "The adapter stopped reporting its turn.",
                     );
+                    // A turn that couldn't start lets go of its sink before it says why: why it
+                    // couldn't is what it ends with.
+                    let error = if started {
+                        quiet()
+                    } else {
+                        match (&mut start).await {
+                            Ok(turn) => {
+                                publish.send_replace(State::Active(turn));
+                                quiet()
+                            }
+                            Err(error) => break couldnt_start(&mut writer, error, &stop).await,
+                        }
+                    };
                     if let Err(unwritten) = writer.abandon(&error).await {
                         eprintln!("Kuvo could not write a turn its agent left: {unwritten}");
                     }
@@ -172,4 +215,23 @@ async fn run(
     writes.close();
     let _ = retirement.end().await;
     publish.send_replace(State::Done(outcome));
+}
+
+/// A turn its agent couldn't start ends failed with why, or stopped if you
+/// stopped it meanwhile.
+async fn couldnt_start(
+    writer: &mut impl TurnWriter,
+    error: io::Error,
+    stop: &AtomicBool,
+) -> Result<Option<Outcome>, Arc<io::Error>> {
+    if stop.load(Ordering::SeqCst) {
+        if let Err(unwritten) = writer.stopped().await {
+            eprintln!("Kuvo could not write a turn stopped as it started: {unwritten}");
+        }
+        return Ok(Some(Outcome::Interrupted));
+    }
+    if let Err(unwritten) = writer.abandon(&error).await {
+        eprintln!("Kuvo could not write a turn that failed to start: {unwritten}");
+    }
+    Err(Arc::new(error))
 }

@@ -62,6 +62,29 @@ const hear = value => { if (scriptedTurns) fs.appendFileSync(heard, JSON.stringi
 hear({ argv: args, cwd: process.cwd(), env: Object.fromEntries(Object.entries(process.env)
   .filter(([name]) => /^(CLAUDE_|DISABLE_|ANTHROPIC_|KUVO_)/.test(name))
   .map(([name, value]) => [name, /TOKEN|KEY|SECRET|PASSWORD/.test(name) ? "<set>" : value])) });
+// Something it leaves running that holds its error output open: it says \`stderr\` once
+// \`until\` (a file beside the script) is there, or \`after\` ms, then says it's done in the heard file.
+function linger(spec) {
+  const go = spec.until ? require("node:path").join(${JSON.stringify(root)}, spec.until) : null;
+  const code = "const fs = require('node:fs'); const spec = " + JSON.stringify({ ...spec, go, heard }) + ";" +
+    "const say = () => fs.write(2, spec.stderr || '', () => { fs.appendFileSync(spec.heard, JSON.stringify({ lingered: spec.stderr || '' }) + String.fromCharCode(10)); process.exit(0); });" +
+    "const wait = () => (!spec.go || fs.existsSync(spec.go)) ? setTimeout(say, spec.after || 0) : setTimeout(wait, 20);" +
+    "wait();";
+  require("node:child_process").spawn(process.execPath, ["-e", code], { stdio: ["ignore", "ignore", "inherit"], detached: true }).unref();
+}
+// How the next one for a conversation starts, when the test says (\`<root>/claude-start.json\`, taken once):
+// once \`until\` is there, leaving \`linger\` running, saying \`stderr\` and stopping with \`exit\`, before
+// it reads anything.
+const startFile = ${JSON.stringify(path.join(root, "claude-start.json"))};
+if (scriptedTurns && native && fs.existsSync(startFile)) {
+  const start = JSON.parse(fs.readFileSync(startFile, "utf8"));
+  fs.rmSync(startFile);
+  const go = start.until && require("node:path").join(${JSON.stringify(root)}, start.until);
+  while (go && !fs.existsSync(go)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  if (start.linger) linger(start.linger);
+  if (start.stderr !== undefined) fs.writeSync(2, start.stderr);
+  process.exit(start.exit ?? 1);
+}
 let held, step = 0, playing = false, hookID;
 const waiting = [], queued = [];
 const waitFor = test => new Promise(resolve => waiting.push({ test, resolve }));
@@ -70,7 +93,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // $SESSION for the conversation, $HOOK for the box's PreToolUse hook), or {wait: "<control subtype>" | "user"}, {reply: "<request id>",
 // allow: [...], deny: [...]} (waits for the box's answer to a request the script sent, then plays the
 // branch for it), {until: "<file>"} (until the test makes that file beside the script), {sleep: ms},
-// {stderr: "..."} and {exit: code}.
+// {stderr: "..."}, {exit: code} and {linger: {stderr, until, after}} (see linger).
 async function play(steps, vars) {
   for (const step of steps) {
     if (step.wait === "user") {
@@ -87,6 +110,8 @@ async function play(steps, vars) {
     } else if (step.until) {
       // Until the test says go: a file of that name beside the script.
       while (!fs.existsSync(require("node:path").join(require("node:path").dirname(scriptFile), step.until))) await delay(20);
+    } else if (step.linger) {
+      linger(step.linger);
     } else if (step.type === undefined && (step.stderr !== undefined || step.exit !== undefined)) {
       if (step.stderr !== undefined) await new Promise(done => process.stderr.write(step.stderr, done));
       if (step.exit !== undefined) process.exit(step.exit);
