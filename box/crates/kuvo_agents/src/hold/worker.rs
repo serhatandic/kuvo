@@ -25,6 +25,8 @@ use tokio::{
 };
 
 const HUNG: Duration = Duration::from_secs(60);
+/// How long output may stay open after the agent itself exited.
+const OUTPUT_AFTER_EXIT: Duration = Duration::from_secs(2);
 const WAIT_FOR_CONTROLLER: Duration = Duration::from_secs(15 * 60);
 
 pub(super) async fn run(
@@ -378,6 +380,7 @@ impl State {
         let mut pending_input = None;
         let mut stdout_closed = false;
         let mut stderr_closed = false;
+        let mut exit_seen: Option<Instant> = None;
         self.departure = Some(Instant::now() + self.orphan);
         loop {
             self.pump()?;
@@ -472,6 +475,23 @@ impl State {
                 _ = &mut termination, if self.stopping.is_none() => self.stop(&mut agent, "SIGTERM")?,
                 _ = tick.tick() => {
                     agent.poll_exit()?;
+                    // Something the agent started, outside its group, may keep
+                    // its output open: its exit is told a moment later all the same.
+                    if agent.status.is_some() && !(stdout_closed && stderr_closed) {
+                        let seen = *exit_seen.get_or_insert_with(Instant::now);
+                        if seen.elapsed() >= OUTPUT_AFTER_EXIT {
+                            while !self.journal.paused()
+                                && let Ok(line) = agent.stdout.try_recv()
+                            {
+                                self.journal.append(&line)?;
+                            }
+                            while let Ok(text) = agent.stderr.try_recv() {
+                                self.stderr(text);
+                            }
+                            stdout_closed = true;
+                            stderr_closed = true;
+                        }
+                    }
                     if let Some((start, sent_term)) = &mut self.stopping
                         && agent.group.is_some()
                     {

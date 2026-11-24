@@ -20,6 +20,7 @@ and the model and session projections share the resident routes.
 | H9 | Backpressure from an old controller cannot block a successor from replaying the journal and reading new output. |
 | H10 | A raw worker keeps blank lines and carriage returns when streaming and when replaying. |
 | H11 | A disconnected holder with a full, pinned journal still stops its agent when it times out. |
+| H12 | An agent exits while a descendant in its own session keeps its output open. The controller hears the exit within the TypeScript holder's two-second allowance. |
 | R1 | [Rust controller process test](../../box/crates/kuvo-box/tests/agent_holders.rs). Kill the original controller while the stand-in agent waits for a reply. A replacement controller launched from another release directory reads the record, replays the turn, answers the ask, and checks that both PIDs are unchanged. This tests the process and wire boundary used by a resident replacement. The test uses the same Rust build in both directories. |
 | R2 | The Rust controller scans a scratch recovery directory with a stale Rust record and a TypeScript record. It returns neither as adoptable and leaves the TypeScript record untouched. Unix removes the stale Rust files. Native Windows preserves files when it cannot match the recorded start identity. |
 
@@ -36,7 +37,7 @@ outstanding request methods can survive a transfer.
 
 | Platform | TypeScript holder conformance | Rust holder conformance | Rust controller process tests |
 |---|---:|---:|---:|
-| macOS | 11/11 | 11/11 | 2/2 |
+| macOS | 12/12 | 12/12 | 2/2 |
 | Linux x86-64, lokum | — | 11/11 | 2/2 |
 | WSL2, Ubuntu 24.04 | — | 11/11 | 2/2 |
 | Native Windows x64 | — | 11/11 | 2/2 |
