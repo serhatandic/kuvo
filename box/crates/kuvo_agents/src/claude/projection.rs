@@ -7,7 +7,8 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 
 use crate::session::{
-    Limit, LimitScope, ModelRef, TextKind, ToolState, TurnError, TurnEvent, Usage, VendorState,
+    Limit, LimitScope, LimitWindow, ModelRef, PlanLimitReading, TextKind, ToolState, TurnError,
+    TurnEvent, Usage, VendorState,
 };
 
 use super::{diagnostic::redact, results, tools::kuvo_tool};
@@ -565,6 +566,15 @@ impl Projection {
         noticed: &mut HashSet<String>,
         out: &mut Vec<TurnEvent>,
     ) {
+        // Where the plan stands, for its limits, whichever turn heard it (the thread says under
+        // which sign-in).
+        let windows = heard_windows(info);
+        if !windows.is_empty() {
+            out.push(TurnEvent::PlanLimit(PlanLimitReading {
+                windows,
+                sign_in: None,
+            }));
+        }
         // A limit being used up: said once per threshold it passes, and again once it's close.
         if info["status"] == "allowed_warning" {
             let (text, close) = limit_warning(info);
@@ -1000,5 +1010,132 @@ fn tool(id: &str, name: &str, state: ToolState) -> TurnEvent {
         name: name.into(),
         state,
         metadata: Map::new(),
+    }
+}
+
+/// The limits Claude Code tells of, by its name for each: the plan's five hours and week, and
+/// each model's own week.
+fn heard_shape(id: &str) -> Option<(&'static str, u32, Option<&'static str>)> {
+    Some(match id {
+        "five_hour" => ("five_hour", 300, None),
+        "seven_day" => ("seven_day", 10_080, None),
+        "seven_day_sonnet" => ("seven_day_sonnet", 10_080, Some("Sonnet")),
+        "seven_day_opus" => ("seven_day_opus", 10_080, Some("Opus")),
+        "seven_day_overage_included" => ("seven_day_fable", 10_080, Some("Fable")),
+        _ => return None,
+    })
+}
+
+/// A number as Claude Code may write it: a number, or one in words.
+fn number(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    }
+    .filter(|number| number.is_finite())
+}
+
+/// Where each of the plan's limits stands, as a rate-limit event says: every window it names
+/// (Claude Code 2.1.3xx tells them all), or else the one it's about.
+pub(super) fn heard_windows(info: &Value) -> Vec<LimitWindow> {
+    let window =
+        |shape: (&str, u32, Option<&str>), used: f64, resets_at: Option<u64>| LimitWindow {
+            id: shape.0.to_owned(),
+            used,
+            minutes: Some(shape.1),
+            resets_at,
+            model: shape.2.map(str::to_owned),
+        };
+    if let Some(unified) = info["unifiedWindows"].as_object() {
+        let windows: Vec<_> = unified
+            .iter()
+            .filter_map(|(id, each)| {
+                let shape = heard_shape(id)?;
+                let used = number(&each["utilization"])?;
+                let resets_at = number(&each["resetsAt"])
+                    .filter(|seconds| *seconds > 0.0)
+                    .map(|seconds| (seconds * 1000.0) as u64);
+                Some(window(shape, used, resets_at))
+            })
+            .collect();
+        if !windows.is_empty() {
+            return windows;
+        }
+    }
+    let Some(shape) = info["rateLimitType"].as_str().and_then(heard_shape) else {
+        return Vec::new();
+    };
+    let resets_at = info["resetsAt"]
+        .as_f64()
+        .map(|seconds| (seconds * 1000.0) as u64);
+    // How much is used, as it says; turned away with no word, all of it.
+    let used = match info["utilization"].as_f64() {
+        Some(used) => used,
+        None if info["status"] == "rejected" => 1.0,
+        None => return Vec::new(),
+    };
+    vec![window(shape, used, resets_at)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_limit_event_says_where_each_window_stands() {
+        // As Claude Code 2.1.3xx tells it: every window, from the response's headers.
+        let info = json!({
+            "status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.81,
+            "resetsAt": 1_794_200_000, "surpassedThreshold": 0.75,
+            "unifiedWindows": {
+                "five_hour": { "utilization": 0.3, "resetsAt": 1_794_100_000 },
+                "seven_day": { "utilization": 0.81, "resetsAt": 1_794_200_000, "status": "allowed_warning" },
+                "something_new": { "utilization": 0.5 }
+            }
+        });
+        let windows = heard_windows(&info);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|window| (
+                    window.id.as_str(),
+                    window.used,
+                    window.minutes,
+                    window.resets_at
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("five_hour", 0.3, Some(300), Some(1_794_100_000_000)),
+                ("seven_day", 0.81, Some(10_080), Some(1_794_200_000_000)),
+            ]
+        );
+        // An older one names only the limit it's about; turned away without a figure, all of it.
+        let only = heard_windows(
+            &json!({ "status": "allowed", "rateLimitType": "five_hour", "utilization": 0.8 }),
+        );
+        assert_eq!(
+            (only[0].id.as_str(), only[0].used, only[0].resets_at),
+            ("five_hour", 0.8, None)
+        );
+        let turned = heard_windows(
+            &json!({ "status": "rejected", "rateLimitType": "seven_day_overage_included", "resetsAt": 10 }),
+        );
+        assert_eq!(
+            turned,
+            [LimitWindow {
+                id: "seven_day_fable".into(),
+                used: 1.0,
+                minutes: Some(10_080),
+                resets_at: Some(10_000),
+                model: Some("Fable".into())
+            }]
+        );
+        assert!(
+            heard_windows(&json!({ "status": "allowed", "rateLimitType": "five_hour" })).is_empty()
+        );
+        assert!(
+            heard_windows(&json!({ "rateLimitType": "elsewhere", "utilization": 0.1 })).is_empty()
+        );
     }
 }

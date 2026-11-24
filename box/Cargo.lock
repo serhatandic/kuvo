@@ -1241,7 +1241,9 @@ dependencies = [
 name = "kuvo-box"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "base64 0.22.1",
+ "futures-core",
  "futures-util",
  "hostname",
  "http",
@@ -1608,6 +1610,8 @@ dependencies = [
  "filetime",
  "futures-core",
  "getrandom 0.4.3",
+ "hex",
+ "hostname",
  "http",
  "http-body-util",
  "icu_collator",
@@ -1617,6 +1621,7 @@ dependencies = [
  "kuvo_peers",
  "kuvo_protocol",
  "kuvo_server",
+ "kuvo_services",
  "kuvo_setup",
  "kuvo_store",
  "kuvo_wire",
@@ -1630,6 +1635,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "unicode-normalization",
  "unicode-segmentation",
  "url",

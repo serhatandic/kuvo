@@ -293,7 +293,11 @@ describe("summarizing on its own, as the conversation fills up", { skip }, () =>
     await until(async () => summaries(await box.claude.rows(id)).length === 1, "It never said it was summarizing.");
     await box.claude.prompt(id, "and the tests too");
     await until(() => heardUser(box.claude, "and the tests too").length === 1, "Claude Code never took it.");
-    const during = await box.claude.rows(id);
+    // (Its row is written as it's handed over: a moment after Claude Code has it.)
+    const during = await until(async () => {
+      const rows = await box.claude.rows(id);
+      return rows.length >= 4 && rows;
+    }, "Your message never showed.");
     assertMatch(summaries(during), [{ status: "running" }]);
     // After the row, which still says it's summarizing.
     assert.deepEqual(during.map(row => row.type), ["user", "assistant", "compaction", "user"]);
@@ -797,5 +801,365 @@ describe("Claude Code's permissions", { skip }, () => {
     assert.equal((await box.claude.dismissForm(id, third.id, "This is on Autopilot: leave it.")).status, 200);
     assertMatch((await box.claude.answered(id, "q3")).response, { behavior: "deny", message: "This is on Autopilot: leave it." });
     await box.claude.idles(id);
+  });
+});
+
+describe("Claude Code, instructions that changed as its conversation goes on", { skip }, () => {
+  const box = resident();
+  /** A message's words, without the block the reference's link adds for a phone. */
+  const words = text => text.replace(/\n\n<from-phone>[\s\S]*<\/from-phone>$/, "");
+  /** The session's last message as Claude Code was sent it. */
+  const lastSent = id => {
+    const pids = new Set(box.claude.heard().filter(line => line.type === "user" && words(line.message.content.findLast(part => part.type === "text")?.text ?? "").includes(id)).map(line => line.pid));
+    const sent = box.claude.heard().filter(line => line.type === "user" && pids.has(line.pid) && !line.isSynthetic);
+    return words(sent.at(-1).message.content.findLast(part => part.type === "text").text);
+  };
+  /** What started the Claude Code that took the session's last message. */
+  const started = id => {
+    const pid = box.claude.heard().filter(line => line.type === "user" && line.message.content.some(part => part.type === "text" && part.text.includes(id))).at(-1)?.pid;
+    return box.claude.heard().filter(line => line.pid === pid);
+  };
+  /** Kuvo Code's instructions for the session, as the box has them from its next start. */
+  async function instruct(id, entries) {
+    await box.claude.stop();
+    const file = path.join(box.claude.home, "agents/sessions", id, "agent.json");
+    const agent = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+    agent.kuvoInstructions = { ...agent.kuvoInstructions, ...entries };
+    for (const [key, value] of Object.entries(entries)) if (value === undefined) delete agent.kuvoInstructions[key];
+    write(file, JSON.stringify(agent));
+    await box.claude.start();
+  }
+  /** A message (naming its session, so its Claude Code is found), answered. */
+  async function answered(id, text, turns, steps) {
+    box.claude.script(`${text} ${id}`, steps ?? [result(["$UUID"])]);
+    await box.claude.prompt(id, `${text} ${id}`);
+    return box.claude.idles(id, turns);
+  }
+
+  test("moved to another folder, the conversation it goes on with is told what changed, once; unchanged, nothing extra", async () => {
+    const { id } = box.next();
+    await instruct(id, { "kuvo.worktree": "You work in the worktree at /old/place/tree." });
+    await answered(id, "first", 1);
+    // A new conversation has them as its instructions: no note.
+    assert.ok(JSON.stringify(started(id)).includes("/old/place/tree"));
+    assert.equal(lastSent(id), `first ${id}`);
+    // It moved (another computer, another folder), and the box started again there.
+    await instruct(id, { "kuvo.worktree": "You work in the worktree at /new/place/tree.", "kuvo.moved": "You moved to this computer from the Old Mac." });
+    await answered(id, "second", 2);
+    // The same conversation, which keeps the instructions it started with: what changed goes with the message.
+    assert.ok(started(id).find(line => line.argv)?.argv.some(arg => arg.startsWith("--resume")));
+    const told = lastSent(id);
+    assert.ok(told.includes("/new/place/tree"), told);
+    assert.ok(told.includes("You moved to this computer from the Old Mac."), told);
+    assert.match(told, /Replaced or taken out:\s+You work in the worktree at \/old\/place\/tree\./);
+    assert.ok(told.endsWith(`\n\nsecond ${id}`), told);
+    // Unchanged since: nothing more.
+    await answered(id, "third", 3);
+    assert.equal(lastSent(id), `third ${id}`);
+  });
+
+  test("a conversation from before Kuvo Code kept what it was told hears its instructions as they are now, once", async () => {
+    const { id } = box.next();
+    await instruct(id, { "kuvo.moved": "You moved to this computer from the Old Mac." });
+    await answered(id, "first", 1);
+    // As a conversation kept by an older bridge: it has no word of what it was told.
+    await box.claude.stop();
+    const file = path.join(box.claude.home, "agents/sessions", id, "agent.json");
+    const agent = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const slot of Object.values(agent.threads ?? {})) delete slot.state?.claudeTold;
+    delete agent.claudeTold;
+    write(file, JSON.stringify(agent));
+    assert.ok(!fs.readFileSync(file, "utf8").includes("claudeTold"));
+    await box.claude.start();
+    await answered(id, "second", 2);
+    assert.ok(lastSent(id).includes("You moved to this computer from the Old Mac."));
+    assert.ok(lastSent(id).endsWith(`\n\nsecond ${id}`));
+    await answered(id, "third", 3);
+    assert.equal(lastSent(id), `third ${id}`);
+  });
+
+  test("changed while Claude Code runs: a command you type goes as typed, and the next message says what changed", async () => {
+    const { id } = box.next();
+    await answered(id, "first", 1);
+    // Its worktree changed: it starts again, going on with the same conversation.
+    await instruct(id, { "kuvo.worktree": "You work in the worktree at /a/tree." });
+    box.claude.script("/review", [result(["$UUID"])]);
+    await box.claude.prompt(id, "/review");
+    await box.claude.idles(id, 2);
+    const typed = box.claude.heard().filter(line => line.type === "user").at(-1);
+    assert.equal(words(typed.message.content.findLast(part => part.type === "text").text), "/review");
+    assert.ok(box.claude.heard().find(line => line.argv && line.pid === typed.pid).argv.some(arg => arg.startsWith("--resume")));
+    await answered(id, "go on", 3);
+    assert.ok(lastSent(id).includes("You work in the worktree at /a/tree."));
+    assert.ok(lastSent(id).endsWith(`\n\ngo on ${id}`));
+  });
+
+  // (Its first half, a message Claude Code never took because it quit, depends on the line
+  // handing that message over again after the exit: 4.1b's retry of missed messages.)
+  test("a message Claude Code took and failed on: what changed isn't said again", async () => {
+    const { id } = box.next();
+    await answered(id, "first", 1);
+    await instruct(id, { "kuvo.project-folders": "The project's other folder is /elsewhere." });
+    // It takes it, and fails on it (Claude's API overloaded).
+    const rows = await answered(id, "second", 2, [result(["$UUID"], "error_during_execution", { result: "Overloaded" })]);
+    assert.ok(lastSent(id).includes("/elsewhere"));
+    // The reference's SDK closes Claude Code on an error result, so there the turn ends as that
+    // exit and the line hands the message over again (4.1b): the rest is the Rust resident's, whose
+    // Claude Code goes on and fails the turn in Claude's words, as the reference adapter's test has it.
+    if (boxBinary().typescript) return assertMatch(idles(rows)[1], { outcome: "interrupted", reason: "agent-exit" });
+    assertMatch(idles(rows)[1], { outcome: "failed", error: { message: "Overloaded" } });
+    await answered(id, "third", 3);
+    assert.equal(lastSent(id), `third ${id}`);
+  });
+
+  test("once Claude Code summarized its conversation, what it has is what it was started with: nothing more to say", async () => {
+    const { id } = box.next();
+    await answered(id, "first", 1);
+    await instruct(id, { "kuvo.worktree": "You work in the worktree at /b/tree." });
+    // Your command, as typed, and Claude Code summarizes.
+    box.claude.script("/compact", [
+      { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 100 }, parent_tool_use_id: null },
+      result(["$UUID"]),
+    ]);
+    await box.claude.prompt(id, "/compact");
+    await box.claude.idles(id, 2);
+    await answered(id, "after", 3);
+    assert.equal(lastSent(id), `after ${id}`);
+  });
+});
+
+describe("what Claude Code says as it stops", { skip }, () => {
+  const box = resident();
+  const windows = process.platform === "win32";
+  const plain = "Claude Code process exited with code 1";
+  /** A message the next Claude Code stops before taking, having said `stderr`: how its turn ends. */
+  async function stopsAsItStarts(id, stderr, more) {
+    const turns = idles(await box.claude.rows(id)).length + 1;
+    box.claude.stopsAsItStarts(stderr, more);
+    const text = `go ${turns} ${id}`;
+    box.claude.script(text, [result(["$UUID"])]);
+    await box.claude.prompt(id, text);
+    return idles(await box.claude.idles(id, turns))[turns - 1];
+  }
+  const said = async (id, stderr, more) => (await stopsAsItStarts(id, stderr, more)).error?.message;
+
+  test("stopped before it took your message, the turn fails with the last line it said, without a secret or a stack", async () => {
+    const { id } = box.next();
+    for (const [line, told] of [
+      ["cannot reach https://me:p@ss@proxy.test/v1", "cannot reach https://…@proxy.test/v1"],
+      ["sent Bearer abc.def-ghi, Authorization: Basic Zm9v", "sent Bearer …, Authorization: …"],
+      [`API_KEY="a b" TOKEN=k1 x-api-key: k2`, `API_KEY=… TOKEN=… x-api-key: …`],
+      [`{"apiKey":"k3","password": "k4"}`, `{"apiKey":…,"password": …}`],
+      ["password: k5 auth_token: k6", "password: … auth_token: …"],
+      ["ran it with --token k7 --api-key=k8", "ran it with --token … --api-key=…"],
+      ["Invalid token sk-ant-oat01-abcdefghijklmnop", "Invalid token sk-ant-…"],
+    ]) {
+      const ended = await stopsAsItStarts(id, `${line}\n`);
+      assertMatch(ended, { outcome: "failed", error: { message: `${plain}: ${told}` } });
+    }
+    // Its stack, and the runtime's banner, aren't why.
+    assert.equal(await said(id, "Error: out of memory\n    at run (cli.js:1:1)\n\nBun v1.3.14 (macOS arm64)\n"), `${plain}: Error: out of memory`);
+  });
+
+  test("a plain sentence keeps its words", async () => {
+    const { id } = box.next();
+    for (const line of ["Bearer token expired", "Invalid API key: not found", "Invalid token: expired", "max_tokens=4096 is too many", "Authorization failed for that account"]) {
+      assert.equal(await said(id, `${line}\n`), `${plain}: ${line}`);
+    }
+  });
+
+  test("a line too long to keep whole is left out, so no piece of a token gets through", async () => {
+    const { id } = box.next();
+    assert.equal(await said(id, `sk-ant-oat01-${"a".repeat(5000)}\n`), plain);
+  });
+
+  test("what an earlier Claude Code said isn't why a later one stopped", async () => {
+    const { id } = box.next();
+    assert.equal(await said(id, "the first one's reason\n"), `${plain}: the first one's reason`);
+    assert.equal(await said(id, ""), plain);
+  });
+
+  test("one being replaced, still writing as it goes, doesn't speak for the new one", async () => {
+    const setting = value => fs.writeFileSync(path.join(box.claude.home, "box", "conversation-compaction.json"), JSON.stringify(value));
+    try {
+      const { id } = box.next();
+      // It answers, leaving something running that holds its error output.
+      box.claude.script(`first ${id}`, [{ linger: { stderr: "the old one's last words\n", until: "old-goes" } }, result(["$UUID"])]);
+      await box.claude.prompt(id, `first ${id}`);
+      await box.claude.idles(id, 1);
+      // The summary setting changed: the next message starts another, which stops as it starts,
+      // once what the old one left has spoken.
+      const conversations = () => box.claude.heard().filter(line => line.argv?.some(arg => arg.startsWith("--session-id") || arg.startsWith("--resume"))).length;
+      const before = conversations();
+      setting("600000");
+      const ended = stopsAsItStarts(id, "", { until: "new-goes" });
+      await until(() => conversations() > before, "The next Claude Code never started.");
+      box.claude.go("old-goes");
+      // (On Windows what Claude Code left running ends with it: nothing of it is left to speak.)
+      if (!windows) await until(() => box.claude.heard().some(line => line.lingered), "What the old one left never spoke.");
+      box.claude.go("new-goes");
+      assertMatch(await ended, { outcome: "failed", error: { message: plain } });
+    } finally {
+      fs.rmSync(path.join(box.claude.home, "box", "conversation-compaction.json"), { force: true });
+    }
+  });
+
+  test("a warning from a turn that went through isn't why a later one stopped", async () => {
+    const { id } = box.next();
+    box.claude.script(`first ${id}`, [{ stderr: "warning: something old\n" }, result(["$UUID"])]);
+    await box.claude.prompt(id, `first ${id}`);
+    assertMatch(idles(await box.claude.idles(id, 1))[0], { outcome: "succeeded" });
+    box.claude.script(`second ${id}`, [{ exit: 1 }]);
+    await box.claude.prompt(id, `second ${id}`);
+    const ended = idles(await box.claude.idles(id, 2))[1];
+    assertMatch(ended, { outcome: "interrupted", reason: "agent-exit" });
+    assert.equal(ended.error, undefined);
+  });
+
+  test("Claude Code quitting after it took your message stops the turn, with nothing failed to say", async () => {
+    const { id } = box.next();
+    box.claude.script(`go ${id}`, [{ stderr: "Error: out of memory\n    at run (cli.js:1:1)\n\nBun v1.3.14 (macOS arm64)\n", exit: 1 }]);
+    await box.claude.prompt(id, `go ${id}`);
+    const ended = idles(await box.claude.idles(id, 1))[0];
+    assertMatch(ended, { outcome: "interrupted", reason: "agent-exit" });
+    assert.equal(ended.error, undefined);
+  });
+
+
+  test("with its error output held open by what it left running: what comes after it stopped still counts", {
+    skip: windows && "On Windows what Claude Code left running ends with it, so nothing speaks after it.",
+  }, async () => {
+    const { id } = box.next();
+    assert.equal(await said(id, "", { linger: { stderr: "said as it went\n", after: 300 } }), `${plain}: said as it went`);
+  });
+
+  test("with its error output held open by what it left running: the failure doesn't wait for long, and leaves out a line still coming", async () => {
+    const { id } = box.next();
+    try {
+      const started = Date.now();
+      assert.equal(await said(id, "a whole line\nhttps://me:hunt", { linger: { stderr: "er2@proxy\n", until: "held-goes" } }), `${plain}: a whole line`);
+      assert.ok(Date.now() - started < 8000);
+    } finally {
+      box.claude.go("held-goes");
+    }
+  });
+
+  test("with its error output held open by what it left running: you can stop the turn while it waits", async () => {
+    const { id } = box.next();
+    try {
+      box.claude.stopsAsItStarts("", { linger: { until: "waits-goes" } });
+      box.claude.script(`go ${id}`, [result(["$UUID"])]);
+      const before = box.claude.heard().filter(line => line.argv).length;
+      await box.claude.prompt(id, `go ${id}`);
+      await until(() => box.claude.heard().filter(line => line.argv).length > before, "Claude Code never started.");
+      await box.claude.interrupt(id);
+      assertMatch(idles(await box.claude.idles(id, 1))[0], { outcome: "interrupted" });
+    } finally {
+      box.claude.go("waits-goes");
+    }
+  });
+});
+
+describe("Claude Code's background commands", { skip }, () => {
+  const box = resident();
+  const bash = (call, command) => ({ type: "assistant", message: { id: `m_${call}`, role: "assistant", model: "opus", content: [{ type: "tool_use", id: call, name: "Bash", input: { command, run_in_background: true } }] }, parent_tool_use_id: null, session_id: "$SESSION" });
+  const started = (task, call, more = {}) => ({ type: "system", subtype: "task_started", task_id: task, task_type: "local_bash", description: "In the background", tool_use_id: call, is_backgrounded: true, session_id: "$SESSION", ...more });
+  const live = tasks => ({ type: "system", subtype: "background_tasks_changed", tasks: tasks.map(task => ({ task_id: task, task_type: "local_bash", description: "In the background" })), session_id: "$SESSION" });
+  const ended = (task, call, more = {}) => ({ type: "system", subtype: "task_notification", task_id: task, status: "completed", tool_use_id: call, summary: "exit code 0", session_id: "$SESSION", ...more });
+  const listed = id => until(async () => (await box.claude.work()).sessions[id], "The command it left running was never listed.");
+  const gone = id => until(async () => !(await box.claude.work()).sessions[id], "The command it left running stayed listed.");
+  const words = text => text.replace(/\n\n<from-phone>[\s\S]*<\/from-phone>$/, "");
+  const took = (id, text) => box.claude.heard().find(line => line.type === "user" && words(line.message.content.findLast(part => part.type === "text")?.text ?? "") === `${text} ${id}`)?.pid;
+
+  test("a command it leaves running shows in the bar with what it printed, until it ends", async () => {
+    const { id } = box.next();
+    box.claude.printed("t_server", "ready on :3000\n");
+    box.claude.script(`go ${id}`, [bash("tool_server", "npm run dev"), started("t_server", "tool_server"), live(["t_server"]), result(["$UUID"]),
+      { until: "server-ends" }, ended("t_server", "tool_server"), live([])]);
+    await box.claude.prompt(id, `go ${id}`);
+    await box.claude.idles(id, 1);
+    assertMatch(await listed(id), { commands: 1, subagents: 0, tasks: 0 });
+    const bar = await box.claude.work(`/${id}`);
+    assert.equal(bar.commands.length, 1);
+    assertMatch(bar.commands[0], { command: "npm run dev", agents: true });
+    const output = `/${id}/commands/${bar.commands[0].id}/output`;
+    assertMatch(await box.claude.work(output), { output: "ready on :3000", cut: false, state: "running" });
+    // It ends: the bar lets it go, and what it printed stands.
+    box.claude.go("server-ends");
+    await gone(id);
+    assertMatch(await until(async () => {
+      const read = await box.claude.work(output);
+      return read.state === "ended" && read;
+    }, "Its end never showed."), { command: { command: "npm run dev" }, state: "ended" });
+  });
+
+  test("a finished background command shows the final output file after Claude Code forgets its output", async () => {
+    const { id } = box.next();
+    const file = path.join(box.claude.home, `build-${id}.output`);
+    box.claude.printed("t_build", "Compiling\n");
+    box.claude.script(`go ${id}`, [bash("tool_build", "cargo build"), started("t_build", "tool_build"), live(["t_build"]), result(["$UUID"]),
+      { until: "build-ends" }, ended("t_build", "tool_build", { output_file: file }), live([])]);
+    await box.claude.prompt(id, `go ${id}`);
+    await box.claude.idles(id, 1);
+    await listed(id);
+    const [command] = (await box.claude.work(`/${id}`)).commands;
+    const output = `/${id}/commands/${command.id}/output`;
+    assertMatch(await box.claude.work(output), { command: { id: command.id, agents: true }, output: "Compiling", state: "running" });
+    fs.writeFileSync(file, "Compiling\nFinished\n");
+    box.claude.printed("t_build");
+    box.claude.go("build-ends");
+    await gone(id);
+    assertMatch(await until(async () => {
+      const read = await box.claude.work(output);
+      return read.state === "ended" && read;
+    }, "Its end never showed."), { command: { id: command.id, agents: true }, output: "Compiling\nFinished", state: "ended" });
+  });
+
+  test("a foreground command keeps its start time when moved to the background", async () => {
+    const { id } = box.next();
+    const before = Date.now();
+    box.claude.script(`go ${id}`, [started("t_moved", "tool_moved", { is_backgrounded: false }), { until: "moves" },
+      { type: "system", subtype: "task_updated", task_id: "t_moved", patch: { is_backgrounded: true }, session_id: "$SESSION" }, live(["t_moved"]),
+      result(["$UUID"]), { until: "moved-ends" }, ended("t_moved", "tool_moved"), live([])]);
+    await box.claude.prompt(id, `go ${id}`);
+    await until(() => took(id, "go"), "Claude Code never took the message.");
+    const startedBy = Date.now();
+    await new Promise(resolve => setTimeout(resolve, 400));
+    box.claude.go("moves");
+    await listed(id);
+    const [command] = (await box.claude.work(`/${id}`)).commands;
+    assert.ok(command.started >= before && command.started < startedBy + 250, JSON.stringify({ before, startedBy, command }));
+    box.claude.go("moved-ends");
+    await gone(id);
+    await box.claude.idles(id, 1);
+  });
+
+  test("changing the summary setting leaves Claude Code's background command running", async () => {
+    const setting = path.join(box.claude.home, "box", "conversation-compaction.json");
+    try {
+      const { id } = box.next();
+      box.claude.script(`go ${id}`, [bash("tool_tests", "scripts/test.sh"), started("t_tests", "tool_tests"), live(["t_tests"]), result(["$UUID"])]);
+      await box.claude.prompt(id, `go ${id}`);
+      await box.claude.idles(id, 1);
+      await listed(id);
+      fs.writeFileSync(setting, JSON.stringify("200000"));
+      // Its next message goes to the same Claude Code: starting another would end the tests.
+      box.claude.script(`still ${id}`, [result(["$UUID"]), { until: "tests-end" }, ended("t_tests", "tool_tests"), live([])]);
+      await box.claude.prompt(id, `still ${id}`);
+      await box.claude.idles(id, 2);
+      assert.equal(took(id, "still"), took(id, "go"));
+      assertMatch(await box.claude.work(), { sessions: { [id]: { commands: 1 } } });
+      // Once they're done, the next starts one with the new setting.
+      box.claude.go("tests-end");
+      await gone(id);
+      box.claude.script(`then ${id}`, [result(["$UUID"])]);
+      await box.claude.prompt(id, `then ${id}`);
+      await box.claude.idles(id, 3);
+      assert.notEqual(took(id, "then"), took(id, "go"));
+      const launched = box.claude.heard().find(line => line.argv && line.pid === took(id, "then"));
+      assert.equal(launched.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "233000");
+    } finally {
+      fs.rmSync(setting, { force: true });
+    }
   });
 });

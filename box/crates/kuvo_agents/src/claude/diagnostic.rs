@@ -47,10 +47,9 @@ impl Said {
         self.last = None;
     }
 
-    pub fn last(&mut self, exited: bool) -> Option<String> {
-        if exited {
-            self.finish_line();
-        }
+    /// The last whole line it said: one still coming when it stopped may be cut anywhere, even
+    /// inside a secret, so it isn't said back.
+    pub fn last(&self) -> Option<String> {
         self.last
             .as_deref()
             .map(|line| redact(line).chars().take(300).collect())

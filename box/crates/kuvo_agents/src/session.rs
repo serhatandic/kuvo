@@ -16,6 +16,9 @@ pub struct SessionContext {
     pub session_id: String,
     pub directory: PathBuf,
     pub state: VendorState,
+    /// Where its agent says what it keeps going besides its turn: commands it left running, and
+    /// other tasks.
+    pub background: crate::background::Background,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -257,6 +260,32 @@ pub struct TurnResult {
     pub missed: Vec<String>,
 }
 
+/// One reading of the plan's limits an agent heard in a turn, as the limits
+/// ring keeps it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanLimitReading {
+    pub windows: Vec<LimitWindow>,
+    /// The sign-in it was heard under, as a fingerprint of who's signed in
+    /// (never the secret). A reading under one that isn't the account's now
+    /// counts for no one.
+    pub sign_in: Option<String>,
+}
+
+/// One of a plan's limits, as its maker says it stands.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LimitWindow {
+    /// Its maker's own name for it: `five_hour`, `seven_day`, `seven_day_sonnet`.
+    pub id: String,
+    /// How much of it is used, from 0 to 1.
+    pub used: f64,
+    /// How long it is, in minutes (300: five hours; 10080: a week).
+    pub minutes: Option<u32>,
+    /// When it starts over, in ms since 1970, when its maker says.
+    pub resets_at: Option<u64>,
+    /// The model it's for, as its maker names it; none for the whole plan's.
+    pub model: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub enum TurnEvent {
     StepStarted {
@@ -287,6 +316,9 @@ pub enum TurnEvent {
     /// What the turn cost besides its steps' own costs, in dollars: an agent
     /// that says what it spent once per turn.
     Cost(f64),
+    /// Where the plan's limits stand, as the agent heard in this turn: for
+    /// the account the turn runs on (the plan limits' ring, 5.4).
+    PlanLimit(PlanLimitReading),
     RanOn(String),
     Notice(String),
     CompactionStarted,

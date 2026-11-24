@@ -36,6 +36,23 @@ pub(crate) struct Inventory {
 }
 
 impl Inventory {
+    /// The window its agent lists for the conversation's model (not one it's still guessing).
+    async fn listed_window(&self, fields: &Map<String, Value>) -> Option<u64> {
+        let model = fields.get("contextModel").or_else(|| fields.get("model"))?;
+        let provider = Provider::parse(model["providerID"].as_str()?)?;
+        let id = model["id"].as_str()?;
+        let roster = self.agents.as_ref()?.roster();
+        let models = roster.find(&provider)?.agent.models(false).await.ok()?;
+        models
+            .models
+            .iter()
+            .find(|each| {
+                !each.provisional && (each.id == id || each.aliases.iter().any(|alias| alias == id))
+            })?
+            .context
+            .filter(|window| *window > 0)
+    }
+
     fn runs(&self) -> io::Result<&SessionRuns> {
         self.running
             .as_ref()
@@ -78,11 +95,20 @@ impl AgentSessionSource for Inventory {
 
     fn session<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Map<String, Value>>> {
         Box::pin(async move {
-            Ok(self
-                .store
-                .read(id)
-                .await?
-                .map(|saved| session_view::for_clients(saved.into_fields(), &self.home)))
+            let Some(saved) = self.store.read(id).await? else {
+                return Ok(None);
+            };
+            let mut fields = saved.into_fields();
+            // How much its model holds, as its agent's list says, until a turn says.
+            if !fields.contains_key("contextWindow")
+                && let Some(window) = self.listed_window(&fields).await
+            {
+                fields.insert("contextWindow".into(), window.into());
+                if let Some(context) = fields.get_mut("context").and_then(Value::as_object_mut) {
+                    context.entry("window").or_insert(window.into());
+                }
+            }
+            Ok(Some(session_view::for_clients(fields, &self.home)))
         })
     }
 

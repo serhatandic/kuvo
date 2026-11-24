@@ -197,10 +197,29 @@ export async function scriptedClaude(fixture = {}) {
       scripts[text] = steps;
       write(path.join(env.HOME, "claude-script.json"), JSON.stringify(scripts));
     },
+    /** The next Claude Code started for a conversation says `stderr` and stops with `exit`, before it
+     * reads anything (once `until` is there, leaving `linger` running: see the stand-in). */
+    stopsAsItStarts(stderr, more = {}) {
+      write(path.join(env.HOME, "claude-start.json"), JSON.stringify({ stderr, exit: 1, ...more }));
+    },
     /** What the stand-in read: its arguments and every line, from each Claude Code it ran. */
     heard: () => fs.existsSync(heardFile)
       ? fs.readFileSync(heardFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [],
     seed: (id, options) => seedSession(home, id, options),
+    /** What a command Claude Code left running (its task `task`) has printed so far. */
+    printed(task, text) {
+      const file = path.join(env.HOME, "claude-task-output.json");
+      const outputs = fs.existsSync(file) ? readJSON(file) : {};
+      if (text === undefined) delete outputs[task];
+      else outputs[task] = text;
+      write(file, JSON.stringify(outputs));
+    },
+    /** What the box says runs besides the session's turn (`kuvo/work/background…`). */
+    async work(suffix = "") {
+      const answer = await request(listener, "GET", `kuvo/work/background${suffix}`, undefined, headers, 20000);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json;
+    },
     /** Lets a script waiting `{until: name}` go on. */
     go: name => write(path.join(env.HOME, name), ""),
     /** The session as it's saved (its totals, once a turn ends). */

@@ -68,11 +68,21 @@ impl SessionHeader {
 #[derive(Clone)]
 pub struct SessionStore {
     root: PathBuf,
+    /// What the agents keep going besides each conversation's turn, given to each thread.
+    background: crate::background::Background,
 }
 
 impl SessionStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            background: crate::background::Background::default(),
+        }
+    }
+
+    /// What the agents keep going besides each conversation's own turn.
+    pub fn background(&self) -> &crate::background::Background {
+        &self.background
     }
 
     pub async fn read(&self, id: &str) -> io::Result<Option<SessionHeader>> {
@@ -117,6 +127,7 @@ impl SessionStore {
         };
         let id = id.to_owned();
         let provider = provider.to_owned();
+        let background = self.background.clone();
         tokio::task::spawn_blocking(move || {
             let Some(header) = read_header(&folder, &id)? else {
                 return Ok(None);
@@ -132,6 +143,7 @@ impl SessionStore {
                 session_id: id,
                 directory: PathBuf::from(directory),
                 state,
+                background,
             }))
         })
         .await?
@@ -200,6 +212,28 @@ impl SessionStore {
 
     /// Update a transcript by message ID. Updating an existing step keeps its
     /// position, including when a tool result arrives after the step ended.
+    /// Kuvo Code's instructions for the conversation (its worktree, the
+    /// computer it moved to, its project's folders), as its agent is told
+    /// them: each entry in order, a paragraph apart.
+    pub async fn instructions(&self, id: &str) -> io::Result<String> {
+        let Some(folder) = self.folder(id) else {
+            return Ok(String::new());
+        };
+        tokio::task::spawn_blocking(move || {
+            let agent = read_agent(&folder)?;
+            Ok(agent
+                .get("kuvoInstructions")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flat_map(|entries| entries.values())
+                .filter_map(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n"))
+        })
+        .await?
+    }
+
     pub async fn write_messages(&self, id: &str, mut rows: Vec<Value>) -> io::Result<bool> {
         let attachments = self.attachments();
         let session = id.to_owned();

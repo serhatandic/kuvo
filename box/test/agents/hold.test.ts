@@ -220,7 +220,7 @@ describe("an agent under a holder", () => {
     process.kill(asked.pid, "SIGTERM")
     await ended
     const later = await attach(paths.folder, record)
-    expect(await later.exited).toEqual({ code: null, signal: "SIGTERM" })
+    expect(await later.exited).toEqual({ code: null, signal: "SIGTERM", heardAll: true })
     await later.closed
     expect(existsSync(join(paths.folder, `${asked.id}.sock`))).toBe(false)
   })

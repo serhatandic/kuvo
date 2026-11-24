@@ -562,8 +562,31 @@ Seen once: on lokum, in a one-CPU container, at d50d27912, "the Rust keeper
 keeps an actual Claude adapter turn across a release switch" failed with
 `The replacement resident never finished the held turn.` (adapter.mjs
 `until`, agents-claude.test.mjs:205), after 32.5 s. Two reruns of the same
-build passed, as did WSL and native Windows. If it fails again, it gets a
-root cause before any rerun.
+build passed, as did WSL and native Windows. It failed again at 058ce659d
+and at 6aa76a156, the second time with the case's new report: the first resident had ended the
+turn as failed ("The adapter stopped reporting its turn.") and the next one
+never took it up. Cause: once the holder confirmed the handover, the first
+resident's Claude thread dropped the turn's sink. Its turn runtime then read
+the closed channel as an agent gone quiet, and wrote a failed end before that
+resident exited. The failure needed the resident to live on briefly after the
+handover, which one CPU allowed. A handed-over turn's sink now stays open for
+as long as that resident is there. The holder scenario checks this, and the
+keeper case reports the last rows, what Claude Code heard and the keeper's
+log if it ever fails.
+
+A turn's end is written before its Claude Code's holder hears that it ended.
+If the resident goes between the two, the next resident finds a holder still
+in a turn that has ended, and lets it go: that Claude Code stops, and the
+conversation's next message starts one that resumes it. Before this, the
+next message failed with "Claude Code has a recovered turn." Native Windows
+showed this, and the holder scenario covers it.
+
+Shared changes for 73–85: a turn its agent couldn't start ends with the
+agent's own reason. Before, a closed channel could win the race and say "The
+adapter stopped reporting its turn." A turn you stopped while it started, and
+which then couldn't start, ends stopped (`TurnWriter::stopped`, additive). An
+agent exit's end carries no error, as in the reference, which writes none for
+a stopped turn.
 
 A message handed to a running turn has a receipt before it is sent: the
 UUID Claude acknowledges it by. The receipt stays unresolved while a live or
@@ -582,23 +605,23 @@ The two rows expanded from the bot and session steering loop count separately.
 | 1–7 | 4.4b stream events, cancellation before launch, limit scope, error messages and expired sign-in. Skill resolution and startup cancellation also need 4.1b/c. |
 | 8–10 | 4.1b route and queue recovery, including a late cancelled handoff and steering across resident reconnect. 4.4b owns the Claude stream and message acknowledgements. |
 | 11–13 | The holder scenario covers 11, a late steered result, and its receipt. 4.4b owns the other steering and missed-message cases, and 4.1b owns retry of missed messages. |
-| 14–28 | 4.4b Claude task lifecycle and holder reuse. 4.1b owns resident background projection, wake-up, staged Undo, account deletion and restarting the session. 4.6 owns projection of agent-initiated turns. |
+| 14–28 | The background model is ported from the reference, with Claude feeding it first. `kuvo_agents::background` is agent-neutral: commands an agent left running, with their output and Stop through the agent, and the other tasks it keeps going. The resident publishes them as the `bridge` place of `run/work/background.json`, and kuvo-box serves `kuvo/work/background`, its session and command-output routes, and their followed forms from that file, as the reference's link does. 14, 16 and 18, and 15's bar, are ported to agents-claude-turns on both boxes: a foreground command moved to the background keeps its start time; a command left running shows in the bar with what it printed until it ends; a finished one shows its final output file; and a changed summary setting doesn't end Claude Code while its command runs. Seams: 15's own turn, 17 and 27 (turns Claude Code starts on its own) are 4.6's. 19, 25 and 26 (waking the session, and its note, when Claude Code or the box stopped with work going) are 5.1's wake-ups. 20, 21 and 28 (staged Undo) and 23 (an account removed) are the session line's, 4.1b's. 22 and 24 (an update keeps the background work going) need the next resident to take up what an adopted Claude Code keeps going, with 7.2. The engine's own place in the file (its shells and active subagents) and reading its commands' output are the engine's, with 5.1c; until then the output route says `unread` for an engine command. Subagents at work under a conversation are 4.6's to add to the model. |
 | 29–42 | 4.6 subagent sessions, background lanes, messaging and handover. 4.4b supplies Claude's wire events. |
 | 43–49 | Ported to agents-claude-turns on both boxes: the summary window Claude Code is started with and its setting between messages, the saved context, a tool's picture kept as a file, server tool results, its own notes, repeated hook failures and limit warnings. |
-| 50 | 4.4b model windows from `get_context_usage`. The shared catalog model has no context size yet; it goes with 55–57. |
+| 50 | Ported to agents-claude on both boxes. Claude's model probe asks each model's window (`set_model`, then `get_context_usage`), once per model it resolves to, and the shared catalog model carries it as `context` (additive). "Never summarize" holds only for a model of 900,000 tokens or more, as the conversation's turns or the list say; the case checks it through what Claude Code is started with. Until a turn says, a conversation's `contextWindow` is its model's listed window, as in the reference (`withContextWindow`). That read goes through the engine's sessions, which these cases run without, so only its source is checked here. |
 | 51–54 | 4.4a conformance covers account-selected default aliases and the concrete name and ID of a default outside the listed models. |
-| 55–57 | 4.4a provides the provisional list. 4.4b still needs end-to-end proof of provisional models, running the native default and compatibility when Claude omits window information. |
+| 55–57 | Ported to agents-claude on both boxes: before Claude Code has listed its models, the usual ones answer to its default and none is called default; a conversation on its default is never told a model, so Claude Code runs its own; and an older Claude Code that doesn't say how much each holds gets its list's word (a million where it says 1M, else 200,000). |
 | 58–61 | 4.6 conversation transfer and chosen model across computers. 4.4b supplies Claude's native transcript and memory locations. |
 | 62–66 | 4.1c MCP server wiring, status, credentials, reconnect and deadlines. 4.4b supplies Claude's control request boundary. |
 | 67–72 | 4.4b Claude launch, native state and session environment. 4.1c owns relay wiring and 6.1 owns sandbox policy and launch. |
-| 73–85 | 4.4b bounded and redacted native process diagnostics, history of the current process and interruption. |
-| 86–92 | 4.4b sandbox launch, file copies, sign-out and adoption. 6.1 owns sandbox policy and 6.3 owns worktree paths. |
+| 73–85 | Ported to agents-claude-turns: a Claude Code that stops before it takes your message fails the turn as Claude's SDK says it, with the last whole line it said. Secrets, stacks and over-long lines are left out. An earlier or replaced Claude Code's words don't count, nor does a warning from a turn that went through. One quitting after it took your message stops the turn with no error. These pass on both boxes. 82–84 too: Claude Code's words after it stopped count for as long as its holder waits (2 s), a line still coming is left out, and you can stop the turn meanwhile. The reference bridge did neither under its holder, so a piece of a secret could show. a6701cc39 fixed that: its holder waits for Claude Code's error output too, and says whether all of it came. On Windows, what Claude Code left running ends with it (its job), so nothing speaks after it, and 82 doesn't apply there. 77 and 85 need the box's sandbox: they go with 86–92, and 85's token is checked here. |
+| 86–92 | 89 is ported to agents-claude on both boxes: signed out, the Claude Code a conversation has open goes, and its next message starts another. Rust stops it as you sign out; the reference stops it at that next message. 86–88 and 90–92 need the box's sandbox: its own sandbox off inside the box's, attachments copied where the sandbox reads them, starting again inside it once it's on, and a worktree's repository fences. They go with 6.1, which owns the policy and the launch (Rust has only the OS-level Seatbelt and Linux wrappers so far), and 6.3 for worktree paths. So do 77 and the sandbox half of 85. |
 | 93–103 | Ported to agents-claude-turns on both boxes: Ask First, Allow Always for a command and for edits, Deny with the edit's preview, Approve All and `.env`, paths outside the project and Claude Code's own files, Blocks, Plan mode and leaving it, and questions answered, dismissed or turned down with words. |
 | 104–109 | Ported to [agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs) on both boxes. After Stop, the reference bridge under its holder starts Claude Code again, while its own test expects the same process to take the next message. Rust does that, and only Rust checks it. |
 | 110–114 | Ported to agents-claude-turns on both boxes, with a refusal for a conversation Claude Code hasn't started. |
 | 115–122 | Ported to agents-claude-turns on both boxes, except the `session.compaction.*` events, which the conformance cases don't read. |
-| 123–127 | 4.4b notices and one-time instruction updates. 4.6 owns carry and handover. |
-| 128–131 | 4.4b credential attribution and generation fences. 5.4 owns the account's gathered usage and limits. |
+| 123–127 | Ported to agents-claude-turns on both boxes: what changed in its instructions is said once, ahead of the next message Claude Code takes, never ahead of a command you type, and not after it summarized. In 126 the reference's SDK closes Claude Code on an error result, so its turn ends as that exit and the line hands the message over again (4.1b). The Rust resident's Claude Code goes on and fails the turn, as the reference adapter's own test expects, and only Rust checks what follows. Its half for a message Claude Code never took, because it quit, waits on 4.1b's retry of missed messages. 4.6 owns carry and handover. |
+| 128–131 | 131 is ported to agents-claude on both boxes: a probe for a new Claude account's models doesn't wait on one for the old account, and the old one can't change the models offered. The reference lets the old one answer and ignores it, while Rust stops it. 128–130: the adapter's side is here, and the ring is 5.4's. Claude Code's `rate_limit_event` becomes `TurnEvent::PlanLimit` (additive, agent-neutral): the windows the reference's ring keeps for one reading (`heardWindows`: id, used, minutes, resetsAt, model), with the sign-in it was heard under, as the reference's fingerprint of `.claude.json`'s account. A reading heard after the sign-in changed counts for no one. A Claude Code started under another sign-in, or one taken up whose sign-in isn't known, starts again at its next turn, going on with its conversation. The turn projection hands each reading, with the account the turn runs on, to `PlanLimits::heard`, which does nothing until 5.4 brings the ring (`Projection::with_limits`). Unit tests (`heard_windows`, the projection's hand-off) and the holder scenario cover it. 5.4 owns the ring, its generation (a reading from before the ring dropped an account), and the routes that serve it, with `TurnEvent::PlanLimit` as their input. |
 | 132–136 | 4.6 subagent definition and policy projection, with 6.1 for Agents settings. |
 
 | Other TypeScript source | Coverage and remaining owner |

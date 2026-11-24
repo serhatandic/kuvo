@@ -62,7 +62,35 @@ const hear = value => { if (scriptedTurns) fs.appendFileSync(heard, JSON.stringi
 hear({ argv: args, cwd: process.cwd(), env: Object.fromEntries(Object.entries(process.env)
   .filter(([name]) => /^(CLAUDE_|DISABLE_|ANTHROPIC_|KUVO_)/.test(name))
   .map(([name, value]) => [name, /TOKEN|KEY|SECRET|PASSWORD/.test(name) ? "<set>" : value])) });
-let held, step = 0, playing = false, hookID;
+// Something it leaves running that holds its error output open: it says \`stderr\` once
+// \`until\` (a file beside the script) is there, or \`after\` ms, then says it's done in the heard file.
+function linger(spec) {
+  const pathOf = require("node:path");
+  const go = spec.until ? pathOf.join(${JSON.stringify(root)}, spec.until) : null;
+  const script = pathOf.join(${JSON.stringify(root)}, "claude-linger.cjs");
+  fs.writeFileSync(script, "const fs = require('node:fs'); const spec = JSON.parse(process.argv[2]);" +
+    "const say = () => fs.write(2, spec.stderr || '', () => { fs.appendFileSync(spec.heard, JSON.stringify({ lingered: spec.stderr || '' }) + String.fromCharCode(10)); process.exit(0); });" +
+    "const wait = () => (!spec.go || fs.existsSync(spec.go)) ? setTimeout(say, spec.after || 0) : setTimeout(wait, 20);" +
+    "wait();");
+  // (A Windows process outlives the one that started it without being detached, which would cut it
+  // off from the error output it's to hold.)
+  require("node:child_process").spawn(process.execPath, [script, JSON.stringify({ ...spec, go, heard })],
+    { stdio: ["ignore", "ignore", "inherit"], detached: process.platform !== "win32", windowsHide: true }).unref();
+}
+// How the next one for a conversation starts, when the test says (\`<root>/claude-start.json\`, taken once):
+// once \`until\` is there, leaving \`linger\` running, saying \`stderr\` and stopping with \`exit\`, before
+// it reads anything.
+const startFile = ${JSON.stringify(path.join(root, "claude-start.json"))};
+if (scriptedTurns && native && fs.existsSync(startFile)) {
+  const start = JSON.parse(fs.readFileSync(startFile, "utf8"));
+  fs.rmSync(startFile);
+  const go = start.until && require("node:path").join(${JSON.stringify(root)}, start.until);
+  while (go && !fs.existsSync(go)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  if (start.linger) linger(start.linger);
+  if (start.stderr !== undefined) fs.writeSync(2, start.stderr);
+  process.exit(start.exit ?? 1);
+}
+let held, step = 0, playing = false, hookID, chosen;
 const waiting = [], queued = [];
 const waitFor = test => new Promise(resolve => waiting.push({ test, resolve }));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -70,7 +98,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 // $SESSION for the conversation, $HOOK for the box's PreToolUse hook), or {wait: "<control subtype>" | "user"}, {reply: "<request id>",
 // allow: [...], deny: [...]} (waits for the box's answer to a request the script sent, then plays the
 // branch for it), {until: "<file>"} (until the test makes that file beside the script), {sleep: ms},
-// {stderr: "..."} and {exit: code}.
+// {stderr: "..."}, {exit: code} and {linger: {stderr, until, after}} (see linger).
 async function play(steps, vars) {
   for (const step of steps) {
     if (step.wait === "user") {
@@ -87,6 +115,8 @@ async function play(steps, vars) {
     } else if (step.until) {
       // Until the test says go: a file of that name beside the script.
       while (!fs.existsSync(require("node:path").join(require("node:path").dirname(scriptFile), step.until))) await delay(20);
+    } else if (step.linger) {
+      linger(step.linger);
     } else if (step.type === undefined && (step.stderr !== undefined || step.exit !== undefined)) {
       if (step.stderr !== undefined) await new Promise(done => process.stderr.write(step.stderr, done));
       if (step.exit !== undefined) process.exit(step.exit);
@@ -97,7 +127,10 @@ async function play(steps, vars) {
 }
 function script(text) {
   if (!fs.existsSync(scriptFile)) return;
-  return JSON.parse(fs.readFileSync(scriptFile, "utf8"))[text.split("\\n", 1)[0]];
+  // By its first line, or another (a note the box put ahead of your words).
+  const scripts = JSON.parse(fs.readFileSync(scriptFile, "utf8"));
+  const line = text.split("\\n").find(each => Object.hasOwn(scripts, each));
+  return line === undefined ? undefined : scripts[line];
 }
 async function begin(message) {
   playing = true;
@@ -149,12 +182,47 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (subtype === "initialize") {
     // Its PreToolUse hook, as the box registered it ($HOOK in a script).
     hookID = message.request?.hooks?.PreToolUse?.[0]?.hookCallbackIds?.[0] ?? hookID;
+    // A probe for its models (no conversation), as the test says (\`<root>/claude-catalog.json\`):
+    // those \`models\`, once \`until\` is there (it says it's waiting, then that it answered).
+    const catalogFile = ${JSON.stringify(path.join(root, "claude-catalog.json"))};
+    const catalog = !native && fs.existsSync(catalogFile) ? JSON.parse(fs.readFileSync(catalogFile, "utf8")) : undefined;
+    if (catalog) {
+      const mark = name => fs.writeFileSync(${JSON.stringify(root)} + require("node:path").sep + name, String(process.pid));
+      const reply = () => {
+        answer(message.request_id, { subtype: "success", pending_permission_requests: [], response: { models: catalog.models, commands: [], agents: [], output_style: "default", available_output_styles: ["default"], account: {} } });
+        if (catalog.until) mark("claude-catalog-answered");
+      };
+      if (!catalog.until) return reply();
+      mark("claude-catalog-waiting");
+      const go = ${JSON.stringify(root)} + require("node:path").sep + catalog.until;
+      const wait = () => fs.existsSync(go) ? reply() : setTimeout(wait, 20);
+      return wait();
+    }
     answer(message.request_id, { subtype: "success", pending_permission_requests: [], response: { models, commands: [], agents: [], output_style: "default", available_output_styles: ["default"], account: {} } });
     if (scriptedTurns && held) {
       say("After the switch.");
       finish(held);
       held = undefined;
     }
+  } else if (!native && ["set_model", "get_context_usage"].includes(subtype)) {
+    // A probe asking how much each model holds: as the test says (\`windows\` in
+    // \`<root>/claude-catalog.json\`, by model), or, as an older Claude Code, it doesn't say.
+    const catalogFile = ${JSON.stringify(path.join(root, "claude-catalog.json"))};
+    const windows = (fs.existsSync(catalogFile) ? JSON.parse(fs.readFileSync(catalogFile, "utf8")) : {}).windows;
+    if (subtype === "set_model") chosen = message.request.model;
+    if (!windows) answer(message.request_id, { subtype: "error", error: "Not in this stand-in." });
+    else if (subtype === "set_model") answer(message.request_id, { subtype: "success", response: {} });
+    else answer(message.request_id, { subtype: "success", response: { maxTokens: windows[chosen] } });
+  } else if (scriptedTurns && subtype === "get_task_output") {
+    // What a command it left running printed so far, as the test says (\`<root>/claude-task-output.json\`).
+    const outputs = ${JSON.stringify(path.join(root, "claude-task-output.json"))};
+    const output = (fs.existsSync(outputs) ? JSON.parse(fs.readFileSync(outputs, "utf8")) : {})[message.request.task_id] ?? "";
+    answer(message.request_id, { subtype: "success", response: { output, total_bytes: Buffer.byteLength(output) } });
+  } else if (scriptedTurns && subtype === "stop_task") {
+    // Stopped: it says so, and that nothing's left going.
+    answer(message.request_id, { subtype: "success", response: {} });
+    send({ type: "system", subtype: "task_notification", task_id: message.request.task_id, status: "stopped", summary: "stopped", session_id: native });
+    send({ type: "system", subtype: "background_tasks_changed", tasks: [], session_id: native });
   } else if (scriptedTurns && ["set_model", "set_permission_mode", "apply_flag_settings", "interrupt"].includes(subtype)) {
     answer(message.request_id, { subtype: "success", response: {} });
     if (held && subtype === "interrupt") { finish(held, true); held = undefined; }

@@ -69,6 +69,7 @@ pub struct Engine {
     pub(crate) submission_turns: Turns,
     pub(crate) draft_turns: Turns,
     pub(crate) decision_writer: std::sync::Arc<tokio::sync::Semaphore>,
+    pub(crate) heard: tokio::sync::broadcast::Sender<std::sync::Arc<EngineEvent>>,
 
     version: String,
     commands: mpsc::UnboundedSender<Command>,
@@ -76,6 +77,16 @@ pub struct Engine {
 }
 
 pub(crate) use crate::turns::Turns;
+
+/// One of the engine's events: its type (`session.execution.succeeded`, `credential.updated`, ...)
+/// and what it says.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct EngineEvent {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, alias = "properties")]
+    pub data: serde_json::Value,
+}
 
 pub(crate) struct Lease {
     pub record: Record,
@@ -151,6 +162,7 @@ impl Engine {
             submission_turns: Turns::new(),
             draft_turns: Turns::new(),
             decision_writer: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+            heard: tokio::sync::broadcast::channel(256).0,
             context_windows: crate::context::Windows::open(&home),
             catalogs: crate::models::CatalogCache::new(),
             queues: crate::queue::QueueStore::open(&home),
@@ -179,7 +191,14 @@ impl Engine {
         self.turns.acquire(session).await
     }
 
-    pub(crate) fn states(&self) -> watch::Receiver<State> {
+    /// The engine's events as its feed hears them, for those that follow what its sessions do
+    /// (one that falls behind misses some, and hears that it did).
+    pub fn events(&self) -> tokio::sync::broadcast::Receiver<std::sync::Arc<EngineEvent>> {
+        self.heard.subscribe()
+    }
+
+    /// The engine's state as it changes.
+    pub fn states(&self) -> watch::Receiver<State> {
         self.state.clone()
     }
 

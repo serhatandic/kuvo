@@ -2,6 +2,7 @@
 
 pub mod account_check;
 pub mod accounts;
+pub mod background;
 pub mod catalog;
 pub mod file_change;
 pub mod claude;

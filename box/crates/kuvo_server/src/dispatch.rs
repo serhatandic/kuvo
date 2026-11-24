@@ -403,6 +403,13 @@ pub struct Registry {
     engine: Option<Fallback>,
     socket: Option<SocketHandler>,
     activity: Option<Activity>,
+    retired: Vec<Retired>,
+}
+
+/// Paths of routes that are gone, each answered 404 with why rather than an empty answer.
+struct Retired {
+    matches: fn(&str) -> bool,
+    message: &'static str,
 }
 
 impl Registry {
@@ -479,6 +486,12 @@ impl Registry {
                 }
             }),
         });
+    }
+
+    /// Routes that are gone: a `kuvo/` path `matches` takes (without its query) is answered 404
+    /// with `message`, whatever its method, where no route here takes it.
+    pub fn retire(&mut self, matches: fn(&str) -> bool, message: &'static str) {
+        self.retired.push(Retired { matches, message });
     }
 
     /// Engine passthrough has no fixed response shape.
@@ -604,6 +617,9 @@ impl Dispatcher {
             return Reply::empty_json(StatusCode::METHOD_NOT_ALLOWED);
         }
         if canonical == request.path && path.starts_with("kuvo/") {
+            if let Some(retired) = self.0.retired.iter().find(|retired| (retired.matches)(path)) {
+                return Refusal::new(StatusCode::NOT_FOUND, retired.message).reply();
+            }
             return Reply::empty_json(StatusCode::NOT_FOUND);
         }
         let canonical_route = canonical.split('?').next().unwrap_or_default();

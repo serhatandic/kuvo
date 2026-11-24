@@ -201,6 +201,13 @@ async fn scenario(root: PathBuf) {
     let before = runtime.holders().records().await.unwrap().pop().unwrap();
     assert!(before.child.is_some());
     old.prepare_replacement().await.unwrap();
+    // The turn goes on with the next resident: this one doesn't end it, so what it reports to
+    // stays open for as long as this resident is there.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        Arc::strong_count(&sink) > 1,
+        "the handed-over turn was let go"
+    );
     drop(active);
     drop(holder);
     drop(first);
@@ -325,11 +332,42 @@ async fn scenario(root: PathBuf) {
     );
     let saved = clear.state.lock().unwrap().clone();
     assert_eq!(saved["claudeSession"], CLEARED);
-    next.shutdown().await.unwrap();
+    // A turn under way as the resident makes way: the next one finds it ended after all (its end
+    // was written just before the resident went) and lets it go. Its conversation goes on.
+    let (asking, _gone, mut asks) = Sink::new();
+    let active = holder
+        .start(
+            input("turn_gone", TurnKind::Prompt(prompt("msg_gone", "ask"))),
+            asking.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asks.recv().await.unwrap(), "tool-approve");
+    next.prepare_replacement().await.unwrap();
+    drop(active);
+    drop(holder);
+    drop(replacement);
+    let saved = asking.state.lock().unwrap().clone();
 
     let restarted = activate(&runtime, factory).await;
     let restored = claude(&restarted);
-    let holder = restored.open_thread(context(&root, saved)).await.unwrap();
+    let note = runtime
+        .holders()
+        .records()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .turns()
+        .unwrap()
+        .remove("main")
+        .unwrap();
+    assert_eq!(note.turn.as_deref(), Some("turn_gone"));
+    restored.let_go(&note).await.unwrap();
+    let holder = restored
+        .open_thread(context(&root, saved.clone()))
+        .await
+        .unwrap();
     let (sink, mut frames, _) = Sink::new();
     holder
         .start(
@@ -339,7 +377,7 @@ async fn scenario(root: PathBuf) {
         .await
         .unwrap();
     let end = finish(&mut frames).await;
-    let expected = format!("resumed {CLEARED}");
+    let expected = format!("resumed {}", saved["claudeSession"].as_str().unwrap());
     assert!(end.iter().any(
         |event| matches!(&event.event, TurnEvent::TextDelta { delta, .. } if delta == &expected)
     ));
@@ -398,6 +436,64 @@ async fn scenario(root: PathBuf) {
     tokio::time::sleep(Duration::from_millis(20)).await;
     fs::write(root.join(".claude/.credentials.json"), "{}").unwrap();
     assert!(restored.probe_account().await.unwrap().signed_in);
+
+    // Where the plan's limits stand, as Claude Code hears in a turn: for the sign-in it started
+    // under, as a fingerprint of who that is (the reference's own, from `.claude.json`).
+    let account = |id: &str| {
+        fs::write(
+            root.join(".claude.json"),
+            json!({"oauthAccount": {"accountUuid": id, "organizationUuid": "O-1"}}).to_string(),
+        )
+        .unwrap();
+    };
+    let heard = |end: &[EventEnvelope]| {
+        end.iter()
+            .filter_map(|event| match &event.event {
+                TurnEvent::PlanLimit(reading) => Some(reading.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    account("A-1");
+    let limits =
+        |id: &str, text: &str| input(id, TurnKind::Prompt(prompt(&format!("msg_{id}"), text)));
+    let (sink, mut first, _) = Sink::new();
+    holder
+        .start(limits("turn_limits", "hear the limits"), sink)
+        .await
+        .unwrap();
+    let readings = heard(&finish(&mut first).await);
+    assert_eq!(readings.len(), 1, "{readings:?}");
+    assert_eq!(readings[0].sign_in.as_deref(), Some("ddfa9296fabdbb7b"));
+    assert_eq!(
+        readings[0]
+            .windows
+            .iter()
+            .map(|window| (window.id.as_str(), window.used))
+            .collect::<Vec<_>>(),
+        [("five_hour", 0.3), ("seven_day", 0.81)]
+    );
+    // Signed in as another account since: its next turn starts a Claude Code under that one, and
+    // what it hears counts for it.
+    account("B-2");
+    let (sink, mut second, _) = Sink::new();
+    holder
+        .start(limits("turn_limits_b", "hear the limits"), sink)
+        .await
+        .unwrap();
+    let readings = heard(&finish(&mut second).await);
+    assert_eq!(readings.len(), 1, "{readings:?}");
+    assert_eq!(readings[0].sign_in.as_deref(), Some("fc35f91bb5886e9b"));
+    // A sign-in that changes while it runs: what it hears then counts for no one.
+    let (sink, mut third, _) = Sink::new();
+    holder
+        .start(
+            limits("turn_limits_c", "hear the limits after a sign-in"),
+            sink,
+        )
+        .await
+        .unwrap();
+    assert!(heard(&finish(&mut third).await).is_empty());
     restored.shutdown().await.unwrap();
     assert!(events.try_recv().is_ok());
 }
@@ -423,6 +519,7 @@ fn context(root: &Path, state: VendorState) -> SessionContext {
         session_id: SESSION.into(),
         directory: root.to_owned(),
         state,
+        background: Default::default(),
     }
 }
 
@@ -644,6 +741,26 @@ fn claude_wire_fixture() {
                             json!({"type":"result","subtype":"success","is_error":true,"result":words,
                             "user_message_uuids":[message["uuid"]]}),
                         );
+                    }
+                    "hear the limits" | "hear the limits after a sign-in" => {
+                        if text.ends_with("sign-in") {
+                            let home = env::var_os("HOME")
+                                .or_else(|| env::var_os("USERPROFILE"))
+                                .unwrap();
+                            fs::write(
+                                PathBuf::from(home).join(".claude.json"),
+                                json!({"oauthAccount": {"accountUuid": "C-3"}}).to_string(),
+                            )
+                            .unwrap();
+                        }
+                        emit(json!({"type":"rate_limit_event","rate_limit_info":{
+                            "status":"allowed","rateLimitType":"five_hour","utilization":0.3,
+                            "unifiedWindows":{
+                                "five_hour":{"utilization":0.3,"resetsAt":1_794_100_000},
+                                "seven_day":{"utilization":0.81,"resetsAt":1_794_200_000}
+                            }
+                        }}));
+                        result(vec![message["uuid"].clone()]);
                     }
                     "resume" => {
                         assistant("resume", &format!("resumed {}", resume.as_deref().unwrap()));

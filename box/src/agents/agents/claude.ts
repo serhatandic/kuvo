@@ -173,6 +173,8 @@ class Said {
 export class ClaudeAgent implements Agent {
   /** How long a failure waits for the rest of what Claude Code said as it stopped. */
   static heardWithin = 1000
+  /** The same, held: its holder's own wait (2 s after Claude Code's end), and its word of it. */
+  static heardWithinHeld = 2500
 
   id = "claude"
   compacts = true
@@ -1611,6 +1613,7 @@ class ClaudeThread implements Thread {
         // itself), this one's alone: one being replaced can still be writing.
         const said = new Said()
         this.said = said
+        this.saidHeld = false
         this.saidAll = new Promise((done) => {
           if (!child.stderr) return done()
           child.stderr.once("close", () => {
@@ -1655,10 +1658,13 @@ class ClaudeThread implements Thread {
       // What it says as it stops, for why it did (as the SDK keeps it for a process it starts itself).
       const said = new Said()
       this.said = said
+      this.saidHeld = true
       this.saidAll = holding.then(
         (held) => {
           held.onStderr((text) => said.add(text))
-          return held.exited.then(() => said.finish())
+          return held.exited.then((exit) => {
+            if (exit.heardAll) said.finish()
+          })
         },
         () => said.finish(),
       )
@@ -1673,7 +1679,10 @@ class ClaudeThread implements Thread {
     const said = new Said()
     this.said = said
     held.onStderr((text) => said.add(text))
-    this.saidAll = held.exited.then(() => said.finish())
+    this.saidAll = held.exited.then((exit) => {
+      if (exit.heardAll) said.finish()
+    })
+    this.saidHeld = true
     return heldProcess(held)
   }
 
@@ -1773,6 +1782,8 @@ class ClaudeThread implements Thread {
   /** What the Claude Code run whole in the sandbox says on its error output, and when that's all there. */
   private said?: Said
   private saidAll?: Promise<void>
+  /** Its Claude Code is held: its holder says it ended once all it said came, or 2 s on. */
+  private saidHeld = false
 
   /** Until all it said has come for a failure (its exit can arrive first), but not for long: a
    * command it left running can hold its error output open. Nor once you stop the turn. */
@@ -1783,7 +1794,7 @@ class ClaudeThread implements Thread {
     await Promise.race([
       this.saidAll,
       new Promise<void>((done) => {
-        bound = setTimeout(done, ClaudeAgent.heardWithin)
+        bound = setTimeout(done, this.saidHeld ? ClaudeAgent.heardWithinHeld : ClaudeAgent.heardWithin)
         stop = done
         stopped.addEventListener("abort", stop, { once: true })
       }),

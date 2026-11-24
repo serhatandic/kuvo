@@ -69,6 +69,164 @@ test("Claude accepts a pasted sign-in code, then offers that account's models", 
   });
 });
 
+// Claude Code's models as an account lists them: its default (Opus), Opus, Haiku, and Opus with a
+// million tokens.
+const listedModels = [
+  { value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default (recommended)", description: "Opus 5.5 · Most capable" },
+  { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", description: "Opus 5.5 · Most capable" },
+  { value: "claude-haiku-4-5", displayName: "Haiku 4.5", description: "Haiku 4.5 · Fast" },
+  { value: "opus[1m]", resolvedModel: "claude-opus-5-5[1m]", displayName: "Opus 5.5 (1M)", description: "Opus 5.5 with 1M context" },
+];
+
+/** How much each conversation's model holds, as its Claude Code is started with "never summarize"
+ * (only a model of 900,000 tokens or more goes without), once Claude Code has listed its models. */
+async function heldBy(listener, env, sessions) {
+  await until(async () => {
+    const answer = await request(listener, "GET", picker, undefined, headers, 45000);
+    return answer.json?.models?.some(model => model.providerID === provider && model.id === "claude-haiku-4-5" && !model.provisional);
+  }, "Claude Code never listed its models.", 45000);
+  const heard = () => fs.readFileSync(path.join(env.HOME, "claude-heard.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+  const held = {};
+  for (const [session, model] of Object.entries(sessions)) {
+    const route = `kuvo/agents/api/session/${session}`;
+    const sent = await request(listener, "POST", route + "/prompt", { id: `msg_${session.slice(4)}`, text: `go ${session}` }, headers, 45000);
+    assert.equal(sent.status, 200, sent.text);
+    await until(async () => (await transcript(listener, route)).some(row => row.type === "idle"), `${model}'s turn never ended.`);
+    const pid = heard().find(line => line.type === "user" && line.message?.content?.some(part => part.text?.startsWith(`go ${session}`)))?.pid;
+    const launched = heard().find(line => line.argv && line.pid === pid);
+    held[model] = launched.env.DISABLE_AUTO_COMPACT === "1" ? "never" : launched.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  }
+  return held;
+}
+
+const windowSessions = { ses_window_opus: "opus", ses_window_haiku: "claude-haiku-4-5", ses_window_million: "opus[1m]" };
+const seedWindows = (catalog) => (home, env) => {
+  for (const [session, model] of Object.entries(windowSessions)) seedSession(home, session, { model });
+  write(path.join(home, "box", "conversation-compaction.json"), JSON.stringify("never"));
+  write(path.join(env.HOME, "claude-catalog.json"), JSON.stringify(catalog));
+};
+
+test("each model holds what Claude Code says it does on your plan, which its list doesn't say", { timeout: 90000 }, async t => {
+  await withClaude(t, { turns: true }, async (listener, _home, env) => {
+    assert.deepEqual(await heldBy(listener, env, windowSessions), { opus: "never", "claude-haiku-4-5": "433000", "opus[1m]": "never" });
+  }, seedWindows({ models: listedModels, windows: { default: 1_000_000, "claude-haiku-4-5": 200_000, "opus[1m]": 1_000_000 } }));
+});
+
+test("an older Claude Code that doesn't say how much each holds: as its list says", { timeout: 90000 }, async t => {
+  await withClaude(t, { turns: true }, async (listener, _home, env) => {
+    assert.deepEqual(await heldBy(listener, env, windowSessions), { opus: "433000", "claude-haiku-4-5": "433000", "opus[1m]": "never" });
+  }, seedWindows({ models: listedModels }));
+});
+
+test("before Claude Code has listed its models, the usual ones still answer to its default", { timeout: 90000 }, async t => {
+  await withClaude(t, {}, async (listener, _home, env) => {
+    try {
+      const offered = await until(async () => {
+        const answer = await request(listener, "GET", "kuvo/models/offered", undefined, headers, 20000);
+        const models = answer.json?.models?.filter(model => model.providerID === provider) ?? [];
+        return models.length && models;
+      }, "Claude Code's usual models were never offered.");
+      assert.deepEqual(offered.filter(model => model.aliases?.includes("default")).map(model => model.id), ["opus"]);
+      assert.ok(!offered.some(model => model.id === "default" || /default/i.test(model.name)), JSON.stringify(offered));
+    } finally {
+      write(path.join(env.HOME, "list-goes"), "");
+    }
+  }, (_home, env) => write(path.join(env.HOME, "claude-catalog.json"), JSON.stringify({ models: listedModels, until: "list-goes" })));
+});
+
+test("a session already on its default goes on: Claude Code's own default is what it runs", { timeout: 90000 }, async t => {
+  const session = "ses_claude_default";
+  const route = `kuvo/agents/api/session/${session}`;
+  await withClaude(t, { turns: true }, async (listener, _home, env) => {
+    const sent = await request(listener, "POST", route + "/prompt", { id: "msg_on_default", text: "go" }, headers, 45000);
+    assert.equal(sent.status, 200, sent.text);
+    const rows = await until(async () => {
+      const rows = await transcript(listener, route);
+      return rows.some(row => row.type === "idle") && rows;
+    }, "The turn never ended.");
+    assert.equal(rows.find(row => row.type === "idle").outcome, "succeeded");
+    const heard = fs.readFileSync(path.join(env.HOME, "claude-heard.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+    const pid = heard.find(line => line.type === "user")?.pid;
+    // Never told which model: Claude Code runs its own default.
+    assert.ok(!heard.some(line => line.pid === pid && (line.request?.subtype === "set_model" && line.request.model
+      || line.argv?.some(arg => arg.startsWith("--model")))), JSON.stringify(heard.filter(line => line.pid === pid)));
+    assert.equal(readJSON(path.join(_home, "agents/sessions", session, "session.json")).model.id, "default");
+  }, home => seedSession(home, session, { model: "default" }));
+});
+
+/** Signs Claude Code in with a pasted code, as you would on a computer you reach remotely. */
+async function signInClaude(listener) {
+  const started = await request(listener, "POST", oauth, { methodID: "claudeai", remote: true }, headers, 20000);
+  assert.equal(started.status, 200, started.text);
+  const { attemptID } = started.json.data;
+  const done = await request(listener, "POST", `${oauth}/${attemptID}/complete`, { code: "fixture-code" }, headers);
+  assert.equal(done.status, 200, done.text);
+  await until(async () => (await request(listener, "GET", `${oauth}/${attemptID}`, undefined, headers)).json?.data?.status === "complete",
+    "The Claude sign-in did not finish.");
+}
+
+test("signed out, the Claude Code a conversation has open goes: its next message starts another", { timeout: 90000 }, async t => {
+  const session = "ses_claude_signed_out";
+  const route = `kuvo/agents/api/session/${session}`;
+  await withClaude(t, { signedIn: false, turns: true }, async (listener, _home, env) => {
+    const heard = () => fs.readFileSync(path.join(env.HOME, "claude-heard.jsonl"), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+    const took = text => heard().find(line => line.type === "user" && line.message?.content?.some(part => part.text?.startsWith(text)))?.pid;
+    const answered = async (id, text, turns) => {
+      const sent = await request(listener, "POST", route + "/prompt", { id, text }, headers, 45000);
+      assert.equal(sent.status, 200, sent.text);
+      await until(async () => (await transcript(listener, route)).filter(row => row.type === "idle").length === turns,
+        "The Claude fixture did not finish its turn.");
+    };
+    await signInClaude(listener);
+    await answered("msg_signed_out_first", "first", 1);
+    const out = await request(listener, "POST", "kuvo/agents/api/integration/claude-code/disconnect", {}, headers, 20000);
+    assert.equal(out.status, 200, out.text);
+    await signInClaude(listener);
+    await answered("msg_signed_out_again", "again", 2);
+    assert.ok(took("first") && took("again"));
+    assert.notEqual(took("again"), took("first"));
+    const rows = await transcript(listener, route);
+    assert.equal(rows.filter(row => row.type === "idle").at(-1).outcome, "succeeded");
+  }, home => seedSession(home, session));
+});
+
+test("a new Claude account starts a new probe, and an old probe can't change its models", { timeout: 90000 }, async t => {
+  await withClaude(t, { signedIn: false }, async (listener, _home, env) => {
+    const offered = async (query = "?refresh=1") => {
+      const answer = await request(listener, "GET", `kuvo/models/offered${query}`, undefined, headers, 45000);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json.models.filter(model => model.providerID === provider).map(model => model.id).sort();
+    };
+    const signIn = () => signInClaude(listener);
+    const catalog = value => write(path.join(env.HOME, "claude-catalog.json"), JSON.stringify(value));
+    const marked = name => fs.existsSync(path.join(env.HOME, name));
+    const model = (value, displayName) => ({ value, resolvedModel: `claude-${value}`, displayName });
+    try {
+      await signIn();
+      // The first account's models are asked for, and Claude Code takes its time to say.
+      catalog({ models: [model("old-model", "Old model")], until: "old-goes" });
+      const old = offered().catch(() => undefined);
+      await until(() => marked("claude-catalog-waiting"), "The first account's probe never started.");
+      // Meanwhile it signs out, and in as another account, with models of its own.
+      const out = await request(listener, "POST", "kuvo/agents/api/integration/claude-code/disconnect", {}, headers, 20000);
+      assert.equal(out.status, 200, out.text);
+      catalog({ models: [model("new-model", "New model")] });
+      await signIn();
+      assert.deepEqual(await offered(), ["new-model"]);
+      // The old probe answers at last, or was stopped: what it says isn't this account's.
+      const probe = Number(fs.readFileSync(path.join(env.HOME, "claude-catalog-waiting"), "utf8"));
+      const alive = () => { try { process.kill(probe, 0); return true; } catch { return false; } };
+      write(path.join(env.HOME, "old-goes"), "");
+      await until(() => marked("claude-catalog-answered") || !alive(), "The first account's probe neither answered nor stopped.");
+      await old;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.deepEqual(await offered(""), ["new-model"]);
+    } finally {
+      write(path.join(env.HOME, "old-goes"), "");
+    }
+  });
+});
+
 test("the saved Claude Console account keeps its own directory and model access", { timeout: 60000 }, async t => {
   await withClaude(t, { signedIn: false }, async (listener, home) => {
     const offered = await request(listener, "GET", picker, undefined, headers, 45000);
@@ -202,10 +360,15 @@ test("the Rust keeper keeps an actual Claude adapter turn across a release switc
         await control(["select", next]);
         const second = await keptListener(home, keeper, first.pid);
         residents.push(second.pid);
+        let last;
         const rows = await until(async () => {
-          const rows = await transcript(second, route);
-          return rows.at(-1)?.outcome === "succeeded" && rows;
-        }, "The replacement resident never finished the held turn.", 30000);
+          last = await transcript(second, route);
+          return last.at(-1)?.outcome === "succeeded" && last;
+        }, () => {
+          const heard = path.join(env.HOME, "claude-heard.jsonl");
+          return ["The replacement resident never finished the held turn.", JSON.stringify(last?.slice(-3)),
+            fs.existsSync(heard) ? fs.readFileSync(heard, "utf8").slice(-3000) : "", keeper.log().slice(-6000)].join("\n");
+        }, 30000);
         const after = heldClaude(home, session);
         assert.ok(after);
         assert.deepEqual([after.pid, after.child, after.generation], [initial.pid, initial.child, initial.generation + 1]);
@@ -238,7 +401,7 @@ async function withClaude(t, fixture, check, prepare = () => {}) {
   try {
     privateHome(home);
     const env = { ...claudeEnvironment(binary, home, isolatedEnv(root), fixture), KUVO_SANDBOX: "off" };
-    prepare(home);
+    prepare(home, env);
     write(path.join(home, "folder-version.json"), '{"version":23}\n');
     const start = async () => {
       bridge = await startClaudeBridge(binary, home, env);

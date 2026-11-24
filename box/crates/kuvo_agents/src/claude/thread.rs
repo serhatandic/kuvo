@@ -25,7 +25,8 @@ use tokio::{
 
 use crate::{
     hold::{
-        Controller, ControllerInput, Directory, HoldKind, Limits, Metadata, Output, Start, TurnNote,
+        Controller, ControllerInput, Directory, Exit, HoldKind, Limits, Metadata, Output, Start,
+        TurnNote,
     },
     runtime::AdapterCall,
     session::{
@@ -36,7 +37,14 @@ use crate::{
 };
 
 use super::{
-    diagnostic::Said, owned_paths, permissions::Request, program::Program, projection::Projection,
+    diagnostic::Said,
+    model::Catalog,
+    owned_paths,
+    permissions::Request,
+    program::Program,
+    projection::Projection,
+    tasks::{self, Tasks},
+    told::instructions_note,
     wire,
 };
 
@@ -55,6 +63,9 @@ struct Pipe {
     exited: bool,
     compact_at: Option<u64>,
     said: Said,
+    /// The sign-in it started under, as a fingerprint: what it hears of the plan's limits counts
+    /// for that one alone. None when it wasn't known (or no one was signed in that way).
+    sign_in: Option<String>,
 }
 
 impl Pipe {
@@ -86,7 +97,18 @@ impl Pipe {
                 .meta
                 .get("claudeCompactAt")
                 .and_then(Value::as_u64),
-            said: Said::default(),
+            // (What it said before this resident was there, if it stopped that soon.)
+            said: {
+                let mut said = Said::default();
+                said.add(&controller.welcome.stderr);
+                said
+            },
+            sign_in: controller
+                .welcome
+                .meta
+                .get("claudeSignIn")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         }
     }
 
@@ -133,7 +155,11 @@ impl Pipe {
                             _ => {}
                         }
                     }
-                    Output::Stderr { .. } => {}
+                    Output::Stderr { text } => self.said.add(&text),
+                    Output::Exited { exit } => {
+                        self.exited = true;
+                        return Err(io::Error::other(self.stopped(&exit)));
+                    }
                     _ => return Err(io::Error::other("Claude Code stopped before answering.")),
                 }
             }
@@ -141,10 +167,23 @@ impl Pipe {
         .await?
     }
 
+    /// How it stopped before answering, as Claude's SDK says it, with the last thing it said.
+    fn stopped(&mut self, exit: &Exit) -> String {
+        let how = match (exit.code, &exit.signal) {
+            (Some(code), _) => format!("Claude Code process exited with code {code}"),
+            (None, Some(signal)) => format!("Claude Code process terminated by signal {signal}"),
+            (None, None) => "Claude Code stopped before answering.".to_owned(),
+        };
+        match self.said.last() {
+            Some(said) => format!("{how}: {said}"),
+            None => how,
+        }
+    }
+
     async fn stop(mut self) -> io::Result<()> {
         self.input.end().await?;
         let result = timeout(Duration::from_secs(3), async {
-            while !matches!(self.next().await?, Output::Exited { .. }) {}
+            while !self.exited && !matches!(self.next().await?, Output::Exited { .. }) {}
             Ok::<_, io::Error>(())
         })
         .await;
@@ -189,6 +228,13 @@ impl Recovery {
         self.pipe.input.unpin().await?;
         self.pipe.stop().await
     }
+
+    /// Whether it was left under way in `note`'s turn.
+    pub fn holds(&self, note: &TurnNote) -> bool {
+        self.note
+            .as_ref()
+            .is_some_and(|held| held.session == note.session && held.turn == note.turn)
+    }
 }
 
 #[derive(Clone)]
@@ -197,9 +243,34 @@ pub(super) struct Conversation {
     session: String,
     directory: PathBuf,
     config: Option<PathBuf>,
+    /// Where a turn handed to the next resident reports, kept open while this one is here: it
+    /// isn't this resident's to end.
+    _handed: Handed,
 }
 
+type Handed = Arc<std::sync::Mutex<Option<Arc<dyn TurnSink>>>>;
+
 type Reply<T> = oneshot::Sender<io::Result<T>>;
+
+/// Its tasks' control requests, through the conversation's actor while it's there.
+struct Calls(mpsc::WeakSender<Command>);
+
+impl tasks::Calls for Calls {
+    fn call(&self, request: Value) -> futures_util::future::BoxFuture<'_, io::Result<Value>> {
+        Box::pin(async move {
+            let commands = self.0.upgrade().ok_or_else(stopped)?;
+            let (reply, answer) = oneshot::channel();
+            commands
+                .send(Command::TaskCall(request, reply))
+                .await
+                .map_err(|_| stopped())?;
+            timeout(CONTROL_TIMEOUT, answer)
+                .await
+                .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
+                .map_err(|_| stopped())?
+        })
+    }
+}
 
 enum Command {
     Start(Box<TurnInput>, Arc<dyn TurnSink>, Reply<()>),
@@ -208,28 +279,41 @@ enum Command {
     Resolve(SteerReceipt, Reply<Option<bool>>),
     Prepare(Reply<()>),
     Stop(bool, Reply<()>),
+    LetGo(TurnNote, Reply<()>),
+    /// A control request about its tasks (their output, Stop): its answer's `response`.
+    TaskCall(Value, Reply<Value>),
 }
 
 impl Conversation {
     pub fn spawn(
         program: Program,
+        models: Catalog,
         provider: String,
         context: SessionContext,
         recovered: Option<Recovery>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(16);
+        let handed = Handed::default();
         let conversation = Self {
             commands,
             session: context.session_id.clone(),
             directory: context.directory.clone(),
             config: program.config_home(&context.directory),
+            _handed: handed.clone(),
         };
+        let tasks = Tasks::new(
+            &context.session_id,
+            &context.directory.to_string_lossy(),
+            context.background.clone(),
+            Arc::new(Calls(conversation.commands.downgrade())),
+        );
         let (pipe, recovery, instructions) = recovered.map_or((None, None, None), |old| {
             (Some(old.pipe), old.note, old.instructions)
         });
         tokio::spawn(
             Actor {
                 program,
+                models,
                 provider,
                 directory: context.directory,
                 session: context.session_id,
@@ -247,6 +331,9 @@ impl Conversation {
                 configured: None,
                 closing: false,
                 noticed: HashSet::new(),
+                handed,
+                tasks,
+                pending: HashMap::new(),
             }
             .run(receiver),
         );
@@ -268,6 +355,12 @@ impl Conversation {
 
     pub async fn stop(&self, shutdown: bool) -> io::Result<()> {
         self.send(|reply| Command::Stop(shutdown, reply)).await
+    }
+
+    /// The turn it was left under way in won't go on here: that Claude Code goes, and the next
+    /// message starts one that resumes the conversation.
+    pub async fn let_go(&self, note: TurnNote) -> io::Result<()> {
+        self.send(|reply| Command::LetGo(note, reply)).await
     }
 }
 
@@ -333,6 +426,8 @@ impl ActiveTurn for Turn {
 
 struct Actor {
     program: Program,
+    /// The account's models, for how much each holds.
+    models: Catalog,
     provider: String,
     directory: PathBuf,
     session: String,
@@ -351,6 +446,11 @@ struct Actor {
     closing: bool,
     /// What this Claude Code has said once already (a retry, a limit's warning).
     noticed: HashSet<String>,
+    handed: Handed,
+    /// What it keeps going besides its turn.
+    tasks: Tasks,
+    /// Its control requests about tasks, waiting on their answers.
+    pending: HashMap<String, Reply<Value>>,
 }
 
 struct Ask {
@@ -371,6 +471,8 @@ struct Running {
     explicit_compaction: bool,
     took_prompt: bool,
     stopping: bool,
+    /// The instructions said ahead of its message, kept as told once it took it.
+    told: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -410,7 +512,7 @@ impl Actor {
                 () = timer => self.expired().await,
             };
             if output.is_err() {
-                let _ = self.ended(false).await;
+                let _ = self.ended().await;
             }
         }
     }
@@ -432,6 +534,38 @@ impl Actor {
             Command::Resolve(receipt, reply) => {
                 let _ = reply.send(self.resolve(receipt).await);
             }
+            Command::TaskCall(request, reply) => match &mut self.pipe {
+                Some(pipe) => {
+                    let id = unique_id()?;
+                    match wire::request(&mut pipe.input, &id, request).await {
+                        Ok(()) => {
+                            self.pending.insert(id, reply);
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                        }
+                    }
+                }
+                None => {
+                    let _ = reply.send(Err(stopped()));
+                }
+            },
+            Command::LetGo(note, reply) => {
+                let held = self
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|saved| saved.session == note.session && saved.turn == note.turn);
+                if held {
+                    self.recovery = None;
+                    self.replay_sink = None;
+                    if let Some(mut pipe) = self.pipe.take() {
+                        let _ = pipe.input.unpin().await;
+                        let _ = pipe.stop().await;
+                        self.tasks.gone();
+                    }
+                }
+                let _ = reply.send(Ok(()));
+            }
             Command::Prepare(reply) => {
                 if let Some(pipe) = &mut self.pipe
                     && let Some(turn) = &self.running
@@ -450,6 +584,7 @@ impl Actor {
                         && !pipe.can_reconnect
                     {
                         let _ = pipe.stop().await;
+                        self.tasks.gone();
                     }
                     self.closing = true;
                     let _ = reply.send(Ok(()));
@@ -460,7 +595,7 @@ impl Actor {
                     Some(pipe) => pipe.stop().await,
                     None => Ok(()),
                 };
-                let _ = self.ended(false).await;
+                let _ = self.ended().await;
                 self.closing = shutdown;
                 let _ = reply.send(result);
             }
@@ -535,17 +670,14 @@ impl Actor {
                 explicit_compaction,
                 took_prompt: false,
                 stopping: false,
+                told: None,
             });
             return Ok(());
         }
 
-        let message = match input.kind {
-            TurnKind::Prompt(prompt) => message(&self.session, prompt, false).await?,
-            TurnKind::Compact => user_frame(
-                unique_id()?,
-                vec![json!({ "type":"text", "text":"/compact" })],
-                false,
-            ),
+        let prompt = match input.kind {
+            TurnKind::Prompt(prompt) => Some(prompt),
+            TurnKind::Compact => None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
@@ -559,18 +691,23 @@ impl Actor {
                 "Claude Code has a recovered turn.",
             ));
         }
+        let state_before = self.state.clone();
         let compact_at = self.compact_at(&model.id).await?;
         let instructions_changed = self
             .instructions
             .as_ref()
             .is_some_and(|old| *old != input.instructions);
-        if self
-            .pipe
-            .as_ref()
-            .is_some_and(|pipe| pipe.compact_at != compact_at || instructions_changed)
+        // One started under another sign-in, or one taken up whose sign-in isn't known: what it
+        // hears of the plan's limits would count for the wrong account (or none), so it starts
+        // again, going on with its conversation.
+        let sign_in = self.program.sign_in_mark().await;
+        if self.pipe.as_ref().is_some_and(|pipe| {
+            pipe.compact_at != compact_at || instructions_changed || pipe.sign_in != sign_in
+        }) && !self.tasks.keeps_working()
             && let Some(pipe) = self.pipe.take()
         {
             let _ = pipe.stop().await;
+            self.tasks.gone();
         }
         if self.pipe.is_none() {
             self.pipe = Some(self.launch(&input.instructions, compact_at, plan).await?);
@@ -593,11 +730,39 @@ impl Actor {
             if let Err(error) = configure(pipe, &model, plan).await {
                 if let Some(pipe) = self.pipe.take() {
                     let _ = pipe.stop().await;
+                    self.tasks.gone();
                 }
                 return Err(error);
             }
             self.configured = Some((model.clone(), plan));
         }
+        // A conversation it goes on with keeps the instructions it started with (until it's
+        // summarized): what changed since is said ahead of the message, once. Not ahead of a
+        // command (its /compact, a skill's), which goes as typed: the next message says it.
+        let mut told = None;
+        let message = match prompt {
+            Some(mut prompt) => {
+                if !prompt.text.trim_start().starts_with('/')
+                    && let Some(said) = instructions_note(
+                        self.state.get("claudeTold").and_then(Value::as_str),
+                        &input.instructions,
+                    )
+                {
+                    prompt.text = format!("{said}\n\n{}", prompt.text);
+                    told = Some(input.instructions.clone());
+                }
+                message(&self.session, prompt, false).await?
+            }
+            None => user_frame(
+                unique_id()?,
+                vec![json!({ "type":"text", "text":"/compact" })],
+                false,
+            ),
+        };
+        if self.state != state_before {
+            sink.save_state(self.state.clone()).await?;
+        }
+        let pipe = self.pipe.as_mut().expect("Claude process created above");
         let note = TurnNote {
             session: self.session.clone(),
             from: pipe.sequence,
@@ -619,6 +784,7 @@ impl Actor {
             explicit_compaction,
             took_prompt: false,
             stopping: false,
+            told,
         });
         if let Err(error) = pipe.input.write(message.to_string()).await {
             self.running.take();
@@ -640,17 +806,20 @@ impl Actor {
                 .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok())
         })
         .await?;
+        // How much the model holds: as this conversation's turns said, or as the account's list does.
+        let heard = self
+            .state
+            .get("claudeWindow")
+            .filter(|window| window["model"] == model)
+            .and_then(|window| window["size"].as_u64());
+        let window = match heard {
+            Some(size) => Some(size),
+            None => self.models.clone().window(model).await,
+        };
         Ok(match choice.as_deref() {
             Some("200000") => Some(200_000),
             Some("600000") => Some(600_000),
-            Some("never")
-                if self.state.get("claudeWindow").is_some_and(|window| {
-                    window["model"] == model
-                        && window["size"].as_u64().is_some_and(|size| size >= 900_000)
-                }) =>
-            {
-                None
-            }
+            Some("never") if window.is_some_and(|size| size >= 900_000) => None,
             _ => Some(400_000),
         })
     }
@@ -673,7 +842,14 @@ impl Actor {
             .map(str::to_owned);
         let resume =
             native.is_some() && self.state.get("claudeStarted") == Some(&Value::Bool(true));
+        // A new conversation counts its cost from nothing, and has the instructions it's given now.
+        if !resume {
+            self.state.remove("claudeCost");
+            self.state
+                .insert("claudeTold".into(), Value::String(instructions.to_owned()));
+        }
         let native = native.map_or_else(unique_id, Ok)?;
+        let sign_in = self.program.sign_in_mark().await;
         let start = tokio::task::spawn_blocking(move || {
             turn_launch(
                 program, session, directory, provider, native, resume, compact_at, plan,
@@ -684,6 +860,7 @@ impl Actor {
             .start(&self.program.holder_binary, start)
             .await?;
         let mut pipe = Pipe::new(controller, false);
+        pipe.sign_in = sign_in;
         match pipe.call(initialize(instructions)).await {
             Ok(wire::ReplyBody::Success {
                 pending_permission_requests,
@@ -696,6 +873,10 @@ impl Actor {
                         (
                             "claudeInstructions".into(),
                             Value::String(instructions.to_owned()),
+                        ),
+                        (
+                            "claudeSignIn".into(),
+                            pipe.sign_in.clone().map_or(Value::Null, Value::String),
                         ),
                     ]))
                     .await?;
@@ -819,12 +1000,18 @@ impl Actor {
                 if let Some(pipe) = &mut self.pipe {
                     let _ = pipe.input.bye().await;
                 }
-                self.ended(true).await
+                self.ended().await
             }
             Output::Prepared { prepared } => {
                 if let Some(reply) = self.prepare.take() {
                     if prepared {
                         self.pipe.take();
+                        if let Some(turn) = self.running.take() {
+                            *self
+                                .handed
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = Some(turn.sink);
+                        }
                         self.closing = true;
                         let _ = reply.send(Ok(()));
                     } else {
@@ -835,7 +1022,7 @@ impl Actor {
                 }
                 Ok(())
             }
-            _ => self.ended(false).await,
+            _ => self.ended().await,
         }
     }
 
@@ -859,7 +1046,14 @@ impl Actor {
                 self.cancel(&request_id).await?
             }
             Ok(wire::Frame::ControlResponse { response }) => {
-                if self.pipe.as_ref().and_then(|pipe| pipe.reconnect.as_ref())
+                if let Some(reply) = self.pending.remove(&response.request_id) {
+                    let _ = reply.send(match response.body {
+                        wire::ReplyBody::Success { response, .. } => Ok(response),
+                        wire::ReplyBody::Error => {
+                            Err(io::Error::other("Claude Code didn't do that."))
+                        }
+                    });
+                } else if self.pipe.as_ref().and_then(|pipe| pipe.reconnect.as_ref())
                     == Some(&response.request_id)
                 {
                     self.reconnected(response.body).await?;
@@ -870,6 +1064,7 @@ impl Actor {
                     pipe.said.forget();
                 }
                 let message: Value = serde_json::from_str(line)?;
+                self.tasks.frame(&message);
                 self.message(sequence, replay, &message).await?;
             }
             Err(_) => {}
@@ -898,6 +1093,7 @@ impl Actor {
         else {
             let pipe = self.pipe.take().expect("reconnecting process");
             let _ = pipe.stop().await;
+            self.tasks.gone();
             return Err(io::Error::other(
                 "Claude Code couldn't recover its open tool requests.",
             ));
@@ -917,6 +1113,15 @@ impl Actor {
     }
 
     async fn message(&mut self, sequence: u64, replay: bool, message: &Value) -> io::Result<()> {
+        // Where the plan's limits stand counts for the sign-in this Claude Code started under, while
+        // it's still the one signed in (one from before a sign-in changed counts for no one).
+        let heard_under = if message["type"] == "rate_limit_event" && self.running.is_some() {
+            let started = self.pipe.as_ref().and_then(|pipe| pipe.sign_in.clone());
+            let now = self.program.sign_in_mark().await;
+            Some((started == now).then_some(started))
+        } else {
+            None
+        };
         let Some(turn) = &mut self.running else {
             return Ok(());
         };
@@ -929,9 +1134,34 @@ impl Actor {
         let events =
             turn.projection
                 .frame(message, &turn.model, &mut self.state, &mut self.noticed);
+        // A new conversation (its first, its /clear) or one just summarized has the
+        // instructions it was started with.
+        let main = !message["parent_tool_use_id"].is_string();
+        let renewed = match (message["type"].as_str(), message["subtype"].as_str()) {
+            (Some("system"), Some("init")) => {
+                prior_state.get("claudeStarted") != Some(&Value::Bool(true))
+                    || prior_state.get("claudeSession") != message.get("session_id")
+            }
+            (Some("conversation_reset"), _) => true,
+            (Some("system"), Some("compact_boundary")) => main,
+            _ => false,
+        };
+        if renewed && let Some(opened) = &self.instructions {
+            self.state
+                .insert("claudeTold".into(), Value::String(opened.clone()));
+        }
         if self.state != prior_state {
             turn.sink.save_state(self.state.clone()).await?;
         }
+        let mut events = events;
+        events.retain_mut(|event| match (event, &heard_under) {
+            (TurnEvent::PlanLimit(reading), Some(Some(sign_in))) => {
+                reading.sign_in = sign_in.clone();
+                true
+            }
+            (TurnEvent::PlanLimit(_), _) => false,
+            _ => true,
+        });
         let count = events.len() as u32;
         for (ordinal, event) in events.into_iter().enumerate() {
             turn.sink
@@ -1069,6 +1299,15 @@ impl Actor {
             tokio::task::spawn_blocking(move || program.turn_away()).await?;
         }
         let keep = missed.is_empty() && !turned_away;
+        // What changed in its instructions was said with its message: told, once it took it.
+        if let Some(told) = &turn.told
+            && (turn.took_prompt
+                || !matches!(outcome, Outcome::Failed(_) | Outcome::AgentExited(_)))
+        {
+            self.state
+                .insert("claudeTold".into(), Value::String(told.clone()));
+            turn.sink.save_state(self.state.clone()).await?;
+        }
         turn.sink
             .event(envelope(
                 position,
@@ -1085,13 +1324,17 @@ impl Actor {
         }
         if !keep && let Some(pipe) = self.pipe.take() {
             let _ = pipe.stop().await;
+            self.tasks.gone();
         }
         Ok(())
     }
 
-    async fn ended(&mut self, exited: bool) -> io::Result<()> {
+    async fn ended(&mut self) -> io::Result<()> {
+        // What it left running went with it.
+        self.tasks.gone();
+        self.pending.clear();
         self.replay_caught_up().await?;
-        let last = self.pipe.take().and_then(|mut pipe| pipe.said.last(exited));
+        let last = self.pipe.take().and_then(|pipe| pipe.said.last());
         let outcome = if self.running.as_ref().is_some_and(|turn| turn.stopping) {
             Outcome::Interrupted
         } else {
@@ -1112,6 +1355,7 @@ impl Actor {
         let stopped = self.running.as_ref().is_some_and(|turn| turn.stopping);
         if stopped && let Some(pipe) = self.pipe.take() {
             let _ = pipe.stop().await;
+            self.tasks.gone();
         }
         self.finish(
             if stopped {

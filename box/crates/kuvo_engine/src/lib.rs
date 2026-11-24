@@ -37,6 +37,7 @@ mod transcript;
 mod turns;
 mod typed;
 mod waiting;
+mod bot_port;
 mod wake_port;
 mod worktree_notes;
 
@@ -73,7 +74,8 @@ pub use external_asks::{
     ExternalReply, ExternalWaiting,
 };
 pub use launch::pinned_version;
-pub use lifetime::{Engine, State, Timing};
+pub use lifetime::{Engine, EngineEvent, State, Timing};
+pub use queue::limit::{limit_reached, reset_time, resets_in};
 pub use model_preferences::{ModelStar, ModelStarSource, StarSave};
 pub use models::ModelSpeed;
 pub use notes::{NoteEdits, NoteWriter};
@@ -89,6 +91,7 @@ pub use session_move::{LetterDelivery, LetterPrompt, LetterText, MoveEngineError
 pub use start_session::Permission as SessionPermission;
 pub use transcript::{TranscriptError, TranscriptScope};
 pub use waiting::PeerWaiting;
+pub use bot_port::BotEngine;
 pub use wake_port::{Delivered as WakeDelivered, Unreachable, WAKE_FROM, WAKE_MARKER, WakeEngine};
 pub use worktree_notes::WorktreeConversation;
 

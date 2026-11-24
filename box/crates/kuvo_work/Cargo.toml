@@ -14,6 +14,8 @@ base64 = "0.22"
 filetime = "0.2"
 futures-core = "0.3"
 getrandom = "0.4"
+hex = "0.4"
+hostname = "0.4"
 http = "1"
 http-body-util = "0.1"
 icu_collator = "2"
@@ -23,6 +25,7 @@ jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 kuvo_peers = { path = "../kuvo_peers" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
+kuvo_services = { path = "../kuvo_services" }
 kuvo_setup = { path = "../kuvo_setup" }
 kuvo_store = { path = "../kuvo_store" }
 kuvo_wire = { path = "../kuvo_wire" }
@@ -36,6 +39,7 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 unicode-normalization = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
 unicode-segmentation = "1"
 url = "2"
 
