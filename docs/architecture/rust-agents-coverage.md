@@ -170,6 +170,13 @@ different words from the TypeScript model rule (engine start, 3.2), and
 wake-up notes on a coding agent's conversation wait for the shared note
 writer.
 
+Each agent's native state lives in its own slot of the bridge's
+`agent.json` (`threads.<provider>.state`), beside the inbox, Undo notes
+and the other agents' slots. A turn opens with its agent's slot, and a
+checkpoint rewrites only that slot. A conversation from before slots
+gives its single state to the agent that wrote its last reply, as the
+bridge does, the first time the record is saved.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.

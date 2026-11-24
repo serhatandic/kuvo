@@ -413,7 +413,11 @@ impl Service {
         let entry = roster.find(&provider).ok_or_else(|| {
             io::Error::new(ErrorKind::NotFound, "That coding-agent account isn't here.")
         })?;
-        let context = self.store.context(session).await?.ok_or_else(|| {
+        let context = self
+            .store
+            .context(session, &input.model.provider)
+            .await?
+            .ok_or_else(|| {
             io::Error::new(ErrorKind::NotFound, "That coding-agent session isn't here.")
         })?;
         policy.directory = context.directory.clone();
@@ -437,7 +441,13 @@ impl Service {
                 .await?;
         let asks = self.asks.for_turn(session.into(), input.id.clone());
         let (sink, writes) =
-            ResidentSink::channel(session.into(), self.store.clone(), asks, policy.clone());
+            ResidentSink::channel(
+                session.into(),
+                input.model.provider.clone(),
+                self.store.clone(),
+                asks,
+                policy.clone(),
+            );
         let id = input.id.clone();
         let turn = RunningTurn::launch(thread, input, sink, writes, writer);
         Ok(Live {

@@ -34,7 +34,7 @@ test("the resident writes and interrupts a turn through its registered stand-in 
       assert.deepEqual(first.map(row => row.type), ["user", "assistant", "idle"]);
       assert.equal(first[1].content[0].text, "Fixture received hello");
       assert.equal(first[2].outcome, "succeeded");
-      assert.equal(readJSON(path.join(folder(home), "agent.json")).nativeID, "fixture-native");
+      assert.equal(readJSON(path.join(folder(home), "agent.json")).threads["codex-cli"].state.nativeID, "fixture-native");
       await until(async () => {
         const answer = await call("POST", "/prompt", { id: "msg_fixture_next", text: "wait for interrupt" });
         assert.ok([200, 409].includes(answer.status), answer.text);
