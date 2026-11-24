@@ -30,6 +30,111 @@ const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
 const DEPARTURE: ObjectFormat = ObjectFormat::additive("Moved conversation");
 const RECENT_DEPARTURE: u64 = 2 * 24 * 60 * 60_000;
 const HELD: &str = "This record is held while its owner changes.";
+pub(crate) const MOVING: &str = "It’s moving to another computer. Try again once it’s there.";
+
+pub(crate) struct ActionFence {
+    pub held: bool,
+    pub elsewhere: Option<(String, String)>,
+}
+
+pub(crate) fn moved_elsewhere(computer: &str, name: &str) -> Refusal {
+    let clean = name
+        .replace(
+            |c: char| {
+                matches!(
+                    c,
+                    '\u{0000}'..='\u{001f}'
+                        | '\u{007f}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+            },
+            " ",
+        )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let shown = if clean.is_empty() {
+        "another of your computers"
+    } else {
+        clean.as_str()
+    };
+    Refusal::json(
+        StatusCode::CONFLICT,
+        json!({
+            "message": format!("It’s on {shown} now. Change it there."),
+            "computer": computer,
+        }),
+    )
+}
+
+pub(crate) fn check_action(fence: &ActionFence) -> Result<(), Refusal> {
+    if let Some((computer, name)) = &fence.elsewhere {
+        return Err(moved_elsewhere(computer, name));
+    }
+    if fence.held {
+        return Err(Refusal::new(StatusCode::CONFLICT, HELD));
+    }
+    Ok(())
+}
+
+pub(crate) async fn action_state(engine: &Engine, session: &str) -> Result<ActionFence, Refusal> {
+    let mut elsewhere = None;
+    let mut held = false;
+    if let Some(authority) = &engine.ownership
+        && let Ok(scope) = authority.scope(session, None)
+    {
+        held |= scope.held;
+        if let Some(owner) = scope.owner
+            && !owner.local
+            && let Some(key) = owner.key
+        {
+            let computer = kuvo_wire::keys::encode(&key);
+            let name = if owner.name == computer {
+                String::new()
+            } else {
+                owner.name
+            };
+            elsewhere = Some((computer, name));
+        }
+    }
+    let run = engine.home.join("run");
+    let target = session.to_owned();
+    let disk = tokio::task::spawn_blocking(move || {
+        Ok::<_, io::Error>((
+            journal_held(&run, &target, None, false)?,
+            recent_departure(&run, &target)?,
+        ))
+    })
+    .await;
+    let (disk_held, departure) = match disk {
+        Ok(Ok(found)) => found,
+        Ok(Err(error)) => return Err(fence_failure(error)),
+        Err(error) => return Err(fence_failure(error)),
+    };
+    held |= disk_held;
+    if elsewhere.is_none()
+        && let Some(computer) = departure
+    {
+        let name = engine
+            .ownership
+            .as_ref()
+            .and_then(|authority| {
+                let key = kuvo_wire::keys::decode_exact(&computer)?;
+                authority
+                    .members()
+                    .into_iter()
+                    .find(|member| member.key == Some(key))
+                    .map(|member| member.name)
+            })
+            .filter(|name| name != &computer)
+            .unwrap_or_default();
+        elsewhere = Some((computer, name));
+    }
+    Ok(ActionFence { held, elsewhere })
+}
 
 pub(crate) fn refused(status: StatusCode, body: &Value) -> bool {
     status == StatusCode::CONFLICT && body["message"].as_str() == Some(HELD)
@@ -70,10 +175,13 @@ struct Fence {
     id: String,
     thing: String,
     role: String,
+    stage: Option<String>,
     sessions: Vec<String>,
     step: Option<String>,
     failed: Option<String>,
     activation: Option<serde::de::IgnoredAny>,
+    #[serde(default, rename = "queueSettled")]
+    queue_settled: bool,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +198,22 @@ pub(crate) async fn admit(
     session: &str,
     activating: Option<&str>,
 ) -> Result<PromptWrite, Refusal> {
+    admit_write(engine, session, activating, false).await
+}
+
+pub(crate) async fn admit_queue_hold(
+    engine: &Engine,
+    session: &str,
+) -> Result<PromptWrite, Refusal> {
+    admit_write(engine, session, None, true).await
+}
+
+async fn admit_write(
+    engine: &Engine,
+    session: &str,
+    activating: Option<&str>,
+    queue_hold: bool,
+) -> Result<PromptWrite, Refusal> {
     let run = engine.home.join("run");
     let session = session.to_owned();
     let activating = activating.map(str::to_owned);
@@ -104,7 +228,7 @@ pub(crate) async fn admit(
         ));
         files::write_new(&marker, &[])?;
         let write = PromptWrite(marker);
-        if frozen(&run, &session, activating.as_deref())? {
+        if frozen(&run, &session, activating.as_deref(), queue_hold)? {
             Ok::<_, io::Error>(None)
         } else {
             Ok(Some(write))
@@ -136,7 +260,22 @@ fn entries(path: &Path) -> io::Result<impl Iterator<Item = io::Result<fs::DirEnt
     Ok(read.into_iter().flatten())
 }
 
-fn frozen(run: &Path, session: &str, activating: Option<&str>) -> io::Result<bool> {
+fn frozen(
+    run: &Path,
+    session: &str,
+    activating: Option<&str>,
+    queue_hold: bool,
+) -> io::Result<bool> {
+    Ok(journal_held(run, session, activating, queue_hold)?
+        || recent_departure(run, session)?.is_some())
+}
+
+fn journal_held(
+    run: &Path,
+    session: &str,
+    activating: Option<&str>,
+    queue_hold: bool,
+) -> io::Result<bool> {
     let root = run.join("moves");
     for entry in entries(&root)? {
         let entry = entry?;
@@ -165,15 +304,23 @@ fn frozen(run: &Path, session: &str, activating: Option<&str>) -> io::Result<boo
             && row.role == "to"
             && row.activation.is_some()
             && member;
-        if !own_activation && (row.thing == session || member) {
+        let settling = queue_hold
+            && row.role == "from"
+            && row.stage.as_deref() == Some("holding")
+            && !row.queue_settled;
+        if !own_activation && !settling && (row.thing == session || member) {
             return Ok(true);
         }
     }
-    let Some(raw) = files::read(&root.join("moved.json"))? else {
-        return Ok(false);
+    Ok(false)
+}
+
+fn recent_departure(run: &Path, session: &str) -> io::Result<Option<String>> {
+    let Some(raw) = files::read(&run.join("moves/moved.json"))? else {
+        return Ok(None);
     };
     let Ok(Value::Array(rows)) = serde_json::from_slice(&raw) else {
-        return Ok(false);
+        return Ok(None);
     };
     let now = crate::disk::now();
     for row in rows.into_iter().filter(Value::is_object) {
@@ -185,10 +332,10 @@ fn frozen(run: &Path, session: &str, activating: Option<&str>) -> io::Result<boo
             && row.queue.is_none()
             && now.saturating_sub(row.at) < RECENT_DEPARTURE
         {
-            return Ok(true);
+            return Ok(Some(row.key));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 fn write_prefix(session: &str) -> String {
@@ -224,8 +371,29 @@ pub enum MoveEngineError {
     InvalidTree,
     MissingOwnership,
     Busy,
+    WaitingQueue,
+    UnreadableQueue(Option<io::Error>),
     Storage(io::Error),
     Upstream(Box<dyn std::error::Error + Send + Sync>),
+}
+
+pub struct LetterText {
+    pub text: String,
+    pub metadata: Option<Value>,
+}
+
+pub struct LetterPrompt {
+    pub id: String,
+    pub immediate: LetterText,
+    pub when_queued: Option<LetterText>,
+    pub from: String,
+    pub words: String,
+    pub steer: bool,
+}
+
+pub enum LetterDelivery {
+    Accepted,
+    Queued(String),
 }
 
 impl fmt::Display for MoveEngineError {
@@ -237,6 +405,12 @@ impl fmt::Display for MoveEngineError {
                 out.write_str("The conversation copy has no import ownership receipt")
             }
             Self::Busy => out.write_str("Its conversation is still running."),
+            Self::WaitingQueue => {
+                out.write_str("The conversation still has messages on their way.")
+            }
+            Self::UnreadableQueue(_) => {
+                out.write_str("A message waiting for the conversation couldn’t be read.")
+            }
             Self::Upstream(error) => write!(out, "{error}"),
             Self::Storage(error) => write!(out, "{error}"),
         }
@@ -248,6 +422,7 @@ impl std::error::Error for MoveEngineError {
         match self {
             Self::Upstream(error) => Some(error.as_ref()),
             Self::Storage(error) => Some(error),
+            Self::UnreadableQueue(Some(error)) => Some(error),
             _ => None,
         }
     }
@@ -324,13 +499,8 @@ impl SessionMove {
     pub async fn deliver_letter(
         &self,
         session: &str,
-        id: String,
-        text: String,
-        from: String,
-        words: String,
-        steer: bool,
-        metadata: Option<Value>,
-    ) -> Result<bool, Refusal> {
+        letter: LetterPrompt,
+    ) -> Result<LetterDelivery, Refusal> {
         let _turn = self.engine.turn(session).await;
         let _admitted = admit(&self.engine, session, None).await?;
         let queue = self
@@ -339,38 +509,57 @@ impl SessionMove {
             .get(session)
             .await
             .map_err(fence_failure)?;
-        if queue.contains(&id) {
-            return Ok(true);
+        if queue.contains(&letter.id) {
+            return Ok(LetterDelivery::Queued(
+                queue.letter_wait_reason(&self.engine.home),
+            ));
         }
-        if queue::reached(&self.engine, &self.lease, session, &id)
+        if queue::reached(&self.engine, queue::Target::Engine(&self.lease), session, &letter.id)
             .await
             .map_err(fence_failure)?
         {
-            return Ok(false);
+            return Ok(LetterDelivery::Accepted);
         }
-        let keep = queue.is_paused();
-        let prompt = queue::Prompt {
-            id,
-            text,
-            delivery: if steer && !keep {
-                queue::Delivery::Steer
-            } else {
-                queue::Delivery::Queue
-            },
-            metadata,
+        let mut prompt = queue::Prompt {
+            id: letter.id,
+            text: letter.immediate.text,
+            delivery: queue::Delivery::Queue,
+            metadata: letter.immediate.metadata,
             files: vec![],
         };
+        let queued = letter.when_queued.map(|body| queue::Prompt {
+            text: body.text,
+            metadata: body.metadata,
+            ..prompt.clone()
+        });
         if self
             .engine
             .queues
-            .keep(session, &prompt, Some(&words), Some(from), None, &[])
+            .keep(
+                session,
+                queued.as_ref().unwrap_or(&prompt),
+                Some(&letter.words),
+                Some(letter.from),
+                None,
+                &[],
+            )
             .await
             .map_err(fence_failure)?
         {
-            return Ok(true);
+            let reason = self
+                .engine
+                .queues
+                .get(session)
+                .await
+                .unwrap_or(queue)
+                .letter_wait_reason(&self.engine.home);
+            return Ok(LetterDelivery::Queued(reason));
         }
-        crate::send::post(&self.engine, &self.lease, session, &prompt).await?;
-        Ok(false)
+        if letter.steer {
+            prompt.delivery = queue::Delivery::Steer;
+        }
+        crate::send::post(&self.engine, queue::Target::Engine(&self.lease), session, &prompt).await?;
+        Ok(LetterDelivery::Accepted)
     }
 
     pub async fn ready(&self) -> Result<(), MoveEngineError> {
@@ -462,9 +651,7 @@ impl SessionMove {
         &self,
         sessions: &[String],
     ) -> Result<std::collections::BTreeMap<String, Value>, MoveEngineError> {
-        queue::pack_move(&self.engine, &self.lease, sessions)
-            .await
-            .map_err(MoveEngineError::Storage)
+        queue::pack_move(&self.engine, &self.lease, sessions).await
     }
 
     pub async fn place_queues(
@@ -489,7 +676,7 @@ impl SessionMove {
         unpaused: &[String],
     ) -> Result<(), MoveEngineError> {
         for session in unpaused {
-            queue::resume_move(&self.engine, &self.lease, session, move_id)
+            queue::resume_move(&self.engine, queue::Target::Engine(&self.lease), session, move_id)
                 .await
                 .map_err(|error| {
                     MoveEngineError::Storage(io::Error::other(format!(

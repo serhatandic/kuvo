@@ -34,7 +34,7 @@ test("the resident writes and interrupts a turn through its registered stand-in 
       assert.deepEqual(first.map(row => row.type), ["user", "assistant", "idle"]);
       assert.equal(first[1].content[0].text, "Fixture received hello");
       assert.equal(first[2].outcome, "succeeded");
-      assert.equal(readJSON(path.join(folder(home), "agent.json")).nativeID, "fixture-native");
+      assert.equal(readJSON(path.join(folder(home), "agent.json")).threads["codex-cli"].state.nativeID, "fixture-native");
       await until(async () => {
         const answer = await call("POST", "/prompt", { id: "msg_fixture_next", text: "wait for interrupt" });
         assert.ok([200, 409].includes(answer.status), answer.text);
@@ -51,5 +51,115 @@ test("the resident writes and interrupts a turn through its registered stand-in 
         return rows.at(-1)?.outcome === "interrupted" && rows;
       }, "The stopped turn did not reach the saved conversation.");
       assert.deepEqual(stopped.map(row => row.type), ["user", "assistant", "idle", "user", "assistant", "idle"]);
+    });
+  });
+
+test("a new Block keeps an outgoing approval from releasing a pending action",
+  { timeout: 30000 }, t => {
+    if (boxBinary().typescript) {
+      t.skip("The stand-in implements the Rust adapter contract.");
+      return;
+    }
+    const id = "ses_fixture_approval";
+    const route = `kuvo/agents/api/session/${id}`;
+    const headers = { "x-kuvo-from": "app" };
+    return withAgentFixture(t, home => {
+      write(path.join(home, "agents", "sessions", id, "session.json"), JSON.stringify({
+        id, title: "Fixture approval", projectID: "fixture", agent: "build", location: { directory: home },
+        model: { providerID: "codex-cli", id: "stand-in" },
+        time: { created: 1, updated: 1 },
+        permissions: [{ action: "edit", resource: "*", effect: "ask" }],
+      }));
+    }, async (listener, home) => {
+      const call = (method, tail, body) => request(listener, method, route + tail, body, headers);
+      const input = await call("POST", "/prompt", { id: "msg_fixture_permission", text: "wait for approval" });
+      assert.equal(input.status, 200, input.text);
+      const ask = await until(async () => {
+        const answer = await call("GET", "/permission");
+        assert.equal(answer.status, 200, answer.text);
+        return answer.json.data[0];
+      }, "The stand-in did not reach its permission ask.");
+      assert.equal(ask.action, "edit");
+      assert.deepEqual(ask.resources, ["fixture.txt"]);
+      const active = await until(async () => {
+        const answer = await request(listener, "GET", "kuvo/sessions/list", undefined, headers);
+        const session = answer.json?.sessions?.[id];
+        return session?.running && session;
+      }, "The current agent turn did not reach the shared session list.");
+      assert.equal(active.title, "Fixture approval");
+      write(path.join(home, "box", "opencode.json"), JSON.stringify({
+        policies: [{ action: "tool.use", resource: "edit:fixture.txt", effect: "deny" }],
+      }));
+      const reply = `/permission/${ask.id}/reply`;
+      const denied = await call("POST", reply, { decision: "once" });
+      assert.equal(denied.status, 403, denied.text);
+      assert.equal((await call("GET", "/permission")).json.data[0].id, ask.id);
+      const rejected = await call("POST", reply, { decision: "reject" });
+      assert.equal(rejected.status, 200, rejected.text);
+      const saved = await until(async () => {
+        const answer = await call("GET", "/message?order=asc");
+        const rows = answer.json.data;
+        return rows.at(-1)?.type === "idle" && rows;
+      }, "The turn did not settle after refusal.");
+      assert.equal(saved[1].content[0].text, "Fixture received wait for approval; refused");
+      assert.deepEqual((await call("GET", "/permission")).json.data, []);
+      assert.equal((await call("POST", reply, { decision: "once" })).status, 404);
+    });
+  });
+
+test("the shared send, queue, Stop and Resume routes work on a coding agent's conversation",
+  { timeout: 45000 }, t => {
+    if (boxBinary().typescript) {
+      t.skip("The stand-in implements the Rust adapter contract.");
+      return;
+    }
+    const id = "ses_fixture_queue";
+    const headers = { "x-kuvo-from": "app" };
+    return withAgentFixture(t, home => {
+      write(path.join(home, "agents", "sessions", id, "session.json"), JSON.stringify({
+        id, projectID: "fixture", agent: "build", location: { directory: home },
+        model: { providerID: "codex-cli", id: "stand-in" },
+        time: { created: 1, updated: 1 },
+      }));
+    }, async listener => {
+      const call = (method, route, body) => request(listener, method, `kuvo/sessions/${id}${route}`, body, headers);
+      const rows = async () => (await request(listener, "GET",
+        `kuvo/agents/api/session/${id}/message?order=asc`, undefined, headers)).json.data;
+      const sent = await call("POST", "/send", { id: "msg_queueFirst", words: "wait for interrupt" });
+      assert.equal(sent.status, 200, sent.text);
+      await until(async () => (await rows()).some(row =>
+        row.content?.[0]?.text === "Fixture received wait for interrupt"), "The first turn didn't start.");
+      const queued = await call("POST", "/send", { id: "msg_queueSecond", words: "after it", delivery: "queue" });
+      assert.equal(queued.status, 200, queued.text);
+      const line = await until(async () => {
+        const answer = await call("GET", "/queue?items=1");
+        assert.equal(answer.status, 200, answer.text);
+        return answer.json.items?.length && answer.json;
+      }, "The queued message didn't show in the queue.");
+      assert.deepEqual(line.items.map(item => item.id), ["msg_queueSecond"]);
+      const stopped = await call("POST", "/stop", {});
+      assert.equal(stopped.status, 200, stopped.text);
+      await until(async () => (await rows()).at(-1)?.outcome === "interrupted", "Stop didn't end the turn.");
+      const held = await until(async () => {
+        const answer = (await call("GET", "/queue?items=1")).json;
+        return answer.paused && answer;
+      }, "Stop didn't hold the queue.");
+      assert.deepEqual(held.items.map(item => item.id), ["msg_queueSecond"]);
+      assert.equal((await rows()).filter(row => row.type === "user").length, 1);
+      const resumed = await call("POST", "/queue/resume", {});
+      assert.equal(resumed.status, 200, resumed.text);
+      const after = await until(async () => {
+        const saved = await rows();
+        return saved.at(-1)?.type === "idle" && saved.at(-1)?.outcome === "succeeded" && saved;
+      }, "Resume didn't send the held message.");
+      assert.deepEqual(after.filter(row => row.type === "user").map(row => row.id),
+        ["msg_queueFirst", "msg_queueSecond"]);
+      assert.equal(after.at(-2).content[0].text, "Fixture received after it");
+      // (A read answers what the last one saw, and looks again.)
+      const empty = await until(async () => {
+        const answer = (await call("GET", "/queue?items=1")).json;
+        return answer.items?.length === 0 && answer;
+      }, "The sent message stayed in the queue.");
+      assert.equal(empty.paused, false);
     });
   });

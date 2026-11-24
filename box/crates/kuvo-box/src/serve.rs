@@ -108,6 +108,7 @@ pub async fn run(
         resident_agents.is_some(),
     )?;
     let vault_machine = (kind != ComputerKind::Mac).then(|| roster.name.clone());
+    let bot_name = roster.name.clone();
     let mut peers = ResidentPeers::start(
         home,
         roster,
@@ -164,13 +165,27 @@ pub async fn run(
             location,
         );
         agents::turns::restore(&runs, &sessions, home, accounts.adopted_turns()).await;
-        agents::turns::register(runs, sessions, home.to_owned(), &mut routes);
-        engine.with_agent_model_source(Arc::new(agents::Models {
-            runtime,
-            agents: accounts,
-        }))
-    } else {
+        agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
+        let inventory = agents::sessions::Inventory {
+            store: sessions.clone(),
+            running: Some(runs.clone()),
+            home: home.to_owned(),
+            agents: Some(accounts.clone()),
+        };
+        agents::turns::register(runs, &mut routes);
         engine
+            .with_agent_model_source(Arc::new(agents::Models {
+                runtime,
+                agents: accounts,
+            }))
+            .with_agent_sessions(Arc::new(inventory))
+    } else {
+        engine.with_agent_sessions(Arc::new(agents::sessions::Inventory {
+            store: sessions,
+            running: None,
+            home: home.to_owned(),
+            agents: None,
+        }))
     };
     if kind == ComputerKind::Machine {
         let setup = setup.handle();
@@ -197,7 +212,7 @@ pub async fn run(
     let owner_requests = if let Ok(requests) = owners.incoming() {
         peers.advertise_engine_submissions().await?;
         Some(tokio::spawn(super::session_ownership::serve(
-            owners,
+            owners.clone(),
             requests,
             engine.clone(),
             sessions.clone(),
@@ -210,9 +225,39 @@ pub async fn run(
         kuvo_peers::memory_read::Handle::new(peers.reader(), peers.relay_handle(), move || {
             accepted.ownership_state().id
         });
+    let work_queue = kuvo_work::queue::register(
+        &mut routes,
+        home,
+        peers.reader(),
+        sessions.clone(),
+        engine.clone(),
+        setup.handle(),
+        peers.relay_handle(),
+        memory.clone(),
+        owners.clone(),
+    )
+    .await?;
+    let queue_reads = work_queue.peer_reads();
     let search_engine = engine.clone();
-    let memory_reads =
-        memory.serve(move |_, read| super::setup_search::answer(search_engine.clone(), read));
+    let read_owner = kuvo_peers::owner_read::Service::new(
+        peers.reader(),
+        owners,
+        memory.clone(),
+        engine.clone(),
+    );
+    read_owner.register(&mut routes);
+    let memory_reads = memory.serve(move |_, read| {
+        let owner = read_owner.clone();
+        let queues = queue_reads.clone();
+        let engine = search_engine.clone();
+        async move {
+            match read.area.as_deref() {
+                Some("ownership") => owner.answer(read).await,
+                Some("search") => super::setup_search::answer(engine, read).await,
+                _ => queues.answer(read).await,
+            }
+        }
+    });
     engine.register_setup_search(
         Arc::new(super::setup_search::SetupSearch {
             peers: peers.reader(),
@@ -223,7 +268,9 @@ pub async fn run(
     if memory_reads.is_some() {
         peers.advertise_conversation_search().await?;
     }
-    setup.handle().register(&mut routes);
+    setup
+        .handle()
+        .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
     kuvo_services::files::register(
         &mut routes,
@@ -234,6 +281,20 @@ pub async fn run(
         },
     );
     kuvo_services::git::register(&mut routes, home.to_owned());
+    let wakes = kuvo_work::wakes::Wakes::new(home, engine.clone());
+    wakes.register(&mut routes);
+    let bots = kuvo_work::bots::Bots::new(
+        kuvo_work::bots::Setting {
+            home: home.to_owned(),
+            account: account.clone(),
+            name: bot_name,
+            is_mac: kind == ComputerKind::Mac,
+        },
+        wakes.clone(),
+        peers.reader(),
+        sessions.clone(),
+    );
+    bots.register(&mut routes);
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -332,7 +393,14 @@ pub async fn run(
             }
         });
     }
-    let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
+    let session_source = tokio::spawn(publish_local_sessions(
+        home.join("run"),
+        peers,
+        sessions,
+        bots,
+        wakes.changes(),
+    ));
+    let firing = wakes.start();
     let finishing = setup.handle();
     let result = resident
         .serve(dispatcher, Arc::new(devices), async {
@@ -365,6 +433,7 @@ pub async fn run(
             Err(_) => eprintln!("Kuvo timed out checkpointing the coding agents."),
         }
     }
+    firing.stop().await;
     if let Some(updates) = updates {
         updates.stop().await;
     }
@@ -397,19 +466,30 @@ async fn publish_local_sessions(
     run: std::path::PathBuf,
     peers: Arc<ResidentPeers>,
     mut sessions: kuvo_engine::LocalSessions,
+    bots: kuvo_work::bots::Bots,
+    mut wakes: tokio::sync::watch::Receiver<u64>,
 ) {
     loop {
         if let Some(record) = sessions.latest_record()
             && let Ok(list) = serde_json::from_value(record)
         {
-            let run = run.clone();
-            if let Ok(mut local) = tokio::task::spawn_blocking(move || Local::load(&run)).await {
+            let (run, bots) = (run.clone(), bots.clone());
+            if let Ok(mut local) = tokio::task::spawn_blocking(move || {
+                let mut local = Local::load(&run);
+                local.bots = serde_json::to_value(bots.peer_activity())
+                    .and_then(serde_json::from_value)
+                    .ok();
+                local
+            })
+            .await
+            {
                 local.list = Some(list);
                 peers.local(local).await;
             }
         }
-        if !sessions.changed().await {
-            break;
+        tokio::select! {
+            changed = sessions.changed() => if !changed { break },
+            _ = wakes.changed() => {}
         }
     }
 }
@@ -432,7 +512,9 @@ fn info(
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
     features.push(kuvo_peers::memory_read::FEATURE);
+    features.push(kuvo_peers::owner_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
+    features.extend_from_slice(kuvo_work::wakes::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
     }

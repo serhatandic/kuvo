@@ -1,37 +1,71 @@
-//! The resident's live coding-agent sessions.
+//! The resident's live coding-agent sessions: their turns, and the line of
+//! messages waiting for each.
 
 use crate::{
     accounts::Provider,
-    live_asks::LiveAsks,
+    inbox::{Delivery, Input, InboxEvent},
+    live_asks::{Ask, AskKey, LiveAsks, Reply as AskReply},
     permissions::{
-        ConfigLocation, Policy,
+        Allowance, ConfigLocation, Policy, covers, remember,
         turn::{Settings, TurnRules},
     },
     resident::ResidentAgents,
-    session::{Prompt, Steer, TurnInput},
+    session::{Decision, Outcome, Prompt, Thread, TurnInput},
     session_store::SessionStore,
-    turn_projection::{Projection, user},
+    turn_projection::{Projection, record_failed_start},
     turn_runtime::RunningTurn,
     turn_sink::ResidentSink,
 };
+use serde_json::{Map, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, ErrorKind},
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
 };
 use tokio::{
-    sync::{mpsc, oneshot, watch},
+    sync::{broadcast, mpsc, oneshot, watch},
     task::JoinSet,
 };
 
+mod line;
+
 type Reply<T> = oneshot::Sender<io::Result<T>>;
+
+/// What became of a message taken back from the line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Cancelled {
+    Removed,
+    /// It isn't waiting any more.
+    Missing,
+    /// It's being handed to the agent, or Kuvo is checking whether it took it.
+    Busy,
+}
 
 enum Command {
     Start(Box<Start>),
     Find {
         session: String,
-        reply: Reply<Option<RunningTurn>>,
+        reply: Reply<Option<Live>>,
+    },
+    /// Refuse new turns while the conversation is deleted, and hand back the
+    /// turn to stop first.
+    Retire {
+        session: String,
+        reply: Reply<Option<Live>>,
+    },
+    Release {
+        session: String,
+    },
+    Line(line::Request),
+    /// A message handed to a turn: what its agent said.
+    Steered(Box<line::Steered>),
+    /// Uncertain handoffs looked at again.
+    Reconciled {
+        session: String,
+        retry: bool,
+        remaining: bool,
     },
 }
 
@@ -39,15 +73,71 @@ struct Start {
     session: String,
     input: TurnInput,
     policy: Policy,
-    reply: Reply<RunningTurn>,
+    note: Option<Map<String, Value>>,
+    /// The message as it came from the line, its row's words: one whose agent
+    /// can't start is still kept in the conversation, failed.
+    shown: Option<Prompt>,
+    reply: Option<Reply<RunningTurn>>,
 }
 
 #[derive(Clone)]
+struct Live {
+    turn: RunningTurn,
+    id: String,
+    rules: Arc<TurnRules>,
+    thread: Arc<dyn Thread>,
+    provider: String,
+}
+
+/// What a conversation is doing now.
+#[derive(Default)]
+enum Doing {
+    #[default]
+    Idle,
+    /// Its agent is getting ready for message `id`. `stop` once asked to
+    /// stop meanwhile.
+    Starting { stop: bool, id: String },
+    Running(Live),
+    Stopping(Live),
+}
+
+impl Doing {
+    fn live(&self) -> Option<&Live> {
+        match self {
+            Self::Running(live) | Self::Stopping(live) => Some(live),
+            _ => None,
+        }
+    }
+}
+
+/// The resident's state of one conversation, beside what's saved of it.
+#[derive(Default)]
+struct Conversation {
+    doing: Doing,
+    /// A Send Now or Resume waiting for the conversation to be free.
+    go: bool,
+    /// Its agent's process ended under the last turn: what waits goes on, in
+    /// order, once uncertain handoffs are settled.
+    continue_after_exit: bool,
+    /// Messages being handed to the running turn, and whether each was
+    /// taken back meanwhile.
+    handing: BTreeMap<String, Arc<AtomicBool>>,
+    retired: bool,
+    checking: bool,
+}
+
+/// How long a turn asked to stop is waited for before its conversation goes
+/// without it.
+const STOP_GRACE: Duration = Duration::from_secs(8);
+
+#[derive(Clone)]
 pub struct SessionRuns {
+    stop_grace: Duration,
     asks: LiveAsks,
     store: SessionStore,
     commands: mpsc::Sender<Command>,
     running: watch::Receiver<Arc<BTreeSet<String>>>,
+    events: broadcast::Sender<InboxEvent>,
 }
 
 impl SessionRuns {
@@ -59,6 +149,7 @@ impl SessionRuns {
     ) -> Self {
         let (commands, requests) = mpsc::channel(32);
         let (identities, running) = watch::channel(Arc::new(BTreeSet::new()));
+        let (events, _) = broadcast::channel(256);
         let asks = LiveAsks::start();
         let service = Service {
             agents,
@@ -66,18 +157,105 @@ impl SessionRuns {
             asks: asks.clone(),
             identities,
             settings: Settings { home, location },
+            events: events.clone(),
+            commands: commands.downgrade(),
         };
         tokio::spawn(service.run(requests));
         Self {
+            stop_grace: STOP_GRACE,
             asks,
             store,
             commands,
             running,
+            events,
         }
+    }
+
+    /// Wait this long for a turn asked to stop, rather than the usual eight
+    /// seconds.
+    pub fn with_stop_grace(mut self, grace: Duration) -> Self {
+        self.stop_grace = grace;
+        self
     }
 
     pub fn asks(&self) -> &LiveAsks {
         &self.asks
+    }
+
+    /// The line's changes, as clients are told them.
+    pub fn events(&self) -> broadcast::Receiver<InboxEvent> {
+        self.events.subscribe()
+    }
+
+    pub async fn reply_permission(
+        &self,
+        key: AskKey,
+        answer: Decision,
+        cancelled: impl Fn() -> bool,
+    ) -> io::Result<()> {
+        if cancelled() {
+            return Err(ErrorKind::Interrupted.into());
+        }
+        if answer == Decision::Reject {
+            return self.asks.reply(key, AskReply::Permission(answer)).await;
+        }
+        let ask = {
+            let pending = self.asks.pending();
+            let current = pending.borrow();
+            match current.get(&key) {
+                Some(Ask::Permission(ask)) => ask.clone(),
+                _ => return Err(ErrorKind::NotFound.into()),
+            }
+        };
+        let live = self
+            .find(key.session.clone())
+            .await?
+            .filter(|live| live.id == key.turn)
+            .ok_or(ErrorKind::NotFound)?;
+        live.rules.verify_reply(&ask).await?;
+        if cancelled() {
+            return Err(ErrorKind::Interrupted.into());
+        }
+        self.asks
+            .reply(key.clone(), AskReply::Permission(answer))
+            .await?;
+        if answer != Decision::Always {
+            return Ok(());
+        }
+        let saved = remember(&ask);
+        live.rules.remembered.send_if_modified(|allowed| {
+            if allowed.contains(&saved) {
+                return false;
+            }
+            allowed.push(saved.clone());
+            true
+        });
+        let others = {
+            let watched = self.asks.pending();
+            let pending = watched.borrow();
+            pending
+                .iter()
+                .filter_map(|(other, ask)| match ask {
+                    Ask::Permission(ask)
+                        if other.session == key.session
+                            && other.turn == key.turn
+                            && covers(&saved, ask) =>
+                    {
+                        Some((other.clone(), ask.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for (other, ask) in others {
+            if live.rules.verify_reply(&ask).await.is_ok() {
+                let _ = self
+                    .asks
+                    .reply(other, AskReply::Permission(Decision::Once))
+                    .await;
+            }
+        }
+        Ok(())
     }
 
     pub fn running(&self) -> Arc<BTreeSet<String>> {
@@ -90,50 +268,208 @@ impl SessionRuns {
         watch
     }
 
+    /// Start a turn directly, outside the line (a recovered turn).
     pub async fn run_turn(
         &self,
         session: String,
         input: TurnInput,
         policy: Policy,
     ) -> io::Result<RunningTurn> {
-        self.call(|reply| Command::Start(Box::new(Start {
+        self.call(|reply| {
+            Command::Start(Box::new(Start {
+                session,
+                input,
+                policy,
+                note: None,
+                shown: None,
+                reply: Some(reply),
+            }))
+        })
+        .await
+    }
+
+    /// Put a message in the conversation's line: into the turn under way
+    /// where its agent takes one partway, now when nothing runs, or after.
+    /// Sent twice, it goes once. `handoff` is the box's token for this
+    /// attempt; one whose handoff was cancelled is refused.
+    pub async fn prompt(
+        &self,
+        session: String,
+        input: Input,
+        handoff: Option<String>,
+    ) -> io::Result<()> {
+        self.line(|reply| line::Request::Prompt {
             session,
-            input,
-            policy,
+            input: Box::new(input),
+            handoff,
             reply,
-        })))
+        })
+        .await
+    }
+
+    /// Whether the conversation's transcript has this message.
+    pub async fn has_message(&self, session: &str, id: &str) -> io::Result<bool> {
+        self.store.has_message(session, id).await
+    }
+
+    /// The conversation's last `limit` rows, newest first.
+    pub async fn recent(&self, session: &str, limit: u32) -> io::Result<Vec<Value>> {
+        Ok(self
+            .store
+            .message_page(session, None, limit, crate::session_store::MessageOrder::NewestFirst)
+            .await?
+            .map(|page| page.messages)
+            .unwrap_or_default())
+    }
+
+    /// What waits in the conversation's line, as clients list it.
+    pub async fn inbox(&self, session: &str) -> io::Result<Option<Vec<Input>>> {
+        self.store.line(session).await
+    }
+
+    /// Steer (it goes next, and now if nothing runs) or queue a waiting
+    /// message. `into`: steered into the turn under way, where its agent
+    /// takes one partway.
+    pub async fn set_delivery(
+        &self,
+        session: String,
+        id: String,
+        delivery: Delivery,
+        into: bool,
+    ) -> io::Result<()> {
+        self.line(|reply| line::Request::SetDelivery {
+            session,
+            id,
+            delivery,
+            into,
+            reply,
+        })
+        .await
+    }
+
+    /// Take a waiting message back. `defer`: one being handed to the agent
+    /// is taken back if the agent doesn't take it.
+    pub async fn cancel_input(
+        &self,
+        session: String,
+        id: String,
+        defer: bool,
+    ) -> io::Result<Cancelled> {
+        self.line(|reply| line::Request::Cancel {
+            session,
+            id,
+            defer,
+            reply,
+        })
+        .await
+    }
+
+    /// Whether the conversation has this message, waiting or sent, written
+    /// to disk before answering.
+    pub async fn confirm_prompt(&self, session: String, id: String) -> io::Result<bool> {
+        self.line(|reply| line::Request::Confirm { session, id, reply })
+            .await
+    }
+
+    /// Keep a late arrival of this attempt from landing after a Delete. False
+    /// when the conversation already has the message.
+    pub async fn cancel_handoff(
+        &self,
+        session: String,
+        id: String,
+        token: String,
+    ) -> io::Result<bool> {
+        self.line(|reply| line::Request::CancelHandoff {
+            session,
+            id,
+            token,
+            reply,
+        })
         .await
     }
 
     pub async fn interrupt(&self, session: String) -> io::Result<bool> {
-        let Some(run) = self.find(session).await? else {
-            return Ok(false);
-        };
-        run.interrupt().await?;
-        Ok(true)
+        self.interrupt_and(session, false).await
     }
 
-    pub async fn steer(&self, session: String, prompt: Prompt) -> io::Result<Steer> {
-        let Some(run) = self.find(session.clone()).await? else {
-            return Ok(Steer::Declined);
-        };
-        let reply = run.steer(prompt.clone()).await?;
-        if reply == Steer::Accepted
-            && !self
-                .store
-                .write_messages(&session, vec![user(&prompt)])
-                .await?
-        {
-            return Err(io::Error::new(
-                ErrorKind::NotFound,
-                "That coding-agent session isn't here.",
-            ));
+    /// Stop the turn under way. `resume`: what you steered goes next (Send
+    /// Now); with nothing running, it starts now.
+    pub async fn interrupt_and(&self, session: String, resume: bool) -> io::Result<bool> {
+        let stopping = self
+            .line(|reply| line::Request::Interrupt {
+                session,
+                resume,
+                reply,
+            })
+            .await?;
+        match stopping {
+            line::Stopping::Turn(turn) => {
+                turn.interrupt().await?;
+                Ok(true)
+            }
+            line::Stopping::Starting => Ok(true),
+            line::Stopping::Nothing => Ok(false),
         }
-        Ok(reply)
     }
 
-    async fn find(&self, session: String) -> io::Result<Option<RunningTurn>> {
+    /// Delete a conversation as the bridge does: no turn starts meanwhile, the
+    /// running one stops first, and its subagents' conversations go with it
+    /// unless a fork's steps still show them. False when it wasn't here.
+    pub async fn delete(&self, session: String) -> io::Result<bool> {
+        Box::pin(self.delete_retired(session)).await
+    }
+
+    async fn delete_retired(&self, session: String) -> io::Result<bool> {
+        let live = self
+            .call(|reply| Command::Retire {
+                session: session.clone(),
+                reply,
+            })
+            .await?;
+        let deleted = async {
+            if let Some(live) = live {
+                // One that doesn't stop is given up on: what it says after
+                // can't bring the conversation back.
+                let stopping = async {
+                    let _ = live.turn.interrupt().await;
+                    let _ = live.turn.finished().await;
+                };
+                let _ = tokio::time::timeout(self.stop_grace, stopping).await;
+            }
+            let headers = self.store.headers().await?;
+            let children = headers
+                .iter()
+                .filter(|header| header.parent() == Some(session.as_str()))
+                .map(|header| header.id().to_owned())
+                .collect::<Vec<_>>();
+            for child in children {
+                let mut shown = false;
+                for other in &headers {
+                    if other.id() != session
+                        && other.id() != child
+                        && self.store.shows_subagent(other.id(), &child).await?
+                    {
+                        shown = true;
+                        break;
+                    }
+                }
+                if !shown {
+                    self.delete(child).await?;
+                }
+            }
+            self.store.delete(&session).await
+        }
+        .await;
+        let _ = self.commands.send(Command::Release { session }).await;
+        deleted
+    }
+
+    async fn find(&self, session: String) -> io::Result<Option<Live>> {
         self.call(|reply| Command::Find { session, reply }).await
+    }
+
+    async fn line<T>(&self, request: impl FnOnce(Reply<T>) -> line::Request) -> io::Result<T> {
+        self.call(|reply| Command::Line(request(reply))).await
     }
 
     async fn call<T>(&self, command: impl FnOnce(Reply<T>) -> Command) -> io::Result<T> {
@@ -153,66 +489,271 @@ struct Service {
     asks: LiveAsks,
     identities: watch::Sender<Arc<BTreeSet<String>>>,
     settings: Settings,
+    events: broadcast::Sender<InboxEvent>,
+    commands: mpsc::WeakSender<Command>,
+}
+
+type Prepared = (String, io::Result<Live>, Option<Reply<RunningTurn>>);
+
+/// The actor's state: every conversation it knows of now, and the tasks it
+/// waits on.
+struct State {
+    conversations: BTreeMap<String, Conversation>,
+    approvals: BTreeMap<String, watch::Sender<Vec<Allowance>>>,
+    preparations: JoinSet<Prepared>,
+    turns: JoinSet<(String, io::Result<Option<Outcome>>)>,
+}
+
+impl State {
+    fn conversation(&mut self, session: &str) -> &mut Conversation {
+        self.conversations.entry(session.to_owned()).or_default()
+    }
 }
 
 impl Service {
     async fn run(self, mut commands: mpsc::Receiver<Command>) {
-        let mut sessions = BTreeMap::new();
-        let mut starting = BTreeSet::new();
-        let mut preparations = JoinSet::new();
-        let mut by_session = JoinSet::new();
+        let mut state = State {
+            conversations: BTreeMap::new(),
+            approvals: BTreeMap::new(),
+            preparations: JoinSet::new(),
+            turns: JoinSet::new(),
+        };
+        self.wake_saved(&mut state).await;
         loop {
             tokio::select! {
                 next = commands.recv() => {
-                    match next {
-                        Some(Command::Start(request)) => {
-                            let Start { session, input, policy, reply } = *request;
-                            if sessions.contains_key(&session) || !starting.insert(session.clone()) {
-                                let _ = reply.send(Err(io::Error::new(
-                                    ErrorKind::AlreadyExists, "That conversation is already working.",
-                                )));
-                                continue;
-                            }
-                            let service = self.clone();
-                            preparations.spawn(async move {
-                                let outcome = service.begin(&session, input, policy).await;
-                                (session, outcome, reply)
-                            });
-                        }
-                        Some(Command::Find { session, reply }) => {
-                            let _ = reply.send(Ok(sessions.get(&session).cloned()));
-                        }
-                        None => break,
+                    let Some(command) = next else { break };
+                    self.handle(&mut state, command).await;
+                }
+                prepared = state.preparations.join_next(), if !state.preparations.is_empty() => {
+                    if let Some(Ok(prepared)) = prepared {
+                        self.prepared(&mut state, prepared).await;
                     }
                 }
-                prepared = preparations.join_next(), if !preparations.is_empty() => {
-                    if let Some(Ok((session, outcome, reply))) = prepared {
-                        starting.remove(&session);
-                        if let Ok(turn) = &outcome {
-                            sessions.insert(session.clone(), turn.clone());
-                            self.publish(&sessions);
-                            let turn = turn.clone();
-                            by_session.spawn(async move { (session, turn.finished().await) });
-                        }
-                        let _ = reply.send(outcome);
-                    }
-                }
-                completed = by_session.join_next(), if !by_session.is_empty() => {
-                    if let Some(Ok((session, result))) = completed {
-                        sessions.remove(&session);
-                        self.publish(&sessions);
-                        if let Err(error) = result {
-                            eprintln!("Kuvo could not finish coding-agent session {session}: {error}");
-                        }
+                ended = state.turns.join_next(), if !state.turns.is_empty() => {
+                    if let Some(Ok((session, result))) = ended {
+                        self.turn_ended(&mut state, &session, result).await;
                     }
                 }
             }
         }
     }
 
-    fn publish(&self, runs: &BTreeMap<String, RunningTurn>) {
-        self.identities
-            .send_replace(Arc::new(runs.keys().cloned().collect()));
+    async fn handle(&self, state: &mut State, command: Command) {
+        match command {
+            Command::Start(request) => {
+                let Start {
+                    session,
+                    input,
+                    policy,
+                    note,
+                    shown,
+                    reply,
+                } = *request;
+                let conversation = state.conversation(&session);
+                let refused = if conversation.retired {
+                    Some(io::Error::new(
+                        ErrorKind::NotFound,
+                        "That conversation is being deleted.",
+                    ))
+                } else if !matches!(conversation.doing, Doing::Idle) {
+                    Some(io::Error::new(
+                        ErrorKind::AlreadyExists,
+                        "That conversation is already working.",
+                    ))
+                } else {
+                    None
+                };
+                if let Some(error) = refused {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err(error));
+                    }
+                    return;
+                }
+                conversation.doing = Doing::Starting {
+                    stop: false,
+                    id: input.id.clone(),
+                };
+                self.spawn_start(state, session, input, policy, note, shown, reply);
+            }
+            Command::Find { session, reply } => {
+                let live = state
+                    .conversations
+                    .get(&session)
+                    .and_then(|conversation| conversation.doing.live())
+                    .cloned();
+                let _ = reply.send(Ok(live));
+            }
+            Command::Retire { session, reply } => {
+                state.approvals.remove(&session);
+                let conversation = state.conversation(&session);
+                conversation.retired = true;
+                let _ = reply.send(Ok(conversation.doing.live().cloned()));
+            }
+            Command::Release { session } => {
+                if let Some(conversation) = state.conversations.get_mut(&session) {
+                    conversation.retired = false;
+                    if matches!(conversation.doing, Doing::Idle) {
+                        state.conversations.remove(&session);
+                    }
+                }
+            }
+            Command::Line(request) => self.line_request(state, request).await,
+            Command::Steered(steered) => self.steered(state, *steered).await,
+            Command::Reconciled {
+                session,
+                retry,
+                remaining,
+            } => self.reconciled(state, &session, retry, remaining).await,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn spawn_start(
+        &self,
+        state: &mut State,
+        session: String,
+        input: TurnInput,
+        policy: Policy,
+        note: Option<Map<String, Value>>,
+        shown: Option<Prompt>,
+        reply: Option<Reply<RunningTurn>>,
+    ) {
+        let remembered = state
+            .approvals
+            .entry(session.clone())
+            .or_insert_with(|| watch::channel(Vec::new()).0)
+            .clone();
+        let service = self.clone();
+        state.preparations.spawn(async move {
+            let outcome = service
+                .begin(&session, input, policy, remembered, note, shown)
+                .await;
+            (session, outcome, reply)
+        });
+    }
+
+    async fn prepared(&self, state: &mut State, prepared: Prepared) {
+        let (session, mut outcome, reply) = prepared;
+        let conversation = state.conversation(&session);
+        let stop = matches!(conversation.doing, Doing::Starting { stop: true, .. });
+        if conversation.retired
+            && let Ok(live) = &outcome
+        {
+            // Deleted while it started: stop it rather than run it.
+            let turn = live.turn.clone();
+            tokio::spawn(async move {
+                let _ = turn.interrupt().await;
+            });
+            outcome = Err(io::Error::new(
+                ErrorKind::NotFound,
+                "That conversation is being deleted.",
+            ));
+        }
+        match &outcome {
+            Ok(live) => {
+                let turn = live.turn.clone();
+                conversation.doing = if stop {
+                    let stopping = turn.clone();
+                    tokio::spawn(async move {
+                        let _ = stopping.interrupt().await;
+                    });
+                    Doing::Stopping(live.clone())
+                } else {
+                    Doing::Running(live.clone())
+                };
+                let ended = session.clone();
+                state
+                    .turns
+                    .spawn(async move { (ended, turn.finished().await) });
+                self.publish(state);
+                let _ = self.events.send(InboxEvent::Started {
+                    session: session.clone(),
+                });
+            }
+            Err(_) => {
+                // A turn that never started ends as a failed one.
+                conversation.doing = Doing::Idle;
+                if !conversation.retired {
+                    self.advance(state, &session, None).await;
+                    self.emit_idle(state, &session);
+                }
+            }
+        }
+        if let Some(reply) = reply {
+            let _ = reply.send(outcome.map(|live| live.turn));
+        }
+    }
+
+    async fn turn_ended(
+        &self,
+        state: &mut State,
+        session: &str,
+        result: io::Result<Option<Outcome>>,
+    ) {
+        let conversation = state.conversation(session);
+        let stopped = matches!(conversation.doing, Doing::Stopping(_));
+        conversation.doing = Doing::Idle;
+        self.publish(state);
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!("Kuvo could not finish coding-agent session {session}: {error}");
+                None
+            }
+        };
+        let _ = self.events.send(InboxEvent::Ended {
+            session: session.to_owned(),
+            outcome: outcome.clone(),
+            stopped,
+        });
+        let exited = !stopped && matches!(outcome, Some(Outcome::AgentExited(_)));
+        let succeeded = !stopped && matches!(outcome, Some(Outcome::Succeeded));
+        let conversation = state.conversation(session);
+        if exited {
+            conversation.continue_after_exit = true;
+        }
+        if conversation.retired {
+            return;
+        }
+        self.advance(state, session, Some(succeeded)).await;
+        self.emit_idle(state, session);
+    }
+
+    fn emit_idle(&self, state: &mut State, session: &str) {
+        if matches!(state.conversation(session).doing, Doing::Idle) {
+            let _ = self.events.send(InboxEvent::Idle {
+                session: session.to_owned(),
+            });
+        }
+    }
+
+    fn publish(&self, state: &State) {
+        let running = state
+            .conversations
+            .iter()
+            .filter(|(_, conversation)| conversation.doing.live().is_some())
+            .map(|(session, _)| session.clone())
+            .collect();
+        self.identities.send_replace(Arc::new(running));
+    }
+
+    async fn thread(&self, session: &str, provider: &str) -> io::Result<Arc<dyn Thread>> {
+        let parsed = Provider::parse(provider).ok_or_else(|| {
+            io::Error::new(ErrorKind::InvalidInput, "Choose a coding-agent model.")
+        })?;
+        let roster = self.agents.roster();
+        let entry = roster.find(&parsed).ok_or_else(|| {
+            io::Error::new(ErrorKind::NotFound, "That coding-agent account isn't here.")
+        })?;
+        let context = self
+            .store
+            .context(session, provider)
+            .await?
+            .ok_or_else(|| {
+                io::Error::new(ErrorKind::NotFound, "That coding-agent session isn't here.")
+            })?;
+        entry.agent.open_thread(context).await
     }
 
     async fn begin(
@@ -220,19 +761,38 @@ impl Service {
         session: &str,
         input: TurnInput,
         mut policy: Policy,
-    ) -> io::Result<RunningTurn> {
-        let provider = Provider::parse(&input.model.provider).ok_or_else(|| {
-            io::Error::new(ErrorKind::InvalidInput, "Choose a coding-agent model.")
-        })?;
-        let roster = self.agents.roster();
-        let entry = roster.find(&provider).ok_or_else(|| {
-            io::Error::new(ErrorKind::NotFound, "That coding-agent account isn't here.")
-        })?;
-        let context = self.store.context(session).await?.ok_or_else(|| {
-            io::Error::new(ErrorKind::NotFound, "That coding-agent session isn't here.")
-        })?;
-        policy.directory = context.directory.clone();
-        let thread = entry.agent.open_thread(context).await?;
+        remembered: watch::Sender<Vec<Allowance>>,
+        note: Option<Map<String, Value>>,
+        shown: Option<Prompt>,
+    ) -> io::Result<Live> {
+        let agent = if input.plan { "plan" } else { "build" };
+        let thread = match self.thread(session, &input.model.provider).await {
+            Ok(thread) => thread,
+            Err(error) => {
+                if let Some(shown) = &shown {
+                    let _ = record_failed_start(
+                        self.store.clone(),
+                        session.into(),
+                        agent.into(),
+                        &input,
+                        Some(shown),
+                        note,
+                        &error,
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        };
+        let directory = self
+            .store
+            .read(session)
+            .await?
+            .and_then(|header| header.directory().map(PathBuf::from))
+            .ok_or_else(|| {
+                io::Error::new(ErrorKind::NotFound, "That coding-agent session isn't here.")
+            })?;
+        policy.directory = directory;
         policy.own_folders.extend([
             self.settings.home.join("agents"),
             self.settings.home.join("tmp"),
@@ -242,14 +802,37 @@ impl Service {
             current: policy,
             plan: input.plan,
             thread: thread.clone(),
+            remembered,
+            store: self.store.clone(),
+            session: session.into(),
         });
-        let agent = if input.plan { "plan" } else { "build" };
-        let writer =
-            Projection::start(self.store.clone(), session.into(), agent.into(), &input).await?;
+        let writer = Projection::start(
+            self.store.clone(),
+            session.into(),
+            agent.into(),
+            &input,
+            shown.as_ref(),
+            note,
+        )
+        .await?;
         let asks = self.asks.for_turn(session.into(), input.id.clone());
-        let (sink, writes) =
-            ResidentSink::channel(session.into(), self.store.clone(), asks, policy);
-        Ok(RunningTurn::launch(thread, input, sink, writes, writer))
+        let provider = input.model.provider.clone();
+        let (sink, writes) = ResidentSink::channel(
+            session.into(),
+            provider.clone(),
+            self.store.clone(),
+            asks,
+            policy.clone(),
+        );
+        let id = input.id.clone();
+        let turn = RunningTurn::launch(thread.clone(), input, sink, writes, writer);
+        Ok(Live {
+            turn,
+            id,
+            rules: policy,
+            thread,
+            provider,
+        })
     }
 }
 

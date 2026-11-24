@@ -32,6 +32,8 @@ impl Projection {
         session: String,
         agent: String,
         input: &TurnInput,
+        shown: Option<&Prompt>,
+        note: Option<Map<String, Value>>,
     ) -> io::Result<Self> {
         let prior = if matches!(input.kind, TurnKind::Recover { .. }) {
             store
@@ -57,7 +59,11 @@ impl Projection {
             prior,
         };
         if let TurnKind::Prompt(prompt) = &input.kind {
-            projection.write(vec![user(prompt)]).await?;
+            let mut row = user(shown.unwrap_or(prompt));
+            if let Some(note) = note {
+                row["metadata"] = Value::Object(note);
+            }
+            projection.write(vec![row]).await?;
         }
         Ok(projection)
     }
@@ -252,6 +258,40 @@ impl Projection {
     }
 }
 
+/// A message whose agent couldn't start: it's in the conversation with the
+/// turn that failed, as one whose agent broke at once.
+pub(crate) async fn record_failed_start(
+    store: SessionStore,
+    session: String,
+    agent: String,
+    input: &TurnInput,
+    shown: Option<&Prompt>,
+    note: Option<Map<String, Value>>,
+    error: &io::Error,
+) -> io::Result<()> {
+    let mut projection = Projection::start(store, session, agent, input, shown, note).await?;
+    let message = error.to_string();
+    let finished = EventEnvelope {
+        position: None,
+        delivery: crate::session::Delivery::Live,
+        event: TurnEvent::Finished(TurnResult {
+            outcome: Outcome::Failed(TurnError {
+                kind: "agent".into(),
+                message: if message.is_empty() {
+                    "The agent stopped with an error.".into()
+                } else {
+                    message
+                },
+                status: None,
+                limit: None,
+            }),
+            took_prompt: false,
+            missed: Vec::new(),
+        }),
+    };
+    projection.apply(&finished).await
+}
+
 fn row_prefix(turn: &str) -> String {
     format!("msg_{turn}_")
 }
@@ -289,13 +329,13 @@ impl Projection {
             .change_header(&self.session, move |header| match event {
                 TurnEvent::Context { used, window } => {
                     if let Some(window) =
-                        window.filter(|&window| window > 0 && window <= (1 << 53) - 1)
+                        window.filter(|&window| window > 0 && window < (1 << 53))
                     {
                         header.insert("contextWindow".into(), json!(window));
                     }
                     let window = header.get("contextWindow").cloned();
                     let context = object(header, "context");
-                    if let Some(used) = used.filter(|&used| used <= (1 << 53) - 1) {
+                    if let Some(used) = used.filter(|&used| used < (1 << 53)) {
                         context.insert("used".into(), json!(used));
                     }
                     if let Some(window) = window {
@@ -523,24 +563,10 @@ fn model(model: &ModelRef) -> Value {
 }
 
 fn reason(error: &TurnError) -> Value {
-    let mut reason = json!({"type":error.kind,"message":error.message});
-    if let Some(status) = error.status {
-        reason["status"] = json!(status);
-    }
-    if let Some(limit) = &error.limit {
-        let scope = match limit.scope {
-            crate::session::LimitScope::Provider => "provider",
-            crate::session::LimitScope::Model => "model",
-        };
-        reason["limit"] = json!({"scope":scope});
-        if let Some(at) = limit.resets_at {
-            reason["limit"]["resetsAt"] = json!(at);
-        }
-    }
-    reason
+    error.reason()
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::UNIX_EPOCH
         .elapsed()
         .unwrap_or_default()

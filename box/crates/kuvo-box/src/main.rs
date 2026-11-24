@@ -1,5 +1,9 @@
+#[cfg(target_os = "linux")]
+mod install_linux;
 #[cfg(target_os = "macos")]
 mod install_media;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod install_released;
 mod model_stars;
 mod serve;
 mod session_ownership;
@@ -32,9 +36,30 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         kuvo_agents::hold::run(&args[1..])?;
         return Ok(ExitCode::SUCCESS);
     }
+    // The stdio MCP forwarder an agent starts in its sandbox.
+    if (word(0), args.len()) == (Some("mcp"), 1) {
+        let relay = kuvo_agents::tool_forwarder::Relay::from_env()?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(kuvo_agents::tool_forwarder::forward(
+                relay,
+                tokio::io::BufReader::new(tokio::io::stdin()),
+                tokio::io::stdout(),
+            ))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     #[cfg(target_os = "macos")]
     if word(0) == Some("install-media") {
         return Ok(install_media::run(&args[1..]));
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if word(0) == Some("install-released-machine") {
+        return Ok(install_released::run(&args[1..]));
+    }
+    #[cfg(target_os = "linux")]
+    if word(0) == Some("install-linux") {
+        return Ok(install_linux::run(&args[1..]));
     }
     #[cfg(target_os = "macos")]
     if (word(0), args.len()) == (Some("helper-hand-over"), 1) {
@@ -64,6 +89,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         ))?;
         kuvo_setup::backup::Backups::new(home).preserve_before_rust()?;
         return Ok(ExitCode::SUCCESS);
+    }
+    if (word(0), word(1)) == (Some("box"), Some("labels")) {
+        return kuvo_work::label_restore::run(&args[2..]);
     }
     if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
         if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
@@ -188,7 +216,19 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
     }
     if let Some(check) = uninstall {
-        let outcome = kuvo_setup::uninstall::run(&home, check);
+        let startup = |_check| {
+            Ok(kuvo_setup::uninstall::StartupEntries {
+                #[cfg(unix)]
+                crontab: kuvo_keeper::crontab::uninstall(&home, _check)?,
+                #[cfg(not(unix))]
+                crontab: None,
+                #[cfg(target_os = "macos")]
+                launch_agent: kuvo_keeper::mac_helper::uninstall(&home, _check)?,
+                #[cfg(not(target_os = "macos"))]
+                launch_agent: None,
+            })
+        };
+        let outcome = kuvo_setup::uninstall::run(&home, check, startup);
         #[cfg(windows)]
         if !check
             && outcome.status == 0

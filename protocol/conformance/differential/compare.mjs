@@ -47,7 +47,8 @@ function normalise(value, name, home, enginePort, field = "") {
   if (name === "GET kuvo/models/offered" && /^generations\/[^/]+$/.test(field) && typeof value === "string")
     return "<string: model catalog generation>";
   const usageScan = name === "agents/usage/usage.json" && /^accounts\/[^/]+\/scanned$/.test(field);
-  const why = usageScan ? "local account scan timestamp" : volatile.get(name)?.[field];
+  const botSince = name === "GET kuvo/bots" && /^bots\/\d+\/now\/since$/.test(field);
+  const why = usageScan ? "local account scan timestamp" : botSince ? "when this box saw the bot's state begin" : volatile.get(name)?.[field];
   if (why && ["number", "string"].includes(typeof value)) return `<${typeof value}: ${why}>`;
   if (name === "updates/rehome/journal.json" && field === "kept" && typeof value === "string") {
     value = value.replace(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/, "<move start time>");

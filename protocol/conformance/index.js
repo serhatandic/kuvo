@@ -27,10 +27,13 @@ const areas = new Map([
   ["engine-worktree", "./engine-worktree.test.mjs"],
   ["backups", "./backups.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
+  ["work-queue", "./work-queue.test.mjs"],
   ["files", "./files.test.mjs"],
   ["git", "./git.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
+  // Bots, wake-ups and work: their route scenarios (`bots.json` and `wakes.json`).
+  ["bots", "./routes.test.mjs"],
 ]);
 const area = process.env.KUVO_CONFORMANCE_AREA;
 if (!area) {

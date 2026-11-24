@@ -1246,6 +1246,7 @@ dependencies = [
  "hostname",
  "http",
  "http-body-util",
+ "jiff",
  "kuvo_agents",
  "kuvo_engine",
  "kuvo_keeper",
@@ -1258,6 +1259,7 @@ dependencies = [
  "kuvo_setup",
  "kuvo_store",
  "kuvo_wire",
+ "kuvo_work",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -1279,13 +1281,18 @@ dependencies = [
  "jiff",
  "kuvo_os",
  "kuvo_store",
+ "percent-encoding",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "subtle",
  "tempfile",
  "tokio",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -1583,6 +1590,39 @@ dependencies = [
 [[package]]
 name = "kuvo_work"
 version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "base64 0.22.1",
+ "filetime",
+ "futures-core",
+ "getrandom 0.4.3",
+ "http",
+ "http-body-util",
+ "icu_collator",
+ "jiff",
+ "kuvo_engine",
+ "kuvo_os",
+ "kuvo_peers",
+ "kuvo_protocol",
+ "kuvo_server",
+ "kuvo_setup",
+ "kuvo_store",
+ "kuvo_wire",
+ "libc",
+ "markdown",
+ "percent-encoding",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "unicode-normalization",
+ "unicode-segmentation",
+ "url",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "landlock"
@@ -1650,6 +1690,15 @@ name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
+
+[[package]]
+name = "markdown"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5cab8f2cadc416a82d2e783a1946388b31654d391d1c7d92cc1f03e295b1deb"
+dependencies = [
+ "unicode-id",
+]
 
 [[package]]
 name = "memchr"
@@ -2995,6 +3044,12 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "unicode-id"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65dd75ab2d9d379dbe86d4059e91d8b5a6e7054865eaba1ddbfc7a817ff96392"
 
 [[package]]
 name = "unicode-ident"

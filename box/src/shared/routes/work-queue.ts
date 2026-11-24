@@ -19,9 +19,12 @@ const MESSAGE = object({ message: string });
 // (You, an agent, or another shape kept as it came: an outside tracker's change, later.)
 const WHO = oneOf(object({ user: bool }), object({ session: string, name: string }), map(any));
 const STAMP = object({ at: number, by: WHO });
-const NOTE = object({ at: number, by: WHO, text: string });
+const NOTE = object({ at: number, by: WHO, text: string, "id?": string });
+const MENTION = object({ start: number, end: number, number, item: string });
+const MENTION_RANGE = object({ start: number, end: number, number });
+const ITEM_RELATION = object({ id: string, kind: string, title: string, "number?": number });
 /** Activity history. An edit can name its fields and a stop can name the affected session. */
-const EVENT = object({ at: number, by: WHO, kind: string, "from?": string, "to?": string, "top?": bool, "fields?": list(string), "session?": string });
+const EVENT = object({ at: number, by: WHO, kind: string, "from?": string, "to?": string, "top?": bool, "fields?": list(string), "session?": string, "fromLabel?": string, "toLabel?": string });
 const PROGRESS = object({ "value?": number, "note?": string });
 
 /** An outside source's item (an issue or a pull request), named by its ref, never numbered; `name`
@@ -46,7 +49,7 @@ const ASSIGNEE = object({ kind: words("bot", "agent"), id: string, name: string,
 /** What whoever asked may do to an item (a client's view and answers; not what's told between
  * computers): change its title and description; where it stands among the open statuses, its
  * priority, labels, assignee, due day and place; close it (Done, Canceled); delete it; bring it back. */
-const CAN = object({ edit: bool, set: bool, assign: bool, close: bool, delete: bool, restore: bool, "why?": string });
+const CAN = object({ edit: bool, set: bool, assign: bool, close: bool, delete: bool, restore: bool, "attach?": bool, "why?": string });
 
 /** An item as a list shows it: everything but its body and notes (how many, and the last). */
 const NUMBER_ALIASES = list(object({ setup: string, name: string, number }));
@@ -56,6 +59,7 @@ export const QUEUE_ITEM = object({
   "number?": number,
   "numberPending?": bool,
   "numberAliases?": NUMBER_ALIASES,
+  "mentionTargets?": list(string),
   "wanted?": number,
   owner: string,
   title: string,
@@ -97,9 +101,12 @@ export const QUEUE_ITEM_WHOLE = object({
   ...QUEUE_ITEM.object,
   "told?": bool,
   body: string,
-  notes: list(NOTE),
+  notes: list(object({ ...NOTE.object, "mentions?": list(MENTION) })),
+  "bodyMentions?": list(MENTION),
+  "itemRelations?": list(ITEM_RELATION),
+  "canLinkItems?": bool,
   events: list(EVENT),
-  files: list(object({ name: string, size: number, type: string, at: number })),
+  files: list(object({ name: string, size: number, type: string, "at?": number, "id?": string, "anchor?": string, "sha256?": string })),
   links: list(object({ url: string, "title?": string, "kind?": string, "ref?": string })),
   handed: list(object({ from: string, to: string, at: number })),
 });
@@ -137,14 +144,19 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   // An owner's view (`owner=ses_…|grp_…|usr_you|all`), across your computers; `q`, filters and `counts=1`.
   { route: "GET kuvo/work-queue", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
   { route: "GET kuvo/work-queue/events", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+  // The provider API carried through the coding agents' bridge for Work Queue GitHub sign-in.
+  { route: "GET api/integration/github-work-queue", feature: "sign-in.methods", answers: { 200: object({ location: object({ directory: string }), data: any }) } },
+  { route: "POST api/integration/github-work-queue/connect/oauth", feature: "sign-in.methods", answers: { 200: object({ location: object({ directory: string }), data: any }) } },
+  { route: "GET api/integration/github-work-queue/connect/oauth/:attempt", feature: "sign-in.methods", answers: { 200: object({ location: object({ directory: string }), data: any }) } },
+  { route: "DELETE api/integration/github-work-queue/connect/oauth/:attempt", feature: "sign-in.methods", answers: { 200: any } },
   // The agents' `queue_…` tools (MCP definitions) and their instructions, for a tool server to list.
   { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
   // Runs an agent's `queue_…` call (`{name, arguments, session}`), only while that session is making it.
-  { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }) } },
+  { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }), 503: object({ retryToolCall: bool, message: string }) } },
   // What each ref names (`refs=243,12`: a `#n`, an id or a `gh:` issue), for chips; null for one unknown.
   { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
   // Refs as a list (`{refs}`), or `{text}` → the `#n` mentions in a description (UTF-16 ranges).
-  { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
+  { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: oneOf(REFS, object({ mentions: list(MENTION_RANGE) })) } },
   { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
   // Adds (`{add, color?}`), changes (`{change, name?, color?}`) or removes (`{remove}`) a label.
   { route: "POST kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
@@ -157,7 +169,7 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
     200: LABEL_RESTORE_RESULT, 400: MESSAGE, 403: MESSAGE, 409: MESSAGE, 503: MESSAGE,
   } },
   // Adds an item; send a client operation id (`x-kuvo-operation`) and reuse it on a retry.
-  { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },
+  { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM }), OFFLINE_EDIT_ANSWERS[200]) } },
   // Imports items from Markdown backlog files on the box (`{owner, files}`), keeping their numbers where free.
   { route: "POST kuvo/work-queue/import", feature: "work-queue", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
   // One item whole, by id or number; one on another computer is read from there (`told: false`) when it can be.
@@ -165,11 +177,11 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   // An item's file; one on another computer comes from there, 4 MB at most, else 413.
   { route: "GET kuvo/work-queue/items/:item/files/:name", feature: "work-queue.attachments", answers: { 200: BYTES, 409: ON_ANOTHER, 413: object({ message: string, "computer?": COMPUTER }), 502: ON_ANOTHER, 503: ON_ANOTHER } },
   // Changes only what's sent; one kept on another computer is changed there by its box.
-  { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM }), OFFLINE_EDIT_ANSWERS[200]), 409: oneOf(ON_ANOTHER, OFFLINE_EDIT_ANSWERS[409]), 503: ON_ANOTHER } },
+  { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM, "itemRelationApplied?": bool, "inlineImagesApplied?": bool }), OFFLINE_EDIT_ANSWERS[200]), 409: oneOf(ON_ANOTHER, OFFLINE_EDIT_ANSWERS[409]), 503: ON_ANOTHER } },
   // Brings a deleted item back (kept 30 days).
   { route: "POST kuvo/work-queue/items/:item/restore", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
   // Deletes an item (kept 30 days); one on its way to another computer has its hand-off called off.
-  { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+  { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM }), OFFLINE_EDIT_ANSWERS[200]), 409: oneOf(ON_ANOTHER, OFFLINE_EDIT_ANSWERS[409]), 503: ON_ANOTHER } },
 ];
 
 

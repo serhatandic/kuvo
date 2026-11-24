@@ -29,6 +29,33 @@ impl Activity {
     }
 }
 
+impl crate::Engine {
+    /// A fresh, complete list for settling the status of migrated Work Queue items.
+    pub async fn work_queue_active_sessions(&self) -> std::io::Result<BTreeSet<String>> {
+        let lease = self
+            .acquire(crate::lifetime::Demand::Passive)
+            .await
+            .ok_or_else(|| std::io::Error::other("The engine is not running."))?;
+        let active = self
+            .call::<Value>(&lease, http::Method::GET, "api/session/active", None)
+            .await
+            .map_err(std::io::Error::other)?;
+        match active {
+            Value::Object(active) if !active.contains_key("data") => {
+                Ok(active.into_iter().map(|(session, _)| session).collect())
+            }
+            Value::Array(active) => Ok(active
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()),
+            _ => Err(std::io::Error::other(
+                "The engine did not supply a complete run list.",
+            )),
+        }
+    }
+}
+
 impl LocalSessions {
     /// A local snapshot for the background work writer and peer activity publisher.
     pub fn activity(&self) -> Vec<Activity> {

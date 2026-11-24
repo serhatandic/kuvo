@@ -872,6 +872,30 @@ test("new on Linux: a machine's box in ~/.kuvo-code, its files and engine in pla
   assert.equal(read(path.join(removed.K, "desktop", "identity")), "the app's own");
 });
 
+test("on Linux an install stays complete when retired staging cannot be deleted", { skip: mac && "a Linux computer's box" }, () => {
+  const where = computer();
+  const updates = path.join(where.K, "updates");
+  const abandoned = path.join(staging(where), "abandoned");
+  write(path.join(abandoned, "unfinished"), "discard this");
+  fs.chmodSync(abandoned, 0o500);
+  try {
+    const made = install(where, "new");
+    assert.equal(read(path.join(where.home, "keeper-asked")), "start\n");
+    assert.equal(made.status, 0, made.stderr + JSON.stringify(made.lines));
+    assert.deepEqual([made.said.result, made.said.verdict, made.said.started], ["done", "machine", true]);
+    assert.equal(exists(staging(where)), false);
+    const retired = fs.readdirSync(updates).find(folder => folder.startsWith("retired-install-"));
+    assert.ok(retired, "the old staging must be retired even when deletion fails");
+    assert.equal(read(path.join(updates, retired, "abandoned/unfinished")), "discard this");
+    assert.equal(install(where, "status").said.verdict, "machine");
+  } finally {
+    for (const folder of fs.readdirSync(updates)) {
+      const old = path.join(updates, folder, "abandoned");
+      if (exists(old)) fs.chmodSync(old, 0o700);
+    }
+  }
+});
+
 test("on Linux nothing is made or set aside under something that still runs in the folder", { skip: mac && "a Linux computer's box" }, async () => {
   // A box turned off whose keeper still runs (it's ending): by its record and its command line.
   const where = computer();

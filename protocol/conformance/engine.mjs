@@ -8,7 +8,7 @@ export const git = (env, cwd, ...args) => execFileSync("git", args, { cwd, env, 
 
 export async function standInEngine(root, env) {
   // Its sessions (`given.session`), which run, its sign-ins, and every request it got.
-  const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), permissions: new Map(), forms: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map() };
+  const engine = { sessions: [], models: [], providers: [], integrations: [], defaultModel: null, messages: new Map(), permissions: new Map(), forms: new Map(), inboxes: new Map(), interrupted: [], running: new Set(), credentials: [], asked: [], made: 0, worktrees: 0, projects: new Map(), refuseDeletes: new Set() };
   engine.open = new Set();
   engine.closed = [];
   engine.terminals = new Set();
@@ -30,6 +30,13 @@ export async function standInEngine(root, env) {
       try { given = body ? JSON.parse(body) : {}; } catch {}
       engine.asked.push({ method: request.method, path: url.pathname, json: given });
       const send = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+      const queueRead = (body, status = 200) => {
+        const hold = engine.holdQueueRead;
+        if (hold?.path !== url.pathname) return send(body, status);
+        engine.holdQueueRead = null;
+        hold.entered();
+        hold.finish.then(() => send(body, status));
+      };
       const paged = (rows, size) => {
         const start = Number(url.searchParams.get("cursor") ?? 0);
         const take = Number(url.searchParams.get("limit") ?? size);
@@ -47,10 +54,19 @@ export async function standInEngine(root, env) {
       if (route === "GET /api/session") {
         if (engine.sessionListUnavailable) return send({ message: "The list is unavailable." }, 503);
         const parent = url.searchParams.get("parentID");
+        if (engine.refuseWholeList && (parent === null || parent === "null")) {
+          return send({ message: "The full session list is temporarily unavailable." }, 503);
+        }
         if (parent === null && url.searchParams.get("limit") !== "1") engine.inventoryReads = (engine.inventoryReads ?? 0) + 1;
         const rows = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
         const descendants = parent && parent !== "null" && Number(url.searchParams.get("limit")) > 0;
         const page = engine.paged || descendants ? paged(rows, 100) : { data: rows };
+        if (engine.holdWholeList && url.searchParams.get("limit") !== "1" && (parent === null || parent === "null")) {
+          const gate = engine.holdWholeList;
+          gate.entered();
+          void gate.finish.then(() => send(page));
+          return;
+        }
         if (engine.holdSessionList && url.searchParams.get("limit") !== "1") {
           if (!parent) engine.heldInventories = (engine.heldInventories ?? 0) + 1;
           void engine.holdSessionList.then(() => send(page));
@@ -59,6 +75,7 @@ export async function standInEngine(root, env) {
         return send(page);
       }
       if (route === "GET /api/session/active") {
+        if (engine.refuseActive) return send({ message: "The engine is unavailable." }, 503);
         if (engine.activeUnavailable) return send({}, 503);
         const data = Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }]));
         engine.activeRead?.();
@@ -91,15 +108,22 @@ export async function standInEngine(root, env) {
       }
       if (route === "POST /api/experimental/session/import") {
         const id = given.info?.id;
+        engine.beforeImport?.(id);
         if (!id || engine.sessions.some(each => each.id === id)) return send({ message: "Session already exists." }, 409);
         const info = { ...given.info, location: given.location };
         engine.sessions.push(info);
         engine.messages.set(id, given.messages);
         publish({ type: "session.created", data: { sessionID: id, info } });
+        if (engine.loseImportReply === id) {
+          engine.loseImportReply = null;
+          response.destroy();
+          return;
+        }
         if (engine.holdImport?.id === id) {
           const held = engine.holdImport;
           engine.holdImport = null;
           held.accepted();
+          if (held.finish) held.finish.then(() => send({ data: info }));
           return;
         }
         return send({ data: info });
@@ -109,8 +133,10 @@ export async function standInEngine(root, env) {
         return engine.sessions.some(row => row.id === decodeURIComponent(instructions[1])) ? send({}) : send({}, 404);
       }
       if (one && request.method === "GET") {
-        if (engine.unavailableSession === decodeURIComponent(one[1])) return send({ message: "Busy." }, 500);
-        const index = engine.sessions.findIndex(each => each.id === decodeURIComponent(one[1]));
+        const id = decodeURIComponent(one[1]);
+        if (engine.refuseLookup === id) return send({ message: "The conversation is temporarily unavailable." }, 503);
+        if (engine.unavailableSession === id) return send({ message: "Busy." }, 500);
+        const index = engine.sessions.findIndex(each => each.id === id);
         const found = engine.sessions[index];
         if (found && engine.delistOnRead === found.id) {
           engine.delistOnRead = null;
@@ -145,7 +171,9 @@ export async function standInEngine(root, env) {
       }
       if (one && request.method === "DELETE") {
         const id = decodeURIComponent(one[1]);
-        if (engine.refuseDelete === id) return send({ message: "The engine cannot remove this copy yet." }, 503);
+        if (engine.refuseDeletes.has(id)) {
+          return send({ message: "The engine cannot remove this copy yet." }, 503);
+        }
         const at = engine.sessions.findIndex(each => each.id === id);
         if (at < 0) return send({ message: "No such session." }, 404);
         const [removed] = engine.sessions.splice(at, 1);
@@ -183,7 +211,8 @@ export async function standInEngine(root, env) {
           return send(refusal.body ?? { message: "Try the prompt again." }, refusal.status ?? 503);
         }
         if (engine.unconfirmedPrompt === given.id) return send({});
-        const held = engine.holdPrompt?.id === given.id ? engine.holdPrompt : null;
+        const hold = engine.holdPrompt;
+        const held = hold && (hold.id ? hold.id === given.id : hold.session === session) ? hold : null;
         if (held) engine.holdPrompt = null;
         const accept = () => {
           const messages = engine.messages.get(session) ?? [];
@@ -196,6 +225,7 @@ export async function standInEngine(root, env) {
           } else {
             messages.push({ ...given, type: "user" });
             engine.messages.set(session, messages);
+            if (engine.runAfterPrompt === given.id) engine.running.add(session);
           }
           publish({ type: "session.inbox.updated", data: { sessionID: session, item: { id: given.id } } });
           engine.afterPromptAccepted?.(session, given.id);
@@ -221,6 +251,7 @@ export async function standInEngine(root, env) {
         const session = decodeURIComponent(waiting[1]);
         const inbox = engine.inboxes.get(session) ?? [];
         if (!waiting[2] && request.method === "GET") {
+          if (engine.refuseInbox === session) return send({ message: "The inbox is unavailable." }, 503);
           if (engine.inboxUnavailable?.has(session)) return send({}, 503);
           const reply = engine.inboxReplies?.get(session);
           if (reply) return send(reply.body, reply.status);
@@ -232,7 +263,7 @@ export async function standInEngine(root, env) {
             void held.release.then(() => send({ data: read }));
             return;
           }
-          return send({ data: inbox });
+          return queueRead({ data: inbox });
         }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));
         if (index < 0) return send({}, 404);
@@ -253,11 +284,14 @@ export async function standInEngine(root, env) {
       if (message && request.method === "GET") {
         if (engine.messageUnavailable?.has(decodeURIComponent(message[2]))) return send({}, 503);
         const stored = engine.messages.get(decodeURIComponent(message[1]))?.find(row => row.id === decodeURIComponent(message[2]));
-        return stored ? send({ data: stored }) : send({}, 404);
+        return stored ? queueRead({ data: stored }) : queueRead({}, 404);
       }
       const interrupt = url.pathname.match(/^\/api\/session\/([^/]+)\/interrupt$/);
       if (interrupt && request.method === "POST") {
-        engine.interrupted.push({ session: decodeURIComponent(interrupt[1]), resume: url.searchParams.get("resume") === "true" });
+        const session = decodeURIComponent(interrupt[1]);
+        const resume = url.searchParams.get("resume") === "true";
+        engine.interrupted.push({ session, resume });
+        if (!resume && engine.running.delete(session)) publish({ type: "session.idle", data: { sessionID: session } });
         return send({});
       }
       const view = url.pathname.match(/^\/api\/session\/([^/]+)\/view$/);
@@ -298,9 +332,23 @@ export async function standInEngine(root, env) {
       if (["GET /api/form", "GET /api/permission/request", "GET /api/shell"].includes(route)) return send({ data: [] });
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") {
-        const rows = engine.messages.get(decodeURIComponent(messages[1])) ?? [];
-        engine.messagePageRead?.(decodeURIComponent(messages[1]), url.searchParams);
-        return send(engine.paged ? paged(rows, 200) : { data: rows });
+        const session = decodeURIComponent(messages[1]);
+        engine.messagePageRead?.(session, url.searchParams);
+        const cursor = url.searchParams.get("cursor");
+        if (engine.refuseMessagePage?.session === session && engine.refuseMessagePage.cursor === cursor) {
+          engine.refuseMessagePage = null;
+          return send({ message: "That page was temporarily unavailable." }, 503);
+        }
+        const pages = engine.messagePages?.get(session);
+        const page = pages?.get(cursor);
+        if (page) return send(page);
+        const history = engine.messages.get(session) ?? [];
+        if (engine.paged) return send(paged(history, 200));
+        if (engine.orderedMessages && url.searchParams.get("order") === "desc") {
+          if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
+          return send({ data: history.toReversed().slice(0, Number(url.searchParams.get("limit")) || history.length) });
+        }
+        return send({ data: history });
       }
       if (route === "GET /api/credential") return send({ data: engine.credentials });
       if (route === "POST /api/credential") {

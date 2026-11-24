@@ -9,8 +9,8 @@ use serde::Serialize;
 use super::Session;
 use crate::{
     Engine,
-    lifetime::Lease,
-    session_list::{Observed, read_inventory},
+    lifetime::{Demand, Lease},
+    session_list::{Observed, agent_rows, read_inventory},
     worktree_notes::{self, Location, Records},
 };
 
@@ -39,14 +39,24 @@ fn title(session: &Session) -> String {
     format!("Delete “{name}”?")
 }
 
+/// What deleting `session` takes with it. Without a lease (a coding agent's
+/// conversation) the engine's rows are read only if it already runs.
 pub(super) async fn one(
     engine: &Engine,
-    lease: &Lease,
+    lease: Option<&Lease>,
     session: &Session,
 ) -> Result<Confirmation, Refusal> {
     let records = records(engine).await?;
     let rows = if records.at(session.directory()).is_some() {
-        read_inventory(engine, lease).await.unwrap_or_default()
+        let mut rows = match lease {
+            Some(lease) => read_inventory(engine, lease).await.unwrap_or_default(),
+            None => match engine.acquire(Demand::Passive).await {
+                Some(lease) => read_inventory(engine, &lease).await.unwrap_or_default(),
+                None => Vec::new(),
+            },
+        };
+        rows.extend(agent_rows(engine).await.unwrap_or_default());
+        rows
     } else {
         Vec::new()
     };
@@ -58,9 +68,10 @@ pub(super) async fn many(
     lease: &Lease,
     mut ids: BTreeSet<&str>,
 ) -> Result<Confirmation, Refusal> {
-    let rows = read_inventory(engine, lease)
+    let mut rows = read_inventory(engine, lease)
         .await
         .map_err(|_| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running."))?;
+    rows.extend(agent_rows(engine).await.unwrap_or_default());
     let mut count = ids.len();
     let mut deleting = Vec::new();
     for Observed { session, .. } in &rows {

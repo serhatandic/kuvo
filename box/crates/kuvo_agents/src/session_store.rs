@@ -10,8 +10,13 @@ use std::{
     time::Duration,
 };
 
+mod line;
 mod metadata;
 mod projection;
+
+pub use line::Line;
+
+pub use metadata::{NewSession, SessionPatch};
 
 const FORMAT: ObjectFormat = ObjectFormat::additive("Coding-agent session");
 const TRANSCRIPT: &str = "messages-v1.sqlite";
@@ -39,6 +44,16 @@ impl SessionHeader {
 
     pub fn directory(&self) -> Option<&str> {
         self.fields.get("location")?.get("directory")?.as_str()
+    }
+
+    /// How its last turn ended: `succeeded`, `failed` or `interrupted`.
+    pub fn outcome(&self) -> Option<&str> {
+        self.fields.get("outcome")?.as_str()
+    }
+
+    /// The conversation that started this one, for a subagent's.
+    pub fn parent(&self) -> Option<&str> {
+        self.fields.get("parentID")?.as_str()
     }
 
     pub fn into_fields(self) -> Map<String, Value> {
@@ -90,11 +105,14 @@ impl SessionStore {
         .await?
     }
 
-    pub async fn context(&self, id: &str) -> io::Result<Option<SessionContext>> {
+    /// What a turn of `provider`'s agent opens the conversation with: its
+    /// own slot of the saved state, beside the inbox and the other agents'.
+    pub async fn context(&self, id: &str, provider: &str) -> io::Result<Option<SessionContext>> {
         let Some(folder) = self.folder(id) else {
             return Ok(None);
         };
         let id = id.to_owned();
+        let provider = provider.to_owned();
         tokio::task::spawn_blocking(move || {
             let Some(header) = read_header(&folder, &id)? else {
                 return Ok(None);
@@ -105,10 +123,11 @@ impl SessionStore {
                     format!("The saved session {id} has no working directory."),
                 )
             })?;
+            let state = slot_state(&folder, &header, &read_agent(&folder)?, &provider)?;
             Ok(Some(SessionContext {
                 session_id: id,
                 directory: PathBuf::from(directory),
-                state: read_state(&folder)?,
+                state,
             }))
         })
         .await?
@@ -146,12 +165,31 @@ impl SessionStore {
         .await?
     }
 
-    /// Save vendor state only while the session still exists. A late native
-    /// frame after deletion must never recreate its previous session folder.
-    pub async fn save_state(&self, id: &str, state: VendorState) -> io::Result<bool> {
+    /// Save `provider`'s vendor state into its slot only while the session
+    /// still exists. A late native frame after deletion must never recreate
+    /// its previous session folder. The inbox and other agents' slots stay.
+    pub async fn save_state(
+        &self,
+        id: &str,
+        provider: &str,
+        state: VendorState,
+    ) -> io::Result<bool> {
+        let session = id.to_owned();
+        let provider = provider.to_owned();
         self.mutate_existing(id, move |folder| {
-            let body = serde_json::to_vec(&state)?;
-            files::write_atomic(&folder.join("agent.json"), &body)
+            let header = read_header(folder, &session)?.ok_or(ErrorKind::NotFound)?;
+            let mut agent = read_agent(folder)?;
+            let threads = slots(folder, &header, &mut agent)?;
+            let slot = threads
+                .entry(provider)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !slot.is_object() {
+                *slot = Value::Object(Map::new());
+            }
+            if let Some(slot) = slot.as_object_mut() {
+                slot.insert("state".into(), Value::Object(state));
+            }
+            files::write_atomic(&folder.join("agent.json"), &serde_json::to_vec(&agent)?)
         })
         .await
     }
@@ -173,18 +211,25 @@ impl SessionStore {
         id: &str,
         change: impl FnOnce(&Path) -> io::Result<()> + Send + 'static,
     ) -> io::Result<bool> {
+        Ok(self.mutate_existing_with(id, change).await?.is_some())
+    }
+
+    async fn mutate_existing_with<T: Send + 'static>(
+        &self,
+        id: &str,
+        change: impl FnOnce(&Path) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<Option<T>> {
         let Some(folder) = self.folder(id) else {
-            return Ok(false);
+            return Ok(None);
         };
         let lock = self.root.join(format!(".{id}.lock"));
         let id = id.to_owned();
         tokio::task::spawn_blocking(move || {
             let _guard = OwnedLock::acquire(&lock, Duration::from_secs(1))?;
             if read_header(&folder, &id)?.is_none() {
-                return Ok(false);
+                return Ok(None);
             }
-            change(&folder)?;
-            Ok(true)
+            change(&folder).map(Some)
         })
         .await?
     }
@@ -205,11 +250,128 @@ fn read_header(folder: &Path, id: &str) -> io::Result<Option<SessionHeader>> {
         }))
 }
 
-fn read_state(folder: &Path) -> io::Result<VendorState> {
-    // Match the bridge's treatment of old or incomplete vendor markers.
+/// Native conversation keys an agent kept at the top of `agent.json` before
+/// each agent had its own slot.
+const LEGACY: [&str; 7] = [
+    "claudeSession",
+    "claudeStarted",
+    "codexThread",
+    "acpSession",
+    "acpInstructed",
+    "cursorAgent",
+    "cursorInstructed",
+];
+
+/// The bridge's per-conversation record of its agents (`agent.json`). Like
+/// the bridge, an unreadable record reads as empty.
+fn read_agent(folder: &Path) -> io::Result<Map<String, Value>> {
     Ok(files::read(&folder.join("agent.json"))?
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default())
+}
+
+fn slot_state(
+    folder: &Path,
+    header: &SessionHeader,
+    agent: &Map<String, Value>,
+    provider: &str,
+) -> io::Result<VendorState> {
+    let state = |slot: Option<&Value>| {
+        slot.and_then(|slot| slot.get("state"))
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    if let Some(threads) = agent.get("threads").filter(|threads| truthy(threads)) {
+        return Ok(state(threads.get(provider)));
+    }
+    let legacy = legacy_state(agent);
+    if legacy.is_empty() || legacy_owner(folder, header)?.as_deref() != Some(provider) {
+        return Ok(VendorState::new());
+    }
+    Ok(legacy)
+}
+
+/// The slots, made from the single agent's state of before if need be.
+fn slots<'a>(
+    folder: &Path,
+    header: &SessionHeader,
+    agent: &'a mut Map<String, Value>,
+) -> io::Result<&'a mut Map<String, Value>> {
+    if !agent.get("threads").is_some_and(truthy) {
+        let legacy = legacy_state(agent);
+        let mut threads = Map::new();
+        if !legacy.is_empty()
+            && let Some(owner) = legacy_owner(folder, header)?
+        {
+            threads.insert(owner, serde_json::json!({ "state": legacy }));
+        }
+        for key in LEGACY {
+            agent.shift_remove(key);
+        }
+        agent.insert("threads".into(), Value::Object(threads));
+    }
+    let threads = agent
+        .get_mut("threads")
+        .expect("the slots were just made");
+    if !threads.is_object() {
+        *threads = Value::Object(Map::new());
+    }
+    Ok(threads.as_object_mut().expect("the slots are an object"))
+}
+
+fn truthy(value: &Value) -> bool {
+    !matches!(value, Value::Null | Value::Bool(false))
+        && value.as_str() != Some("")
+        && value.as_f64() != Some(0.0)
+}
+
+fn legacy_state(agent: &Map<String, Value>) -> VendorState {
+    LEGACY
+        .into_iter()
+        .filter_map(|key| Some((key.to_owned(), agent.get(key)?.clone())))
+        .collect()
+}
+
+/// The agent that wrote the conversation's replies (the session's model may
+/// have moved since), or its model's for one without replies.
+fn legacy_owner(folder: &Path, header: &SessionHeader) -> io::Result<Option<String>> {
+    let replied = last_assistant_provider(folder)?;
+    let owner = replied.or_else(|| {
+        header.fields.get("model")?.get("providerID")?.as_str().map(str::to_owned)
+    });
+    Ok(owner.filter(|owner| !owner.is_empty() && owner != "auto"))
+}
+
+fn last_assistant_provider(folder: &Path) -> io::Result<Option<String>> {
+    let db = folder.join(TRANSCRIPT);
+    if db.try_exists()? {
+        let db = sqlite::open_index(&db, Duration::from_secs(1)).map_err(io::Error::other)?;
+        let mut query = db
+            .prepare(
+                "SELECT body FROM message WHERE json_extract(body, '$.type') = 'assistant'
+                 ORDER BY position DESC LIMIT 1",
+            )
+            .map_err(io::Error::other)?;
+        let mut rows = query.query([]).map_err(io::Error::other)?;
+        return match rows.next().map_err(io::Error::other)? {
+            Some(row) => {
+                let body: String = row.get(0).map_err(io::Error::other)?;
+                let body: Value = serde_json::from_str(&body)?;
+                Ok(body["model"]["providerID"].as_str().map(str::to_owned))
+            }
+            None => Ok(None),
+        };
+    }
+    let Some(raw) = files::read(&folder.join("messages.json"))? else {
+        return Ok(None);
+    };
+    let rows: Vec<Value> = serde_json::from_slice(&raw)?;
+    Ok(rows
+        .iter()
+        .rev()
+        .find(|row| row["type"] == "assistant")
+        .and_then(|row| row["model"]["providerID"].as_str().map(str::to_owned)))
 }
 
 fn query_messages(

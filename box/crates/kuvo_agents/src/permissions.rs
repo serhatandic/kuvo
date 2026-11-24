@@ -1,11 +1,13 @@
 //! Permission rules checked by the resident before any native policy runs.
 
+mod allowance;
 mod settings;
 mod shell;
-pub(crate) mod turn;
 #[cfg(test)]
 mod tests;
+pub(crate) mod turn;
 
+pub use allowance::{covers, remember};
 pub use settings::{ConfigLocation, read_blocks};
 
 use crate::session::PermissionAsk;
@@ -41,7 +43,7 @@ impl Rule {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Allowance {
     pub action: String,
     pub patterns: Vec<String>,

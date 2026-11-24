@@ -4,7 +4,7 @@
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
@@ -460,7 +460,7 @@ fn the_shell_keeper_confirms_a_rust_switch_and_rolls_back_without_ending_a_holde
         Duration::from_secs(140),
         "shell guard rolls back the damaged Rust release",
         || {
-            (std::fs::read_link(computer.home.join("bin")).ok()? == PathBuf::from(GOOD))
+            (std::fs::read_link(computer.home.join("bin")).ok()? == Path::new(GOOD))
                 .then_some(())
         },
     );

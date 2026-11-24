@@ -113,6 +113,38 @@ fn note_owners(
     at: Millis,
     arrived: bool,
 ) -> io::Result<()> {
+    write_owners(
+        run,
+        std::iter::once(&record.thing)
+            .chain(record.sessions.iter())
+            .map(String::as_str),
+        key,
+        at,
+        arrived,
+        None,
+    )
+}
+
+/// Keep the owning queue of an item that has switched computers.
+pub fn note_queue_placement(
+    run: &Path,
+    item: &str,
+    queue: &str,
+    key: &str,
+    at: Millis,
+    arrived: bool,
+) -> io::Result<()> {
+    write_owners(run, [item], key, at, arrived, Some(queue))
+}
+
+fn write_owners<'a>(
+    run: &Path,
+    ids: impl IntoIterator<Item = &'a str>,
+    key: &str,
+    at: Millis,
+    arrived: bool,
+    queue: Option<&str>,
+) -> io::Result<()> {
     let root = run.join("moves");
     let _lock = StaleLock::acquire(
         &root.join(".departures.lock"),
@@ -124,24 +156,27 @@ fn note_owners(
     let mut rows = departures(run).map_err(io::Error::other)?;
     let mut changed = BTreeSet::new();
     let mut add = Vec::new();
-    for id in std::iter::once(&record.thing).chain(record.sessions.iter()) {
+    for id in ids {
         if !rows.iter().any(|row| {
-            row.session == *id && row.key == key && row.arrived == arrived && row.queue.is_none()
+            row.session == id
+                && row.key == key
+                && row.arrived == arrived
+                && row.queue.as_deref() == queue
         }) && changed.insert(id)
         {
             add.push(Departure {
-                session: id.clone(),
+                session: id.into(),
                 key: key.into(),
                 at,
                 arrived,
-                queue: None,
+                queue: queue.map(str::to_owned),
             });
         }
     }
     if add.is_empty() {
         return Ok(());
     }
-    rows.retain(|row| !changed.contains(&row.session));
+    rows.retain(|row| !changed.contains(row.session.as_str()));
     rows.extend(add);
     let encoded = rows
         .into_iter()

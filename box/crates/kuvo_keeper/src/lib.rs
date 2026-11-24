@@ -3,6 +3,8 @@
 //! The updater stages complete packs before requesting a selection. The keeper
 //! only switches executable code and records the trial. It never restores a data snapshot.
 
+#[cfg(unix)]
+pub mod crontab;
 mod engine_pack;
 pub mod fleet;
 #[cfg(target_os = "macos")]
@@ -56,7 +58,6 @@ pub enum Command {
 
 const ROUND: Duration = Duration::from_secs(1);
 const RESTART: Duration = Duration::from_secs(15);
-const TRIAL: Duration = Duration::from_secs(120);
 
 struct Installation {
     home: PathBuf,
@@ -387,7 +388,7 @@ impl Installation {
             };
             if selected.as_ref() != Some(&current) {
                 selected = Some(current.clone());
-                trial_deadline = Instant::now() + TRIAL;
+                trial_deadline = Instant::now() + fleet::keeper_trial_limit();
                 next_start = Instant::now();
             }
             if worker

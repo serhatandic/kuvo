@@ -1,9 +1,12 @@
 //! Apply a fresh view of Blocks to a submitted agent ask.
 
-use super::{ConfigLocation, Decision as Verdict, Effect, Policy, check, read_blocks};
+use super::{
+    Allowance, ConfigLocation, Decision as Verdict, Effect, Policy, Rule, check, read_blocks,
+};
 use crate::{
     runtime::AdapterCall,
     session::{Decision, PermissionAsk, Preflight, Thread},
+    session_store::SessionStore,
     turn_sink::TurnPolicy,
 };
 use std::{
@@ -11,6 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use tokio::sync::watch;
 
 #[derive(Clone)]
 pub(crate) struct Settings {
@@ -23,21 +27,73 @@ pub(crate) struct TurnRules {
     pub current: Policy,
     pub plan: bool,
     pub thread: Arc<dyn Thread>,
+    pub remembered: watch::Sender<Vec<Allowance>>,
+    pub store: SessionStore,
+    pub session: String,
 }
 
 impl TurnRules {
+    pub(crate) async fn verify_reply(&self, ask: &PermissionAsk) -> io::Result<()> {
+        let header = self
+            .store
+            .read(&self.session)
+            .await?
+            .ok_or(io::ErrorKind::NotFound)?
+            .into_fields();
+        let policy = self.load(true).await?;
+        let mut policy = policy;
+        policy.session_rules = header
+            .get("permissions")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|rule| serde_json::from_value::<Rule>(rule.clone()).ok())
+            .collect();
+        let verdict = self.evaluate(policy, ask.clone(), false, true).await?;
+        if verdict == Some(Verdict::Deny) {
+            Err(io::ErrorKind::PermissionDenied.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn load(&self, strict: bool) -> io::Result<Policy> {
+        let mut policy = self.current.clone();
+        policy
+            .allowed
+            .extend(self.remembered.borrow().iter().cloned());
+        let directory = policy.directory.clone();
+        let layers = tokio::task::spawn_blocking(move || project_layers(&directory)).await?;
+        let blocks = read_blocks(&self.settings.home, self.settings.location, layers).await;
+        policy.blocks = if strict {
+            Some(blocks.map_err(|error| {
+                io::Error::other(format!(
+                    "Kuvo couldn’t verify this computer’s current permissions. {error}",
+                ))
+            })?)
+        } else {
+            blocks.ok()
+        };
+        Ok(policy)
+    }
+
     async fn resolve(
         &self,
         ask: PermissionAsk,
         native_plan: bool,
         interactive: bool,
     ) -> io::Result<Option<Verdict>> {
-        let mut policy = self.current.clone();
-        let directory = policy.directory.clone();
-        let layers = tokio::task::spawn_blocking(move || project_layers(&directory)).await?;
-        policy.blocks = read_blocks(&self.settings.home, self.settings.location, layers)
-            .await
-            .ok();
+        let policy = self.load(false).await?;
+        self.evaluate(policy, ask, native_plan, interactive).await
+    }
+
+    async fn evaluate(
+        &self,
+        mut policy: Policy,
+        ask: PermissionAsk,
+        native_plan: bool,
+        interactive: bool,
+    ) -> io::Result<Option<Verdict>> {
         let plan = self.plan && !native_plan;
         if ask.sandboxed == Some(true) {
             policy.auto_without_sandbox = false;

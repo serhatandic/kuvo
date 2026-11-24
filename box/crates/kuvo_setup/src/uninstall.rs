@@ -47,7 +47,17 @@ pub struct Outcome {
     pub note: Option<String>,
 }
 
-pub fn run(home: &Home, check: bool) -> Outcome {
+#[derive(Default)]
+pub struct StartupEntries {
+    pub launch_agent: Option<bool>,
+    pub crontab: Option<bool>,
+}
+
+pub fn run(
+    home: &Home,
+    check: bool,
+    startup: impl FnOnce(bool) -> io::Result<StartupEntries>,
+) -> Outcome {
     let root = home.root();
     let retired_app = root
         .parent()
@@ -59,13 +69,17 @@ pub fn run(home: &Home, check: bool) -> Outcome {
             "Kuvo on this Mac runs in Kuvo Code's own folder: remove Kuvo Code itself (its background work goes with it).",
         );
     }
-    match stopped_machine(home, check) {
+    match stopped_machine(home, check, startup) {
         Ok(outcome) => outcome,
         Err(error) => refusal(&error.to_string()),
     }
 }
 
-fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
+fn stopped_machine(
+    home: &Home,
+    check: bool,
+    startup: impl FnOnce(bool) -> io::Result<StartupEntries>,
+) -> Result<Outcome, Error> {
     let root = home.root();
     if !home.bin().join("kuvo-start").is_file() && !home.run().is_dir() {
         return Ok(refusal("There’s no Kuvo Code box in this folder."));
@@ -80,7 +94,8 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
     }
     let files = Files::new(root.canonicalize().map_err(|source| at(root, source))?);
     if check {
-        return run_check(&files, root).map(|value| Outcome {
+        let entries = startup(true).map_err(|source| at(root, source))?;
+        return run_check(&files, root, entries).map(|value| Outcome {
             status: 0,
             value,
             note: None,
@@ -105,7 +120,8 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
             "Kuvo Code is still running. Stop it before uninstalling.",
         ));
     }
-    if files.path("bin/kuvo-start").exists() || files.path("run/wsl-task").exists() {
+    let mac = fs::read_to_string(files.path("box/kind")).is_ok_and(|kind| kind.trim() == "mac");
+    if files.path("run/wsl-task").exists() {
         return Ok(refusal(
             "Kuvo Code couldn’t confirm its startup entries were removed.",
         ));
@@ -142,10 +158,7 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
             ));
         }
     }
-    if files.path("run/host.json").exists()
-        || files.path("box/kind").is_file()
-            && fs::read_to_string(files.path("box/kind")).is_ok_and(|text| text.trim() == "mac")
-    {
+    if files.path("run/host.json").exists() {
         return Ok(refusal(
             "Kuvo Code couldn’t confirm it had stopped this Mac’s background work.",
         ));
@@ -155,6 +168,23 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
     {
         return Ok(refusal(
             "The verified pre-wipe backup could not be confirmed.",
+        ));
+    }
+    let entries = startup(false).map_err(|source| at(root, source))?;
+    if mac && entries.launch_agent.is_none() {
+        return Ok(refusal(
+            "Kuvo Code couldn’t confirm it had stopped this Mac’s background work.",
+        ));
+    }
+    if files.path("bin/kuvo-start").exists()
+        && if cfg!(target_os = "macos") {
+            entries.launch_agent.is_none()
+        } else {
+            entries.crontab.is_none()
+        }
+    {
+        return Ok(refusal(
+            "Kuvo Code couldn’t confirm its startup entries were removed.",
         ));
     }
     files.write_bytes("run/off", b"")?;
@@ -180,12 +210,12 @@ fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
     Ok(Outcome {
         status: u8::from(!complete),
         value: json!({"result": if complete { "uninstalled" } else { "unfinished" }, "stopped": true,
-            "launchAgent": false, "crontab": false, "startsAgain": [], "left": [root], "message": note}),
+            "launchAgent": entries.launch_agent.unwrap_or(false), "crontab": entries.crontab.unwrap_or(false), "startsAgain": [], "left": [root], "message": note}),
         note: Some(note),
     })
 }
 
-fn run_check(files: &Files, home: &Path) -> Result<Value, Error> {
+fn run_check(files: &Files, home: &Path, entries: StartupEntries) -> Result<Value, Error> {
     let link: Link = files.read(LINK)?.unwrap_or_default();
     let computers = link
         .member_list()
@@ -200,7 +230,8 @@ fn run_check(files: &Files, home: &Path) -> Result<Value, Error> {
     let (bots, wakes) = scheduled_work(files)?;
     Ok(
         json!({"folder": home, "kind": kind.as_deref().map(str::trim).unwrap_or("machine"),
-        "running": running, "starts": {"launchAgent": false, "crontab": false, "checked": false},
+        "running": running, "starts": {"launchAgent": entries.launch_agent.unwrap_or(false),
+            "crontab": entries.crontab.unwrap_or(false), "checked": entries.launch_agent.is_some() || entries.crontab.is_some()},
         "bots": bots, "wakes": wakes, "phones": phones, "computers": computers}),
     )
 }

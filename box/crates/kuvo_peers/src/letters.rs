@@ -1,14 +1,20 @@
 //! Durable ordinary letters and notes. Resolve ownership again for each send
 //! and immediately before placing an incoming prompt on a local session.
+pub(crate) mod homes;
 
 use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
     io,
     path::Path,
     sync::Arc,
     time::{Duration, UNIX_EPOCH},
 };
 
-use kuvo_engine::{Engine, SessionMove};
+use kuvo_engine::{
+    Engine, LetterDelivery, LetterPrompt, LetterText, MoveEngineError, SessionMove,
+    TranscriptError, TranscriptScope,
+};
 use kuvo_store::{
     files,
     locks::{OnBusy, StaleLock},
@@ -21,15 +27,18 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::{
-    sync::broadcast,
+    sync::{broadcast, watch},
     task::{JoinHandle, JoinSet},
     time::{self, Instant, MissedTickBehavior},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{
-    directory::ComputerKey,
+    directory::{Announcement, ComputerKey},
     moves::{is_mac, plain_name},
-    outbox::{Delivered, Delivery, FailureContext, Id, IncomingLetter, Letter, Outbox, Receipts},
+    outbox::{
+        Delivered, Delivery, FailureContext, Id, IncomingLetter, Letter, Outbox, Pending, Receipts,
+    },
     ownership::Handle,
     relay::{RelayEvent, RelayHandle},
     setup_lists::{Reader, View},
@@ -39,6 +48,8 @@ const MOVED: &str = "It's moving to another computer: it comes again once it's t
 const LIMIT: u64 = 600_000;
 const ANSWER_TEXT: usize = 8000;
 const READ_BY_MAIL: usize = 20_000;
+const INTRODUCING_FOR: Duration = Duration::from_secs(60);
+const PUBLISHING_FOR: Duration = Duration::from_secs(2);
 
 pub fn start(
     reader: Reader,
@@ -58,6 +69,8 @@ pub fn start(
         outbox: None,
         receipts: None,
         answers: JoinSet::new(),
+        introductions: HashMap::new(),
+        incoming_lists: HashMap::new(),
     };
     Ok(tokio::spawn(post.run(events)))
 }
@@ -70,6 +83,18 @@ struct Letters {
     outbox: Option<Outbox>,
     receipts: Option<Receipts>,
     answers: JoinSet<Option<(Id, Letter)>>,
+    introductions: HashMap<Id, Introduction>,
+    incoming_lists: HashMap<ComputerKey, Announcement>,
+}
+
+struct Introduction {
+    since: Instant,
+    wait_for_list: Option<bool>,
+}
+
+struct ReadFailure {
+    message: String,
+    retry: bool,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +103,7 @@ struct Note {
     words: String,
     delivery: NoteDelivery,
     line: Option<String>,
+    about: Option<Value>,
 }
 
 #[derive(Deserialize, PartialEq)]
@@ -162,8 +188,12 @@ impl Letters {
 
     async fn send_due(&mut self) -> io::Result<()> {
         let view = self.reader.view();
-        let now = self.reader.now().max(0) as u64;
+        let wall = self.reader.now();
+        let now = wall.max(0) as u64;
         let run = self.reader.run.clone();
+        if let Err(error) = homes::learn_moves(&run, &view, wall) {
+            eprintln!("Remembering moved conversations: {error}");
+        }
         self.recover_replies(&view, now)?;
         let Some(outbox) = self.open_outbox()? else {
             return Ok(());
@@ -176,16 +206,33 @@ impl Letters {
                 .map_err(io::Error::other)?;
         }
         let pending = outbox.due(now, true).map_err(io::Error::other)?;
+        let due: HashSet<_> = pending.iter().map(|each| &each.id).collect();
+        self.introductions.retain(|id, _| due.contains(id));
+        let homes = if pending.iter().any(|each| each.letter.note.is_some()) {
+            homes::read(&run)?
+        } else {
+            Default::default()
+        };
         for each in pending {
             let Ok(scope) = self.ownership.scope(&each.letter.to, None) else {
                 continue;
             };
-            let owner = scope.owner;
-            if scope.held && owner.as_ref().is_none_or(|owner| owner.local) {
+            if scope.letter_held {
                 continue;
             }
-            let known = scope
-                .letter_home
+            let owner = scope.owner;
+            let learned = homes.get(&each.letter.to).filter(|home| {
+                each.letter.note.is_some()
+                    && !owner.as_ref().is_some_and(|owner| owner.local)
+                    && scope
+                        .letter_home
+                        .is_none_or(|(_, at)| at.is_some_and(|at| home.newer_than(at)))
+            });
+            let retained = learned
+                .and_then(homes::Home::key)
+                .filter(|key| Some(*key) == view.roster.here || view.roster.member(key).is_some());
+            let known = retained
+                .or_else(|| scope.letter_home.map(|(key, _)| key))
                 .or_else(|| owner.and_then(|owner| owner.key));
             let key = known.or_else(|| each.letter.peer.as_deref().and_then(decode_exact));
             let Some(key) = key else {
@@ -196,6 +243,9 @@ impl Letters {
                 .then(|| view.roster.member(&key).and_then(|peer| peer.host()))
                 .flatten();
             if !here && (!view.relay_connected || host.is_none()) {
+                continue;
+            }
+            if !here && !self.introduced(&key, &each).await {
                 continue;
             }
             let Some(mail) = self
@@ -223,6 +273,77 @@ impl Letters {
         Ok(())
     }
 
+    async fn introduced(&mut self, peer: &ComputerKey, pending: &Pending) -> bool {
+        // A transcript reply belongs to an authenticated request. Its reader
+        // already knows the conversation, including one that is archived.
+        if pending.letter.answers.is_some() && pending.letter.read.is_some() {
+            return true;
+        }
+        let Some(sender) = pending
+            .letter
+            .from
+            .as_deref()
+            .filter(|sender| !sender.is_empty())
+        else {
+            return true;
+        };
+        let sent = self.reader.agent_sent_to(peer, sender);
+        if sent == Some(true) {
+            return true;
+        }
+        let introduction = self
+            .introductions
+            .entry(pending.id.clone())
+            .or_insert_with(|| Introduction {
+                since: Instant::now(),
+                wait_for_list: None,
+            });
+        if introduction.since.elapsed() >= INTRODUCING_FOR {
+            return true;
+        }
+        // An older list can omit a newly created root while the engine has
+        // it already. Check once before treating a missing name as unknown.
+        if introduction.wait_for_list.is_none() {
+            let fresh = time::timeout(Duration::from_secs(10), async {
+                self.engine.session_move().await?.lookup(sender).await
+            })
+            .await;
+            if let Ok(Ok(Some(info))) = &fresh
+                && let Some(imported) = info
+                    .pointer("/metadata/kuvo.moveImport")
+                    .and_then(Value::as_str)
+                && crate::moves::receipt::Receipts::open(&self.reader.run)
+                    .introduced_by_move(sender, peer, imported)
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+            let now = self.reader.now().max(0) as u64;
+            let recent = |at| now.saturating_sub(at) < INTRODUCING_FOR.as_millis() as u64;
+            introduction.wait_for_list = Some(match fresh {
+                Ok(Ok(Some(info))) => {
+                    !archived(&info)
+                        && info["parentID"].is_null()
+                        && info
+                            .pointer("/metadata/kuvo/seat")
+                            .is_none_or(Value::is_null)
+                        && info["title"]
+                            .as_str()
+                            .is_some_and(|title| !title.trim().is_empty())
+                        && info
+                            .pointer("/time/created")
+                            .and_then(Value::as_u64)
+                            .is_some_and(recent)
+                }
+                Ok(Ok(None) | Err(MoveEngineError::InvalidTree)) => false,
+                // The engine may still be opening its session list. An error
+                // doesn't establish that a newly queued message has no sender.
+                _ => pending.letter.at.is_some_and(recent),
+            });
+        }
+        sent == Some(false) && introduction.wait_for_list == Some(false)
+    }
+
     fn recover_replies(&mut self, view: &View, now: u64) -> io::Result<()> {
         let replies = self.reader.run.join("replies");
         let entries = match std::fs::read_dir(&replies) {
@@ -232,14 +353,21 @@ impl Letters {
         };
         for entry in entries {
             let path = entry?.path();
+            let extension = path.extension().and_then(|ext| ext.to_str());
+            if !matches!(extension, Some("json" | "gaveup")) {
+                continue;
+            }
             let Some(id) = path
-                .file_name()
+                .file_stem()
                 .and_then(|name| name.to_str())
-                .and_then(|name| name.strip_suffix(".json"))
                 .and_then(|id| Id::try_from(id.to_owned()).ok())
             else {
                 continue;
             };
+            if extension == Some("gaveup") {
+                self.give_up(&id, &path)?;
+                continue;
+            }
             if tool_alive(&self.reader.run, &id, now) {
                 continue;
             }
@@ -256,7 +384,7 @@ impl Letters {
                 let Ok(scope) = self.ownership.scope(&to, None) else {
                     continue;
                 };
-                if scope.held {
+                if scope.letter_held {
                     continue;
                 }
                 let name = reply.name.as_deref().unwrap_or("another agent");
@@ -289,16 +417,43 @@ impl Letters {
                 )?;
             }
             files::remove_file_synced(&path)?;
-            files::remove_file_synced(&path.with_extension("gaveup"))?;
+            let gave_up = path.with_extension("gaveup");
+            if gave_up.try_exists()? {
+                self.give_up(&id, &gave_up)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn give_up(&mut self, id: &Id, marker: &Path) -> io::Result<()> {
+        if self.outbox()?.give_up(id).map_err(io::Error::other)? {
+            files::remove_file_synced(&marker.with_extension("alive"))?;
+            files::remove_file_synced(marker)?;
         }
         Ok(())
     }
 
     async fn receive(&mut self, key: ComputerKey, envelope: &Envelope) -> io::Result<()> {
         let view = self.reader.view();
-        let Some(host) = view.roster.member(&key).and_then(|peer| peer.host()) else {
+        let Some(peer) = view.roster.member(&key) else {
             return Ok(());
         };
+        let key_text = encode(&key);
+        let published = view.announced.get(&key_text).map_or(0, |entry| entry.at);
+        self.incoming_lists.retain(|key, entry| {
+            view.roster.member(key).is_some()
+                && view.announced.get(&encode(key)).map_or(0, |list| list.at) < entry.at
+        });
+        if let Some(agents) = envelope.0.get("agents").cloned()
+            && let Some(agents) = Announcement::received(agents, peer, self.reader.now())
+            && agents.at > published
+            && self
+                .incoming_lists
+                .get(&key)
+                .is_none_or(|seen| agents.at > seen.at)
+        {
+            self.incoming_lists.insert(key, agents);
+        }
         let now = self.reader.now().max(0) as u64;
         if let Some(delivered) = envelope_field::<Delivered>(envelope, "delivered")
             && let Some(outbox) = self.open_outbox()?
@@ -307,12 +462,44 @@ impl Letters {
                 .settle(&key, &delivered, now)
                 .map_err(io::Error::other)?;
         }
-        if let Some(letter) = envelope_field::<IncomingLetter>(envelope, "letter")
+        let Some(letter) = envelope_field::<IncomingLetter>(envelope, "letter") else {
+            return Ok(());
+        };
+        // Both actors see authenticated mail in relay order. If the preceding list
+        // named this sender, give the directory time to publish that precise list.
+        let view = match self.incoming_lists.get(&key) {
+            Some(list)
+                if letter.letter.from.as_ref().is_some_and(|sender| {
+                    list.list.iter().any(|agent| &agent.session == sender)
+                }) =>
+            {
+                self.after_announcement(&key_text, list.at).await
+            }
+            _ => view,
+        };
+        if let Some(host) = view.roster.member(&key).and_then(|peer| peer.host())
             && let Some(reply) = self.take(&view, key, letter).await?
         {
             let _ = self.relay.sender.mail(host, reply.envelope(now)).await;
         }
         Ok(())
+    }
+
+    async fn after_announcement(&mut self, key: &str, at: i64) -> Arc<View> {
+        let _ = time::timeout(PUBLISHING_FOR, async {
+            while self
+                .reader
+                .view()
+                .announced
+                .get(key)
+                .is_none_or(|list| list.at < at)
+            {
+                self.reader.changed().await?;
+            }
+            Ok::<(), watch::error::RecvError>(())
+        })
+        .await;
+        self.reader.view()
     }
 
     async fn take(
@@ -323,9 +510,7 @@ impl Letters {
     ) -> io::Result<Option<Delivered>> {
         let now = self.reader.now().max(0) as u64;
         // Remote work calls and seats own their own dispatch and receipts.
-        if envelope.letter.other.contains_key("call")
-            || envelope.letter.other.contains_key("seat")
-            || (envelope.letter.read.is_some() && envelope.letter.answers.is_none())
+        if envelope.letter.other.contains_key("call") || envelope.letter.other.contains_key("seat")
         {
             return Ok(None);
         }
@@ -352,12 +537,18 @@ impl Letters {
             return Ok(Some(delivered(id)));
         }
         if let Some(answered) = &letter.answers
-            && (self.accept_answer(view, key, &letter, answered, now)? || letter.read.is_some())
+            && (self
+                .accept_answer(view, key, &letter, answered, now)
+                .await?
+                || letter.read.is_some())
         {
             self.receipts()?
                 .accepted(&id, note.is_some(), now)
                 .map_err(io::Error::other)?;
             return Ok(Some(delivered(id)));
+        }
+        if letter.read.is_some() {
+            return self.read_transcript(key, id, letter, now).await.map(Some);
         }
         let scope = self
             .ownership
@@ -386,6 +577,19 @@ impl Letters {
         let session = match engine.lookup(&letter.to).await {
             Ok(Some(session)) => session,
             Ok(None) => {
+                if note.is_some()
+                    && let Some(home) = homes::read(&self.reader.run)?
+                        .get(&letter.to)
+                        .and_then(homes::Home::key)
+                        .filter(|key| view.roster.member(key).is_some())
+                {
+                    return Ok(Some(refused(
+                        id,
+                        "It lives on another computer now: it comes again there.",
+                        true,
+                        Some(encode(&home)),
+                    )));
+                }
                 return Ok(Some(refused(
                     id,
                     "Its coding agents aren't running yet.",
@@ -406,12 +610,7 @@ impl Letters {
         let seat = session
             .pointer("/metadata/kuvo/seat")
             .is_some_and(|seat| !seat.is_null());
-        let archived = session.pointer("/metadata/kuvo.archived") == Some(&Value::Bool(true))
-            || session.pointer("/metadata/kuvo/archived") == Some(&Value::Bool(true))
-            || session
-                .pointer("/time/archived")
-                .and_then(Value::as_u64)
-                .is_some_and(|at| at != 0);
+        let archived = archived(&session);
         if archived && !child && !seat && note.is_some() {
             return Ok(Some(refused(
                 id,
@@ -428,6 +627,44 @@ impl Letters {
                 None,
             )));
         }
+        if note.is_none() && view.roster.here != Some(key) {
+            let agents = view.announced_agents();
+            if !agents.is_empty() && !agents.iter().any(|agent| agent.session == letter.to) {
+                let here = view.roster.local();
+                let arrived = crate::moves::recently_arrived(
+                    &self.reader.run,
+                    &letter.to,
+                    &here.id,
+                    self.reader.now(),
+                )
+                .map_err(io::Error::other)?;
+                if !arrived {
+                    let under = match letter.from.as_deref() {
+                        Some(lead) => started_under(&engine, &session, lead).await,
+                        None => Ok(false),
+                    };
+                    match under {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return Ok(Some(refused(
+                                id,
+                                "That conversation isn't one this computer lists, nor one you started: write to one that list_agents names.",
+                                false,
+                                None,
+                            )));
+                        }
+                        Err(error) => {
+                            return Ok(Some(refused(
+                                id,
+                                &format!("It didn't reach it: {error}"),
+                                true,
+                                None,
+                            )));
+                        }
+                    }
+                }
+            }
+        }
         let key_text = encode(&key);
         let counted_as = format!(
             "{}:{key_text}",
@@ -443,29 +680,43 @@ impl Letters {
         }
         let text = cut(&letter.text, 32_000).to_owned();
         let mut sender = None;
-        let (prompt, from, words, steer, metadata) = if let Some(ref note) = note {
+        let (immediate, when_queued, from, words, steer) = if let Some(ref note) = note {
             let from = cut(&note.from, 200).to_owned();
             let metadata = note
                 .line
                 .as_ref()
                 .map(|line| json!({"kuvo":{"note":{"from":from,"line":cut(line,32_000)}}}));
             (
-                text,
+                LetterText { text, metadata },
+                None,
                 from,
                 cut(&note.words, 32_000).to_owned(),
                 note.delivery == NoteDelivery::Steer,
-                metadata,
             )
         } else {
             sender = self.sender(view, key, letter.from.as_deref());
             let name = sender
-                .map(|(_, name)| name.to_owned())
+                .as_ref()
+                .map(|(_, name)| name.to_string())
                 .unwrap_or_else(|| unknown_sender(view, &key));
-            let address = sender.map_or("unknown", |(from, _)| from);
-            let hint = letter_hint(address, letter.wait);
-            let prompt = format!("[Message from {name} · {address}] ({hint})\n\n{text}");
-            let metadata = json!({"kuvo":{"parts":{"words":text,"mail":{"name":name,"session":address,"hint":hint}}}});
-            (prompt, name, text, true, Some(metadata))
+            let address = sender.as_ref().map_or("unknown", |(from, _)| *from);
+            let compose = |waiting| {
+                let hint = letter_hint(address, waiting);
+                LetterText {
+                    text: format!("[Message from {name} · {address}] ({hint})\n\n{text}"),
+                    metadata: Some(
+                        json!({"kuvo":{"parts":{"words":text,"mail":{"name":name,"session":address,"hint":hint}}}}),
+                    ),
+                }
+            };
+            let waiting = sender.is_some() && letter.wait;
+            (
+                compose(waiting),
+                waiting.then(|| compose(false)),
+                name,
+                text,
+                true,
+            )
         };
         let Delivery::Submit { prompt: prompt_id } = self
             .receipts()?
@@ -477,37 +728,63 @@ impl Letters {
         match engine
             .deliver_letter(
                 &letter.to,
-                prompt_id.clone(),
-                prompt,
-                from,
-                words,
-                steer,
-                metadata,
+                LetterPrompt {
+                    id: prompt_id.clone(),
+                    immediate,
+                    when_queued,
+                    from,
+                    words,
+                    steer,
+                },
             )
             .await
         {
-            Ok(kept) => {
+            Ok(delivered_letter) => {
                 self.receipts()?
                     .accepted(&id, note.is_some(), now)
                     .map_err(io::Error::other)?;
+                if view.roster.here != Some(key)
+                    && let Some(about) = note
+                        .as_ref()
+                        .and_then(|note| note.about.as_ref())
+                        .and_then(Value::as_array)
+                {
+                    let sessions = about
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|session| crate::ownership::session_id(session))
+                        .take(100);
+                    let made = letter
+                        .other
+                        .get("made")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(now);
+                    if let Err(error) =
+                        homes::remember(&self.reader.run, sessions, &key, made.min(now))
+                    {
+                        eprintln!("Remembering the computer named in a note: {error}");
+                    }
+                }
                 let mut receipt = delivered(id.clone());
                 if note.is_none() && letter.wait {
-                    if let Some((from, _)) = sender.filter(|_| !kept) {
+                    if let (Some((from, _)), LetterDelivery::Accepted) =
+                        (&sender, &delivered_letter)
+                    {
                         self.answers.spawn(wait_for_answer(
                             engine,
                             letter.to.clone(),
                             prompt_id,
-                            from.to_owned(),
+                            (*from).to_owned(),
                             key,
                             id,
                         ));
                     } else {
                         receipt.answer = Some(false);
-                        receipt.why = Some(if sender.is_some() {
-                            "That conversation has a paused queue. Your message waits for the conversation to resume. Its answer, if it writes one, comes to you as a message."
-                        } else {
-                            "Its answer can't come back to you: it doesn't know who you are."
-                        }.into());
+                        receipt.why = Some(match (sender, delivered_letter) {
+                            (Some(_), LetterDelivery::Queued(reason)) => reason,
+                            _ => "Its answer can't come back to you: it doesn't know who you are."
+                                .into(),
+                        });
                     }
                 }
                 Ok(Some(receipt))
@@ -524,39 +801,180 @@ impl Letters {
         }
     }
 
+    async fn read_transcript(
+        &mut self,
+        key: ComputerKey,
+        id: Id,
+        request: Letter,
+        now: u64,
+    ) -> io::Result<Delivered> {
+        const MOVING_READ: &str = "It's moving to another computer: it's read once it's there.";
+        let Some(from) = request.from.filter(|from| {
+            from.strip_prefix("ses_").is_some_and(|suffix| {
+                (1..=60).contains(&suffix.len())
+                    && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            })
+        }) else {
+            return Ok(refused(id, "Its answer has nowhere to go.", false, None));
+        };
+        let moving = |to: &str| {
+            self.ownership
+                .scope(to, None)
+                .map(|scope| {
+                    scope.held
+                        || scope.owner.is_some_and(|owner| !owner.local)
+                        || scope
+                            .letter_home
+                            .is_some_and(|(home, _)| Some(home) != scope.here)
+                })
+                .map_err(io::Error::other)
+        };
+        if moving(&request.to)? {
+            return Ok(refused(id, MOVING_READ, true, None));
+        }
+        let result = self
+            .transcript(
+                &request.to,
+                &from,
+                request
+                    .read
+                    .as_ref()
+                    .and_then(|read| read.get("query"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
+            )
+            .await;
+        let words = match result {
+            Ok(words) => words,
+            Err(error) => return Ok(refused(id, &error.message, error.retry, None)),
+        };
+        if moving(&request.to)? {
+            return Ok(refused(id, MOVING_READ, true, None));
+        }
+        let hash = Sha256::digest(format!("{} read by {}", id.as_str(), encode(&key)));
+        let answer =
+            Id::try_from(format!("ltr_{}", &encode(&hash)[..22])).map_err(io::Error::other)?;
+        self.leave_answer(
+            &answer,
+            Letter {
+                to: from,
+                from: Some(request.to),
+                text: words,
+                at: None,
+                peer: Some(encode(&key)),
+                sent_to: None,
+                wait: false,
+                answers: Some(id.clone()),
+                read: Some(Default::default()),
+                note: None,
+                refused: false,
+                other: Default::default(),
+            },
+        )?;
+        self.receipts()?
+            .accepted(&id, false, now)
+            .map_err(io::Error::other)?;
+        Ok(delivered(id))
+    }
+
+    async fn transcript(
+        &self,
+        session: &str,
+        from: &str,
+        query: Option<&str>,
+    ) -> Result<String, ReadFailure> {
+        let unavailable = |error: MoveEngineError| ReadFailure {
+            message: format!("It couldn't be read: {error}"),
+            retry: true,
+        };
+        let engine = self.engine.session_move().await.map_err(unavailable)?;
+        let info = engine
+            .lookup(session)
+            .await
+            .map_err(unavailable)?
+            .ok_or_else(|| ReadFailure {
+                message: "Its coding agents aren't running here now: it comes again once they are."
+                    .into(),
+                retry: true,
+            })?;
+        let refuse = |message: &str| ReadFailure {
+            message: message.into(),
+            retry: false,
+        };
+        if info["parentID"].as_str().is_some_and(|s| !s.is_empty()) {
+            return Err(refuse("It's a subagent's conversation."));
+        }
+        if info
+            .pointer("/metadata/kuvo/seat")
+            .is_some_and(|seat| !seat.is_null())
+        {
+            return Err(refuse("It's a seat in a group chat."));
+        }
+        if archived(&info)
+            && (engine.lookup(from).await.map_err(unavailable)?.is_some()
+                || !started_under(&engine, &info, from)
+                    .await
+                    .map_err(unavailable)?)
+        {
+            return Err(refuse(
+                "It's archived, and only the conversation that started this work can read it.",
+            ));
+        }
+        let title = info["title"]
+            .as_str()
+            .filter(|title| !title.is_empty())
+            .unwrap_or("New session");
+        self.engine
+            .transcript(
+                session,
+                title,
+                query,
+                TranscriptScope::Peer,
+                &CancellationToken::new(),
+            )
+            .await
+            .map_err(|error| ReadFailure {
+                message: format!("It couldn't be read: {error}"),
+                retry: !matches!(error, TranscriptError::Refused(_)),
+            })
+    }
+
     fn sender<'a>(
         &self,
         view: &'a View,
         key: ComputerKey,
         from: Option<&'a str>,
-    ) -> Option<(&'a str, &'a str)> {
+    ) -> Option<(&'a str, Cow<'a, str>)> {
         let from = from?;
-        let owner = self.ownership.scope(from, None).ok()?.owner?;
-        if owner.key != Some(key) {
+        let scope = self.ownership.scope(from, None).ok()?;
+        if scope.owner?.key != Some(key) {
             return None;
         }
         let name = if view.roster.here == Some(key) {
-            view.local
-                .list
-                .as_ref()?
-                .sessions
-                .get(from)?
-                .facts
-                .title
-                .as_deref()?
+            Cow::Borrowed(
+                view.local
+                    .list
+                    .as_ref()?
+                    .sessions
+                    .get(from)?
+                    .facts
+                    .title
+                    .as_deref()?,
+            )
+        } else if let Some(agent) = view
+            .announced
+            .get(&encode(&key))
+            .and_then(|said| said.list.iter().find(|agent| agent.session == from))
+        {
+            Cow::Borrowed(agent.name.as_str())
         } else {
-            &view
-                .announced
-                .get(&encode(&key))?
-                .list
-                .iter()
-                .find(|agent| agent.session == from)?
-                .name
+            Cow::Owned(crate::moves::switched_sender(&self.reader.run, from, &key)?)
         };
         Some((from, name))
     }
 
-    fn accept_answer(
+    async fn accept_answer(
         &mut self,
         view: &View,
         key: ComputerKey,
@@ -566,6 +984,27 @@ impl Letters {
     ) -> io::Result<bool> {
         let run = self.reader.run.clone();
         let sender = self.sender(view, key, letter.from.as_deref());
+        // The engine can already answer for a moved-in conversation while
+        // the last full session list still omits it.
+        let local_name = if sender.is_none()
+            && view.roster.here == Some(key)
+            && letter.read.is_none()
+            && let Some(from) = letter.from.as_deref()
+            && let Ok(engine) = self.engine.session_move().await
+            && let Ok(Some(info)) = engine.lookup(from).await
+        {
+            Some((
+                from,
+                info["title"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("New session")
+                    .to_owned(),
+            ))
+        } else {
+            None
+        };
+        let sender = sender.or_else(|| local_name.map(|(from, name)| (from, Cow::Owned(name))));
         // The awaited letter may be the only record left after a restart.
         self.outbox()?
             .answer(&key, answered, now, |sent| {
@@ -586,7 +1025,11 @@ impl Letters {
                     return Some(reply);
                 }
                 let fallback = unknown_sender(view, &key);
-                let (from, name) = sender.unwrap_or(("unknown", fallback.as_str()));
+                let (from, name) = sender
+                    .as_ref()
+                    .map_or(("unknown", fallback.as_str()), |(from, name)| {
+                        (*from, name.as_ref())
+                    });
                 Some(
                     json!({"text":cut(&letter.text, ANSWER_TEXT), "to":sent.from,
                 "from":from, "name":name}),
@@ -594,6 +1037,47 @@ impl Letters {
             })
             .map_err(io::Error::other)
     }
+}
+
+fn archived(info: &Value) -> bool {
+    info.pointer("/metadata/kuvo.archived") == Some(&Value::Bool(true))
+        || info.pointer("/metadata/kuvo/archived") == Some(&Value::Bool(true))
+        || info
+            .pointer("/time/archived")
+            .and_then(Value::as_u64)
+            .is_some_and(|at| at != 0)
+}
+
+async fn started_under(
+    engine: &SessionMove,
+    info: &Value,
+    lead: &str,
+) -> Result<bool, kuvo_engine::MoveEngineError> {
+    let mut above = info.clone();
+    for _ in 0..20 {
+        let metadata = &above["metadata"]["kuvo"];
+        let Some(parent) = metadata["startedBy"].as_str().filter(|id| !id.is_empty()) else {
+            return Ok(false);
+        };
+        let contains_lead = metadata["line"].as_array().map_or(parent == lead, |line| {
+            line.iter()
+                .rev()
+                .filter_map(Value::as_str)
+                .take(20)
+                .any(|id| id == lead)
+        });
+        if contains_lead {
+            return Ok(true);
+        }
+        let Some(parent) = engine.lookup(parent).await? else {
+            return Ok(false);
+        };
+        if parent["parentID"].as_str().is_some_and(|id| !id.is_empty()) {
+            return Ok(false);
+        }
+        above = parent;
+    }
+    Ok(false)
 }
 
 fn letter_hint(address: &str, waiting: bool) -> std::borrow::Cow<'_, str> {

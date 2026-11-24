@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 const DAY: u64 = 86_400_000;
 const LETTER_MEMORY: u64 = 2 * DAY;
-const NOTE_MEMORY: u64 = 30 * DAY;
+pub(crate) const NOTE_MEMORY: u64 = 30 * DAY;
 const RETRY_EVERY: u64 = 60_000;
 const EXPIRED: &str = "It couldn't get there in two days of trying.";
 
@@ -40,7 +40,7 @@ pub struct FailureContext {
     pub tool_waiting: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Id(String);
 
@@ -186,6 +186,7 @@ pub struct Pending {
 }
 
 pub struct Outbox {
+    run: PathBuf,
     sending: PathBuf,
     replies: PathBuf,
     tries: HashMap<String, u64>,
@@ -202,6 +203,7 @@ impl Outbox {
         }
         let writer = lock(&run.join("outbox/writer.lock"))?;
         Ok(Self {
+            run: run.into(),
             sending,
             replies,
             tries: HashMap::new(),
@@ -222,6 +224,30 @@ impl Outbox {
             }
         }
         write(&self.pending(id), letter)?;
+        Ok(true)
+    }
+
+    /// A tool stopped waiting. A request for a transcript has no recipient
+    /// for its result, while a message can still go on without a waiter.
+    pub(crate) fn give_up(&mut self, id: &Id) -> Result<bool, Error> {
+        let pending = self.pending(id);
+        let letter = match read::<Letter>(&pending) {
+            Ok(letter) => letter,
+            Err(Error::Json { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(mut letter) = letter {
+            if letter.other.contains_key("call") || letter.other.contains_key("seat") {
+                return Ok(false);
+            }
+            if letter.read.is_some() {
+                remove(&pending)?;
+            } else if letter.wait {
+                letter.wait = false;
+                write(&pending, &letter)?;
+            }
+        }
+        remove(&self.waiting(id))?;
         Ok(true)
     }
 
@@ -327,6 +353,11 @@ impl Outbox {
             {
                 letter.peer = Some(keys::encode(&next));
                 write(&path, &letter)?;
+                if let Err(error) =
+                    crate::letters::homes::remember(&self.run, [letter.to.as_str()], &next, now)
+                {
+                    eprintln!("Remembering where a note was redirected: {error}");
+                }
             }
             return Ok(Settlement::Retry);
         }

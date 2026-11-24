@@ -11,8 +11,14 @@ pub type Millis = i64;
 const CHECKED_EVERY: Millis = 300_000;
 const HEARD_FOR: Millis = 30 * 60_000;
 const LIVE_FOR: Millis = 60_000;
-const SWITCH_GRACE: Millis = 10 * 60_000;
+pub const SWITCH_GRACE: Millis = 10 * 60_000;
 pub const COPY_QUIET_AFTER: Millis = 180_000;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UpdatePresence {
+    pub away_for: Option<Millis>,
+    pub heard: Option<Millis>,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Standing {
@@ -112,6 +118,22 @@ impl Reach {
 
     pub fn peer_is_away(&self, key: &str, heard: Option<Millis>, now: Millis) -> bool {
         self.away.contains_key(key) || heard.is_some_and(|at| now.saturating_sub(at) > HEARD_FOR)
+    }
+
+    pub(crate) fn update_presence(
+        &self,
+        key: &str,
+        heard: Option<Millis>,
+        now: Millis,
+    ) -> UpdatePresence {
+        let away_for = self.peer_is_away(key, heard, now).then(|| {
+            heard
+                .filter(|at| now.saturating_sub(*at) <= HEARD_FOR)
+                .map_or(Millis::MAX, |at| {
+                    now.saturating_sub(self.away_since(key).unwrap_or(at))
+                })
+        });
+        UpdatePresence { away_for, heard }
     }
 
     pub fn copy_standing(
