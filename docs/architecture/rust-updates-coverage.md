@@ -10,6 +10,9 @@ restore the launch identity from `bin/.kuvo-release.json` when a TypeScript
 stager moved only `bin`. A Rust manifest uses the five Rust target triples
 under `packs`, with the existing signed `pack` field available to older readers.
 
+Intel Macs: machine only (box, no app).
+Intel Mac: checked without running; a real run waits for an Intel Mac.
+
 ## Checks added in 7.2
 
 | Check | Boundary |
@@ -66,6 +69,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U50 | The release builder assembles Rust target packs with the native executable and common catalogs, browser, and configuration. Mac arm64, native Linux x64, WSL2, and native Windows x64 verify and prepare their pack from the same signed manifest. The Mac pack retains the ad-hoc Helper signature, and the Windows pack ships the runtime library and probes the pinned engine. |
 | U51 | A trial executable exits just after the previous resident stops, leaving its Rust holder running. The keeper resumes the recorded rollback, and the previous release adopts the same holder and agent at the next generation. The conversation completes once and the keeper settles the refusal for the failed digest. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U52 | The release signer reads the five named target archives beside the compatibility pack. It checks their release and engine metadata, signs every archive's digest and URL, and keeps the exact signed TypeScript bridge. An inconsistent target fails before an envelope is written. |
+| U53 | The release dry run builds the five target programs and assembles and signs them separately from the desktop release. A local replay packaged all five binaries, checked every signed archive digest and file list, and prepared the matching release on Mac arm64, native Linux x64, WSL2, and native Windows x64. Static checks verified the Intel-only box executable, its universal ad-hoc signed Helper, and the static Linux arm64 executable. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -297,7 +301,7 @@ dependencies.
 | Same, stale Mac launcher marks | Open. | 7.2 |
 | Same, partial rollback reported once | Partial. U51 resumes the native rollback journal and records the matching refusal while the held turn finishes. The interrupted in-place restore and its one-time settlement still need the predecessor fixture. | 7.2 |
 | Same, signed release with Helper kept for peers | Partial. U9–U10 pull the signed pack from a peer. U50 prepares locally assembled target packs, including a Mac Helper with a verified ad-hoc signature. U52 signs the complete target set with the bridge envelope. Release-signed Helper media and publication remain open. | 7.2, 6.2, 9.3 |
-| Same, full packaged contents | Partial. U50 prepares the complete local Mac arm64, Linux x64, and Windows x64 packs. Mac x64 and Linux arm64 builds and published media remain open. | 7.2, 9.3 |
+| Same, full packaged contents | Partial. U50 prepares the complete local Mac arm64, Linux x64, and Windows x64 packs. U53 checks the signed Intel Mac and Linux arm64 archives as well. Published media remain open. | 9.3 |
 | [update-follows-peers](../../box/bridge-tests/update-follows-peers.test.js), installed version and app version | Partial. U8 and U10 follow the main's signed installed version. Installer and app offers remain open. | 7.2 |
 | Same, desktop looks for its own update | TypeScript reference and desktop updater. | — |
 | Same, six-hour check | Partial. The resident schedules checks every six hours. U20 covers manual checks forwarded by a member. The elapsed-round cases remain open. | 7.2 |
@@ -364,6 +368,7 @@ dependencies.
 | [Keeper](rust-keeper-coverage.md) route, future update record, rollback status, and former release | U5 covers bin-only manifest recovery. U6 and U43 cover a keeper's trial refusal in update status and the fleet row. Future pack file-list versions are refused by the Rust reader. Former-release integration remains open. | 7.2 |
 | [Store](rust-store-coverage.md) authority-format cases | Installer stdin/prefix before making, making marker, repair records, and former-release rollback still need full installer and updater proofs. | 2.3, 7.2 |
 | [Adding](rust-adding-coverage.md) `computers-add.test.js` 302, 360, 397, 445, 2038, 2069 | Open. Cover update discovery, missing version, fallback address, retired app, and interrupted Helper reinstall. | 2.3, 2.4, 2.6, 6.2, 7.2 |
+| Fresh SSH Add across different targets and headless Mac code join | U53 supplies signed packs by target. TypeScript sends its own common release files and fetches the target's pinned engine on the sender. Fresh Rust Add and headless code join still need to select and stage the target's signed pack and engine before enrollment, then start its machine keeper. | 2.3 |
 | [Move](rust-move-coverage.md) `rehome`, `rehome-run`, `folder-version` 287, 301, 326, and own-home Mac | Partial. 2.6 has released data and cutover tests with stand-ins and U11 covers the installer entry for moves. The release trial and Helper launch remain open. | 4.1, 6.2, 7.2 |
 | [Engine](rust-engine-coverage.md) inbox paging, incomplete inventory and ordered crash recovery | The existing inbox API is available. Its coordinated switch caller and release tests remain open. | 3.2, 7.2 |
 | Same, engine swap holds, rollback, expiry, and downgrade fence | Open as release tests. | 3.2, 7.2 |
