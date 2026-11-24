@@ -1,5 +1,6 @@
 use std::{
-    io::{self, BufRead, BufReader, Read, Write},
+    collections::HashMap,
+    io::{self, BufRead, BufReader, Write},
     sync::{Arc, mpsc},
     thread,
     time::Duration,
@@ -43,6 +44,21 @@ impl Catalog {
     fn stamp(&self, mut models: Models, generation: u64) -> Models {
         models.generation = Some(format!("{}-{generation}", self.prefix));
         models
+    }
+
+    /// How much `model` holds, as the account's listed models say (none while they're a guess).
+    pub async fn window(&self, model: &str) -> Option<u64> {
+        let cache = self.cache.lock().await;
+        cache
+            .models
+            .as_ref()?
+            .models
+            .iter()
+            .find(|each| {
+                !each.provisional
+                    && (each.id == model || each.aliases.iter().any(|alias| alias == model))
+            })?
+            .context
     }
 
     pub async fn clear(&self) {
@@ -100,21 +116,18 @@ impl Catalog {
 }
 
 async fn load(program: Program) -> io::Result<Models> {
-    let response = tokio::task::spawn_blocking(move || initialize(program)).await??;
-    let list: Vec<Info> =
-        serde_json::from_value(response.get("models").cloned().unwrap_or(Value::Null))
-            .map_err(|_| io::Error::other("Claude Code didn’t list its models."))?;
-    if list.is_empty() {
-        return Err(io::Error::other("Claude Code didn’t list its models."));
-    }
+    let (list, windows) = tokio::task::spawn_blocking(move || probe(program)).await??;
     Ok(Models {
         complete: true,
-        models: named_models(list),
+        models: named_models(list, &windows),
         ..Models::default()
     })
 }
 
-fn initialize(program: Program) -> io::Result<Value> {
+/// Claude Code's models on this account, as it lists them, and how much each holds, as its
+/// `/context` says once a model is chosen (an older Claude Code that doesn't say leaves them to its
+/// list's word).
+fn probe(program: Program) -> io::Result<(Vec<Info>, HashMap<String, u64>)> {
     let env = program.environment(true);
     let executable = program
         .executable(&env)
@@ -143,55 +156,126 @@ fn initialize(program: Program) -> io::Result<Value> {
     .chain([settings.into_os_string()])
     .collect();
     let mut child = spawn.spawn()?;
-    let mut stdin = child.stdin.take().expect("requested stdin");
+    let stdin = child.stdin.take().expect("requested stdin");
     let stdout = child.stdout.take().expect("requested stdout");
-    let (send, receive) = mpsc::sync_channel(1);
+    let (send, replies) = mpsc::sync_channel(16);
     let reader = thread::Builder::new()
         .name("claude-models".into())
-        .spawn(move || {
-            let _ = send.send(model_reply(BufReader::new(stdout)));
-        })?;
-    writeln!(
-        stdin,
-        "{}",
-        wire::control_request("catalog", json!({"subtype":"initialize"}))
-    )?;
-    let result = receive.recv_timeout(Duration::from_secs(30));
-    drop(stdin);
+        .spawn(move || read_replies(BufReader::new(stdout), &send))?;
+    let mut asking = Asking { stdin, replies };
+    let result = asking.models();
+    drop(asking);
     child.stop(Duration::from_secs(1), |_| {})?;
     let _ = reader.join();
-    result.map_err(|error| match error {
-        mpsc::RecvTimeoutError::Timeout => io::Error::new(
-            io::ErrorKind::TimedOut,
-            "Claude Code didn't answer in time.",
-        ),
-        mpsc::RecvTimeoutError::Disconnected => {
-            io::Error::other("Claude Code stopped before listing its models.")
-        }
-    })?
+    result
 }
 
-fn model_reply(mut stdout: impl BufRead) -> io::Result<Value> {
-    // A catalog is short. Do not accept an unbounded stream from a broken CLI.
-    let mut stdout = stdout.by_ref().take(8_000_001);
+/// The probe's requests to its Claude Code, each with its answer.
+struct Asking {
+    stdin: std::io::PipeWriter,
+    replies: mpsc::Receiver<(String, wire::ReplyBody)>,
+}
+
+impl Asking {
+    fn ask(&mut self, id: &str, request: Value, within: Duration) -> io::Result<wire::ReplyBody> {
+        writeln!(self.stdin, "{}", wire::control_request(id, request))?;
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.replies.recv_timeout(left) {
+                Ok((answered, body)) if answered == id => return Ok(body),
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Claude Code didn't answer in time.",
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(io::Error::other(
+                        "Claude Code stopped before listing its models.",
+                    ));
+                }
+            }
+        }
+    }
+
+    fn models(&mut self) -> io::Result<(Vec<Info>, HashMap<String, u64>)> {
+        let wire::ReplyBody::Success { response, .. } = self.ask(
+            "catalog",
+            json!({"subtype":"initialize"}),
+            Duration::from_secs(30),
+        )?
+        else {
+            return Err(io::Error::other("Claude Code refused to list its models."));
+        };
+        let list: Vec<Info> =
+            serde_json::from_value(response.get("models").cloned().unwrap_or(Value::Null))
+                .map_err(|_| io::Error::other("Claude Code didn’t list its models."))?;
+        if list.is_empty() {
+            return Err(io::Error::other("Claude Code didn’t list its models."));
+        }
+        let windows = self.windows(&list);
+        Ok((list, windows))
+    }
+
+    /// Each model's window, once per model (its aliases share it); none past one it can't say.
+    fn windows(&mut self, list: &[Info]) -> HashMap<String, u64> {
+        let within = Duration::from_secs(5);
+        let mut said: HashMap<String, u64> = HashMap::new();
+        let mut windows = HashMap::new();
+        for (index, info) in list.iter().enumerate() {
+            let key = info
+                .resolved_model
+                .clone()
+                .unwrap_or_else(|| info.value.clone());
+            let window = match said.get(&key) {
+                Some(window) => *window,
+                None => {
+                    let chosen = self.ask(
+                        &format!("model-{index}"),
+                        json!({"subtype":"set_model","model":info.value}),
+                        within,
+                    );
+                    if !matches!(chosen, Ok(wire::ReplyBody::Success { .. })) {
+                        return windows;
+                    }
+                    let Ok(wire::ReplyBody::Success { response, .. }) = self.ask(
+                        &format!("context-{index}"),
+                        json!({"subtype":"get_context_usage","detail":"summary"}),
+                        within,
+                    ) else {
+                        return windows;
+                    };
+                    let Some(window) = response["maxTokens"].as_u64().filter(|window| *window > 0)
+                    else {
+                        return windows;
+                    };
+                    said.insert(key, window);
+                    window
+                }
+            };
+            windows.insert(info.value.clone(), window);
+        }
+        windows
+    }
+}
+
+/// Each control response Claude Code writes, until it stops (a catalog is short: an unbounded
+/// stream from a broken CLI isn't taken).
+fn read_replies(stdout: impl BufRead, send: &mpsc::SyncSender<(String, wire::ReplyBody)>) {
+    let mut stdout = stdout.take(8_000_001);
     let mut line = String::new();
     loop {
         line.clear();
-        if stdout.read_line(&mut line)? == 0 || !line.ends_with('\n') {
-            return Err(io::Error::other(
-                "Claude Code stopped before listing its models.",
-            ));
+        if !matches!(stdout.read_line(&mut line), Ok(read) if read > 0) || !line.ends_with('\n') {
+            return;
         }
         if let Ok(wire::Frame::ControlResponse { response }) =
             serde_json::from_str::<wire::Frame>(&line)
-            && response.request_id == "catalog"
+            && send.send((response.request_id, response.body)).is_err()
         {
-            return match response.body {
-                wire::ReplyBody::Success { response, .. } => Ok(response),
-                wire::ReplyBody::Error => {
-                    Err(io::Error::other("Claude Code refused to list its models."))
-                }
-            };
+            return;
         }
     }
 }
@@ -218,6 +302,21 @@ impl Info {
 
     fn name(&self) -> &str {
         self.described_name().unwrap_or(&self.display_name)
+    }
+
+    /// How much it holds: as Claude Code said, or as its list says (a million where it says 1M).
+    fn window(&self, windows: &HashMap<String, u64>) -> u64 {
+        windows.get(&self.value).copied().unwrap_or_else(|| {
+            if self
+                .description
+                .as_deref()
+                .is_some_and(|text| text.to_lowercase().contains("1m"))
+            {
+                1_000_000
+            } else {
+                200_000
+            }
+        })
     }
 
     fn stands_for(&self, other: &Self) -> bool {
@@ -256,7 +355,7 @@ impl Info {
     }
 }
 
-fn named_models(list: Vec<Info>) -> Vec<Model> {
+fn named_models(list: Vec<Info>, windows: &HashMap<String, u64>) -> Vec<Model> {
     let default = list.iter().position(|info| info.value == "default");
     let equivalent = default.and_then(|standing| {
         list.iter()
@@ -273,6 +372,7 @@ fn named_models(list: Vec<Info>) -> Vec<Model> {
                 }
                 let name = info.default_name();
                 let concrete = info.resolved_model.is_some();
+                let context = info.window(windows);
                 return Some((
                     index,
                     model(
@@ -281,13 +381,15 @@ fn named_models(list: Vec<Info>) -> Vec<Model> {
                         info.supported_effort_levels,
                         concrete,
                         false,
-                    ),
+                    )
+                    .holding(context),
                 ));
             }
             let place = default
                 .filter(|_| Some(index) == equivalent)
                 .unwrap_or(index);
             let name = info.name().to_owned();
+            let context = info.window(windows);
             Some((
                 place,
                 model(
@@ -296,7 +398,8 @@ fn named_models(list: Vec<Info>) -> Vec<Model> {
                     info.supported_effort_levels,
                     Some(index) == equivalent,
                     false,
-                ),
+                )
+                .holding(context),
             ))
         })
         .collect();
@@ -324,6 +427,18 @@ fn model(
         hidden: false,
         retiring: false,
         provisional,
+        context: None,
+    }
+}
+
+trait Holding {
+    fn holding(self, context: u64) -> Self;
+}
+
+impl Holding for Model {
+    fn holding(mut self, context: u64) -> Self {
+        self.context = Some(context);
+        self
     }
 }
 

@@ -38,6 +38,7 @@ use crate::{
 
 use super::{
     diagnostic::Said,
+    model::Catalog,
     owned_paths,
     permissions::Request,
     program::Program,
@@ -286,6 +287,7 @@ enum Command {
 impl Conversation {
     pub fn spawn(
         program: Program,
+        models: Catalog,
         provider: String,
         context: SessionContext,
         recovered: Option<Recovery>,
@@ -311,6 +313,7 @@ impl Conversation {
         tokio::spawn(
             Actor {
                 program,
+                models,
                 provider,
                 directory: context.directory,
                 session: context.session_id,
@@ -423,6 +426,8 @@ impl ActiveTurn for Turn {
 
 struct Actor {
     program: Program,
+    /// The account's models, for how much each holds.
+    models: Catalog,
     provider: String,
     directory: PathBuf,
     session: String,
@@ -801,17 +806,20 @@ impl Actor {
                 .and_then(|bytes| serde_json::from_slice::<String>(&bytes).ok())
         })
         .await?;
+        // How much the model holds: as this conversation's turns said, or as the account's list does.
+        let heard = self
+            .state
+            .get("claudeWindow")
+            .filter(|window| window["model"] == model)
+            .and_then(|window| window["size"].as_u64());
+        let window = match heard {
+            Some(size) => Some(size),
+            None => self.models.clone().window(model).await,
+        };
         Ok(match choice.as_deref() {
             Some("200000") => Some(200_000),
             Some("600000") => Some(600_000),
-            Some("never")
-                if self.state.get("claudeWindow").is_some_and(|window| {
-                    window["model"] == model
-                        && window["size"].as_u64().is_some_and(|size| size >= 900_000)
-                }) =>
-            {
-                None
-            }
+            Some("never") if window.is_some_and(|size| size >= 900_000) => None,
             _ => Some(400_000),
         })
     }

@@ -24,6 +24,8 @@ pub struct Model {
     pub hidden: bool,
     pub retiring: bool,
     pub provisional: bool,
+    /// How much it holds, in tokens, where its agent says (or its list does).
+    pub context: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
