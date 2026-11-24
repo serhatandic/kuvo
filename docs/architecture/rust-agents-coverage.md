@@ -252,7 +252,11 @@ through the shared JSON-RPC connection. The stand-in's replay comes a second
 late, yet the next resident's first read shows the ask once. A stale answer
 is refused, the answer reaches the agent once, and the message queued before
 the update goes next, once. Without the wait, that first read is empty. The
-keeper switch case still passes.
+keeper switch case still passes. The update scenarios and all four
+`agent-turn-fixture` cases passed on macOS, Linux (lokum), WSL2 and native
+Windows, with the holder, account, saved-session, line and agent conformance
+cases. On Windows the test harness stops the resident by force, so nothing is
+handed over there. The ask still comes again, and the case waits for it.
 
 The current beta's golden home (`compat/current-world.ts`) now also keeps a
 waiting message and an agent's slot in its coding-agent conversation, written

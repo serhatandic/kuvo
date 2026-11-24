@@ -53,7 +53,8 @@ export async function withAgentFixture(t, seed, run) {
     await resident?.stop();
     await bridge?.stop();
     await relay.close();
-    rmSync(root, { recursive: true, force: true });
+    // (A holder whose agent just ended can keep its folder open on Windows for a moment.)
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }
 
