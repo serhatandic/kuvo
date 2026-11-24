@@ -17,6 +17,7 @@ use kuvo_os::platform::Account;
 use kuvo_store::{files, home::Home};
 
 const LABEL: &str = "run.kuvo.code.machine";
+const WATCH_LABEL: &str = "run.kuvo.code.machine.permissions";
 const HELPER: &str = "Kuvo Helper.app";
 const AT_LOGIN: &str = "Kuvo Helper starts Kuvo on this Mac at login.";
 
@@ -44,13 +45,6 @@ pub fn pause(home: &Home) -> io::Result<()> {
 /// Inspect or unregister the login job for the account's own Mac installation.
 /// A scratch profile can only use launch tools inside that profile.
 pub fn uninstall(home: &Home, check: bool) -> io::Result<Option<bool>> {
-    if files::text_of(&home.root().join("box/kind"))
-        .as_deref()
-        .map(str::trim)
-        != Some("mac")
-    {
-        return Ok(None);
-    }
     let account = Account::current()?;
     let profile = account
         .home_folder(
@@ -65,7 +59,15 @@ pub fn uninstall(home: &Home, check: bool) -> io::Result<Option<bool>> {
     let Some(agent) = LaunchAgent::for_account(&profile, real) else {
         return Ok(None);
     };
-    agent.unregister(home, &profile, check).map(Some)
+    let mac = files::text_of(&home.root().join("box/kind"))
+        .as_deref()
+        .map(str::trim)
+        == Some("mac");
+    agent.unregister(home, &profile, WATCH_LABEL, "watch-machine", check)?;
+    let mode = if mac { "keep" } else { "keep-machine" };
+    agent
+        .unregister(home, &profile, LABEL, mode, check)
+        .map(Some)
 }
 
 #[derive(Clone, Copy)]
@@ -263,17 +265,26 @@ impl LaunchAgent {
         })
     }
 
-    fn unregister(&self, home: &Home, profile: &Path, check: bool) -> io::Result<bool> {
-        let exists = match fs::symlink_metadata(&self.plist) {
+    fn unregister(
+        &self,
+        home: &Home,
+        profile: &Path,
+        label: &str,
+        mode: &str,
+        check: bool,
+    ) -> io::Result<bool> {
+        let plist = self.plist.with_file_name(format!("{label}.plist"));
+        let exists = match fs::symlink_metadata(&plist) {
             Ok(entry) => {
                 let program = home.bin().join(HELPER).join("Contents/MacOS/Kuvo Helper");
+                let matches = |key, expected| Self::job_field(&plist, key, expected);
                 if !entry.is_file()
-                    || !self.plist.canonicalize()?.starts_with(profile)
-                    || !self.job_field("Label", LABEL.as_ref())?
-                    || !self.job_field("ProgramArguments.0", program.as_os_str())?
-                    || !self.job_field("ProgramArguments.1", "keep".as_ref())?
-                    || !self.job_field("ProgramArguments.2", "--home".as_ref())?
-                    || !self.job_field("ProgramArguments.3", home.root().as_os_str())?
+                    || !plist.canonicalize()?.starts_with(profile)
+                    || !matches("Label", label.as_ref())?
+                    || !matches("ProgramArguments.0", program.as_os_str())?
+                    || !matches("ProgramArguments.1", mode.as_ref())?
+                    || !matches("ProgramArguments.2", "--home".as_ref())?
+                    || !matches("ProgramArguments.3", home.root().as_os_str())?
                 {
                     return Err(io::Error::other(
                         "Kuvo couldn’t confirm that the login job belongs to this installation.",
@@ -287,7 +298,7 @@ impl LaunchAgent {
         if check {
             return Ok(exists);
         }
-        let service = format!("{}/{LABEL}", domain()?);
+        let service = format!("{}/{label}", domain()?);
         let mut status = self.run(["print", &service])?;
         if exists && status.status.success() && self.run(["bootout", &service])?.status.success() {
             for _ in 0..100 {
@@ -303,15 +314,15 @@ impl LaunchAgent {
                 "Kuvo couldn’t confirm that its Helper login job had stopped.",
             ));
         }
-        files::remove_file_synced(&self.plist)?;
+        files::remove_file_synced(&plist)?;
         Ok(exists)
     }
 
-    fn job_field(&self, key: &str, expected: &OsStr) -> io::Result<bool> {
+    fn job_field(plist: &Path, key: &str, expected: &OsStr) -> io::Result<bool> {
         let value = output(
             Command::new("/usr/bin/plutil")
                 .args(["-extract", key, "raw", "-o", "-"])
-                .arg(&self.plist),
+                .arg(plist),
         )?;
         Ok(value.status.success()
             && value.stdout.strip_suffix(b"\n").unwrap_or(&value.stdout)

@@ -240,6 +240,7 @@ test("uninstall removes only the stopped Mac's own Helper login job", t => {
   write(other, "other job");
   write(path.join(tools, "launchctl"), `#!/bin/sh
 tools="$KUVO_TEST_UNINSTALL_TOOLS"
+[ "$1" != print ] || [ "$2" != "gui/$(/usr/bin/id -u)/run.kuvo.code.machine.permissions" ] || exit 113
 [ "$2" = "gui/$(/usr/bin/id -u)/run.kuvo.code.machine" ] || exit 2
 case "$1" in
   print) [ -f "$tools/registered" ] || exit 113 ;;
@@ -280,6 +281,52 @@ esac
   const again = call("uninstall");
   assert.equal(again.status, 0, again.stderr);
   assert.equal(JSON.parse(again.stdout).launchAgent, false);
+});
+
+test("uninstall removes only Kuvo's tagged reboot line from a stopped Unix home", t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform === "win32") return t.skip("The fixture runs the Rust Unix installer.");
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const tools = path.join(env.HOME, "tools");
+  const table = path.join(tools, "table");
+  const other = "PATH=/usr/bin:/bin\n\n@reboot another-program\n0 12 * * * backup\n";
+  const original = other + '@reboot sh "$HOME/.kuvo-code/bin/kuvo-start" >/dev/null 2>&1 # kuvo-code: starts its engine again after a restart\n';
+  Object.assign(env, { KUVO_HOME: home, KUVO_TEST_UNINSTALL_TOOLS: tools });
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "bin/kuvo-start"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  write(path.join(home, "run/link.json"), '{"phones":[]}\n');
+  write(path.join(home, "workspace/notes"), "saved work");
+  write(table, original);
+  write(path.join(tools, "crontab"), `#!/bin/sh
+case "$1" in
+  -l) [ ! -f "$KUVO_TEST_UNINSTALL_TOOLS/deny" ] || exit 1
+      cat "$KUVO_TEST_UNINSTALL_TOOLS/table" ;;
+  -) cat >"$KUVO_TEST_UNINSTALL_TOOLS/table" ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o700 });
+  if (process.platform === "darwin") {
+    write(path.join(tools, "launchctl"), "#!/bin/sh\n[ \"$1\" != print ] || exit 113\nexit 2\n", { mode: 0o700 });
+  }
+  const call = (...args) => spawnSync(binary.file, ["uninstall", ...args], { env, cwd: home, encoding: "utf8", timeout: 20000 });
+  const check = call("--check");
+  assert.equal(check.status, 0, check.stderr);
+  assert.deepEqual(JSON.parse(check.stdout).starts, { launchAgent: false, crontab: true, checked: true });
+  write(path.join(tools, "deny"), "");
+  assert.equal(call().status, 1);
+  assert.equal(read(table), original);
+  assert.equal(fs.existsSync(path.join(home, "run/off")), false);
+  fs.rmSync(path.join(tools, "deny"));
+  const removed = call();
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.equal(JSON.parse(removed.stdout).crontab, true);
+  assert.equal(read(table), other);
+  assert.equal(read(path.join(home, "workspace/notes")), "saved work");
+  assert.deepEqual(fs.readdirSync(env.TMPDIR), []);
+  assert.equal(JSON.parse(call().stdout).crontab, false);
 });
 
 test("the Mac Helper install writes a launchd job and can reload it once the old job goes", t => {
