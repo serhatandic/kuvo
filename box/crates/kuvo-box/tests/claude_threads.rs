@@ -519,6 +519,7 @@ fn context(root: &Path, state: VendorState) -> SessionContext {
         session_id: SESSION.into(),
         directory: root.to_owned(),
         state,
+        background: Default::default(),
     }
 }
 

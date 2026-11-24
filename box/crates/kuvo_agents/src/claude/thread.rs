@@ -37,8 +37,14 @@ use crate::{
 };
 
 use super::{
-    diagnostic::Said, owned_paths, permissions::Request, program::Program, projection::Projection,
-    told::instructions_note, wire,
+    diagnostic::Said,
+    owned_paths,
+    permissions::Request,
+    program::Program,
+    projection::Projection,
+    tasks::{self, Tasks},
+    told::instructions_note,
+    wire,
 };
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -90,7 +96,12 @@ impl Pipe {
                 .meta
                 .get("claudeCompactAt")
                 .and_then(Value::as_u64),
-            said: Said::default(),
+            // (What it said before this resident was there, if it stopped that soon.)
+            said: {
+                let mut said = Said::default();
+                said.add(&controller.welcome.stderr);
+                said
+            },
             sign_in: controller
                 .welcome
                 .meta
@@ -240,6 +251,26 @@ type Handed = Arc<std::sync::Mutex<Option<Arc<dyn TurnSink>>>>;
 
 type Reply<T> = oneshot::Sender<io::Result<T>>;
 
+/// Its tasks' control requests, through the conversation's actor while it's there.
+struct Calls(mpsc::WeakSender<Command>);
+
+impl tasks::Calls for Calls {
+    fn call(&self, request: Value) -> futures_util::future::BoxFuture<'_, io::Result<Value>> {
+        Box::pin(async move {
+            let commands = self.0.upgrade().ok_or_else(stopped)?;
+            let (reply, answer) = oneshot::channel();
+            commands
+                .send(Command::TaskCall(request, reply))
+                .await
+                .map_err(|_| stopped())?;
+            timeout(CONTROL_TIMEOUT, answer)
+                .await
+                .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
+                .map_err(|_| stopped())?
+        })
+    }
+}
+
 enum Command {
     Start(Box<TurnInput>, Arc<dyn TurnSink>, Reply<()>),
     Steer(String, Prompt, Reply<Steer>),
@@ -248,6 +279,8 @@ enum Command {
     Prepare(Reply<()>),
     Stop(bool, Reply<()>),
     LetGo(TurnNote, Reply<()>),
+    /// A control request about its tasks (their output, Stop): its answer's `response`.
+    TaskCall(Value, Reply<Value>),
 }
 
 impl Conversation {
@@ -266,6 +299,12 @@ impl Conversation {
             config: program.config_home(&context.directory),
             _handed: handed.clone(),
         };
+        let tasks = Tasks::new(
+            &context.session_id,
+            &context.directory.to_string_lossy(),
+            context.background.clone(),
+            Arc::new(Calls(conversation.commands.downgrade())),
+        );
         let (pipe, recovery, instructions) = recovered.map_or((None, None, None), |old| {
             (Some(old.pipe), old.note, old.instructions)
         });
@@ -290,6 +329,8 @@ impl Conversation {
                 closing: false,
                 noticed: HashSet::new(),
                 handed,
+                tasks,
+                pending: HashMap::new(),
             }
             .run(receiver),
         );
@@ -401,6 +442,10 @@ struct Actor {
     /// What this Claude Code has said once already (a retry, a limit's warning).
     noticed: HashSet<String>,
     handed: Handed,
+    /// What it keeps going besides its turn.
+    tasks: Tasks,
+    /// Its control requests about tasks, waiting on their answers.
+    pending: HashMap<String, Reply<Value>>,
 }
 
 struct Ask {
@@ -484,6 +529,22 @@ impl Actor {
             Command::Resolve(receipt, reply) => {
                 let _ = reply.send(self.resolve(receipt).await);
             }
+            Command::TaskCall(request, reply) => match &mut self.pipe {
+                Some(pipe) => {
+                    let id = unique_id()?;
+                    match wire::request(&mut pipe.input, &id, request).await {
+                        Ok(()) => {
+                            self.pending.insert(id, reply);
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                        }
+                    }
+                }
+                None => {
+                    let _ = reply.send(Err(stopped()));
+                }
+            },
             Command::LetGo(note, reply) => {
                 let held = self
                     .recovery
@@ -495,6 +556,7 @@ impl Actor {
                     if let Some(mut pipe) = self.pipe.take() {
                         let _ = pipe.input.unpin().await;
                         let _ = pipe.stop().await;
+                        self.tasks.gone();
                     }
                 }
                 let _ = reply.send(Ok(()));
@@ -517,6 +579,7 @@ impl Actor {
                         && !pipe.can_reconnect
                     {
                         let _ = pipe.stop().await;
+                        self.tasks.gone();
                     }
                     self.closing = true;
                     let _ = reply.send(Ok(()));
@@ -635,9 +698,11 @@ impl Actor {
         let sign_in = self.program.sign_in_mark().await;
         if self.pipe.as_ref().is_some_and(|pipe| {
             pipe.compact_at != compact_at || instructions_changed || pipe.sign_in != sign_in
-        }) && let Some(pipe) = self.pipe.take()
+        }) && !self.tasks.keeps_working()
+            && let Some(pipe) = self.pipe.take()
         {
             let _ = pipe.stop().await;
+            self.tasks.gone();
         }
         if self.pipe.is_none() {
             self.pipe = Some(self.launch(&input.instructions, compact_at, plan).await?);
@@ -660,6 +725,7 @@ impl Actor {
             if let Err(error) = configure(pipe, &model, plan).await {
                 if let Some(pipe) = self.pipe.take() {
                     let _ = pipe.stop().await;
+                    self.tasks.gone();
                 }
                 return Err(error);
             }
@@ -972,7 +1038,14 @@ impl Actor {
                 self.cancel(&request_id).await?
             }
             Ok(wire::Frame::ControlResponse { response }) => {
-                if self.pipe.as_ref().and_then(|pipe| pipe.reconnect.as_ref())
+                if let Some(reply) = self.pending.remove(&response.request_id) {
+                    let _ = reply.send(match response.body {
+                        wire::ReplyBody::Success { response, .. } => Ok(response),
+                        wire::ReplyBody::Error => {
+                            Err(io::Error::other("Claude Code didn't do that."))
+                        }
+                    });
+                } else if self.pipe.as_ref().and_then(|pipe| pipe.reconnect.as_ref())
                     == Some(&response.request_id)
                 {
                     self.reconnected(response.body).await?;
@@ -983,6 +1056,7 @@ impl Actor {
                     pipe.said.forget();
                 }
                 let message: Value = serde_json::from_str(line)?;
+                self.tasks.frame(&message);
                 self.message(sequence, replay, &message).await?;
             }
             Err(_) => {}
@@ -1011,6 +1085,7 @@ impl Actor {
         else {
             let pipe = self.pipe.take().expect("reconnecting process");
             let _ = pipe.stop().await;
+            self.tasks.gone();
             return Err(io::Error::other(
                 "Claude Code couldn't recover its open tool requests.",
             ));
@@ -1241,11 +1316,15 @@ impl Actor {
         }
         if !keep && let Some(pipe) = self.pipe.take() {
             let _ = pipe.stop().await;
+            self.tasks.gone();
         }
         Ok(())
     }
 
     async fn ended(&mut self) -> io::Result<()> {
+        // What it left running went with it.
+        self.tasks.gone();
+        self.pending.clear();
         self.replay_caught_up().await?;
         let last = self.pipe.take().and_then(|pipe| pipe.said.last());
         let outcome = if self.running.as_ref().is_some_and(|turn| turn.stopping) {
@@ -1268,6 +1347,7 @@ impl Actor {
         let stopped = self.running.as_ref().is_some_and(|turn| turn.stopping);
         if stopped && let Some(pipe) = self.pipe.take() {
             let _ = pipe.stop().await;
+            self.tasks.gone();
         }
         self.finish(
             if stopped {

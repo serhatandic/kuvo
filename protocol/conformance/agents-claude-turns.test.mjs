@@ -293,7 +293,11 @@ describe("summarizing on its own, as the conversation fills up", { skip }, () =>
     await until(async () => summaries(await box.claude.rows(id)).length === 1, "It never said it was summarizing.");
     await box.claude.prompt(id, "and the tests too");
     await until(() => heardUser(box.claude, "and the tests too").length === 1, "Claude Code never took it.");
-    const during = await box.claude.rows(id);
+    // (Its row is written as it's handed over: a moment after Claude Code has it.)
+    const during = await until(async () => {
+      const rows = await box.claude.rows(id);
+      return rows.length >= 4 && rows;
+    }, "Your message never showed.");
     assertMatch(summaries(during), [{ status: "running" }]);
     // After the row, which still says it's summarizing.
     assert.deepEqual(during.map(row => row.type), ["user", "assistant", "compaction", "user"]);
@@ -1052,6 +1056,110 @@ describe("what Claude Code says as it stops", { skip }, () => {
       assertMatch(idles(await box.claude.idles(id, 1))[0], { outcome: "interrupted" });
     } finally {
       box.claude.go("waits-goes");
+    }
+  });
+});
+
+describe("Claude Code's background commands", { skip }, () => {
+  const box = resident();
+  const bash = (call, command) => ({ type: "assistant", message: { id: `m_${call}`, role: "assistant", model: "opus", content: [{ type: "tool_use", id: call, name: "Bash", input: { command, run_in_background: true } }] }, parent_tool_use_id: null, session_id: "$SESSION" });
+  const started = (task, call, more = {}) => ({ type: "system", subtype: "task_started", task_id: task, task_type: "local_bash", description: "In the background", tool_use_id: call, is_backgrounded: true, session_id: "$SESSION", ...more });
+  const live = tasks => ({ type: "system", subtype: "background_tasks_changed", tasks: tasks.map(task => ({ task_id: task, task_type: "local_bash", description: "In the background" })), session_id: "$SESSION" });
+  const ended = (task, call, more = {}) => ({ type: "system", subtype: "task_notification", task_id: task, status: "completed", tool_use_id: call, summary: "exit code 0", session_id: "$SESSION", ...more });
+  const listed = id => until(async () => (await box.claude.work()).sessions[id], "The command it left running was never listed.");
+  const gone = id => until(async () => !(await box.claude.work()).sessions[id], "The command it left running stayed listed.");
+  const words = text => text.replace(/\n\n<from-phone>[\s\S]*<\/from-phone>$/, "");
+  const took = (id, text) => box.claude.heard().find(line => line.type === "user" && words(line.message.content.findLast(part => part.type === "text")?.text ?? "") === `${text} ${id}`)?.pid;
+
+  test("a command it leaves running shows in the bar with what it printed, until it ends", async () => {
+    const { id } = box.next();
+    box.claude.printed("t_server", "ready on :3000\n");
+    box.claude.script(`go ${id}`, [bash("tool_server", "npm run dev"), started("t_server", "tool_server"), live(["t_server"]), result(["$UUID"]),
+      { until: "server-ends" }, ended("t_server", "tool_server"), live([])]);
+    await box.claude.prompt(id, `go ${id}`);
+    await box.claude.idles(id, 1);
+    assertMatch(await listed(id), { commands: 1, subagents: 0, tasks: 0 });
+    const bar = await box.claude.work(`/${id}`);
+    assert.equal(bar.commands.length, 1);
+    assertMatch(bar.commands[0], { command: "npm run dev", agents: true });
+    const output = `/${id}/commands/${bar.commands[0].id}/output`;
+    assertMatch(await box.claude.work(output), { output: "ready on :3000", cut: false, state: "running" });
+    // It ends: the bar lets it go, and what it printed stands.
+    box.claude.go("server-ends");
+    await gone(id);
+    assertMatch(await until(async () => {
+      const read = await box.claude.work(output);
+      return read.state === "ended" && read;
+    }, "Its end never showed."), { command: { command: "npm run dev" }, state: "ended" });
+  });
+
+  test("a finished background command shows the final output file after Claude Code forgets its output", async () => {
+    const { id } = box.next();
+    const file = path.join(box.claude.home, `build-${id}.output`);
+    box.claude.printed("t_build", "Compiling\n");
+    box.claude.script(`go ${id}`, [bash("tool_build", "cargo build"), started("t_build", "tool_build"), live(["t_build"]), result(["$UUID"]),
+      { until: "build-ends" }, ended("t_build", "tool_build", { output_file: file }), live([])]);
+    await box.claude.prompt(id, `go ${id}`);
+    await box.claude.idles(id, 1);
+    await listed(id);
+    const [command] = (await box.claude.work(`/${id}`)).commands;
+    const output = `/${id}/commands/${command.id}/output`;
+    assertMatch(await box.claude.work(output), { command: { id: command.id, agents: true }, output: "Compiling", state: "running" });
+    fs.writeFileSync(file, "Compiling\nFinished\n");
+    box.claude.printed("t_build");
+    box.claude.go("build-ends");
+    await gone(id);
+    assertMatch(await until(async () => {
+      const read = await box.claude.work(output);
+      return read.state === "ended" && read;
+    }, "Its end never showed."), { command: { id: command.id, agents: true }, output: "Compiling\nFinished", state: "ended" });
+  });
+
+  test("a foreground command keeps its start time when moved to the background", async () => {
+    const { id } = box.next();
+    const before = Date.now();
+    box.claude.script(`go ${id}`, [started("t_moved", "tool_moved", { is_backgrounded: false }), { until: "moves" },
+      { type: "system", subtype: "task_updated", task_id: "t_moved", patch: { is_backgrounded: true }, session_id: "$SESSION" }, live(["t_moved"]),
+      result(["$UUID"]), { until: "moved-ends" }, ended("t_moved", "tool_moved"), live([])]);
+    await box.claude.prompt(id, `go ${id}`);
+    await until(() => took(id, "go"), "Claude Code never took the message.");
+    const startedBy = Date.now();
+    await new Promise(resolve => setTimeout(resolve, 400));
+    box.claude.go("moves");
+    await listed(id);
+    const [command] = (await box.claude.work(`/${id}`)).commands;
+    assert.ok(command.started >= before && command.started < startedBy + 250, JSON.stringify({ before, startedBy, command }));
+    box.claude.go("moved-ends");
+    await gone(id);
+    await box.claude.idles(id, 1);
+  });
+
+  test("changing the summary setting leaves Claude Code's background command running", async () => {
+    const setting = path.join(box.claude.home, "box", "conversation-compaction.json");
+    try {
+      const { id } = box.next();
+      box.claude.script(`go ${id}`, [bash("tool_tests", "scripts/test.sh"), started("t_tests", "tool_tests"), live(["t_tests"]), result(["$UUID"])]);
+      await box.claude.prompt(id, `go ${id}`);
+      await box.claude.idles(id, 1);
+      await listed(id);
+      fs.writeFileSync(setting, JSON.stringify("200000"));
+      // Its next message goes to the same Claude Code: starting another would end the tests.
+      box.claude.script(`still ${id}`, [result(["$UUID"]), { until: "tests-end" }, ended("t_tests", "tool_tests"), live([])]);
+      await box.claude.prompt(id, `still ${id}`);
+      await box.claude.idles(id, 2);
+      assert.equal(took(id, "still"), took(id, "go"));
+      assertMatch(await box.claude.work(), { sessions: { [id]: { commands: 1 } } });
+      // Once they're done, the next starts one with the new setting.
+      box.claude.go("tests-end");
+      await gone(id);
+      box.claude.script(`then ${id}`, [result(["$UUID"])]);
+      await box.claude.prompt(id, `then ${id}`);
+      await box.claude.idles(id, 3);
+      assert.notEqual(took(id, "then"), took(id, "go"));
+      const launched = box.claude.heard().find(line => line.argv && line.pid === took(id, "then"));
+      assert.equal(launched.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "233000");
+    } finally {
+      fs.rmSync(setting, { force: true });
     }
   });
 });

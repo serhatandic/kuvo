@@ -1241,7 +1241,9 @@ dependencies = [
 name = "kuvo-box"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
  "base64 0.22.1",
+ "futures-core",
  "futures-util",
  "hostname",
  "http",

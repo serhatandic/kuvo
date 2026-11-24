@@ -7,6 +7,7 @@ mod permissions;
 mod program;
 mod projection;
 mod results;
+mod tasks;
 mod thread;
 mod told;
 mod tools;
