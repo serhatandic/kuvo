@@ -132,6 +132,7 @@ impl Letters {
                 event = events.recv() => match event {
                     Ok(event) => match event.as_ref() {
                         RelayEvent::Mail { key, envelope, .. } => self.receive(*key, envelope).await,
+                        RelayEvent::Connected(_) => self.send_due().await,
                         _ => Ok(()),
                     },
                     Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
@@ -258,7 +259,12 @@ impl Letters {
                 continue;
             };
             if let Some(host) = host {
-                let _ = self.relay.sender.mail(host, mail).await;
+                if self.relay.sender.mail(host, mail).await.is_err() {
+                    self.outbox
+                        .as_mut()
+                        .expect("opened outbox")
+                        .cancel_try(&each.id);
+                }
             } else if let Some(letter) = envelope_field::<IncomingLetter>(&mail, "letter") {
                 let receipt = self.take(&view, key, letter).await?;
                 if let Some(receipt) = receipt {

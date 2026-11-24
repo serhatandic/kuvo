@@ -89,6 +89,10 @@ pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     fs::hard_link(from, to)
 }
 
+pub fn remove_file(path: &Path) -> io::Result<()> {
+    fs::remove_file(path)
+}
+
 pub fn sync_dir(folder: &Path) -> io::Result<()> {
     File::open(folder)?.sync_all()
 }

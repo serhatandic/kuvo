@@ -233,7 +233,9 @@ impl Outbox {
         let pending = self.pending(id);
         let letter = match read::<Letter>(&pending) {
             Ok(letter) => letter,
-            Err(Error::Json { .. }) => None,
+            // A sibling process may still be writing the pending letter; keep the
+            // `.gaveup` marker for the next round instead of silently dropping it.
+            Err(Error::Json { .. }) => return Ok(false),
             Err(error) => return Err(error),
         };
         if let Some(mut letter) = letter {
@@ -249,6 +251,10 @@ impl Outbox {
         }
         remove(&self.waiting(id))?;
         Ok(true)
+    }
+
+    pub fn cancel_try(&mut self, id: &Id) {
+        self.tries.remove(id.as_str());
     }
 
     pub fn due(&mut self, now: u64, online: bool) -> Result<Vec<Pending>, Error> {
@@ -778,13 +784,30 @@ fn relocate(from: &Path, to: &Path) -> Result<(), Error> {
 }
 
 fn remove(path: &Path) -> Result<(), Error> {
-    match fs::remove_file(path) {
-        Ok(()) => sync_parent(path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(storage(path, source)),
-    }
+    kuvo_store::files::remove_file_synced(path).map_err(|source| storage(path, source))
 }
 
-fn sync_parent(path: &Path) -> Result<(), Error> {
-    kuvo_store::files::sync_parent(path).map_err(|source| storage(path, source))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn give_up_defers_while_pending_letter_json_is_incomplete() {
+        let run = tempfile::tempdir().unwrap();
+        let id = Id::try_from("ltr_partial01".to_owned()).unwrap();
+        let mut outbox = Outbox::open(run.path()).unwrap();
+        let pending = run.path().join("outbox/sending/ltr_partial01.json");
+        fs::write(&pending, "{").unwrap();
+
+        assert!(!outbox.give_up(&id).unwrap());
+
+        fs::write(
+            &pending,
+            r#"{"to":"ses_target","text":"Hi","wait":true,"at":1}"#,
+        )
+        .unwrap();
+        assert!(outbox.give_up(&id).unwrap());
+        let updated: Letter = read(&pending).unwrap().unwrap();
+        assert!(!updated.wait);
+    }
 }

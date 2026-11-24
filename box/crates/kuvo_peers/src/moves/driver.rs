@@ -2608,7 +2608,13 @@ mod tests {
         let t0 = Instant::now();
 
         // A freshly created step with no sentAt/againAt is immediately ready.
-        assert!(retry_state_ready(&mut retries, &row, STEP_AGAIN, 10_000, t0));
+        assert!(retry_state_ready(
+            &mut retries,
+            &row,
+            STEP_AGAIN,
+            10_000,
+            t0
+        ));
         assert_eq!(retries.get(&row.id), Some(&RetryState::Unsent));
 
         // If pack() saved sentAt before a failed offline send, marking Unsent keeps it

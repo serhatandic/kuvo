@@ -639,6 +639,8 @@ test("Stop settles a running conversation so its move preserves the paused queue
   assert.equal(stopped.status, 200, stopped.text);
   assert.equal(stopped.json.paused, true);
   assert.deepEqual(source.engine.interrupted, [{ session: id, resume: false }]);
+  source.engine.running.delete(id);
+  source.engine.emit({ type: "session.execution.interrupted", data: { sessionID: id, reason: "user" } });
   await moveRetired(source, begun.json.move.id, () => sourceProcess.log(), 45000);
   const queue = await request(to, "GET", session + "/queue");
   assert.equal(queue.status, 200, queue.text);
@@ -3038,7 +3040,9 @@ test("a tool that gives up leaves its letter on the way without waiting", { time
   here.engine.sessions.push(sessionOf({ id: sender, title: "Reader", directory: path.join(here.home, "chats") }));
   there.engine.sessions.push(sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") }));
   there.engine.sessions.push(sessionOf({ id: readTarget, title: "Unopened transcript", directory: path.join(there.home, "chats") }));
-  const [source, target] = await Promise.all([here.start().ready(), there.start().ready()]);
+  const sourceProcess = here.start(), targetProcess = there.start();
+  const [source, target] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  const logs = () => sourceProcess.log() + "\n" + targetProcess.log();
   await Promise.all([[source, sender], [target, recipient]].map(([resident, session]) =>
     until(async () => (await request(resident, "GET", "api/session/" + session)).status === 200,
       "The conversation's engine did not become ready")));
@@ -3054,7 +3058,8 @@ test("a tool that gives up leaves its letter on the way without waiting", { time
     write(path.join(pending, letterId + ".json"), JSON.stringify(contents));
     write(path.join(tool, letterId + ".gaveup"), "");
   }
-  const prompts = await until(() => there.engine.messages.get(recipient), "The letter never reached the destination");
+  const prompts = await until(() => there.engine.messages.get(recipient),
+    () => "The letter never reached the destination\n" + logs(), 15000);
   assert.equal(prompts.length, 1);
   assert.equal(prompts[0].text, `[Message from Reader · ${sender}] (To answer, use send_message to ${sender}.)\n\nIs the table booked?`);
   for (const letterId of [id, read]) {
