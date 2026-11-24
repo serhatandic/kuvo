@@ -12,17 +12,18 @@
 //! set right, its agent is given it at another address and connects afresh.
 
 use super::{
-    Body, Holder, Program, ToolRelay, failure, full, json_reply, text,
+    Answer, Body, Holder, Program, RelayTiming, ToolRelay, connection_of, failure, fresh, full,
+    json_reply, parse_error, text,
 };
 use futures_util::{
     FutureExt, StreamExt,
-    future::{BoxFuture, Shared},
+    future::{BoxFuture, Shared, join_all},
     stream,
 };
-use http::{HeaderValue, Method, Response, StatusCode, header};
+use http::{HeaderValue, Method, Response, StatusCode, header, request::Parts};
 use http_body_util::{StreamBody, combinators::BoxBody};
 use hyper::body::{Bytes, Frame};
-use kuvo_os::platform::Environment;
+use kuvo_os::platform::{Environment, Executable, which};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -32,12 +33,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime},
 };
-
-/// How long a server has to start for an agent that gives up its whole
-/// session over one (ACP's): a command's longer, as it may fetch its package
-/// the first time.
-pub const BRIEF_START: Duration = Duration::from_secs(15);
-pub const BRIEF_COMMAND_START: Duration = Duration::from_secs(25);
+use tokio::time::Instant;
 
 /// The connections the relay names for its stand-ins.
 const STAND_IN: &str = "unavailable-";
@@ -86,7 +82,7 @@ pub struct RelayedServer {
 
 /// What a command's server is started as.
 pub struct Launch {
-    pub command: PathBuf,
+    pub command: Executable,
     pub args: Vec<OsString>,
     pub env: Environment,
 }
@@ -121,6 +117,8 @@ pub(super) struct NoHost;
 impl ServerHost for NoHost {}
 
 type Asked = Shared<BoxFuture<'static, ()>>;
+/// A conversation's server, by name.
+type At = (String, String);
 
 #[derive(Default)]
 pub(super) struct Servers {
@@ -131,11 +129,21 @@ pub(super) struct Servers {
     stand_ins: HashMap<String, StandIn>,
     /// The host asked to connect each server again, for how it was set up
     /// when it turned down its sign-in: once a setup.
-    refusals: HashMap<(String, String), (String, Asked)>,
+    refusals: HashMap<At, (String, Asked)>,
     /// How many times each conversation's server was set right after the
     /// relay stood in for it.
     set_right: HashMap<String, BTreeMap<String, u32>>,
     brief: HashSet<String>,
+    /// Each check underway of a server the relay stood in for, and when the
+    /// next is due.
+    checks: HashMap<At, Shared<BoxFuture<'static, bool>>>,
+    later: HashMap<At, Later>,
+}
+
+struct Later {
+    setup: String,
+    next: Instant,
+    wait: Duration,
 }
 
 #[derive(Clone)]
@@ -157,20 +165,8 @@ struct StandIn {
 /// command and environment.
 fn setup_of(server: &ComputerServer) -> String {
     match &server.kind {
-        ServerKind::Remote { url, headers, .. } => json!([url, headers]).to_string(),
-        ServerKind::Local { command, env, cwd } => {
-            let words = |all: &mut dyn Iterator<Item = &OsString>| {
-                all.map(|word| word.to_string_lossy().into_owned()).collect::<Vec<_>>()
-            };
-            json!([
-                words(&mut command.iter()),
-                env.iter()
-                    .map(|(key, value)| (key.to_string_lossy().into_owned(), value.to_string_lossy().into_owned()))
-                    .collect::<BTreeMap<_, _>>(),
-                cwd
-            ])
-            .to_string()
-        }
+        ServerKind::Remote { url, headers, .. } => format!("{url:?} {headers:?}"),
+        ServerKind::Local { command, env, cwd } => format!("{command:?} {env:?} {cwd:?}"),
     }
 }
 
@@ -181,6 +177,8 @@ impl Servers {
         self.refusals.retain(|(at, _), _| at != session);
         self.set_right.remove(session);
         self.brief.remove(session);
+        self.checks.retain(|(at, _), _| at != session);
+        self.later.retain(|(at, _), _| at != session);
         let stopping = self
             .running
             .keys()
@@ -195,6 +193,29 @@ impl Servers {
 
     pub(super) fn stop_all(&mut self) -> Vec<Arc<Program>> {
         self.running.drain().map(|(_, program)| program).collect()
+    }
+
+    /// The command servers no connection has used for `idle`, let go of.
+    pub(super) fn idle(&mut self, idle: Duration) -> Vec<Arc<Program>> {
+        let mut stopping = Vec::new();
+        self.running.retain(|_, program| {
+            let used = !program.unused_for(idle);
+            if !used {
+                stopping.push(program.clone());
+            }
+            used
+        });
+        stopping
+    }
+
+    /// Not there: checked again later, a few minutes on, then each time
+    /// twice as long, up to the most (unless it's set up otherwise now).
+    fn check_later(&mut self, at: At, setup: String, timing: &RelayTiming) {
+        let wait = match self.later.get(&at) {
+            Some(before) if before.setup == setup => (before.wait * 2).min(timing.check_at_most),
+            _ => timing.check_every,
+        };
+        self.later.insert(at, Later { setup, next: Instant::now() + wait, wait });
     }
 
     /// Stand-ins for servers gone now, or (turned down its sign-in) set up
@@ -243,6 +264,7 @@ impl Servers {
                 stand_in.retired = true;
             }
         }
+        self.later.remove(&(session.to_owned(), name.to_owned()));
     }
 }
 
@@ -307,19 +329,112 @@ impl ToolRelay {
 
     /// What tells the servers an agent is given now from those it was
     /// given: one the relay stood in for that's set right since counts as
-    /// another, so its agent connects to it afresh.
-    pub fn servers_key(&self, session: &str, found: &ComputerServers) -> String {
-        let mut state = self.state();
-        state.servers.retire_changed(session, found);
+    /// another, so its agent connects to it afresh. One whose sign-in was
+    /// turned down is set right by another; one that couldn't be reached,
+    /// or start, once it answers, which is checked now (briefly: one that
+    /// doesn't answer at once is checked on, for the next message).
+    pub async fn servers_key(&self, session: &str, found: &ComputerServers) -> String {
+        let (waiting, check) = {
+            let mut state = self.state();
+            let timing = state.timing;
+            let directory = state.servers.served.get(session).map(|served| served.directory.clone());
+            let servers = &mut state.servers;
+            servers.retire_changed(session, found);
+            let names = servers
+                .stand_ins
+                .values()
+                .filter(|stand_in| stand_in.session == session && !stand_in.retired && !stand_in.sign_in)
+                .map(|stand_in| stand_in.name.clone())
+                .collect::<HashSet<_>>();
+            let mut waiting = Vec::new();
+            for now in found.servers.iter().filter(|each| names.contains(&each.name)) {
+                let at = (session.to_owned(), now.name.clone());
+                if let Some(check) = servers.checks.get(&at) {
+                    waiting.push(check.clone());
+                    continue;
+                }
+                // (Not again so soon, unless it's set up otherwise now: your
+                // change may be what it needed.)
+                let setup = setup_of(now);
+                let later = servers.later.get(&at);
+                if later.is_some_and(|later| later.setup == setup && Instant::now() < later.next) {
+                    continue;
+                }
+                let (relay, now, directory, key) = (self.clone(), now.clone(), directory.clone(), at.clone());
+                let check = async move {
+                    let started = relay.answers(&now, &key.0, directory.as_deref()).await;
+                    let mut state = relay.state();
+                    state.servers.checks.remove(&key);
+                    if started {
+                        state.servers.later.remove(&key);
+                        state.servers.retire(&key.0, &key.1);
+                    } else {
+                        state.servers.check_later(key, setup, &timing);
+                    }
+                    started
+                }
+                .boxed()
+                .shared();
+                tokio::spawn(check.clone());
+                servers.checks.insert(at, check.clone());
+                waiting.push(check);
+            }
+            (waiting, timing.check)
+        };
+        if !waiting.is_empty() {
+            let _ = tokio::time::timeout(check, join_all(waiting)).await;
+        }
+        let state = self.state();
         match state.servers.set_right.get(session).filter(|times| !times.is_empty()) {
             Some(times) => format!("{} {}", found.key, json!(times.iter().collect::<Vec<_>>())),
             None => found.key.clone(),
         }
     }
 
+    /// Whether a server that wasn't there starts now, as an agent's start
+    /// would have it: connected to, and let go.
+    async fn answers(&self, entry: &ComputerServer, session: &str, directory: Option<&Path>) -> bool {
+        let timing = self.timing();
+        let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"kuvo-code","version":"1"}}});
+        let ServerKind::Remote { url, headers, .. } = &entry.kind else {
+            let Some(Ok(program)) = directory.map(|directory| self.start_server(entry, session, directory))
+            else {
+                return false;
+            };
+            let answer = program.send(initialize, entry.timeout.min(timing.command_starts), "check").await;
+            program.stop();
+            return answer.is_some_and(|answer| answer["result"].is_object() && answer.get("error").is_none());
+        };
+        let deadline = Instant::now() + entry.timeout.min(timing.starts);
+        let mut request = self.0.client.post(url);
+        for (key, value) in headers {
+            request = request.header(key, value);
+        }
+        let request = request
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .body(initialize.to_string());
+        let Ok(Ok(response)) = tokio::time::timeout_at(deadline, request.send()).await else {
+            return false;
+        };
+        let (status, at) = (response.status(), response.url().clone());
+        let connection = response.headers().get("mcp-session-id").cloned();
+        let started = status.is_success()
+            && matches!(tokio::time::timeout_at(deadline, read_start(Some(response), &json!(1))).await, Ok(Ok(_)));
+        if let Some(connection) = connection {
+            let mut left = self.0.client.delete(at).header("mcp-session-id", connection);
+            for (key, value) in headers {
+                left = left.header(key, value);
+            }
+            tokio::spawn(left.timeout(timing.starts).send());
+        }
+        started
+    }
+
     pub(super) async fn answer_server(
         &self,
-        parts: http::request::Parts,
+        parts: Parts,
         body: Option<Bytes>,
         session: &str,
         name: &str,
@@ -333,12 +448,7 @@ impl ToolRelay {
                 _ => return text(StatusCode::NOT_FOUND, "No such server here."),
             }
         };
-        let connection = parts
-            .headers
-            .get("mcp-session-id")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_owned();
+        let connection = connection_of(&parts);
         if connection.starts_with(STAND_IN) {
             // One of the relay's own, never passed on to the server, which
             // never gave it.
@@ -368,7 +478,7 @@ impl ToolRelay {
 
     fn answer_stand_in(
         &self,
-        parts: &http::request::Parts,
+        parts: &Parts,
         body: Option<Bytes>,
         connection: &str,
         why: &str,
@@ -389,7 +499,7 @@ impl ToolRelay {
     #[allow(clippy::too_many_arguments)]
     async fn answer_remote(
         &self,
-        parts: http::request::Parts,
+        parts: Parts,
         body: Option<Bytes>,
         sent: Option<Value>,
         session: &str,
@@ -400,8 +510,8 @@ impl ToolRelay {
         let messages = messages(sent.as_ref());
         let initialize = messages.iter().find(|message| message["method"] == "initialize").cloned();
         let brief = initialize.is_some() && self.state().servers.brief.contains(session);
-        let start_in = if brief { entry.timeout.min(BRIEF_START) } else { entry.timeout };
-        let deadline = tokio::time::Instant::now() + start_in;
+        let start_in = if brief { entry.timeout.min(self.timing().starts) } else { entry.timeout };
+        let deadline = Instant::now() + start_in;
         let host = self.0.host.clone();
         let renewing = || {
             let host = host.clone();
@@ -476,11 +586,7 @@ impl ToolRelay {
             return match started {
                 Ok(body) => {
                     self.state().servers.reached(session, name);
-                    let mut reply = Response::builder().status(answer.status);
-                    for (key, value) in &answer.headers {
-                        reply = reply.header(*key, value.as_slice());
-                    }
-                    reply.body(body).unwrap_or_else(|_| text(StatusCode::BAD_GATEWAY, ""))
+                    answer.reply(body)
                 }
                 Err(why) => self.stand_in_for(session, name, &setup_of(&current), &why, sent.as_ref(), answer.status == 401),
             };
@@ -493,61 +599,29 @@ impl ToolRelay {
         if parts.method == Method::GET && failing(answer.status) {
             return not_allowed();
         }
-        answer.into_reply()
+        answer.into_reply("The server didn't answer.")
     }
 
+    /// To a URL's server as it's set up: a start is given up at `deadline`.
     async fn send_remote(
         &self,
-        parts: &http::request::Parts,
+        parts: &Parts,
         server: &ComputerServer,
         body: Option<Bytes>,
         timeout: Option<Duration>,
-        deadline: tokio::time::Instant,
-    ) -> Remote {
+        deadline: Instant,
+    ) -> Answer {
         let ServerKind::Remote { url, headers, .. } = &server.kind else {
-            return Remote::failed();
+            return Answer::failed();
         };
-        let mut request = self.0.client.request(parts.method.clone(), url);
-        for (key, value) in headers {
-            request = request.header(key, value);
-        }
-        let accept = parts.headers.get(header::ACCEPT).cloned()
-            .unwrap_or(HeaderValue::from_static("application/json, text/event-stream"));
-        request = request.header(header::ACCEPT, accept);
-        for key in ["content-type", "mcp-session-id", "mcp-protocol-version", "last-event-id"] {
-            if let Some(value) = parts.headers.get(key) {
-                request = request.header(key, value);
-            }
-        }
-        if let Some(body) = body {
-            request = request.body(body);
-        }
-        if let Some(timeout) = timeout.filter(|_| parts.method == Method::POST) {
-            request = request.timeout(timeout);
-        }
-        // (A start: given up at its deadline; untied once it has started.)
-        let sent = if timeout.is_none() {
-            tokio::time::timeout_at(deadline, request.send()).await.ok()
-        } else {
-            Some(request.send().await)
-        };
-        match sent {
-            Some(Ok(response)) => Remote {
-                status: response.status().as_u16(),
-                headers: ["content-type", "mcp-session-id"]
-                    .into_iter()
-                    .filter_map(|key| Some((key, response.headers().get(key)?.as_bytes().to_vec())))
-                    .collect(),
-                response: Some(response),
-            },
-            _ => Remote::failed(),
-        }
+        let deadline = timeout.is_none().then_some(deadline);
+        self.send_on(parts, url, headers, body, timeout, deadline).await
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn answer_local(
         &self,
-        parts: http::request::Parts,
+        parts: Parts,
         sent: Option<Value>,
         session: &str,
         name: &str,
@@ -573,10 +647,8 @@ impl ToolRelay {
             let Some(program) = program.filter(|program| !program.stopped()) else {
                 return text(StatusCode::NOT_FOUND, "No such connection here.");
             };
-            let answers = futures_util::future::join_all(
-                all.into_iter().map(|message| program.send(message, entry.timeout, connection)),
-            )
-            .await;
+            let answers =
+                join_all(all.into_iter().map(|message| program.send(message, entry.timeout, connection))).await;
             return replies(&body, answers, None);
         };
         // Each connection a server of its own, as an agent that starts it
@@ -585,16 +657,12 @@ impl ToolRelay {
             Ok(program) => program,
             Err(why) => return self.stand_in_for(session, name, &setup_of(entry), &why, Some(&body), false),
         };
-        let mut fresh = [0; 12];
-        let _ = getrandom::fill(&mut fresh);
-        let fresh = hex::encode(fresh);
-        self.state().servers.running.insert(
-            (session.to_owned(), name.to_owned(), fresh.clone()),
-            program.clone(),
-        );
+        let fresh = fresh(12);
+        let at = (session.to_owned(), name.to_owned(), fresh.clone());
+        self.state().servers.running.insert(at.clone(), program.clone());
         let brief = self.state().servers.brief.contains(session);
-        let start_in = if brief { entry.timeout.min(BRIEF_COMMAND_START) } else { entry.timeout };
-        let answers = futures_util::future::join_all(all.into_iter().map(|message| {
+        let start_in = if brief { entry.timeout.min(self.timing().command_starts) } else { entry.timeout };
+        let answers = join_all(all.into_iter().map(|message| {
             let time = if message == initialize { start_in } else { entry.timeout };
             program.send(message, time, &fresh)
         }))
@@ -613,7 +681,7 @@ impl ToolRelay {
             }
             other => {
                 program.stop();
-                self.state().servers.running.remove(&(session.to_owned(), name.to_owned(), fresh));
+                self.state().servers.running.remove(&at);
                 let said = other
                     .as_ref()
                     .and_then(|answer| answer["error"]["message"].as_str())
@@ -638,63 +706,33 @@ impl ToolRelay {
         environment.extend(env.clone());
         environment.insert("OPENCODE_SESSION_ID".into(), session.into());
         // By its name on the PATH, as a shell finds it.
-        let program = find_program(named, environment.get(&OsString::from("PATH")))
-            .ok_or_else(|| format!("The {} server can't start: {} isn't installed here.", entry.name, named.to_string_lossy()))?;
+        let program = which(named, &environment, &[]).ok_or_else(|| {
+            format!("The {} server can't start: {} isn't installed here.", entry.name, named.to_string_lossy())
+        })?;
         let launch = Launch { command: program, args: args.to_vec(), env: environment };
-        let launch = match self.0.host.sandboxed(&launch, directory)? {
-            Some(sandboxed) => sandboxed,
-            None => launch,
-        };
+        let launch = self.0.host.sandboxed(&launch, directory)?.unwrap_or(launch);
         let cwd = cwd.clone().unwrap_or_else(|| directory.to_owned());
-        Program::start(String::new(), launch.command, launch.args, launch.env, Some(cwd), format!("The {} server", entry.name))
+        Program::start(String::new(), launch, Some(cwd), format!("The {} server", entry.name))
             .map_err(|error| format!("The {} server couldn't start: {error}", entry.name))
     }
 
     /// A server that couldn't be reached as an agent connected to it: a
     /// stand-in of the relay's own, with no tools, whose instructions say why.
     fn stand_in_for(&self, session: &str, name: &str, setup: &str, why: &str, sent: Option<&Value>, sign_in: bool) -> Response<Body> {
-        let mut fresh = [0; 12];
-        let _ = getrandom::fill(&mut fresh);
-        let connection = format!("{STAND_IN}{}", hex::encode(fresh));
-        self.state().servers.stand_ins.insert(
-            connection.clone(),
-            StandIn {
-                session: session.to_owned(),
-                name: name.to_owned(),
-                setup: setup.to_owned(),
-                why: why.to_owned(),
-                sign_in,
-                retired: false,
-            },
-        );
-        stand_in_answers(sent.unwrap_or(&Value::Null), why, Some(&connection), false)
-    }
-}
-
-/// A server's answer as it came.
-struct Remote {
-    status: u16,
-    headers: Vec<(&'static str, Vec<u8>)>,
-    response: Option<reqwest::Response>,
-}
-
-impl Remote {
-    fn failed() -> Self {
-        Self { status: 502, headers: Vec::new(), response: None }
-    }
-
-    fn into_reply(self) -> Response<Body> {
-        let mut reply = Response::builder().status(self.status);
-        for (key, value) in &self.headers {
-            reply = reply.header(*key, value.as_slice());
+        let connection = format!("{STAND_IN}{}", fresh(12));
+        let (session, name, setup) = (session.to_owned(), name.to_owned(), setup.to_owned());
+        let mut state = self.state();
+        let timing = state.timing;
+        // (This start was a check of its own: the next, a few minutes on.)
+        let at = (session.clone(), name.clone());
+        if !sign_in && !state.servers.later.contains_key(&at) {
+            state.servers.check_later(at, setup.clone(), &timing);
         }
-        let body = match self.response {
-            Some(response) => BoxBody::new(StreamBody::new(
-                response.bytes_stream().map(|chunk| chunk.map(Frame::data).map_err(io::Error::other)),
-            )),
-            None => full(Bytes::from_static(b"The server didn't answer.")),
-        };
-        reply.body(body).unwrap_or_else(|_| text(StatusCode::BAD_GATEWAY, ""))
+        let why_now = why.to_owned();
+        let stand_in = StandIn { session, name, setup, why: why_now, sign_in, retired: false };
+        state.servers.stand_ins.insert(connection.clone(), stand_in);
+        drop(state);
+        stand_in_answers(sent.unwrap_or(&Value::Null), why, Some(&connection), false)
     }
 }
 
@@ -818,7 +856,7 @@ fn why_not(name: &str, status: u16, started: Option<&str>) -> String {
     format!("The {name} server couldn't be reached ({what}), so its tools aren't available for now")
 }
 
-fn messages(sent: Option<&Value>) -> Vec<Value> {
+pub(super) fn messages(sent: Option<&Value>) -> Vec<Value> {
     match sent {
         Some(Value::Array(all)) => all.clone(),
         Some(one) => vec![one.clone()],
@@ -885,27 +923,3 @@ fn not_allowed() -> Response<Body> {
     reply
 }
 
-fn parse_error() -> Response<Body> {
-    json_reply(
-        StatusCode::BAD_REQUEST,
-        &json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}),
-        None,
-    )
-}
-
-/// A command by its path, or by its name on `PATH`.
-fn find_program(named: &OsString, path: Option<&OsString>) -> Option<PathBuf> {
-    let given = Path::new(named);
-    if given.components().count() > 1 {
-        return given.is_file().then(|| given.to_owned());
-    }
-    let extensions: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    std::env::split_paths(path?).find_map(|folder| {
-        extensions.iter().find_map(|extension| {
-            let mut candidate = folder.join(given).into_os_string();
-            candidate.push(extension);
-            let candidate = PathBuf::from(candidate);
-            candidate.is_file().then_some(candidate)
-        })
-    })
-}
