@@ -926,6 +926,11 @@ describe("Claude Code, instructions that changed as its conversation goes on", {
 
 describe("what Claude Code says as it stops", { skip }, () => {
   const box = resident();
+  // The reference bridge, under its holder, neither waits for what's said after Claude Code stopped
+  // nor leaves out a line still coming (its own adapter tests, without the holder, do both), so
+  // there's no wait to stop it in: the last three are the Rust resident's.
+  const held = boxBinary().typescript ? "The reference bridge's holder reports Claude Code's words as they were at its exit." : false;
+  const windows = process.platform === "win32";
   const plain = "Claude Code process exited with code 1";
   /** A message the next Claude Code stops before taking, having said `stderr`: how its turn ends. */
   async function stopsAsItStarts(id, stderr, more) {
@@ -990,7 +995,8 @@ describe("what Claude Code says as it stops", { skip }, () => {
       const ended = stopsAsItStarts(id, "", { until: "new-goes" });
       await until(() => conversations() > before, "The next Claude Code never started.");
       box.claude.go("old-goes");
-      await until(() => box.claude.heard().some(line => line.lingered), "What the old one left never spoke.");
+      // (On Windows what Claude Code left running ends with it: nothing of it is left to speak.)
+      if (!windows) await until(() => box.claude.heard().some(line => line.lingered), "What the old one left never spoke.");
       box.claude.go("new-goes");
       assertMatch(await ended, { outcome: "failed", error: { message: plain } });
     } finally {
@@ -1019,12 +1025,10 @@ describe("what Claude Code says as it stops", { skip }, () => {
     assert.equal(ended.error, undefined);
   });
 
-  // The reference bridge, under its holder, neither waits for what's said after Claude Code stopped
-  // nor leaves out a line still coming (its own adapter tests, without the holder, do both), so
-  // there's no wait to stop it in: these three are the Rust resident's.
-  const held = boxBinary().typescript ? "The reference bridge's holder reports Claude Code's words as they were at its exit." : false;
 
-  test("with its error output held open by what it left running: what comes after it stopped still counts", { skip: held }, async () => {
+  test("with its error output held open by what it left running: what comes after it stopped still counts", {
+    skip: held || (windows && "On Windows what Claude Code left running ends with it, so nothing speaks after it."),
+  }, async () => {
     const { id } = box.next();
     assert.equal(await said(id, "", { linger: { stderr: "said as it went\n", after: 300 } }), `${plain}: said as it went`);
   });

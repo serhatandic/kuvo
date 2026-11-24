@@ -65,12 +65,17 @@ hear({ argv: args, cwd: process.cwd(), env: Object.fromEntries(Object.entries(pr
 // Something it leaves running that holds its error output open: it says \`stderr\` once
 // \`until\` (a file beside the script) is there, or \`after\` ms, then says it's done in the heard file.
 function linger(spec) {
-  const go = spec.until ? require("node:path").join(${JSON.stringify(root)}, spec.until) : null;
-  const code = "const fs = require('node:fs'); const spec = " + JSON.stringify({ ...spec, go, heard }) + ";" +
+  const pathOf = require("node:path");
+  const go = spec.until ? pathOf.join(${JSON.stringify(root)}, spec.until) : null;
+  const script = pathOf.join(${JSON.stringify(root)}, "claude-linger.cjs");
+  fs.writeFileSync(script, "const fs = require('node:fs'); const spec = JSON.parse(process.argv[2]);" +
     "const say = () => fs.write(2, spec.stderr || '', () => { fs.appendFileSync(spec.heard, JSON.stringify({ lingered: spec.stderr || '' }) + String.fromCharCode(10)); process.exit(0); });" +
     "const wait = () => (!spec.go || fs.existsSync(spec.go)) ? setTimeout(say, spec.after || 0) : setTimeout(wait, 20);" +
-    "wait();";
-  require("node:child_process").spawn(process.execPath, ["-e", code], { stdio: ["ignore", "ignore", "inherit"], detached: true }).unref();
+    "wait();");
+  // (A Windows process outlives the one that started it without being detached, which would cut it
+  // off from the error output it's to hold.)
+  require("node:child_process").spawn(process.execPath, [script, JSON.stringify({ ...spec, go, heard })],
+    { stdio: ["ignore", "ignore", "inherit"], detached: process.platform !== "win32", windowsHide: true }).unref();
 }
 // How the next one for a conversation starts, when the test says (\`<root>/claude-start.json\`, taken once):
 // once \`until\` is there, leaving \`linger\` running, saying \`stderr\` and stopping with \`exit\`, before
