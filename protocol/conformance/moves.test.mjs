@@ -2958,14 +2958,26 @@ test("a paused queue moves with its messages in order and resumes the first one"
   }));
   const entered = Promise.withResolvers(), resumeWrite = Promise.withResolvers();
   t.after(() => resumeWrite.resolve());
-  // Both reads happen after prompt admission, in the respective queue writers.
-  const kind = boxBinary().typescript ? "inbox" : "session";
-  here.engine.holdQueueRead = { session, kind, entered: entered.resolve, finish: resumeWrite.promise };
-  const pending = request(a, "POST", queue + "/add", {
+  const draft = {
     id: second, text: next, before: "msg_notPresent",
     files: [{ name: "notes.txt", uri: "data:text/plain;base64,RG9jcyBmaXJzdC4=" }],
-  });
-  await entered.promise;
+  };
+  const typescript = boxBinary().typescript;
+  if (!typescript) {
+    // Leave a real prompt claim whose queue write failed. The retry checks
+    // that message ID in the engine after admission.
+    const blocked = path.join(here.home, "run/waiting", second + ".json");
+    fs.mkdirSync(blocked, { recursive: true });
+    const failed = await request(a, "POST", queue + "/add", draft);
+    assert.equal(failed.status, 503, failed.text);
+    fs.rmdirSync(blocked);
+  }
+  const engineRead = `/api/session/${session}/` + (typescript ? "inbox" : `message/${second}`);
+  here.engine.holdQueueRead = { path: engineRead, entered: entered.resolve, finish: resumeWrite.promise };
+  let finishedWrite = false;
+  const pending = request(a, "POST", queue + "/add", draft)
+    .then(response => { finishedWrite = true; return response; });
+  await Promise.race([entered.promise, pending.then(response => assert.fail("The admitted write did not reach the gate: " + response.text))]);
   const move = await request(a, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   assert.equal(move.status, 202, move.text);
   const journal = path.join(here.home, "run/moves", move.json.move.id + ".json");
@@ -2975,6 +2987,8 @@ test("a paused queue moves with its messages in order and resumes the first one"
   }, "The source did not hold the conversation");
   const late = request(a, "POST", queue + "/add", { id: "msg_queueTooLate", text: "Keep this on the source." });
   await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(finishedWrite, false, "The admitted queue write was not held in the engine");
+  assert.equal(offeredEarly, false, "The source offered a copy before the admitted write finished");
   released = true;
   resumeWrite.resolve();
   const [kept, rejected] = await Promise.all([pending, late]);
@@ -2983,7 +2997,6 @@ test("a paused queue moves with its messages in order and resumes the first one"
   fenced = true;
   for (const packet of delayed) relay.replay(packet);
   await moveRetired(here, move.json.move.id, () => source.log() + "\n" + destination.log());
-  assert.equal(offeredEarly, false);
   const old = await request(a, "GET", queue);
   assert.deepEqual(old.json, { paused: false, held: [] });
   for (const id of [first, second]) assert.ok(!fs.existsSync(path.join(here.home, "run/waiting", id + ".json")));

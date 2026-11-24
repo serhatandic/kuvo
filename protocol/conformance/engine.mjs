@@ -25,12 +25,12 @@ export async function standInEngine(root, env) {
       try { given = body ? JSON.parse(body) : {}; } catch {}
       engine.asked.push({ method: request.method, path: url.pathname, json: given });
       const send = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
-      const queueRead = (session, kind, data) => {
+      const queueRead = (body, status = 200) => {
         const hold = engine.holdQueueRead;
-        if (hold?.session !== session || hold.kind !== kind) return send({ data });
+        if (hold?.path !== url.pathname) return send(body, status);
         engine.holdQueueRead = null;
         hold.entered();
-        hold.finish.then(() => send({ data }));
+        hold.finish.then(() => send(body, status));
       };
       const route = `${request.method} ${url.pathname}`;
       if (route === "GET /api/event") {
@@ -103,7 +103,7 @@ export async function standInEngine(root, env) {
         const id = decodeURIComponent(one[1]);
         if (engine.refuseLookup === id) return send({ message: "The conversation is temporarily unavailable." }, 503);
         const found = engine.sessions.find(each => each.id === id);
-        return found ? queueRead(id, "session", found) : send({ message: "No such session." }, 404);
+        return found ? send({ data: found }) : send({ message: "No such session." }, 404);
       }
       // What's changed, kept, as the engine keeps it (each field given in place of its own).
       if (one && request.method === "PATCH") {
@@ -174,7 +174,7 @@ export async function standInEngine(root, env) {
         const inbox = engine.inboxes.get(session) ?? [];
         if (!waiting[2] && request.method === "GET") {
           if (engine.refuseInbox === session) return send({ message: "The inbox is unavailable." }, 503);
-          return queueRead(session, "inbox", inbox);
+          return queueRead({ data: inbox });
         }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));
         if (index < 0) return send({}, 404);
@@ -187,7 +187,7 @@ export async function standInEngine(root, env) {
       const message = url.pathname.match(/^\/api\/session\/([^/]+)\/message\/([^/]+)$/);
       if (message && request.method === "GET") {
         const stored = engine.messages.get(decodeURIComponent(message[1]))?.find(row => row.id === decodeURIComponent(message[2]));
-        return stored ? send({ data: stored }) : send({}, 404);
+        return stored ? queueRead({ data: stored }) : queueRead({}, 404);
       }
       const interrupt = url.pathname.match(/^\/api\/session\/([^/]+)\/interrupt$/);
       if (interrupt && request.method === "POST") {
