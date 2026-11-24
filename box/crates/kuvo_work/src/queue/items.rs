@@ -4,12 +4,13 @@ mod edit;
 
 use super::{
     assignees::Assignees,
+    attachments::staging::{ClientFiles, Staged},
     labels,
     mentions::Index,
     migration,
     numbers::Numbers,
     refs::{Reference, References},
-    routes::{blocking, internal, storage_refusal, typed, work_queue_client},
+    routes::{blocking, internal, local_work_queue_app, storage_refusal, typed, work_queue_client},
     status::{self, PRIORITIES, STATUSES},
     store::{self, Error, Item, QUEUE, Store, limit, owner_id, plain_name, queue_files},
     view,
@@ -66,6 +67,7 @@ struct Writer {
     peers: Reader,
     refs: Arc<References>,
     numbers: Numbers,
+    files: Arc<ClientFiles>,
 }
 
 pub(super) fn register(
@@ -78,6 +80,7 @@ pub(super) fn register(
 ) -> Runtime {
     let writer = Writer {
         numbers: Numbers::new(&store, setup.clone(), peers.clone()),
+        files: Arc::new(ClientFiles::new()),
         store,
         setup,
         peers,
@@ -91,7 +94,14 @@ pub(super) fn register(
                 return Err(Refusal::new(StatusCode::FORBIDDEN, CLIENT));
             }
             let body = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
-            typed(here.create(&call.request.headers, body).await?)
+            typed(
+                here.create(
+                    &call.request.headers,
+                    body,
+                    local_work_queue_app(&call.request.caller),
+                )
+                .await?,
+            )
         }
     });
     let here = writer.clone();
@@ -322,7 +332,12 @@ impl Writer {
         .map_err(io::Error::other)?
     }
 
-    async fn create(&self, headers: &HeaderMap, body: Value) -> Result<Value, Refusal> {
+    async fn create(
+        &self,
+        headers: &HeaderMap,
+        body: Value,
+        local: bool,
+    ) -> Result<Value, Refusal> {
         let nonce = nonce(headers, &body)?;
         let setup = self.setup.queue_setup();
         let scope = setup.as_ref().map_or("", |setup| setup.id.as_str());
@@ -357,6 +372,7 @@ impl Writer {
                         .and_then(|id| assignees.bot_session(id)).map(str::to_owned)
                 })).unwrap_or_else(|| "usr_you".into());
             writer.admit(&owner)?;
+            let staged = writer.files.stage(&writer.store, body.get("files"), local)?;
             let title = text(body.get("title").filter(|title| !title.is_null()).unwrap_or(&Value::String(String::new())), 800, "The title")?;
             let title = limit(&plain_name(&title), 200);
             if title.is_empty() {
@@ -390,24 +406,22 @@ impl Writer {
             if let Some(due) = body.get("due").map(due_of).transpose()?.flatten() {
                 item["due"] = due.into();
             }
-            if body.get("files").is_some_and(|files| !files.is_null() && !files.as_array().is_some_and(Vec::is_empty))
-                || body.get("removeInlineImages").is_some_and(|images| !images.as_array().is_some_and(Vec::is_empty)) {
-                return Err(bad("Choose files to attach and try again."));
+            if let Some(images) = body.get("removeInlineImages") {
+                let parsed = Item::read(&owner, &item).expect("new queue item");
+                edit::pictures_to_remove(&parsed, images)?;
             }
-            if let Some(parsed) = Item::read(&owner, &item) {
-                item["mentionIndex"] = json!(Index::rebuild(&writer.refs.mentions, &parsed, &all, None));
-            }
-            let local_max = highest(&all);
             let document = writer.read_owner(&owner, now)?;
-            Ok(Prepared::New { item, document, assignees, local_max, operation, digest })
+            Ok(Prepared::New { item, document, assignees, all, operation, digest, staged, body_changed: body.get("body").is_some() })
         }).await.map_err(internal)??;
         let Prepared::New {
             mut item,
             mut document,
             assignees,
-            local_max,
+            all,
             operation,
             digest,
+            staged,
+            body_changed,
         } = prepared
         else {
             let Prepared::Replay(value) = prepared else {
@@ -417,26 +431,35 @@ impl Writer {
         };
         let assigned = self
             .numbers
-            .allocate(1, local_max, now)
+            .allocate(1, highest(&all), now)
             .await
             .map_err(storage_refusal)?;
         if let Some(number) = assigned.first() {
             item["number"] = (*number).into();
         }
-        let store = self.store.clone();
-        blocking(move || {
+        let writer = self.clone();
+        tokio::task::spawn_blocking(move || {
             let _guard = guard;
             let owner = document.owner.clone();
+            let published =
+                writer
+                    .files
+                    .publish(&writer.store, &mut item, &staged, body_changed, now)?;
+            let parsed = Item::read(&owner, &item).expect("new queue item");
+            item["mentionIndex"] =
+                json!(Index::rebuild(&writer.refs.mentions, &parsed, &all, None));
             let reader = Item::read(&owner, &item).expect("new queue item");
             let answer = view::mutation(&reader, &assignees);
             item["creationReceipt"] = json!({
                 "operation":operation, "digest":digest, "answer":{"status":200,"value":answer}
             });
             document.items.push(item);
-            document.save(&store)?;
+            document.save(&writer.store).map_err(storage_refusal)?;
+            published.commit();
             Ok(answer)
         })
         .await
+        .map_err(internal)?
     }
 
     async fn change(&self, name: String, removal: Removal) -> Result<Value, Refusal> {
@@ -711,9 +734,11 @@ enum Prepared {
         item: Value,
         document: Document,
         assignees: Assignees,
-        local_max: u64,
+        all: Vec<Item>,
         operation: String,
         digest: String,
+        staged: Staged,
+        body_changed: bool,
     },
 }
 

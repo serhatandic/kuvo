@@ -13,12 +13,34 @@ impl Writer {
                     return Err(Refusal::new(StatusCode::FORBIDDEN, CLIENT));
                 }
                 let fields = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
-                typed(writer.edit(reference, fields).await?)
+                typed(
+                    writer
+                        .edit(
+                            reference,
+                            fields,
+                            local_work_queue_app(&call.request.caller),
+                        )
+                        .await?,
+                )
             }
         });
     }
 
-    async fn edit(&self, reference: String, fields: Value) -> Result<Value, Refusal> {
+    async fn edit(&self, reference: String, fields: Value, local: bool) -> Result<Value, Refusal> {
+        let (fields, staged) =
+            if fields.get("itemRelation").is_some() || fields.get("files").is_none() {
+                (fields, Staged::default())
+            } else {
+                let writer = self.clone();
+                tokio::task::spawn_blocking(move || {
+                    let staged = writer
+                        .files
+                        .stage(&writer.store, fields.get("files"), local)?;
+                    Ok::<_, Refusal>((fields, staged))
+                })
+                .await
+                .map_err(internal)??
+            };
         let guard = self.lock().await?;
         let writer = self.clone();
         tokio::task::spawn_blocking(move || {
@@ -42,7 +64,7 @@ impl Writer {
             if item.removed.is_some() {
                 return Err(bad("It's deleted: bring it back first."));
             }
-            writer.edit_fields(&all, item, &fields, now, &people)
+            writer.edit_fields(&all, item, &fields, &staged, now, &people)
         })
         .await
         .map_err(internal)?
@@ -125,15 +147,10 @@ impl Writer {
         all: &[Item],
         item: &Item,
         fields: &Value,
+        staged: &Staged,
         now: i64,
         people: &Assignees,
     ) -> Result<Value, Refusal> {
-        if fields
-            .get("files")
-            .is_some_and(|files| !files.is_null() && !files.as_array().is_some_and(Vec::is_empty))
-        {
-            return Err(bad("Choose files to attach and try again."));
-        }
         let mut row = Value::Object(item.saved.clone());
         let mut documents = std::collections::BTreeMap::<String, Document>::new();
         let previous = item.status.as_str();
@@ -154,6 +171,11 @@ impl Writer {
             {
                 return Err(bad(format!(
                     "{name} takes its title and description from GitHub: change them there."
+                )));
+            }
+            if !staged.is_empty() {
+                return Err(bad(format!(
+                    "{name} takes its description from GitHub: attach files there."
                 )));
             }
             let mut projection = row.clone();
@@ -342,6 +364,13 @@ impl Writer {
             append_event(&mut row, moved);
         }
         row["updated"] = stamp;
+        let published = self.files.publish(
+            &self.store,
+            &mut row,
+            staged,
+            fields.get("body").is_some(),
+            now,
+        )?;
         let parsed = Item::read(&item.owner, &row).expect("changed queue item");
         let before = Index::read(item);
         if parsed.body != item.body || before.is_none() {
@@ -362,8 +391,13 @@ impl Writer {
             .iter_mut()
             .find(|saved| saved["id"] == item.id)
             .expect("changed queue item") = row;
+        let mut published = Some(published);
         for document in documents.into_values() {
+            let edited = document.owner == item.owner;
             document.save(&self.store).map_err(storage_refusal)?;
+            if edited && let Some(attachments) = published.take() {
+                attachments.commit();
+            }
         }
         Ok(answer)
     }
@@ -424,7 +458,7 @@ fn change_or_remove(row: &mut Value, field: &str, value: Option<Value>) {
     }
 }
 
-fn pictures_to_remove<'a>(
+pub(super) fn pictures_to_remove<'a>(
     item: &Item,
     removals: &'a Value,
 ) -> Result<std::collections::HashSet<&'a str>, Refusal> {

@@ -495,6 +495,35 @@ test("removing an inline picture preserves the current text and saved attachment
     assert.equal((await ask(`${route}/files/right.png`)).text, "b");
   }));
 
+test("client pictures keep unique names, anchors and bytes", { timeout: 30000 }, () =>
+  withQueue(async (queue, start) => {
+    const ask = await start();
+    const app = { "x-kuvo-from": "app" };
+    const draft = "![Attachment](kuvo-attachment:draft/0/Photo.png)";
+    const picture = (name, bytes) => ({ name, uri: `data:image/png;base64,${Buffer.from(bytes).toString("base64")}` });
+    const added = await ask("kuvo/work-queue/items", "POST", {
+      operation: "queue-attach-pictures", title: "Pictures", body: draft,
+      files: [picture("Photo.png", "first")],
+    }, app);
+    assert.equal(added.status, 200, added.text);
+    const id = added.json.item.id;
+    const route = `kuvo/work-queue/items/${id}`;
+    const before = (await ask(route)).json.item;
+    assert.match(before.files[0].anchor, /^[0-9a-f]{24}$/);
+    assert.equal(before.body, `![Photo.png](kuvo-attachment:file/${before.files[0].anchor})`);
+    write(path.join(queue, "files", id, "photo 2.png"), "occupied");
+    const saved = await ask(route, "PATCH", {
+      body: `${before.body}\n${draft}`, files: [picture("photo.png", "second")],
+    }, app);
+    assert.equal(saved.status, 200, saved.text);
+    const after = (await ask(route)).json.item;
+    assert.deepEqual(after.files.map(({ name }) => name), ["Photo.png", "photo 3.png"]);
+    assert.equal(after.body, `${before.body}\n![photo 3.png](kuvo-attachment:file/${after.files[1].anchor})`);
+    assert.equal((await ask(`${route}/files/Photo.png`)).text, "first");
+    assert.equal((await ask(`${route}/files/photo%203.png`)).text, "second");
+    assert.equal(readFileSync(path.join(queue, "files", id, "photo 2.png"), "utf8"), "occupied");
+  }));
+
 test("the main grants unique Work Queue numbers across two computers", { timeout: 90000 }, async t => {
   const { computer, leases } = await bench(t);
   const studio = await computer("Studio");

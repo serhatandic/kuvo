@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(super) mod staging;
+
 pub(super) struct Download {
     pub media_type: String,
     pub bytes: Vec<u8>,

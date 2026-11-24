@@ -1562,6 +1562,7 @@ name = "kuvo_work"
 version = "0.1.0"
 dependencies = [
  "async-stream",
+ "base64 0.22.1",
  "getrandom 0.4.3",
  "http",
  "icu_collator",
@@ -1580,6 +1581,8 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "thiserror",
  "tokio",
  "unicode-normalization",

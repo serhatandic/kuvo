@@ -5,8 +5,9 @@ stream, saved attachments and cached GitHub state. It creates items with a durab
 receipt, deletes and restores local items, spends and exchanges ordinary number
 blocks on the relay lease, and saves signed labels. It also edits local text,
 status, order and fields, reads and writes manual relations, previews Markdown
-references, and removes inline picture markers. Feature advertisements wait for
-the complete contract.
+references, and stages client attachments with stable anchors and collision-safe
+names. Inline picture markers can be removed separately from their files. Feature
+advertisements wait for the complete contract.
 
 Case numbers follow declaration order in each TypeScript file. Partial means a
 conformance scenario exercises part of the TypeScript case. Open cases are
@@ -29,11 +30,11 @@ assigned to the indicated row for the rest of the port.
 | [work-queue-numbering](../../box/test/work-queue-numbering.test.ts) | 3–5 | Partial, 5.2. Real residents grant within the high mark and spend existing numbers while the main is unavailable. Exhaustion, missing lease and boundary cases need the referenced scenarios. |
 | | 1–2, 6 | Open, 5.2. Claim and receipt replay, inherited counters and Markdown import. |
 | [work-queue-relations](../../box/test/work-queue-relations.test.ts) | 1, 4 | Covered. The preview route uses the shared exclusions and UTF-16 offsets for non-BMP text, fences, code spans, links, and bidirectional text. |
-| | 2, 5–6, 8, 10 | Partial, 5.2. Saved note mentions preserve their ranges and backlinks. Local relation edits preserve mention bindings and show the inverse. An attached file opens and a symlink replacement is refused. Inline marker removal preserves current text and attachment bytes. Missing indexes are reconstructed on reads. Durable recovery, staging and typed note writes still need coverage. |
-| | 3, 7, 9, 11 | Open, 5.2. Attachment staging and anchors, purge pruning and dispatch responsiveness with a held writer lock. |
+| | 2–3, 5–8, 10 | Partial, 5.2. Saved note mentions preserve their ranges and backlinks. Local relation edits preserve mention bindings and show the inverse. Downloads refuse symlink replacements. Client staging keeps distinct names, bytes and anchors when both the metadata and disk have collisions. Inline marker removal preserves current text and attachment bytes. Missing indexes are reconstructed on reads. More staging cases, durable recovery and typed note writes still need coverage. |
+| | 9, 11 | Open, 5.2. Purge pruning and dispatch responsiveness with a held writer lock. |
 | [queue-live](../../box/bridge-tests/queue-live.test.js), [queue-stop](../../box/test/queue-stop.test.ts), [queue-items](../../box/test/queue-items.test.ts) | 1, 1–6, 1–25 respectively | Conversation message queues. See the case-by-case [engine map](rust-engine-coverage.md) for status and rows 3.2, 4.1 and 5.1. |
 
-Of the 182 directly named cases, 2 are covered, 29 are partial, 119 are open in
+Of the 182 directly named cases, 2 are covered, 31 are partial, 117 are open in
 Work Queue and 32 are tracked in the engine map. The Work Queue conformance area also
 checks the initial migration and future-format refusal through a real resident.
 
@@ -60,7 +61,7 @@ checks the initial migration and future-format refusal through a real resident.
 
 Open work in 5.2 includes merged peer views and the quiet owner-read transport,
 forwarded writes and receipts, offline merge and handoff, import claims and merge
-reservations, attachment staging, mention binding after number grants and owner
+reservations, agent and forwarded attachments, mention binding after number grants and owner
 changes, bot reassignment and remaining status and order cases, live GitHub reads
 and vault sign-in, and the agents' tools.
 Label restore and setup seeding remain open. Signed label changes use the Rust

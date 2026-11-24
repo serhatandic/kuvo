@@ -329,11 +329,15 @@ where
 }
 
 pub(super) fn work_queue_client(caller: &Caller) -> bool {
+    local_work_queue_app(caller) || caller.pairing().is_some_and(|pairing| pairing.is_current())
+}
+
+pub(super) fn local_work_queue_app(caller: &Caller) -> bool {
     matches!(
         caller,
         Caller::Local(Transport::Http {
             origin: LocalOrigin::App | LocalOrigin::Mac,
             ..
         })
-    ) || caller.pairing().is_some_and(|pairing| pairing.is_current())
+    )
 }
