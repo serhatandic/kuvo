@@ -9,7 +9,7 @@ use std::{
 };
 
 use flate2::read::GzDecoder;
-use kuvo_os::{platform::Environment, process::Spawn};
+use kuvo_os::process::Spawn;
 use kuvo_store::{files, format::ObjectFormat, home::Home, locks};
 use serde::Deserialize;
 use serde_json::json;
@@ -121,17 +121,14 @@ fn prepare_pack(
         .prefix(".probe-")
         .tempdir_in(&versions)?;
     let engine = EnginePack::find_or_fetch(home, signed, target, probe.path())?;
-    check_program(
-        engine.executable(),
-        &["--version"],
-        probe.path(),
-        "The new engine doesn't run here.",
-    )?;
-    check_program(
+    let cwd = Some(home.root());
+    check_engine(engine.executable(), cwd, "The new engine doesn't run here.")?;
+    probe_program(
         &draft.path().join(&binary),
         &["selftest", "--engine", &contents.engine],
-        probe.path(),
+        cwd,
         "The new box doesn't run with its engine here.",
+        Duration::from_secs(10),
     )?;
     let bin = draft.path().join("bin");
     let plugins = draft.path().join("config/opencode/plugins");
@@ -232,17 +229,17 @@ pub fn prepare_install(home: &Home, signed: &SignedRelease, source: &Path) -> io
         .prefix(".probe-")
         .tempdir_in(&install)?;
     let engine = EnginePack::find_or_fetch(&media, signed, target, probe.path())?;
-    check_program(
+    check_engine(
         engine.executable(),
-        &["--version"],
-        probe.path(),
-        "The new engine doesn't run here.",
+        None,
+        "Kuvo's engine doesn't run on this Mac.",
     )?;
-    check_program(
+    probe_program(
         &release.join("bin/kuvo-box"),
         &["selftest", "--engine", signed.engine()],
-        probe.path(),
+        None,
         "The new box doesn't run with its engine here.",
+        Duration::from_secs(10),
     )?;
     // The engine downloader's temporary file belongs to the install folder.
     // Seal it before publishing the pair that the move will open.
@@ -374,17 +371,13 @@ fn check_downgrade(home: &Home, next: &Contents) -> io::Result<()> {
     Ok(())
 }
 
-fn check_program(program: &Path, args: &[&str], folder: &Path, failure: &str) -> io::Result<()> {
-    probe_program(program, args, folder, failure, Duration::from_secs(10))
-}
-
-pub(crate) fn check_engine(program: &Path, folder: &Path) -> io::Result<()> {
+pub(crate) fn check_engine(program: &Path, cwd: Option<&Path>, failure: &str) -> io::Result<()> {
     // The signed SHA-512 pins the download. The probe only checks that it runs.
     probe_program(
         program,
         &["--version"],
-        folder,
-        "The engine doesn't run on this computer.",
+        cwd,
+        failure,
         Duration::from_secs(120),
     )
 }
@@ -392,35 +385,12 @@ pub(crate) fn check_engine(program: &Path, folder: &Path) -> io::Result<()> {
 fn probe_program(
     program: &Path,
     args: &[&str],
-    folder: &Path,
+    cwd: Option<&Path>,
     failure: &str,
     timeout: Duration,
 ) -> io::Result<()> {
-    let mut env: Environment = std::env::vars_os()
-        .filter(|(key, _)| {
-            ["PATH", "SystemRoot", "WINDIR"]
-                .iter()
-                .any(|name| key.eq_ignore_ascii_case(std::ffi::OsStr::new(name)))
-        })
-        .collect();
-    for key in [
-        "HOME",
-        "USERPROFILE",
-        "APPDATA",
-        "LOCALAPPDATA",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_STATE_HOME",
-        "KUVO_HOME",
-    ] {
-        env.insert(key.into(), folder.as_os_str().into());
-    }
-    let mut command = Spawn::new(program, env);
-    command.cwd = Some(folder.into());
+    let mut command = Spawn::new(program, std::env::vars_os().collect());
+    command.cwd = cwd.map(Path::to_owned);
     command.args = args.iter().map(|arg| (*arg).into()).collect();
     let mut child = command
         .spawn()
