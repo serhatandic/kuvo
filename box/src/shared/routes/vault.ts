@@ -137,6 +137,8 @@ export const VAULT_ROUTES: RouteShape[] = [
   { route: "DELETE kuvo/vault/items/:id", feature: "vault", answers: { 200: NOTHING } },
   // An item's values, for Show on a client (noted `shown`); never answered to an agent.
   { route: "GET kuvo/vault/items/:id/values", feature: "vault", answers: { 200: VAULT_VALUES } },
+  // Whether the supplied fields match the saved values, without showing them.
+  { route: "POST kuvo/vault/items/:id/same", feature: "vault", answers: { 200: object({ same: bool }) } },
   // Who may use which item, and how (on its own, or asking you each time).
   { route: "GET kuvo/vault/grants", feature: "vault", answers: { 200: VAULT_GRANTS } },
   // Grants an item (`{item, who, how}`); `how: null` takes the grant away.

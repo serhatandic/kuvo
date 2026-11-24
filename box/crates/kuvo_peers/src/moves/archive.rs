@@ -119,7 +119,13 @@ pub(super) fn write_chat(
         return Err(Error::TooLarge);
     }
     if let Some(wake) = wake {
-        wake_archive::measure(wake, MAX_BUNDLE_BYTES - content)?;
+        wake_archive::measure(wake, MAX_BUNDLE_BYTES - content).map_err(|error| {
+            if error.kind() == io::ErrorKind::FileTooLarge {
+                Error::TooLarge
+            } else {
+                Error::Archive(error)
+            }
+        })?;
     }
     files::write_generated(path, |file| {
         let mut archive = Builder::new(GzEncoder::new(file, Compression::default()));

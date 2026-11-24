@@ -19,6 +19,7 @@ use kuvo_wire::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::{
     sync::broadcast,
     task::{JoinHandle, JoinSet},
@@ -86,6 +87,16 @@ enum NoteDelivery {
     Steer,
 }
 
+#[derive(Deserialize)]
+struct ToolReply {
+    #[serde(default)]
+    read: bool,
+    text: Option<String>,
+    to: Option<String>,
+    from: Option<String>,
+    name: Option<String>,
+}
+
 impl Letters {
     async fn run(mut self, mut events: broadcast::Receiver<Arc<RelayEvent>>) {
         let mut tick = time::interval(Duration::from_secs(3));
@@ -122,9 +133,16 @@ impl Letters {
                 .transpose()?
                 .is_some()
         {
-            self.outbox = Some(Outbox::open(&self.reader.run).map_err(io::Error::other)?);
+            self.outbox()?;
         }
         Ok(self.outbox.as_mut())
+    }
+
+    fn outbox(&mut self) -> io::Result<&mut Outbox> {
+        if self.outbox.is_none() {
+            self.outbox = Some(Outbox::open(&self.reader.run).map_err(io::Error::other)?);
+        }
+        Ok(self.outbox.as_mut().expect("opened outbox"))
     }
 
     fn receipts(&mut self) -> io::Result<&mut Receipts> {
@@ -136,12 +154,9 @@ impl Letters {
 
     fn leave_answer(&mut self, id: &Id, mut letter: Letter) -> io::Result<()> {
         letter.at = Some(self.reader.now().max(0) as u64);
-        if self.outbox.is_none() {
-            self.outbox = Some(Outbox::open(&self.reader.run).map_err(io::Error::other)?);
-        }
-        if let Some(outbox) = &mut self.outbox {
-            outbox.enqueue(id, &letter).map_err(io::Error::other)?;
-        }
+        self.outbox()?
+            .enqueue(id, &letter)
+            .map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -149,6 +164,7 @@ impl Letters {
         let view = self.reader.view();
         let now = self.reader.now().max(0) as u64;
         let run = self.reader.run.clone();
+        self.recover_replies(&view, now)?;
         let Some(outbox) = self.open_outbox()? else {
             return Ok(());
         };
@@ -168,7 +184,9 @@ impl Letters {
             if scope.held && owner.as_ref().is_none_or(|owner| owner.local) {
                 continue;
             }
-            let known = owner.as_ref().and_then(|owner| owner.key);
+            let known = scope
+                .letter_home
+                .or_else(|| owner.and_then(|owner| owner.key));
             let key = known.or_else(|| each.letter.peer.as_deref().and_then(decode_exact));
             let Some(key) = key else {
                 continue;
@@ -201,6 +219,77 @@ impl Letters {
                         .map_err(io::Error::other)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn recover_replies(&mut self, view: &View, now: u64) -> io::Result<()> {
+        let replies = self.reader.run.join("replies");
+        let entries = match std::fs::read_dir(&replies) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            let Some(id) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".json"))
+                .and_then(|id| Id::try_from(id.to_owned()).ok())
+            else {
+                continue;
+            };
+            if tool_alive(&self.reader.run, &id, now) {
+                continue;
+            }
+            let Some(bytes) = files::read(&path)? else {
+                continue;
+            };
+            let Ok(reply) = serde_json::from_slice::<ToolReply>(&bytes) else {
+                continue;
+            };
+            if !reply.read {
+                let (Some(to), Some(words)) = (reply.to, reply.text) else {
+                    continue;
+                };
+                let Ok(scope) = self.ownership.scope(&to, None) else {
+                    continue;
+                };
+                if scope.held {
+                    continue;
+                }
+                let name = reply.name.as_deref().unwrap_or("another agent");
+                let from = reply.from.as_deref().unwrap_or("unknown");
+                let delivery = Id::try_from(format!(
+                    "ltr_{}",
+                    &encode(&Sha256::digest(format!("{} left answer", id.as_str())))[..22]
+                ))
+                .map_err(io::Error::other)?;
+                // This stable ID survives a restart between enqueuing the note
+                // and removing the tool's copy of its answer.
+                self.leave_answer(
+                    &delivery,
+                    Letter {
+                        to,
+                        text: letter_prompt(name, from, &words, false),
+                        from: None,
+                        at: None,
+                        peer: view.roster.here.map(|key| encode(&key)),
+                        sent_to: None,
+                        wait: false,
+                        answers: None,
+                        read: None,
+                        note: json!({"from":name, "words":words, "delivery":"steer"})
+                            .as_object()
+                            .cloned(),
+                        refused: false,
+                        other: Default::default(),
+                    },
+                )?;
+            }
+            files::remove_file_synced(&path)?;
+            files::remove_file_synced(&path.with_extension("gaveup"))?;
         }
         Ok(())
     }
@@ -373,13 +462,7 @@ impl Letters {
                 .map(|(_, name)| name.to_owned())
                 .unwrap_or_else(|| unknown_sender(view, &key));
             let address = sender.map_or("unknown", |(from, _)| from);
-            let hint = if address == "unknown" {
-                "It can't be answered: who sent it isn't known.".into()
-            } else if letter.wait {
-                "They're waiting for your reply: just answer, in your words.".into()
-            } else {
-                format!("To answer, use send_message to {address}.")
-            };
+            let hint = letter_hint(address, letter.wait);
             let prompt = format!("[Message from {name} · {address}] ({hint})\n\n{text}");
             let metadata = json!({"kuvo":{"parts":{"words":text,"mail":{"name":name,"session":address,"hint":hint}}}});
             (prompt, name, text, true, Some(metadata))
@@ -483,15 +566,13 @@ impl Letters {
     ) -> io::Result<bool> {
         let run = self.reader.run.clone();
         let sender = self.sender(view, key, letter.from.as_deref());
-        let Some(outbox) = self.open_outbox()? else {
-            return Ok(false);
-        };
-        outbox
+        // The awaited letter may be the only record left after a restart.
+        self.outbox()?
             .answer(&key, answered, now, |sent| {
-                if is_mac(&run) || !tool_alive(&run, answered, now) {
-                    return None;
-                }
                 if sent.read.is_some() {
+                    if !tool_alive(&run, answered, now) {
+                        return None;
+                    }
                     let words = letter
                         .note
                         .as_ref()
@@ -513,6 +594,21 @@ impl Letters {
             })
             .map_err(io::Error::other)
     }
+}
+
+fn letter_hint(address: &str, waiting: bool) -> std::borrow::Cow<'_, str> {
+    if address == "unknown" {
+        "It can't be answered: who sent it isn't known.".into()
+    } else if waiting {
+        "They're waiting for your reply: just answer, in your words.".into()
+    } else {
+        format!("To answer, use send_message to {address}.").into()
+    }
+}
+
+fn letter_prompt(name: &str, address: &str, text: &str, waiting: bool) -> String {
+    let hint = letter_hint(address, waiting);
+    format!("[Message from {name} · {address}] ({hint})\n\n{text}")
 }
 
 async fn wait_for_answer(
@@ -617,7 +713,11 @@ fn unknown_sender(view: &View, key: &ComputerKey) -> String {
 }
 
 fn tool_alive(run: &Path, id: &Id, now: u64) -> bool {
-    std::fs::metadata(run.join("replies").join(format!("{}.alive", id.as_str())))
+    let replies = run.join("replies");
+    if replies.join(format!("{}.gaveup", id.as_str())).exists() {
+        return false;
+    }
+    std::fs::metadata(replies.join(format!("{}.alive", id.as_str())))
         .and_then(|meta| meta.modified())
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
@@ -662,11 +762,7 @@ fn failure_context(
             }
         })
         .unwrap_or_default();
-    let replies = run.join("replies");
-    let tool_waiting = !mac
-        && letter.wait
-        && !replies.join(format!("{}.gaveup", id.as_str())).exists()
-        && tool_alive(run, id, now);
+    let tool_waiting = !mac && letter.wait && tool_alive(run, id, now);
     FailureContext {
         conversation: plain_name(title),
         computer: plain_name(computer),

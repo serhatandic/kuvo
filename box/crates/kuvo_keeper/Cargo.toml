@@ -9,12 +9,19 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
+ed25519-dalek = "2"
+flate2 = "1"
+percent-encoding = "2"
 kuvo_os = { path = "../kuvo_os" }
 kuvo_server = { path = "../kuvo_server" }
 kuvo_store = { path = "../kuvo_store" }
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "time"] }
 uuid = { version = "1", features = ["v4"] }
 

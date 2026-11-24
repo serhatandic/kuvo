@@ -19,6 +19,16 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    if word(0) == Some("update") {
+        return Ok(kuvo_keeper::prepare_command::run(&args[1..])?);
+    }
+    if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
+        if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
+            return Err("The release names a different engine.".into());
+        }
+        println!("ok");
+        return Ok(ExitCode::SUCCESS);
+    }
     if word(0) == Some("rehome") {
         return rehome(&args[1..]);
     }
@@ -36,7 +46,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let seed = (word(0), word(1), args.len()) == (Some("box"), Some("seed"), 2);
     let wipe = (word(0), args.len()) == (Some("wipe-member"), 1);
-    let serve = (word(0), args.len()) == (Some("serve"), 1);
+    let helper_resident = (word(0), word(1), args.len()) == (Some("serve"), Some("--resident"), 2);
+    let serve = (word(0), args.len()) == (Some("serve"), 1) || helper_resident;
     #[cfg(windows)]
     let startup = match (word(0), word(1), args.len()) {
         (Some("install"), Some("--startup"), 2) => Some(true),
@@ -241,7 +252,27 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(())
         } else {
-            serve::run(home.root(), resident_shutdown(home.root(), supervised)).await
+            let (launch, helper_ended) = if helper_resident
+                && std::fs::read_to_string(home.root().join("box/kind"))
+                    .is_ok_and(|kind| kind.trim() == "mac")
+            {
+                let (input, received) = tokio::sync::oneshot::channel();
+                let (ended, helper_ended) = tokio::sync::oneshot::channel();
+                // Helper keeps stdin open while it supervises the resident. This read
+                // must finish independently of the runtime that drains a local wipe.
+                std::thread::Builder::new().name("mac-helper-stdin".into()).spawn(move || {
+                    let mut stdin = io::stdin().lock();
+                    let launch = kuvo_services::vault::Launch::read(&mut stdin);
+                    if launch.is_ok() && input.send(launch).is_ok() {
+                        let _ = io::copy(&mut stdin, &mut io::sink());
+                    }
+                    let _ = ended.send(());
+                })?;
+                (received.await.map_err(|_| io::Error::other("The Mac Helper's launch message is unreadable."))??, Some(helper_ended))
+            } else {
+                (kuvo_services::vault::Launch::default(), None)
+            };
+            serve::run(home.root(), launch, helper_ended, resident_shutdown(home.root(), supervised)).await
         }
     });
     if serve && result.is_ok() && kuvo_setup::wipe::pending(home.root())? {

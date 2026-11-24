@@ -248,8 +248,8 @@ TypeScript suite until their respective Rust phase.
 | `moves.test.js` | Moving sessions, bots and groups without losing queued work or attachments. | Later, 2.4. |
 | `moves-races.test.js` | Failed or duplicate move offers, partial arrivals and concurrent session work. | Later, 2.4. |
 | `moves-recover.test.js` | Retries, restart recovery and settling copies and mail. | Later, 2.4. |
-| `moves-lanes.test.js` | Native agent move payloads, accounts and relay transfers. | Later, 2.4 and 4.6. |
-| `moves-lanes-races.test.js` | Edits during packing, interrupted transfers and retained copies. | Later, 2.4 and 4.6. |
+| `moves-lanes.test.js` | Native agent move payloads, accounts and relay transfers. | Later, 4.6 and 5.1. |
+| `moves-lanes-races.test.js` | Edits during native packing, interrupted native transfers and retained copies. | Later, 4.6 and 5.1. Shared transfer and retry behavior remains in 2.4. |
 | `moves-elsewhere.test.js` | Listing and expiring moves between other computers. | Later, 2.4. Keep internal clock and announcer checks with TS. |
 | `work-queue-across.test.js` | Peer views, number leases, forwarding, handoff and deduplication. | Later, 5.2. Keep retired numbering rules and internal projections with TS. |
 | `work-queue-two-boxes.test.js` | Cross-computer items, numbering, delete and restore. | Later, 5.2. |
@@ -426,8 +426,8 @@ parallel.
 | 5.4 | Usage, limits, Insights (SQLite), pricing<br>Also covers `notices-usage.test.ts`. | services | 4.1, 2.2 | 5 ×2 | C |
 | 5.5 | Library, artifacts, marketplace, integrations, skills, MCP catalog. Attachment cases in `offline-merge.test.ts` and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`. | services | 2.2 | 4 ×2 | A |
 | 6.1 | Settings pages and flows, permissions, sandbox (Seatbelt, `fence-exec`) | services | 4.1 | 5 ×2 | D |
-| 6.2 | Vault: Helper Keychain, wrapped-key files, broker, SSH agent. Installed Helper and Keychain in `setup-mac.test.js`. Supply `kuvo_move::mac::KeychainItems` through Helper and verify that a custom Claude Code account's credentials survive a released move on a real Mac. | services | 1.3 | 6 | D |
-| 6.3 | Files, Git, Changes, worktrees, projects, folders. Golden-home projects in `protocol/conformance/compat.test.mjs`. 6.3a files and folders: a file's info, text and bytes, folder lists, a new folder, a folder's tree, finding files and suggested folders ported (`kuvo_services::files`, `files` conformance area, every TS case covered); done on macOS; native Windows runs 2 of 16 (a server path refusal, a network path's name, and the cases' Unix-only setup) and Linux are left ([coverage](rust-files-coverage.md)). | services | 1.4 | 5 ×2 | D |
+| 6.2 | **Open.** Vault: Helper Keychain, wrapped-key files, broker and SSH agent. The released move uses the TypeScript `security` path for custom Claude Code credentials, verified with a disposable Mac Keychain. Installed Helper and Keychain cases in `setup-mac.test.js` remain open. See the [coverage and remaining gates](rust-vault-coverage.md). | services | 1.3, 4.1, 6.1 | 6 | D |
+| 6.3 | Files, Git, Changes, worktrees, projects, folders. Golden-home projects in `protocol/conformance/compat.test.mjs`. 6.3a files and folders: a file's info, text and bytes, folder lists, a new folder, a folder's tree, finding files and suggested folders ported (`kuvo_services::files`, `files` conformance area, every TS case covered); done on macOS; native Windows runs 8 of 16 (a network path's name, the git cases' setup, verbatim paths in suggested folders, a link loop's answer) and Linux are left ([coverage](rust-files-coverage.md)). | services | 1.4 | 5 ×2 | D |
 | 6.4 | Browser keeper: Chrome for Testing, CDP pipe, browser tools, live view, downloads | services | 4.1 | 5 ×2 | A |
 | 7.1 | **Done.** Portable `kuvo-box keep`, atomic selection and rollback, Windows keeper handover, and `kuvo-start` launching by manifest. [Coverage and remaining owner phases](rust-keeper-coverage.md) | keeper | 1.3 | 5 ×2 | D |
 | 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint. Keep each Rust release's `box.json` beside `bin` with a top-level `launch: "rust"`, including when the previous TypeScript stager moves only `bin`. | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |

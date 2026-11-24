@@ -186,6 +186,22 @@ export function holdVault(handle: LinkHandler, keepAgents: () => () => void = ke
       if (!socket.destroyed) socket.end(JSON.stringify({ formatVersion: 1, status, type, body: body.toString("base64") } satisfies Answered) + "\n");
     });
   });
+  server.once("listening", () => {
+    // The resident exits explicitly after draining. Remove only the socket this listener bound.
+    let owned: fs.BigIntStats;
+    try { owned = fs.lstatSync(VAULT_SOCKET, { bigint: true }); } catch { return; }
+    if (!owned.isSocket()) return;
+    const withdraw = () => {
+      try {
+        const current = fs.lstatSync(VAULT_SOCKET, { bigint: true });
+        if (current.isSocket() && current.dev === owned.dev && current.ino === owned.ino) {
+          fs.unlinkSync(VAULT_SOCKET);
+        }
+      } catch {}
+    };
+    process.once("exit", withdraw);
+    server.once("close", () => process.off("exit", withdraw));
+  });
   const old = process.umask(0o177);
   try {
     server.listen(VAULT_SOCKET);

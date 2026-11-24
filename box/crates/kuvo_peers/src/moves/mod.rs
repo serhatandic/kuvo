@@ -22,7 +22,11 @@ use kuvo_store::{files, format::ObjectFormat};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{directory::Ownership, lists::matching_paths, reach::Millis};
+use crate::{
+    directory::{MoveLocation, Ownership},
+    lists::matching_paths,
+    reach::Millis,
+};
 
 pub(crate) use driver::Handle;
 pub(crate) use driver::start;
@@ -31,7 +35,7 @@ pub(crate) use notices::{Announcer, Notices};
 
 const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
 const DEPARTURE: ObjectFormat = ObjectFormat::additive("Moved conversation");
-const ROUTING_FOR: Millis = 2 * 24 * 3_600_000;
+pub(crate) const ROUTING_FOR: Millis = 2 * 24 * 3_600_000;
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -319,7 +323,10 @@ fn apply_owners(
             ownership
                 .journal
                 .entry(record(&departure.session))
-                .or_insert(key);
+                .or_insert(MoveLocation {
+                    key,
+                    departed_at: Some(departure.at),
+                });
         }
     }
     let mut switching = BTreeSet::new();
@@ -339,7 +346,13 @@ fn apply_owners(
             if let Some(destination) = destination
                 && switching.insert(id.clone())
             {
-                ownership.journal.insert(record(&id), destination);
+                ownership.journal.insert(
+                    record(&id),
+                    MoveLocation {
+                        key: destination,
+                        departed_at: None,
+                    },
+                );
             }
         }
     }
