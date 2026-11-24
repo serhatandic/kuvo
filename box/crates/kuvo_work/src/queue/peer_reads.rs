@@ -169,7 +169,17 @@ impl PeerReads {
     }
 
     pub(super) async fn item(&self, name: String, client: bool) -> Result<Value, Refusal> {
-        self.refresh_local(&name).await;
+        self.item_view(name, client, true).await
+    }
+
+    pub(super) async fn item_for_tool(&self, name: String) -> Result<Value, Refusal> {
+        self.item_view(name, true, false).await
+    }
+
+    async fn item_view(&self, name: String, client: bool, refresh: bool) -> Result<Value, Refusal> {
+        if refresh {
+            self.refresh_local(&name).await;
+        }
         let here = self.clone();
         let lookup = name.clone();
         let (local, target) = blocking(move || {
@@ -206,7 +216,7 @@ impl PeerReads {
                     ));
                 }
             }
-            if target.item.get("source").is_some() {
+            if refresh && target.item.get("source").is_some() {
                 self.github
                     .read_seen(
                         self.refs.clone(),

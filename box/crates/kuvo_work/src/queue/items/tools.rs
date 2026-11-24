@@ -45,7 +45,7 @@ impl Writer {
                     return typed(previous);
                 }
                 let answer = match engine.active_tool(session, name, args).await {
-                    Some(caller) => match writer.run_tool(name, args.clone(), caller, operation.as_ref().map(|op| op.id.clone())).await {
+                    Some(caller) => match writer.run_tool(name, args.clone(), caller, operation.as_ref().map(|op| op.id.clone()), &engine).await {
                         Ok(answer) => answer,
                         Err(error) => tool_refusal(error).await,
                     },
@@ -66,6 +66,7 @@ impl Writer {
         args: Value,
         caller: ActiveTool,
         operation: Option<String>,
+        engine: &Engine,
     ) -> Result<Value, Refusal> {
         if args.get("category").is_some() && name != "queue_import" {
             return Err(bad(format!(
@@ -92,6 +93,7 @@ impl Writer {
             }
             "queue_update" => self.update_words(args, caller, operation).await,
             "queue_remove" => self.remove_words(args, caller, operation).await,
+            "queue_hand" => self.hand_local(args, caller, operation, engine).await,
             "queue_import" => {
                 let owner = self.tool_owner(&caller, true)?;
                 let result = self

@@ -15,7 +15,7 @@ impl Writer {
             Removal::Delete
         };
         let reference = self.tool_item_reference(&args["item"])?;
-        let answer = self.reads.item(reference, true).await?;
+        let answer = self.reads.item_for_tool(reference).await?;
         let target = &answer["item"];
         if target.get("computer").is_some() {
             return Err(bad(
@@ -33,7 +33,7 @@ impl Writer {
     ) -> Result<Value, Refusal> {
         self.tool_owner(&caller, false)?;
         let reference = self.tool_item_reference(&args["item"])?;
-        let answer = self.reads.item(reference, true).await?;
+        let answer = self.reads.item_for_tool(reference).await?;
         let target = &answer["item"];
         if target.get("computer").is_some() {
             return Err(bad(
@@ -141,6 +141,164 @@ impl Writer {
             Ok(result.expect("saved tool answer"))
         }).await.map_err(internal)?
     }
+    pub(super) async fn hand_local(
+        &self,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+        engine: &Engine,
+    ) -> Result<Value, Refusal> {
+        self.tool_owner(&caller, false)?;
+        let reference = self.tool_item_reference(&args["item"])?;
+        let answer = self.reads.item_for_tool(reference).await?;
+        let target = &answer["item"];
+        if target.get("computer").is_some() {
+            return Err(bad(
+                "Use the Work Queue on the computer that keeps that item to hand it off.",
+            ));
+        }
+        let id = target["id"].as_str().expect("queue item id").to_owned();
+        let to = args["to"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches('&')
+            .trim();
+        if to.is_empty() {
+            return Err(bad(
+                "Say who to hand it to (to), by a session's address or a bot's name.",
+            ));
+        }
+        let people = Assignees::read(&self.store);
+        let (owner, name) = if to.starts_with("ses_") && owner_id(to) {
+            let (computer, heading) = self.computer_words();
+            let found = engine.tool_session_owner(to).await.map_err(|_| {
+                bad(format!(
+                    "{heading}'s engine can't say where {to} is now. Try again in a moment."
+                ))
+            })?;
+            let (owner, mut name) = found.ok_or_else(|| bad(format!("There's no session {to} on {computer} or your other computers that this one knows of. Give the address list_agents or list_sessions shows.")))?;
+            if let Some(bot) = people.for_session(&owner) {
+                name = bot.info.name.clone();
+            }
+            (owner, name)
+        } else {
+            let matching = people
+                .rows()
+                .into_iter()
+                .filter(|row| {
+                    row["kind"] == "bot"
+                        && row["name"]
+                            .as_str()
+                            .is_some_and(|name| name.to_lowercase() == to.to_lowercase())
+                })
+                .collect::<Vec<_>>();
+            let Some((owner, bot)) = matching
+                .first()
+                .filter(|_| matching.len() == 1)
+                .and_then(|bot| Some((people.bot_session(bot["id"].as_str()?)?, bot)))
+            else {
+                return Err(bad(format!(
+                    "There's no bot called {to} on {} or your other computers. Give a session's address (from start_session or list_sessions).",
+                    self.computer_words().0
+                )));
+            };
+            (
+                owner.to_owned(),
+                bot["name"].as_str().unwrap_or_default().to_owned(),
+            )
+        };
+        let guard = self.lock().await?;
+        let writer = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let now = Timestamp::now().as_millisecond();
+            let (all, compaction) = writer.changes(now)?;
+            if let Some(answer) = operation
+                .as_deref()
+                .and_then(|operation| receipt::kept_answer(&all, operation))
+            {
+                compaction.finish(&writer, now)?;
+                return Ok(answer);
+            }
+            let item = all
+                .iter()
+                .find(|item| item.id == id)
+                .ok_or_else(|| bad("There's no item like that."))?;
+            writer.admit(&item.owner)?;
+            if item.removed.is_some() {
+                return Err(deleted(item));
+            }
+            if item.owner == owner {
+                let item = read::item_name(&Value::Object(item.saved.clone()));
+                return Err(bad(format!("{item} is in that queue already.")));
+            }
+            writer.admit(&owner)?;
+            edit::refuse_handing(item)?;
+            if all
+                .iter()
+                .filter(|item| {
+                    item.owner == owner && item.removed.is_none() && !status::closed(&item.status)
+                })
+                .count()
+                >= 2000
+            {
+                return Err(bad("That queue has 2000 open items already."));
+            }
+            let now = now.max((item.updated.at + 1.0) as i64);
+            let who = actor(&caller);
+            let mut row = Value::Object(item.saved.clone());
+            row["owner"] = owner.clone().into();
+            row["updated"] = json!({"at":now,"by":who});
+            if row.get("handedBy").is_none() {
+                row["handedBy"] = item.owner.clone().into();
+            }
+            let mut handed = item.handed.clone();
+            handed.push(json!({"from":item.owner,"to":owner,"at":now}));
+            handed.drain(..handed.len().saturating_sub(20));
+            row["handed"] = handed.into();
+            append_event(
+                &mut row,
+                json!({"at":now,"by":who,"kind":"handed","to":owner}),
+            );
+            if owner.starts_with("ses_") && !status::closed(&item.status) {
+                let mut sessions = item.sessions.clone();
+                if !sessions.iter().any(|link| link["session"] == owner) {
+                    sessions.push(json!({"session":owner,"since":now}));
+                }
+                row["sessions"] = sessions.into();
+            }
+            writer.observe_known(&mut row, &item.id);
+            let display = read::item_name(&row);
+            let linked = if owner.starts_with("ses_") {
+                ", linked to it"
+            } else {
+                ""
+            };
+            let answer = said(format!(
+                "Handed {display} to {name}: it's in its queue now{linked}, and stays in your view."
+            ));
+            keep_reply(&mut row, operation, &answer);
+            let mut destination = writer.read_owner(&owner, now)?;
+            destination.items.retain(|row| row["id"] != item.id);
+            destination.items.push(row);
+            destination.save(&writer.store).map_err(storage_refusal)?;
+            let mut source = writer.read_owner(&item.owner, now)?;
+            source.items.retain(|row| row["id"] != item.id);
+            if source.items.is_empty() {
+                files::remove_file_synced(&source.path)
+                    .map_err(Error::from)
+                    .map_err(storage_refusal)?;
+            } else {
+                source.save(&writer.store).map_err(storage_refusal)?;
+            }
+            compaction.finish(&writer, now)?;
+            Ok(answer)
+        })
+        .await
+        .map_err(internal)?
+    }
+
     pub(super) async fn add_ordinary(
         &self,
         mut args: Value,

@@ -1252,3 +1252,47 @@ test("an agent records work edits and only restores agent deletions", { timeout:
   assert.equal(unauthorized.isError, true, unauthorized.text);
   assert.match(unauthorized.text, /^The user deleted .*: only they bring it back\. Ask them if it's still needed\.$/);
 });
+
+test("an agent hands an item to another conversation on the same computer", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const lab = await computer("Lab");
+  const author = { id: "ses_HandAuthor", title: "Author", time: { created: 1, updated: 2 } };
+  const recipient = { id: "ses_HandReceiver", title: "Receiver", time: { created: 1, updated: 2 } };
+  lab.engine.sessions.push(author, recipient);
+  const ask = lab.connect(await lab.start().ready());
+  const app = { "x-kuvo-from": "app" };
+  const add = await ask("POST", "kuvo/work-queue/items", {
+    operation: "local-item-for-handoff", owner: author.id, title: "Hand off this item",
+  }, app);
+  assert.equal(add.status, 200, add.text);
+  const item = add.json.item.id;
+  const args = { item, to: recipient.id };
+  lab.engine.messages.set(author.id, [{ id: "msg_hand", type: "assistant", content: [{ type: "tool",
+    name: "kuvo-browser_queue_hand", state: { status: "running", input: args } }] }]);
+  const call = { name: "queue_hand", arguments: args, session: author.id, operation: "local-agent-handoff" };
+  const hand = await ask("POST", "kuvo/work-queue/tools", call);
+  assert.equal(hand.status, 200, hand.text);
+  assert.equal(hand.json.isError, false, hand.text);
+  assert.match(hand.json.text, /to Receiver: it's in its queue now, linked to it, and stays in your view\./);
+  lab.engine.messages.set(author.id, []);
+  const replay = await ask("POST", "kuvo/work-queue/tools", call);
+  assert.equal(replay.status, 200, replay.text);
+  assert.deepEqual(replay.json, hand.json);
+  const route = "kuvo/work-queue/items/" + item;
+  const detail = await ask("GET", route);
+  assert.equal(detail.status, 200, detail.text);
+  assert.equal(detail.json.item.owner, recipient.id);
+  assert.equal(detail.json.item.sessions.find(row => row.session === recipient.id)?.title, recipient.title);
+  assert.deepEqual(detail.json.item.updated.by, { session: author.id, name: author.title });
+  assert.deepEqual(detail.json.item.events.at(-1), {
+    at: detail.json.item.updated.at, by: { session: author.id, name: author.title }, kind: "handed", to: recipient.id,
+  });
+  const folder = path.join(lab.home, "run", "work-queue", "queues");
+  const oldFile = path.join(folder, author.id + ".json");
+  assert.equal(existsSync(oldFile), false);
+  const nextFile = path.join(folder, recipient.id + ".json");
+  assert.equal(JSON.parse(readFileSync(nextFile, "utf8")).items[0].id, item);
+  const lister = await ask("GET", "kuvo/work-queue?owner=" + author.id + "&glance=1");
+  assert.equal(lister.status, 200, lister.text);
+  assert.equal(lister.json.items.filter(row => row.id === item).length, 1);
+});

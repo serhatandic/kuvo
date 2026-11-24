@@ -174,7 +174,7 @@ impl Writer {
 
     pub(super) async fn show_words(&self, item: &Value, owner: String) -> Result<Value, Refusal> {
         let reference = self.tool_item_reference(item)?;
-        let answer = match self.reads.item(reference.clone(), true).await {
+        let answer = match self.reads.item_for_tool(reference.clone()).await {
             Ok(answer) => answer,
             Err(error) => {
                 let reply = error.reply();
