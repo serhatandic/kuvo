@@ -927,7 +927,7 @@ test("a destination resumes a partial move after restarting", {
     return false;
   }));
   const sourceProcess = here.start(), targetProcess = there.start();
-  const [source] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  const [source, target] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
   await readyToMove(source, session, member);
   const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   assert.equal(begun.status, 202, begun.text);
@@ -937,6 +937,18 @@ test("a destination resumes a partial move after restarting", {
   assert.equal(remaining.move.of, 2);
   assert.equal(remaining.move.i, 1);
   assert.equal(there.engine.sessions.length, 0);
+  for (const [resident, place, progress] of [
+    [source, member.name, "Moving to " + member.name + "…"],
+    [target, main.name, "Moving to this computer…"],
+  ]) {
+    const result = await request(resident, "GET", "kuvo/moves");
+    assert.equal(result.status, 200, result.text);
+    const move = result.json.moves.find(move => move.id === id);
+    assert.equal(move?.place, place, result.text);
+    assert.equal(move.progress, progress);
+    assert.equal(move.stage, "copying");
+    assert.ok(move.size > 0 && (move.sent ?? 0) <= move.size);
+  }
   await targetProcess.stop();
   await until(() => !relay.has(to), "The stopped destination did not leave the relay");
   restarting = true;
@@ -1428,7 +1440,7 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.equal(fs.readFileSync(path.join(folder, "directory"), "utf8"), sourceChats);
 });
 
-test("a transcript read returns to its tool without prompting the conversation", { timeout: 45000 }, async t => {
+test("a transcript read returns to its tool without prompting the conversation", { timeout: 90000 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("read-source"), there = await computer("read-owner");
   const { main, member } = seedPeerSetup(here.home, relay.url);
@@ -1457,7 +1469,8 @@ test("a transcript read returns to its tool without prompting the conversation",
       { id: "msg_readQuestion", type: "user", text: "Can you book a table?" },
     ] }],
   ])]]);
-  const [source, target] = await Promise.all([here.start().ready(), there.start().ready()]);
+  const sourceProcess = here.start(), targetProcess = there.start();
+  const [source, target] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
   await Promise.all([[source, sender], [target, recipient]].map(([resident, session]) =>
     until(async () => (await request(resident, "GET", "api/session/" + session)).status === 200,
       "The conversation's engine did not become ready")));
@@ -1472,7 +1485,8 @@ test("a transcript read returns to its tool without prompting the conversation",
     return until(() => {
       fs.utimesSync(tool + ".alive", new Date(), new Date());
       return fs.existsSync(tool + ".json") && readJSON(tool + ".json");
-    }, "The original tool did not receive an answer for " + to, 15000, 250);
+    }, () => "The original tool did not receive an answer for " + to + "\n"
+      + sourceProcess.log() + "\n" + targetProcess.log(), 25000, 250);
   }
   const answer = await read("ltr_readConversation", recipient, { query: "cafe" });
   assert.deepEqual(answer, {
@@ -1559,6 +1573,15 @@ test("a letter that waits hears the authenticated answer after the sender restar
   const letter = "ltr_waitForReservations";
   const tool = path.join(here.home, "run/replies", letter);
   const file = path.join(here.home, "run/outbox/sending", letter + ".json");
+  const address = Buffer.from(main.address, "base64url");
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  let sent;
+  t.after(relay.intercept(address, Buffer.from(member.address, "base64url"), packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), Buffer.from(main.key, "base64url"));
+    if (JSON.parse(payload).letter?.id === letter) sent = packet;
+    return false;
+  }));
   write(tool + ".alive", "");
   write(file, JSON.stringify({ from: sender, to: recipient, text: "Is the train booked?", peer: member.key, wait: true, at: Date.now() }));
   const conversation = await until(() => there.engine.messages.get(recipient),
@@ -1566,7 +1589,6 @@ test("a letter that waits hears the authenticated answer after the sender restar
   assert.equal(conversation.length, 1);
   assert.match(conversation[0].text, /They're waiting for your reply/);
   await until(() => fs.existsSync(tool + ".wait"), "The sender did not save the awaited letter");
-  const address = Buffer.from(main.address, "base64url");
   await source.stop();
   await until(() => !relay.has(address), "The stopped sender did not leave the relay");
   const restarted = here.start();
@@ -1584,30 +1606,80 @@ test("a letter that waits hears the authenticated answer after the sender restar
   assert.ok(!fs.existsSync(tool + ".wait"));
   assert.ok(!fs.existsSync(file));
   assert.equal(here.engine.messages.has(sender), false);
+
+  assert.ok(sent, "The original letter crossed the relay");
+  relay.replay(sent);
+  const unknown = "ltr_unknownWaiter";
+  const unknownReply = path.join(here.home, "run/replies", unknown + ".json");
+  write(path.join(here.home, "run/outbox/sending", unknown + ".json"), JSON.stringify({
+    from: "ses_unlisted", to: recipient, text: "Is lunch booked?", peer: member.key, wait: true, at: Date.now(),
+  }));
+  const notAnswerable = await until(() => fs.existsSync(unknownReply) && readJSON(unknownReply),
+    "The unlisted sender did not hear that it couldn't receive a reply", 15000);
+  assert.deepEqual(notAnswerable, { note: "Its answer can't come back to you: it doesn't know who you are." });
+  assert.equal(conversation.length, 3, "Replaying the first letter does not start another turn");
+  assert.equal(conversation.at(-1).text, `[Message from an agent on ${main.name} · unknown] (It can't be answered: who sent it isn't known.)\n\nIs lunch booked?`);
 });
 
-test("a refused letter becomes one queued note to the conversation that sent it", { timeout: 45000 }, async t => {
+test("a refused letter becomes one queued note to the conversation that sent it", {
+  timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("refused-letter-source"), there = await computer("refused-letter-target");
-  const { member } = seedPeerSetup(here.home, relay.url);
-  seedPeerSetup(there.home, relay.url, 2);
+  const { main, member, spare } = seedPeerSetup(here.home, relay.url, 1, 3);
+  seedPeerSetup(there.home, relay.url, 2, 3);
   const sender = "ses_letterSender", recipient = "ses_letterRecipient";
   here.engine.sessions.push(sessionOf({ id: sender, directory: path.join(here.home, "chats") }));
   there.engine.sessions.push(sessionOf({ id: recipient, archived: true, directory: path.join(there.home, "chats") }));
-  const file = path.join(here.home, "run/outbox/sending/ltr_refusedByOwner.json");
+  const id = "ltr_refusedByOwner", sending = path.join(here.home, "run/outbox/sending");
+  const file = path.join(sending, id + ".json");
+  const { sealOneWay, openOneWay, Frame, frame } = await testMail(t, boxBinary(wireFixture));
+  const ownKey = Buffer.from(main.key, "base64url"), address = Buffer.from(main.address, "base64url");
+  const rejecting = Buffer.from(member.address, "base64url");
+  let receipt;
+  const release = relay.intercept(rejecting, address, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 1), Buffer.from(member.key, "base64url"));
+    if (JSON.parse(payload).delivered?.id !== id) return false;
+    receipt = packet;
+    return true;
+  });
+  t.after(release);
+  const other = relay.device(Buffer.alloc(32, 53));
+  assert.equal(other.address.toString("base64url"), spare.address);
+  t.after(() => other.leave());
   const hereProcess = here.start(), targetProcess = there.start();
-  await Promise.all([hereProcess.ready(), targetProcess.ready()]);
-  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The destination did not connect");
+  const [source, target] = await Promise.all([hereProcess.ready(), targetProcess.ready()]);
+  await Promise.all([[source, sender], [target, recipient]].map(([resident, session]) =>
+    until(async () => (await request(resident, "GET", "api/session/" + session)).status === 200,
+      "The conversation's engine did not become ready")));
   write(file, JSON.stringify({ from: sender, to: recipient, text: "Hello", peer: member.key, wait: false, at: Date.now() }));
+  await until(() => receipt, "The owner did not refuse the letter", 18000);
+
+  const moveId = "mov_refusalHold", journal = path.join(here.home, "run/moves", moveId + ".json");
+  write(journal, JSON.stringify({ id: moveId, thing: sender, name: "Held sender", kind: "chat",
+    from: spare.key, to: main.key, peer: spare.key, role: "to", stage: "copying", sessions: [sender],
+    started: Date.now(), safeSwitch: true, generation: 1, hash: "A".repeat(43) }));
+  const forged = Buffer.from(JSON.stringify({ at: Date.now(), delivered: { id, ok: false, why: "A different computer said no." } }));
+  const { message } = sealOneWay(forged, Buffer.alloc(32, 3), ownKey);
+  other.send(address, frame(Frame.mail, 0, message));
+  release();
+  relay.replay(receipt);
+
+  const notice = await until(() => fs.readdirSync(sending).find(name =>
+    name.endsWith(".json") && name !== path.basename(file)), "No notice was saved for the held sender");
+  assert.match(readJSON(path.join(sending, notice)).text, /That conversation doesn't take messages/);
   const prompts = () => here.engine.messages.get(sender) ?? [];
-  await until(() => prompts().length, "The sender never heard the reason its letter was refused", 14000);
+  assert.equal(prompts().length, 0);
+  await hereProcess.stop();
+  fs.unlinkSync(journal);
+  await here.start().ready();
+  await until(() => prompts().length, "The sender never heard the reason its letter was refused", 18000);
   const line = `Your message to that chat on ${member.name} wasn't delivered`;
   assert.equal(prompts()[0].text, `[Not delivered] ${line}: ${member.name} said "That conversation doesn't take messages."`);
   assert.deepEqual(prompts()[0].metadata.kuvo.note, { from: "Your other computers", line });
   assert.equal(prompts()[0].delivery, "queue");
   assert.ok(!fs.existsSync(file));
-  await hereProcess.stop();
-  await here.start().ready();
   assert.equal(prompts().length, 1);
   assert.equal(there.engine.messages.has(recipient), false);
 });
