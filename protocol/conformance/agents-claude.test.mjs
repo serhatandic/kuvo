@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { claudeEnvironment, startClaudeBridge } from "./claude.mjs";
 import {
-  boxBinary, isolatedEnv, localRelay, privateHome, readJSON, request, scratch,
+  boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, readJSON, request, scratch,
   startBox, until, write,
 } from "./adapter.mjs";
 
@@ -114,6 +114,145 @@ test("a saved setup token is replaced only when Claude reports its own sign-in",
   });
 });
 
+test("a saved Claude session receives a prompt through the resident", { timeout: 60000 }, async t => {
+  const session = "ses_claude_fixture";
+  const route = `kuvo/agents/api/session/${session}`;
+  await withClaude(t, { turns: true }, async (listener, home) => {
+    const started = await request(listener, "POST", route + "/prompt", {
+      id: "msg_fixture_first", text: "hello",
+    }, headers, 45000);
+    assert.equal(started.status, 200, started.text);
+    const rows = await until(async () => {
+      const answer = await request(listener, "GET", route + "/message?order=asc", undefined, headers);
+      assert.equal(answer.status, 200, answer.text);
+      const rows = answer.json.data;
+      return rows.at(-1)?.type === "idle" && rows;
+    }, "The Claude fixture did not finish its turn.");
+    assert.deepEqual(rows.map(row => row.type), ["user", "assistant", "idle"]);
+    assert.equal(rows[1].content[0].text, "Claude fixture received hello");
+    assert.equal(rows[2].outcome, "succeeded");
+    const saved = readJSON(path.join(home, "agents/sessions", session, "agent.json"));
+    assert.match((saved.threads?.[provider]?.state ?? saved).claudeSession, /^[a-f0-9-]{36}$/i);
+  }, home => seedSession(home, session));
+});
+
+test("the Rust keeper keeps an actual Claude adapter turn across a release switch",
+  { timeout: 90000 }, async t => {
+    const binary = boxBinary();
+    if (binary.typescript) {
+      t.skip("A Rust-to-Rust release switch uses the Rust holder and resident.");
+      return;
+    }
+    const root = scratch();
+    const home = path.join(root, "box");
+    const relay = await localRelay();
+    const session = "ses_claude_kept";
+    const route = `kuvo/agents/api/session/${session}`;
+    const old = "versions/0.8.0-beta.1-123456789abc/bin";
+    const next = "versions/0.8.0-beta.2-123456789abc/bin";
+    let keeper, kept;
+    try {
+      privateHome(home);
+      const env = { ...claudeEnvironment(binary, home, isolatedEnv(root), { turns: true }), KUVO_SANDBOX: "off" };
+      write(path.join(home, "folder-version.json"), '{"version":23}\n');
+      seedSession(home, session);
+      for (const [folder, version] of [[old, "0.8.0-beta.1"], [next, "0.8.0-beta.2"]]) {
+        const installed = path.join(home, folder, path.basename(binary.file));
+        write(path.join(home, folder, "..", "box.json"), JSON.stringify({ kuvo: "box/1", launch: "rust", version }));
+        fs.mkdirSync(path.dirname(installed), { recursive: true });
+        try { fs.linkSync(binary.file, installed); }
+        catch { fs.copyFileSync(binary.file, installed); }
+      }
+      const control = async args => {
+        const command = boxCommand(binary, home, env, relay, ["keep", ...args]);
+        assert.equal((await command.exited).code, 0, command.log());
+      };
+      try {
+        await control(["select", old]);
+        keeper = boxCommand(binary, home, env, relay, ["keep"]);
+        const first = await keptListener(home, keeper);
+        const started = await request(first, "POST", route + "/prompt", {
+          id: "msg_fixture_kept", text: "wait for update",
+        }, headers);
+        assert.equal(started.status, 200, started.text);
+        await until(async () => (await transcript(first, route)).some(row =>
+          row.content?.[0]?.text === "Before the switch."
+        ), "The fixture never began its turn.");
+        const initial = await until(() => heldClaude(home, session), "Claude's holder was never recorded.");
+        assert.equal(initial.meta.turns.main.turn, "msg_fixture_kept");
+        await control(["select", next]);
+        const second = await keptListener(home, keeper, first.pid);
+        const rows = await until(async () => {
+          const rows = await transcript(second, route);
+          return rows.at(-1)?.outcome === "succeeded" && rows;
+        }, "The replacement resident never finished the held turn.", 30000);
+        const after = heldClaude(home, session);
+        assert.ok(after);
+        assert.deepEqual([after.pid, after.child, after.generation], [initial.pid, initial.child, initial.generation + 1]);
+        assert.deepEqual(rows.filter(row => row.type === "assistant").flatMap(row => row.content.map(part => part.text)),
+          ["Before the switch.", "After the switch."]);
+        kept = after.pid;
+      } finally {
+        await control(["off"]);
+      }
+    } finally {
+      await keeper?.stop();
+      stopFixtureHolders(home);
+      await relay.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+    assert.ok(kept);
+  });
+
+async function keptListener(home, keeper, previous) {
+  return until(async () => {
+    const file = path.join(home, "run", "serve.json");
+    if (!fs.existsSync(file)) return;
+    const listener = readJSON(file);
+    if (listener.pid === previous) return;
+    try {
+      const info = await request(listener, "GET", "kuvo/info", undefined, headers, 1000);
+      return info.status === 200 && listener;
+    } catch {
+      return;
+    }
+  }, () => "The keeper did not publish a ready resident. " + keeper.log(), 25000);
+}
+
+async function transcript(listener, route) {
+  const answer = await request(listener, "GET", route + "/message?order=asc", undefined, headers);
+  assert.equal(answer.status, 200, answer.text);
+  return answer.json.data;
+}
+
+function holderRecords(home) {
+  const folder = path.join(home, "run", "agents", "hold");
+  if (!fs.existsSync(folder)) return [];
+  return fs.readdirSync(folder).filter(name => /^[a-f\d]{12}\.json$/.test(name))
+    .map(name => readJSON(path.join(folder, name)));
+}
+
+function heldClaude(home, session) {
+  return holderRecords(home).find(record => record.meta?.provider === provider && record.meta?.session === session);
+}
+
+function stopFixtureHolders(home) {
+  for (const { pid } of holderRecords(home)) {
+    if (!Number.isInteger(pid) || pid <= 1) continue;
+    try { process.kill(pid, "SIGTERM"); }
+    catch (error) { if (error.code !== "ESRCH") throw error; }
+  }
+}
+
+function seedSession(home, id) {
+  write(path.join(home, "agents/sessions", id, "session.json"), JSON.stringify({
+    id, title: "Claude fixture", projectID: "fixture", agent: "build",
+    location: { directory: home }, model: { providerID: "claude-code", id: "opus" },
+    time: { created: 1, updated: 1 }, cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  }));
+}
+
 async function withClaude(t, fixture, check, prepare = () => {}) {
   const binary = boxBinary();
   if (binary.typescript && process.platform === "win32") {
@@ -126,7 +265,7 @@ async function withClaude(t, fixture, check, prepare = () => {}) {
   let resident, bridge;
   try {
     privateHome(home);
-    const env = claudeEnvironment(binary, home, isolatedEnv(root), fixture);
+    const env = { ...claudeEnvironment(binary, home, isolatedEnv(root), fixture), KUVO_SANDBOX: "off" };
     prepare(home);
     write(path.join(home, "folder-version.json"), '{"version":23}\n');
     const start = async () => {
@@ -145,6 +284,7 @@ async function withClaude(t, fixture, check, prepare = () => {}) {
   } finally {
     await resident?.stop();
     await bridge?.stop();
+    stopFixtureHolders(home);
     await relay.close();
     fs.rmSync(root, { recursive: true, force: true });
   }

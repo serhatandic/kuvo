@@ -2,6 +2,7 @@
 
 mod diagnostic;
 mod model;
+mod owned_paths;
 mod permissions;
 mod program;
 mod projection;
@@ -178,6 +179,7 @@ impl Agent for Claude {
 
     fn remove_credentials(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
+            self.stop_threads(false).await?;
             self.program.logout().await?;
             self.models.clear().await;
             Ok(())

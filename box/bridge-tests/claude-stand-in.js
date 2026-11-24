@@ -1,5 +1,5 @@
 // Claude Code, as far as the agents bridge asks it in these tests: signed in (`claude auth status`),
-// and the models it has, which Claude's SDK asks over its pipe as it starts it. Never a turn. Its
+// the models it has, and optional scripted turns. Its
 // `default` is the model it recommends on that account (`stands`: Opus on one plan, Sonnet on
 // another). The bridge is given the SDK as the box's own tests have it (`bun install` in
 // box, before these tests, as CI does), so nothing is downloaded, and the stand-in comes
@@ -12,7 +12,7 @@ const boxModules = fileURLToPath(new URL("../node_modules", import.meta.url));
 
 /** The stand-in in `root`'s `.local/bin`, and the SDK in the bridge's `agents` folder: the folder to
  * put first on the bridge's PATH. */
-export function standInClaude({ root, agents, stands = "opus", signedIn = true, catalog }) {
+export function standInClaude({ root, agents, stands = "opus", signedIn = true, catalog, turns = false }) {
   const bin = path.join(root, ".local", "bin");
   fs.mkdirSync(bin, { recursive: true });
   const named = { opus: "Opus 5.5", sonnet: "Sonnet 5.5" };
@@ -46,13 +46,51 @@ if (args[0] === "auth") {
 }
 if (!args.includes("stream-json")) process.exit(1);
 const models = ${JSON.stringify(models)};
-const answer = (request_id, said) => process.stdout.write(JSON.stringify({ type: "control_response", response: { request_id, ...said } }) + "\\n");
+const send = message => process.stdout.write(JSON.stringify(message) + "\\n");
+const answer = (request_id, said) => send({ type: "control_response", response: { request_id, ...said } });
+const native = args.find(arg => arg.startsWith("--session-id="))?.split("=")[1]
+  ?? args[args.indexOf("--session-id") + 1];
+const scriptedTurns = ${turns};
+let held, step = 0;
+const textOf = value => value.message.content.find(block => block.type === "text")?.text;
+const say = text => send({
+  type: "assistant", parent_tool_use_id: null, session_id: native,
+  message: { id: "step-" + ++step, role: "assistant", model: "opus", content: [{ type: "text", text }] },
+});
+const finish = (uuid, interrupted = false) => send({
+  type: "result", subtype: interrupted ? "error_during_execution" : "success",
+  is_error: interrupted, session_id: native, user_message_uuids: [uuid],
+});
 require("node:readline").createInterface({ input: process.stdin }).on("line", line => {
   let message;
   try { message = JSON.parse(line); } catch { return; }
+  if (message.type === "user" && scriptedTurns) {
+    send({ type: "system", subtype: "init", session_id: native });
+    const text = textOf(message);
+    if (text === "wait for update") {
+      held = message.uuid;
+      say("Before the switch.");
+    } else {
+      say("Claude fixture received " + text.split("\\n", 1)[0]);
+      finish(message.uuid);
+    }
+    return;
+  }
   if (message.type !== "control_request") return;
-  if (message.request?.subtype === "initialize") answer(message.request_id, { subtype: "success", response: { models, commands: [], agents: [], output_style: "default", available_output_styles: ["default"], account: {} } });
-  else answer(message.request_id, { subtype: "error", error: "Not in this stand-in." });
+  const subtype = message.request?.subtype;
+  if (subtype === "initialize") {
+    answer(message.request_id, { subtype: "success", pending_permission_requests: [], response: { models, commands: [], agents: [], output_style: "default", available_output_styles: ["default"], account: {} } });
+    if (scriptedTurns && held) {
+      say("After the switch.");
+      finish(held);
+      held = undefined;
+    }
+  } else if (scriptedTurns && ["set_model", "set_permission_mode", "apply_flag_settings", "interrupt"].includes(subtype)) {
+    answer(message.request_id, { subtype: "success", response: {} });
+    if (held && subtype === "interrupt") { finish(held, true); held = undefined; }
+  } else {
+    answer(message.request_id, { subtype: "error", error: "Not in this stand-in." });
+  }
 }).on("close", () => process.exit(0));
 `;
   if (process.platform === "win32") {

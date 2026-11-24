@@ -36,7 +36,8 @@ use crate::{
 };
 
 use super::{
-    diagnostic::Said, permissions::Request, program::Program, projection::Projection, wire,
+    diagnostic::Said, owned_paths, permissions::Request, program::Program, projection::Projection,
+    wire,
 };
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -193,12 +194,14 @@ impl Recovery {
 #[derive(Clone)]
 pub(super) struct Conversation {
     commands: mpsc::Sender<Command>,
+    directory: PathBuf,
+    config: Option<PathBuf>,
 }
 
 type Reply<T> = oneshot::Sender<io::Result<T>>;
 
 enum Command {
-    Start(TurnInput, Arc<dyn TurnSink>, Reply<()>),
+    Start(Box<TurnInput>, Arc<dyn TurnSink>, Reply<()>),
     Steer(String, Prompt, Reply<Steer>),
     Interrupt(String, Reply<()>),
     Prepare(Reply<()>),
@@ -213,7 +216,11 @@ impl Conversation {
         recovered: Option<Recovery>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(16);
-        let conversation = Self { commands };
+        let conversation = Self {
+            commands,
+            directory: context.directory.clone(),
+            config: program.config_home(&context.directory),
+        };
         let (pipe, recovery, instructions) = recovered.map_or((None, None, None), |old| {
             (Some(old.pipe), old.note, old.instructions)
         });
@@ -261,6 +268,12 @@ impl Conversation {
 }
 
 impl Thread for Conversation {
+    fn owns_path(&self, path: &Path) -> bool {
+        self.config
+            .as_deref()
+            .is_some_and(|config| owned_paths::owns_path(config, &self.directory, path))
+    }
+
     fn start(
         &self,
         input: TurnInput,
@@ -268,7 +281,7 @@ impl Thread for Conversation {
     ) -> AdapterCall<'_, Arc<dyn ActiveTurn>> {
         Box::pin(async move {
             let id = input.id.clone();
-            self.send(|reply| Command::Start(input, sink, reply))
+            self.send(|reply| Command::Start(Box::new(input), sink, reply))
                 .await?;
             Ok(Arc::new(Turn {
                 id,
@@ -382,7 +395,7 @@ impl Actor {
     async fn command(&mut self, command: Command) -> io::Result<()> {
         match command {
             Command::Start(input, sink, reply) => {
-                let result = self.start(input, sink).await;
+                let result = self.start(*input, sink).await;
                 let _ = reply.send(result);
             }
             Command::Steer(turn, prompt, reply) => {

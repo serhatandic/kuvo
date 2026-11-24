@@ -107,6 +107,22 @@ impl Program {
         env
     }
 
+    pub fn config_home(&self, directory: &Path) -> Option<PathBuf> {
+        let env: Environment = std::env::vars_os().collect();
+        let platform = Platform::current();
+        if let Some(managed) = &self.managed {
+            return Some(managed.clone());
+        }
+        if let Some(config) =
+            env_value(platform, &env, "CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty())
+        {
+            return Some(directory.join(config));
+        }
+        let account = kuvo_os::platform::Account::current().ok()?;
+        let personal = account.home_folder(platform, &env).ok()?;
+        Some(personal.join(".claude"))
+    }
+
     pub fn scratch(&self) -> PathBuf {
         self.home.run().join("agents/tmp")
     }

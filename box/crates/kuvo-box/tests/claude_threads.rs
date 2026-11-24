@@ -161,6 +161,10 @@ async fn scenario(root: PathBuf) {
     let old = claude(&first);
     let saved: VendorState = serde_json::from_value(json!({"claudeSession": INITIAL})).unwrap();
     let holder = old.open_thread(context(&root, saved)).await.unwrap();
+    assert!(holder.owns_path(&root.join(".claude/plans/fixture.md")));
+    assert!(holder.owns_path(&root.join(".claude/projects/project/memory/fixture.md")));
+    assert!(!holder.owns_path(&root.join(".claude/projects/project/credentials.json")));
+    assert!(!holder.owns_path(&root.join(".claude/plans/../../fixture.md")));
     let (sink, mut events, mut questions) = Sink::new();
     let active = holder
         .start(
