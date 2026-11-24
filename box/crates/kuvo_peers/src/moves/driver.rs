@@ -59,6 +59,7 @@ const WAITING_FOR_SWITCH: Duration = Duration::from_secs(150);
 const HELD_AT_MOST: Millis = 7 * 24 * 60 * 60_000;
 const DROP_AGAIN_LATE: Millis = 60 * 60_000;
 const DROP_AT_MOST: Millis = 24 * 3_600_000;
+const ORPHAN_AFTER: Duration = Duration::from_secs(20 * 60);
 
 #[derive(Deserialize)]
 pub(super) struct Request {
@@ -109,6 +110,7 @@ pub(crate) fn start(
         sending: HashMap::new(),
         retry: HashMap::new(),
         logged_stuck: HashSet::new(),
+        orphans: HashMap::new(),
         owned: HashSet::new(),
         heard: HashMap::new(),
         looking_since: Instant::now(),
@@ -139,6 +141,7 @@ struct Driver {
     sending: HashMap<String, Sending>,
     retry: HashMap<String, RetryClock>,
     logged_stuck: HashSet<String>,
+    orphans: HashMap<String, Instant>,
     owned: HashSet<String>,
     heard: HashMap<String, Instant>,
     looking_since: Instant,
@@ -306,6 +309,11 @@ impl Driver {
         let view = self.reader.view();
         let now = self.reader.now();
         let rows = journals(self.run_dir()).map_err(io::Error::other)?;
+        if let Err(error) =
+            remove_orphaned_bundles(&self.reader.run, &mut self.orphans, Instant::now())
+        {
+            eprintln!("Removing an orphaned move bundle: {error}");
+        }
         self.refresh_waiting(&rows);
         self.check_trash(&view, &rows).await?;
         for mut row in rows {
@@ -2355,4 +2363,72 @@ fn unavailable() -> Refusal {
 
 fn gone() -> Refusal {
     Refusal::new(StatusCode::NOT_FOUND, "It isn’t on this computer any more.")
+}
+
+fn remove_orphaned_bundles(
+    run: &Path,
+    seen: &mut HashMap<String, Instant>,
+    now: Instant,
+) -> io::Result<()> {
+    let moves = run.join("moves");
+    let entries = match std::fs::read_dir(&moves) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            seen.clear();
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    let mut absent = HashSet::new();
+    for entry in entries {
+        let entry = entry?;
+        let Ok(id) = entry.file_name().into_string() else {
+            continue;
+        };
+        if move_id(&id).is_none()
+            || !entry.file_type()?.is_dir()
+            || moves.join(format!("{id}.json")).try_exists()?
+        {
+            continue;
+        }
+        let since = seen.entry(id.clone()).or_insert(now);
+        if now.duration_since(*since) > ORPHAN_AFTER {
+            *since = now;
+            files::remove_tree_synced(&entry.path())?;
+        } else {
+            absent.insert(id);
+        }
+    }
+    seen.retain(|id, _| absent.contains(id));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_orphaned_bundle_is_removed_only_after_the_grace_period() {
+        let home = tempfile::tempdir().unwrap();
+        let run = home.path().join("run");
+        let moves = run.join("moves");
+        let orphan = moves.join("mov_orphan");
+        let active = moves.join("mov_active");
+        let other = moves.join("other");
+        for bundle in [&orphan, &active, &other] {
+            files::write_atomic(&bundle.join("bundle.tgz"), b"a staged copy").unwrap();
+        }
+        files::write_atomic(&moves.join("mov_active.json"), b"{}").unwrap();
+        let mut seen = HashMap::new();
+        let now = Instant::now();
+        for offset in [Duration::ZERO, ORPHAN_AFTER] {
+            remove_orphaned_bundles(&run, &mut seen, now + offset).unwrap();
+            assert!(orphan.is_dir());
+        }
+        remove_orphaned_bundles(&run, &mut seen, now + ORPHAN_AFTER + Duration::from_secs(1))
+            .unwrap();
+        assert!(!orphan.exists());
+        assert!(active.join("bundle.tgz").is_file());
+        assert!(other.join("bundle.tgz").is_file());
+    }
 }
