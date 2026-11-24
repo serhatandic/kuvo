@@ -70,6 +70,10 @@ pub(crate) struct Observation {
 }
 
 impl Observation {
+    pub(crate) fn number_bounds(&self) -> Option<(u64, u64)> {
+        Some((self.number_floor?, self.high))
+    }
+
     fn fresh(&self, clock: &Clock) -> bool {
         let now = clock.now();
         [self.since, self.valid_after].iter().all(|start| {

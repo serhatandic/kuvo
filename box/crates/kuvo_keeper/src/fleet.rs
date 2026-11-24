@@ -26,6 +26,12 @@ pub struct Candidate {
     envelope: String,
 }
 
+pub struct InstallerMedia {
+    pub pack_name: String,
+    pub pack_sha256: String,
+    pub archive: Vec<u8>,
+}
+
 impl Candidate {
     pub fn verify(envelope: String, key: &str) -> io::Result<Self> {
         if envelope.len() as u64 > staging::MAX_ENVELOPE {
@@ -134,10 +140,9 @@ impl Candidate {
         files::write_secret(&folder.join("boxes.json"), self.envelope.as_bytes())
     }
 
-    pub fn kept(home: &Home, key: &str) -> io::Result<Option<Self>> {
-        files::text_of(&home.updates().join("release/boxes.json"))
-            .map(|bytes| Self::verify(bytes, key))
-            .transpose()
+    pub fn kept(home: &Home, key: &str) -> Option<Self> {
+        let envelope = files::text_of(&home.updates().join("release/boxes.json"))?;
+        Self::verify(envelope, key).ok()
     }
 
     pub fn keep(&self, home: &Home) -> io::Result<()> {
@@ -181,6 +186,75 @@ impl Candidate {
             Duration::from_secs(300),
         )
         .await
+    }
+
+    /// Carry the running signed release and its installer to an older SSH machine.
+    pub async fn installer_media(
+        &self,
+        home: &Home,
+        target: &str,
+        fetcher: &Fetcher,
+    ) -> io::Result<InstallerMedia> {
+        if !self.signed.launches_rust() {
+            return Err(io::Error::other("The running release does not start Rust."));
+        }
+        let pack = self.signed.pack_for(target)?;
+        let name = pack.filename()?;
+        if matches!(
+            name.as_str(),
+            "boxes.json" | "kuvo-install" | "kuvo-install-bin"
+        ) {
+            return Err(io::Error::other("The release has an invalid pack name."));
+        }
+        let reference = self.signed.reference(pack);
+        let held = reference.target()?.folder(home.root()).join("pack");
+        let held_ref = reference.clone();
+        let cached = tokio::task::spawn_blocking(move || {
+            staging::read_release(&held, staging::MAX_PACK)
+                .ok()
+                .filter(|bytes| held_ref.matches_bytes(bytes))
+        })
+        .await
+        .map_err(io::Error::other)?;
+        let bytes = match cached {
+            Some(bytes) => bytes,
+            None => {
+                download(
+                    &fetcher.0,
+                    &pack.url,
+                    staging::MAX_PACK,
+                    Duration::from_secs(300),
+                )
+                .await?
+            }
+        };
+        let envelope = self.envelope.clone();
+        tokio::task::spawn_blocking(move || {
+            if !reference.matches_bytes(&bytes) {
+                return Err(io::Error::other("The pack isn't what the release says."));
+            }
+            let mut archive = tar::Builder::new(Vec::new());
+            for (path, bytes) in [
+                ("boxes.json", envelope.as_bytes()),
+                (
+                    "kuvo-install",
+                    include_bytes!("../../../src/install/kuvo-install").as_slice(),
+                ),
+                (name.as_str(), bytes.as_slice()),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(0o600);
+                header.set_size(bytes.len() as u64);
+                archive.append_data(&mut header, path, bytes)?;
+            }
+            Ok(InstallerMedia {
+                pack_name: name,
+                pack_sha256: reference.sha256,
+                archive: archive.into_inner()?,
+            })
+        })
+        .await
+        .map_err(io::Error::other)?
     }
 
     pub async fn prepare(self, home: Home, bytes: Vec<u8>) -> io::Result<()> {
@@ -302,7 +376,7 @@ impl HeldPack {
         };
         let (_, running) = installed(home)?;
         let kept =
-            Candidate::kept(home, key)?.and_then(|candidate| candidate.local().ok()?.target().ok());
+            Candidate::kept(home, key).and_then(|candidate| candidate.local().ok()?.target().ok());
         let bridge = (home.updates().join("bridge"), None);
         let root = home.root().canonicalize()?;
         for (folder, target) in [exact, running, kept]

@@ -39,12 +39,46 @@ pub fn replace(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn place_exclusive(from: &Path, to: &Path) -> io::Result<()> {
+    rename_mac(from, to, libc::RENAME_EXCL)
+}
+
+#[cfg(target_os = "macos")]
+pub fn exchange(from: &Path, to: &Path) -> io::Result<()> {
+    rename_mac(from, to, libc::RENAME_SWAP)
+}
+
+#[cfg(target_os = "linux")]
+pub fn exchange(from: &Path, to: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
     let from = CString::new(from.as_os_str().as_bytes())?;
     let to = CString::new(to.as_os_str().as_bytes())?;
     // SAFETY: Both arguments are NUL-terminated paths kept alive for the call.
-    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+    if unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    } == 0
+    {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn rename_mac(from: &Path, to: &Path, flags: libc::c_uint) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let from = CString::new(from.as_os_str().as_bytes())?;
+    let to = CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: Both arguments are NUL-terminated paths kept alive for the call.
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), flags) } == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())

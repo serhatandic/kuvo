@@ -105,7 +105,7 @@ pub fn split(bytes: &[u8]) -> Option<Arc<[Part]>> {
 
 /// Work Queue mail uses the same part spelling and digest as documents. The
 /// whole is the compact JSON before the enclosing mail's version and clock.
-pub(crate) fn work_queue_mails(payload: Value, at: i64) -> Option<Vec<Envelope>> {
+pub fn work_queue_mails(payload: Value, at: i64) -> Option<Vec<Envelope>> {
     queue_mails(payload, at, false)
 }
 
