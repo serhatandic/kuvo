@@ -273,7 +273,7 @@ test("a discarded release signature does not stop the next signed feed check", a
   assert.equal(fs.existsSync(path.join(here.home, "run/fleet-ready.json")), false);
 });
 
-async function fixtureReleaseFeed(t, packBytes) {
+async function fixtureReleaseFeed(t, packBytes, { holdPack = false } = {}) {
   const key = keypair();
   const version = "0.8.0";
   const hash = digest(packBytes ?? "signed target");
@@ -282,6 +282,7 @@ async function fixtureReleaseFeed(t, packBytes) {
   const feed = createServer((req, res) => {
     if (req.url !== "/boxes.json") {
       downloads += 1;
+      if (holdPack) return;
       return packBytes ? res.end(packBytes) : res.writeHead(404).end();
     }
     res.end(signed);
@@ -450,6 +451,62 @@ test("a member keeps its signed switching row during a quiet relay restart", { t
   }, "the member must read as offline once the switch grace has expired");
   assert.equal(offline.seen, expired.heard);
   assert.deepEqual(offline.line, { words: "beta.1 · seen 11 min ago", tone: "off", phase: "off" });
+});
+
+test("a quiet member keeps preparing or shows its staged release switching", { timeout: 60000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { main, member } = await pairedUpdateComputers(t);
+  const { version, hash, signed, updateEnv, downloaded } = await fixtureReleaseFeed(t, undefined, { holdPack: true });
+  const installed = "0.8.0-beta.1";
+  for (const computer of [main, member]) write(path.join(computer.home, "bin/box-version"), installed + "\n");
+  let observer = main.start(binary, updateEnv);
+  let sender = member.start(binary, updateEnv);
+  const [first, second] = await Promise.all([observer.ready(), sender.ready()]);
+  const key = (await request(second, "GET", "kuvo/setup")).json.you.key;
+  const peers = path.join(main.home, "run/peer-agents.json");
+  const reach = path.join(main.home, "run/peer-reach.json");
+  const facts = () => fs.existsSync(peers) && readJSON(peers)[key]?.computer;
+  const rowIn = (resident, state) => until(async () => {
+    const answer = await request(resident, "GET", "kuvo/computers");
+    const row = answer.json?.computers?.find(computer => computer.key === key)?.fleetUpdate;
+    return row?.state === state && row;
+  }, `the member must report ${state}`);
+  const quiet = async age => {
+    await sender.stop();
+    await observer.stop();
+    const announced = readJSON(peers);
+    const heard = Date.now() - age;
+    announced[key].heard = heard;
+    write(peers, encode(announced));
+    write(reach, encode({ [key]: heard }));
+    observer = main.start(binary, updateEnv);
+    return observer.ready();
+  };
+
+  await until(() => downloaded() >= 2 && facts()?.kuvo === installed,
+    "the main must have heard from its member while both pack downloads are held");
+  const preparing = await rowIn(first, "getting-ready");
+  assert.deepEqual(await rowIn(await quiet(5_000), "getting-ready"), preparing);
+
+  // Resume with the normal preparation receipt already written, before any trial.
+  const release = path.join(member.home, `versions/${version}-${hash.slice(0, 12)}`);
+  write(path.join(release, "box.json"), encode({ kuvo: "box/1", version, launch: "rust" }));
+  write(path.join(release, "boxes.json"), signed);
+  const program = path.join(release, "bin", process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box");
+  fs.mkdirSync(path.dirname(program), { recursive: true });
+  fs.copyFileSync(binary.file, program);
+  write(path.join(member.home, "run/fleet-ready.json"), encode({ version, sha256: hash }));
+  sender = member.start(binary, updateEnv);
+  await sender.ready();
+  const ready = await rowIn(await observer.ready(), "ready");
+  assert.deepEqual([ready.current, ready.target, ready.targetSha256], [installed, version, hash]);
+  assert.deepEqual(facts().staged, { version, sha256: hash });
+  assert.equal(facts().switching, undefined);
+  const switching = await rowIn(await quiet(3 * 60_000), "updating");
+  assert.deepEqual([switching.current, switching.target, switching.targetSha256, switching.stage, switching.canRetry],
+    [installed, version, hash, "switching", false]);
+  assert.deepEqual(switching.line, { words: `Switching to ${version}…`, tone: "working", phase: "switching" });
 });
 
 test("the computers list shows a retryable failure for the signed fleet target", { timeout: 30000 }, async t => {

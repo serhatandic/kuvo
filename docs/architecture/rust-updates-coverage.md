@@ -54,6 +54,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U38 | With the feed unavailable, the main pulls a known signed release from an ahead member. The relay holds parts while both computers report the same accepted fraction and wording. Replaying already accepted parts leaves the count unchanged. The main confirms the release after the remaining parts arrive. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U39 | A member reports the signed release it is trying while its previous release remains current. Neither computer accepts a retry for that trial. A three-minute relay gap keeps the switching row, and the saved last-heard time appears when the ten-minute restart window expires. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U40 | A verified pack that cannot unpack leaves a blocked row tied to its signed digest. The current release keeps serving, the row survives restart, and manual retry is refused. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U41 | A brief relay gap preserves a member's preparing row. If the member last reported the signed pack ready, its row shows switching during the restart grace before a trial is reported. Passed on Mac, native Linux, WSL2, and native Windows. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -310,7 +311,7 @@ dependencies.
 | Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover retryable failure rows. U34 covers getting ready, ready, switching, off and up to date. U40 covers a preparation failure that must wait for the next release. | — |
 | Same, pull progress never moves back | Partial. U38 checks local and peer progress and duplicate delivery. A second peer after a timed-out transfer still needs a binary scenario. | 7.2 |
 | Same, member asks main to check | Covered by U20. | — |
-| [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | Partial. U34 checks preparation through confirmation, and U39 checks a signed trial reported over relay, a quiet restart, and expiry past the restart window. A ready computer that goes quiet before reporting a trial and a brief gap during preparation still need binary proof. | 7.2 |
+| [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | U34 checks preparation through confirmation. U39 checks a signed trial reported over relay and expiry past the restart window. U41 checks a brief gap during preparation and a ready computer that goes quiet before reporting a trial. | — |
 | Same, local box says it is switching and ready reads separately from done | Covered by U34. | — |
 | Same, preparation fraction is visible in local and peer rows | Covered by U38. | — |
 | Same, off row reports when it was last heard from | Partial. U34 checks one never heard from, and U39 checks the timestamp and minutes-ago wording after the quiet restart window. The remaining time ranges still need binary proof. | 7.2 |
