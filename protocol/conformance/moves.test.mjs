@@ -613,6 +613,15 @@ test("a second computer cannot take over a held incoming move", {
   assert.equal((await other({ ...offer, id: next, from: spare.key })).op, "ready");
   assert.equal(readJSON(path.join(here.home, "run/moves", next + ".json")).peer, spare.key);
   assert.equal(here.engine.sessions.length, 0);
+
+  const local = "ses_alreadyHere", overwrite = "mov_localOverwrite";
+  const kept = sessionOf({ id: local, title: "Local original", directory: path.join(here.home, "chats") });
+  here.engine.sessions.push(kept);
+  const refused = await other({ ...offer, from: spare.key, id: overwrite, thing: local });
+  assert.equal(refused.op, "refused");
+  assert.equal(refused.message, `Notes is on ${main.name} already.`);
+  assert.equal(fs.existsSync(path.join(here.home, "run/moves", overwrite + ".json")), false);
+  assert.deepEqual(here.engine.sessions, [kept]);
 });
 
 test("the week-long cleanup warning dates from the drop and keeps the copy held", {
@@ -1292,7 +1301,50 @@ test("a waiting move reports an unanswered destination as unavailable", {
   assert.equal(fs.readFileSync(pause, "utf8"), "user-paused");
 });
 
-test("a destination missing the chat's sign-in refuses before its work is held", { timeout: 45000 }, async t => {
+test("a conversation stays home while its background work is running", { timeout: 55000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("background-source"), there = await computer("background-target");
+  const { member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const id = "ses_backgroundMove", child = "ses_backgroundChild", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id, title: "Trip plans", directory }), sessionOf({ id: child, directory, parent: id }));
+  const [source] = await Promise.all([here.start().ready(), there.start().ready()]);
+  await readyToMove(source, id, member);
+  const working = path.join(here.home, "run/work/background.json");
+  const running = (session, started) => ({
+    engine: { sessions: { [session]: { commands: [{ id: "cmd_background", command: "npm run dev", started }],
+      subagents: [], tasks: [] } }, folders: [] },
+  });
+  write(working, JSON.stringify(running(id, Date.now())));
+  const why = "“Trip plans” has a command running. Wait for it to finish, or stop it, then move “Trip plans”.";
+  const places = await request(source, "GET", "kuvo/moves/places?kind=chat&id=" + id);
+  assert.equal(places.status, 200, places.text);
+  const place = places.json.places.find(place => place.key === member.key);
+  assert.equal(place.ok, false, places.text);
+  assert.equal(place.why, why);
+  assert.equal(place.note, "Running something");
+  const move = () => request(source, "POST", "kuvo/moves", { kind: "chat", id, to: member.key, receipt: true });
+  const refused = await move();
+  assert.equal(refused.status, 409, refused.text);
+  assert.equal(refused.json.message, why);
+  const moves = path.join(here.home, "run/moves");
+  assert.ok(!fs.existsSync(moves) || !fs.readdirSync(moves).some(name => /^mov_/.test(name)));
+
+  const rootOld = running(id, Date.now() - 7 * 3600_000);
+  Object.assign(rootOld.engine.sessions, running(child, Date.now()).engine.sessions);
+  write(working, JSON.stringify(rootOld));
+  const started = await move();
+  assert.equal(started.status, 202, started.text);
+  const file = path.join(moves, started.json.move.id + ".outcome.json");
+  await until(() => fs.existsSync(file), "The source did not finish checking its child's background work");
+  const outcome = await request(source, "GET", "kuvo/moves/receipt?id=" + started.json.move.id);
+  assert.deepEqual(outcome.json, { state: "failed", message: why });
+  assert.deepEqual(here.engine.sessions.map(row => row.id), [id, child]);
+  assert.equal(there.engine.sessions.length, 0);
+});
+
+test("an unavailable destination or missing sign-in refuses before work is held", { timeout: 65000 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("account-source"), there = await computer("account-target");
   const { member } = seedPeerSetup(here.home, relay.url);
@@ -1310,21 +1362,28 @@ test("a destination missing the chat's sign-in refuses before its work is held",
   await readyToMove(source, id, member);
   const move = () => request(source, "POST", "kuvo/moves", { kind: "chat", id, to: member.key, receipt: true });
   const status = handle => request(source, "GET", "kuvo/moves/receipt?id=" + handle);
-  const begun = await move();
-  assert.equal(begun.status, 202, begun.text);
-  const first = begun.json.move.id;
-  const failed = await until(async () => {
-    const reply = await status(first);
-    assert.equal(reply.status, 200, reply.text);
-    assert.notEqual(reply.json.state, "done", "The chat moved without its sign-in");
-    return reply.json.state === "failed" && reply.json;
-  }, "The destination never refused the unsigned model", 12000);
+  async function refuses(message) {
+    const begun = await move();
+    assert.equal(begun.status, 202, begun.text);
+    const moveId = begun.json.move.id;
+    const failed = await until(async () => {
+      const reply = await status(moveId);
+      assert.equal(reply.status, 200, reply.text);
+      assert.notEqual(reply.json.state, "done", "The chat moved despite a destination refusal");
+      return reply.json.state === "failed" && reply.json;
+    }, "The destination did not refuse the move", 15000);
+    assert.deepEqual(failed, { state: "failed", message });
+    assert.ok(here.engine.sessions.some(session => session.id === id));
+    assert.equal(there.engine.sessions.length, 0);
+    assert.ok(!fs.existsSync(path.join(here.home, "wakes", id, "paused")));
+    await until(() => !fs.existsSync(path.join(here.home, "run/moves", moveId + ".json")),
+      "The refused move did not release its reservation");
+  }
   const place = member.name;
-  assert.deepEqual(failed, { state: "failed",
-    message: `“Account chat”’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move “Account chat”.` });
-  assert.equal(here.engine.sessions.find(session => session.id === id)?.id, id);
-  assert.equal(there.engine.sessions.length, 0);
-  assert.ok(!fs.existsSync(path.join(here.home, "wakes", id, "paused")));
+  there.engine.refuseActive = true;
+  await refuses(`The engine on ${place} isn’t running. Try again once it is.`);
+  there.engine.refuseActive = false;
+  await refuses(`“Account chat”’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move “Account chat”.`);
 
   there.engine.providers.push({ id: "needs-sign-in" });
   const retry = await move();

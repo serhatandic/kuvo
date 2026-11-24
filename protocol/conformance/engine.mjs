@@ -44,7 +44,10 @@ export async function standInEngine(root, env) {
         }
         return send({ data });
       }
-      if (route === "GET /api/session/active") return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
+      if (route === "GET /api/session/active") {
+        if (engine.refuseActive) return send({ message: "The engine is unavailable." }, 503);
+        return send({ data: Object.fromEntries([...engine.running].map(id => [id, { type: "busy" }])) });
+      }
       if (route === "POST /api/session") {
         if (engine.failStart === "before") return send({ message: "Cut short." }, 500);
         const made = sessionOf({ id: `ses_made${++engine.made}`, title: given.title ?? "", directory: given.location?.directory ?? "" });

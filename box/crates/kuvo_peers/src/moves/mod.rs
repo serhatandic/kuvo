@@ -2,6 +2,7 @@
 
 pub mod archive;
 mod attachment_paths;
+mod background;
 mod driver;
 mod forward_evidence;
 mod handoff;

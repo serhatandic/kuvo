@@ -8,6 +8,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Rust computers answer conversation reads from your other computers.
 - A move carries forwarding decisions saved while the conversation is on its way.
+- Messages can still reach another computer after the sending tool stops waiting for a reply.
+- A conversation with a background command or subagent running stays on its computer until the work finishes.
+- A retired conversation’s backup is cleaned up again if the first attempt fails.
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
 - Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.

@@ -339,6 +339,7 @@ pub(crate) fn register_start(
             let view = look.view();
             let source = plain_name(&view.roster.name);
             let moving = journals(&look.run).map_err(format_refusal)?.iter().any(|row| row.live() && row.covers(&id));
+            let background = super::background::refusal(&look.run, [id.as_str()], &what, look.now());
             let busy = match engine.session_move().await {
                 Ok(engine) => engine.running(&id).await.unwrap_or(false),
                 Err(_) => false,
@@ -352,6 +353,7 @@ pub(crate) fn register_start(
                 let shown = plain_name(&peer.name);
                 let name = if !shown.is_empty() { &shown } else if peer.kind == crate::session::ComputerKind::Mac { "Mac" } else { "Machine" };
                 let why = if moving { Some((super::driver::MOVING.into(), "Moving already")) }
+                    else if let Some(reason) = &background { Some((reason.clone(), "Running something")) }
                     else if !supports_moves(&view, &key, accepted) {
                         Some((needs_update(name), "Needs a newer Kuvo Code"))
                     } else if view.reach.peer_is_away(&key, entry.and_then(|entry| entry.heard), look.now()) {

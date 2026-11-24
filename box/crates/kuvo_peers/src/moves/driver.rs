@@ -29,7 +29,8 @@ use tokio::{
 };
 
 use super::{
-    Journal, Kind, Role, Stage, archive, forward_evidence, handoff, journals, left, listing,
+    Journal, Kind, Role, Stage, archive, background, forward_evidence, handoff, journals, left,
+    listing,
     manifest::{Manifest, Origin},
     move_id, read_json,
     receipt::{self, Bundle, Decided, Decision, Payloads, Receipts},
@@ -249,12 +250,16 @@ impl Driver {
                 listing::needs_update(place),
             ));
         }
+        let name = chat_name(&session);
+        let now = self.reader.now();
+        if let Some(reason) = background::refusal(self.run_dir(), [request.id.as_str()], &name, now)
+        {
+            return Err(Refusal::new(StatusCode::CONFLICT, reason));
+        }
         let mut random = [0; 12];
         getrandom::fill(&mut random).map_err(|_| unavailable())?;
         // The durable name is also a cross-resident identifier.
         let id = format!("mov_{}", encode(&random).replace(['-', '_'], ""));
-        let name = chat_name(&session);
-        let now = self.reader.now();
         let peer = &request.to;
         let check = view
             .announced
@@ -735,17 +740,22 @@ impl Driver {
             .settle(&row.sessions)
             .await
             .map_err(io::Error::other)?;
+        self.check_background(row)?;
         let exports = session
             .export_tree(&row.thing)
             .await
             .map_err(io::Error::other)?;
         let ids = tree(&exports, &row.thing)?;
+        let discovered = ids.iter().any(|id| !row.sessions.contains(id));
         row.sessions = ids;
         row.save(self.run_dir())?;
         session
             .settle(&row.sessions)
             .await
             .map_err(io::Error::other)?;
+        if discovered {
+            self.check_background(row)?;
+        }
         let (exports, queues) = snapshot(&session, row).await?;
         self.check_payloads(row)?;
         let notes = session_notes::pack(self.run_dir(), &row.sessions)?;
@@ -1187,6 +1197,18 @@ impl Driver {
                 .await;
         }
         Ok(())
+    }
+
+    fn check_background(&self, row: &Journal) -> io::Result<()> {
+        match background::refusal(
+            self.run_dir(),
+            row.sessions.iter().map(String::as_str),
+            row.display_name(),
+            self.reader.now(),
+        ) {
+            Some(reason) => Err(io::Error::other(reason)),
+            None => Ok(()),
+        }
     }
 
     fn check_payloads(&self, row: &Journal) -> io::Result<()> {
