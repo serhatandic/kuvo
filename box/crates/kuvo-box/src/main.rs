@@ -1,4 +1,6 @@
 mod serve;
+#[cfg(target_os = "macos")]
+mod sign_ins;
 
 use std::{env, io, path::PathBuf, process::ExitCode};
 
@@ -393,7 +395,7 @@ async fn resident_shutdown(home: &std::path::Path, supervised: bool) {
 fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::{ffi::OsStr, path::Path};
 
-    let usage = "usage: kuvo-box rehome <root> --status | --resume | --settle | --back | --new [--check | --release <folder> [--keeps-awake on|off]] | --run --app <bundle> --release <folder> --engine <folder>";
+    let usage = "usage: kuvo-box rehome <root> --status | --resume | --settle | --sign-ins | --back | --new [--check | --release <folder> [--keeps-awake on|off]] | --run --app <bundle> --release <folder> --engine <folder>";
     let invalid = || {
         eprintln!("{usage}");
         Ok(ExitCode::from(2))
@@ -437,6 +439,12 @@ fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::E
     if options == [OsStr::new("--status")] {
         println!("{}", kuvo_move::rehome_status(&Home::new(target)?));
         return Ok(ExitCode::SUCCESS);
+    }
+    #[cfg(target_os = "macos")]
+    if options == [OsStr::new("--sign-ins")] {
+        let result = kuvo_move::mac::sign_ins(&Home::new(target)?, &account.home)?;
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(ExitCode::from(result.exit_code()));
     }
     #[cfg(target_os = "macos")]
     if let Some(words) = options.strip_prefix(&[std::ffi::OsString::from("--new")]) {

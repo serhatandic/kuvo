@@ -12,6 +12,8 @@ mod helper;
 mod holder;
 mod identity;
 mod items;
+#[cfg(target_os = "macos")]
+mod mac_wipe;
 mod mask;
 mod replay;
 mod routes;
@@ -25,6 +27,8 @@ mod store;
 mod tools;
 
 pub use holder::Holder;
+#[cfg(target_os = "macos")]
+pub use mac_wipe::clear_mac_app_link_keys;
 
 pub use mask::{Hidden, mask};
 pub use routes::Resident;
