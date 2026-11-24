@@ -152,7 +152,10 @@ export async function standInEngine(root, env) {
         const global = id === "global" && type === "form";
         const items = global ? engine.globalForms : type === "permission" ? engine.permissions : engine.forms;
         const location = global ? folderOf(request) : id;
-        if (request.method === "GET") return send({ data: items.get(location) ?? [] });
+        if (request.method === "GET") {
+          if (type === "permission" && url.searchParams.get("live") === "1") engine.beforeLivePermission?.();
+          return send({ data: items.get(location) ?? [] });
+        }
         const pending = items.get(location) ?? [];
         const index = pending.findIndex(item => item.id === decodeURIComponent(key));
         if (index < 0) return send({}, 404);

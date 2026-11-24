@@ -123,6 +123,44 @@ test("OpenCode permission cards preserve the shared Always button words", { time
   }
 });
 
+test("a live permission read can expire an ask or discover a new local Block", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-ask-consent");
+  const session = sessionOf({ id: "ses_consent", directory: here.home });
+  const ask = { id: "per_edit", sessionID: session.id, action: "edit", resources: ["notes.txt"] };
+  here.engine.sessions.push(session);
+  here.engine.permissions.set(session.id, [ask]);
+  const record = await here.start().ready();
+  const raw = `api/session/${session.id}/permission/${ask.id}/reply`;
+  const card = `kuvo/sessions/${session.id}/asks/${ask.id}`;
+  const headers = { "x-kuvo-from": "app" };
+  const grant = route => request(record, "POST", route,
+    route === raw ? { decision: "once" } : { answer: "once" }, headers);
+  const sent = () => here.engine.asked.filter(row => row.method === "POST" && row.path === "/" + raw);
+  here.engine.beforeLivePermission = () => here.engine.permissions.set(session.id, []);
+  const ended = await grant(raw);
+  assert.equal(ended.status, 404, ended.text);
+  assert.deepEqual(sent(), []);
+
+  here.engine.permissions.set(session.id, [ask]);
+  const config = path.join(here.home, "box", "opencode.json");
+  here.engine.beforeLivePermission = () => write(config,
+    JSON.stringify({ permissions: [{ action: "edit", resource: "*", effect: "deny" }] }));
+  for (const route of [card, raw]) {
+    const blocked = await grant(route);
+    assert.equal(blocked.status, 403, blocked.text);
+  }
+  assert.deepEqual(sent(), []);
+
+  here.engine.beforeLivePermission = null;
+  fs.rmSync(config);
+  const allowed = await grant(card);
+  assert.equal(allowed.status, 200, allowed.text);
+  assert.equal(sent().length, 1);
+  assert.equal((await grant(card)).status, 404);
+  assert.equal(sent().length, 1);
+});
+
 test("a child question changes the parent’s asks and waiting counts through the resident", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-asks");
