@@ -907,7 +907,7 @@ class ClaudeThread implements Thread {
   private commands = new Map<string, string>()
   /** The last of its tasks to end: what began a turn it starts on its own. */
   private lastEnded?: { type: string; description: string; command?: string; status: string; summary?: string }
-  private opened?: { compaction?: string; model: string; effort?: string; plan: boolean; append: string; program: number; tools?: string; skills?: string; fence: string; subagents: string }
+  private opened?: { compaction?: string; model: string; effort?: string; plan: boolean; append: string; program: number; tools?: string; skills?: string; removals?: string; fence: string; subagents: string }
   /** Your subagents as it was last given them (their rules hold for their tools). */
   private subagents?: Subagents
   /** What a subagent of yours may do, for each of its tools it's asked about: by the tool's call. */

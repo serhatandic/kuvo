@@ -21,7 +21,7 @@ async function onPlatform(platform: NodeJS.Platform, release: string, run: () =>
 }
 
 async function get<T>(path: string): Promise<T> {
-  const pieces = await Array.fromAsync(request({ path, method: "GET", fromApp: true }, undefined))
+  const pieces = await Array.fromAsync(request({ path, method: "GET", headers: {}, fromApp: true }, undefined))
   const head = pieces[0]
   expect(head && "head" in head ? head.head.status : undefined).toBe(200)
   return JSON.parse(Buffer.concat(pieces.flatMap(piece => "body" in piece ? [piece.body] : [])).toString())
@@ -35,7 +35,8 @@ for (const [name, platform, release] of [
     const approval = await get<ApprovalHere>("kuvo/approval")
     for (const options of [approval.options?.engine, approval.options?.agents]) {
       expect(options?.find(option => option.approval === "auto")).toEqual({
-        approval: "auto", unavailable: { reason: "windows", why: "Coming soon on Windows." },
+        approval: "auto", title: "Auto", detail: "Works on its own inside the sandbox; asks before anything beyond it.",
+        unavailable: { reason: "windows", why: "Coming soon on Windows." },
       })
     }
   }))

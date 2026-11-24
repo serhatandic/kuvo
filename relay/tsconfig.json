@@ -15,6 +15,7 @@
   },
   "include": [
     "src",
-    "test"
+    "test",
+    "../box/test/fixtures/rust-relay-peer.ts"
   ]
 }
