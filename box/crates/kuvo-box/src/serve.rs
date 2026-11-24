@@ -1,3 +1,5 @@
+mod agents;
+
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
 use kuvo_engine::{Engine, State, Timing};
@@ -76,7 +78,35 @@ pub async fn run(
     } else {
         bootstrap.devices
     };
-    let info = info(home, &roster.name, kind, devices.permits_local_pairing())?;
+    let factories = agents::factories(home);
+    let resident_agents = if factories.is_empty() {
+        None
+    } else {
+        let agent_home = kuvo_store::home::Home::new(home.to_owned())?;
+        let runtime = kuvo_agents::runtime::Runtime::for_home(&agent_home);
+        match kuvo_agents::resident::ResidentAgents::start(runtime.clone(), factories).await {
+            Ok((agents, failures)) => {
+                for failure in failures {
+                    eprintln!(
+                        "Kuvo could not take up agent holder {}: {}",
+                        failure.holder, failure.error
+                    );
+                }
+                Some((runtime, agents))
+            }
+            Err(error) => {
+                eprintln!("Kuvo could not start its coding agents: {error}");
+                None
+            }
+        }
+    };
+    let info = info(
+        home,
+        &roster.name,
+        kind,
+        devices.permits_local_pairing(),
+        resident_agents.is_some(),
+    )?;
     let vault_machine = (kind != ComputerKind::Mac).then(|| roster.name.clone());
     let mut peers = ResidentPeers::start(
         home,
@@ -116,7 +146,17 @@ pub async fn run(
         )))
         .with_model_stars(Arc::new(super::model_stars::SetupStars(setup.handle())))
         .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
+    let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
     let mut routes = Registry::new();
+    let engine = if let Some((runtime, accounts)) = resident_agents {
+        agents::register(accounts.clone(), &mut routes);
+        engine.with_agent_model_source(Arc::new(agents::Models {
+            runtime,
+            agents: accounts,
+        }))
+    } else {
+        engine
+    };
     if kind == ComputerKind::Machine {
         let setup = setup.handle();
         routes.observe_activity(move |caller| {
@@ -319,6 +359,21 @@ pub async fn run(
             }
         })
         .await;
+    if let Some(agents) = agent_shutdown {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            agents.prepare_replacement(),
+        )
+        .await
+        {
+            Ok(failures) => {
+                for (provider, error) in failures {
+                    eprintln!("Kuvo could not checkpoint {provider}: {error}");
+                }
+            }
+            Err(_) => eprintln!("Kuvo timed out checkpointing the coding agents."),
+        }
+    }
     if let Some(updates) = updates {
         updates.stop().await;
     }
@@ -373,6 +428,7 @@ fn info(
     name: &str,
     kind: ComputerKind,
     permits_pairing: bool,
+    agent_accounts: bool,
 ) -> Result<info::Status200, Box<dyn std::error::Error>> {
     let chats = home.join("chats");
     fs::create_dir_all(&chats)?;
@@ -388,6 +444,9 @@ fn info(
     features.extend_from_slice(kuvo_services::files::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
+    }
+    if agent_accounts {
+        features.push("agents.accounts");
     }
     let mut answer = json!({
         "kind": if is_mac { "mac" } else { "machine" },
