@@ -2608,6 +2608,48 @@ test("pending letters reach a peer in creation order", { timeout: 40000 }, async
   assert.deepEqual(messages.map(prompt => prompt.text.split("\n\n").at(-1)), [note, "first", "second", "third"]);
 });
 
+test("a letter waits until the recipient is told of its fresh sender", {
+  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("fresh-letter-source"), there = await computer("fresh-letter-destination");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const sender = "ses_freshLetter", recipient = "ses_freshLetterTarget", id = "ltr_freshLetter";
+  here.engine.sessions.push(sessionOf({ id: sender, title: "Fresh sender", directory: path.join(here.home, "chats") }));
+  there.engine.sessions.push(sessionOf({ id: recipient, directory: path.join(there.home, "chats") }));
+  const target = await there.start().ready();
+  await until(async () => (await request(target, "GET", "api/session/" + recipient)).status === 200,
+    "The destination's engine did not become ready");
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  here.engine.holdWholeList = { entered: entered.resolve, finish: release.promise };
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const names = [], sourceKey = Buffer.from(main.key, "base64url"), secret = Buffer.alloc(32, 2);
+  t.after(relay.intercept(Buffer.from(main.address, "base64url"), Buffer.from(member.address, "base64url"), packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), secret, sourceKey);
+    const mail = JSON.parse(payload);
+    if (mail.agents?.list.some(agent => agent.session === sender)) names.push("sender");
+    if (mail.letter?.id === id) names.push("letter");
+    return false;
+  }));
+  write(path.join(here.home, "run/outbox/sending", id + ".json"), JSON.stringify({
+    from: sender, to: recipient, text: "Can you check the build?", peer: member.key, wait: false, at: Date.now(),
+  }));
+  await here.start().ready();
+  await entered.promise;
+  // The resident takes an outbox round while the engine's first list is held.
+  await new Promise(resolve => setTimeout(resolve, 3500));
+  assert.deepEqual(names, []);
+  here.engine.holdWholeList = null;
+  release.resolve();
+  await until(() => names.includes("letter"), "The letter did not follow the sender announcement", 18000);
+  assert.equal(names[0], "sender");
+  const message = await until(() => there.engine.messages.get(recipient)?.[0], "The letter did not reach its conversation", 15000);
+  assert.match(message.text, new RegExp(`^\\[Message from Fresh sender · ${sender}\\]`));
+});
+
 test("only its lead can address an old conversation that is no longer listed", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

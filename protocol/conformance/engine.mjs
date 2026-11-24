@@ -52,6 +52,12 @@ export async function standInEngine(root, env) {
           const end = start + limit;
           return send({ data: data.slice(start, end), ...(end < data.length ? { cursor: { next: String(end) } } : {}) });
         }
+        if (engine.holdWholeList && (parent === null || parent === "null")) {
+          const gate = engine.holdWholeList;
+          gate.entered();
+          gate.finish.then(() => send({ data }));
+          return;
+        }
         return send({ data });
       }
       if (route === "GET /api/session/active") {
