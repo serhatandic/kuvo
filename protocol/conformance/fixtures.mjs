@@ -128,6 +128,17 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
       engine.orderedMessages = true;
       engine.messages.set(given.session, given.rows);
     },
+    // A command a session left running in its folder, as the engine lists it.
+    shell(given) {
+      engine.shells = [...(engine.shells ?? []), { id: given.id, status: "running", command: given.command ?? "npm test", folder: given.folder, metadata: { sessionID: given.session }, time: { started: Date.now() } }];
+      engine.emit({ type: "shell.created", location: { directory: given.folder }, data: { id: given.id } });
+    },
+    // That command ended.
+    shellEnded(given) {
+      const job = (engine.shells ?? []).find(each => each.id === given.id);
+      engine.shells = (engine.shells ?? []).filter(each => each.id !== given.id);
+      engine.emit({ type: "shell.exited", location: { directory: job?.folder }, data: { id: given.id } });
+    },
     // One of the engine's events, as its feed tells it.
     engineEvent(given) {
       engine.emit(given);
@@ -139,7 +150,7 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
       const asks = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).asks : [];
       const { id, session, name = "Your chat", project, action = "makeProject", clone, late, git } = given;
       const made = { name: project, ...(git === undefined ? {} : { git }), ...(clone ? { clone } : {}) };
-      const ask = { id, action, session, name, project, ...(clone ? { clone } : {}), folderName: project.toLowerCase(), folder: null, at: Date.now(), given: made, ...(late ? { late } : {}) };
+      const ask = { id, action, session, name, project, ...(clone ? { clone } : {}), folderName: project.toLowerCase(), folder: null, at: Date.now(), given: made, ...(late ? { late } : {}), ...(given.answered ? { answered: { answer: "allow", text: given.answered, isError: false, at: Date.now() } } : {}) };
       write(file, JSON.stringify({ asks: [...asks, ask] }));
     },
     // What an agent browsing here asks you for, as the browser's keeper leaves it for the bridge

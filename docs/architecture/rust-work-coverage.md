@@ -437,14 +437,50 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Gaps and owners
 
-- **Catching up as the box starts** (what finished, failed or asked while it was down; `told.json`'s
-  `held` and `unread`), **finishes held while what a session left running goes on** (the engine's
-  place in `run/work/background.json`, its commands' output, `servicesWords`, "still serving") and
-  **late answers told again** (`tellLateAnswers`, every five minutes): 5.1c-6b.
+- **Catching up as the box starts**, **finishes held while what a session left running goes on** and
+  **late answers told again**: 5.1c-6b, below.
 - **Autopilot** going ahead on what's asked, and declining what an MCP server asks: 5.3.
 - **A starter waiting with send_message** (`awaitedBy`) and **a report sent already** (`saidAlready`),
   and **a starter that moved to another computer** (a letter, `tellMovedAway`): 5.1e, with the tools
   that write them.
 - **A starter the coding agents run**: kept and tried again, as TypeScript does with their bridge
-  stopped, until the coding agents' sessions take the box's own messages (4.4).
+  stopped, until the coding agents' sessions take the box's own messages (4.6, with moves and
+  wake-ups into agent conversations: the same inbox path for all five agents).
+
+## 5.1c-6b — the watcher's catch-up, held finishes and late answers
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `watch::background::EngineBackground` (the engine's place in `run/work/background.json`: commands left running a folder at a time, subagents at work, looked at as events say; `of`, `known`, `noted`, `start`, `gone`); `Running` (`counting`, `awaited`, `started_since`, `services_words`); `write_place` | `work/background.ts` `backgroundWatcher` (its engine side), `counting`, `awaited`, `startedSince`, `servicesWords`, `write` |
+| `watch::services::listening_ports` (`lsof` on macOS, `/proc` on Linux) | `work/services.ts` |
+| `watch::held` (`holds`, `wait_for`, `look_while_waiting`, `settle`, `background_ended`, `finished_quietly`) | `wakes.ts` `holds`, `waitFor`, `lookWhileWaiting`, `settle`, `backgroundEnded`, `markLater` |
+| `watch::catchup` (`catch_up`, `tell_what_happened`, `tell_if_finished`, `work_sessions`, `asks_in`; late answers at start and every five minutes) | `wakes.ts` `catchUp`, `tellWhatHappened`, `tellIfFinished`, `catchingUp`, `lateAgain`; `tree.ts` `workSessions` (whole); `answers.ts` `asksIn`, `askersOf`; `asks.ts` `tellLateAnswers` |
+| `Watcher::finish` held while what its session left running goes on; `done_since_line`, "Still serving" | `wakes.ts` `finish`, `doneSinceLine` |
+| `kuvo_engine::BotEngine::call_in` (a call about a folder); `EngineEvent::location` | `engine/client.ts` `call`'s `folder` |
+| `kuvo_agents::background::write_place` under `.background.lock`, as the engine's place is written beside the coding agents' | `background.ts` `write`'s lock |
+
+### Proof
+
+- `work` scenarios (2 new, 13 in all): a finish waits for the command its session left running
+  (`kuvo/work/background` lists it from the engine's place), then its starter hears it once that
+  ends; what finished while the box was down is told as it starts, and an answer given late is told
+  to its conversation then. 13/13 against both boxes on macOS; against the Rust box on native
+  Windows and Linux (WSL, static musl). `bots` 40/40 on all three; `engine-sessions` 81/81,
+  `engine-delivery`, `engine-asks` and `moves` against the Rust box on macOS.
+- Unit tests: what a finish waits on and what's still serving (`work::watch::background`); a process
+  group holding a listening socket is a service (`work::watch::services`, `/proc`).
+- The route runner's `engineGot` waits up to 30 seconds (a held finish settles ten seconds after
+  what it left running ends); the stand-in engine lists commands left running in a folder, with
+  givens `shell` and `shellEnded`; `workAsk` takes one answered; `kuvo/work/background` is waited for.
+- The background look reads a conversation's place from the session list where it has it, so it
+  asks the engine only about sessions the list doesn't know: an extra read of a conversation took
+  the place of one `engine-sessions` holds (Stop holds a named send).
+
+### Gaps and owners
+
+- **Services on Windows**: no process groups to read listening ports from; nothing there is a
+  service yet, so a dev server left up holds its finish until its limit. 8.1.
+- **Autopilot's catch-up** (questions its conversations asked meanwhile going ahead first): 5.3.
 
