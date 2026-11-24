@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { relayLeaseStandIn } from "../../box/bridge-tests/relay-lease-stand-in.js";
-import { boxBinary, boxCommand, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, launch, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { standInEngine } from "./engine.mjs";
 
 export async function bench(t) {
@@ -26,6 +26,14 @@ export async function bench(t) {
       const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off", ...configure(folder) };
       const engine = await standInEngine(folder, env);
       engines.push(engine);
+      if (process.platform === "win32" && !implementation.typescript) {
+        // Let the box create its private directory before seeding records.
+        // An empty seed request stops before writing any data.
+        const init = launch(implementation.file, ["box", "seed"], { ...env, KUVO_HOME: home }, folder);
+        children.push(init);
+        init.child.stdin.end();
+        assert.equal((await init.exited).code, 0, init.log());
+      }
       // This fixture seeds records in the current layout before either resident starts.
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       write(path.join(home, "run", "engine.json"), JSON.stringify(engine.record));
