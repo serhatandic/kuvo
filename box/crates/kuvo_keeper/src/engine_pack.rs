@@ -73,13 +73,17 @@ fn provision(home: &Home, version: &str, build: Option<EngineBuild>) -> io::Resu
     }
     files::create_private_dirs(&engine)?;
     let scratch = tempfile::Builder::new()
-        .prefix(".provision-")
+        .prefix(".staging.")
         .tempdir_in(&engine)?;
     let pack = EnginePack::in_home(installed.clone(), || build, scratch.path())?;
-    check_engine(pack.executable(), scratch.path())?;
+    check_engine(
+        pack.executable(),
+        None,
+        "The engine doesn't run on this computer.",
+    )?;
     match pack.publish(&home) {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            check_engine(&installed, scratch.path())
+            check_engine(&installed, None, "The engine doesn't run on this computer.")
         }
         outcome => outcome,
     }
@@ -208,7 +212,14 @@ mod tests {
         let root = tempfile::tempdir()?;
         let home = Home::new(root.path().canonicalize()?)?;
         let mut archive = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
-        let program = b"#!/bin/sh\nprintf 'opencode v2.2.6\\n'\n";
+        let program = br#"#!/bin/sh
+set -eu
+if [ -n "${XDG_DATA_HOME:-}" ]; then
+    [ -d "$XDG_DATA_HOME" ] && [ -w "$XDG_DATA_HOME" ] || exit 1
+    [ ! -e "$XDG_DATA_HOME/opencode" ] || [ -d "$XDG_DATA_HOME/opencode" ] || exit 1
+fi
+printf 'opencode v2.2.6\n'
+"#;
         let mut entry = tar::Header::new_gnu();
         entry.set_mode(0o700);
         entry.set_size(program.len() as u64);
