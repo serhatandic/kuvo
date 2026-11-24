@@ -90,7 +90,7 @@ const OWN_COMMANDS = [
 test("the repository's programs are really there: git itself runs them", () => {
   const { top, ran } = planted()
   for (const args of [["status", "--porcelain"], ["diff"], ["branch", "control"], ["commit", "--allow-empty", "-qm", "signed"], ["st"], ["ls-remote", "origin"], ["ls-remote", "far"], ["credential", "fill"], ["-c", "credential.helper=", "credential", "fill"]])
-    spawnSync("git", args, { cwd: top, env: { ...process.env, GIT_CONFIG_GLOBAL: none, GIT_TERMINAL_PROMPT: "0" }, input: "protocol=https\nhost=example.com\n\n", stdio: ["pipe", "ignore", "ignore"] })
+    spawnSync("git", args, { cwd: top, env: { ...process.env, ...AUTHOR, GIT_CONFIG_GLOBAL: none, GIT_TERMINAL_PROMPT: "0" }, input: "protocol=https\nhost=example.com\n\n", stdio: ["pipe", "ignore", "ignore"] })
   expect(ran()).toEqual(expect.arrayContaining(["alias", "askpass", "clean", "command", "fsmonitor", "gpg", "ext", "ssh"]))
 })
 

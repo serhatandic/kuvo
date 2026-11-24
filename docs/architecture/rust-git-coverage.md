@@ -84,6 +84,13 @@ or differential case; the proof is unit and scenario tests in `safe_tests.rs`:
 | git-programs 11: git's own watcher on a Mac | `hostile::gits_own_watcher…` |
 | git-common 1–3: commondir elsewhere, a bare repository made around a broken `.git`, own/none/worktree as ever | `common::…` (the layer's refusals); Changes' Commit **left** |
 
+Where the layer's tests ran: macOS (20 of 20; the TS hostile case 4 of 4), native Windows (the
+cross-built test executable over SSH, git 2.56: 9 of 9, the hostile and `commondir` cases being
+Unix-only; the `git` conformance area 4 of 4 on `kuvo-box.exe`), and Ubuntu 24.04 under WSL2 (a
+static musl build, git 2.43: 20 of 20; the `git` conformance area 4 of 4). The table's expected
+arrays, printed by the TS box on a Mac, hold on Windows and Linux too, where git's own watcher is
+never kept on.
+
 ## The TypeScript cases
 
 | TS case | Status |

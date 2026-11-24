@@ -704,6 +704,7 @@ mod hostile {
                 .current_dir(&planted.top)
                 .env("GIT_CONFIG_GLOBAL", planted.root.join("no-settings"))
                 .env("GIT_TERMINAL_PROMPT", "0")
+                .envs(AUTHOR)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
