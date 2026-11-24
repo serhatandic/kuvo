@@ -515,6 +515,65 @@ test("a stopped queue shows messages in order and Edit returns carried and retai
   }
 });
 
+test("wake-up rows show the same saved summary in the engine or the resident queue", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("queue-wake-summary");
+  const session = "ses_wakeSummary";
+  const words = "Check everything. More instructions here.";
+  const text = "[Wake-up] " + words;
+  const summary = "Check the release";
+  const metadata = { kuvo: { wake: { summary } } };
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.inboxes.set(session, [{ id: "msg_engineWake", type: "user", delivery: "queue", payload: { text, metadata } }]);
+  const record = await here.start().ready();
+  const route = `kuvo/sessions/${session}/queue`;
+  assert.equal((await request(record, "POST", route + "/hold")).json.paused, true);
+  const add = await request(record, "POST", route + "/add", { id: "msg_boxWake", text, metadata, words, from: "Wake-up", kept: true });
+  assert.equal(add.json.waits, true);
+  const items = await until(async () => {
+    const reply = await request(record, "GET", route + "?items=1");
+    return reply.json?.items?.length === 2 && reply.json.items;
+  }, "both wake-up rows to be listed");
+  assert.deepEqual(items.map(row => [row.from, row.on, row.words]), [["Wake-up", "engine", summary], ["Wake-up", "box", summary]]);
+  const taken = await request(record, "DELETE", route + "/msg_boxWake");
+  assert.equal(taken.json.removed.text, text);
+});
+
+test("a standalone summary keeps a read conversation read while actual replies stay unread", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("summary-read");
+  const idle = created => ({ type: "idle", time: { created }, outcome: "succeeded" });
+  const compact = { type: "compaction", status: "completed", reason: "manual" };
+  const reply = { type: "assistant", content: [] };
+  const cases = [
+    ["ses_read", 2000, [idle(3000), compact, idle(1000)]],
+    ["ses_unread", 500, [idle(3000), compact, idle(1000)]],
+    ["ses_laterReply", 2000, [idle(3000), reply, compact, idle(1000)]],
+    ["ses_sameTurn", 2000, [idle(3000), compact, reply, { type: "user", text: "Go." }, idle(1000)]],
+  ];
+  for (const [id, viewed, messages] of cases) {
+    const session = sessionOf({ id, directory: here.home });
+    Object.assign(session.time, { viewed, idle: 3000 });
+    here.engine.sessions.push(session);
+    here.engine.messages.set(id, messages);
+  }
+  await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow completed summaries");
+  const measured = new Set();
+  here.engine.messagePageRead = (id, query) => {
+    if (query.get("limit") === "6") measured.add(id);
+  };
+  for (const [sessionID] of cases) {
+    here.engine.emit({ type: "session.execution.succeeded", data: { sessionID } });
+  }
+  await until(() => measured.size === cases.length && here.engine.sessions[0].time.viewed === 3000,
+    "the resident to preserve the read marker through the standalone summary");
+  assert.deepEqual(here.engine.sessions.map(session => session.time.viewed), [3000, 500, 2000, 2000]);
+  assert.deepEqual(here.engine.asked.filter(call => call.path.endsWith("/view")).map(call => [call.path, call.json]), [
+    ["/api/session/ses_read/view", { idle: 3000 }],
+  ]);
+});
+
 for (const unreadable of ["inbox", "transcript"]) {
   test(`Edit recovers an inbox draft after the ${unreadable} read fails`, { timeout: 45000 }, async t => {
     const { computer } = await bench(t);
@@ -849,6 +908,19 @@ test("queue reads keep the last complete inbox and the live line skips unreadabl
   const missing = await request(record, "GET", "kuvo/sessions/ses_missing/queue?items=1");
   assert.equal(missing.status, 200, missing.text);
   assert.deepEqual(missing.json, { paused: false, held: [], items: null });
+
+  const saved = "ses_savedDuringOutage";
+  const savedRoute = `kuvo/sessions/${saved}/queue`;
+  here.engine.sessions.push(sessionOf({ id: saved, directory: here.home }));
+  assert.equal((await request(record, "POST", `kuvo/sessions/${saved}/stop`)).json.paused, true);
+  const added = await request(record, "POST", savedRoute + "/add", { id: "msg_savedDuringOutage", words: "Keep this." },
+    { "x-kuvo-from": "app" });
+  assert.equal(added.json.waits, true);
+  here.engine.inboxReplies.set(saved, { status: 503, body: {} });
+  const unreadable = await request(record, "GET", savedRoute + "?items=1");
+  assert.equal(unreadable.status, 200, unreadable.text);
+  assert.equal(unreadable.json.items, null);
+  assert.deepEqual(unreadable.json.waiting.map(row => [row.id, row.text]), [["msg_savedDuringOutage", "Keep this."]]);
 });
 
 test("a slow reorder reads the queue after a concurrent Add and Send Now finish", { timeout: 45000 }, async t => {
@@ -1080,6 +1152,7 @@ test("after a failure only your own message to steer opens the queue again", { t
     data: { sessionID: session, item: { id: "msg_whatChanged", type: "user", delivery: "steer", payload: { text, metadata } } },
   });
   written("[Message from another session]");
+  written("[Wake-up] Check this again.");
   written("An automatic note.", { kuvo: { note: { from: "Kuvo Code", line: "An automatic note." } } });
   await new Promise(resolve => setTimeout(resolve, 200));
   assert.equal((await queue()).json.paused, true);
@@ -1297,6 +1370,42 @@ test("a paused queue stays paused when its last engine message is taken back", {
   assert.deepEqual(here.engine.interrupted.at(-1), { session, resume: true });
 });
 
+test("Stop on an empty queue keeps two later messages waiting and releases them one turn at a time", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("stop-while-empty");
+  const session = "ses_stopEmpty";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  const record = await here.start().ready();
+  const base = `kuvo/sessions/${session}`;
+  const queue = base + "/queue";
+  const stop = await request(record, "POST", base + "/stop");
+  assert.deepEqual(stop.json, { paused: true, held: [] });
+  for (const id of ["msg_firstLate", "msg_secondLate"]) {
+    const add = await request(record, "POST", base + "/send",
+      { id, words: id, delivery: "queue" }, { "x-kuvo-from": "app" });
+    assert.deepEqual(add.json, { waits: true });
+  }
+  const items = await until(async () => {
+    const reply = await request(record, "GET", queue + "?items=1");
+    return reply.json?.items?.length === 2 && reply.json.items;
+  }, "both saved messages to be listed");
+  assert.deepEqual(items.map(row => [row.id, row.on]), [["msg_firstLate", "box"], ["msg_secondLate", "box"]]);
+  const sent = () => here.engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt")).map(row => row.json.id);
+  assert.deepEqual(sent(), []);
+
+  here.engine.running.delete(session);
+  const resume = await request(record, "POST", queue + "/resume");
+  assert.equal(resume.status, 200, resume.text);
+  here.engine.running.add(session);
+  assert.deepEqual(sent(), ["msg_firstLate"]);
+  assert.deepEqual((await request(record, "GET", queue)).json.waiting.map(row => row.id), ["msg_secondLate"]);
+  here.engine.running.delete(session);
+  here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+  await until(() => sent().length === 2, "the second message to follow the completed turn");
+  assert.deepEqual(sent(), ["msg_firstLate", "msg_secondLate"]);
+});
+
 test("Steer releases only one held engine message and starts a saved draft when selected", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("steer-held-queue");
@@ -1318,6 +1427,21 @@ test("Steer releases only one held engine message and starts a saved draft when 
   assert.deepEqual([one.delivery, two.delivery], ["queue", "steer"]);
   assert.deepEqual(here.engine.interrupted, [{ session, resume: false }]);
   assert.equal((await steer("msg_missing")).status, 404);
+
+  const taken = item("msg_taken");
+  taken.delivery = "queue";
+  here.engine.inboxes.get(session).push(taken);
+  const reading = Promise.withResolvers();
+  const handoff = Promise.withResolvers();
+  here.engine.holdInbox = { session, accepted: reading.resolve, release: handoff.promise };
+  t.after(handoff.resolve);
+  const racing = steer(taken.id);
+  await reading.promise;
+  const inbox = here.engine.inboxes.get(session);
+  inbox.splice(inbox.indexOf(taken), 1);
+  handoff.resolve();
+  assert.equal((await racing).status, 404);
+  assert.equal(here.engine.interrupted.length, 1);
 
   const draft = { id: "msg_saved", text: "Take this next." };
   const saved = await request(record, "POST", queue + "/add", draft);

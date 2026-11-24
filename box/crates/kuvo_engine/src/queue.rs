@@ -602,13 +602,25 @@ async fn with_items(
                 .waiting_prompt(id)
                 .await
                 .map_err(save_failed)?;
-            let delivery = payload.map_or(Delivery::Queue, |message| message.delivery);
-            items.push(
-                json!({ "id": id, "words": waiting.text, "files": waiting.files,
-                "from": waiting.from, "on": "box", "delivery": delivery, "held": held }),
-            );
+            let delivery = payload
+                .as_ref()
+                .map_or(Delivery::Queue, |message| message.delivery);
+            let wake = payload
+                .as_ref()
+                .and_then(|message| wake_summary(&message.text, message.metadata.as_ref()));
+            let words = wake.as_deref().unwrap_or(&waiting.text);
+            items.push(json!({ "id": id, "words": words, "files": waiting.files,
+                "from": waiting.from, "on": "box", "delivery": delivery, "held": held }));
         } else if let Some(item) = inbox.iter().find(|row| row.id == id) {
             let (words, from) = item.shown();
+            let (words, from) = if from.is_none()
+                && let Some(summary) =
+                    wake_summary(item.text().unwrap_or_default(), item.metadata())
+            {
+                (summary, Some("Wake-up".to_owned()))
+            } else {
+                (words, from)
+            };
             items.push(
                 json!({ "id": id, "words": words, "files": file_names(item.files()),
                 "from": from, "on": "engine", "delivery": item.delivery, "held": held }),
@@ -617,6 +629,48 @@ async fn with_items(
     }
     shown["items"] = json!(items);
     Ok(shown)
+}
+
+fn wake_summary(text: &str, metadata: Option<&Value>) -> Option<String> {
+    let note = text.strip_prefix("[Wake-up] ")?.trim();
+    let stored = metadata
+        .and_then(|metadata| metadata.pointer("/kuvo/wake/summary"))
+        .and_then(Value::as_str)
+        .map(|summary| summary.split_whitespace().collect::<Vec<_>>().join(" "));
+    if let Some(stored) = stored.filter(|summary| !summary.is_empty()) {
+        return Some(String::from_utf16_lossy(
+            &stored.encode_utf16().take(300).collect::<Vec<_>>(),
+        ));
+    }
+    let line = note
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+    let plain = line.replace(['*', '`'], "");
+    let plain = plain
+        .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, '#' | '>' | '-'))
+        .trim();
+    let sentence = plain
+        .char_indices()
+        .find_map(|(index, ch)| {
+            let after = index + ch.len_utf8();
+            (matches!(ch, '.' | '!' | '?' | '…')
+                && plain[after..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace))
+            .then_some(&plain[..after])
+        })
+        .unwrap_or(plain);
+    if sentence.is_empty() {
+        Some("Wake-up".to_owned())
+    } else if sentence.encode_utf16().count() > 300 {
+        let clipped =
+            String::from_utf16_lossy(&sentence.encode_utf16().take(299).collect::<Vec<_>>());
+        Some(format!("{}…", clipped.trim_end()))
+    } else {
+        Some(sentence.to_owned())
+    }
 }
 
 pub(crate) fn format_refusal(error: &io::Error) -> Option<Refusal> {
@@ -881,8 +935,8 @@ async fn holding(
                 .await
                 .map_err(save_failed)?;
         }
-        // An in-flight prompt can reach the inbox first. Its request deadline is
-        // independent of how long a person's Stop may wait.
+        // Let in-flight sends finish their handoff before interrupting. A late
+        // named send still sees the durable hold once this deadline passes.
         let _turn = tokio::time::timeout(std::time::Duration::from_secs(10), engine.turn(session))
             .await
             .ok();

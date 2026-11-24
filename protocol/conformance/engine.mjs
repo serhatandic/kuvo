@@ -259,6 +259,13 @@ export async function standInEngine(root, env) {
         engine.interrupted.push({ session: decodeURIComponent(interrupt[1]), resume: url.searchParams.get("resume") === "true" });
         return send({});
       }
+      const view = url.pathname.match(/^\/api\/session\/([^/]+)\/view$/);
+      if (view && request.method === "POST") {
+        const found = engine.sessions.find(row => row.id === decodeURIComponent(view[1]));
+        if (!found || found.time?.idle !== given.idle) return send({}, 409);
+        found.time.viewed = given.idle;
+        return send({ data: found });
+      }
       if (["GET /api/model", "GET /api/model/default", "GET /api/provider", "GET /api/integration"].includes(route)) {
         const catalog = engine.catalogs?.get(path.normalize(folderOf(request))) ?? engine;
         if (route === "GET /api/model") return send({ data: catalog.models });
@@ -291,6 +298,7 @@ export async function standInEngine(root, env) {
       const messages = url.pathname.match(/^\/api\/session\/([^/]+)\/message$/);
       if (messages && request.method === "GET") {
         const rows = engine.messages.get(decodeURIComponent(messages[1])) ?? [];
+        engine.messagePageRead?.(decodeURIComponent(messages[1]), url.searchParams);
         return send(engine.paged ? paged(rows, 200) : { data: rows });
       }
       if (route === "GET /api/credential") return send({ data: engine.credentials });

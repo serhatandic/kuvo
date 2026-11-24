@@ -1,6 +1,7 @@
 //! Shared treatment of stored and streaming conversation summaries.
 
 mod reasoning;
+mod summary;
 pub(crate) mod tool_words;
 
 use std::{collections::BTreeSet, sync::Arc};
@@ -110,6 +111,7 @@ pub(crate) fn watch(
                 }
                 continue;
             };
+            let lease = Arc::new(lease);
             states.borrow_and_update();
             let pin = (lease.record.pid, lease.record.port);
             if generation.is_none() {
@@ -164,10 +166,12 @@ pub(crate) fn watch(
                     let _ = attachments.send(None);
                 }
                 let mut chunks = response.bytes_stream();
+                let mut summaries = tokio::task::JoinSet::new();
                 let mut line = Vec::new();
                 loop {
                     let next = tokio::select! {
                         next = chunks.next() => next,
+                        _ = summaries.join_next(), if !summaries.is_empty() => continue,
                         () = async {
                             match reasoning.next() {
                                 Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -225,6 +229,14 @@ pub(crate) fn watch(
                             {
                                 if event.kind == "session.created" {
                                     let _ = worktrees.send(session.to_owned());
+                                }
+                                if event.kind == "session.execution.succeeded" {
+                                    let worker = engine.clone();
+                                    let lease = lease.clone();
+                                    let session = session.to_owned();
+                                    summaries.spawn(async move {
+                                        let _ = summary::keep_read(&worker, &lease, &session).await;
+                                    });
                                 }
                                 if reasoning.hear(session, &event.kind) {
                                     thinking.send_replace(Arc::new(reasoning.visible()));
