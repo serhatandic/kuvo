@@ -218,18 +218,60 @@ async fn download(
     max: u64,
     timeout: Duration,
 ) -> io::Result<Vec<u8>> {
+    for wait in [Duration::from_secs(5), Duration::from_secs(20)] {
+        match download_once(client, url, max, timeout).await {
+            Err(DownloadError::Request(error)) if retry_download(&error) => {
+                tokio::time::sleep(wait).await;
+            }
+            result => return result.map_err(DownloadError::into_io),
+        }
+    }
+    download_once(client, url, max, timeout)
+        .await
+        .map_err(DownloadError::into_io)
+}
+
+fn retry_download(error: &reqwest::Error) -> bool {
+    error.status().map_or(!error.is_builder(), |status| {
+        status.is_server_error()
+            || matches!(
+                status,
+                reqwest::StatusCode::REQUEST_TIMEOUT | reqwest::StatusCode::TOO_MANY_REQUESTS
+            )
+    })
+}
+
+enum DownloadError {
+    Request(reqwest::Error),
+    TooLarge,
+}
+
+impl DownloadError {
+    fn into_io(self) -> io::Error {
+        match self {
+            Self::Request(source) => io::Error::other(source),
+            Self::TooLarge => io::Error::other("It's larger than a release can be."),
+        }
+    }
+}
+
+async fn download_once(
+    client: &reqwest::Client,
+    url: &str,
+    max: u64,
+    timeout: Duration,
+) -> Result<Vec<u8>, DownloadError> {
     let mut response = client
         .get(url)
         .timeout(timeout)
         .send()
         .await
-        .map_err(io::Error::other)?
-        .error_for_status()
-        .map_err(io::Error::other)?;
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(DownloadError::Request)?;
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(io::Error::other)? {
+    while let Some(chunk) = response.chunk().await.map_err(DownloadError::Request)? {
         if (bytes.len() + chunk.len()) as u64 > max {
-            return Err(io::Error::other("That release can't be read."));
+            return Err(DownloadError::TooLarge);
         }
         bytes.extend_from_slice(&chunk);
     }

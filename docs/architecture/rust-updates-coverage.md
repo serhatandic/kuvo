@@ -21,11 +21,12 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U5 | The shell keeper answers an SSH request using Rust after the previous stager's bin-only move. It restores `box.json` on disk. |
 | U6 | `GET kuvo/update` reports the installed version, running engine, latest known version, and the keeper's failed trial. |
 | U7 | The prepared-pack scenario stops its keeper and uninstalls the standalone computer. It retains the home, clears the desktop identity, and leaves the scratch account and its temporary directory unchanged. |
-| U8 | Two Rust computers prepare while a third is offline. Holding the second download leaves both on the old selection. A recorded stand-in turn answers across the switch, and the returning computer switches and serves. |
+| U8 | Two Rust computers prepare while a third is offline. Holding the second download leaves both on the old selection. A recorded stand-in turn answers across the switch. The returning computer retries a transient download error, then switches and serves. |
 | U9 | The old main goes down while its member's pack download is held. Advancing the relay and computer test clocks expires the lease, and the new main completes the release. |
 | U10 | A returning TypeScript beta reads the Rust main's signed offer, stages its own target, and starts Rust through the shell keeper. The old home is copied before selection. |
-| U11 | The published v0.7.2 and v0.8.0-beta.1 Mac golden homes take signed Rust installer media through `kuvo-install` into the actual move. The resulting home retains the original notes and the Rust launch manifest. |
+| U11 | The published v0.7.2 and v0.8.0-beta.1 Mac golden homes take signed Rust installer media through `kuvo-install` into the actual move. The resulting home retains the original notes and the Rust launch manifest. The installer starts the Helper through a scratch launchctl stand-in and recovers a missing registration through `status` and `new`. |
 | U12 | A TypeScript updater prepares the target-specific Rust pack while the old selection stays active. |
+| U13 | A failed first Rust launch leaves the Rust selection and writes the keeper's refusal record. |
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -45,6 +46,34 @@ On Ubuntu 24.04 under WSL2, the static x86_64 musl build passed all five Rust
 cases. Preparation and retry took 8.2 seconds, and selection and confirmation
 took 1.5 seconds. U7 passed there too. Lokum's Docker socket was unavailable
 to the test account, so this run covers Linux and WSL.
+
+The second slice passed ten Rust and five TypeScript cases on macOS, with
+stand-ins for the relay, engine, and running turn. The failed-trial status
+matched in the differential run. The full directory comparison still found
+differences in the residents' other state. The native Windows rerun passed
+five cases. The update prepared and retried in 11.9 seconds and switched
+automatically in 1.3 seconds. The fixture used a user-only ACL and registered
+no scheduled task.
+
+The macOS shell fleet first prepared in 21.1 seconds. The main and member
+confirmed 20.6 and 24.9 seconds after the held download resumed. The returning
+computer confirmed in 38.6 seconds, including a 503 retry. The native-keeper
+failover fixture elected a new main in 22.9 seconds with the relay clock
+advanced, confirmed 17.2 seconds after the held download resumed, and caught
+up the returning computer in 24.1 seconds. The returning TypeScript beta
+confirmed Rust in 11.4 seconds. It uses the checkout's transition-capable
+bundle. The v0.7.2 move took 44.0 seconds and the beta.1 move took 27.0 seconds.
+Their Helper restarts took 0.8 and 1.1 seconds through the launchctl
+stand-in. Those timings exclude generation of the golden homes.
+
+The static Linux musl rerun on Ubuntu 24.04 under WSL2 passed eight cases.
+Preparation and retry took 6.1 seconds, and selection and confirmation took
+1.3 seconds. On the shell-keeper fleet, the first computer prepared in
+2.8 seconds. The main and member confirmed 7.4 and 11.4 seconds after the
+held download resumed, and the returning computer took 12.2 seconds,
+including retrying a 503 response. The failover fixture elected a new main
+in 4.1 seconds with the relay clock advanced, confirmed in 5.9 seconds after
+the download resumed, and caught up the returning computer in 8.1 seconds.
 
 ## TypeScript reference cases
 
@@ -79,10 +108,10 @@ or desktop updater, and 23 are open. The inherited and live-proof table has
 | [update-from-before](../../box/bridge-tests/update-from-before.test.js), earlier updater through keeper | Partial. U5 proves the bin-only layout, and M5 in 2.6 covers opening older data. A real predecessor performing the update and entering Rust remains open. | 7.2, 9.3 |
 | [update-real-keeper](../../box/bridge-tests/update-real-keeper.test.js), saved baseline layout | Partial. 7.1 checks the shell's layout judge and the startup fence. | 7.2 |
 | Same, pre-marker updater commits and migrates | Partial. U11 starts the Rust move through the signed installer with both released data sets. A full predecessor updater and real Helper start remain open. | 7.2, 9.3 |
-| Same, interrupted pre-marker updater restores baseline | Partial. 7.1 checks Rust rollback. The TypeScript-to-Rust transition follows the no-automatic-rollback decision in section 4, and the old rollback fixture still needs the released-predecessor run. | 7.2, 9.3 |
+| Same, interrupted pre-marker updater restores baseline | Partial. 7.1 checks Rust rollback and U13 checks that the first Rust launch does not revert to TypeScript. The old rollback fixture still needs the released-predecessor run. | 7.2, 9.3 |
 | [resident-update-pilot](../../box/bridge-tests/resident-update-pilot.test.js), sandboxed live turn survives both outcomes | Open. | 7.2, 9.3 |
 | [fleet-switch](../../box/bridge-tests/fleet-switch.test.js), T1 prepare, commit, and offline catch-up | Partial. U8–U10 pass through the relay stand-in and keeper. Before-rejoin work admission and the fleet status routes remain open. | 7.2 |
-| Same, T3 retry and five-minute limit | Partial. The keeper stores a five-minute barrier from first preparation. The elapsed deadline and retry paths remain open. | 7.2 |
+| Same, T3 retry and five-minute limit | Partial. The keeper stores a five-minute barrier from first preparation. U8 retries a transient download. The elapsed deadline, peer fallback and manual retry remain open. | 7.2 |
 | Same, ahead member offers its version | Open. | 7.2 |
 | Same, Update Now chooses the immediate candidate | Open. | 7.2 |
 | Same, progress summary remains while switching and after settlement | Open. | 7.2 |
@@ -109,14 +138,14 @@ or desktop updater, and 23 are open. The inherited and live-proof table has
 | Same 361, two installers prepare together | Open. | 7.2 |
 | Same 379 and 387, refuse local-file engine and damaged pack or engine | Partial. U2 and U4 cover update pack and engine integrity. The installer entry remains open. | 7.2 |
 | Same 418, 442, 451, existing home, fleet update instead of reinstall, and offline status | Open. | 7.2 |
-| Same 468, 505, Mac new and interrupted install, Helper launch | Partial. 2.6 covers staged making. The installer handoff and real Helper remain open. | 6.2, 7.2 |
-| Same 564, 594, 645, existing app's data moves, progress order, and legacy app kept | Partial. U11 covers the move and both the retained source and published home. Ordered progress and Helper readiness remain open. | 6.2, 7.2 |
-| Same 700, 725, launch retry after move and deferred key settlement | Partial. 2.6 covers resumable settlement with stand-ins. | 6.2, 7.2 |
+| Same 468, 505, Mac new and interrupted install, Helper launch | Partial. 2.6 covers staged making. U11 starts the Helper through the installer with a launchctl stand-in. Fresh installer admission and the real Helper remain open. | 6.2, 7.2 |
+| Same 564, 594, 645, existing app's data moves, progress order, and legacy app kept | Partial. U11 covers the move, ordered progress, and both the retained source and published home. The live Helper readiness check remains open. | 6.2, 7.2 |
+| Same 700, 725, launch retry after move and deferred key settlement | Partial. U11 checks installer restart after a missing Helper registration. 2.6 covers resumable settlement with stand-ins. Actual launchd and authenticated Keychain settlement remain open. | 6.2, 7.2 |
 | Same 750, two installations preserved | Partial. 2.6 covers the verdict and fence. Installer invocation remains open. | 7.2 |
 | Same 766, Linux move refusal | Partial. Existing Rust move command refuses. The installer entry remains open. | 7.2 |
 | Same 774 and 793, Mac app copy and case spelling | Partial. 2.6 checks the Mac command's matching home. The installer entry remains open. | 7.2 |
 | Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | Open at installer boundary. | 2.3, 7.2 |
-| [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. Helper readiness and restart (45, 57, 128), restarted fresh making (74), and Linux starter admission (169) remain open with the installer. | 6.2, 7.2 |
+| [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 checks missing Helper registration and restart with a stand-in. Live readiness (45, 57, 128), restarted fresh making (74), and Linux starter admission (169) remain open. | 6.2, 7.2 |
 
 ## Inherited cases and system proof
 
@@ -128,8 +157,8 @@ or desktop updater, and 23 are open. The inherited and live-proof table has
 | [Move](rust-move-coverage.md) `rehome`, `rehome-run`, `folder-version` 287, 301, 326, and own-home Mac | Partial. 2.6 has released data and cutover tests with stand-ins and U11 covers the installer entry for moves. The release trial and Helper launch remain open. | 4.1, 6.2, 7.2 |
 | [Engine](rust-engine-coverage.md) inbox paging, incomplete inventory and ordered crash recovery | The existing inbox API is available. Its coordinated switch caller and release tests remain open. | 3.2, 7.2 |
 | Same, engine swap holds, rollback, expiry, and downgrade fence | Open as release tests. | 3.2, 7.2 |
-| [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Partial. U10 checks the saved TypeScript home before Rust selection. Interrupted handoff, the one-time refusal to roll back, and wipe generation in this workflow remain open. | 7.2, 9.1 |
-| Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Partial. U8–U9 exercise all four with a stand-in turn and the native keeper. Production shell fleet and before-rejoin work admission remain open. | 4.1, 7.2 |
-| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10–U11 pass in scratch homes. U10 uses the checkout's transition-capable TypeScript bundle, and U11 uses a stand-in engine and no Helper login job. | 6.2, 7.2, 9.3 |
+| [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Partial. U10 checks the saved TypeScript home, and U13 checks the one-time refusal to roll back. Interrupted handoff and wipe generation in this workflow remain open. | 7.2, 9.1 |
+| Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Partial. U8 uses the shell keeper and U9 uses the native keeper. A stand-in turn stays alive. Before-rejoin work admission and native holder adoption remain open. | 4.1, 7.2 |
+| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10–U11 pass in scratch homes. U10 uses the checkout's transition-capable TypeScript bundle. U11 uses released Mac app homes, a stand-in engine, and a scratch launchctl. The released Linux machine upgrade and real Helper job remain open. | 6.2, 7.2, 9.3 |
 | Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers stopped standalone scratch installations on Mac, native Windows, and Linux musl under WSL. The live shared, Helper-owned and installer flows remain open. | 2.3, 7.2 |
-| [Setup](rust-setup-coverage.md) add and fleet authority, [Windows](rust-windows-coverage.md) release handover | Partial. U9 checks a new main's lease and U4 checks a prepared Windows selection. Shared Windows fleet activation and on-return admission remain open. | 2.3, 7.2, 8.1 |
+| [Setup](rust-setup-coverage.md) add and fleet authority, [Windows](rust-windows-coverage.md) case 18 | Partial. U9 checks a new main's lease and U4 checks an automatic Windows selection. Shared Windows activation, on-return admission, and cleanup of a busy previous release remain open. | 2.3, 7.2, 8.1 |

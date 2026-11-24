@@ -30,6 +30,22 @@ const envelope = (body, signer, claimed = signer.key) => ({
   signature: sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), encode(body)]), signer.privateKey).toString("base64"),
 });
 
+function privateWindowsHome(home) {
+  if (process.platform !== "win32") return;
+  fs.mkdirSync(home, { recursive: true });
+  const command = Buffer.from(`
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $acl = New-Object System.Security.AccessControl.DirectorySecurity
+    $acl.SetSecurityDescriptorSddlForm(('O:{0}D:P(A;OICI;FA;;;{0})' -f $sid))
+    Set-Acl -LiteralPath $env:KUVO_FIXTURE_HOME -AclObject $acl -ErrorAction Stop
+  `, "utf16le").toString("base64");
+  const done = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", command], {
+    env: { ...process.env, KUVO_FIXTURE_HOME: home },
+    encoding: "utf8", timeout: 15000,
+  });
+  assert.equal(done.status, 0, done.error?.message ?? done.stderr);
+}
+
 function box(t) {
   const binary = boxBinary();
   const root = scratch();
@@ -38,6 +54,7 @@ function box(t) {
   const home = path.join(env.HOME, "update-home");
   const release = path.join(root, "release");
   const key = keypair();
+  if (!binary.typescript) privateWindowsHome(home);
   write(path.join(home, "bin/box-version"), "0.8.0-beta.1\n");
   const body = {
     kuvo: "box/1", version: "0.8.0", engine: "2.2.6",
@@ -96,7 +113,10 @@ test("an update cannot move to an earlier release or spread a private build", t 
 
 test("the update status reports the installed release and a keeper's failed trial", async t => {
   const { computer } = await bench(t);
-  const here = await computer("update-status");
+  const here = await computer("update-status", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
   write(path.join(here.home, "bin/box-version"), "0.8.0-beta.1\n");
   write(path.join(here.home, "run/update-cannot"), "1740000000 0.8.0 123456789abc\n");
   write(path.join(here.home, "run/update.json"), '{"formatVersion":1,"latest":"0.8.0"}\n');
@@ -292,17 +312,62 @@ test("Rust prepares its target without changing the selected release and its kee
   assert.deepEqual(fs.readdirSync(env.TMPDIR).sort(), tempEntries);
 });
 
-test("the main waits for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, false));
-test("a new main finishes a prepared release after the old main goes away", { timeout: 180000 }, t => fleetRun(t, true));
-test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 180000 }, t => fleetRun(t, false, true));
+test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
+test("a new main finishes a prepared release after the old main goes away", { timeout: 180000 }, t => fleetRun(t, { failover: true }));
+test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 180000 }, t => fleetRun(t, { returningTypescript: true }));
 
-async function fleetRun(t, failover, returningTypescript = false) {
-  const { binary, release, key, body } = box(t);
+test("the shell keeper records a failed first Rust launch without selecting TypeScript again", async t => {
+  if (boxBinary().typescript || process.platform === "win32") {
+    return t.skip("This boundary is the Unix keeper's one-time Rust switch.");
+  }
+  const root = scratch();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const starter = fs.readFileSync(fileURLToPath(new URL("../../box/src/keeper/kuvo-start", import.meta.url)), "utf8")
+    .replaceAll("@ENGINE@", "2.2.6");
+  const previous = "versions/0.8.0-beta.1-000000000000/bin";
+  const selected = "versions/0.8.0-123456789abc/bin";
+  for (const relative of [previous, selected]) {
+    write(path.join(home, relative, "kuvo-start"), starter, { mode: 0o700 });
+  }
+  write(path.join(home, selected, "..", "box.json"), '{"launch":"rust"}');
+  fs.symlinkSync(selected, path.join(home, "bin"));
+  const keep = path.join(home, "bin/kuvo-start");
+  write(path.join(home, "run/previous"), previous + "\n");
+  const tools = path.join(root, "tools");
+  write(path.join(tools, "date"), `#!/bin/sh
+if [ -e "$KUVO_FIXTURE_CLOCK" ]; then echo 1121; else touch "$KUVO_FIXTURE_CLOCK"; echo 1000; fi
+`, { mode: 0o700 });
+  write(path.join(tools, "sync"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const keeper = launch(process.execPath, ["-e", "process.stdin.resume()", keep], env, home);
+  try {
+    await until(() => spawnSync("/bin/ps", ["-ww", "-o", "command=", "-p", String(keeper.child.pid)], {
+      encoding: "utf8",
+    }).stdout?.includes(keep), "the stand-in keeper must own the trial");
+    write(path.join(home, "run/box.pid"), String(keeper.child.pid) + "\n");
+    const judged = spawnSync("/bin/sh", [keep, "start-guard", selected, String(keeper.child.pid)], {
+      cwd: home,
+      env: { ...env, PATH: `${tools}:${env.PATH}`, KUVO_FIXTURE_CLOCK: path.join(root, "clock") },
+      encoding: "utf8", timeout: 10000,
+    });
+    assert.equal(judged.status, 1, judged.error?.message ?? judged.stdout + judged.stderr);
+    assert.equal(fs.readlinkSync(path.join(home, "bin")), selected);
+    assert.equal(fs.readFileSync(path.join(home, "run/update-cannot"), "utf8"), "1121 0.8.0 123456789abc\n");
+    assert.equal(fs.existsSync(path.join(home, "run/previous")), false);
+  } finally {
+    await keeper.stop();
+  }
+});
+
+async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
+  const binary = boxBinary();
   if (binary.typescript || process.platform === "win32") {
     return t.skip("The fleet process fixture uses the Rust keeper and Unix enrollment.");
   }
   const typescript = process.env.KUVO_CONFORMANCE_TS_BIN;
   if (returningTypescript && !typescript) return t.skip("Set KUVO_CONFORMANCE_TS_BIN to the TypeScript bundle.");
+  const { release, key, body } = box(t);
   const { computer, leases, relay } = await bench(t);
   const [main, member, away] = await Promise.all([computer("Studio"), computer("Lab"), computer("Away")]);
   const old = main.start();
@@ -347,6 +412,7 @@ async function fleetRun(t, failover, returningTypescript = false) {
   const selected = `versions/${version}-${hash.slice(0, 12)}/bin`;
   const waiting = [];
   let hold = true;
+  let retryDownload = false;
   let downloads = 0;
   const feed = createServer((req, res) => {
     const url = `http://127.0.0.1:${feed.address().port}/fleet.tar.gz`;
@@ -355,7 +421,10 @@ async function fleetRun(t, failover, returningTypescript = false) {
       const signed = envelope({ ...body, pack: descriptor, launch: "rust", packs: { [target]: descriptor } }, key);
       res.end(encode(signed));
     } else if (req.url === "/fleet.tar.gz") {
-      if (++downloads > 1 && hold) waiting.push(res);
+      if (retryDownload) {
+        retryDownload = false;
+        res.writeHead(503).end();
+      } else if (++downloads > 1 && hold) waiting.push(res);
       else res.end(pack);
     } else {
       res.writeHead(404).end();
@@ -369,18 +438,31 @@ async function fleetRun(t, failover, returningTypescript = false) {
     KUVO_TEST_RELEASE_FEED: feedURL, KUVO_TEST_RELEASE_KEY: key.key, KUVO_TEST_KEEP_ROUND: "1",
   });
   const legacy = peer => returningTypescript && peer === away;
+  const shell = peer => shellKeepers || legacy(peer);
   function control(computer, ...args) {
-    const result = legacy(computer)
+    const result = shell(computer)
       ? spawnSync("/bin/sh", [path.join(computer.home, "bin/kuvo-start"), ...args], { cwd: computer.home, env: env(computer), encoding: "utf8", timeout: 15000 })
       : spawnSync(binary.file, ["keep", ...args], { cwd: computer.home, env: env(computer), encoding: "utf8", timeout: 15000 });
     assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   }
   for (const peer of [main, member, away]) {
-    if (legacy(peer)) {
+    if (shell(peer)) {
       const machineHome = path.join(peer.env.HOME, ".kuvo-code");
       fs.renameSync(peer.home, machineHome);
       peer.home = machineHome;
+      write(path.join(peer.home, initial, "kuvo-start"), starter, { mode: 0o700 });
+      write(path.join(peer.home, initial, "kuvo-setsid"), setsid, { mode: 0o700 });
+      write(path.join(peer.home, initial, "box-version"), "0.8.0-beta.1\n");
+      fs.mkdirSync(path.join(peer.home, initial, "opencode-plugins"));
+      fs.symlinkSync(initial, path.join(peer.home, "bin"));
+    }
+    const engine = path.join(peer.home, "engine", body.engine, "opencode");
+    if (legacy(peer)) {
       write(path.join(peer.home, initial, "kuvo-link.js"), fs.readFileSync(typescript));
+      fs.rmSync(path.join(peer.home, "run/engine.json"));
+      // Let the shell keeper use Bun in place of the embedded runtime.
+      const runtime = "'" + typescriptRuntime().replaceAll("'", "'\\''") + "'";
+      write(engine, `#!/bin/sh\n[ "$1" != --version ] || exit 0\nexec ${runtime} "$@"\n`, { mode: 0o700 });
       continue;
     }
     write(path.join(peer.home, initial, "kuvo-box"), executable, { mode: 0o700 });
@@ -388,29 +470,17 @@ async function fleetRun(t, failover, returningTypescript = false) {
       kuvo: "box/1", version: "0.8.0-beta.1", launch: "rust", engine: body.engine,
     }));
     write(path.join(peer.home, "run/engine.json"), encode({ ...peer.engine.record, version: body.engine }));
-    write(path.join(peer.home, "engine", body.engine, "opencode"), '#!/bin/sh\n[ "$1" = --version ]\n', { mode: 0o700 });
-    control(peer, "select", initial);
-  }
-  if (returningTypescript) {
-    write(path.join(away.home, initial, "kuvo-start"), starter, { mode: 0o700 });
-    write(path.join(away.home, initial, "kuvo-setsid"), setsid, { mode: 0o700 });
-    write(path.join(away.home, initial, "box-version"), "0.8.0-beta.1\n");
-    fs.mkdirSync(path.join(away.home, initial, "opencode-plugins"));
-    fs.symlinkSync(initial, path.join(away.home, "bin"));
-    fs.rmSync(path.join(away.home, "run/engine.json"));
-    // Keep the shell keeper on the scratch release and the scratch relay.
-    const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-    write(path.join(away.home, "engine", body.engine, "opencode"),
-      `#!/bin/sh\n[ "$1" != --version ] || exit 0\nexec ${quote(typescriptRuntime())} "$@"\n`, { mode: 0o700 });
+    write(engine, '#!/bin/sh\n[ "$1" = --version ]\n', { mode: 0o700 });
+    if (!shell(peer)) control(peer, "select", initial);
   }
   const keepers = new Map();
   function start(peer) {
-    const keeper = legacy(peer)
+    const keeper = shell(peer)
       ? launch("/bin/sh", [path.join(peer.home, "bin/kuvo-start"), "keep"], env(peer), peer.home)
       : launch(binary.file, ["keep"], env(peer), peer.home);
     keepers.set(peer, keeper);
   }
-  const active = peer => legacy(peer)
+  const active = peer => shell(peer)
     ? fs.readlinkSync(path.join(peer.home, "bin"))
     : fs.readFileSync(path.join(peer.home, "active-release"), "utf8");
   const staged = peer => fs.existsSync(path.join(peer.home, "run/fleet-ready.json"));
@@ -421,15 +491,18 @@ async function fleetRun(t, failover, returningTypescript = false) {
       return fs.existsSync(log) ? `${peer.home} ${name}\n${fs.readFileSync(log, "utf8")}` : "";
     }).join("\n") + keepers.get(peer).log();
   }).join("\n");
-  const turn = launch(process.execPath, ["-e", "process.stdin.pipe(process.stdout)", "kuvo-holder-stand-in"], env(member), member.home, "pipe");
+  const turnId = "feeda1234567";
+  const holder = path.join(member.home, "run/agents", `kuvo-hold-${turnId}.js`);
+  write(holder, "process.stdin.pipe(process.stdout)\n");
+  const turn = launch(process.execPath, [holder, "release-fixture", turnId, "raw"], env(member), member.home, "pipe");
   const reply = async text => {
     const answer = once(turn.child.stdout, "data");
     turn.child.stdin.write(text + "\n");
     const [chunk] = await answer;
     assert.equal(chunk.toString(), text + "\n");
   };
-  write(path.join(member.home, "run/agents/hold/feeda1.json"), encode({
-    proto: "hold/1", holder: "release-fixture", id: "feeda1", kind: "codex", pid: turn.child.pid, fixture: true,
+  write(path.join(member.home, "run/agents/hold", `${turnId}.json`), encode({
+    proto: "hold/1", holder: "release-fixture", id: turnId, kind: "codex", pid: turn.child.pid, fixture: true,
   }));
   try {
     const began = performance.now();
@@ -467,11 +540,13 @@ async function fleetRun(t, failover, returningTypescript = false) {
     t.diagnostic(`online member confirmed ${Math.round(performance.now() - released)} ms after its download resumed`);
 
     const returned = performance.now();
+    retryDownload = Boolean(shellKeepers);
     start(away);
     await until(() => confirmed(away), diagnose, 65000);
     const resident = readJSON(path.join(away.home, "run/serve.json"));
     const info = await request(resident, "GET", "kuvo/info");
     assert.equal(info.status, 200, info.text);
+    assert.equal(retryDownload, false);
     if (returningTypescript) {
       const copy = path.join(away.home, "backups/before-rust");
       assert.equal(fs.readlinkSync(path.join(copy, "bin")), initial);
@@ -543,10 +618,25 @@ test("kuvo-install hands the two released Mac homes to the Rust move", { timeout
     fs.copyFileSync(fileURLToPath(new URL("../../box/src/install/kuvo-install", import.meta.url)), path.join(media, "kuvo-install"));
     fs.copyFileSync(binary.file, path.join(media, "kuvo-install-bin"));
 
+    const tools = path.join(app.home, "launch-fixture");
+    const logs = path.join(tools, "calls");
+    const registration = path.join(tools, "registered");
+    write(path.join(tools, "launchctl"), `#!/bin/sh
+printf '%s\\n' "$1" >> "$KUVO_TEST_UNINSTALL_TOOLS/calls"
+registered="$KUVO_TEST_UNINSTALL_TOOLS/registered"
+case "$1" in
+  print | kickstart) [ -f "$registered" ] ;;
+  bootstrap) [ -f "$3" ] && touch "$registered" ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o700 });
     const original = fs.readFileSync(path.join(app.S, "Chats/c1/notes.md"), "utf8");
     const install = verb => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb, "--app", app.bundle], {
       cwd: app.home,
-      env: { ...environment, HOME: app.home, TMPDIR: path.join(app.home, "tmp"), KUVO_TEST_RELEASE_KEY: key.key },
+      env: {
+        ...environment, HOME: app.home, TMPDIR: path.join(app.home, "tmp"),
+        KUVO_TEST_RELEASE_KEY: key.key, KUVO_TEST_UNINSTALL_TOOLS: tools,
+      },
       encoding: "utf8", timeout: 90000,
     });
     const verdict = install("status");
@@ -555,12 +645,33 @@ test("kuvo-install hands the two released Mac homes to the Rust move", { timeout
     const moving = performance.now();
     const ran = install("move");
     assert.equal(ran.status, 0, ran.error?.message ?? ran.stdout + ran.stderr);
-    assert.equal(JSON.parse(ran.stdout.trim().split("\n").at(-1)).result, "done");
+    const lines = ran.stdout.trim().split("\n").map(line => JSON.parse(line));
+    const result = lines.pop();
+    assert.equal(result.result, "done");
+    assert.equal(result.started, true, ran.stderr);
+    assert.equal(lines[0]?.step, "plan");
+    assert.ok(lines.some(line => line.step === "database"));
+    assert.ok(lines.every((line, i) => !i || line.index > lines[i - 1].index));
     assert.equal(readJSON(path.join(app.K, "box.json")).launch, "rust");
     assert.equal(readJSON(path.join(app.K, "folder-version.json")).version, 23);
     assert.equal(fs.readFileSync(path.join(app.S, "Chats/c1/notes.md"), "utf8"), original);
     assert.ok(fs.statSync(path.join(app.K, "bin/kuvo-box")).isFile());
+    assert.equal(fs.readFileSync(logs, "utf8"), "print\nbootstrap\n");
+    const plist = path.join(app.home, "Library/LaunchAgents/run.kuvo.code.machine.plist");
+    assert.ok(fs.readFileSync(plist, "utf8").includes(path.join(app.K, "bin/Kuvo Helper.app/Contents/MacOS/Kuvo Helper")));
     t.diagnostic(`${tag} installer moved the home in ${Math.round(performance.now() - moving)} ms`);
+
+    const restarting = performance.now();
+    fs.rmSync(registration);
+    const missing = install("status");
+    assert.equal(missing.status, 0, missing.stderr);
+    assert.equal(JSON.parse(missing.stdout).verb, "new");
+    const restarted = install("new");
+    assert.equal(restarted.status, 0, restarted.stderr);
+    assert.equal(JSON.parse(restarted.stdout).started, true);
+    assert.ok(fs.existsSync(registration));
+    assert.equal(fs.readFileSync(logs, "utf8"), "print\nbootstrap\nprint\nprint\nbootstrap\nkickstart\n");
+    t.diagnostic(`${tag} relaunched its Helper in ${Math.round(performance.now() - restarting)} ms`);
   }
 });
 

@@ -5,6 +5,8 @@
 
 mod engine_pack;
 pub mod fleet;
+#[cfg(target_os = "macos")]
+pub mod mac_helper;
 pub mod manifest;
 pub mod prepare_command;
 mod readiness;

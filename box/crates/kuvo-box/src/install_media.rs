@@ -2,12 +2,13 @@
 
 use std::{
     ffi::OsString,
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
 use kuvo_keeper::{
+    mac_helper::LaunchAgent,
     manifest::{SignedRelease, UPDATE_KEY},
     staging::{self, MAX_ENVELOPE},
 };
@@ -29,9 +30,13 @@ pub fn run(args: &[OsString]) -> ExitCode {
 }
 
 fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
-    let [source, root, bundle] = args else {
+    let (restart, media_args) = match args.split_last() {
+        Some((last, paths)) if last == "--start" => (true, paths),
+        _ => (false, args),
+    };
+    let [source, root, bundle] = media_args else {
         return Err(io::Error::other(
-            "Usage: kuvo-box install-media <release folder> <home name> <app>",
+            "Usage: kuvo-box install-media <release folder> <home name> <app> [--start]",
         )
         .into());
     };
@@ -63,8 +68,24 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         .into());
     }
     let home = Home::new(PathBuf::from(target))?;
-    let app = profile.join("Library/Application Support").join(app_id);
+    let app = profile.join("Library/Application Support").join(&app_id);
     let before = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
+    if restart && before.verdict == kuvo_move::install::Verdict::Ours {
+        let launched = LaunchAgent::for_account(&profile, real)
+            .map(|agent| agent.start(&home, &app_id))
+            .transpose()?;
+        println!(
+            "{}",
+            json!({"result":"nothing", "verdict":before.verdict, "status":before.status,
+                "started":launched.is_some(),
+                "message":launched.unwrap_or("It's made, and starts by itself only in ~/.kuvo-code.")})
+        );
+        return Ok(0);
+    }
+    if restart {
+        println!("{}", json!({"result":"refused","verdict":before.verdict}));
+        return Ok(1);
+    }
     if before.verb != Some(kuvo_move::install::Verb::Move) {
         let ours = before.verdict == kuvo_move::install::Verdict::Ours;
         println!(
@@ -83,6 +104,15 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     files::create_private_dirs(&home.updates())?;
     let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
     let media = staging::prepare_install(&home, &signed, source)?;
+    let mut shown = 0;
+    let mut progress = |step: &serde_json::Value| {
+        if let Some(index) = step["index"].as_u64().filter(|index| *index > shown) {
+            shown = index;
+            // The move and its journal outlive a client that stops reading.
+            let _ = writeln!(io::stdout().lock(), "{step}");
+        }
+    };
+    progress(&kuvo_move::rehome_progress("plan"));
     let move_result = kuvo_move::mac::Run {
         home: &home,
         account: &profile,
@@ -91,12 +121,25 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         release: &media.root().join("release"),
         engine: &media.root().join("engine"),
     }
-    .execute(|_| {});
+    .execute(|_| progress(&kuvo_move::rehome_status(&home)["progress"]));
     let mut value = serde_json::to_value(&move_result)?;
+    if move_result.exit_code() == 0
+        && value["result"] == "done"
+        && let Some(agent) = LaunchAgent::for_account(&profile, real)
+    {
+        progress(&kuvo_move::rehome_progress("settle"));
+        match agent.start(&home, &app_id) {
+            Ok(message) => {
+                value["started"] = true.into();
+                value["message"] = message.into();
+            }
+            Err(error) => eprintln!("helper start: {error}"),
+        }
+    }
     value["verdict"] = serde_json::to_value(
         kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?.verdict,
     )?;
-    println!("{value}");
+    let _ = writeln!(io::stdout().lock(), "{value}");
     if !real && move_result.exit_code() == 0 && home.updates().join("install").is_dir() {
         files::remove_tree_synced(&home.updates().join("install"))?;
     }

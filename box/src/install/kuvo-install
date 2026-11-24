@@ -122,6 +122,7 @@ if [ "$SYSTEM" = darwin ] && [ -x "$D/kuvo-install-bin" ]; then
     case "$VERB" in
         status) KUVO_HOME="$HOME/$ROOT" exec "$D/kuvo-install-bin" install --status --root "$ROOT" --app "$APP" ;;
         move) exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" ;;
+        new) if [ -x "$HOME/$ROOT/bin/kuvo-box" ]; then exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" --start; fi ;;
     esac
 fi
 

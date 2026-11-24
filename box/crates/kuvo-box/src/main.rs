@@ -162,7 +162,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if let Some(check) = uninstall {
         let outcome = kuvo_setup::uninstall::run(&home, check);
         #[cfg(windows)]
-        if !check && outcome.status == 0 && home.bin().join(kuvo_keeper::windows::STARTER).is_file()
+        if !check
+            && outcome.status == 0
+            && (home.bin().join(kuvo_keeper::windows::STARTER).is_file()
+                || !kuvo_keeper::prepare_command::is_scratch(&home)?)
         {
             kuvo_keeper::windows::StartupTask::for_home(home.root())?.remove()?;
         }
@@ -655,7 +658,22 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
-    let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, None)?;
+    let helper_ready = {
+        #[cfg(target_os = "macos")]
+        {
+            let profile = located(&folder);
+            let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
+            home.bin()
+                .join("kuvo-box")
+                .is_file()
+                .then(|| kuvo_keeper::mac_helper::LaunchAgent::for_account(&profile, real))
+                .flatten()
+                .and_then(|agent| agent.ready(&home).ok())
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
+    };
+    let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, helper_ready)?;
     if judge.verdict == kuvo_move::install::Verdict::Stuck
         && judge.status["step"].is_null()
         && let Some(message) = judge.status["failed"]["message"].as_str()
