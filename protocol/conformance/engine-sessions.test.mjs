@@ -1280,6 +1280,21 @@ test("a paused queue stays paused when its last engine message is taken back", {
   assert.equal(repeated.json.waits, true);
   assert.deepEqual(repeated.json.waiting.map(row => row.id), [late.id]);
   assert.deepEqual(here.engine.messages.get(session) ?? [], []);
+  const next = { id: "msg_next", text: "Use the new notes." };
+  assert.equal((await request(record, "POST", route + "/add", next)).json.waits, true);
+  const removed = await request(record, "DELETE", route + "/" + late.id);
+  assert.equal(removed.status, 200, removed.text);
+  assert.deepEqual(removed.json.waiting.map(row => row.id), [next.id]);
+  assert.deepEqual((await request(record, "DELETE", route + "/" + late.id)).json, removed.json);
+  const ack = await request(record, "POST", route + "/" + late.id + "/ack", { receipt: removed.json.removed.receipt });
+  assert.equal(ack.status, 200, ack.text);
+  assert.equal((await request(record, "DELETE", route + "/" + late.id)).status, 404);
+  assert.equal(fs.existsSync(path.join(here.home, "run", "waiting", late.id + ".json")), false);
+  here.engine.running.add(session);
+  const sent = await request(record, "POST", route + "/" + next.id + "/now");
+  assert.deepEqual(sent.json, { paused: false, held: [] });
+  assert.deepEqual(here.engine.inboxes.get(session).map(item => [item.id, item.delivery]), [[next.id, "steer"]]);
+  assert.deepEqual(here.engine.interrupted.at(-1), { session, resume: true });
 });
 
 test("Steer releases only one held engine message and starts a saved draft when selected", { timeout: 45000 }, async t => {
@@ -2417,9 +2432,12 @@ test("the line shows a reordered queue and Send Now interrupts the running step"
     assert.deepEqual(reorder.json.items.map(item => item.id), ["msg_C", "msg_A", "msg_B"]);
     assert.deepEqual(await nextItems(), ["msg_C", "msg_A", "msg_B"]);
     assert.equal((await request(record, "POST", path + "/queue/hold")).json.paused, true);
+    const letter = { id: "msg_followUp", from: "Ada", words: "The build is green.", text: "[Letter] The build is green.", kept: true };
+    assert.equal((await request(record, "POST", path + "/queue/add", letter)).json.waits, true);
     const now = await request(record, "POST", path + "/queue/msg_C/now");
     assert.equal(now.status, 200);
     assert.equal(now.json.paused, false);
+    assert.deepEqual(now.json.waiting.map(row => [row.id, row.from, row.text]), [[letter.id, "Ada", letter.words]]);
     assert.deepEqual(here.engine.interrupted, [{ session: id, resume: true }]);
     assert.equal(here.engine.inboxes.get(id).find(item => item.id === "msg_C").delivery, "steer");
     assert.equal(here.engine.inboxes.get(id).find(item => item.id === "msg_A").delivery, "queue");
