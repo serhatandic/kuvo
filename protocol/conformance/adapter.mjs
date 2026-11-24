@@ -1,6 +1,6 @@
 // Launch the selected box in a private home and use the same endpoint as a desktop client.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -12,6 +12,18 @@ import { createHash } from "node:crypto";
 export function scratch() {
   // Keep Unix socket paths short even under macOS's long default TMPDIR.
   return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "kc-"));
+}
+
+/** A box's home made private before anything's written in it: on Windows the Rust box takes only a
+ * folder no other account can read (its own user, nothing inherited), as it makes one itself. */
+export function privateHome(home) {
+  fs.mkdirSync(home, { recursive: true });
+  if (process.platform !== "win32") return;
+  const icacls = path.join(process.env.SystemRoot, "System32", "icacls.exe");
+  const user = os.userInfo().username;
+  // (Owned by the user itself: an administrator's new folders can be the Administrators group's.)
+  execFileSync(icacls, [home, "/setowner", user], { stdio: "ignore" });
+  execFileSync(icacls, [home, "/inheritance:r", "/grant:r", `${user}:(OI)(CI)F`], { stdio: "ignore" });
 }
 
 export function write(file, data, options) {
