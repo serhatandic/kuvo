@@ -95,11 +95,17 @@ test("queue add preserves fields, replays, and saved parts", { timeout: 45000 },
   const record = await here.start().ready();
   const add = body => request(record, "POST", "kuvo/sessions/" + target + "/queue/add", body, { "x-kuvo-from": "app" });
   const latest = () => here.engine.asked.findLast(row => row.method === "POST" && row.path.endsWith("/prompt")).json;
-  const fresh = await add({ id: "msg_fresh", words: "After this", widget: "Plans", delivery: "queue" });
+  const draft = { id: "msg_fresh", words: "After this", widget: "Plans", delivery: "queue" };
+  const fresh = await add(draft);
   assert.equal(fresh.status, 200, fresh.text);
   assert.equal(fresh.json.waits, false);
+  assert.equal(latest().delivery, "queue");
   assert.equal(latest().text, "After this\n\n<from-widget>\nThe user sent this from a widget shown in this conversation (show_widget), titled:\nPlans\n</from-widget>");
   assert.deepEqual(latest().metadata.kuvo.parts, { words: "After this", widget: "Plans" });
+  const retry = await add(draft);
+  assert.equal(retry.status, 200, retry.text);
+  assert.equal(retry.json.waits, false);
+  assert.equal(here.engine.asked.filter(row => row.method === "POST" && row.path.endsWith("/prompt") && row.json?.id === draft.id).length, 1);
 
   const letter = "[Message from Ada · ses_ada] (To answer, use send_message to ses_ada.)\n\nThe build is green.";
   const again = await add({ id: "msg_letter", text: letter, again: true, words: "The build is green.", delivery: "queue" });
@@ -1180,6 +1186,97 @@ test("a quick Resume supersedes the external Stop before its delayed hold", { ti
   assert.equal(here.engine.asked.some(row => row.method === "PATCH" && row.json?.delivery === "queue"), false);
 });
 
+test("a paused queue stays paused when its last engine message is taken back", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("paused-empty-queue");
+  const session = "ses_pausedEmpty";
+  const item = "msg_theLast";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.inboxes.set(session, [{ id: item, type: "user", delivery: "steer", payload: { text: "Last." } }]);
+  here.engine.running.add(session);
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the resident to follow inbox removal");
+  assert.deepEqual((await request(record, "POST", `kuvo/sessions/${session}/stop`)).json,
+    { paused: true, held: [item] });
+  here.engine.inboxes.set(session, []);
+  here.engine.running.delete(session);
+  here.engine.emit({ type: "session.inbox.cancelled", data: { sessionID: session, inboxID: item } });
+  const route = `kuvo/sessions/${session}/queue`;
+  const empty = await until(async () => {
+    const found = await request(record, "GET", route);
+    return found.json?.held.length === 0 && found.json;
+  }, "the held item to leave the queue");
+  assert.deepEqual(empty, { paused: true, held: [] });
+  const late = { id: "msg_late", text: "One more thing." };
+  const saved = await request(record, "POST", route + "/add", late);
+  assert.equal(saved.status, 200, saved.text);
+  assert.equal(saved.json.waits, true);
+  assert.deepEqual(saved.json.waiting.map(row => row.id), [late.id]);
+  assert.deepEqual(here.engine.messages.get(session) ?? [], []);
+});
+
+test("Steer releases only one held engine message and starts a saved draft when selected", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("steer-held-queue");
+  const session = "ses_steerHeld";
+  const item = id => ({ id, type: "user", delivery: "steer", payload: { text: id } });
+  const one = item("msg_one");
+  const two = item("msg_two");
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.inboxes.set(session, [one, two]);
+  here.engine.running.add(session);
+  const record = await here.start().ready();
+  const base = `kuvo/sessions/${session}`;
+  const queue = base + "/queue";
+  assert.deepEqual((await request(record, "POST", base + "/stop")).json, { paused: true, held: [one.id, two.id] });
+  const steer = id => request(record, "POST", `${queue}/${id}/steer`);
+  const steered = await steer(two.id);
+  assert.equal(steered.status, 200, steered.text);
+  assert.deepEqual(steered.json, { paused: true, held: [one.id] });
+  assert.deepEqual([one.delivery, two.delivery], ["queue", "steer"]);
+  assert.deepEqual(here.engine.interrupted, [{ session, resume: false }]);
+  assert.equal((await steer("msg_missing")).status, 404);
+
+  const draft = { id: "msg_saved", text: "Take this next." };
+  const saved = await request(record, "POST", queue + "/add", draft);
+  assert.equal(saved.json.waits, true);
+  const advance = await steer(draft.id);
+  assert.equal(advance.status, 200, advance.text);
+  assert.deepEqual(advance.json, { paused: false, held: [one.id] });
+  assert.equal(here.engine.inboxes.get(session).find(row => row.id === draft.id)?.delivery, "steer");
+  assert.deepEqual(here.engine.interrupted.at(-1), { session, resume: true });
+
+  here.engine.running.delete(session);
+  const idle = await steer(one.id);
+  assert.deepEqual(idle.json, { paused: false, held: [] });
+  assert.equal(one.delivery, "steer");
+  assert.equal(here.engine.interrupted.length, 2);
+});
+
+test("the composer saves a queued prompt while stopped and Send Now interrupts for its accepted prompt", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("composer-send-now");
+  const session = "ses_composerNow";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.running.add(session);
+  const record = await here.start().ready();
+  const base = `kuvo/sessions/${session}`;
+  const send = (id, words, delivery) => request(record, "POST", base + "/send", { id, words, delivery }, { "x-kuvo-from": "app" });
+  assert.equal((await request(record, "POST", base + "/stop")).status, 200);
+  const wait = await send("msg_waits", "After the other turn.", "queue");
+  assert.deepEqual(wait.json, { waits: true });
+  assert.deepEqual(here.engine.inboxes.get(session) ?? [], []);
+  const now = await send("msg_goNow", "Stop and use the new copy.", "now");
+  assert.equal(now.status, 200, now.text);
+  assert.deepEqual(here.engine.inboxes.get(session).map(row => [row.id, row.delivery]), [["msg_goNow", "steer"]]);
+  const effects = here.engine.asked.filter(row => row.method === "POST" && /\/(prompt|interrupt)/.test(row.path));
+  assert.deepEqual(effects.map(row => row.path.split("/").at(-1)), ["interrupt", "prompt", "interrupt"]);
+  assert.deepEqual(here.engine.interrupted, [{ session, resume: false }, { session, resume: true }]);
+  const left = await request(record, "GET", base + "/queue");
+  assert.equal(left.json.paused, false);
+  assert.deepEqual(left.json.waiting.map(row => row.id), ["msg_waits"]);
+});
+
 // Deterministic provider errors for side-by-side TS and Rust comparison. The
 // live queue scenario uses OpenCode Go separately.
 test("a usage limit survives an inbox error and a manual Resume survives restart", { timeout: 45000 }, async t => {
@@ -2096,11 +2193,14 @@ test("the line shows a reordered queue and Send Now interrupts the running step"
     assert.equal(reorder.status, 200);
     assert.deepEqual(reorder.json.items.map(item => item.id), ["msg_C", "msg_A", "msg_B"]);
     assert.deepEqual(await nextItems(), ["msg_C", "msg_A", "msg_B"]);
+    assert.equal((await request(record, "POST", path + "/queue/hold")).json.paused, true);
     const now = await request(record, "POST", path + "/queue/msg_C/now");
     assert.equal(now.status, 200);
+    assert.equal(now.json.paused, false);
     assert.deepEqual(here.engine.interrupted, [{ session: id, resume: true }]);
     assert.equal(here.engine.inboxes.get(id).find(item => item.id === "msg_C").delivery, "steer");
     assert.equal(here.engine.inboxes.get(id).find(item => item.id === "msg_A").delivery, "queue");
+    assert.equal((await request(record, "POST", path + "/queue/msg_missing/now")).status, 404);
   } finally {
     line.close();
   }
