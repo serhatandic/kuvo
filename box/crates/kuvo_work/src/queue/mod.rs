@@ -20,4 +20,4 @@ mod store;
 mod told;
 mod view;
 
-pub use routes::{Runtime, register};
+pub use routes::{Network, Runtime, register};

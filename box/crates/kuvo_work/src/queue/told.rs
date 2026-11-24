@@ -4,14 +4,9 @@ use super::{
     labels, status,
     store::{self, Error, Store},
 };
-use kuvo_engine::LocalSessions;
 use kuvo_peers::{
-    directory::ComputerKey,
-    reach::Standing,
-    relay::RelayHandle,
-    session::ComputerKind,
-    setup_lists::{Reader, View},
-    work_queue_mails,
+    directory::ComputerKey, reach::Standing, relay::RelayHandle, session::ComputerKind,
+    setup_lists::View, work_queue_mails,
 };
 use kuvo_store::{
     files,
@@ -25,7 +20,6 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
     path::PathBuf,
-    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -661,14 +655,18 @@ impl Delivery {
 
     pub async fn publish(
         &mut self,
-        store: &Store,
-        peers: &Reader,
+        reads: &super::peer_reads::PeerReads,
         relay: &RelayHandle,
-        refs: Arc<super::refs::References>,
-        sessions: &LocalSessions,
         setup: Option<kuvo_setup::QueueSetup>,
         now: i64,
     ) -> Result<(), Error> {
+        let super::peer_reads::PeerReads {
+            store,
+            peers,
+            refs,
+            sessions,
+            ..
+        } = reads;
         let view = peers.view();
         let targets: Vec<_> = view
             .roster
@@ -684,6 +682,7 @@ impl Delivery {
         }
         let store = store.clone();
         let sessions = sessions.clone();
+        let refs = refs.clone();
         let before = self
             .current
             .as_ref()
@@ -833,10 +832,10 @@ pub(super) fn outgoing(
         if let Some(assignee) = fields.get_mut("assignee").and_then(Value::as_object_mut) {
             assignee.remove("look");
         }
-        if let Some(note) = fields.get_mut("lastNote").and_then(Value::as_object_mut) {
-            if let Some(text) = note["text"].as_str() {
-                note.insert("text".into(), store::limit(text, 500).into());
-            }
+        if let Some(note) = fields.get_mut("lastNote").and_then(Value::as_object_mut)
+            && let Some(text) = note["text"].as_str()
+        {
+            note.insert("text".into(), store::limit(text, 500).into());
         }
         let mut handed_from = HashSet::new();
         let handed: Vec<_> = item
@@ -931,11 +930,7 @@ pub(super) fn outgoing(
         .get("since")
         .and_then(positive_time)
         .unwrap_or_else(|| {
-            let birth = store
-                .root
-                .parent()
-                .and_then(|run| fs_birth(run))
-                .unwrap_or(now);
+            let birth = store.root.parent().and_then(fs_birth).unwrap_or(now);
             all.iter()
                 .map(|item| item.created.at as i64)
                 .filter(|at| *at > 0)

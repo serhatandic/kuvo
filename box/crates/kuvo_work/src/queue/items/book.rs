@@ -217,14 +217,14 @@ pub(super) fn number(item: &Item) -> Option<u64> {
 pub(super) fn wanted(item: &Item) -> Option<u64> {
     item.saved
         .get("wanted")
-        .and_then(|value| store::positive_integer(value))
+        .and_then(store::positive_integer)
         .map(|value| value as u64)
 }
 
 pub(super) fn imported_as(item: &Item) -> Option<u64> {
     item.saved
         .get("importedAs")
-        .and_then(|value| store::positive_integer(value))
+        .and_then(store::positive_integer)
         .map(|value| value as u64)
 }
 

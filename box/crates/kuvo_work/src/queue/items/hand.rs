@@ -17,6 +17,12 @@ pub(super) struct Delivery {
     sent: HashMap<String, (ComputerKey, i64)>,
 }
 
+pub(super) struct Destination {
+    pub peer: Member,
+    pub owner: String,
+    pub name: String,
+}
+
 impl Writer {
     pub(super) fn hand_peer(&self, owner: &str) -> Option<Member> {
         let view = self.peers.view();
@@ -31,13 +37,12 @@ impl Writer {
         &self,
         item: &Item,
         all: &[Item],
-        peer: Member,
-        owner: String,
-        name: String,
+        destination: Destination,
         who: Value,
         operation: Option<String>,
         now: i64,
     ) -> Result<Value, Refusal> {
+        let Destination { peer, owner, name } = destination;
         let view = self.peers.view();
         if !view.advertises(&peer.key, told::FEATURE) {
             return Err(bad(format!(

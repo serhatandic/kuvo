@@ -74,6 +74,13 @@ const CREATION_FIELDS: [&str; 13] = [
     "removeInlineImages",
 ];
 
+struct ChangeContext<'a> {
+    all: &'a [Item],
+    people: &'a Assignees,
+    now: i64,
+    who: &'a Value,
+}
+
 #[derive(Clone)]
 struct Writer {
     store: Store,
@@ -91,28 +98,31 @@ struct Writer {
 
 pub(super) fn register(
     registry: &mut Registry,
-    store: Store,
     setup: SetupHandle,
-    peers: Reader,
-    refs: Arc<References>,
-    sessions: LocalSessions,
     engine: Engine,
     relay: Option<RelayHandle>,
     reads: PeerReads,
     owners: ownership::Handle,
 ) -> Runtime {
-    let writer = Writer {
-        revisions: Arc::new(offline::Revisions::new()),
-        numbers: Numbers::new(&store, setup.clone(), peers.clone()),
-        files: Arc::new(ClientFiles::new()),
-        forward: Forward::new(store.clone(), owners, relay.clone()),
-        sessions,
-        engine: engine.clone(),
-        reads,
+    let PeerReads {
         store,
-        setup,
         peers,
         refs,
+        sessions,
+        ..
+    } = &reads;
+    let writer = Writer {
+        revisions: Arc::new(offline::Revisions::new()),
+        numbers: Numbers::new(store, setup.clone(), peers.clone()),
+        files: Arc::new(ClientFiles::new()),
+        forward: Forward::new(store.clone(), owners, relay.clone()),
+        sessions: sessions.clone(),
+        engine: engine.clone(),
+        store: store.clone(),
+        setup,
+        peers: peers.clone(),
+        refs: refs.clone(),
+        reads,
     };
     let here = writer.clone();
     registry.register::<add::Spec, _, _>(Access::Any, move |call| {
@@ -297,15 +307,7 @@ impl Writer {
             }
             exchange
                 .snapshots
-                .publish(
-                    &self.store,
-                    &self.peers,
-                    relay,
-                    self.refs.clone(),
-                    &self.sessions,
-                    self.setup.queue_setup(),
-                    now,
-                )
+                .publish(&self.reads, relay, self.setup.queue_setup(), now)
                 .await?;
         }
         Ok(())
@@ -552,13 +554,13 @@ impl Writer {
                 })).unwrap_or_else(|| "usr_you".into());
             writer.admit(&owner)?;
             let staged = writer.files.stage(&writer.store, body.get("files"), local)?;
-            let item = writer.new_row(&id, &owner, &body, &all, &assignees, now, &json!({"user":true}))?;
+            let item = writer.new_row(&id, &owner, &body, ChangeContext { all: &all, people: &assignees, now, who: &json!({"user":true}) })?;
             if let Some(images) = body.get("removeInlineImages") {
                 let parsed = Item::read(&owner, &item).expect("new queue item");
                 edit::pictures_to_remove(&parsed, images)?;
             }
             let document = writer.read_owner(&owner, now)?;
-            Ok(Prepared::New { item, document, assignees, all, operation, digest, staged, compaction, body_changed: body.get("body").is_some() })
+            Ok(Prepared::New { item, document: Box::new(document), assignees, all, operation, digest, staged, compaction: Box::new(compaction), body_changed: body.get("body").is_some() })
         }).await.map_err(internal)??;
         let Prepared::New {
             mut item,
@@ -616,11 +618,14 @@ impl Writer {
         id: &str,
         owner: &str,
         body: &Value,
-        all: &[Item],
-        assignees: &Assignees,
-        now: i64,
-        who: &Value,
+        context: ChangeContext<'_>,
     ) -> Result<Value, Refusal> {
+        let ChangeContext {
+            all,
+            people: assignees,
+            now,
+            who,
+        } = context;
         let title = text(
             body.get("title")
                 .filter(|title| !title.is_null())
@@ -649,7 +654,7 @@ impl Writer {
             .map(status_of)
             .transpose()?
             .unwrap_or("todo");
-        let position = place(&all, None, status, body["top"].as_bool() == Some(true));
+        let position = place(all, None, status, body["top"].as_bool() == Some(true));
         let label_book = labels::shown(&self.store, self.setup.queue_setup().as_ref())
             .map_err(storage_refusal)?;
         let labels = body
@@ -956,13 +961,13 @@ enum Prepared {
     Replay(Value),
     New {
         item: Value,
-        document: Document,
+        document: Box<Document>,
         assignees: Assignees,
         all: Vec<Item>,
         operation: String,
         digest: String,
         staged: Staged,
-        compaction: Compaction,
+        compaction: Box<Compaction>,
         body_changed: bool,
     },
 }

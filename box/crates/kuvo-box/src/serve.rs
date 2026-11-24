@@ -262,13 +262,15 @@ pub async fn run(
     let work_queue = kuvo_work::queue::register(
         &mut routes,
         home,
-        peers.reader(),
         sessions.clone(),
         engine.clone(),
         setup.handle(),
-        peers.relay_handle(),
-        memory.clone(),
-        owners.clone(),
+        kuvo_work::queue::Network {
+            peers: peers.reader(),
+            relay: peers.relay_handle(),
+            memory: memory.clone(),
+            owners: owners.clone(),
+        },
     )
     .await?;
     let queue_reads = work_queue.peer_reads();
