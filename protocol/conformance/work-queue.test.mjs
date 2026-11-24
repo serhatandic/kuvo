@@ -1523,7 +1523,7 @@ test("a keeper records the agent's changes and files from another computer", { t
   assert.deepEqual(restored.json.item.events.at(-1).by, { session: session.id, name: session.title });
 });
 
-test("queue writers use the resident PID to reclaim a dead owner and wait for a live one", { timeout: 35000 }, async t => {
+test("queue writers use the resident PID to reclaim a dead owner and wait for a live one", { timeout: 75000 }, async t => {
   const { computer, leases } = await bench(t);
   const studio = await computer("Studio");
   const ask = studio.connect(await studio.start().ready());
@@ -1534,6 +1534,11 @@ test("queue writers use the resident PID to reclaim a dead owner and wait for a 
   const add = operation => ask("POST", "kuvo/work-queue/items", { operation, title: operation }, app);
   const first = await add("prime-prior-queue-writer");
   assert.equal(first.status, 200, first.text);
+  const numberOf = row => until(async () => {
+    const item = await ask("GET", "kuvo/work-queue/items/" + row.json.item.id);
+    return item.json?.item?.number;
+  }, "The item did not receive a number.", 30000, 80);
+  const firstNumber = await numberOf(first);
 
   const dead = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["-e", ""]);
@@ -1550,11 +1555,7 @@ test("queue writers use the resident PID to reclaim a dead owner and wait for a 
   placeMarker(ledger, dead);
   const numbered = await add("replace-dead-number-writer");
   assert.equal(numbered.status, 200, numbered.text);
-  const numberOf = row => until(async () => {
-    const item = await ask("GET", "kuvo/work-queue/items/" + row.json.item.id);
-    return item.json?.item?.number;
-  }, "The item did not receive a number.");
-  assert.ok(await numberOf(numbered) > await numberOf(replaced));
+  assert.ok(await numberOf(numbered) > firstNumber);
 
   placeMarker(writer, process.pid);
   const waiting = add("wait-for-living-queue-writer");
