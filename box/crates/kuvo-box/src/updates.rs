@@ -272,8 +272,7 @@ impl Fleet {
                 .map(|member| member.name.as_str())
                 .filter(|name| !name.is_empty());
             let name = named.unwrap_or("your main computer");
-            let (away, _) = view.peer_updates(&main, now);
-            let message = if away {
+            let message = if view.kept_peer_is_away(&self.home.run(), &main, now) {
                 let place = named.map_or_else(
                     || name.to_owned(),
                     |name| format!("{name} (your main computer)"),
@@ -323,8 +322,7 @@ impl Fleet {
                 .filter(|main| Some(*main) != view.roster.here),
         ) && now.saturating_sub(kept) <= CHECK_KEPT
         {
-            let (away, _) = view.peer_updates(&main, now);
-            if away {
+            if view.kept_peer_is_away(&self.home.run(), &main, now) {
                 return Ok(());
             }
             let Some((mail, host)) = self

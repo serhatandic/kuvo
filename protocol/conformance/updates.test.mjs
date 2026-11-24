@@ -199,11 +199,28 @@ test("a member asks its main to check the release feed now or when it returns", 
     assert.match(asked.json.message, /is checking for updates\.$/);
     await until(() => checked === 2, "the main must check upon the member's authenticated request");
 
-    const reconnect = relay.disconnect(mainAddress);
     const run = path.join(member.env.HOME, ".kuvo-code/run");
     const carrier = path.join(run, "fleet-check.json");
+    const reach = path.join(run, "peer-reach.json");
+    const memberLink = readJSON(path.join(run, "link.json"));
+    const memberAddress = relayAddress(Buffer.from(memberLink.secret, "base64url"));
+    const resume = relay.pause(mainAddress, memberAddress);
+    const beforeReach = fs.existsSync(reach) ? readJSON(reach) : {};
     try {
-      const reach = path.join(run, "peer-reach.json");
+      // Preserve the interval after the peer receiver writes the observation
+      // and before its new in-memory view is available to the updater.
+      write(reach, encode({ ...beforeReach, [mainKey]: Date.now() }));
+      const pending = await request(second, "POST", "kuvo/update", { now: true });
+      assert.equal(pending.status, 202, pending.text);
+      assert.match(pending.json.message, /checks for updates when .+ is back\.$/);
+      assert.equal(typeof readJSON(carrier).at, "number");
+    } finally {
+      fs.rmSync(carrier, { force: true });
+      write(reach, encode(beforeReach));
+      resume();
+    }
+    const reconnect = relay.disconnect(mainAddress);
+    try {
       await until(() => fs.existsSync(reach) && readJSON(reach)[mainKey], "the member must detect that its main is away");
       const pending = await request(second, "POST", "kuvo/update", { now: true });
       assert.equal(pending.status, 202, pending.text);
