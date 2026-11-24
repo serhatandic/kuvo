@@ -357,6 +357,12 @@ impl Bots {
         let Some(engine) = self.inner.engine.bot_engine().await else {
             return no(503, "The engine isn’t running.");
         };
+        // (Its approval kept first, for one from before there were approvals: what's said to it
+        // next is the last its conversation hears of this change.)
+        self.inner
+            .conversations
+            .settle_session(&engine, &here.session)
+            .await;
         let renamed = changed.get("name") != described.get("name");
         let was = job_of(&here, true);
         if job_line.is_some() || job_details.is_some() {

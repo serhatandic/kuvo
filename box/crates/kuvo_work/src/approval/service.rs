@@ -8,7 +8,7 @@
 //! Auto needs the sandbox, which this box doesn't run yet: it's kept, and asks first (on Windows it
 //! isn't offered at all).
 
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use http::{Method, StatusCode};
 use kuvo_engine::{BotEngine, Engine, LocalSessions, NoteEdits};
@@ -234,6 +234,15 @@ impl ApprovalService {
         kept(self, at).is_none() || self.write(engine, id_of(&at.data), kept).await
     }
 
+    /// A conversation's rules made for what its approval comes to now, where they aren't (a bot's
+    /// from before there were approvals: this computer's default). Whether it's so.
+    pub async fn settle_session(&self, engine: &BotEngine, id: &str) -> bool {
+        match self.session(engine, id).await {
+            Some(at) => self.settle(engine, &at).await,
+            None => false,
+        }
+    }
+
     async fn session(&self, engine: &BotEngine, id: &str) -> Option<Found> {
         let data = engine
             .call(
@@ -319,9 +328,13 @@ impl ApprovalService {
                     continue;
                 }
                 let at = self.found(data.clone());
+                // (A bot's from before there were approvals is the bots' to adopt, in its turn.)
+                if at.bot && kept.is_null() {
+                    continue;
+                }
                 let now = self.of(&at);
                 let remade = settings && now.stored && self.change_for(&at, now.approval).is_some();
-                let special = kept == "auto" || kept == "fullAccess" || (at.bot && kept.is_null());
+                let special = kept == "auto" || kept == "fullAccess";
                 if !remade && !special && !now.pending {
                     continue;
                 }
@@ -395,28 +408,9 @@ impl ApprovalService {
         }
     }
 
-    /// Each bot's own conversation from before there were approvals, kept with the one its rules
-    /// say, once (`done`: those already looked at).
-    async fn adopt_bots(&self, engine: &BotEngine, done: &mut HashSet<String>) {
-        for id in crate::wakes::folder::names(&self.bots) {
-            let Some(bot) = BotHere::read(&self.bots, &id).filter(|bot| !bot.agents) else {
-                continue;
-            };
-            if done.contains(&bot.session) {
-                continue;
-            }
-            if let Some(at) = self.session(engine, &bot.session).await
-                && self.settle(engine, &at).await
-            {
-                done.insert(bot.session);
-            }
-        }
-    }
-
     /// Kept so as the box runs: when the engine starts, the Full Access switch or Settings ›
     /// Permissions change, every conversation kept with an approval made again until every one is;
-    /// and as conversations come and go, the new ones a client made adopted and each bot's from
-    /// before, once. Only while the engine runs: this never starts it, nor keeps it up.
+    /// and as conversations come and go, the new ones a client made adopted. Only while the engine runs: this never starts it, nor keeps it up.
     pub fn keep(&self) -> tokio::task::JoinHandle<()> {
         let service = self.clone();
         tokio::spawn(async move {
@@ -426,7 +420,6 @@ impl ApprovalService {
             let mut sessions = service.sessions.clone();
             let mut last: Option<String> = None;
             let mut settings_made: Option<String> = None;
-            let mut adopted = HashSet::new();
             loop {
                 let started = match &*states.borrow_and_update() {
                     kuvo_engine::State::Running { started, .. } => Some(format!("{started:?}")),
@@ -447,7 +440,6 @@ impl ApprovalService {
                             settings_made = Some(settings);
                         }
                         service.adopt_pending(&engine).await;
-                        service.adopt_bots(&engine, &mut adopted).await;
                     }
                 }
                 // (Looked at again as the engine or its list changes, and every two seconds for
