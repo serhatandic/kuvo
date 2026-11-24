@@ -14,13 +14,14 @@ import { homeFolder, K } from "../src/link/home";
 import { setSkillSource, skillsFor, forgetSkills } from "../src/agents/skills";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, readDoc, signingKeyOf } from "../src/link/documents/format";
-import { newSetupID } from "../src/link/setup/record";
+import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { publishedShared, takeShared } from "../src/link/setup/shared";
 import { readLink, writeLink, type LinkState } from "../src/link/state";
 import { grantRelayLease } from "./relay-lease";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { RUN } from "../src/link/home";
 import type { EngineLink } from "../src/agents/engine";
+import { isObject } from "../src/shared/json";
 
 const handler = engineHandler(() => ({ pid: process.pid, port: 12345, password: "test" }), { name: "Test box" }, (() => null) as never);
 const route = (verb: string, at = "", body?: unknown) => ask(handler, verb, "kuvo/marketplace" + at, body);
@@ -188,7 +189,7 @@ test("a computer applies a signed removal and restores its own copy from Recentl
     return { seed: key.toString("base64url"), key: publicOf(key).toString("base64url"), sign, signer: signingKeyOf(sign), address: addressOf(key).toString("base64url") };
   };
   const primary = identity(), member = identity();
-  const setup = { id: newSetupID(), epoch: 1, primary: primary.key, sign: primary.signer, managed: true, checkpointed: true };
+  const setup: Omit<SetupRecord, "role"> = { id: newSetupID(), epoch: 1, primary: primary.key, sign: primary.signer, managed: true, checkpointed: true };
   const boxes = [primary, member].map(box => ({ key: box.key, sign: box.signer, address: box.address, kind: "machine", name: "Skill box" }));
   const a: LinkState = {
     key: primary.seed, sign: primary.sign, phones: [], setup: { ...setup, role: "primary" }, sharedSetup: setup.id,
@@ -199,7 +200,8 @@ test("a computer applies a signed removal and restores its own copy from Recentl
   const folder = path.join(homeFolder(), ".claude/skills", name);
   const localTrash = SKILL_TRASH_FOLDER + "-primary";
   const applyOnMember = () => {
-    const doc = publishedShared(readLink()!).map(envelope => readDoc(envelope)!).find(doc => doc.body.replica?.marketplaceInstallations);
+    const doc = publishedShared(readLink()!).map(envelope => readDoc(envelope)!)
+      .find(({ body }) => isObject(body.replica) && body.replica.marketplaceInstallations);
     expect(doc).toBeDefined();
     takeShared(b, primary.key, doc!);
     writeLink(b);
