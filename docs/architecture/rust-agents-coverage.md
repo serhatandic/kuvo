@@ -94,6 +94,22 @@ new prompt or attaches the resident's sink to a recovered turn through
 `Thread::start`. The sink handles transcript events, vendor-state
 checkpoints and independent permission and question promises.
 
+Saved-session checks read the bridge's header, native conversation state,
+legacy JSON transcript and SQLite transcript. The binary transcript case
+pages a saved conversation in both directions on both boxes. The replies
+and unchanged transcript files match. On the first write Rust stages a
+legacy import beside the original array and publishes it after commit.
+Updates keep the existing message's position and carry the bridge's
+usage and artifact projections. A late checkpoint or transcript write
+after deletion cannot recreate the conversation.
+
+The resident turn sink waits for a transcript writer to acknowledge each
+event and saves native state before acknowledging that checkpoint.
+Permission and form requests are scoped to their session and turn.
+Tests cover withdrawing an ask, duplicate request IDs in separate
+sessions, denying a late ask, and withholding acknowledgement until a
+checkpoint has been written.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.

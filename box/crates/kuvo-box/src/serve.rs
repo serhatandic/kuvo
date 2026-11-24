@@ -148,6 +148,8 @@ pub async fn run(
         .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
     let mut routes = Registry::new();
+    let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
+    agents::sessions::register(sessions, &mut routes);
     let engine = if let Some((runtime, accounts)) = resident_agents {
         agents::register(accounts.clone(), &mut routes);
         engine.with_agent_model_source(Arc::new(agents::Models {
