@@ -1,6 +1,6 @@
 // Launch the selected box in a private home and use the same endpoint as a desktop client.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -88,8 +88,34 @@ export function typescriptRuntime() {
   return process.env.KUVO_CONFORMANCE_BUN || process.env.BUN || (fs.existsSync(installed) ? installed : "bun");
 }
 
+function prepareWindowsFixtureHome(home, env) {
+  if (!fs.existsSync(home)) return;
+  const fixture = path.dirname(env.HOME);
+  assert.equal(path.dirname(env.TMPDIR), fixture, "An isolated fixture owns the home and temporary folder.");
+  assert.ok(!fs.lstatSync(home).isSymbolicLink(), "The fixture home cannot be a link.");
+  const relative = path.relative(fs.realpathSync(fixture), fs.realpathSync(home));
+  assert.ok(!path.isAbsolute(relative) && relative.split(path.sep)[0] !== "..", "The Windows home must be in the fixture.");
+  // Tests seed files before the resident starts. Give their homes the same
+  // protected, inheritable ACL as a home created by the native installer.
+  const script = `
+$ErrorActionPreference = 'Stop'
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = [Security.AccessControl.DirectorySecurity]::new()
+$acl.SetSecurityDescriptorSddlForm("O:$($sid.Value)D:P(A;OICI;FA;;;$($sid.Value))")
+[IO.Directory]::SetAccessControl($env:KUVO_FIXTURE_HOME, $acl)
+`;
+  const powershell = path.join(env.SystemRoot ?? env.WINDIR, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  execFileSync(powershell,
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { env: { ...env, KUVO_FIXTURE_HOME: home }, windowsHide: true, timeout: 10000 });
+}
+
 export function boxCommand(binary, home, env, relay, args, extra = {}, stdout = "ignore") {
   const ts = binary.typescript;
+  if (process.platform === "win32" && !ts && args[0] !== "here"
+      && !(args[0] === "install" && args.includes("--status"))) {
+    prepareWindowsFixtureHome(extra.KUVO_HOME ?? home, env);
+  }
   return launch(ts ? typescriptRuntime() : binary.file,
     ts ? [`--config=${os.devNull}`, "--no-env-file", binary.file, ...args] : args,
     { ...env, ...(ts ? { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } : {}),
