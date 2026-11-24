@@ -1235,6 +1235,12 @@ Buffer.from = function (value, encoding, ...args) {
     else write(engine, '#!/bin/sh\n[ "$1" = --version ]\n', { mode: 0o700 });
     if (!shell(peer)) control(peer, "select", bin);
   }
+  const now = Date.now();
+  const launchers = shellKeepers && process.platform === "darwin" ? [
+    ["older-mac", Buffer.alloc(0)],
+    ["launchers.json", encode({ "an older Mac": now - 26 * 86_400_000, "mac-old": now })],
+  ] : [];
+  for (const [file, data] of launchers) write(path.join(main.home, "run", file), data);
   const keepers = new Map();
   function start(peer) {
     const keeper = shell(peer)
@@ -1451,6 +1457,15 @@ Buffer.from = function (value, encoding, ...args) {
     await until(() => confirmed(member), diagnose, 75000);
     await reply("same turn after release switch");
     if (shellKeepers) await runningTurn();
+    if (launchers.length) {
+      const resident = readJSON(path.join(main.home, "run/serve.json"));
+      const reply = await request(resident, "GET", "kuvo/update");
+      assert.equal(reply.status, 200, reply.text);
+      assert.deepEqual([reply.json.version, reply.json.blocked], [version, null]);
+      for (const [file, data] of launchers) {
+        assert.deepEqual(fs.readFileSync(path.join(main.home, "run", file)), data);
+      }
+    }
     assert.equal(active(away), initial(away));
     if (checkRows) {
       const { Lab: current, Away: offline } = await until(async () => {

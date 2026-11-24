@@ -70,6 +70,7 @@ Intel Mac: checked without running; a real run waits for an Intel Mac.
 | U51 | A trial executable exits just after the previous resident stops, leaving its Rust holder running. The keeper resumes the recorded rollback, and the previous release adopts the same holder and agent at the next generation. The conversation completes once and the keeper settles the refusal for the failed digest. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U52 | The release signer reads the five named target archives beside the compatibility pack. It checks their release and engine metadata, signs every archive's digest and URL, and keeps the exact signed TypeScript bridge. An inconsistent target fails before an envelope is written. |
 | U53 | The release dry run builds the five target programs and assembles and signs them separately from the desktop release. A local replay packaged all five binaries, checked every signed archive digest and file list, and prepared the matching release on Mac arm64, native Linux x64, WSL2, and native Windows x64. Static checks verified the Intel-only box executable, its universal ad-hoc signed Helper, and the static Linux arm64 executable. |
+| U54 | During the shell-keeper fleet switch, the main Mac retains the anonymous and named launcher markers from older clients. It confirms the signed release and reports an unblocked updater with the same marker bytes. The TypeScript launcher-marker reference also passed. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -298,7 +299,7 @@ dependencies.
 | --- | --- | --- |
 | [updates](../../box/bridge-tests/updates.test.js), version order | Partial. U3 covers numeric ordering and refuses a different digest at the installed version. U4 covers beta-to-final ordering. An already-ahead fleet member remains open. | 7.2 |
 | Same, pinned signatures and signed bytes | Covered by U1 and U21. | — |
-| Same, stale Mac launcher marks | Open. | 7.2 |
+| Same, stale Mac launcher marks | U54 confirms the signed switch and unblocked updater with both markers present. | — |
 | Same, partial rollback reported once | Partial. U51 resumes the native rollback journal and records the matching refusal while the held turn finishes. The interrupted in-place restore and its one-time settlement still need the predecessor fixture. | 7.2 |
 | Same, signed release with Helper kept for peers | Partial. U9–U10 pull the signed pack from a peer. U50 prepares locally assembled target packs, including a Mac Helper with a verified ad-hoc signature. U52 signs the complete target set with the bridge envelope. Release-signed Helper media and publication remain open. | 7.2, 6.2, 9.3 |
 | Same, full packaged contents | Partial. U50 prepares the complete local Mac arm64, Linux x64, and Windows x64 packs. U53 checks the signed Intel Mac and Linux arm64 archives as well. Published media remain open. | 9.3 |
