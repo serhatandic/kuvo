@@ -119,6 +119,16 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
       }
       write(given.path, given.text);
     },
+    // What a conversation asks before it's done (`run/work/asks.json`), asked just now: making a
+    // project unless it says otherwise.
+    workAsk(given) {
+      const file = path.join(home, "run", "work", "asks.json");
+      const asks = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).asks : [];
+      const { id, session, name = "Your chat", project, action = "makeProject", clone, late, git } = given;
+      const made = { name: project, ...(git === undefined ? {} : { git }), ...(clone ? { clone } : {}) };
+      const ask = { id, action, session, name, project, ...(clone ? { clone } : {}), folderName: project.toLowerCase(), folder: null, at: Date.now(), given: made, ...(late ? { late } : {}) };
+      write(file, JSON.stringify({ asks: [...asks, ask] }));
+    },
     // What an agent browsing here asks you for, as the browser's keeper leaves it for the bridge
     // (`run/browser-asks.json`, while the keeper runs: a process named as it is stands in for it).
     ask(given) {

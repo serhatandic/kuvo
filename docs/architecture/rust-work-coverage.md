@@ -261,7 +261,7 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 | Test | Cases | Rust |
 |---|---|---|
 | [bots-projects](../../box/bridge-tests/bots-projects.test.js) | 222, 236 a projects folder picked, only a real one | `work` scenarios; `WorkSettings::change` |
-| | 100–208, 250–338 asking to make or clone a project, answering, Always, `kuvo/projects/new` | 5.1c, with the work tools: open |
+| | 100–208, 250–338 asking to make or clone a project, answering, Always, `kuvo/projects/new` | answering and `kuvo/projects/new`: 5.1c-4; asking (the make_project tool): 5.1e |
 | `own-mac` (Keep This Mac Awake) | the setting and whether it holds now | `WorkSettings::keep_awake`: `caffeinate -i -w` while agents work, `run/work-awake.json`; only on a Mac box on macOS |
 
 ### Deliberate differences from TypeScript
@@ -305,3 +305,63 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 - **A phone's `kuvo/work?bot=`** is answered from the session list, as every other client's is;
   TypeScript asked the engine again for a phone's (each session's ask and last reply).
+
+## 5.1c-4 — making a project, and answering what's asked
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::work::projects` (`make_project`, `made_words`, `cloneable`, `shown_path`, `first_commit`) | `work/projects.ts` (`makeProject`, `madeWords`, `cloneable`, `namedPlace`, `shownPath`, `cloneInto`); `git.ts` `firstCommit`, `gitLater` |
+| `kuvo_work::work::answers` (`Work::answer_work`, `change_asks`, `allow_always`, `do_work`, `tell_late`) | `work/asks.ts` (`answerWork`, `changeKept`, `allowAlways`, `doWork`, `tellLate`) |
+| `kuvo_services::git::change_projects` (beside `read_projects`) | `areas/projects.ts` `changeProjects` |
+| `WakeEngine::tell` (a wake-up's `deliver` goes through it) | `engine/queue.ts` `sendInto` to the engine, with `boxNote` |
+| `POST kuvo/projects/new`, `POST kuvo/work/asks/:id` in `Work::register` | `areas/work.ts` `newProjectRoute`, `workAsksRoute` |
+
+### Proof
+
+- `work` scenarios (3 new, 8 in all): a client makes a project (refusals: no name, no projects
+  folder with `needs`, a folder not given in full, a name that makes no folder, addresses git won't
+  clone, a folder with files in it, a project there already; a plain folder and a git repository
+  made); what's asked answered (not asked, a wrong answer, the projects folder picked with the
+  first allow, answered once, deny, deny overnight for a clone); and an answer given after its
+  tool stopped waiting told to its conversation (`[The user answered] …`, marked "Your answer").
+  8/8 against both boxes on macOS; against the Rust box on native Windows and on Linux (WSL, static
+  musl). `bots` stays 40/40 on all three (wake-ups now deliver through `WakeEngine::tell`).
+- `work::projects::tests` (3): which addresses git clones without asking; `~` for paths under your
+  home only; a new repository's empty first commit, with nothing left over, made once.
+- Side by side, 21 requests (`kuvo/projects/new`, `kuvo/work/asks/:id`, `kuvo/work/asks`,
+  `kuvo/projects`, `kuvo/work/settings`): every answer matches. The projects, asks and settings
+  files match too, except as below.
+- Size: about 30,700 characters of Rust for about 23,500 of TypeScript: 1.30× as the files stand;
+  1.14× without each line's indentation (Rust indents by four, TypeScript by two, and rustfmt
+  breaks a chain over 60 characters into lines of its own).
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bots-projects](../../box/bridge-tests/bots-projects.test.js) | 236 a client makes a project in the projects folder | `work` scenarios |
+| | 250 a new project starts with a commit, by Kuvo Code where no one's set | `work::projects::tests`; the scenarios' runs set who commits, so Kuvo Code's own name is the unit test's fallback: open for 5.1e's tool scenarios |
+| | 162, 290 what would fail anyway (a folder with files in it, a project there already, an address that isn't a repository's) | `work` scenarios, as refusals of `kuvo/projects/new`; not asking first is the tool's: 5.1e |
+| | 208 an answer given after its tool stopped waiting reaches its conversation; a second answer finds it gone | `work` scenarios |
+| | 222 allowing needs a projects folder, and only a real one; a no doesn't | `work` scenarios |
+| | 132 Always kept with the bot | `allow_always`; its scenario needs the tool asking first: 5.1e |
+| | 299, 338 a project that can't be made is the answer ("Couldn't do it") | `do_work`; read-only folders aren't set up in the shared scenarios: 5.1e's tool cases |
+
+### Gaps and owners
+
+- **A plan's reset answered** (`resetLimits`): the coding agents' `spendReset` isn't in this box;
+  Rust answers that the reset wasn't used. 5.4 (usage and limits).
+- **`box/found-folders.json`**: TypeScript notes a made project's folder as first found there
+  (`noteFolderFound`, for Auto's reviewer). 6.3, with the folders it lists.
+- **A late answer to a conversation elsewhere**: one the coding agents run, or one that moved to
+  another computer since (a letter, `tellMovedAway`), stays untold here. The agents' sessions: 4.4;
+  letters: 5.1e with the work tools. Telling those left untold as the box starts and every few
+  minutes (`tellLateAnswers`): the work watcher, next in 5.1c.
+
+### Deliberate differences from TypeScript
+
+- **The session list** lists a made project at once; TypeScript's saved list caught up later (side
+  by side, at shutdown its `run/lists/sessions.json` didn't have them yet).
+

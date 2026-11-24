@@ -1,5 +1,5 @@
 {
- "about": "Where new projects go on a box (PROTOCOL.md, \"Work\"): none until you pick a folder, a folder checked before it's kept, and a change made only while it's still as you read it.",
+ "about": "Where new projects go on a box (PROTOCOL.md, \"Work\"): none until you pick a folder, a folder checked before it's kept, and a change made only while it's still as you read it; a project made there, and what's asked before a bot does something answered.",
  "scenarios": [
   {
    "name": "where new projects go: none at first, a folder that isn't one refused, one picked kept, and a change on what was read",
@@ -208,6 +208,457 @@
       "status": 404,
       "json": {
        "message": "There's no such bot here."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a client makes a project where new projects go: a git repository or a plain folder, and what won't do refused",
+   "steps": [
+    {
+     "send": "POST kuvo/projects/new",
+     "body": [],
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Send {name}, and git or clone."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "  "
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Say what it's called (name)."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tidepool"
+     },
+     "why": "No projects folder picked yet.",
+     "expect": {
+      "status": 403,
+      "json": {
+       "message": "There's no projects folder here yet: the user picks one.",
+       "needs": "projectsFolder"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tidepool",
+      "folder": "projects/tidepool"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Give the folder as a full path, like ~/projects/tidepool."
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/notes/todo.md",
+       "text": "mine\n"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "???"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "??? can't be a folder's name: use letters or numbers."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Sneaky",
+      "clone": "--upload-pack=touch x"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "--upload-pack=touch x isn't a repository address git can clone: give an https or ssh one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Local",
+      "clone": "/etc"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "/etc isn't a repository address git can clone: give an https or ssh one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Notes"
+     },
+     "why": "A folder with files in it already.",
+     "expect": {
+      "status": 409,
+      "json": {
+       "message": {
+        "<contains>": "already, with files in it. Pick another name."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tide Pool",
+      "git": false
+     },
+     "expect": {
+      "status": 201,
+      "json": {
+       "project": {
+        "directory": "<string>",
+        "folders": [],
+        "addedByBox": true,
+        "name": "Tide Pool",
+        "madeBy": "<absent>"
+       },
+       "text": {
+        "<contains>": ", a plain folder, on this machine. It's in the sidebar; start sessions in it with start_session (project: \"Tide Pool\")."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tide Pool"
+     },
+     "expect": {
+      "status": 409,
+      "json": {
+       "message": {
+        "<contains>": "already: Tide Pool."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "lighthouse"
+     },
+     "expect": {
+      "status": 201,
+      "json": {
+       "project": {
+        "directory": "<string>",
+        "folders": [],
+        "addedByBox": true,
+        "name": "<absent>"
+       },
+       "text": {
+        "<contains>": ", a new git repository, on this machine."
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/projects",
+     "expect": {
+      "status": 200
+     }
+    }
+   ]
+  },
+  {
+   "name": "what's asked answered: allow with the projects folder picked, deny, and one answered or not asked",
+   "steps": [
+    {
+     "send": "POST kuvo/work/asks/wak_none",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "That's been answered, or it isn't asked any more."
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_harbor",
+       "session": "ses_chat",
+       "project": "Harbor",
+       "git": false
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_reef",
+       "session": "ses_chat",
+       "project": "Reef"
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_clone",
+       "session": "ses_chat",
+       "project": "B",
+       "action": "cloneProject",
+       "clone": "https://example.com/a/b"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/asks",
+     "expect": {
+      "status": 200,
+      "json": {
+       "asks": {
+        "<length>": 3,
+        "<includes>": [
+         {
+          "id": "wak_harbor",
+          "action": "makeProject",
+          "project": "Harbor",
+          "folder": null,
+          "given": "<absent>"
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "maybe"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Answer allow, always or deny."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Pick the folder new projects go in."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow",
+      "folder": "relative"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Give a full path to the folder."
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/README.md",
+       "text": "Projects\n"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow",
+      "folder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "allow",
+       "isError": false,
+       "text": {
+        "<contains>": ", a plain folder, on this machine."
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/settings",
+     "why": "The folder picked with the answer is where new projects go now.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": "<string>"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow"
+     },
+     "why": "Answered once: another client finds it gone.",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "That's been answered, or it isn't asked any more."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_reef",
+     "body": {
+      "answer": "deny"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "deny",
+       "isError": true,
+       "text": "The user said no to making Reef. Don't ask again for it: go on without it, or ask them in a line what they'd like instead."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_clone",
+     "body": {
+      "answer": "deny",
+      "overnight": true
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "deny",
+       "isError": true,
+       "text": "No one could answer cloning https://example.com/a/b as B overnight, so it's no for now. Go on without it; it waits for the user in the morning report."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/asks",
+     "expect": {
+      "status": 200,
+      "json": {
+       "asks": []
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "an answer given after its tool stopped waiting is told to its conversation",
+   "steps": [
+    {
+     "given": {
+      "session": {
+       "id": "ses_late",
+       "title": "Planning"
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/README.md",
+       "text": "Projects\n"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_late",
+       "session": "ses_late",
+       "project": "Late",
+       "git": false,
+       "late": true
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_late",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "allow",
+       "isError": false
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_late/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[The user answered] Made Late at "
+       },
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "from": "Your answer",
+          "line": {
+           "<contains>": "You answered: Made Late at "
+          }
+         }
+        }
+       }
       }
      }
     }

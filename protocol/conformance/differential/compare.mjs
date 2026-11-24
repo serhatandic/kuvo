@@ -33,6 +33,7 @@ const volatile = new Map([
     started: "session list writer start identity",
   }],
   ["run/work/told.json", { since: "notice scan start time", "sinces/bridge": "bridge notice scan start time" }],
+  ["run/work/asks.json", { "asks/0/answered/at": "answer time", "asks/1/answered/at": "answer time" }],
   ["run/notices/teller", { "": "notice publisher PID" }],
   ["agents/usage/insights.sqlite/state/local", { scanned: "local index scan timestamp" }],
   ["updates/rehome/journal.json", { began: "move start time", clonedAt: "clone start time" }],
