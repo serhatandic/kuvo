@@ -132,6 +132,85 @@ fn a_move_decided_by_an_older_computer_still_answers_after_its_routing_hint_has_
     assert!(!run.join("moves/decisions/mov_old.json").exists());
 }
 
+#[test]
+fn protects_attachments_covers_active_moves_departures_and_recent_drops() {
+    let folder = tempfile::tempdir().unwrap();
+    let run = folder.path().join("run");
+    let now = 1_760_000_000_000i64;
+    let expired = now - 3 * 24 * 3_600_000;
+    files::write_atomic(
+        &run.join("moves/mov_active1.json"),
+        &serde_json::to_vec(&json!({
+            "id": "mov_active1", "thing": "ses_moving1", "peer": "other", "role": "from",
+            "stage": "copying", "sessions": ["ses_moving1"], "started": now,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    files::write_atomic(
+        &run.join("moves/moved.json"),
+        &serde_json::to_vec(&json!([
+            { "session": "ses_moved1", "key": "other", "at": now },
+            { "session": "ses_oldMoved", "key": "other", "at": expired },
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    files::write_atomic(
+        &run.join("moves/ended.json"),
+        &serde_json::to_vec(&json!({
+            "mov_dropLegacy": { "as": "dropped", "at": now, "sessions": ["ses_droppedLegacy"] },
+            "mov_dropOld": { "as": "dropped", "at": expired, "sessions": ["ses_droppedOld"] },
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let receipts = Receipts::open(&run);
+    receipts
+        .record(
+            "mov_dropModern",
+            &Decision {
+                decided: Decided::Dropped,
+                at: now,
+                peer: Some("other".into()),
+                last: None,
+                bundle: Bundle::default(),
+                payloads: None,
+            },
+            &["ses_droppedModern".into()],
+        )
+        .unwrap();
+
+    for session in [
+        "ses_moving1",
+        "ses_moved1",
+        "ses_droppedLegacy",
+        "ses_droppedModern",
+    ] {
+        assert!(
+            kuvo_peers::moves::protects_attachments(&run, session, now),
+            "{session} should stay protected"
+        );
+    }
+    for session in ["ses_oldMoved", "ses_droppedOld", "ses_unrelated"] {
+        assert!(
+            !kuvo_peers::moves::protects_attachments(&run, session, now),
+            "{session} should not stay protected"
+        );
+    }
+    // Fail closed if a future-version drop hint cannot be read.
+    files::write_atomic(
+        &run.join("moves/decision-hints/mov_future.json"),
+        &serde_json::to_vec(&json!({ "formatVersion": 99, "as": "dropped", "at": now, "sessions": [] })).unwrap(),
+    )
+    .unwrap();
+    assert!(kuvo_peers::moves::protects_attachments(
+        &run,
+        "ses_unrelated",
+        now
+    ));
+}
+
 fn read(path: &std::path::Path) -> Value {
     serde_json::from_slice(&files::read(path).unwrap().unwrap()).unwrap()
 }

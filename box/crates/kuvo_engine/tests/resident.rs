@@ -66,6 +66,7 @@ fn main() {
             external_asks().await;
             peer_waiting().await;
             paired_delivery().await;
+            resident_answers_promptly_under_mutation_lock_contention().await;
         });
     }
 }
@@ -1956,4 +1957,27 @@ async fn inbox_fixture(req: Request<Incoming>) -> Reply {
         }
         _ => missing(),
     }
+}
+
+async fn resident_answers_promptly_under_mutation_lock_contention() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let lock = home.join("run/owned-data/.mutations.lock");
+    fs::create_dir_all(&lock).unwrap();
+    let server = Server::start(home).await;
+    let started = std::time::Instant::now();
+    let reply = server.get("kuvo/nonexistent").await;
+    let elapsed = started.elapsed();
+    assert_eq!(reply.status(), StatusCode::NOT_FOUND);
+    assert!(
+        elapsed < Duration::from_millis(250),
+        "Resident request waited {elapsed:?} while the mutation lock was held"
+    );
+    let _ = fs::remove_dir_all(&lock);
+    server.stop().await;
 }

@@ -30,6 +30,111 @@ const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
 const DEPARTURE: ObjectFormat = ObjectFormat::additive("Moved conversation");
 const RECENT_DEPARTURE: u64 = 2 * 24 * 60 * 60_000;
 const HELD: &str = "This record is held while its owner changes.";
+pub(crate) const MOVING: &str = "It’s moving to another computer. Try again once it’s there.";
+
+pub(crate) struct ActionFence {
+    pub held: bool,
+    pub elsewhere: Option<(String, String)>,
+}
+
+pub(crate) fn moved_elsewhere(computer: &str, name: &str) -> Refusal {
+    let clean = name
+        .replace(
+            |c: char| {
+                matches!(
+                    c,
+                    '\u{0000}'..='\u{001f}'
+                        | '\u{007f}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+            },
+            " ",
+        )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let shown = if clean.is_empty() {
+        "another of your computers"
+    } else {
+        clean.as_str()
+    };
+    Refusal::json(
+        StatusCode::CONFLICT,
+        json!({
+            "message": format!("It’s on {shown} now. Change it there."),
+            "computer": computer,
+        }),
+    )
+}
+
+pub(crate) fn check_action(fence: &ActionFence) -> Result<(), Refusal> {
+    if let Some((computer, name)) = &fence.elsewhere {
+        return Err(moved_elsewhere(computer, name));
+    }
+    if fence.held {
+        return Err(Refusal::new(StatusCode::CONFLICT, HELD));
+    }
+    Ok(())
+}
+
+pub(crate) async fn action_state(engine: &Engine, session: &str) -> Result<ActionFence, Refusal> {
+    let mut elsewhere = None;
+    let mut held = false;
+    if let Some(authority) = &engine.ownership
+        && let Ok(scope) = authority.scope(session, None)
+    {
+        held |= scope.held;
+        if let Some(owner) = scope.owner
+            && !owner.local
+            && let Some(key) = owner.key
+        {
+            let computer = kuvo_wire::keys::encode(&key);
+            let name = if owner.name == computer {
+                String::new()
+            } else {
+                owner.name
+            };
+            elsewhere = Some((computer, name));
+        }
+    }
+    let run = engine.home.join("run");
+    let target = session.to_owned();
+    let disk = tokio::task::spawn_blocking(move || {
+        Ok::<_, io::Error>((
+            journal_held(&run, &target, None, false)?,
+            recent_departure(&run, &target)?,
+        ))
+    })
+    .await;
+    let (disk_held, departure) = match disk {
+        Ok(Ok(found)) => found,
+        Ok(Err(error)) => return Err(fence_failure(error)),
+        Err(error) => return Err(fence_failure(error)),
+    };
+    held |= disk_held;
+    if elsewhere.is_none()
+        && let Some(computer) = departure
+    {
+        let name = engine
+            .ownership
+            .as_ref()
+            .and_then(|authority| {
+                let key = kuvo_wire::keys::decode_exact(&computer)?;
+                authority
+                    .members()
+                    .into_iter()
+                    .find(|member| member.key == Some(key))
+                    .map(|member| member.name)
+            })
+            .filter(|name| name != &computer)
+            .unwrap_or_default();
+        elsewhere = Some((computer, name));
+    }
+    Ok(ActionFence { held, elsewhere })
+}
 
 pub(crate) fn refused(status: StatusCode, body: &Value) -> bool {
     status == StatusCode::CONFLICT && body["message"].as_str() == Some(HELD)
@@ -161,6 +266,16 @@ fn frozen(
     activating: Option<&str>,
     queue_hold: bool,
 ) -> io::Result<bool> {
+    Ok(journal_held(run, session, activating, queue_hold)?
+        || recent_departure(run, session)?.is_some())
+}
+
+fn journal_held(
+    run: &Path,
+    session: &str,
+    activating: Option<&str>,
+    queue_hold: bool,
+) -> io::Result<bool> {
     let root = run.join("moves");
     for entry in entries(&root)? {
         let entry = entry?;
@@ -197,11 +312,15 @@ fn frozen(
             return Ok(true);
         }
     }
-    let Some(raw) = files::read(&root.join("moved.json"))? else {
-        return Ok(false);
+    Ok(false)
+}
+
+fn recent_departure(run: &Path, session: &str) -> io::Result<Option<String>> {
+    let Some(raw) = files::read(&run.join("moves/moved.json"))? else {
+        return Ok(None);
     };
     let Ok(Value::Array(rows)) = serde_json::from_slice(&raw) else {
-        return Ok(false);
+        return Ok(None);
     };
     let now = crate::disk::now();
     for row in rows.into_iter().filter(Value::is_object) {
@@ -213,10 +332,10 @@ fn frozen(
             && row.queue.is_none()
             && now.saturating_sub(row.at) < RECENT_DEPARTURE
         {
-            return Ok(true);
+            return Ok(Some(row.key));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 fn write_prefix(session: &str) -> String {

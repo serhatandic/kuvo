@@ -144,8 +144,29 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
         let engine = local.clone();
         async move {
             let id = id(&call)?;
+            let fence = crate::session_move::action_state(&engine, &id).await?;
             let lease = api::start(&engine).await?;
-            let session: Session = typed(read(&engine, &lease, &path(&id)).await?)?;
+            let session: Session = match engine
+                .call::<Session>(&lease, Method::GET, &path(&id), None)
+                .await
+            {
+                Ok(session) => session,
+                Err(error) if error.missing() => {
+                    if let Some((computer, name)) = fence.elsewhere {
+                        return Err(crate::session_move::moved_elsewhere(&computer, &name));
+                    }
+                    return Err(Refusal::new(
+                        StatusCode::NOT_FOUND,
+                        "That conversation isn't here.",
+                    ));
+                }
+                Err(_) => {
+                    return Err(Refusal::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "The engine isn't answering. Try again in a moment.",
+                    ));
+                }
+            };
             session.check_independent()?;
             let confirm = confirmation::one(&engine, &lease, &session).await?;
             let mut menu = Vec::new();
@@ -163,9 +184,11 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
                 menu.push(json!({"id":"archive","label":"Archive"}));
             }
             menu.push(json!({"id":"delete","label":"Delete","destructive":true,"confirm":confirm}));
-            Ok(RouteReply::json::<200>(typed(
-                json!({"session":id,"actions":menu}),
-            )?))
+            let mut answer = json!({"session":id,"actions":menu});
+            if fence.held {
+                answer["held"] = json!(crate::session_move::MOVING);
+            }
+            Ok(RouteReply::json::<200>(typed(answer)?))
         }
     });
     let local = engine.clone();
@@ -212,11 +235,13 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
         async move {
             let id = id(&call)?;
             let given = body(&call).unwrap_or_default();
+            crate::session_move::check_action(&crate::session_move::action_state(&engine, &id).await?)?;
             let _turn = call
                 .cancel
                 .run_until_cancelled(engine.note_turn(&id))
                 .await
                 .ok_or_else(|| cancelled("deleted"))?;
+            crate::session_move::check_action(&crate::session_move::action_state(&engine, &id).await?)?;
             let lease = api::start(&engine).await?;
             let path = path(&id);
             match engine
@@ -351,8 +376,10 @@ where
     } else {
         "changed"
     };
+    crate::session_move::check_action(&crate::session_move::action_state(&engine, &id).await?)?;
     let prepare = async {
         let turn = engine.note_turn(&id).await;
+        crate::session_move::check_action(&crate::session_move::action_state(&engine, &id).await?)?;
         let lease = api::start(&engine).await?;
         let info = read(&engine, &lease, &path).await?;
         Ok::<_, Refusal>((turn, lease, info))
