@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod catalog;
 pub mod hold;
 pub mod live_asks;
+pub mod permissions;
 pub mod resident;
 pub mod roster;
 pub mod runtime;

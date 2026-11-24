@@ -110,6 +110,18 @@ Tests cover withdrawing an ask, duplicate request IDs in separate
 sessions, denying a late ask, and withholding acknowledgement until a
 checkpoint has been written.
 
+The transcript and sink checkpoint passed on macOS, Linux (lokum), WSL2
+and native Windows. The two-box transcript fixture compared five HTTP
+responses and the saved SQLite bytes, and the account fixture compared
+the normalized replies and account index.
+
+4.1b owns the read-only Blocks loader, command analysis and preflight
+evaluation. The Rust tests cover the four command parsing cases in
+`bridge.test.ts` and the `Sessions.checkPermission` cases for Blocks,
+unavailable settings, native Plan mode, Auto outside the sandbox and
+paths outside the project. Row 6.1 owns editing Blocks, the Settings
+pages and sandbox setup and can reuse this evaluator.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.
