@@ -1,4 +1,4 @@
-//! A failed preparation is kept against its signed target until explicitly retried.
+//! A failed preparation is recorded against its signed target.
 
 use std::io;
 
@@ -42,10 +42,7 @@ impl Failure {
     }
 
     pub(super) fn save(&self, home: &Home) -> io::Result<()> {
-        if self.0.fixable {
-            files::write_secret(&home.run().join(RECORD), &serde_json::to_vec(&self.0)?)?;
-        }
-        Ok(())
+        files::write_secret(&home.run().join(RECORD), &serde_json::to_vec(&self.0)?)
     }
 
     pub(super) fn for_release(
