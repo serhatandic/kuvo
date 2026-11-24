@@ -32,6 +32,15 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    let _release = if matches!(word(0), Some("serve" | "keep" | "hold" | "mcp")) {
+        env::var_os("KUVO_HOME")
+            .filter(|home| std::path::Path::new(home).is_absolute())
+            .map(|home| kuvo_keeper::lease_running_release(std::path::Path::new(&home)))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if word(0) == Some("hold") {
         kuvo_agents::hold::run(&args[1..])?;
         return Ok(ExitCode::SUCCESS);

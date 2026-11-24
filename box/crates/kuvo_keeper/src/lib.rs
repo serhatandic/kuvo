@@ -13,6 +13,7 @@ pub mod manifest;
 pub mod prepare_command;
 mod readiness;
 mod release;
+mod retirement;
 pub mod staging;
 pub mod update_status;
 mod worker;
@@ -23,6 +24,7 @@ pub mod windows;
 pub use engine_pack::provision_pinned_engine;
 pub use readiness::resident_info;
 pub use release::Release;
+pub use retirement::lease_running_release;
 pub use worker::wait_for_stop;
 
 use std::{
