@@ -734,12 +734,15 @@ async function engineFeed(t, release, fixture) {
   const calls = path.join(release, "engine-downloads");
   const feed = new Worker(String.raw`
     const { createServer } = require("node:http");
-    const { appendFileSync, createReadStream } = require("node:fs");
+    const { appendFileSync, createReadStream, existsSync } = require("node:fs");
     const { parentPort, workerData } = require("node:worker_threads");
     let requests = 0;
     const server = createServer((request, response) => {
-      if (request.url !== "/engine.tar.gz") { response.writeHead(404).end(); return; }
+      if (request.url !== "/engine.tar.gz") {
+        response.writeHead(404).end(); return;
+      }
       appendFileSync(workerData.calls, "download\n");
+      if (!existsSync(workerData.archive)) { response.writeHead(404).end(); return; }
       if (++requests === 1 && workerData.damageFirst) { response.end("incomplete download"); return; }
       createReadStream(workerData.archive).pipe(response);
     });
@@ -748,7 +751,7 @@ async function engineFeed(t, release, fixture) {
   t.after(() => feed.terminate());
   const [port] = await once(feed, "message");
   return {
-    calls, executable, engine,
+    archive, calls, executable, engine,
     build: {
       url: `http://127.0.0.1:${port}/engine.tar.gz`,
       integrity: "sha512-" + createHash("sha512").update(fs.readFileSync(archive)).digest("base64"),
@@ -1657,7 +1660,7 @@ async function linuxInstallMedia(t, binary, root, key, beforeStart = "") {
     pack, packs: { [target]: pack }, linux: { [arch]: feed.build } }, key)));
   fs.copyFileSync(new URL("../../box/src/install/kuvo-install", import.meta.url), path.join(media, "kuvo-install"));
   fs.copyFileSync(binary.file, path.join(media, "kuvo-install-bin"));
-  return { media, tree, version, pack, bytes };
+  return { media, tree, version, pack, bytes, feed };
 }
 
 async function freshLinuxInstaller(t, binary, beforeStart = "") {
@@ -1665,7 +1668,7 @@ async function freshLinuxInstaller(t, binary, beforeStart = "") {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const env = isolatedEnv(root);
   const key = keypair();
-  const { media, version, pack } = await linuxInstallMedia(t, binary, root, key,
+  const { media, version, pack, feed } = await linuxInstallMedia(t, binary, root, key,
     `export KUVO_TEST_RELAY=ws://127.0.0.1:1\n${beforeStart}`);
   const home = path.join(env.HOME, ".kuvo-code");
   const tools = path.join(env.HOME, "tools");
@@ -1698,8 +1701,69 @@ esac
     assert.equal(stopped.status, 0, stopped.stderr);
   };
   const begin = (verb, stdout) => launch("/bin/sh", [entry, verb], fixtureEnv, env.HOME, stdout);
-  return { env, home, cron, cronBefore, version, pack, media, key, install, begin, stop };
+  return { env, home, cron, cronBefore, version, pack, media, key, install, begin, stop, feed };
 }
+
+function engineDownloadInstallerStatus(install, home, { archive, calls }) {
+  assert.equal(fs.existsSync(home), false);
+  const saved = fs.readFileSync(archive);
+  const checkFailure = message => {
+    const result = install("status");
+    assert.equal(result.status, 1, result.error?.message ?? result.stdout + result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { result: "failed", message });
+    assert.equal(fs.existsSync(home), false);
+  };
+  try {
+    fs.appendFileSync(archive, "damaged");
+    checkFailure("The engine that was downloaded isn't what this copy of Kuvo's release says. Try again.");
+    fs.unlinkSync(archive);
+    const here = process.platform === "darwin" ? "this Mac" : "this computer";
+    checkFailure(`The engine couldn't be downloaded. Check that ${here} is online, then try again.`);
+    const downloads = fs.readFileSync(calls);
+    const engine = path.join(home, "engine/0.0.0", process.platform === "win32" ? "opencode.exe" : "opencode");
+    if (process.platform === "win32") {
+      fs.mkdirSync(path.dirname(engine), { recursive: true });
+      fs.copyFileSync(process.execPath, engine);
+    } else {
+      write(engine, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    }
+    const status = install("status");
+    assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
+    assert.equal(JSON.parse(status.stdout).verdict, "fresh");
+    assert.deepEqual(fs.readFileSync(calls), downloads);
+    assert.deepEqual(fs.readdirSync(home), ["engine"]);
+  } finally {
+    fs.writeFileSync(archive, saved);
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test("Windows installer status checks the signed engine without making a home", { timeout: 120000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "win32") return t.skip("Uses native Windows status.");
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const key = keypair();
+  const media = path.join(root, "media");
+  const home = path.join(env.HOME, ".kuvo-code");
+  const feed = await engineFeed(t, media);
+  const bytes = Buffer.from("checks the signed archive digest before fetching the engine");
+  const pack = { url: "https://example.invalid/status.tar.gz", sha256: digest(bytes) };
+  write(path.join(media, "status.tar.gz"), bytes);
+  write(path.join(media, "boxes.json"), encode(envelope({
+    kuvo: "box/1", version: "0.8.0", engine: "2.2.6", launch: "rust",
+    pack, packs: { [target]: pack }, windows: { x86_64: feed.build },
+  }, key)));
+  const status = () => spawnSync(binary.file, ["install", "--status", "--root", ".kuvo-code", "--media", media], {
+    cwd: env.HOME, env: { ...env, KUVO_HOME: home, KUVO_TEST_RELEASE_KEY: key.key }, encoding: "utf8", timeout: 90000,
+  });
+  engineDownloadInstallerStatus(status, home, feed);
+  const answer = status();
+  assert.equal(answer.status, 0, answer.error?.message ?? answer.stdout + answer.stderr);
+  assert.equal(JSON.parse(answer.stdout).verdict, "fresh");
+  assert.equal(fs.existsSync(home), false);
+});
 
 function damagedInstallerStatus(install, media, home) {
   for (const name of ["move.tar.gz", "boxes.json"]) {
@@ -1764,9 +1828,10 @@ async function concurrentInstallStatus(start, home) {
 test("signed Linux installer makes a fresh machine and keeps unrelated reboot jobs", { timeout: 120000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
-  const { env, home, cron, cronBefore, version, pack, media, key, install, begin, stop } = await freshLinuxInstaller(t, binary);
+  const { env, home, cron, cronBefore, version, pack, media, key, install, begin, stop, feed } = await freshLinuxInstaller(t, binary);
   damagedInstallerStatus(install, media, home);
   fileEngineInstallerStatus(install, media, home, key);
+  engineDownloadInstallerStatus(install, home, feed);
   await concurrentInstallStatus(() => begin("status", "pipe"), home);
   const status = install("status");
   assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
@@ -2208,6 +2273,7 @@ esac
       const futureHome = path.join(fresh, ".kuvo-code");
       damagedInstallerStatus(verb => install(verb, fresh, freshTools), media, futureHome);
       fileEngineInstallerStatus(verb => install(verb, fresh, freshTools), media, futureHome, key);
+      engineDownloadInstallerStatus(verb => install(verb, fresh, freshTools), futureHome, feed);
       await concurrentInstallStatus(
         () => launch("/bin/sh", installArgs("status"), installEnv(fresh, freshTools), fresh, "pipe"), futureHome,
       );
