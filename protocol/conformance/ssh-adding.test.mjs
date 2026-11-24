@@ -503,8 +503,8 @@ exec ${quote(process.execPath)} ${quote(fixture)} "$@"
   };
 }
 
-async function addBench(t) {
-  const { computer, leases, relay } = await bench(t);
+async function addBench(t, options) {
+  const { computer, leases, relay } = await bench(t, options);
   const implementation = boxBinary();
   let fake, remote, account, releaseMarker;
   const main = await computer("Studio", implementation, folder => {
@@ -790,6 +790,65 @@ test("a failed SSH Add leaves a previously uninstalled computer's credentials an
   for (const file of [`box/keys/${selectedKey}`, "run/.ssh-fresh-add", "run/engine.json"]) {
     assert.equal(fs.existsSync(path.join(target, file)), false, file);
   }
+});
+
+test("an SSH-enrolled member follows the next primary after reconnecting", {
+  skip: process.platform === "win32" || boxBinary().typescript, timeout: 120_000,
+}, async t => {
+  const { computer, main, ask, remote, relay, headers, page } = await addBench(t, { handover: true });
+  const delegate = await computer("Delegate");
+  const invitation = await ask("POST", "kuvo/computers/add/code", {}, headers);
+  assert.equal(invitation.status, 201, invitation.text);
+  const enrolled = await delegate.join(invitation.json.code);
+  assert.equal(enrolled.code, 0, enrolled.log);
+  const other = delegate.connect(await delegate.start().ready());
+  const readSetup = async from => (await from("GET", "kuvo/setup")).json;
+  const first = await readSetup(ask);
+  const firstKey = first.you.key;
+  const secondKey = (await readSetup(other)).you.key;
+  const handover = async (from, next) => {
+    const old = await readSetup(from);
+    const result = await from("POST", "kuvo/setup/handover", { primary: next, epoch: old.epoch }, headers);
+    assert.equal(result.status, 202, result.text);
+    for (const each of [ask, other]) {
+      await until(async () => {
+        const state = await readSetup(each);
+        return state.epoch === old.epoch + 1 && state.primary.key === next;
+      }, "The existing residents did not accept the new primary.", 20_000);
+    }
+    return old.epoch + 1;
+  };
+  await handover(ask, secondKey);
+  const before = await handover(other, firstKey);
+  const target = path.join(remote, ".kuvo-code");
+  stageEngine(t, target);
+  write(path.join(main.home, "ssh", "known_hosts"), `lab ssh-ed25519 ${key(8)}\n`);
+  const added = await ask("POST", "kuvo/computers/add", { destination: "lab" }, headers);
+  assert.equal(added.status, 202, added.text);
+  const done = await until(async () => {
+    const entry = (await page()).tries.find(each => each.id === added.json.try.id);
+    if (entry?.state === "failed") assert.fail(entry.failure.message);
+    return entry?.state === "done" && entry;
+  }, "The SSH-enrolled resident did not start.", 35_000);
+  const info = readJSON(path.join(target, "run", "serve.json"));
+  t.after(() => { try { process.kill(info.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; } });
+  const fromTarget = (...args) => request(info, ...args);
+  assert.equal((await readSetup(fromTarget)).epoch, before);
+  assert.equal((await readSetup(fromTarget)).you.key, done.computer.key);
+  const local = () => readJSON(path.join(target, "run", "link.json"));
+  const reconnect = relay.disconnect(relayAddress(Buffer.from(local().secret, "base64url")));
+  let after;
+  try {
+    after = await handover(ask, secondKey);
+    assert.equal((await readSetup(fromTarget)).epoch, before);
+  } finally {
+    reconnect();
+  }
+  await until(async () => {
+    const state = await readSetup(fromTarget);
+    return state.epoch === after && state.primary.key === secondKey && state.you.key === done.computer.key && state.you.role === "member";
+  }, "The SSH-enrolled resident did not accept the next epoch on reconnect.", 30_000);
+  assert.ok(local().leadership[after]);
 });
 
 test("SSH Add keeps its selected checklist and refuses a missing key before writing", {

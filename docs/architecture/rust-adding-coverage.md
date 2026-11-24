@@ -40,6 +40,7 @@ the races that span removal, backup, moves, and an authority change.
 | C30 | [SSH Add recovers a disconnected credential writer](../../protocol/conformance/ssh-adding.test.mjs) | The SSH client dies by signal or returns 255 while the target still writes. An alias cannot acquire the active lock. Once the writer settles, explicit recovery resumes the same copy, rejects a different checklist, and enrolls the same account without duplicating its sign-in. |
 | C31 | [Stop and failed enrollment roll back the staged SSH engine and credentials](../../protocol/conformance/ssh-adding.test.mjs) | Stop waits for the guarded writer before cleaning up. A separate attempt fails at enrollment after copying. Both remove staged keys and SQLite sign-ins, stop the verified engine and leave no member or receipt. |
 | C32 | [A failed SSH Add leaves a previously uninstalled computer's credentials and settings in place](../../protocol/conformance/ssh-adding.test.mjs) | A prior machine identity keeps the computer out of the fresh-copy path. Add reports that the target keeps its own settings, leaves its keys and sign-ins byte for byte, and touches no staged credential state when joining fails. |
+| C33 | [An SSH-enrolled member follows the next primary after reconnecting](../../protocol/conformance/ssh-adding.test.mjs) | Two Rust computers move the main role twice before adding a third via SSH. The new resident starts at the accepted epoch. After another handover while it is offline, it reconnects and accepts the new signed authority while keeping its own identity. The TypeScript reference seeds the preceding epoch through its SSH path and then catches up. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -278,7 +279,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 50 have coverage and 144 still have open or partial work. Of those, 97 list 2.3 as an owner (72 open, 25 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 51 have coverage and 143 still have open or partial work. Of those, 96 list 2.3 as an owner (71 open, 25 partial).
 
 ### computers-add
 
@@ -530,7 +531,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 50 h
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
 | [an offline member follows two handovers and the former primary can be unlinked](../../box/bridge-tests/setup-handover.test.js#L392) | U12 verifies catch-up and the signed unlink in the new epoch. The reference passes on TypeScript. The forged leadership and stale authority variants remain with 9.3. | 9.3 |
-| [an SSH-enrolled member advertises its accepted epoch and catches up](../../box/bridge-tests/setup-handover.test.js#L428) | Open | 2.3 |
+| [an SSH-enrolled member advertises its accepted epoch and catches up](../../box/bridge-tests/setup-handover.test.js#L428) | C33 and the original reference case verify SSH enrollment at an existing epoch and catch-up to the following main after a disconnect. The Rust case passes on Mac and WSL. | — |
 | [unlink retries credential cleanup before acknowledging completion](../../box/bridge-tests/setup-handover-access.test.js#L18) | U3 covers a machine’s durable cleanup fence and restart. Helper and relocated stores remain open. | 2.3, 6.2 |
 | [an unmatched pre-join pairing requires an explicit enrollment decision](../../box/bridge-tests/setup-handover-access.test.js#L96) | Open | 2.3 |
 | [local uninstall refuses a primary before clearing identity or stopping it](../../box/bridge-tests/setup-handover-access.test.js#L124) | U9 verifies refusal with the main running and U5 verifies standalone uninstall. | — |
