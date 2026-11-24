@@ -70,6 +70,22 @@ pub fn prepare(
     bytes: &[u8],
     envelope: &[u8],
 ) -> io::Result<ReleaseRef> {
+    prepare_pack(home, signed, target, bytes, envelope, StageFor::Fleet)
+}
+
+enum StageFor {
+    Fleet,
+    Install,
+}
+
+fn prepare_pack(
+    home: &Home,
+    signed: &SignedRelease,
+    target: &str,
+    bytes: &[u8],
+    envelope: &[u8],
+    purpose: StageFor,
+) -> io::Result<ReleaseRef> {
     let pack = signed.pack_for(target)?;
     if bytes.len() as u64 > MAX_PACK || sha256(bytes) != pack.sha256 {
         return Err(damaged());
@@ -97,7 +113,12 @@ pub fn prepare(
         .prefix(".staging-")
         .tempdir_in(&versions)?;
     let (contents, actual) = unpack_checked(draft.path(), signed, &reference, bytes)?;
-    check_downgrade(home, &contents)?;
+    if matches!(purpose, StageFor::Install) && !actual.contains_key("bin/kuvo-start") {
+        return Err(io::Error::other("The selected release has no keeper."));
+    }
+    if matches!(purpose, StageFor::Fleet) {
+        check_downgrade(home, &contents)?;
+    }
     let binary = format!("bin/kuvo-box{}", std::env::consts::EXE_SUFFIX);
     let probe = tempfile::Builder::new()
         .prefix(".probe-")
@@ -142,10 +163,12 @@ pub fn prepare(
     let folder = release.folder(home.root());
     files::write_secret(&folder.join("pack"), bytes)?;
     files::write_secret(&folder.join("boxes.json"), envelope)?;
-    files::write_secret(
-        &home.run().join("fleet-ready.json"),
-        &serde_json::to_vec(&reference)?,
-    )?;
+    if matches!(purpose, StageFor::Fleet) {
+        files::write_secret(
+            &home.run().join("fleet-ready.json"),
+            &serde_json::to_vec(&reference)?,
+        )?;
+    }
     Ok(reference)
 }
 
@@ -230,6 +253,99 @@ pub fn prepare_install(home: &Home, signed: &SignedRelease, source: &Path) -> io
     files::sync_tree(draft.path(), home.root())?;
     files::replace_synced(draft.path(), published.root())?;
     Ok(published)
+}
+
+/// Select the verified release that a Mac move or fresh making just installed.
+/// Run before starting the Helper, while the installer still owns its lock.
+#[cfg(target_os = "macos")]
+pub fn select_install(
+    home: &Home,
+    signed: &SignedRelease,
+    source: &Path,
+    envelope: &[u8],
+) -> io::Result<()> {
+    let target = crate::manifest::local_target()?;
+    let pack = signed.pack_for(target)?;
+    let reference = signed.reference(pack);
+    let selection = reference.target()?;
+    let selected = home.bin();
+    let entry = fs::symlink_metadata(&selected)?;
+    if entry.file_type().is_symlink()
+        && fs::read_link(&selected)? == Path::new(&selection.to_string())
+    {
+        return selection.validate(home.root());
+    }
+    let changed = || io::Error::other("The selected installation changed while it was made.");
+    if !entry.is_dir() {
+        return Err(changed());
+    }
+    let installed = read_release(&home.root().join("box.json"), 10_000_000)?;
+    let current = contents(&installed)?;
+    if current.launch != "rust"
+        || current.version != reference.version
+        || current.engine != signed.engine()
+    {
+        return Err(changed());
+    }
+    prepare_install_selection(home, signed, source, envelope)?;
+    if installed != read_release(&selection.folder(home.root()).join("box.json"), 10_000_000)? {
+        return Err(changed());
+    }
+
+    select_initial(home, &selection)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn prepare_install_selection(
+    home: &Home,
+    signed: &SignedRelease,
+    source: &Path,
+    envelope: &[u8],
+) -> io::Result<Release> {
+    let target = crate::manifest::local_target()?;
+    let pack = signed.pack_for(target)?;
+    let bytes = read_release(&source.join(pack.filename()?), MAX_PACK)?;
+    prepare_pack(home, signed, target, &bytes, envelope, StageFor::Install)?.target()
+}
+
+/// Select the staged release before the installed keeper starts.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn select_initial(home: &Home, selection: &Release) -> io::Result<()> {
+    selection.validate(home.root())?;
+    let keeper = selection.folder(home.root()).join("bin/kuvo-start");
+    if !fs::symlink_metadata(keeper).is_ok_and(|entry| entry.is_file()) {
+        return Err(io::Error::other("The selected release has no keeper."));
+    }
+    let selected = home.bin();
+    let target = selection.to_string();
+    match fs::symlink_metadata(&selected) {
+        Ok(entry)
+            if entry.file_type().is_symlink()
+                && fs::read_link(&selected)? == Path::new(&target) =>
+        {
+            return Ok(());
+        }
+        Ok(entry) if entry.is_dir() => {}
+        Ok(_) => {
+            return Err(io::Error::other(
+                "The selected installation changed while it was made.",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::os::unix::fs::symlink(target, &selected)?;
+            return files::sync_parent(&selected);
+        }
+        Err(error) => return Err(error),
+    }
+    let install = home.updates().join("install");
+    files::create_private_dirs(&install)?;
+    let draft = tempfile::Builder::new()
+        .prefix(".selection-")
+        .tempdir_in(install)?;
+    let next = draft.path().join("bin");
+    std::os::unix::fs::symlink(target, &next)?;
+    files::exchange_entries(&next, &selected)?;
+    files::remove_tree_synced(&next)
 }
 
 fn check_downgrade(home: &Home, next: &Contents) -> io::Result<()> {

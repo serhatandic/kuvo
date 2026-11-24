@@ -888,7 +888,122 @@ Buffer.from = function (value, encoding, ...args) {
   }
 }
 
-test("kuvo-install creates a new Mac home and moves the two released Mac homes", { timeout: 240000 }, async t => {
+async function checkReleasedMachine(t, { root, tag, fixture, environment, install, installedRelease }) {
+  const account = path.join(root, `${tag}-released-machine`);
+  const machineTools = path.join(account, "tools");
+  const home = path.join(account, ".kuvo-code");
+  fs.cpSync(path.join(fixture, "machine"), home, { recursive: true });
+  fs.mkdirSync(path.join(account, "tmp"), { recursive: true });
+  write(path.join(machineTools, "caffeinate"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const identity = "5a".repeat(16);
+  write(path.join(home, "machine-id"), identity + "\n");
+  const link = path.join(home, "run/link.json");
+  const before = readJSON(link);
+  // It was disconnected while the new release was installed on the Mac.
+  write(link, encode({ ...before, relay: "ws://127.0.0.1:1" }));
+  write(path.join(home, "workspace/notes"), "work kept on the released machine");
+  const legacyBin = path.join(home, "bin/kuvo-start");
+  write(legacyBin, "#!/bin/sh\nexit 77\n", { mode: 0o700 });
+  if (tag !== "v0.7.2") write(path.join(home, "bin/box-version"), tag.slice(1) + "\n");
+  const updateMachine = value => install("released-machine", account, machineTools, ["--identity", value]);
+  const wrong = updateMachine("bb".repeat(16));
+  assert.equal(wrong.status, 1, wrong.stdout + wrong.stderr);
+  assert.match(JSON.parse(wrong.stdout).message, /saved installation/);
+  assert.equal(fs.existsSync(path.join(home, "folder-version.json")), false);
+  const active = launch("/bin/sleep", ["30"], environment, home);
+  const priorPid = path.join(home, "run/link.pid");
+  try {
+    write(priorPid, String(active.child.pid));
+    const busy = updateMachine(identity);
+    assert.equal(busy.status, 4, busy.stdout + busy.stderr);
+    assert.equal(JSON.parse(busy.stdout).result, "waits");
+    assert.equal(active.child.exitCode, null);
+    assert.equal(fs.existsSync(path.join(home, "folder-version.json")), false);
+  } finally {
+    await active.stop();
+    fs.rmSync(priorPid, { force: true });
+  }
+  write(path.join(home, "run/engine.json"), encode({ pid: active.child.pid, version: "2.0.32" }));
+  const readyAt = performance.now();
+  try {
+    const upgraded = updateMachine(identity);
+    assert.equal(upgraded.status, 0, upgraded.error?.message ?? upgraded.stdout + upgraded.stderr);
+    assert.deepEqual(JSON.parse(upgraded.stdout), { result: "done", started: true });
+    installedRelease(home);
+    const ready = await until(() => {
+      try { return readJSON(path.join(home, "run/serve.json")); } catch { return undefined; }
+    }, "the released machine must start the new keeper", 15000);
+    const info = await request(ready, "GET", "kuvo/info");
+    assert.equal(info.status, 200, info.text);
+    assert.equal(readJSON(path.join(home, "folder-version.json")).version, 23);
+    const after = readJSON(link);
+    assert.equal(after.key, before.key);
+    assert.equal(after.secret, before.secret);
+    assert.equal(fs.readFileSync(path.join(home, "workspace/notes"), "utf8"), "work kept on the released machine");
+    t.diagnostic(`released ${tag} machine applied its signed installer and answered in ${Math.round(performance.now() - readyAt)} ms`);
+  } finally {
+    if (fs.lstatSync(path.join(home, "bin")).isSymbolicLink()) {
+      const stopped = spawnSync("/bin/sh", [legacyBin, "off"], {
+        cwd: home, env: { ...environment, HOME: account, TMPDIR: path.join(account, "tmp") },
+        encoding: "utf8", timeout: 15000,
+      });
+      assert.equal(stopped.status, 0, stopped.error?.message ?? stopped.stdout + stopped.stderr);
+    }
+  }
+}
+
+test("signed Linux media moves the two released machines after they return", { timeout: 240000 }, async t => {
+  const binary = boxBinary();
+  const cache = process.env.KUVO_CONFORMANCE_RELEASED_MACHINES;
+  if (binary.typescript || process.platform !== "linux" || !cache) {
+    return t.skip("Supply the released machine fixtures for the Linux installer.");
+  }
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const environment = isolatedEnv(root);
+  const key = keypair();
+  const media = path.join(root, "media");
+  const tree = path.join(media, "files");
+  const version = "0.8.0";
+  const pin = "2.2.6";
+  const starter = fs.readFileSync(new URL("../../box/src/keeper/kuvo-start", import.meta.url), "utf8")
+    .replaceAll("@ENGINE@", pin);
+  const payload = {
+    "bin/box-version": Buffer.from(version + "\n"),
+    "bin/kuvo-start": Buffer.from(starter),
+    "bin/kuvo-box": fs.readFileSync(binary.file),
+  };
+  for (const [file, bytes] of Object.entries(payload)) write(path.join(tree, file), bytes, { mode: 0o700 });
+  write(path.join(tree, "box.json"), encode({ kuvo: "box/1", version, engine: pin, launch: "rust",
+    files: Object.fromEntries(Object.entries(payload).map(([file, bytes]) => [file, digest(bytes)])) }));
+  const archive = path.join(media, "move.tar");
+  const packed = spawnSync("tar", ["cf", archive, "-C", tree, "box.json", "bin"], { encoding: "utf8", timeout: 90000 });
+  assert.equal(packed.status, 0, packed.stderr);
+  const bytes = gzipSync(fs.readFileSync(archive), { level: 1 });
+  write(path.join(media, "move.tar.gz"), bytes);
+  const pack = { url: "https://example.invalid/move.tar.gz", sha256: digest(bytes) };
+  const feed = await engineFeed(t, media, `#!/bin/sh\n[ "$1" = --version ] && echo ${pin}\n`);
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  write(path.join(media, "boxes.json"), encode(envelope({ kuvo: "box/1", version, engine: pin, launch: "rust",
+    pack, packs: { [target]: pack }, linux: { [arch]: feed.build } }, key)));
+  fs.copyFileSync(new URL("../../box/src/install/kuvo-install", import.meta.url), path.join(media, "kuvo-install"));
+  fs.copyFileSync(binary.file, path.join(media, "kuvo-install-bin"));
+  const install = (verb, account, _tools, extra) => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb, ...extra], {
+    cwd: account,
+    env: { ...environment, HOME: account, TMPDIR: path.join(account, "tmp"), KUVO_TEST_RELEASE_KEY: key.key },
+    encoding: "utf8", timeout: 90000,
+  });
+  const installedRelease = home => {
+    const selected = fs.readlinkSync(path.join(home, "bin"));
+    assert.equal(selected, `versions/${version}-${pack.sha256.slice(0, 12)}/bin`);
+    assert.deepEqual(readJSON(path.join(home, selected, "../boxes.json")), readJSON(path.join(media, "boxes.json")));
+  };
+  for (const tag of ["v0.7.2", "v0.8.0-beta.1"]) {
+    await checkReleasedMachine(t, { root, tag, fixture: path.join(cache, tag), environment, install, installedRelease });
+  }
+});
+
+test("kuvo-install creates a new Mac home and moves the released homes", { timeout: 420000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "darwin") {
     return t.skip("The released Mac installer fixture needs the Rust Mac bootstrap and APFS.");
@@ -914,10 +1029,13 @@ test("kuvo-install creates a new Mac home and moves the two released Mac homes",
     const manifest = readJSON(path.join(tree, "box.json"));
     const starter = fs.readFileSync(new URL("../../box/src/keeper/kuvo-start", import.meta.url), "utf8")
       .replaceAll("@ENGINE@", pin);
+    const setsid = fs.readFileSync(new URL("../../box/src/keeper/kuvo-setsid", import.meta.url));
     write(path.join(tree, "bin/kuvo-start"), starter, { mode: 0o700 });
+    write(path.join(tree, "bin/kuvo-setsid"), setsid, { mode: 0o700 });
     write(path.join(tree, "bin/kuvo-box"), fs.readFileSync(binary.file), { mode: 0o700 });
     write(path.join(tree, "bin/box-version"), version + "\n");
     manifest.files["bin/kuvo-start"] = digest(starter);
+    manifest.files["bin/kuvo-setsid"] = digest(setsid);
     manifest.files["bin/kuvo-box"] = digest(fs.readFileSync(path.join(tree, "bin/kuvo-box")));
     manifest.files["bin/box-version"] = digest(version + "\n");
     manifest.bundles = { [helper]: { [helperPath]: digest(fs.readFileSync(path.join(tree, helper, helperPath))) } };
@@ -953,14 +1071,22 @@ case "$1" in
 esac
 `, { mode: 0o700 });
     const original = fs.readFileSync(path.join(app.S, "Chats/c1/notes.md"), "utf8");
-    const install = (verb, account = app.home, launchTools = tools) => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb, "--app", app.bundle], {
+    const install = (verb, account = app.home, launchTools = tools, extra = []) => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb, "--app", app.bundle, ...extra], {
       cwd: account,
       env: {
         ...environment, HOME: account, TMPDIR: path.join(account, "tmp"),
+        PATH: `${launchTools}${path.delimiter}${environment.PATH}`,
         KUVO_TEST_RELEASE_KEY: key.key, KUVO_TEST_UNINSTALL_TOOLS: launchTools,
       },
-      encoding: "utf8", timeout: 90000,
+      encoding: "utf8", timeout: 150000,
     });
+    const installedRelease = home => {
+      const selected = fs.readlinkSync(path.join(home, "bin"));
+      assert.equal(selected, `versions/${version}-${pack.sha256.slice(0, 12)}/bin`);
+      const release = path.join(home, selected, "..");
+      assert.equal(readJSON(path.join(release, "box.json")).launch, "rust");
+      assert.deepEqual(readJSON(path.join(release, "boxes.json")), readJSON(path.join(media, "boxes.json")));
+    };
     if (tag === "v0.7.2") {
       const fresh = path.join(root, "fresh");
       const freshTools = path.join(fresh, "launch-fixture");
@@ -977,6 +1103,7 @@ esac
       assert.equal(answer.started, true);
       const home = path.join(fresh, ".kuvo-code");
       assert.equal(readJSON(path.join(home, "box.json")).launch, "rust");
+      installedRelease(home);
       assert.equal(readJSON(path.join(home, "folder-version.json")).version, 23);
       assert.equal(fs.existsSync(path.join(home, "updates/install")), false);
       assert.equal(fs.readFileSync(path.join(freshTools, "calls"), "utf8"), "print\nbootstrap\n");
@@ -997,6 +1124,7 @@ esac
     assert.ok(lines.some(line => line.step === "database"));
     assert.ok(lines.every((line, i) => !i || line.index > lines[i - 1].index));
     assert.equal(readJSON(path.join(app.K, "box.json")).launch, "rust");
+    installedRelease(app.K);
     assert.equal(readJSON(path.join(app.K, "folder-version.json")).version, 23);
     assert.equal(fs.readFileSync(path.join(app.S, "Chats/c1/notes.md"), "utf8"), original);
     assert.ok(fs.statSync(path.join(app.K, "bin/kuvo-box")).isFile());
@@ -1042,6 +1170,7 @@ esac
     } finally {
       await resident.stop();
     }
+    await checkReleasedMachine(t, { root, tag, fixture, environment, install, installedRelease });
   }
 });
 
