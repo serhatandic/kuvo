@@ -278,3 +278,22 @@ fn a_mail_replayed_after_one_day_is_refused_before_delivery() {
     let letter: IncomingLetter = serde_json::from_value(wire).unwrap();
     assert_eq!(letter.refusal(NOW).unwrap().retry, Some(true));
 }
+
+#[test]
+fn failed_relay_send_does_not_block_immediate_retry() {
+    let run = tempfile::tempdir().unwrap();
+    let id = id("ltr_retry01");
+    let mut outbox = Outbox::open(run.path()).unwrap();
+    outbox.enqueue(&id, &letter(NOW, "Hello")).unwrap();
+    assert!(outbox.attempt(&id, &DESTINATION, NOW).unwrap().is_some());
+    assert!(outbox.due(NOW + 1_000, true).unwrap().is_empty());
+
+    outbox.cancel_try(&id);
+    assert_eq!(outbox.due(NOW + 1_000, true).unwrap().len(), 1);
+    assert!(
+        outbox
+            .attempt(&id, &DESTINATION, NOW + 1_000)
+            .unwrap()
+            .is_some()
+    );
+}

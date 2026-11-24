@@ -113,6 +113,7 @@ pub(crate) fn start(
         forward_evidence: forward_evidence::Index::default(),
         copies: Receiving::default(),
         sending: HashMap::new(),
+        relay_connected: None,
         retry: HashMap::new(),
         logged_stuck: HashSet::new(),
         orphans: HashMap::new(),
@@ -132,9 +133,16 @@ struct Sending {
     since: Instant,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RetryClock {
     wall: Millis,
     since: Instant,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetryState {
+    Unsent,
+    Sent(RetryClock),
 }
 
 struct Driver {
@@ -142,12 +150,13 @@ struct Driver {
     interrupted: HashSet<String>,
     reader: Reader,
     relay: RelayHandle,
+    relay_connected: Option<bool>,
     engine: Engine,
     ownership: ownership::Handle,
     forward_evidence: forward_evidence::Index,
     copies: Receiving,
     sending: HashMap<String, Sending>,
-    retry: HashMap<String, RetryClock>,
+    retry: HashMap<String, RetryState>,
     logged_stuck: HashSet<String>,
     orphans: HashMap<String, Instant>,
     owned: HashSet<String>,
@@ -178,16 +187,31 @@ impl Driver {
                 event = events.recv() => match event {
                     Ok(event) => {
                         let view = self.reader.view();
-                        if let RelayEvent::Mail { key, envelope, .. } = event.as_ref()
-                            && view.roster.member(key).is_some()
-                            && let Some(movement) = envelope.0.get("move")
-                        {
-                            self.receive(&view, *key, movement).await
-                        } else if matches!(event.as_ref(), RelayEvent::Connected(_)) {
-                            self.round().await
-                        } else { Ok(()) }
+                        match event.as_ref() {
+                            RelayEvent::Mail { key, envelope, .. }
+                                if view.roster.member(key).is_some() =>
+                            {
+                                if let Some(movement) = envelope.0.get("move") {
+                                    self.receive(&view, *key, movement).await
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            RelayEvent::Connected(_) => {
+                                self.relay_connected = Some(true);
+                                self.round().await
+                            }
+                            RelayEvent::Disconnected(_) => {
+                                self.relay_connected = Some(false);
+                                Ok(())
+                            }
+                            _ => Ok(()),
+                        }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => Ok(()),
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        self.relay_connected = None;
+                        Ok(())
+                    }
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
                 _ = tick.tick() => self.round().await,
@@ -222,7 +246,7 @@ impl Driver {
         if request.kind != Kind::Chat || !session_id(&request.id) {
             return Err(gone());
         }
-        if !view.relay_connected {
+        if !self.is_relay_connected(&view) {
             return Err(unavailable());
         }
         if journals(self.run_dir())
@@ -443,13 +467,19 @@ impl Driver {
             } else {
                 "decision?"
             };
-            if self.retry_due(row, STEP_AGAIN) {
-                row.step = Some("switch".into());
-                row.extra.insert("sentAt".into(), now.into());
-                row.extra.shift_remove("againAt");
-                row.save(self.run_dir())?;
-                self.tell(view, key, row, op, json!({"safeSwitch":true}))
-                    .await;
+            if self.is_relay_connected(view) && self.retry_ready(row, STEP_AGAIN) {
+                if self
+                    .tell(view, key, row, op, json!({"safeSwitch":true}))
+                    .await
+                {
+                    row.step = Some("switch".into());
+                    row.extra.insert("sentAt".into(), now.into());
+                    row.extra.shift_remove("againAt");
+                    row.save(self.run_dir())?;
+                    self.mark_retry(row);
+                } else {
+                    self.mark_unsent(row);
+                }
             }
             return Ok(());
         }
@@ -477,7 +507,7 @@ impl Driver {
                 let reason = preparation_timeout(self.run_dir(), row);
                 return self.fail_source(view, key, row, reason, 409).await;
             }
-            if !view.relay_connected {
+            if !self.is_relay_connected(view) {
                 return Ok(());
             }
             self.owned.insert(row.id.clone());
@@ -497,12 +527,16 @@ impl Driver {
                     )
                     .await;
             }
-            if self.retry_due(row, STEP_AGAIN) {
+            if self.is_relay_connected(view) && self.retry_ready(row, STEP_AGAIN) {
                 let mut check = json!({"kind":row.kind,"name":row.name});
                 if let Some(model) = row.extra.get("model") {
                     check["model"] = model.clone();
                 }
-                self.tell(view, key, row, "check", check).await;
+                if self.tell(view, key, row, "check", check).await {
+                    self.mark_retry(row);
+                } else {
+                    self.mark_unsent(row);
+                }
             }
         } else if row.stage == Stage::Holding {
             let message = match time::timeout(PREPARE_AT_MOST, self.pack(view, row)).await {
@@ -547,16 +581,25 @@ impl Driver {
                 }
             }
             match row.step.as_deref() {
-                Some("offer") if self.retry_due(row, STEP_AGAIN) => {
-                    row.extra.insert("againAt".into(), now.into());
-                    row.save(self.run_dir())?;
-                    self.offer(view, key, row).await
+                Some("offer")
+                    if self.is_relay_connected(view) && self.retry_ready(row, STEP_AGAIN) =>
+                {
+                    if self.offer(view, key, row).await {
+                        row.extra.insert("againAt".into(), now.into());
+                        row.save(self.run_dir())?;
+                    }
                 }
                 Some("parts") => self.send_parts(view, key, row).await?,
-                Some("arrive") if self.retry_due(row, STEP_AGAIN) => {
-                    row.extra.insert("againAt".into(), now.into());
-                    row.save(self.run_dir())?;
-                    self.tell(view, key, row, "arrive", json!({})).await;
+                Some("arrive")
+                    if self.is_relay_connected(view) && self.retry_ready(row, STEP_AGAIN) =>
+                {
+                    if self.tell(view, key, row, "arrive", json!({})).await {
+                        row.extra.insert("againAt".into(), now.into());
+                        row.save(self.run_dir())?;
+                        self.mark_retry(row);
+                    } else {
+                        self.mark_unsent(row);
+                    }
                 }
                 _ => {}
             }
@@ -940,8 +983,7 @@ impl Driver {
         Ok(())
     }
 
-    async fn offer(&mut self, view: &View, key: ComputerKey, row: &Journal) {
-        self.mark_retry(row);
+    async fn offer(&mut self, view: &View, key: ComputerKey, row: &Journal) -> bool {
         let mut payload = json!({
             "safeSwitch":true, "twoComputers":true, "wasPaused":row.extra.get("wasPaused") == Some(&Value::Bool(true)), "kind":row.kind, "thing":row.thing,
             "name":row.name, "size":row.size, "from":row.from,
@@ -952,7 +994,13 @@ impl Driver {
         if let Some(paused) = row.extra.get("pausedAs") {
             payload["pausedAs"] = paused.clone();
         }
-        self.tell(view, key, row, "offer", payload).await;
+        if self.tell(view, key, row, "offer", payload).await {
+            self.mark_retry(row);
+            true
+        } else {
+            self.mark_unsent(row);
+            false
+        }
     }
 
     async fn send_parts(&mut self, view: &View, key: ComputerKey, row: &Journal) -> io::Result<()> {
@@ -1040,9 +1088,14 @@ impl Driver {
         if let Some(sending) = self.sending.get_mut(&row.id) {
             sending.since = Instant::now();
         }
-        self.mark_retry(row);
-        self.tell(view, key, row, "switch", json!({"safeSwitch":true}))
-            .await;
+        if self
+            .tell(view, key, row, "switch", json!({"safeSwitch":true}))
+            .await
+        {
+            self.mark_retry(row);
+        } else {
+            self.mark_unsent(row);
+        }
         Ok(())
     }
 
@@ -1109,11 +1162,15 @@ impl Driver {
             && (row.extra.get("dropUntilAck") == Some(&Value::Bool(true))
                 || now.saturating_sub(since) <= DROP_AT_MOST)
         {
-            if self.retry_due(row, STEP_AGAIN) {
-                row.extra.insert("sentAt".into(), self.reader.now().into());
-                row.save(self.run_dir())?;
-                self.tell(view, key, row, "drop", json!({})).await;
-                files::remove_tree_synced(&self.staged(&row.id))?;
+            files::remove_tree_synced(&self.staged(&row.id))?;
+            if self.is_relay_connected(view) && self.retry_ready(row, STEP_AGAIN) {
+                if self.tell(view, key, row, "drop", json!({})).await {
+                    row.extra.insert("sentAt".into(), self.reader.now().into());
+                    row.save(self.run_dir())?;
+                    self.mark_retry(row);
+                } else {
+                    self.mark_unsent(row);
+                }
             }
             return Ok(());
         }
@@ -1134,13 +1191,7 @@ impl Driver {
         };
         listing::save_outcome(self.run_dir(), row, note, None)?;
         if let Err(error) = result {
-            self.retry.insert(
-                row.id.clone(),
-                RetryClock {
-                    wall: self.reader.now(),
-                    since: Instant::now(),
-                },
-            );
+            self.mark_retry(row);
             return Err(error);
         }
         handoff::remove_completed(self.run_dir(), row)
@@ -1309,38 +1360,40 @@ impl Driver {
         row.save(self.run_dir())
     }
 
+    fn is_relay_connected(&self, view: &View) -> bool {
+        self.relay_connected.unwrap_or(view.relay_connected)
+    }
+
+    fn retry_ready(&mut self, row: &Journal, every: Millis) -> bool {
+        retry_state_ready(
+            &mut self.retry,
+            row,
+            every,
+            self.reader.now(),
+            Instant::now(),
+        )
+    }
+
     fn retry_due(&mut self, row: &Journal, every: Millis) -> bool {
-        let wall = self.reader.now();
-        let ticks = Instant::now();
-        let interval = Duration::from_millis(every as u64);
-        let clock = self.retry.entry(row.id.clone()).or_insert_with(|| {
-            let stamp = row
-                .extra
-                .get("againAt")
-                .or_else(|| row.extra.get("sentAt"))
-                .and_then(Value::as_i64)
-                .unwrap_or_else(|| wall.saturating_sub(every));
-            let elapsed = Duration::from_millis(wall.saturating_sub(stamp).clamp(0, every) as u64);
-            RetryClock {
-                wall: stamp,
-                since: ticks.checked_sub(elapsed).unwrap_or(ticks),
-            }
-        });
-        if clock.wall <= wall && ticks.duration_since(clock.since) < interval {
+        if !self.retry_ready(row, every) {
             return false;
         }
-        *clock = RetryClock { wall, since: ticks };
+        self.mark_retry(row);
         true
     }
 
     fn mark_retry(&mut self, row: &Journal) {
         self.retry.insert(
             row.id.clone(),
-            RetryClock {
+            RetryState::Sent(RetryClock {
                 wall: self.reader.now(),
                 since: Instant::now(),
-            },
+            }),
         );
+    }
+
+    fn mark_unsent(&mut self, row: &Journal) {
+        self.retry.insert(row.id.clone(), RetryState::Unsent);
     }
 
     fn retire_memory(&mut self, id: &str) {
@@ -2505,9 +2558,110 @@ fn remove_orphaned_bundles(
     Ok(())
 }
 
+fn retry_state_ready(
+    retries: &mut HashMap<String, RetryState>,
+    row: &Journal,
+    every: Millis,
+    wall: Millis,
+    ticks: Instant,
+) -> bool {
+    let interval = Duration::from_millis(every as u64);
+    let state = retries.entry(row.id.clone()).or_insert_with(|| {
+        let Some(stamp) = row
+            .extra
+            .get("againAt")
+            .or_else(|| row.extra.get("sentAt"))
+            .and_then(Value::as_i64)
+        else {
+            return RetryState::Unsent;
+        };
+        let elapsed = Duration::from_millis(wall.saturating_sub(stamp).clamp(0, every) as u64);
+        RetryState::Sent(RetryClock {
+            wall: stamp,
+            since: ticks.checked_sub(elapsed).unwrap_or(ticks),
+        })
+    });
+    match *state {
+        RetryState::Unsent => true,
+        RetryState::Sent(clock) => {
+            clock.wall > wall || ticks.duration_since(clock.since) >= interval
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsent_steps_retry_immediately_on_reconnect_while_sent_steps_suppress_duplicates() {
+        let mut retries = HashMap::new();
+        let mut row = new_chat_journal(
+            "mov_retry01".into(),
+            "ses_retry01".into(),
+            "Chat".into(),
+            "from".into(),
+            "to".into(),
+            Role::From,
+            10_000,
+        );
+        let t0 = Instant::now();
+
+        // A freshly created step with no sentAt/againAt is immediately ready.
+        assert!(retry_state_ready(
+            &mut retries,
+            &row,
+            STEP_AGAIN,
+            10_000,
+            t0
+        ));
+        assert_eq!(retries.get(&row.id), Some(&RetryState::Unsent));
+
+        // If pack() saved sentAt before a failed offline send, marking Unsent keeps it
+        // immediately ready on reconnect instead of arming the 60s cooldown.
+        row.extra.insert("sentAt".into(), 10_500.into());
+        retries.insert(row.id.clone(), RetryState::Unsent);
+        assert!(retry_state_ready(
+            &mut retries,
+            &row,
+            STEP_AGAIN,
+            12_000,
+            t0 + Duration::from_secs(2),
+        ));
+
+        // Once the relay socket accepts the send, reconnecting within STEP_AGAIN must not
+        // send a duplicate offer/check/switch.
+        retries.insert(
+            row.id.clone(),
+            RetryState::Sent(RetryClock {
+                wall: 12_000,
+                since: t0 + Duration::from_secs(2),
+            }),
+        );
+        assert!(!retry_state_ready(
+            &mut retries,
+            &row,
+            STEP_AGAIN,
+            14_000,
+            t0 + Duration::from_secs(4),
+        ));
+        // After STEP_AGAIN elapses, the next scheduled retry becomes due.
+        assert!(retry_state_ready(
+            &mut retries,
+            &row,
+            STEP_AGAIN,
+            72_000,
+            t0 + Duration::from_secs(62),
+        ));
+        // A backward wall-clock jump also prompts a retry.
+        assert!(retry_state_ready(
+            &mut retries,
+            &row,
+            STEP_AGAIN,
+            11_999,
+            t0 + Duration::from_secs(3),
+        ));
+    }
 
     #[test]
     fn an_orphaned_bundle_is_removed_only_after_the_grace_period() {
