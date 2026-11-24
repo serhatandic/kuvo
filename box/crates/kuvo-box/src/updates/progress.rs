@@ -127,7 +127,7 @@ fn line(phase: Phase, current: Option<&str>, target: &str, seen: Option<i64>, no
     }
 }
 
-fn short(version: &str) -> &str {
+pub(super) fn short(version: &str) -> &str {
     version.split_once('-').map_or(version, |(_, short)| short)
 }
 

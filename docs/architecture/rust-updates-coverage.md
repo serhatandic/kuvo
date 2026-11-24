@@ -48,6 +48,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U32 | The computers list reports the local failure with its signed target version and digest, the current release, and whether retry is available. The list and retry replies use the same row shape and wording. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U33 | The main's computers list reports the reachable member's failure with the version and digest of the signed pack for that member's platform. The row shows the member's current release and offers a retry for the matching target. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U34 | The computers list shows getting ready and ready from the live preparation, then up to date for a confirmed computer and off for one awaiting return. The selected signed release on trial shows switching while the previous release remains current. Once the keeper clears the trial, the row shows the installed version and digest. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U35 | The computers list counts the setup's preparing, ready, confirmed, and offline computers. It shows the failed computer's warning, keeps the summary visible through switching, and retains the settled result for ten minutes across a restart. A computer that first sees the release after confirmation has no visible completion. Passed on Mac, native Linux, WSL2, and native Windows. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -301,7 +302,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, T3 retry and five-minute limit | Partial. U29 covers the elapsed deadline and the waiting member's catch-up. U30 covers local retry across a restart and U31 covers authenticated peer retry after the main has switched. U32–U33 cover retry availability in the computer rows. U8 retries a transient download and U9 pulls a retained pack from its new main. Mixed-target fallback remains open. | 7.2 |
 | Same, ahead member offers its version | U28 covers receiving the signed offer, pulling the member's retained pack and switching. The member's up-to-date row is part of the row-progress work below. | 7.2 |
 | Same, Update Now chooses the immediate candidate | Partial. An explicit check bypasses the automatic release age rule. U20 verifies that an authenticated member request starts the check. A newly published release still needs a full switch scenario. | 7.2 |
-| Same, progress summary remains while switching and after settlement | Open. | 7.2 |
+| Same, progress summary remains while switching and after settlement | Covered by U35. | — |
 | Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover retryable failure rows. U34 covers getting ready, ready, switching, off and up to date. Reporting an unfixable preparation refusal remains open. | 7.2 |
 | Same, pull progress never moves back | Open. | 7.2 |
 | Same, member asks main to check | Covered by U20. | — |
@@ -309,7 +310,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, local box says it is switching and ready reads separately from done | Covered by U34. | — |
 | Same, preparation fraction is visible in local and peer rows | Open. | 7.2 |
 | Same, off row reports when it was last heard from | Partial. U34 checks one never heard from. Exact seen-time wordings remain open. | 7.2 |
-| Same, notifier stays while restarting, phases and words, ten-minute settled display | Open. | 7.2 |
+| Same, notifier stays while restarting, phases and words, ten-minute settled display | U35 covers the live summary and saved settlement across restart. The exact peer restart grace remains part of the reach cases above. | 7.2 |
 | Same, verified kept pack is announced | Partial. U8–U9 cover signed manifest selection, prepared facts, and authenticated delivery from a new main. The kept-pack announcement boundary remains open. | 7.2 |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |
 | Same, Helper starts the new code after the resident exits | Partial. 7.1 dispatches Helper `serve` to a Rust pack. Live Helper update remains open. | 6.2, 7.2, 9.3 |

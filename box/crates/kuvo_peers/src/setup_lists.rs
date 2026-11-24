@@ -10,7 +10,8 @@ use std::{
 };
 
 use kuvo_protocol::routes::types::{
-    GetKuvoComputersStatus200ComputersItemAtWorkItem, PostKuvoUpdateRetryStatus202 as FleetRow,
+    GetKuvoComputersStatus200ComputersItemAtWorkItem, GetKuvoComputersStatus200FleetUpdate,
+    PostKuvoUpdateRetryStatus202 as FleetRow,
 };
 use kuvo_store::files::{FileStamp, file_stamp};
 use kuvo_wire::{
@@ -85,6 +86,10 @@ impl View {
 
     pub(crate) fn peer_update_row(&self, key: &ComputerKey) -> Option<&FleetRow> {
         self.update.peer_rows.get(key)
+    }
+
+    pub(crate) fn fleet_summary(&self) -> Option<&GetKuvoComputersStatus200FleetUpdate> {
+        self.update.summary.as_ref()
     }
 
     /// Check for Updates uses the already persisted observation even while the
@@ -491,6 +496,7 @@ pub struct UpdatePublication {
     pub bridge: Option<BridgeUpdate>,
     pub local_row: Option<FleetRow>,
     pub peer_rows: BTreeMap<ComputerKey, FleetRow>,
+    pub summary: Option<GetKuvoComputersStatus200FleetUpdate>,
 }
 
 pub struct ResidentPeers {
