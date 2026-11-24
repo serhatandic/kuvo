@@ -273,16 +273,16 @@ test("a discarded release signature does not stop the next signed feed check", a
   assert.equal(fs.existsSync(path.join(here.home, "run/fleet-ready.json")), false);
 });
 
-async function failedFleetDownload(t) {
+async function fixtureReleaseFeed(t, packBytes) {
   const key = keypair();
   const version = "0.8.0";
-  const hash = digest("signed target");
+  const hash = digest(packBytes ?? "signed target");
   let downloads = 0;
   let signed;
   const feed = createServer((req, res) => {
     if (req.url !== "/boxes.json") {
       downloads += 1;
-      return res.writeHead(404).end();
+      return packBytes ? res.end(packBytes) : res.writeHead(404).end();
     }
     res.end(signed);
   });
@@ -307,7 +307,7 @@ test("a failed fleet download can be retried for the same signed target", { time
     privateWindowsHome(path.join(folder, "box"));
     return {};
   });
-  const { version, hash, updateEnv, downloaded } = await failedFleetDownload(t);
+  const { version, hash, updateEnv, downloaded } = await fixtureReleaseFeed(t);
   const installed = "0.8.0-beta.1";
   write(path.join(here.home, "bin/box-version"), installed + "\n");
   const child = here.start(binary, updateEnv);
@@ -353,7 +353,7 @@ test("the main can ask a reachable member to retry its failed fleet download", {
   if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
   const { main, member } = await pairedUpdateComputers(t);
 
-  const { version, hash, signed, updateEnv, downloaded } = await failedFleetDownload(t);
+  const { version, hash, signed, updateEnv, downloaded } = await fixtureReleaseFeed(t);
   for (const peer of [main, member]) write(path.join(peer.home, "bin/box-version"), "0.8.0-beta.1\n");
   const [first, second] = await Promise.all([main.start(binary, updateEnv).ready(), member.start(binary, updateEnv).ready()]);
   const memberSetup = await request(second, "GET", "kuvo/setup");
@@ -397,7 +397,7 @@ test("a member keeps its signed switching row during a quiet relay restart", { t
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
   const { main, member } = await pairedUpdateComputers(t);
-  const { version, hash, signed, updateEnv } = await failedFleetDownload(t);
+  const { version, hash, signed, updateEnv } = await fixtureReleaseFeed(t);
   const installed = "0.8.0-beta.1";
   for (const computer of [main, member]) write(path.join(computer.home, "bin/box-version"), installed + "\n");
   const sender = member.start(binary, updateEnv);
@@ -460,7 +460,7 @@ test("the computers list shows a retryable failure for the signed fleet target",
     privateWindowsHome(path.join(folder, "box"));
     return {};
   });
-  const { version, hash, updateEnv } = await failedFleetDownload(t);
+  const { version, hash, updateEnv } = await fixtureReleaseFeed(t);
   const installed = "0.8.0-beta.1";
   write(path.join(here.home, "bin/box-version"), installed + "\n");
   const resident = await here.start(binary, updateEnv).ready();
@@ -479,6 +479,40 @@ test("the computers list shows a retryable failure for the signed fleet target",
   });
 });
 
+test("an invalid signed pack stays blocked without offering retry", { timeout: 30000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { computer } = await bench(t);
+  const here = await computer("Standalone", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const { version, hash, updateEnv, downloaded } = await fixtureReleaseFeed(t, Buffer.from("not a release archive"));
+  const installed = "0.8.0-beta.1";
+  write(path.join(here.home, "bin/box-version"), installed + "\n");
+  const starting = here.start(binary, updateEnv);
+  const before = await starting.ready();
+  const blocked = resident => until(async () => {
+    const answer = await request(resident, "GET", "kuvo/computers");
+    const row = answer.json?.computers?.find(computer => computer.here)?.fleetUpdate;
+    return row?.state === "cannot" && row;
+  }, () => `the invalid signed pack must leave a blocked row after ${downloaded()} downloads`);
+  const failure = await blocked(before);
+  assert.deepEqual([failure.current, failure.target, failure.targetSha256, failure.fixable, failure.canRetry],
+    [installed, version, hash, false, false]);
+  assert.deepEqual(failure.line, {
+    words: `beta.1 · ${failure.reason} · Updates with the next release`,
+    tone: "blocked",
+  });
+  await starting.stop();
+  const after = await here.start(binary, updateEnv).ready();
+  assert.deepEqual(await blocked(after), failure);
+  const retry = await request(after, "POST", "kuvo/update/retry", { target: version, targetSha256: hash });
+  assert.equal(retry.status, 409, retry.text);
+  assert.equal(downloaded(), 1);
+  assert.equal((await request(after, "GET", "kuvo/update")).json.version, installed);
+});
+
 test("the computers list keeps the update visible from trial to settlement", { timeout: 45000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
@@ -488,7 +522,7 @@ test("the computers list keeps the update visible from trial to settlement", { t
     return {};
   });
   const here = await make("Standalone");
-  const { version, hash, signed, updateEnv } = await failedFleetDownload(t);
+  const { version, hash, signed, updateEnv } = await fixtureReleaseFeed(t);
   const installed = "0.8.0-beta.1";
   write(path.join(here.home, "bin/box-version"), installed + "\n");
   const running = here.start(binary, updateEnv);

@@ -53,6 +53,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U37 | The Linux installer reopens its saved journal at each publication boundary. Recovery keeps earlier work and conversations in one archive, keeps the already staged engine, publishes the selected signed release, and starts the keeper. Native Linux and WSL2 passed after archival began, after the engine moved, and after publication before startup. |
 | U38 | With the feed unavailable, the main pulls a known signed release from an ahead member. The relay holds parts while both computers report the same accepted fraction and wording. Replaying already accepted parts leaves the count unchanged. The main confirms the release after the remaining parts arrive. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U39 | A member reports the signed release it is trying while its previous release remains current. Neither computer accepts a retry for that trial. A three-minute relay gap keeps the switching row, and the saved last-heard time appears when the ten-minute restart window expires. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U40 | A verified pack that cannot unpack leaves a blocked row tied to its signed digest. The current release keeps serving, the row survives restart, and manual retry is refused. Passed on Mac, native Linux, WSL2, and native Windows. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -273,10 +274,9 @@ status from the child it owns.
 underlying Rust path is proven and what the update or installer still owes.
 Bridge-specific checks only for unpublished TypeScript betas and desktop app
 update prompts follow the switch-over scope in [the design](rust-box.md#4-switch-over).
-The reference table groups related TypeScript cases into 58 rows. Four rows
-are covered, 32 have partial proof, three are specific to the TypeScript bridge
-or desktop updater, and 19 are open. The inherited and live-proof table has
-11 rows, nine with partial proof and two open.
+The reference table groups related TypeScript cases and names the owner of
+each remaining check. The inherited and live-proof table tracks cross-row
+dependencies.
 
 | Source and case | Status | Remaining owner |
 | --- | --- | --- |
@@ -307,7 +307,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, ahead member offers its version | U28 covers receiving the signed offer, pulling the member's retained pack and switching. The member's up-to-date row is part of the row-progress work below. | 7.2 |
 | Same, Update Now chooses the immediate candidate | Partial. An explicit check bypasses the automatic release age rule. U20 verifies that an authenticated member request starts the check. A newly published release still needs a full switch scenario. | 7.2 |
 | Same, progress summary remains while switching and after settlement | Covered by U35. | — |
-| Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover retryable failure rows. U34 covers getting ready, ready, switching, off and up to date. Reporting an unfixable preparation refusal remains open. | 7.2 |
+| Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover retryable failure rows. U34 covers getting ready, ready, switching, off and up to date. U40 covers a preparation failure that must wait for the next release. | — |
 | Same, pull progress never moves back | Partial. U38 checks local and peer progress and duplicate delivery. A second peer after a timed-out transfer still needs a binary scenario. | 7.2 |
 | Same, member asks main to check | Covered by U20. | — |
 | [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | Partial. U34 checks preparation through confirmation, and U39 checks a signed trial reported over relay, a quiet restart, and expiry past the restart window. A ready computer that goes quiet before reporting a trial and a brief gap during preparation still need binary proof. | 7.2 |
