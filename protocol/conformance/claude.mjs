@@ -234,11 +234,13 @@ export async function scriptedClaude(fixture = {}) {
     },
     rows: id => transcript(listener, claude.route(id)),
     async idles(id, count = 1, why = "The Claude turn never ended.") {
+      let rows = [];
       return until(async () => {
-        const rows = await claude.rows(id);
+        rows = await claude.rows(id);
         return rows.filter(row => row.type === "idle").length >= count && rows;
-      }, () => why + "\n" + claude.log(), 20000);
+      }, () => [why, JSON.stringify(rows.slice(-4)), JSON.stringify(claude.heard().slice(-6)), claude.log()].join("\n"), 20000);
     },
+
     /** Asks for a summary now: its state, or the refusal. */
     async compact(id) {
       return request(listener, "POST", claude.route(id) + "/compact", {}, headers, 20000);
