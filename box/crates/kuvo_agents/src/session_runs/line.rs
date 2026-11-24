@@ -170,7 +170,13 @@ impl Service {
             .line(session)
             .await?
             .ok_or_else(|| missing(session))?;
-        let running = state.conversation(session).doing.live().cloned();
+        // (A turn whose end is written already is over.)
+        let running = state
+            .conversation(session)
+            .doing
+            .live()
+            .filter(|live| !live.turn.is_done())
+            .cloned();
         let summarizing = running.as_ref().is_some_and(|live| live.compacting);
         if !summarizing && !line.iter().any(Input::is_compaction) {
             let fields = header.into_fields();
@@ -200,8 +206,16 @@ impl Service {
                 input: Box::new(input),
             });
         }
+        if running.is_none() {
+            // It starts as the resident hears the turn ended.
+            state.conversation(session).go = true;
+        }
         self.wake(state, session).await;
-        let running = state.conversation(session).doing.live();
+        let running = state
+            .conversation(session)
+            .doing
+            .live()
+            .filter(|live| !live.turn.is_done());
         Ok(match running {
             Some(live) if !live.compacting => Compacting::Waiting,
             _ => Compacting::Now,
@@ -303,13 +317,20 @@ impl Service {
             Doing::Running(live)
                 if !input.held
                     && input.delivery != Delivery::Queue
+                    && !live.turn.is_done()
                     && live.thread.takes_steers() =>
             {
                 Some(live.clone())
             }
             _ => None,
         };
-        let nothing_runs = matches!(conversation.doing, Doing::Idle);
+        // A turn whose end is written already is over, though the resident
+        // hasn't heard yet: what comes now goes after it, as if nothing ran.
+        let ended = match &conversation.doing {
+            Doing::Running(live) | Doing::Stopping(live) => live.turn.is_done(),
+            _ => false,
+        };
+        let nothing_runs = matches!(conversation.doing, Doing::Idle) || ended;
         input.delivery = if into.is_some()
             || input.held
             || (nothing_runs && (input.delivery != Delivery::Queue || line.is_empty()))
@@ -348,6 +369,10 @@ impl Service {
         if let Some(live) = into {
             self.steer_now(state, session, live, input);
         } else if delivery == Delivery::Steer && !input.held {
+            if ended {
+                // It starts as the resident hears the turn ended.
+                state.conversation(session).go = true;
+            }
             self.wake(state, session).await;
         }
         Ok(())

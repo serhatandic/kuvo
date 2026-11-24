@@ -90,6 +90,12 @@ impl RunningTurn {
         self.active().await?.interrupt().await
     }
 
+    /// Whether the turn has ended (its end written), though the resident may
+    /// not have heard yet.
+    pub fn is_done(&self) -> bool {
+        matches!(*self.state.borrow(), State::Done(_))
+    }
+
     pub async fn finished(&self) -> io::Result<Option<Outcome>> {
         let mut state = self.state.clone();
         let latest = state
