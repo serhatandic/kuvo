@@ -10,7 +10,9 @@ mod opened;
 mod order;
 mod suggested;
 
+pub(crate) use address::resolved;
 pub use folders::Places;
+pub(crate) use suggested::real;
 
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};

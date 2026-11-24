@@ -1,6 +1,7 @@
 //! Resident-owned Add attempts. The SSH job owns its subprocesses and the
 //! setup writer issues enrollment only after the remote account was checked.
 
+mod account_scripts;
 mod address;
 mod connect;
 mod fresh;

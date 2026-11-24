@@ -10,9 +10,8 @@ use kuvo_store::home::Home;
 use crate::storage::Files;
 
 use super::{
+    account_scripts::{BUSY, LOST, claim_script, locked_script, owns, release_script},
     address::Address,
-    connect::reservation::{BUSY, LOST, claim_script, locked_script, owns, release_script},
-    saved_machines,
     transport::{self, Connection, Ran},
 };
 
@@ -45,7 +44,10 @@ struct Machine {
 
 impl Machine {
     fn read(files: &Files, destination: &str) -> io::Result<Self> {
-        let list = saved_machines(files).map_err(io::Error::other)?;
+        let list = files
+            .read::<Vec<serde_json::Value>>("machines.json")
+            .map_err(io::Error::other)?
+            .unwrap_or_default();
         let mut found = list
             .iter()
             .filter(|row| row["destination"].as_str() == Some(destination));
@@ -112,7 +114,7 @@ pub async fn with_saved_machine<T>(
 ) -> io::Result<T> {
     let files = Files::new(home.root().to_owned());
     let machine = Machine::read(&files, destination)?;
-    let token = super::connect::reservation::new_token()?;
+    let token = super::account_scripts::new_token()?;
     let mut selected = None;
     for address in &machine.addresses {
         let connection = open(home.root().to_owned(), address.clone()).await?;
@@ -129,7 +131,7 @@ pub async fn with_saved_machine<T>(
             "Could not reach the saved SSH machine with its known host key and identity.",
         )
     })?;
-    let claiming = claim_script(ROOT, &token, None, &machine.prove());
+    let claiming = claim_script(&token, &machine.prove());
     let claim = run(&connection, &claiming, Vec::new(), PROBE).await?;
     if !claim.status.success() {
         return Err(io::Error::other(
@@ -149,7 +151,7 @@ pub async fn with_saved_machine<T>(
     if reserved.settled {
         let released = run(
             &reserved.connection,
-            &release_script(ROOT, &reserved.token),
+            &release_script(&reserved.token),
             Vec::new(),
             PROBE,
         )
@@ -201,7 +203,7 @@ impl SavedMachine {
         self.settled = false;
         let reply = run(
             &self.connection,
-            &locked_script(ROOT, 5, &checked),
+            &locked_script(5, &checked),
             input,
             timeout,
         )
@@ -255,11 +257,19 @@ fn invalid(message: &'static str) -> io::Error {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, os::unix::fs::symlink, path::Path, process::Command};
+    use std::{
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+        path::Path,
+        process::Command,
+    };
 
     use serde_json::json;
 
     use super::*;
+
+    const ID: &str = "6a447d2973b4732897b2298f4b3b11a3";
+    const CHILD: &str = "ssh::saved_machine::tests::uses_saved_address_child";
 
     #[test]
     fn saved_machine_claim_checks_identity_and_retains_existing_writer() {
@@ -268,7 +278,7 @@ mod tests {
         let local = home.join("local");
         fs::create_dir(&local).unwrap();
         let files = Files::new(local);
-        let identity = "6a447d2973b4732897b2298f4b3b11a3";
+        let identity = ID;
         files
             .write(
                 "machines.json",
@@ -300,12 +310,12 @@ mod tests {
         let path = root.join("machine-id");
         fs::create_dir(&root).unwrap();
         fs::write(&path, "not its machine id").unwrap();
-        let token = super::super::connect::reservation::new_token().unwrap();
-        let claim = claim_script(ROOT, &token, None, &machine.prove());
+        let token = super::super::account_scripts::new_token().unwrap();
+        let claim = claim_script(&token, &machine.prove());
         assert_eq!(run(&claim).code(), Some(WRONG_MACHINE));
         assert!(marker.symlink_metadata().is_err());
 
-        let previous = super::super::connect::reservation::new_token().unwrap();
+        let previous = super::super::account_scripts::new_token().unwrap();
         symlink(&previous, &marker).unwrap();
         fs::write(&path, format!("{identity}\n")).unwrap();
         assert!(!run(&claim).success());
@@ -319,7 +329,6 @@ mod tests {
         fs::write(&outside, identity).unwrap();
         symlink(outside, &path).unwrap();
         let check = locked_script(
-            ROOT,
             5,
             &format!(
                 "{} || exit {LOST}\n{}\nexit 0",
@@ -328,7 +337,114 @@ mod tests {
             ),
         );
         assert_eq!(run(&check).code(), Some(WRONG_MACHINE));
-        assert!(run(&release_script(ROOT, &token)).success());
+        assert!(run(&release_script(&token)).success());
         assert!(marker.symlink_metadata().is_err());
+    }
+
+    #[test]
+    fn uses_only_a_trusted_saved_alias_and_checks_again_before_writing() {
+        let scratch = tempfile::tempdir().unwrap();
+        let folder = scratch.path().canonicalize().unwrap();
+        let root = folder.join("remote").join(ROOT);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("machine-id"), ID).unwrap();
+        let local = folder.join("local");
+        fs::create_dir_all(local.join("ssh")).unwrap();
+        fs::write(
+            local.join("ssh/known_hosts"),
+            "workshop ssh-ed25519 fixture\n",
+        )
+        .unwrap();
+        let files = Files::new(local);
+        files
+            .write(
+                "machines.json",
+                &json!([{
+                    "destination": "studio", "identity": ID, "otherAddresses": ["workshop"]
+                }]),
+            )
+            .unwrap();
+        let ssh = folder.join("ssh");
+        fs::write(
+            &ssh,
+            r#"#!/bin/sh
+strict=no
+known=no
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --) shift; break ;;
+    -o)
+      case "$2" in
+        StrictHostKeyChecking=yes) strict=yes ;;
+        UserKnownHostsFile=*'/local/ssh/known_hosts'*) known=yes ;;
+      esac
+      shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ "$strict" = yes ] && [ "$known" = yes ] && [ "$1" = workshop ] || exit 255
+grep -qxF 'workshop ssh-ed25519 fixture' "$KUVO_TEST_SAVED_SSH/local/ssh/known_hosts" || exit 255
+HOME="$KUVO_TEST_SAVED_SSH/remote" exec /bin/sh -c "$2"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+        let account = folder.join("account");
+        fs::create_dir(&account).unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CHILD, "--nocapture"])
+            .env_clear()
+            .env("HOME", account)
+            .env("PATH", "/usr/bin:/bin")
+            .env("KUVO_TEST_SSH", ssh)
+            .env("KUVO_TEST_SAVED_SSH", &folder)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert_eq!(fs::read(root.join("data")).unwrap(), b"fixture input");
+        assert!(
+            folder
+                .join("remote/.kuvo-code-adding")
+                .symlink_metadata()
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn uses_saved_address_child() {
+        let Some(folder) = std::env::var_os("KUVO_TEST_SAVED_SSH").map(PathBuf::from) else {
+            return;
+        };
+        let home = Home::new(folder.join("local")).unwrap();
+        with_saved_machine(&home, "studio", async |machine| {
+            assert_eq!(machine.address(), "workshop");
+            assert_eq!(machine.identity(), ID);
+            let input = machine
+                .run(r#"cat > "$K/data""#, b"fixture input".to_vec(), PROBE)
+                .await?;
+            assert!(input.status.success());
+            fs::write(
+                folder.join("remote").join(ROOT).join("machine-id"),
+                "00000000000000000000000000000000",
+            )?;
+            let refused = machine
+                .run(r#"printf wrong > "$K/data""#, Vec::new(), PROBE)
+                .await;
+            assert!(
+                refused
+                    .err()
+                    .expect("a different machine must be refused")
+                    .to_string()
+                    .contains("identity changed")
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
     }
 }

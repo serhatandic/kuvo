@@ -177,6 +177,7 @@ pub async fn run(
             platform: kuvo_os::platform::Platform::current(),
         },
     );
+    kuvo_services::git::register(&mut routes, home.to_owned());
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
