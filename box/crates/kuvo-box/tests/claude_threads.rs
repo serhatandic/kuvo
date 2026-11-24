@@ -325,11 +325,42 @@ async fn scenario(root: PathBuf) {
     );
     let saved = clear.state.lock().unwrap().clone();
     assert_eq!(saved["claudeSession"], CLEARED);
-    next.shutdown().await.unwrap();
+    // A turn under way as the resident makes way: the next one finds it ended after all (its end
+    // was written just before the resident went) and lets it go. Its conversation goes on.
+    let (asking, _gone, mut asks) = Sink::new();
+    let active = holder
+        .start(
+            input("turn_gone", TurnKind::Prompt(prompt("msg_gone", "ask"))),
+            asking.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asks.recv().await.unwrap(), "tool-approve");
+    next.prepare_replacement().await.unwrap();
+    drop(active);
+    drop(holder);
+    drop(replacement);
+    let saved = asking.state.lock().unwrap().clone();
 
     let restarted = activate(&runtime, factory).await;
     let restored = claude(&restarted);
-    let holder = restored.open_thread(context(&root, saved)).await.unwrap();
+    let note = runtime
+        .holders()
+        .records()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .turns()
+        .unwrap()
+        .remove("main")
+        .unwrap();
+    assert_eq!(note.turn.as_deref(), Some("turn_gone"));
+    restored.let_go(&note).await.unwrap();
+    let holder = restored
+        .open_thread(context(&root, saved.clone()))
+        .await
+        .unwrap();
     let (sink, mut frames, _) = Sink::new();
     holder
         .start(
@@ -339,7 +370,7 @@ async fn scenario(root: PathBuf) {
         .await
         .unwrap();
     let end = finish(&mut frames).await;
-    let expected = format!("resumed {CLEARED}");
+    let expected = format!("resumed {}", saved["claudeSession"].as_str().unwrap());
     assert!(end.iter().any(
         |event| matches!(&event.event, TurnEvent::TextDelta { delta, .. } if delta == &expected)
     ));

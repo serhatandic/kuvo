@@ -562,8 +562,18 @@ Seen once: on lokum, in a one-CPU container, at d50d27912, "the Rust keeper
 keeps an actual Claude adapter turn across a release switch" failed with
 `The replacement resident never finished the held turn.` (adapter.mjs
 `until`, agents-claude.test.mjs:205), after 32.5 s. Two reruns of the same
-build passed, as did WSL and native Windows. If it fails again, it gets a
-root cause before any rerun.
+build passed, as did WSL and native Windows. Seen again at 058ce659d, the
+same way, after 32.7 s. Eight later runs passed there, three of them with a
+second process using the CPU, so the cause isn't known yet. The case now
+reports the replacement's last rows, what Claude Code heard and the keeper's
+log when it fails.
+
+A turn's end is written before its Claude Code's holder hears that it ended.
+If the resident goes between the two, the next resident finds a holder still
+in a turn that has ended, and lets it go: that Claude Code stops, and the
+conversation's next message starts one that resumes it. Before this, the
+next message failed with "Claude Code has a recovered turn." Native Windows
+showed this, and the holder scenario covers it.
 
 A message handed to a running turn has a receipt before it is sent: the
 UUID Claude acknowledges it by. The receipt stays unresolved while a live or

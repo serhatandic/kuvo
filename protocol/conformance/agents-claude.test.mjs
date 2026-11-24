@@ -202,10 +202,15 @@ test("the Rust keeper keeps an actual Claude adapter turn across a release switc
         await control(["select", next]);
         const second = await keptListener(home, keeper, first.pid);
         residents.push(second.pid);
+        let last;
         const rows = await until(async () => {
-          const rows = await transcript(second, route);
-          return rows.at(-1)?.outcome === "succeeded" && rows;
-        }, "The replacement resident never finished the held turn.", 30000);
+          last = await transcript(second, route);
+          return last.at(-1)?.outcome === "succeeded" && last;
+        }, () => {
+          const heard = path.join(env.HOME, "claude-heard.jsonl");
+          return ["The replacement resident never finished the held turn.", JSON.stringify(last?.slice(-3)),
+            fs.existsSync(heard) ? fs.readFileSync(heard, "utf8").slice(-3000) : "", keeper.log().slice(-6000)].join("\n");
+        }, 30000);
         const after = heldClaude(home, session);
         assert.ok(after);
         assert.deepEqual([after.pid, after.child, after.generation], [initial.pid, initial.child, initial.generation + 1]);

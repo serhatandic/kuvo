@@ -36,9 +36,8 @@ use crate::{
 };
 
 use super::{
-    told::instructions_note,
     diagnostic::Said, owned_paths, permissions::Request, program::Program, projection::Projection,
-    wire,
+    told::instructions_note, wire,
 };
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -190,6 +189,13 @@ impl Recovery {
         self.pipe.input.unpin().await?;
         self.pipe.stop().await
     }
+
+    /// Whether it was left under way in `note`'s turn.
+    pub fn holds(&self, note: &TurnNote) -> bool {
+        self.note
+            .as_ref()
+            .is_some_and(|held| held.session == note.session && held.turn == note.turn)
+    }
 }
 
 #[derive(Clone)]
@@ -209,6 +215,7 @@ enum Command {
     Resolve(SteerReceipt, Reply<Option<bool>>),
     Prepare(Reply<()>),
     Stop(bool, Reply<()>),
+    LetGo(TurnNote, Reply<()>),
 }
 
 impl Conversation {
@@ -269,6 +276,12 @@ impl Conversation {
 
     pub async fn stop(&self, shutdown: bool) -> io::Result<()> {
         self.send(|reply| Command::Stop(shutdown, reply)).await
+    }
+
+    /// The turn it was left under way in won't go on here: that Claude Code goes, and the next
+    /// message starts one that resumes the conversation.
+    pub async fn let_go(&self, note: TurnNote) -> io::Result<()> {
+        self.send(|reply| Command::LetGo(note, reply)).await
     }
 }
 
@@ -434,6 +447,21 @@ impl Actor {
             }
             Command::Resolve(receipt, reply) => {
                 let _ = reply.send(self.resolve(receipt).await);
+            }
+            Command::LetGo(note, reply) => {
+                let held = self
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|saved| saved.session == note.session && saved.turn == note.turn);
+                if held {
+                    self.recovery = None;
+                    self.replay_sink = None;
+                    if let Some(mut pipe) = self.pipe.take() {
+                        let _ = pipe.input.unpin().await;
+                        let _ = pipe.stop().await;
+                    }
+                }
+                let _ = reply.send(Ok(()));
             }
             Command::Prepare(reply) => {
                 if let Some(pipe) = &mut self.pipe

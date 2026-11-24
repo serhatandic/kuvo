@@ -83,9 +83,11 @@ mod tests {
         assert!(note.contains("Replaced or taken out:\n\nYou work in the worktree at /old."));
         assert_eq!(instructions_note(Some(new), new), None);
         assert_eq!(instructions_note(Some("a\n\nb"), "b\n\n\na"), None);
-        assert!(instructions_note(None, "a")
-            .unwrap()
-            .contains("as they are now"));
+        assert!(
+            instructions_note(None, "a")
+                .unwrap()
+                .contains("as they are now")
+        );
         assert_eq!(instructions_note(None, " "), None);
     }
 }
