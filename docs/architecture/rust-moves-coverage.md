@@ -36,7 +36,7 @@ for addressed work and receipt lookup.
 | Archive links | Both residents refuse a linked manifest, a linked wake-up directory, a link outside that directory and a chain of links that would escape it. The destination keeps its own file private and unchanged and creates no conversation or wake-up directory. |
 | Destination checks | Both residents show the destination by name and mention a running turn in the move confirmation. They leave the original active after an unanswered check, an unavailable engine or a missing sign-in. A retry after sign-in moves the original and preserves the destination's account note in the receipt. |
 | Background work | Both residents refuse a move while the source has a running background command. The source also checks children as it discovers them, and ignores background work past the six-hour reporting limit. |
-| Wake-up folder | Both residents hold a wake-up folder on each computer until the switch. The source uses configured roots outside its home. The destination rebases the directory and restores the saved pause. The source retains a backup with its conversation. Both move the unpaused folder back and read the receipt after the journal retires. Letters and notes reach the returned conversation while the full engine list is unavailable. A source wake-up folder over 1 GB is refused and its hold is released. |
+| Wake-up folder | Both residents hold a wake-up folder on each computer until the switch. The source uses configured roots outside its home. The destination rebases the directory and restores the saved pause. The source retains its backup until the returning copy activates. Both move the unpaused folder back and read the receipt after the journal retires. Letters and notes reach the returned conversation while the full engine list is unavailable. A source wake-up folder over 1 GB is refused and its hold is released. |
 | Legacy wake-up hold | Both residents restore the saved pause in a failed v0 journal, remove an orphaned bare `moving` marker and retain a pause that names another move. |
 | Waited letter | Both residents identify the sender by its own announcement. The destination sends an answer after the engine reply. The original tool gets it through its saved letter ID and authenticated destination after the sender restarts with only the awaited record. |
 | Letter ordering and delivery recovery | Both residents send pending letters oldest first. A temporary lookup failure leaves the letter pending. Replaying the same letter after the destination restarts without receiving its engine's acceptance returns the receipt with one prompt ID and one saved message. |
@@ -129,8 +129,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Seventy-four have full scenario coverage, 21 have partial proof,
-and 117 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Seventy-six have full scenario coverage, 20 have partial proof,
+and 116 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -183,7 +183,7 @@ separately where they appear.
 | | 39 | Covered by a live source whose durable switch is unanswered for 90 seconds and whose repeated switch later recovers the destination receipt. |
 | | 40 | Covered by authenticated switch retries with a future saved time, a steady wall clock and a backward jump. The part-window test checks monotonic retry deadlines. |
 | | 41–42 | Covered by an incomplete copy waiting after 90 seconds and a complete copy waiting after 150 seconds, and by clearing a waiting announcement when the peer answers again. |
-| | 45 | Partial, a live chat returns to the same computer and discards the earlier move's backup. The pre-activation retention and timed cleanup checks remain 2.4. |
+| | 45 | Covered by preserving the earlier backup until the returning copy activates, then discarding it while retaining the returned conversation and folder. |
 | | 50, 52 | Partial, the receiver refuses an unavailable OpenCode provider before the source holds its work and permits a retry after sign-in. Native coding-agent preflight remains 4.6. |
 | | 51 | Covered by retaining the authenticated destination's replacement-account note in the move receipt. Selecting a replacement for a native agent belongs to 4.6. |
 | | 43–44, 46–47, 49 | Covered by retained backups and retry after failed deletion, first-run replies tied to the carried transcript, and grace-period cleanup of orphaned move bundles. |
@@ -218,8 +218,9 @@ separately where they appear.
 | | 12 | Covered by retrying delivery to both a held conversation and an unavailable engine, then delivering twenty messages before the peer reaches its rate limit. |
 | | 26 | Covered by pending letters arriving oldest first and a letter following a newer move announcement in spite of its older saved address. |
 | | 28 | Covered by a letter with a stale remote address reaching the conversation after it moves home and its awaited reply returning without relay mail. |
+| | 29 | Covered by a live move followed by a letter whose engine acceptance went unheard. Replaying it after restart acknowledges the original prompt without a second submission. |
 | | 31, 33 | Covered by late replies recovered through the resident and by abandoned transcript replies being discarded during the same hold. |
-| | 6, 8, 10–11, 13–14, 27, 29, 32 | Open, 2.4 letter handling through the resident. [2.2](rust-peers-coverage.md) proves parts of mail and outbox storage. |
+| | 6, 8, 10–11, 13–14, 27, 32 | Open, 2.4 letter handling through the resident. [2.2](rust-peers-coverage.md) proves parts of mail and outbox storage. |
 | [mac-peers](../../box/bridge-tests/mac-peers.test.js) | 11 | Partial, transcript mail has a live two-computer scenario. The calling tool’s route and name lookup remain 2.4. |
 | | 2–3, 6, 8, 10, 12 | Open, 2.4 letter handling and Mac peer policy. The linked peer map also covers wire pieces. |
 | [setup-lists](../../box/test/setup-lists.test.ts) | 16 | Typed drafts, remote queue ordering and lost-effect receipts belong to 3.2, with authenticated transport from 2.2. |

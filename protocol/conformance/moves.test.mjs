@@ -2195,15 +2195,29 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   // The original computer must learn the imported session from its event
   // even while it cannot refresh the full engine list.
   here.engine.refuseWholeList = true;
+  let returnSwitch;
+  const releaseReturn = relay.intercept(to, from, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 1), Buffer.from(member.key, "base64url"));
+    if (JSON.parse(payload).move?.op !== "switch") return false;
+    returnSwitch = packet;
+    return true;
+  });
+  t.after(releaseReturn);
   fs.unlinkSync(path.join(target, "paused"));
   await readyToMove(destination, session, main);
   const back = await request(destination, "POST", "kuvo/moves", { kind: "chat", id: session, to: main.key, receipt: true })
     .catch(error => { throw new Error("Starting the return move\n" + dstProcess.log(), { cause: error }); });
   assert.equal(back.status, 202, back.text);
+  await until(() => returnSwitch, "The returning copy did not reach its activation");
+  assert.equal(fs.readFileSync(path.join(left.trash, "wake.txt"), "utf8"), wake);
+  releaseReturn();
+  relay.replay(returnSwitch);
   await moveRetired(there, back.json.move.id, logs);
   const returned = await request(destination, "GET", "kuvo/moves/receipt?id=" + back.json.move.id);
   assert.equal(returned.status, 200, returned.text);
   assert.equal(returned.json.state, "done", returned.text);
+  await until(() => !fs.existsSync(left.trash), "The old backup survived the conversation's return");
   assert.ok(!fs.existsSync(target));
   assert.ok(!fs.existsSync(path.join(folder, "paused")));
   assert.equal(fs.readFileSync(path.join(folder, "wake.txt"), "utf8"), wake);
@@ -2644,9 +2658,16 @@ test("a letter survives a failed lookup and a restart after engine acceptance", 
   assert.ok(!there.engine.messages.has(recipient));
 
   there.engine.refuseLookup = null;
-  const made = sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") });
-  there.engine.sessions.push(made);
-  there.engine.emit({ type: "session.created", data: { sessionID: recipient, info: made } });
+  const directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  const made = sessionOf({ id: recipient, title: "Reservations", directory, updated: Date.now() });
+  here.engine.sessions.push(made);
+  here.engine.emit({ type: "session.created", data: { sessionID: recipient, info: made } });
+  await readyToMove(source, recipient, member);
+  const move = await request(source, "POST", "kuvo/moves", { kind: "chat", id: recipient, to: member.key, receipt: true });
+  assert.equal(move.status, 202, move.text);
+  await moveRetired(here, move.json.move.id, () => sourceProcess.log() + "\n" + targetProcess.log());
+  assert.ok(there.engine.sessions.some(session => session.id === recipient));
   const accepted = new Promise(resolve => { there.engine.holdPrompt = { session: recipient, accepted: resolve }; });
   relay.replay(first);
   await accepted;
