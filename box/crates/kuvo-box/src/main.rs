@@ -1,4 +1,13 @@
+#[cfg(target_os = "macos")]
+mod install_media;
+mod model_stars;
 mod serve;
+mod session_ownership;
+mod setup_search;
+#[cfg(target_os = "macos")]
+mod sign_ins;
+mod updates;
+mod vault_asks;
 
 use std::{env, io, path::PathBuf, process::ExitCode};
 
@@ -19,8 +28,38 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    #[cfg(target_os = "macos")]
+    if word(0) == Some("install-media") {
+        return Ok(install_media::run(&args[1..]));
+    }
+    #[cfg(target_os = "macos")]
+    if (word(0), args.len()) == (Some("helper-hand-over"), 1) {
+        let home = Home::new(PathBuf::from(
+            env::var_os("KUVO_HOME").ok_or("Expected KUVO_HOME")?,
+        ))?;
+        kuvo_keeper::mac_helper::run_handover(&home)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    #[cfg(target_os = "macos")]
+    if word(0) == Some("helper") {
+        let home = Home::new(PathBuf::from(
+            env::var_os("KUVO_HOME").ok_or("Expected KUVO_HOME")?,
+        ))?;
+        return Ok(ExitCode::from(kuvo_keeper::mac_helper::command(
+            &home,
+            &args[1..],
+        )?));
+    }
     if word(0) == Some("update") {
         return Ok(kuvo_keeper::prepare_command::run(&args[1..])?);
+    }
+    #[cfg(unix)]
+    if (word(0), args.len()) == (Some("preserve-before-rust"), 1) {
+        let home = Home::new(PathBuf::from(
+            env::var_os("KUVO_HOME").ok_or("Expected KUVO_HOME")?,
+        ))?;
+        kuvo_setup::backup::Backups::new(home).preserve_before_rust()?;
+        return Ok(ExitCode::SUCCESS);
     }
     if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
         if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
@@ -147,7 +186,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if let Some(check) = uninstall {
         let outcome = kuvo_setup::uninstall::run(&home, check);
         #[cfg(windows)]
-        if !check && outcome.status == 0 {
+        if !check
+            && outcome.status == 0
+            && (home.bin().join(kuvo_keeper::windows::STARTER).is_file()
+                || !kuvo_keeper::prepare_command::is_scratch(&home)?)
+        {
             kuvo_keeper::windows::StartupTask::for_home(home.root())?.remove()?;
         }
         println!("{}", outcome.value);
@@ -229,19 +272,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let (key, identity) = kuvo_setup::installer::enrolled_ssh_identity(&home)?;
                 #[cfg(not(windows))]
                 start_ssh_resident(&home, &identity).await?;
-                #[cfg(windows)]
-                start_windows(&home).await?;
                 println!("{}", serde_json::json!({"setup": joined.setup, "primary": joined.primary, "key": key, "identity": identity}));
             } else {
-                #[cfg(not(windows))]
                 let joined = kuvo_setup::installer::join(&home, name, &code).await?;
-                #[cfg(windows)]
-                let joined = {
-                    kuvo_keeper::windows::stage_local_release(home.root(), &env::current_exe()?)?;
-                    let joined = kuvo_setup::installer::join_ssh(&home, name, &code).await?;
-                    start_windows(&home).await?;
-                    joined
-                };
                 println!("{}", serde_json::to_string(&joined)?);
             }
             Ok(())
@@ -393,7 +426,7 @@ async fn resident_shutdown(home: &std::path::Path, supervised: bool) {
 fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::{ffi::OsStr, path::Path};
 
-    let usage = "usage: kuvo-box rehome <root> --status | --resume | --settle | --back | --new [--check | --release <folder> [--keeps-awake on|off]] | --run --app <bundle> --release <folder> --engine <folder>";
+    let usage = "usage: kuvo-box rehome <root> --status | --resume | --settle | --sign-ins | --back | --new [--check | --release <folder> [--keeps-awake on|off]] | --run --app <bundle> --release <folder> --engine <folder>";
     let invalid = || {
         eprintln!("{usage}");
         Ok(ExitCode::from(2))
@@ -437,6 +470,12 @@ fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::E
     if options == [OsStr::new("--status")] {
         println!("{}", kuvo_move::rehome_status(&Home::new(target)?));
         return Ok(ExitCode::SUCCESS);
+    }
+    #[cfg(target_os = "macos")]
+    if options == [OsStr::new("--sign-ins")] {
+        let result = kuvo_move::mac::sign_ins(&Home::new(target)?, &account.home)?;
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(ExitCode::from(result.exit_code()));
     }
     #[cfg(target_os = "macos")]
     if let Some(words) = options.strip_prefix(&[std::ffi::OsString::from("--new")]) {
@@ -639,7 +678,22 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
-    let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, None)?;
+    let helper_ready = {
+        #[cfg(target_os = "macos")]
+        {
+            let profile = located(&folder);
+            let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
+            home.bin()
+                .join("kuvo-box")
+                .is_file()
+                .then(|| kuvo_keeper::mac_helper::LaunchAgent::for_account(&profile, real))
+                .flatten()
+                .and_then(|agent| agent.ready(&home).ok())
+        }
+        #[cfg(not(target_os = "macos"))]
+        None
+    };
+    let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, helper_ready)?;
     if judge.verdict == kuvo_move::install::Verdict::Stuck
         && judge.status["step"].is_null()
         && let Some(message) = judge.status["failed"]["message"].as_str()

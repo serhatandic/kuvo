@@ -1,7 +1,6 @@
 // Files and folders (rust-box.md row 6.3a): a file's info, text and bytes, the same from both boxes.
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
@@ -148,8 +147,11 @@ test("a file's info, text and bytes", async t => {
     }
     return top;
   };
+  // git without your own settings: an empty file of the test's own (Windows' NUL isn't a file git reads).
+  const noSettings = path.join(root, "git-config-none");
+  writeFileSync(noSettings, "");
   const git = (folder, ...args) => {
-    const ran = spawnSync("git", ["-c", "init.defaultBranch=main", ...args], { cwd: folder, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1" } });
+    const ran = spawnSync("git", ["-c", "init.defaultBranch=main", ...args], { cwd: folder, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: noSettings, GIT_CONFIG_NOSYSTEM: "1" } });
     assert.equal(ran.status, 0, ran.stderr);
   };
   const repository = (name, names) => {
@@ -298,7 +300,8 @@ test("a file's info, text and bytes", async t => {
     assert.deepEqual([gone.status, gone.json], [404, { message: `There's no folder ${path.join(root, "nowhere")} here.`, reason: "No such folder" }]);
     assert.equal((await find("relative/folder", "signup")).status, 400);
     // (A `?` past the first is part of the query: in what's typed, and in a folder's name.)
-    const asked = repository("asked?here", ["src/signup.ts"]);
+    // (Windows can't name a folder with a `?`: there the typed text alone carries one.)
+    const asked = repository(windows ? "asked-here" : "asked?here", ["src/signup.ts"]);
     const typed = await find(asked, "https://example.com/a?b=1");
     assert.deepEqual([typed.status, typed.json], [200, { url: "https://example.com/a?b=1", files: [] }]);
     assert.equal((await find(asked, "signup")).json.files[0]?.path, path.join(asked, "src/signup.ts"));

@@ -12,9 +12,12 @@ mod helper;
 mod holder;
 mod identity;
 mod items;
+#[cfg(target_os = "macos")]
+mod mac_wipe;
 mod mask;
 mod replay;
 mod routes;
+mod session_asks;
 mod signed;
 #[cfg(unix)]
 mod ssh_agent;
@@ -24,9 +27,14 @@ mod store;
 mod tools;
 
 pub use holder::Holder;
+#[cfg(target_os = "macos")]
+pub use mac_wipe::clear_mac_app_link_keys;
 
 pub use mask::{Hidden, mask};
 pub use routes::Resident;
+pub use session_asks::{
+    VaultAsk, VaultAskCaller, VaultAskReply, VaultCard, VaultDecision, VaultWaiting,
+};
 
 pub use crypto::{Secret, Values};
 pub use encrypted::Encrypted;

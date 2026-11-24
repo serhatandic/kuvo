@@ -123,7 +123,7 @@ fn sign_ins_receipt(state: &Value) -> Value {
     answer
 }
 
-pub(crate) fn progress(step: &str) -> Value {
+pub fn progress(step: &str) -> Value {
     let count = STEPS.len();
     if step == "settle" {
         return json!({ "step": "done", "title": "Starting Kuvo on this Mac", "index": count, "of": count });

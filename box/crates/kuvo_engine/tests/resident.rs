@@ -12,7 +12,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::{SinkExt, StreamExt};
-use http::{Request, Response, StatusCode, header};
+use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
     body::{Bytes, Frame, Incoming},
@@ -20,7 +20,11 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::TokioIo;
-use kuvo_engine::{Engine, Timing, pinned_version};
+use kuvo_engine::{
+    ActivityState, AgentCatalog, AgentModel, AgentModelSource, AttachmentConversation,
+    AttachmentRead, AttachmentSource, AutoModel, CatalogRead, Engine, LocalSessions, ModelAccount,
+    ModelSpeed, Timing, pinned_version,
+};
 use kuvo_os::process::ProcessIdentity;
 use kuvo_server::{
     Caller, DispatchRequest, LineTiming, Pairing, Registry, Reply, Resident, Transport,
@@ -53,8 +57,26 @@ fn main() {
         executor.block_on(async {
             scenarios().await;
             interrupted_inbox_transfer().await;
+            starter_stop_leaves_summary_out_of_queue().await;
+            attachment_retention().await;
+            local_background_activity().await;
+            cancelled_session_writers().await;
+            transcript_reads_older_pages().await;
+            coding_agent_models().await;
+            external_asks().await;
+            peer_waiting().await;
+            paired_delivery().await;
         });
     }
+}
+
+fn accepted<T>(result: Result<T, kuvo_server::Refusal>) -> T {
+    result.unwrap_or_else(|refused| {
+        panic!(
+            "The resident refused the request with {}",
+            refused.reply().status
+        )
+    })
 }
 
 struct Server {
@@ -62,6 +84,7 @@ struct Server {
     task: JoinHandle<io::Result<()>>,
     dispatcher: kuvo_server::Dispatcher,
     engine: Engine,
+    sessions: LocalSessions,
     url: String,
     password: String,
     client: reqwest::Client,
@@ -69,6 +92,10 @@ struct Server {
 
 impl Server {
     async fn start(home: &Path) -> Self {
+        Self::start_with(home, |engine| engine).await
+    }
+
+    async fn start_with(home: &Path, configure: impl FnOnce(Engine) -> Engine) -> Self {
         let resident = Resident::bind(home).await.unwrap().unwrap();
         let mut routes = Registry::new();
         let mut env: kuvo_os::platform::Environment = std::env::vars_os()
@@ -88,7 +115,8 @@ impl Server {
             },
         )
         .unwrap();
-        engine.register(&mut routes);
+        let engine = configure(engine);
+        let sessions = engine.register(&mut routes);
         let dispatcher = routes.build(LineTiming::default());
         let stop = CancellationToken::new();
         let url = format!("127.0.0.1:{}", resident.record().port);
@@ -104,6 +132,7 @@ impl Server {
             task,
             dispatcher,
             engine,
+            sessions,
             url,
             password,
             client,
@@ -375,12 +404,12 @@ async fn scenarios() {
         call.method = vector["method"].as_str().unwrap_or("GET").parse().unwrap();
         let answer = server.dispatcher.dispatch(call, cancel.clone()).await;
         assert!(answer.status.is_success(), "{vector}: {}", answer.status);
-        drop(answer);
         assert_eq!(
-            fs::read_to_string(work.join("last-path")).unwrap(),
+            answer.headers[header::CACHE_CONTROL].to_str().unwrap(),
             format!("/{forwarded}"),
             "{vector}"
         );
+        drop(answer);
     }
 
     let refusal = server
@@ -510,6 +539,749 @@ fn auth(password: &str) -> String {
     format!("Basic {}", STANDARD.encode(format!("opencode:{password}")))
 }
 
+async fn attachment_retention() {
+    struct AgentInventory {
+        available: std::sync::atomic::AtomicBool,
+        carried: std::sync::atomic::AtomicBool,
+    }
+
+    impl AttachmentSource for AgentInventory {
+        fn conversations(&self) -> AttachmentRead<'_, Vec<AttachmentConversation>> {
+            Box::pin(async {
+                if self.available.load(std::sync::atomic::Ordering::Relaxed) {
+                    Ok(if self.carried.load(std::sync::atomic::Ordering::Relaxed) {
+                        vec![AttachmentConversation {
+                            id: "ses_carried".into(),
+                            ancestors: vec!["ses_carriedFrom".into()],
+                        }]
+                    } else {
+                        Vec::new()
+                    })
+                } else {
+                    Err(io::Error::other("The coding-agent roster is unavailable."))
+                }
+            })
+        }
+
+        fn transcript<'a>(&'a self, session: &'a str) -> AttachmentRead<'a, Vec<Value>> {
+            Box::pin(async move {
+                assert_eq!(session, "ses_carried");
+                Ok(vec![
+                    json!({"type":"file","url":"file:///scratch/attachments/ses_carriedFrom/notes.txt"}),
+                ])
+            })
+        }
+
+        fn protected(&self, session: &str) -> bool {
+            session == "ses_inMove"
+        }
+    }
+
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let inventory = Arc::new(AgentInventory {
+        available: false.into(),
+        carried: true.into(),
+    });
+    let files = home.join("attachments");
+    for session in [
+        "ses_source",
+        "ses_sourceWin",
+        "ses_branch",
+        "ses_inMove",
+        "ses_gone",
+        "ses_carriedFrom",
+    ] {
+        let folder = files.join(session);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("notes.txt"), session).unwrap();
+    }
+    let legacy = home.join("mac-attachment-copies");
+    fs::create_dir_all(legacy.join("ses_gone")).unwrap();
+    fs::write(legacy.join("ses_gone/notes.txt"), "Legacy copy.").unwrap();
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("event-watch"), []).unwrap();
+    let server = Server::start_with(home, |engine| {
+        engine.with_attachment_source(inventory.clone(), Some(legacy.clone()))
+    })
+    .await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    until(
+        || work.join("event-subscribed").exists(),
+        "the resident to follow attachment events",
+    )
+    .await;
+    let show = work.join("attachments-list.json");
+    let branch = json!({"id":"ses_branch","metadata":{"kuvo":{"branchedFrom":"ses_middle"}}});
+    fs::write(
+        &show,
+        serde_json::to_vec(
+            &json!([branch, {"id":"ses_middle","metadata":{"kuvo":{"branchedFrom":"ses_source"}}}]),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        work.join("attachment-words.json"),
+        serde_json::to_vec(&json!([
+            {"type":"user","text":"file:///scratch/attachments/ses_source/notes.txt"},
+            {"type":"user","text":r"C:\scratch\attachments\ses_sourceWin\notes.txt"},
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(server.engine.reconcile_attachments().await.is_err());
+    assert!(files.join("ses_gone/notes.txt").exists());
+    inventory
+        .available
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    fs::write(work.join("attachment-inventory-unavailable"), []).unwrap();
+    assert!(server.engine.reconcile_attachments().await.is_err());
+    assert!(files.join("ses_gone/notes.txt").exists());
+    fs::remove_file(work.join("attachment-inventory-unavailable")).unwrap();
+    server.engine.reconcile_attachments().await.unwrap();
+    assert!(!files.join("ses_gone").exists());
+    assert!(legacy.join("ses_gone/notes.txt").exists());
+    assert!(files.join("ses_carriedFrom/notes.txt").exists());
+    assert!(files.join("ses_source/notes.txt").exists());
+    assert!(files.join("ses_sourceWin/notes.txt").exists());
+    assert!(files.join("ses_branch/notes.txt").exists());
+    assert!(files.join("ses_inMove/notes.txt").exists());
+    fs::write(&show, b"[]").unwrap();
+    inventory
+        .carried
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    server.engine.reconcile_attachments().await.unwrap();
+    assert!(!files.join("ses_source").exists());
+    assert!(!files.join("ses_sourceWin").exists());
+    assert!(!files.join("ses_branch").exists());
+    assert!(!files.join("ses_carriedFrom").exists());
+    assert!(files.join("ses_inMove/notes.txt").exists());
+
+    let deleted = "ses_deletedOnLine";
+    for root in [&files, &legacy] {
+        let folder = root.join(deleted);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("notes.txt"), "From the deleted conversation.").unwrap();
+    }
+    let pending = files.join("pending");
+    fs::create_dir_all(&pending).unwrap();
+    fs::write(pending.join("draft.txt"), "In a draft.").unwrap();
+    let event = format!(
+        "data: {}\n\n",
+        json!({"type":"session.deleted","data":{"sessionID":deleted}})
+    );
+    fs::write(work.join("fixture-event"), event).unwrap();
+    until(
+        || !files.join(deleted).exists() && !legacy.join(deleted).exists(),
+        "the deletion event to drop only its attachment copies",
+    )
+    .await;
+    assert!(pending.join("draft.txt").is_file());
+    assert!(legacy.join("ses_gone/notes.txt").is_file());
+    assert!(files.join("ses_inMove/notes.txt").is_file());
+    server.stop().await;
+}
+
+async fn local_background_activity() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let workspace = home.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let rows = [
+        json!({"id":"ses_root","title":"Root","location":{"directory":workspace},"metadata":{"kuvo":{"bot":"bot_coordinator"}}}),
+        json!({"id":"ses_sub","title":"Child","location":{"directory":workspace},"parentID":"ses_root"}),
+        json!({"id":"ses_started","title":"Delegated","metadata":{"kuvo":{"startedBy":"ses_sub"}}}),
+        json!({"id":"ses_unrelated","title":"Other"}),
+        json!({"id":"ses_idle","title":"Done","parentID":"ses_root"}),
+        json!({"id":"ses_archivedTree","title":"Previous work","location":{"directory":workspace},"time":{"archived":1}}),
+        json!({"id":"ses_hiddenTree","title":"Internal","location":{"directory":workspace},"metadata":{"kuvo":{"engineFor":"ses_archivedTree"}}}),
+    ];
+    fs::write(
+        home.join("workspace/attachments-list.json"),
+        serde_json::to_vec(&rows).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        home.join("workspace/active-sessions.json"),
+        br#"{"ses_root":true,"ses_sub":true,"ses_started":true,"ses_unrelated":true}"#,
+    )
+    .unwrap();
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    until(
+        || {
+            server
+                .sessions
+                .activity()
+                .iter()
+                .any(|row| row.session == "ses_started")
+        },
+        "the active sessions projection",
+    )
+    .await;
+    let current = server.sessions.activity();
+    assert!(current.iter().any(|row| row.session == "ses_root"));
+    let background: Vec<_> = current
+        .iter()
+        .filter(|row| row.works_under("ses_root"))
+        .map(|row| {
+            (
+                row.session.as_str(),
+                row.title.as_str(),
+                row.state,
+                row.subagent,
+                row.bot.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        background,
+        [
+            (
+                "ses_started",
+                "Delegated",
+                ActivityState::Working,
+                false,
+                Some("bot_coordinator")
+            ),
+            (
+                "ses_sub",
+                "Child",
+                ActivityState::Working,
+                true,
+                Some("bot_coordinator")
+            ),
+        ]
+    );
+    let inventory = server.engine.worktree_inventory().await.unwrap();
+    assert_eq!(inventory.len(), 2);
+    assert!(inventory.iter().any(|row| row.session == "ses_root"
+        && row.folder == workspace
+        && row.running
+        && !row.archived));
+    assert!(inventory.iter().any(|row| row.session == "ses_archivedTree"
+        && row.folder == workspace
+        && !row.running
+        && row.archived));
+    fs::write(workspace.join("active-sessions.json"), b"null").unwrap();
+    assert!(server.engine.worktree_inventory().await.is_err());
+    fs::write(workspace.join("attachment-inventory-unavailable"), []).unwrap();
+    assert!(server.engine.worktree_inventory().await.is_err());
+    server.stop().await;
+}
+
+async fn cancelled_session_writers() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    let record = work.join("session-writers.json");
+    fs::write(
+        &record,
+        br#"{"id":"ses_writers","title":"Before","metadata":{"kept":true}}"#,
+    )
+    .unwrap();
+    let started = work.join("session-writer-started");
+    let opened = work.join("session-writer-opened");
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    let edit = |action, body: Value, cancel| {
+        let request = DispatchRequest {
+            method: Method::POST,
+            path: format!("kuvo/sessions/ses_writers/{action}"),
+            headers: Default::default(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+            caller: Caller::Local(Transport::Http {
+                origin: kuvo_server::LocalOrigin::App,
+                internal: false,
+            }),
+        };
+        let dispatcher = server.dispatcher.clone();
+        tokio::spawn(async move { dispatcher.dispatch(request, cancel).await.status })
+    };
+    let abandon = async |cancel: CancellationToken, write: JoinHandle<StatusCode>| {
+        cancel.cancel();
+        assert_eq!(
+            time::timeout(Duration::from_secs(2), write)
+                .await
+                .unwrap()
+                .unwrap(),
+            StatusCode::BAD_GATEWAY,
+        );
+    };
+
+    let first = edit("rename", json!({"title":"After"}), CancellationToken::new());
+    until(
+        || started.exists(),
+        "the first note writer to start its read",
+    )
+    .await;
+    let cancel = CancellationToken::new();
+    let waiting = edit("archive", json!({"archived":true}), cancel.clone());
+    tokio::task::yield_now().await;
+    abandon(cancel, waiting).await;
+    fs::write(&opened, []).unwrap();
+    assert_eq!(first.await.unwrap(), StatusCode::OK);
+    assert_eq!(
+        edit("pin", json!({"pinned":true}), CancellationToken::new())
+            .await
+            .unwrap(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&record).unwrap()).unwrap(),
+        json!({
+            "id":"ses_writers","title":"After","metadata":{"kept":true,"kuvo.pinned":true},
+        })
+    );
+
+    fs::remove_file(&started).unwrap();
+    fs::remove_file(&opened).unwrap();
+    let cancel = CancellationToken::new();
+    let reading = edit(
+        "rename",
+        json!({"title":"Do not write this"}),
+        cancel.clone(),
+    );
+    until(
+        || started.exists(),
+        "the next note writer to start a held read",
+    )
+    .await;
+    abandon(cancel, reading).await;
+    let next = edit("pin", json!({"pinned":false}), CancellationToken::new());
+    assert_eq!(
+        time::timeout(Duration::from_secs(2), next)
+            .await
+            .unwrap()
+            .unwrap(),
+        StatusCode::OK
+    );
+    fs::write(&opened, []).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&fs::read(&record).unwrap()).unwrap(),
+        json!({
+            "id":"ses_writers","title":"After","metadata":{"kept":true,"kuvo.pinned":false},
+        })
+    );
+    use kuvo_engine::{NoteEdits, SessionPermission};
+    let mut notes = accepted(server.engine.note_writer("ses_writers").await);
+    assert!(!accepted(notes.edit(NoteEdits::default()).await));
+    assert!(accepted(
+        notes
+            .edit(NoteEdits {
+                kuvo: [
+                    ("chat".to_owned(), Some(json!("/chats"))),
+                    ("autopilot".to_owned(), Some(json!(true)))
+                ]
+                .into(),
+                ..Default::default()
+            })
+            .await
+    ));
+    let mut next = edit("pin", json!({"pinned":true}), CancellationToken::new());
+    assert!(
+        time::timeout(Duration::from_millis(100), &mut next)
+            .await
+            .is_err()
+    );
+    assert!(accepted(
+        notes
+            .edit(NoteEdits {
+                kuvo: [
+                    ("autopilot".to_owned(), None),
+                    ("approval".to_owned(), Some(json!("acceptEdits")))
+                ]
+                .into(),
+                top: [("kuvo.pinned".to_owned(), None)].into(),
+                permissions: Some(vec![SessionPermission::new("edit", "*", "allow")]),
+            })
+            .await
+    ));
+    drop(notes);
+    assert_eq!(next.await.unwrap(), StatusCode::OK);
+    let saved: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    assert_eq!(
+        saved["metadata"],
+        json!({
+            "kept": true, "kuvo.pinned": true, "kuvo": { "chat": "/chats", "approval": "acceptEdits" },
+        })
+    );
+    assert_eq!(
+        saved["permissions"],
+        json!([{ "action":"edit", "resource":"*", "effect":"allow" }])
+    );
+    server.stop().await;
+}
+
+async fn transcript_reads_older_pages() {
+    use kuvo_engine::{TranscriptError, TranscriptScope};
+
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    let retain = |file, value: Value| {
+        fs::write(work.join(file), serde_json::to_vec(&value).unwrap()).unwrap()
+    };
+    let session = "ses_transcript";
+    retain("transcript-session.json", json!({"id":session}));
+    let mut rows: Vec<_> = (1..=42).map(|at| json!({
+        "id":format!("msg_{at}"), "type":"user", "text":format!("Paragraph {at} {}",
+        if at % 14 == 0 { format!("mentions Café. {}", "words ".repeat(440)) } else { "words ".repeat(445) }),
+    })).collect();
+    let recent = rows.split_off(22);
+    retain(
+        "transcript-latest.json",
+        json!({"data":recent.into_iter().rev().collect::<Vec<_>>(), "cursor":{"previous":"older page"}}),
+    );
+    retain(
+        "transcript-older.json",
+        json!({"data":rows.into_iter().rev().collect::<Vec<_>>()}),
+    );
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    let cancel = CancellationToken::new();
+    let read = |query| {
+        server
+            .engine
+            .transcript(session, "Release", query, TranscriptScope::Peer, &cancel)
+    };
+
+    let whole = read(None).await.unwrap();
+    assert!(whole.starts_with("# Release\n\n**User**\n\nParagraph 1 "));
+    assert!(whole.contains("[… the middle is left out; read it with query, to find a part …]"));
+    assert!(whole.contains("Paragraph 42 mentions Café."));
+    assert!(whole.len() < 20_200);
+    let found = read(Some("CAFE")).await.unwrap();
+    assert!(found.starts_with("3 places mention \"CAFE\""));
+    assert!(found.contains("Paragraph 41"));
+    assert!(found.contains("Paragraph 42 mentions Café."));
+    assert!(!found.contains("Paragraph 14 mentions Café."));
+    assert!(
+        read(Some("missing"))
+            .await
+            .unwrap()
+            .starts_with("Nothing in it mentions")
+    );
+
+    retain(
+        "transcript-session.json",
+        json!({"id":session, "revert":{"messageID":"msg_41"}}),
+    );
+    let reverted = read(None).await.unwrap();
+    assert!(reverted.contains("Paragraph 40"));
+    assert!(!reverted.contains("Paragraph 41"));
+    assert!(!reverted.contains("Paragraph 42"));
+    fs::write(work.join("transcript-unavailable"), []).unwrap();
+    assert!(
+        read(None)
+            .await
+            .unwrap()
+            .starts_with("Some older messages couldn't be read:")
+    );
+    retain(
+        "transcript-session.json",
+        json!({"id":session, "revert":{"messageID":"msg_3"}}),
+    );
+    assert!(matches!(
+        read(None).await,
+        Err(TranscriptError::Unavailable(_))
+    ));
+    fs::remove_file(work.join("transcript-unavailable")).unwrap();
+    retain("transcript-session.json", json!({"id":session}));
+    for reason in ["auto", "manual"] {
+        retain(
+            "transcript-latest.json",
+            json!({"data":[
+                {"id":"msg_idle","type":"idle","outcome":"failed","error":{"message":"The engine stopped."}},
+                {"id":"msg_summary","type":"compaction","reason":reason,"status":"failed"},
+                {"id":"msg_first","type":"user","text":"Tidy the notes."},
+            ]}),
+        );
+        let summary = read(None).await.unwrap();
+        assert!(summary.contains("_Couldn't summarize the conversation._"));
+        assert_eq!(
+            summary.contains("It stopped with an error: The engine stopped."),
+            reason == "auto"
+        );
+    }
+    cancel.cancel();
+    assert!(matches!(read(None).await, Err(TranscriptError::Cancelled)));
+    server.stop().await;
+}
+
+async fn external_asks() {
+    use kuvo_engine::{
+        AskResult, ExternalAsk, ExternalAskKind, ExternalAsks, ExternalCard, ExternalDecision,
+        ExternalReply, ExternalWaiting,
+    };
+    use kuvo_server::Refusal;
+    use tokio::sync::watch;
+
+    struct Owner(watch::Sender<Arc<Vec<ExternalWaiting>>>);
+    impl ExternalAsks for Owner {
+        fn list<'a>(
+            &'a self,
+            sessions: &'a [String],
+            viewer: &'a DispatchRequest,
+        ) -> AskResult<'a, Vec<ExternalAsk>> {
+            Box::pin(async move {
+                let choices = json!([{"answer":"once","title":"Allow Once","help":null,
+                    "named":null,"placeholder":null,"spoken":null}]);
+                let seen = self.0.borrow();
+                Ok(seen.iter().filter(|ask| sessions.contains(&ask.session)).map(|ask| {
+                    let card = match ask.kind {
+                        ExternalAskKind::Sandbox => ExternalCard::Sandbox(serde_json::from_value(json!({
+                            "kind":"sandbox","id":ask.id,"session":ask.session,"title":"Outside the sandbox",
+                            "asker":"Runner","message":"A command needs your answer.","command":"printf test",
+                            "error":null,"why":"A test command","stopped":[],"choices":choices,
+                        })).unwrap()),
+                        ExternalAskKind::Vault => ExternalCard::Vault(serde_json::from_value(json!({
+                            "kind":"vault","id":ask.id,"session":ask.session,"title":"Use a vault item",
+                            "need":"use","message":null,"note":null,"site":null,
+                            "choices":if viewer.headers.contains_key("x-test-vault-proof") { choices.clone() } else { json!([]) },
+                        })).unwrap()),
+                    };
+                    ExternalAsk { at: ask.at, card }
+                }).collect())
+            })
+        }
+        fn reply<'a>(&'a self, answer: ExternalReply<'a>) -> AskResult<'a, ()> {
+            Box::pin(async move {
+                assert!(matches!(answer.decision, ExternalDecision::Once));
+                assert_eq!(answer.session, "ses_asks");
+                if matches!(answer.kind, ExternalAskKind::Vault) {
+                    assert!(answer.request.headers.contains_key("x-test-vault-proof"));
+                }
+                let changed = self.0.send_if_modified(|rows| {
+                    let rows = Arc::make_mut(rows);
+                    let before = rows.len();
+                    rows.retain(|ask| ask.id != answer.id);
+                    rows.len() != before
+                });
+                if changed {
+                    Ok(())
+                } else {
+                    Err(Refusal::new(
+                        StatusCode::NOT_FOUND,
+                        "It isn’t waiting any more.",
+                    ))
+                }
+            })
+        }
+        fn waiting(&self) -> watch::Receiver<Arc<Vec<ExternalWaiting>>> {
+            self.0.subscribe()
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let seen = Arc::new(vec![
+        ExternalWaiting {
+            id: "sb_test".into(),
+            session: "ses_asks".into(),
+            at: 2,
+            kind: ExternalAskKind::Sandbox,
+        },
+        ExternalWaiting {
+            id: "vault_test".into(),
+            session: "ses_asks".into(),
+            at: 1,
+            kind: ExternalAskKind::Vault,
+        },
+    ]);
+    let (updates, _) = watch::channel(seen);
+    let source = Arc::new(Owner(updates));
+    let server = Server::start_with(home, |engine| engine.with_external_asks(source)).await;
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    fs::write(
+        home.join("workspace/attachments-list.json"),
+        br#"[{"id":"ses_asks","title":"Test","location":{"directory":""}}]"#,
+    )
+    .unwrap();
+    let route = "kuvo/sessions/ses_asks/asks";
+    let cards = server.get(route).await.json::<Value>().await.unwrap();
+    assert_eq!(cards["asks"][0]["id"], "sb_test");
+    assert_eq!(cards["asks"][1]["choices"], json!([]));
+    let answer = |id: &str| {
+        server
+            .request(reqwest::Method::POST, &format!("{route}/{id}"))
+            .header("x-kuvo-from", "app")
+            .json(&json!({"answer":"once"}))
+    };
+    assert_eq!(answer("vault_test").send().await.unwrap().status(), 403);
+    assert_eq!(answer("sb_test").send().await.unwrap().status(), 200);
+    assert_eq!(
+        answer("vault_test")
+            .header("x-test-vault-proof", "yes")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    assert_eq!(
+        server.get(route).await.json::<Value>().await.unwrap(),
+        json!({"asks":[]})
+    );
+    server.stop().await;
+}
+
+async fn coding_agent_models() {
+    struct CodingAgent;
+    impl AgentModelSource for CodingAgent {
+        fn catalog(&self, refresh: bool) -> CatalogRead<'_, AgentCatalog> {
+            Box::pin(async move {
+                let account =
+                    |provider: &str, id: &str, name: &str, label: Option<&str>| ModelAccount {
+                        provider: provider.into(),
+                        kind: "codex".into(),
+                        id: id.into(),
+                        name: name.into(),
+                        label: label.map(str::to_owned),
+                        signed_in_as: None,
+                        plan: Some("Pro".into()),
+                        installed: true,
+                        signed_in: true,
+                        complete: id != "default",
+                    };
+                Ok(AgentCatalog {
+                    accounts: vec![
+                        account("codex-cli", "default", "Codex", None),
+                        account("codex-cli@work", "work", "Codex · Work", Some("Work")),
+                    ],
+                    models: vec![AgentModel {
+                        provider: "codex-cli@work".into(),
+                        id: "listed".into(),
+                        name: "Listed".into(),
+                        aliases: vec!["default".into()],
+                        efforts: vec!["high".into()],
+                        hidden: false,
+                        retiring: false,
+                        provisional: false,
+                        speeds: vec![ModelSpeed {
+                            id: "priority".into(),
+                            name: "Fast".into(),
+                            description: None,
+                        }],
+                    }],
+                    auto: Some(vec![AutoModel {
+                        id: "picked".into(),
+                        name: "Picked".into(),
+                        entry_count: 1,
+                    }]),
+                    generations: [(
+                        "codex-cli@work".into(),
+                        if refresh { "fresh" } else { "kept" }.into(),
+                    )]
+                    .into(),
+                    unavailable: vec!["codex-cli".into()],
+                })
+            })
+        }
+        fn session_folder<'a>(&'a self, session: &'a str) -> CatalogRead<'a, Option<String>> {
+            Box::pin(async move { Ok((session == "ses_agents").then(String::new)) })
+        }
+    }
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    fs::create_dir_all(home.join("box")).unwrap();
+    fs::write(
+        home.join("box/models.json"),
+        br#"{"speeds":{"codex-cli@work":"priority"}}"#,
+    )
+    .unwrap();
+    let server = Server::start_with(home, |engine| {
+        engine.with_agent_model_source(Arc::new(CodingAgent))
+    })
+    .await;
+    let reply = server.get("kuvo/models/offered?session=ses_agents&refresh=1&provider=codex-cli%40work&model=default&variant=high").await;
+    assert_eq!(reply.status(), 200);
+    assert_eq!(
+        reply.json::<Value>().await.unwrap(),
+        json!({
+            "models":[
+                {"providerID":"codex-cli@work","id":"listed","name":"Listed","side":"agents","aliases":["default"],"efforts":["high"],"speeds":[{"id":"priority","name":"Fast"}]},
+                {"providerID":"auto","id":"picked","name":"Picked","side":"agents","aliases":[],"efforts":[]}
+            ],
+            "providers":[
+                {"id":"codex-cli@work","name":"Codex · Work","label":"Work","speed":"priority","account":{"agent":"codex","id":"work","agentName":"Codex","name":"Work","plan":"Pro"}},
+                {"id":"auto","name":"Custom Auto"}
+            ],
+            "known":{"engine":false,"agents":true},"starred":[],
+            "generations":{"codex-cli@work":"fresh"},"listing":["codex-cli"],"unavailable":[{"id":"codex-cli"}],
+            "starting":{"providerID":"codex-cli@work","id":"listed","variant":"high"},"scoped":true
+        })
+    );
+    server.stop().await;
+}
+
+async fn peer_waiting() {
+    use kuvo_engine::PeerWaiting;
+    let home = tempfile::tempdir().unwrap();
+    let folder = home.path().join("bots/bot_scout");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(
+        folder.join("bot.json"),
+        br#"{"kuvo":1,"id":"bot_scout","name":"Scout"}"#,
+    )
+    .unwrap();
+    fs::write(folder.join("session"), b"ses_root").unwrap();
+    let seen = Arc::new(vec![
+        PeerWaiting {
+            session: "ses_delegated".into(),
+            line: vec!["ses_root".into()],
+            bot: None,
+        },
+        PeerWaiting {
+            session: "ses_child".into(),
+            line: Vec::new(),
+            bot: Some("bot_scout".into()),
+        },
+    ]);
+    let (updates, activity) = tokio::sync::watch::channel(seen);
+    let server = Server::start_with(home.path(), |engine| engine.with_peer_waiting(activity)).await;
+    let waiting = || async {
+        server
+            .get("kuvo/waiting")
+            .await
+            .json::<Value>()
+            .await
+            .unwrap()
+    };
+    assert_eq!(waiting().await, json!({"sessions":0,"bots":1,"queue":0}));
+    updates.send_replace(Arc::new(Vec::new()));
+    assert_eq!(waiting().await, json!({"sessions":0,"bots":0,"queue":0}));
+    server.stop().await;
+}
+
 async fn fixture() {
     use std::io::Write;
     let mut file = fs::OpenOptions::new()
@@ -541,6 +1313,200 @@ async fn fixture() {
                 .await;
         });
     }
+}
+
+async fn paired_delivery() {
+    use kuvo_engine::{
+        ComputerKey, DeviceAccess, OwnedRequest, OwnerScope, PeerReply, SessionOwnership,
+    };
+    use kuvo_server::Refusal;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Authority {
+        held: AtomicBool,
+        replaced: AtomicBool,
+    }
+
+    impl SessionOwnership for Authority {
+        fn scope(&self, _: &str, issuer: Option<ComputerKey>) -> Result<OwnerScope, Refusal> {
+            Ok(OwnerScope {
+                setup: Some("set_AAAAAAAAAAAAAAAAAAAAAA".into()),
+                here: Some([3; 32]),
+                owner: None,
+                receipt_issuer: issuer,
+                held: self.held.load(Ordering::Relaxed),
+            })
+        }
+
+        fn current_pairing(&self, key: &ComputerKey, pairing: &str) -> DeviceAccess {
+            let expected = if self.replaced.load(Ordering::Relaxed) {
+                "new"
+            } else {
+                "old"
+            };
+            if *key == [17; 32] && pairing == expected {
+                DeviceAccess::Allowed
+            } else {
+                DeviceAccess::Revoked
+            }
+        }
+
+        fn request(&self, _: ComputerKey, _: OwnedRequest, _: Duration) -> PeerReply<'_> {
+            panic!("a draft addressed here must use the local handoff")
+        }
+    }
+
+    let home = tempfile::tempdir().unwrap();
+    let authority = Arc::new(Authority {
+        held: true.into(),
+        replaced: false.into(),
+    });
+    let server = Server::start_with(home.path(), |engine| {
+        engine.with_session_ownership(authority.clone())
+    })
+    .await;
+    let call = |method: Method, route: String, device, pairing: &str, body: Value| {
+        let id = pairing.to_owned();
+        let authority = authority.clone();
+        DispatchRequest {
+            method,
+            path: route,
+            headers: Default::default(),
+            body: serde_json::to_vec(&body).unwrap().into(),
+            caller: Caller::Paired {
+                transport: Transport::Relay,
+                pairing: Pairing::verified(
+                    device,
+                    id.clone(),
+                    "paired author".into(),
+                    true,
+                    move || authority.current_pairing(&device, &id) == DeviceAccess::Allowed,
+                ),
+            },
+        }
+    };
+    let cancel = CancellationToken::new();
+    let saved = server
+        .dispatcher
+        .dispatch(
+            call(
+                Method::POST,
+                "kuvo/sessions/ses_paired/delivery".into(),
+                [17; 32],
+                "old",
+                json!({"id":"msg_paired","text":"Before pairing changed","message":{}}),
+            ),
+            cancel.clone(),
+        )
+        .await;
+    assert_eq!(saved.status, 202);
+    let saved: Value =
+        serde_json::from_slice(&saved.body.collect().await.unwrap().to_bytes()).unwrap();
+    let receipt = format!(
+        "kuvo/data/messages/{}",
+        saved["operation"].as_str().unwrap()
+    );
+    let read = |pairing| call(Method::GET, receipt.clone(), [17; 32], pairing, Value::Null);
+    authority.replaced.store(true, Ordering::Relaxed);
+    authority.held.store(false, Ordering::Relaxed);
+    assert_eq!(
+        server
+            .dispatcher
+            .dispatch(read("old"), cancel.clone())
+            .await
+            .status,
+        403
+    );
+    let settled = time::timeout(Duration::from_secs(15), async {
+        loop {
+            let result = server
+                .dispatcher
+                .dispatch(read("new"), cancel.clone())
+                .await;
+            assert_eq!(result.status, 200);
+            let receipt: Value =
+                serde_json::from_slice(&result.body.collect().await.unwrap().to_bytes()).unwrap();
+            if receipt["status"] == "interrupted" {
+                break receipt;
+            }
+            time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        settled["message"]
+            .as_str()
+            .unwrap()
+            .contains("no longer has access")
+    );
+    assert!(!home.path().join("run/engine.json").exists());
+    let installed = install(home.path());
+    let _cleanup = Cleanup {
+        home: home.path().to_owned(),
+        installed,
+    };
+    let work = home.path().join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    assert_eq!(server.get("api/echo").await.status(), 207);
+    let permission = "api/session/ses_paired/permission/per_live/reply";
+    let permission_for = |pairing| {
+        call(
+            Method::POST,
+            permission.into(),
+            [17; 32],
+            pairing,
+            json!({"decision":"once"}),
+        )
+    };
+    assert_eq!(
+        server
+            .dispatcher
+            .dispatch(permission_for("old"), cancel.clone())
+            .await
+            .status,
+        403
+    );
+    let started = work.join("consent-reading");
+    let proceed = work.join("consent-continue");
+    for (status, revoke_pairing) in [(403, true), (409, false)] {
+        let dispatch = server.dispatcher.clone();
+        let request = permission_for("new");
+        let waiting = tokio::spawn(async move {
+            dispatch
+                .dispatch(request, CancellationToken::new())
+                .await
+                .status
+        });
+        until(|| started.exists(), "the live permission read").await;
+        if revoke_pairing {
+            authority.replaced.store(false, Ordering::Relaxed);
+        } else {
+            authority.held.store(true, Ordering::Relaxed);
+        }
+        fs::write(&proceed, []).unwrap();
+        assert_eq!(waiting.await.unwrap(), status);
+        assert!(!work.join("consent-replied").exists());
+        fs::remove_file(&started).unwrap();
+        fs::remove_file(&proceed).unwrap();
+        authority.replaced.store(true, Ordering::Relaxed);
+        authority.held.store(false, Ordering::Relaxed);
+    }
+    fs::write(&proceed, []).unwrap();
+    assert_eq!(
+        server
+            .dispatcher
+            .dispatch(permission_for("new"), cancel)
+            .await
+            .status,
+        200
+    );
+    assert!(work.join("consent-replied").exists());
+
+    server.stop().await;
+    println!(
+        "revoked delivery and permissions were fenced, including during a live permission read"
+    );
 }
 
 // The old inbox is only on the fixture engine; the saved prefix uses the resident's real files.
@@ -602,7 +1568,14 @@ async fn interrupted_inbox_transfer() {
     assert_eq!(server.get("api/session?limit=1").await.status(), 200);
     fs::remove_file(work.join("refuse-B")).unwrap();
     assert_eq!(server.engine.keep_inboxes().await.unwrap(), 2);
+    let waiting = home.join("run/waiting/msg_A.json");
+    fs::write(work.join("acceptance-unknown"), []).unwrap();
+    assert_eq!(server.engine.release_waiting().await.unwrap(), 0);
+    assert!(waiting.is_file());
+    assert!(!work.join("delivered").exists());
+    fs::remove_file(work.join("acceptance-unknown")).unwrap();
     assert_eq!(server.engine.release_waiting().await.unwrap(), 4);
+    assert!(!waiting.exists());
     assert_eq!(server.engine.release_waiting().await.unwrap(), 0);
     assert_eq!(
         fs::read_to_string(work.join("delivered")).unwrap(),
@@ -618,6 +1591,53 @@ async fn interrupted_inbox_transfer() {
     server.stop().await;
 }
 
+async fn starter_stop_leaves_summary_out_of_queue() {
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path();
+    let installed = install(home);
+    let _cleanup = Cleanup {
+        home: home.to_owned(),
+        installed,
+    };
+    let work = home.join("workspace");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("inbox-mode"), []).unwrap();
+    fs::write(work.join("event-watch"), []).unwrap();
+    let inbox = work.join("inbox.json");
+    fs::write(
+        &inbox,
+        br#"[{"id":"msg_summary","type":"compaction","delivery":"steer"}]"#,
+    )
+    .unwrap();
+    let server = Server::start(home).await;
+    assert_eq!(server.get("api/session/ses_inbox").await.status(), 200);
+    until(
+        || work.join("event-subscribed").exists(),
+        "the resident to follow execution events",
+    )
+    .await;
+    accepted(server.engine.stop_for_starter("ses_inbox").await);
+    assert!(work.join("interrupted").is_file());
+    let stopped = server.get("kuvo/sessions/ses_inbox/queue").await;
+    assert_eq!(
+        stopped.json::<Value>().await.unwrap(),
+        json!({ "paused": false, "held": [] })
+    );
+    let event = json!({"type":"session.execution.interrupted","data":{"sessionID":"ses_inbox","reason":"user"}});
+    fs::write(work.join("fixture-event"), format!("data: {event}\n\n")).unwrap();
+    until(
+        || fs::read_to_string(&inbox).is_ok_and(|rows| rows == "[]"),
+        "the stopped summary to be removed",
+    )
+    .await;
+    let stopped = server.get("kuvo/sessions/ses_inbox/queue").await;
+    assert_eq!(
+        stopped.json::<Value>().await.unwrap(),
+        json!({ "paused": false, "held": [] })
+    );
+    server.stop().await;
+}
+
 async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_server::Body> {
     let mut answer = Reply::json(StatusCode::OK, json!({"data": []}));
     if !req
@@ -630,14 +1650,16 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             json!({"message": "engine password required"}),
         );
     } else {
-        fs::write("last-path", req.uri().path_and_query().unwrap().as_str()).unwrap();
+        let route = req.uri().path_and_query().unwrap().as_str().to_owned();
         let text = |header| {
             req.headers()
                 .get(header)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        if Path::new("inbox-mode").exists() {
+        if Path::new("inbox-mode").exists()
+            && !(req.uri().path() == "/api/event" && Path::new("event-watch").exists())
+        {
             let reply = inbox_fixture(req).await;
             let mut response = Response::new(reply.body);
             *response.status_mut() = reply.status;
@@ -645,6 +1667,97 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             return response;
         }
         match req.uri().path() {
+            "/api/session/ses_paired/permission" if route.ends_with("?live=1") => {
+                fs::write("consent-reading", []).unwrap();
+                until(
+                    || Path::new("consent-continue").exists(),
+                    "the test to finish the live permission read",
+                )
+                .await;
+                answer = Reply::json(
+                    StatusCode::OK,
+                    json!({"data":[{"id":"per_live","action":"edit","resources":["notes.txt"]}]}),
+                );
+            }
+            "/api/session/ses_paired/permission/per_live/reply" if req.method() == Method::POST => {
+                fs::write("consent-replied", []).unwrap();
+                answer = Reply::json(StatusCode::OK, json!({}));
+            }
+            "/api/session/ses_writers" => {
+                let file = "session-writers.json";
+                let mut saved: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+                if req.method() == Method::PATCH {
+                    let patch: serde_json::Map<String, Value> = serde_json::from_slice(
+                        &req.into_body().collect().await.unwrap().to_bytes(),
+                    )
+                    .unwrap();
+                    saved.as_object_mut().unwrap().extend(patch);
+                    fs::write(file, serde_json::to_vec(&saved).unwrap()).unwrap();
+                } else if !Path::new("session-writer-started").exists() {
+                    fs::write("session-writer-started", []).unwrap();
+                    until(
+                        || Path::new("session-writer-opened").exists(),
+                        "the test to release the held note read",
+                    )
+                    .await;
+                }
+                answer = Reply::json(StatusCode::OK, json!({ "data": saved }));
+            }
+            "/api/session/ses_transcript" => {
+                let row: Value =
+                    serde_json::from_slice(&fs::read("transcript-session.json").unwrap()).unwrap();
+                answer = Reply::json(StatusCode::OK, json!({"data":row}));
+            }
+            "/api/session/ses_transcript/message" => {
+                let older = req
+                    .uri()
+                    .query()
+                    .is_some_and(|query| query.contains("cursor=older%20page"));
+                if older && Path::new("transcript-unavailable").exists() {
+                    answer = Reply::json(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"message":"The oldest messages aren't ready."}),
+                    );
+                } else {
+                    let file = if older {
+                        "transcript-older.json"
+                    } else {
+                        "transcript-latest.json"
+                    };
+                    let row: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+                    answer = Reply::json(StatusCode::OK, row);
+                }
+            }
+            "/api/session/active" if Path::new("active-sessions.json").exists() => {
+                let rows: Value =
+                    serde_json::from_slice(&fs::read("active-sessions.json").unwrap()).unwrap();
+                answer = Reply::json(StatusCode::OK, json!({"data":rows}));
+            }
+            "/api/session" if Path::new("attachment-inventory-unavailable").exists() => {
+                answer = Reply::json(StatusCode::SERVICE_UNAVAILABLE, json!({}));
+            }
+            "/api/session" if Path::new("attachments-list.json").exists() => {
+                let mut rows: Vec<Value> =
+                    serde_json::from_slice(&fs::read("attachments-list.json").unwrap()).unwrap();
+                if let Some(parent) = req.uri().query().and_then(|query| {
+                    query
+                        .split('&')
+                        .find_map(|field| field.strip_prefix("parentID="))
+                }) {
+                    rows.retain(|row| row["parentID"] == parent);
+                }
+                answer = Reply::json(StatusCode::OK, json!({"data":rows}));
+            }
+            "/api/session/ses_branch/message" | "/api/session/ses_middle/message"
+                if Path::new("attachment-words.json").exists() =>
+            {
+                let rows: Value =
+                    serde_json::from_slice(&fs::read("attachment-words.json").unwrap()).unwrap();
+                answer = Reply::json(StatusCode::OK, json!({"data":rows}));
+            }
+            "/api/session/ses_asks" if Path::new("attachments-list.json").exists() => {
+                answer = Reply::json(StatusCode::OK, json!({"data":{"id":"ses_asks"}}));
+            }
             "/api/echo" => {
                 let mut value = json!({
                     "path": req.uri().path_and_query().unwrap().as_str(),
@@ -667,6 +1780,12 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
                 let stream = async_stream::stream! {
                     let _ended = StreamEnded;
                     yield Ok(Frame::data(Bytes::from_static(b"data: connected\n\n")));
+                    if Path::new("event-watch").exists() {
+                        fs::write("event-subscribed", []).unwrap();
+                        until(|| Path::new("fixture-event").exists(), "the test to publish an engine event").await;
+                        let event = fs::read("fixture-event").unwrap();
+                        yield Ok(Frame::data(Bytes::from(event)));
+                    }
                     std::future::pending::<()>().await;
                 };
                 answer.body = StreamBody::new(stream).boxed_unsync();
@@ -724,6 +1843,10 @@ async fn fixture_reply(mut req: Request<Incoming>, auth: &str) -> Response<kuvo_
             "/api/pty/refused/connect" => answer.status = StatusCode::NOT_FOUND,
             _ => {}
         }
+        answer
+            .headers
+            .entry(header::CACHE_CONTROL)
+            .or_insert_with(|| route.parse().unwrap());
     }
     let mut response = Response::new(answer.body);
     *response.status_mut() = answer.status;
@@ -778,7 +1901,23 @@ async fn inbox_fixture(req: Request<Incoming>) -> Reply {
             Reply::json(StatusCode::OK, json!({ "data": inbox }))
         }
         ("GET", "/api/session/active") => empty(),
+        ("POST", "/api/session/ses_inbox/interrupt") => {
+            fs::write("interrupted", []).unwrap();
+            Reply::json(StatusCode::OK, json!({}))
+        }
         ("GET", _) if route.ends_with("/inbox") => empty(),
+        ("GET", _) if route.starts_with("/api/session/ses_inbox/message/") => {
+            let id = tail("/api/session/ses_inbox/message/").unwrap();
+            let found = fs::read_to_string("delivered-ids")
+                .unwrap_or_default()
+                .lines()
+                .any(|saved| saved == id);
+            if found {
+                Reply::json(StatusCode::OK, json!({ "data": { "id": id } }))
+            } else {
+                missing()
+            }
+        }
         ("DELETE", _) if route.starts_with("/api/session/ses_inbox/inbox/") => {
             let id = tail("/api/session/ses_inbox/inbox/").unwrap();
             if id == "msg_B" && Path::new("refuse-B").exists() {
@@ -798,12 +1937,21 @@ async fn inbox_fixture(req: Request<Incoming>) -> Reply {
             let given: Value =
                 serde_json::from_slice(&req.into_body().collect().await.unwrap().to_bytes())
                     .unwrap();
+            if Path::new("acceptance-unknown").exists() {
+                return Reply::json(StatusCode::OK, json!({}));
+            }
             let mut delivered = fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open("delivered")
                 .unwrap();
             writeln!(delivered, "{}", given["text"].as_str().unwrap()).unwrap();
+            let mut ids = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("delivered-ids")
+                .unwrap();
+            writeln!(ids, "{}", given["id"].as_str().unwrap()).unwrap();
             Reply::json(StatusCode::OK, json!({}))
         }
         _ => missing(),

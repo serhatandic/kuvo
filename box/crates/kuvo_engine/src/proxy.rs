@@ -3,6 +3,7 @@ use std::{collections::HashSet, io, time::Duration};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use http_body_util::BodyExt;
 use kuvo_server::{DispatchRequest, Refusal, Reply, socket::Socket};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::{Client, RequestBuilder, redirect};
@@ -20,6 +21,7 @@ const DIRECTORY: &str = "x-opencode-directory";
 const REQUEST_HEADERS: &[&str] = &["content-type", "accept", DIRECTORY, "last-event-id"];
 const RESPONSE_HEADERS: &[&str] = &["content-type", "cache-control"];
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const SESSION_WRITE_TURN: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct Upstream(Client);
@@ -142,31 +144,33 @@ pub(crate) async fn busy(upstream: &Upstream, record: &Record) -> bool {
         if directory.is_empty() || !checked.insert(directory) {
             continue;
         }
-        let get = |path| upstream.probe::<Value>(record, path, Some(directory), PROBE_TIMEOUT);
-        let Ok((forms, permissions, terminals, commands)) = tokio::try_join!(
-            get("api/form"),
-            get("api/permission/request"),
-            get("api/pty"),
-            get("api/shell"),
-        ) else {
-            return true;
-        };
-        let running = |jobs: &Value| {
-            list(jobs).is_none_or(|jobs| {
-                jobs.iter().any(|job| {
-                    !job.is_object() || job.get("status").and_then(Value::as_str) == Some("running")
-                })
-            })
-        };
-        if list(&forms).is_none_or(|forms| !forms.is_empty())
-            || list(&permissions).is_none_or(|permissions| !permissions.is_empty())
-            || running(&terminals)
-            || running(&commands)
-        {
+        if folder_busy(upstream, record, directory).await {
             return true;
         }
     }
     false
+}
+
+pub(crate) async fn folder_busy(upstream: &Upstream, record: &Record, directory: &str) -> bool {
+    let get = |path| upstream.probe::<Value>(record, path, Some(directory), PROBE_TIMEOUT);
+    let Ok((forms, permissions, terminals, commands)) = tokio::try_join!(
+        get("api/form"),
+        get("api/permission/request"),
+        get("api/pty"),
+        get("api/shell"),
+    ) else {
+        return true;
+    };
+    let running = |jobs: &Value| {
+        list(jobs).is_none_or(|jobs| {
+            jobs.iter()
+                .any(|job| !job.is_object() || job["status"] == "running")
+        })
+    };
+    list(&forms).is_none_or(|forms| !forms.is_empty())
+        || list(&permissions).is_none_or(|permissions| !permissions.is_empty())
+        || running(&terminals)
+        || running(&commands)
 }
 
 fn list(answer: &Value) -> Option<&Vec<Value>> {
@@ -178,6 +182,43 @@ pub(crate) async fn http(
     request: DispatchRequest,
     cancel: CancellationToken,
 ) -> Reply {
+    if let Some(key) = crate::raw_prompts::prompt(&request) {
+        let here = engine.clone();
+        let send = tokio::spawn(async move {
+            let turn_key = crate::disk::key(&key.0, &key.1);
+            let _turn = here.draft_turns.acquire(&turn_key).await;
+            if let Some(answer) = here.raw_prompts.read(&key).await {
+                return Some(answer);
+            }
+            let answer = tokio::time::timeout(Duration::from_secs(120), async {
+                let reply = forward(here.clone(), request, CancellationToken::new()).await;
+                let body = reply.body.collect().await.ok()?.to_bytes().to_vec();
+                Some(crate::raw_prompts::Answer {
+                    status: reply.status,
+                    headers: reply.headers,
+                    body,
+                })
+            })
+            .await
+            .ok()
+            .flatten()?;
+            if answer.status.is_success() {
+                here.raw_prompts.keep(key, answer.clone()).await;
+            }
+            Some(answer)
+        });
+        return match send.await.ok().flatten() {
+            Some(answer) => answer.reply(),
+            None => down(&engine).await.reply(),
+        };
+    }
+    if let Some(key) = crate::raw_prompts::removed(&request) {
+        engine.raw_prompts.forget(key).await;
+    }
+    forward(engine, request, cancel).await
+}
+
+async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationToken) -> Reply {
     let path = request.path.split('?').next().unwrap_or_default();
     let _admitted = if let Some(id) = crate::session_move::prompt_target(&request.method, path) {
         match crate::session_move::admit(&engine, &id, None).await {
@@ -201,26 +242,32 @@ pub(crate) async fn http(
         }
         return down(&engine).await.reply();
     };
-    let archive = (request.method == Method::PATCH)
+    if let Err(refused) = crate::consent::raw(&engine, &lease, &request, &cancel).await {
+        return refused.reply();
+    }
+    let changing = (request.method == Method::PATCH)
         .then(|| path.strip_prefix("api/session/"))
         .flatten()
         .and_then(|id| percent_encoding::percent_decode_str(id).decode_utf8().ok())
-        .filter(|id| crate::sessions::valid_id(id))
-        .zip(
-            serde_json::from_slice::<Value>(&request.body)
-                .ok()
-                .and_then(|body| body["metadata"]["kuvo.archived"].as_bool()),
-        );
-    let mut archive_turn = None;
+        .filter(|id| crate::sessions::valid_id(id));
+    let mut session_turn = None;
     let mut flip = None;
-    if let Some((id, archived)) = &archive {
-        archive_turn = Some(engine.turn(id).await);
-        let before = engine
-            .call::<Value>(&lease, Method::GET, path, None)
-            .await
-            .ok();
-        if before.map(|state| state["metadata"]["kuvo.archived"] == true) != Some(*archived) {
-            flip = Some((id, *archived));
+    if let Some(id) = &changing {
+        session_turn = cancel.run_until_cancelled(engine.note_turn(id)).await;
+        if session_turn.is_none() {
+            return down(&engine).await.reply();
+        }
+        if let Some(archived) = serde_json::from_slice::<Value>(&request.body)
+            .ok()
+            .and_then(|body| body["metadata"]["kuvo.archived"].as_bool())
+        {
+            let before = engine
+                .call::<Value>(&lease, Method::GET, path, None)
+                .await
+                .ok();
+            if before.map(|state| state["metadata"]["kuvo.archived"] == true) != Some(archived) {
+                flip = Some((id, archived));
+            }
         }
     }
     let mut outgoing =
@@ -233,10 +280,22 @@ pub(crate) async fn http(
         }
     }
     if !matches!(request.method, Method::GET | Method::HEAD) && !request.body.is_empty() {
-        outgoing = outgoing.body(request.body);
+        let body = crate::attachments::raw(&engine, &request).await;
+        outgoing = outgoing.body(body.map_or(request.body, Into::into));
     }
+    let send = async {
+        let request = outgoing.send();
+        tokio::pin!(request);
+        tokio::select! {
+            answer = &mut request => answer.ok(),
+            _ = tokio::time::sleep(SESSION_WRITE_TURN), if session_turn.is_some() => {
+                drop(session_turn.take());
+                request.await.ok()
+            }
+        }
+    };
     let response = tokio::select! {
-        result = outgoing.send() => result.ok(),
+        result = send => result,
         () = cancel.cancelled() => None,
     };
     let Some(response) = response else {
@@ -248,7 +307,7 @@ pub(crate) async fn http(
     {
         crate::sessions::after_archive(&engine, &lease, id, archived).await;
     }
-    drop(archive_turn);
+    drop(session_turn);
     let headers: HeaderMap = RESPONSE_HEADERS
         .iter()
         .filter_map(|&name| {
@@ -279,6 +338,7 @@ pub(crate) async fn http(
                     }
                 } else {
                     crate::conversation::compaction_page(&mut page);
+                    engine.tool_words.fill_page(&engine, &mut page).await;
                 }
                 let mut reply = Reply::json(status, page);
                 reply.headers = headers;

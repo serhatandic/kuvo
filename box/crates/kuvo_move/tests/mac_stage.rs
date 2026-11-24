@@ -1484,3 +1484,151 @@ fn released_move_keeps_a_custom_claude_sign_in_in_a_disposable_keychain() {
         }
     }
 }
+
+#[test]
+fn saved_sign_ins_remove_only_the_password_verified_in_the_vault() {
+    use serde_json::json;
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let account = root.path().canonicalize().unwrap();
+    let home = account.join(".kuvo-code");
+    let origin = account.join("Library/Application Support/run.kuvo.code");
+    let bundle = account.join("Fixture.app");
+    put(&bundle.join("Contents/Info.plist"), br#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>run.kuvo.code</string></dict></plist>"#);
+    put(
+        &home.join("updates/rehome/state.json"),
+        &serde_json::to_vec(&json!({
+            "state":"done", "way":"move", "from":origin, "to":home,
+            "app":{"bundle":bundle, "id":"run.kuvo.code"}, "owed":["passwords"]
+        }))
+        .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let tool = bundle.join("Contents/MacOS/kuvo-keys");
+    put(&tool, format!(r#"#!/bin/sh
+case "$1" in
+passwords) exec /usr/bin/curl --silent --fail --noproxy '*' 'http://127.0.0.1:{port}/fixture/passwords' ;;
+delete-originals)
+  [ "$4" = --password ] && [ "$5" = accepted.example ] && [ "$6" = --account ] && [ "$7" = tester ] || exit 90
+  exec /usr/bin/curl --silent --fail --noproxy '*' --data-binary @- 'http://127.0.0.1:{port}/fixture/delete'
+  ;;
+*) exit 90 ;;
+esac
+"#).as_bytes());
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut canary = [0u8; 24];
+    getrandom::fill(&mut canary).unwrap();
+    let secret = zeroize::Zeroizing::new(hex::encode(canary));
+    let mut auth = [0u8; 24];
+    getrandom::fill(&mut auth).unwrap();
+    put(
+        &home.join("run/serve.json"),
+        &serde_json::to_vec(&json!({"port":port, "password":hex::encode(auth)})).unwrap(),
+    );
+
+    let expected = secret.clone();
+    let fixture = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for (method, path) in [
+            ("GET", "/fixture/passwords"),
+            ("GET", "/kuvo/vault"),
+            ("POST", "/kuvo/vault/items"),
+            ("POST", "/kuvo/vault/items/v_new/same"),
+            ("POST", "/fixture/delete"),
+            ("POST", "/kuvo/vault/items/v_old/same"),
+        ] {
+            let mut socket = loop {
+                if let Ok((socket, _)) = listener.accept() {
+                    break socket;
+                }
+                assert!(Instant::now() < deadline, "a handover request was missing");
+                thread::sleep(Duration::from_millis(10));
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut read = BufReader::new(&mut socket);
+            let mut line = String::new();
+            read.read_line(&mut line).unwrap();
+            assert!(
+                line.starts_with(&format!("{method} {path} ")),
+                "unexpected handover request"
+            );
+            let mut size = 0;
+            loop {
+                line.clear();
+                read.read_line(&mut line).unwrap();
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    size = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = zeroize::Zeroizing::new(vec![0; size]);
+            read.read_exact(&mut body).unwrap();
+            let request = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
+            let reply = match path {
+                "/fixture/passwords" => json!({"logins":[
+                    {"host":"accepted.example","account":"tester","password":expected.as_str()},
+                    {"host":"conflict.example","account":"tester","password":expected.as_str()},
+                    {"host":"short.example","account":"tester","password":&expected[..3]},
+                    {"host":"duplicate.example","account":"tester","password":expected.as_str()},
+                    {"host":"duplicate.example","account":"tester","password":expected.as_str()},
+                ]}),
+                "/kuvo/vault" => {
+                    json!({"items":[{"id":"v_old","name":"Conflict","kind":"login","sites":["conflict.example"],"username":"tester"}],"grants":[]})
+                }
+                "/kuvo/vault/items" => {
+                    assert!(
+                        request["values"]["password"].as_str() == Some(expected.as_str())
+                            && request["signInOnly"] == true,
+                        "the vault must receive a sign-in-only item with the fixture password"
+                    );
+                    json!({"item":{"id":"v_new","kind":"login","sites":["accepted.example"],"username":"tester"}})
+                }
+                "/kuvo/vault/items/v_new/same" => {
+                    assert!(
+                        request["values"]["password"].as_str() == Some(expected.as_str()),
+                        "the added password must be verified"
+                    );
+                    json!({"same":true})
+                }
+                "/fixture/delete" => {
+                    assert!(
+                        request["password"].as_str() == Some(expected.as_str()),
+                        "the verified password must be passed over stdin"
+                    );
+                    json!({})
+                }
+                _ => json!({"same":false}),
+            };
+            let reply = zeroize::Zeroizing::new(serde_json::to_vec(&reply).unwrap());
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reply.len()).unwrap();
+            socket.write_all(&reply).unwrap();
+        }
+    });
+    let home = Home::new(home).unwrap();
+    let outcome = kuvo_move::mac::sign_ins(&home, &account).unwrap();
+    assert_eq!(outcome.exit_code(), 0);
+    fixture.join().unwrap();
+    let status = kuvo_move::rehome_status(&home);
+    assert_eq!(status["signIns"]["added"], 1);
+    assert_eq!(status["signIns"]["kept"], 4);
+    assert_eq!(status["owed"], json!([]));
+    let saved = fs::read_to_string(home.root().join("updates/rehome/state.json")).unwrap();
+    assert!(
+        !saved.contains(secret.as_str()),
+        "the handover receipt omits the password"
+    );
+}

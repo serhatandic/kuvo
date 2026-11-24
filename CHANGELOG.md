@@ -23,10 +23,17 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A moved conversation can send and receive replies by name while its old computer is still cleaning up the original.
 - Your other computer learns a newly created conversation’s name before its message arrives.
 - Notes for a moving conversation wait for its new computer to confirm the move, then reach it while the original is being cleaned up.
+- Windows uninstall completes when there is no sign-in task to remove.
+
+- Windows installer codes can enroll a computer before enabling sign-in startup.
+
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
 - Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.
 - A computer verifies the signed pack for its platform before preparing a Rust update.
+- The main computer waits for reachable computers to prepare a Rust update before switching. A computer that was offline can catch up when it returns.
+- A returning computer can get a signed update from another computer when the release feed no longer serves it. On a Mac, Kuvo restarts an older Helper when the update is ready.
+- A computer keeps a manual update check until its main computer can receive it, even if the computer restarts first.
 
 - An acknowledgement for the wrong part no longer advances a move before that part arrives.
 - A moved conversation opens on its new computer while the original is still being cleaned up.
@@ -65,7 +72,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - The Rust server keeps local OpenCode queues and can settle a retried send after a restart.
 - The Rust server retains local drafts and their receipts, reads OpenCode questions and permissions, and searches local conversations.
+- The Rust server lets you take back, steer, or send a draft waiting on this computer. It keeps the draft you take back until the composer restores it.
 - Retrying a desktop message after a server restart confirms a message already received, without sending another copy.
+- On the Rust box, a draft can wait for its conversation’s computer, starred models appear across the setup, and conversation search includes other computers.
+- Windows project keys open their session lists, and branches keep attachments they refer to by Windows paths.
+- Summarizing a conversation you’ve already read keeps it marked as read.
 - The Rust box shows the coding-agent status reported by each computer and leaves conversations waiting for you out of its working count.
 
 - The Rust box pairs your desktop app across your computers and learns about removed devices when it reconnects, even while your main computer is away.

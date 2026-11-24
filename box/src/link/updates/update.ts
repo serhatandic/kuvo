@@ -112,6 +112,8 @@ export interface BoxRelease {
   layout?: number;
   clientProtocol?: number;
   released?: string;
+  launch?: "rust";
+  packs?: Record<string, BoxRelease["pack"]>;
   pack: { url: string; sha256: string };
   linux?: Record<string, { url?: string; integrity?: string } | undefined>;
   darwin?: Record<string, { url?: string; integrity?: string } | undefined>;
@@ -134,7 +136,23 @@ export function verifyBoxes(text: string, keys: string[] = UPDATE_KEYS): BoxRele
     || (manifest.layout !== undefined && (!Number.isSafeInteger(manifest.layout) || manifest.layout < 0))
     || (manifest.clientProtocol !== undefined && (!Number.isSafeInteger(manifest.clientProtocol) || manifest.clientProtocol < 1))
     || !isObject(manifest.pack) || typeof manifest.pack.url !== "string" || !/^[0-9a-f]{64}$/.test(manifest.pack.sha256 ?? "")) throw new Error("That isn't a release.");
-  return manifest;
+  return localPack(manifest);
+}
+
+export function localPack(manifest: BoxRelease): BoxRelease {
+  if (manifest.launch !== "rust") return manifest;
+  const arch = { x64: "x86_64", arm64: "aarch64" }[os.arch() as "x64" | "arm64"];
+  const system = process.platform === "darwin" ? "apple-darwin" :
+    process.platform === "linux" ? "unknown-linux-musl" : undefined;
+  const pack = system && arch && manifest.packs?.[`${arch}-${system}`];
+  if (!isObject(pack) || typeof pack.url !== "string" || !/^[0-9a-f]{64}$/.test(pack.sha256 ?? ""))
+    throw new Error("The release has no pack for this machine.");
+  return { ...manifest, pack };
+}
+
+export function namesPack(manifest: BoxRelease, hash: string): boolean {
+  return manifest.pack.sha256 === hash ||
+    (manifest.launch === "rust" && Object.values(manifest.packs ?? {}).some(pack => pack?.sha256 === hash));
 }
 
 // This box's version, as the Kuvo Code that put its files there marked it (`bin/box-version`).
@@ -432,6 +450,7 @@ export interface UpdateOptions {
 /** A release's `box.json`, in its pack: its version, its engine's, each file's SHA-256, and its
  * Mac bundles' (`bin/<name>.app`), each file by its path in the bundle. */
 export interface BoxFiles {
+  launch?: "rust";
   version: string;
   engine: string;
   files: Record<string, string>;
@@ -546,6 +565,8 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
     fs.writeFileSync(path.join(stage, "pack.tgz"), pack, { mode: 0o600 });
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
     if (box.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
+    const rust = manifest.launch === "rust";
+    if (rust !== (box.launch === "rust")) throw new Error("The release's files aren't what it says.");
     const layout = installedLinkBuild(path.join(stage, "files"))?.layout ?? 0;
     if (manifest.layout !== undefined && manifest.layout !== layout) throw new Error("The release’s folder layout doesn’t match its manifest.");
     const stagedBin = path.join(stage, "files", "bin");
@@ -613,25 +634,35 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
     step("checking it");
     const engine = staged ?? path.join(engineFolder, "opencode");
     if (ran(engine, ["--version"]).status !== 0) throw new Error("The new engine doesn't run here.");
-    const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
-    if (tried.status !== 0 || !tried.output.includes("ok")) throw new Error("The new link doesn't work with it here.");
-    // Check the staged link against the running engine too, when it differs.
-    if (running && engineChanges) {
-      const before = path.join(K, "engine", running, "opencode");
-      const triedBefore = fs.existsSync(before) ? ran(before, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }) : null;
-      if (triedBefore && (triedBefore.status !== 0 || !triedBefore.output.includes("ok"))) throw new Error("The new link doesn't work with the engine at work here.");
-    }
-    if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
+    if (rust) {
+      const program = path.join(stagedBin, "kuvo-box");
+      if (!files.includes("bin/kuvo-box") ||
+        ran(program, ["selftest", "--engine", manifest.engine], {}, 10_000).status !== 0) {
+        throw new Error("The new box doesn't run with its engine here.");
+      }
+    } else {
+      const tried = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K });
+      if (tried.status !== 0 || !tried.output.includes("ok")) throw new Error("The new link doesn't work with it here.");
+      // Check the staged link against the running engine too, when it differs.
+      if (running && engineChanges) {
+        const before = path.join(K, "engine", running, "opencode");
+        const triedBefore = fs.existsSync(before) ? ran(before, ["--config=/dev/null", "--no-env-file", path.join(stage, "files", "bin", "kuvo-link.js"), "selftest"], { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }) : null;
+        if (triedBefore && (triedBefore.status !== 0 || !triedBefore.output.includes("ok"))) throw new Error("The new link doesn't work with the engine at work here.");
+      }
+      if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
 
-    if (/^V=(.+)$/m.exec(textOf(keeper) ?? "")?.[1] !== manifest.engine) throw new Error("The new keeper names a different engine.");
-    const env = { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K };
-    const bridgeCheck = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stagedBin, "kuvo-agents.js"), "selftest"], env);
-    if (bridgeCheck.status !== 0 || !/^ok(?:\s|$)/.test(bridgeCheck.output)) throw new Error("The new bridge doesn't work with its engine here.");
-    const probeHome = path.join(stage, "probe");
-    fs.mkdirSync(probeHome, { mode: 0o700 });
-    const info = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stagedBin, "kuvo-link.js"), "box", "route", "--internal", "kuvo/info"],
-      { ...env, KUVO_HOME: probeHome }, 10_000);
-    if (info.status !== 0 || !/^\{"status":200,"internal":true,/.test(info.output)) throw new Error("The new link couldn't answer its internal kuvo/info call.");
+      if (/^V=(.+)$/m.exec(textOf(keeper) ?? "")?.[1] !== manifest.engine) throw new Error("The new keeper names a different engine.");
+      const env = { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K };
+      const bridgeCheck = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stagedBin, "kuvo-agents.js"), "selftest"], env);
+      if (bridgeCheck.status !== 0 || !/^ok(?:\s|$)/.test(bridgeCheck.output)) throw new Error("The new bridge doesn't work with its engine here.");
+      const probeHome = path.join(stage, "probe");
+      fs.mkdirSync(probeHome, { mode: 0o700 });
+      const info = ran(engine, ["--config=/dev/null", "--no-env-file", path.join(stagedBin, "kuvo-link.js"), "box", "route", "--internal", "kuvo/info"],
+        { ...env, KUVO_HOME: probeHome }, 10_000);
+      if (info.status !== 0 || !/^\{"status":200,"internal":true,/.test(info.output)) throw new Error("The new link couldn't answer its internal kuvo/info call.");
+    }
+    if (rust && (ran("sh", ["-n", keeper]).status !== 0 ||
+      /^V=(.+)$/m.exec(textOf(keeper) ?? "")?.[1] !== manifest.engine)) throw new Error("The new keeper doesn't read.");
     if (!roomForData()) throw new Error("There isn't room on it to keep its data while it updates.");
     // Rollback selects the old engine along with its code. Require release evidence that the
     // specific engine it would return to can read the new engine's data.
@@ -657,7 +688,11 @@ export async function update({ now = false, from, phase, expected, keys = UPDATE
       fs.mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 });
       fs.renameSync(path.join(stage, "files", file), to);
     }
-    await stageVersion(K, verified, target, receipt);
+    if (rust) {
+      fs.renameSync(path.join(stage, "files", "box.json"), path.join(verified, "box.json"));
+      writeDurablePrivate(path.join(verified, "boxes.json"), released, verified);
+    }
+    await stageVersion(K, verified, target, receipt, rust);
 
     recordReady(ref);
     return { result: "waiting", version: manifest.version };

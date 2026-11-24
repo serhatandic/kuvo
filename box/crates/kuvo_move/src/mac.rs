@@ -32,8 +32,8 @@ mod work;
 pub(crate) use new_install::interrupted as unfinished_install;
 pub use new_install::{new_home, new_readiness};
 pub use publication::{
-    ClaudeKeychain, CutoverStep, GenericPassword, KeychainItems, Outcome, Run, back, resume,
-    resume_with_keychain, settle, settle_started, unfinished,
+    ClaudeKeychain, CutoverStep, GenericPassword, KeychainItems, Outcome, Run, back,
+    owns_sign_ins_home, resume, resume_with_keychain, settle, settle_started, sign_ins, unfinished,
 };
 
 const STAGE: &str = "updates/rehome/rust-stage";
@@ -168,10 +168,13 @@ fn prepare(
     files::remove_tree_synced(&staging)?;
     files::create_private_dirs(&staging)?;
     let staging_disk = Disk(staging.to_owned());
+    let rust_manifest = rust_release_manifest(&release)?;
     for entry in entries(&source_box)? {
         let name = entry.file_name();
         if name == OsStr::new("run") {
             clone_run(&entry.path(), &staging.join("run"))?;
+        } else if name == OsStr::new("box.json") && rust_manifest.is_some() {
+            continue;
         } else if name != OsStr::new("bin") && name != OsStr::new(layout::FILE) {
             clone(&entry.path(), &staging.join(name), false)?;
         }
@@ -189,6 +192,9 @@ fn prepare(
         }
     }
     clone(&release.join("bin"), &staging.join("bin"), true)?;
+    if let Some(manifest) = rust_manifest {
+        clone(&manifest, &staging.join("box.json"), true)?;
+    }
     for entry in entries(&source_box.join("bin"))? {
         let path = staging.join("bin").join(entry.file_name());
         if metadata(&path)?.is_none() && !entry.file_type()?.is_symlink() {
@@ -332,6 +338,20 @@ pub fn bundle_id(bundle: &Path) -> Result<String, Error> {
         return Err(invalid("The app bundle has an invalid identifier."));
     }
     Ok(id.to_owned())
+}
+
+fn rust_release_manifest(release: &Path) -> Result<Option<PathBuf>, Error> {
+    let path = release.join("box.json");
+    Ok(format::BOX_FILES
+        .read(&path)?
+        .is_some_and(|manifest| {
+            manifest
+                .fields
+                .get("launch")
+                .and_then(serde_json::Value::as_str)
+                == Some("rust")
+        })
+        .then_some(path))
 }
 
 fn checked_engine(release: &Path, engine_dir: &Path) -> Result<PathBuf, Error> {

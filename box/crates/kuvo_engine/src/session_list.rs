@@ -1,5 +1,10 @@
 //! A local session list that can be followed by the line and read by the peers crate.
 
+mod activity;
+mod engine_facts;
+
+use engine_facts::EngineFacts;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -9,6 +14,7 @@ use std::{
 };
 
 use http::{Method, StatusCode};
+use kuvo_os::watch::{Notice, Options, Subscription, WatchHub};
 use kuvo_protocol::routes::{
     get_kuvo_sessions_list as read, get_kuvo_sessions_list_events as events,
     get_kuvo_sessions_page as page,
@@ -18,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{
     sync::{mpsc, watch},
+    task::JoinSet,
     time,
 };
 use tokio_util::sync::CancellationToken;
@@ -27,6 +34,8 @@ use crate::{
     lifetime::{Demand, Lease},
     sessions::{Session, typed},
 };
+
+pub use activity::{Activity, ActivityState};
 
 #[derive(Clone)]
 pub struct LocalSessions {
@@ -39,6 +48,8 @@ pub struct LocalSessions {
 struct ListTasks {
     list: tokio::task::JoinHandle<()>,
     feed: tokio::task::JoinHandle<()>,
+    models: tokio::task::JoinHandle<()>,
+    limits: tokio::task::JoinHandle<()>,
     stop: CancellationToken,
 }
 
@@ -47,6 +58,8 @@ impl Drop for ListTasks {
         self.stop.cancel();
         self.feed.abort();
         self.list.abort();
+        self.models.abort();
+        self.limits.abort();
     }
 }
 
@@ -114,6 +127,15 @@ impl LocalSessions {
         self.snapshot.borrow().clone()
     }
 
+    pub(crate) fn knows_folder(&self, matches: impl Fn(&str) -> bool) -> bool {
+        self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
+            snapshot
+                .sessions
+                .values()
+                .any(|row| matches(&row.facts.directory))
+        })
+    }
+
     pub async fn changed(&mut self) -> bool {
         self.snapshot.changed().await.is_ok()
     }
@@ -122,50 +144,162 @@ impl LocalSessions {
         let (refresh, mut requests) = mpsc::channel(1);
         let (updates, snapshot) = watch::channel(None);
         let stop = CancellationToken::new();
+        let (changed, revisions) = watch::channel(0);
         let (ask_updates, mut ask_changes) = watch::channel(Arc::new(crate::asks::Book::default()));
+        let (thinking, mut thought) = watch::channel(Arc::new(BTreeSet::new()));
+        let (models_changed, models) = crate::model_refresh::watch(engine.clone());
+        let limits = crate::queue::watch_limits(engine.clone(), stop.clone());
         let feed = crate::conversation::watch(
             engine.clone(),
             refresh.downgrade(),
+            changed,
             ask_updates,
+            models_changed,
+            thinking,
             stop.clone(),
         );
         let known_asks = ask_changes.clone();
+        let mut external = engine.external_asks.as_ref().map(|source| source.waiting());
         let list = tokio::spawn(async move {
-            let mut last = load(&engine.home).await.unwrap_or_else(Snapshot::new);
-            if !last.sessions.is_empty() {
+            let kept = load(&engine.home).await;
+            let existed = kept.is_some();
+            let mut last = kept.unwrap_or_else(Snapshot::new);
+            if last.owner.is_some() {
                 last.seq += 1_000_000;
                 last.floor = last.seq;
-                last.pending = vec!["engine".to_owned()];
-                updates.send_replace(Some(Arc::new(last.clone())));
             }
+            last.owner = Some(std::process::id());
+            last.started = Some(format!("{:x}-{:x}", crate::disk::now(), std::process::id()));
+            if existed {
+                let mut cached = last.clone();
+                cached.pending = vec!["engine".to_owned()];
+                updates.send_replace(Some(Arc::new(cached)));
+            }
+            let mut first = true;
             let mut state = engine.states();
-            let mut check = time::interval(Duration::from_secs(60));
+            let files = WatchHub::default();
+            let mut edits = files
+                .subscribe(
+                    engine.home.join("box"),
+                    Options {
+                        create: true,
+                        ..Options::default()
+                    },
+                )
+                .await
+                .ok();
+            let mut inventory: Option<(u64, Vec<Observed>, EngineFacts)> = None;
+            let mut reads = JoinSet::new();
+            let mut read_again = true;
+            let period = Duration::from_secs(60);
+            let mut check = time::interval_at(time::Instant::now() + period, period);
             check.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
             loop {
+                if read_again && reads.is_empty() {
+                    read_again = false;
+                    let at = *revisions.borrow();
+                    let reader = engine.clone();
+                    let previous = inventory
+                        .as_ref()
+                        .map(|(_, _, facts)| Arc::clone(&facts.databases));
+                    reads.spawn(async move {
+                        let lease = reader.acquire(Demand::Passive).await?;
+                        let (rows, mut facts) = tokio::join!(
+                            read_inventory(&reader, &lease),
+                            engine_facts::read(&reader.home, previous)
+                        );
+                        let rows = rows.ok()?;
+                        facts.add_linked(&rows).await;
+                        Some((at, rows, facts))
+                    });
+                }
                 tokio::select! {
                     biased;
-                    next = requests.recv() => if next.is_none() { break; },
-                    changed = ask_changes.changed() => if changed.is_err() { break; },
-                    changed = state.changed() => if changed.is_err() { break; },
-                    _ = check.tick() => {},
+                    next = requests.recv() => {
+                        if next.is_none() { break; }
+                        read_again = true;
+                        continue;
+                    },
+                    changed = ask_changes.changed() => {
+                        if changed.is_err() { break; }
+                    },
+                    changed = thought.changed() => {
+                        if changed.is_err() { break; }
+                        if !first && last.apply_thinking(&thought.borrow_and_update()) {
+                            let listed = publish(&updates, &last);
+                            save(&engine.home, listed).await;
+                        }
+                        continue;
+                    },
+                    changed = async {
+                        match &mut external {
+                            Some(external) => external.changed().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        if changed.is_err() { external = None; }
+                    },
+                    changed = state.changed() => {
+                        if changed.is_err() { break; }
+                        read_again = true;
+                        continue;
+                    },
+                    changed = project_changes(&mut edits) => {
+                        if !changed {
+                            edits = None;
+                            continue;
+                        }
+                    },
+                    _ = check.tick() => {
+                        read_again = true;
+                        continue;
+                    },
+                    finished = reads.join_next(), if !reads.is_empty() => {
+                        let Some(Ok(Some((at, rows, facts)))) = finished else { continue; };
+                        if at != *revisions.borrow() { continue; }
+                        inventory = Some((at, rows, facts));
+                    },
                 }
-                let Some(lease) = engine.acquire(Demand::Passive).await else {
+                let Some((began, rows, facts)) = &inventory else {
+                    // Mark an ask heard even while there is no complete engine inventory.
+                    ask_changes.borrow_and_update();
                     continue;
                 };
-                let book = ask_changes.borrow().clone();
-                let Some((sessions, projects, archived, needs_you)) =
-                    measure(&engine, &lease, &book).await.ok()
-                else {
+                let mut book = ask_changes.borrow_and_update().clone();
+                if let Some(external) = &external {
+                    crate::asks::include_external(Arc::make_mut(&mut book), &external.borrow());
+                }
+                let (projects, worktrees) = tokio::join!(
+                    read_projects(&engine.home),
+                    crate::worktree_notes::read(&engine.home)
+                );
+                let Ok(worktrees) = worktrees else {
                     continue;
                 };
-                if last.commit(sessions, projects, archived, needs_you)
-                    || updates.borrow().is_none()
-                {
-                    updates.send_replace(Some(Arc::new(last.clone())));
-                    let path = engine.home.join("run/lists/sessions.json");
-                    let saved = last.clone();
-                    let _ = tokio::task::spawn_blocking(move || crate::disk::write(&path, &saved))
-                        .await;
+                let (mut sessions, projects, archived, needs_you) = measure(
+                    rows,
+                    &engine.home,
+                    &projects,
+                    &worktrees.filed,
+                    facts,
+                    &book,
+                );
+                let published = {
+                    let revision = revisions.borrow();
+                    if *revision != *began {
+                        // The feed queued another read. A stale page cannot revive a deleted row.
+                        continue;
+                    }
+                    let thinking = thought.borrow_and_update();
+                    for (id, facts) in &mut sessions {
+                        facts.thinking(thinking.contains(id));
+                    }
+                    let write_first = std::mem::take(&mut first);
+                    (last.commit(sessions, projects, archived, needs_you) || write_first)
+                        .then(|| publish(&updates, &last))
+                };
+                if let Some(saved) = published {
+                    save(&engine.home, saved).await;
                 }
             }
         });
@@ -173,7 +307,13 @@ impl LocalSessions {
             snapshot,
             refresh,
             ask_changes: known_asks,
-            _tasks: Arc::new(ListTasks { list, feed, stop }),
+            _tasks: Arc::new(ListTasks {
+                list,
+                feed,
+                models,
+                limits,
+                stop,
+            }),
         }
     }
 
@@ -191,11 +331,11 @@ impl LocalSessions {
         &mut self,
         cancel: &CancellationToken,
     ) -> Result<Arc<Snapshot>, Refusal> {
-        self.refresh();
         let current = self.snapshot.borrow_and_update().clone();
         if let Some(current) = current {
             return Ok(current);
         }
+        self.refresh();
         tokio::select! {
             result = time::timeout(api::WAIT, self.snapshot.wait_for(Option::is_some)) => {
                 if let Ok(Ok(snapshot)) = result {
@@ -209,6 +349,17 @@ impl LocalSessions {
             "The engine isn’t running.",
         ))
     }
+}
+
+fn publish(updates: &watch::Sender<Option<Arc<Snapshot>>>, snapshot: &Snapshot) -> Arc<Snapshot> {
+    let published = Arc::new(snapshot.clone());
+    updates.send_replace(Some(published.clone()));
+    published
+}
+
+async fn save(home: &Path, snapshot: Arc<Snapshot>) {
+    let path = home.join("run/lists/sessions.json");
+    let _ = tokio::task::spawn_blocking(move || crate::disk::write(&path, snapshot.as_ref())).await;
 }
 
 type Sessions = BTreeMap<String, Facts>;
@@ -228,7 +379,13 @@ pub(crate) struct Snapshot {
     #[serde(default, skip_serializing)]
     archived: Vec<Value>,
     #[serde(default, rename = "needsYou")]
-    needs_you: Vec<Value>,
+    needs_you: Option<Vec<Value>>,
+    #[serde(default, rename = "workByBot")]
+    work_by_bot: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    started: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -271,6 +428,19 @@ impl Facts {
         self.extra.get(field) == Some(&Value::Bool(true))
     }
 
+    fn thinking(&mut self, should_show: bool) -> bool {
+        let thinking = should_show && self.flag("running");
+        if thinking == self.flag("thinking") {
+            return false;
+        }
+        if thinking {
+            self.extra.insert("thinking".into(), json!(true));
+        } else {
+            self.extra.remove("thinking");
+        }
+        true
+    }
+
     fn waiting(&self) -> bool {
         matches!(self.kind, Kind::Project | Kind::Chat | Kind::Bot)
             && self.extra.contains_key("asked")
@@ -284,6 +454,27 @@ impl Facts {
 }
 
 impl Snapshot {
+    fn apply_thinking(&mut self, thinking: &BTreeSet<String>) -> bool {
+        let next = self.seq + 1;
+        let mut changed = false;
+        for (session, row) in &mut self.sessions {
+            if row.facts.thinking(thinking.contains(session)) {
+                row.seq = next;
+                changed = true;
+            }
+        }
+        if changed {
+            self.seq = next;
+        }
+        changed
+    }
+
+    pub(crate) fn has_local(&self, id: &str) -> bool {
+        self.sessions
+            .get(id)
+            .is_some_and(|row| !row.facts.flag("away"))
+    }
+
     pub(crate) fn waiting_sessions(&self) -> usize {
         self.sessions
             .values()
@@ -299,6 +490,64 @@ impl Snapshot {
         })
     }
 
+    pub(crate) fn bot_waits(&self, root: &str, bot: &str) -> bool {
+        self.sessions.iter().any(|(id, row)| {
+            let facts = &row.facts;
+            if facts.flag("archived")
+                || facts.flag("away")
+                || facts.kind == Kind::Hidden
+                || facts.flag("reviewPart")
+                || !(facts.flag("ownAsk")
+                    || facts.extra.contains_key("asked") && !facts.flag("childAsk"))
+            {
+                return false;
+            }
+            let belongs =
+                |facts: &Facts| facts.extra.get("bot").and_then(Value::as_str) == Some(bot);
+            if id == root || belongs(facts) {
+                return true;
+            }
+            let parents = |facts: &Facts| {
+                facts
+                    .extra
+                    .get("parent")
+                    .and_then(Value::as_str)
+                    .into_iter()
+                    .chain(
+                        facts
+                            .extra
+                            .get("line")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str),
+                    )
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
+            let mut ancestors = std::collections::VecDeque::from(parents(facts));
+            let mut seen = BTreeSet::new();
+            while seen.len() < 24 {
+                let Some(parent) = ancestors.pop_front() else {
+                    break;
+                };
+                if parent == *id || !seen.insert(parent.clone()) {
+                    continue;
+                }
+                if parent == root {
+                    return true;
+                }
+                if let Some(above) = self.sessions.get(&parent) {
+                    if belongs(&above.facts) {
+                        return true;
+                    }
+                    ancestors.extend(parents(&above.facts));
+                }
+            }
+            false
+        })
+    }
+
     fn new() -> Self {
         Self {
             epoch: format!("{:x}-{:x}", crate::disk::now(), std::process::id()),
@@ -309,7 +558,10 @@ impl Snapshot {
             projects: BTreeMap::new(),
             pending: Vec::new(),
             archived: Vec::new(),
-            needs_you: Vec::new(),
+            needs_you: Some(Vec::new()),
+            work_by_bot: BTreeMap::new(),
+            owner: None,
+            started: None,
         }
     }
 
@@ -320,12 +572,14 @@ impl Snapshot {
         archived: Vec<Value>,
         needs_you: Vec<Value>,
     ) -> bool {
-        let mut changed = self.needs_you != needs_you
+        let mut changed = self.seq == 0
+            || self.needs_you.as_ref() != Some(&needs_you)
             || !self.pending.is_empty()
             || self.projects != projects
             || self.archived != archived;
+        let next = self.seq + 1;
         self.pending.clear();
-        self.needs_you = needs_you;
+        self.needs_you = Some(needs_you);
         let removed = self
             .sessions
             .keys()
@@ -333,12 +587,11 @@ impl Snapshot {
             .cloned()
             .collect::<Vec<_>>();
         for id in removed {
-            self.seq += 1;
             self.sessions.remove(&id);
             self.gone.insert(
                 id,
                 Gone {
-                    seq: self.seq,
+                    seq: next,
                     at: crate::disk::now(),
                 },
             );
@@ -348,29 +601,36 @@ impl Snapshot {
             if self.sessions.get(&id).is_some_and(|row| row.facts == facts) {
                 continue;
             }
-            self.seq += 1;
             self.gone.remove(&id);
             self.sessions.insert(
                 id,
                 Listed {
                     facts,
-                    seq: self.seq,
+                    seq: next,
                     place: Some("engine".into()),
                 },
             );
             changed = true;
         }
         if changed {
-            self.seq += 1;
+            self.seq = next;
             self.projects = projects;
             self.archived = archived;
-            while self.gone.len() > 2000 {
-                let Some((oldest, gone)) = self.gone.iter().min_by_key(|(_, gone)| gone.seq) else {
-                    break;
-                };
-                self.floor = self.floor.max(gone.seq);
-                let oldest = oldest.clone();
-                self.gone.remove(&oldest);
+            self.work_by_bot = work_by_bot(&self.sessions);
+            let now = crate::disk::now();
+            let mut disappeared = self.gone.iter().collect::<Vec<_>>();
+            disappeared.sort_by_key(|(_, gone)| std::cmp::Reverse(gone.seq));
+            let expired = disappeared
+                .into_iter()
+                .enumerate()
+                .filter(|(index, (_, gone))| {
+                    *index >= 2000 || now.saturating_sub(gone.at) >= 24 * 3_600_000
+                })
+                .map(|(_, (id, gone))| (id.clone(), gone.seq))
+                .collect::<Vec<_>>();
+            for (id, seq) in expired {
+                self.floor = self.floor.max(seq);
+                self.gone.remove(&id);
             }
         }
         changed
@@ -394,15 +654,18 @@ impl Snapshot {
             .collect::<BTreeMap<_, _>>();
         let mut projects = self.projects.iter().collect::<Vec<_>>();
         projects.sort_by(|(left_id, left), (right_id, right)| {
-            right["updated"]
-                .as_u64()
-                .cmp(&left["updated"].as_u64())
+            let updated = |row: &Value| row["updated"].as_u64().unwrap_or_default();
+            updated(right)
+                .cmp(&updated(left))
+                .then_with(|| {
+                    by_project_name(project_name(left_id, left), project_name(right_id, right))
+                })
                 .then_with(|| left_id.cmp(right_id))
         });
         let order = projects.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
         let mut answer = json!({ "at": self.cursor(), "sessions": sessions, "projects": self.projects,
             "projectOrder": order, "startProject": order.first(), "archivedGroups": self.archived,
-            "needsYou": self.needs_you });
+            "needsYou": self.needs_you.as_deref().unwrap_or_default() });
         if let Some(since) = since {
             let gone = self
                 .gone
@@ -423,6 +686,82 @@ impl Snapshot {
     }
 }
 
+fn project_name<'a>(directory: &'a str, row: &'a Value) -> &'a str {
+    row["name"].as_str().unwrap_or_else(|| {
+        Path::new(directory)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(directory)
+    })
+}
+
+fn name_parts(mut name: &str) -> impl Iterator<Item = &str> {
+    std::iter::from_fn(move || {
+        let first = name.chars().next()?;
+        let end = if first.is_ascii_digit() {
+            name.find(|character: char| !character.is_ascii_digit())
+                .unwrap_or(name.len())
+        } else {
+            first.len_utf8()
+        };
+        let (part, rest) = name.split_at(end);
+        name = rest;
+        Some(part)
+    })
+}
+
+fn by_project_name(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut left = name_parts(left);
+    let mut right = name_parts(right);
+    loop {
+        let (a, b) = (left.next(), right.next());
+        let (Some(a), Some(b)) = (a, b) else {
+            return a.is_some().cmp(&b.is_some());
+        };
+        let part = if a.as_bytes()[0].is_ascii_digit() && b.as_bytes()[0].is_ascii_digit() {
+            let a = a.trim_start_matches('0');
+            let b = b.trim_start_matches('0');
+            a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+        } else {
+            a.to_lowercase().cmp(&b.to_lowercase())
+        };
+        if part != std::cmp::Ordering::Equal {
+            return part;
+        }
+    }
+}
+
+fn work_by_bot(sessions: &BTreeMap<String, Listed>) -> BTreeMap<String, Vec<String>> {
+    let mut work = BTreeMap::<String, Vec<String>>::new();
+    for (id, row) in sessions {
+        let facts = &row.facts;
+        if facts.flag("archived")
+            || facts.flag("away")
+            || facts.extra.contains_key("parent")
+            || !facts
+                .extra
+                .get("line")
+                .and_then(Value::as_array)
+                .is_some_and(|line| !line.is_empty())
+        {
+            continue;
+        }
+        if let Some(bot) = facts
+            .extra
+            .get("bot")
+            .and_then(Value::as_str)
+            .filter(|bot| {
+                bot.strip_prefix("bot_").is_some_and(|name| {
+                    !name.is_empty() && name.bytes().all(|letter| letter.is_ascii_alphanumeric())
+                })
+            })
+        {
+            work.entry(bot.into()).or_default().push(id.clone());
+        }
+    }
+    work
+}
+
 async fn load(home: &Path) -> Option<Snapshot> {
     let mut saved: Snapshot = serde_json::from_slice(
         &tokio::fs::read(home.join("run/lists/sessions.json"))
@@ -435,6 +774,19 @@ async fn load(home: &Path) -> Option<Snapshot> {
             project.entry(field).or_insert_with(|| json!(0));
         }
     }
+    saved.needs_you.get_or_insert_with(|| {
+        let mut waiting: Vec<_> = saved
+            .sessions
+            .iter()
+            .filter(|(_, row)| matches!(row.facts.kind, Kind::Project | Kind::Chat) && row.facts.waiting())
+            .map(|(session, row)| (session, row.facts.extra.get("asked").and_then(Value::as_u64)))
+            .collect();
+        waiting.sort_by(|(a, one), (b, other)| other.cmp(one).then_with(|| a.cmp(b)));
+        waiting
+            .into_iter()
+            .map(|(session, _)| json!({"session":session,"asks":{"kind":"other","summary":"waits on you"}}))
+            .collect()
+    });
     if saved
         .sessions
         .values()
@@ -445,7 +797,7 @@ async fn load(home: &Path) -> Option<Snapshot> {
             .iter()
             .map(|(id, row)| (id.clone(), row.facts.clone()))
             .collect();
-        saved.archived = archived_groups(&facts, &saved.projects);
+        saved.archived = archived_groups(&facts, &saved.projects, &read_projects(home).await);
     }
     Some(saved)
 }
@@ -465,33 +817,153 @@ struct Project {
     removed: bool,
 }
 
-async fn measure(
-    engine: &Engine,
-    lease: &Lease,
-    asks: &crate::asks::Book,
-) -> Result<(Sessions, Projects, Vec<Value>, Vec<Value>), Box<dyn std::error::Error + Send + Sync>>
-{
-    let (rows, active, projects) = tokio::join!(
-        all_sessions(engine, lease),
-        engine.call::<Value>(lease, Method::GET, "api/session/active", None),
-        tokio::fs::read(engine.home.join("box/projects.json"))
-    );
-    let rows = rows?;
-    let active = active?;
-    let projects = projects
+async fn read_projects(home: &Path) -> Vec<Project> {
+    tokio::fs::read(home.join("box/projects.json"))
+        .await
         .ok()
         .and_then(|bytes| serde_json::from_slice::<ProjectFile>(&bytes).ok())
-        .map_or_else(Vec::new, |file| file.projects);
-    let mut sessions = Sessions::new();
-    for session in rows {
-        let running = active
-            .as_array()
-            .is_some_and(|active| active.iter().any(|row| row == &session.id))
-            || active
-                .get(&session.id)
-                .is_some_and(|value| !value.is_null());
-        let facts = facts(&session, &engine.home, &projects, running);
-        sessions.insert(session.id, facts);
+        .map_or_else(Vec::new, |file| file.projects)
+}
+
+pub(crate) struct Observed {
+    pub(crate) session: Session,
+    pub(crate) running: bool,
+}
+
+pub(crate) async fn read_inventory(
+    engine: &Engine,
+    lease: &Lease,
+) -> Result<Vec<Observed>, Box<dyn std::error::Error + Send + Sync>> {
+    let (rows, active) = tokio::join!(
+        all_sessions(engine, lease),
+        engine.call::<Value>(lease, Method::GET, "api/session/active", None)
+    );
+    let active = active?;
+    if (!active.is_object() && !active.is_array()) || active.get("data").is_some() {
+        return Err(io::Error::other("The engine did not supply a complete run list.").into());
+    }
+    Ok(rows?
+        .into_iter()
+        .map(|session| {
+            let running = active
+                .as_array()
+                .is_some_and(|active| active.iter().any(|row| row == &session.id))
+                || active
+                    .get(&session.id)
+                    .is_some_and(|value| !value.is_null());
+            Observed { session, running }
+        })
+        .collect())
+}
+
+async fn project_changes(edits: &mut Option<Subscription>) -> bool {
+    let Some(edits) = edits else {
+        return std::future::pending().await;
+    };
+    while let Some(notice) = edits.recv().await {
+        match notice {
+            Notice::Rescan => return true,
+            Notice::Changed { paths }
+                if paths.iter().any(|path| {
+                    path == Path::new("projects.json")
+                        || path == Path::new(crate::worktree_notes::FILE)
+                }) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+struct Filing<'a> {
+    saved: &'a BTreeMap<String, String>,
+    engine: &'a EngineFacts,
+    other_folders: BTreeMap<&'a str, &'a str>,
+}
+
+impl<'a> Filing<'a> {
+    fn new(
+        projects: &'a [Project],
+        saved: &'a BTreeMap<String, String>,
+        engine: &'a EngineFacts,
+    ) -> Self {
+        let own = projects
+            .iter()
+            .filter(|project| !project.removed)
+            .map(|project| project.directory.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut other_folders = BTreeMap::new();
+        for project in projects.iter().filter(|project| !project.removed) {
+            for folder in &project.folders {
+                if !own.contains(folder.as_str()) {
+                    other_folders
+                        .entry(folder.as_str())
+                        .or_insert(project.directory.as_str());
+                }
+            }
+        }
+        Self {
+            saved,
+            engine,
+            other_folders,
+        }
+    }
+
+    fn known(&self, folder: &str) -> Option<&str> {
+        let project = self
+            .saved
+            .get(folder)
+            .map(String::as_str)
+            .or_else(|| self.other_folders.get(folder).copied())
+            .or_else(|| self.engine.worktree(folder).and_then(Path::to_str))?;
+        Some(self.other_folders.get(project).copied().unwrap_or(project))
+    }
+}
+
+fn measure(
+    rows: &[Observed],
+    home: &Path,
+    projects: &[Project],
+    worktrees: &BTreeMap<String, String>,
+    engine_facts: &EngineFacts,
+    asks: &crate::asks::Book,
+) -> (Sessions, Projects, Vec<Value>, Vec<Value>) {
+    let filing = Filing::new(projects, worktrees, engine_facts);
+    let mut sessions = rows
+        .iter()
+        .map(|row| {
+            (
+                row.session.id.clone(),
+                facts(&row.session, home, &filing, row.running),
+            )
+        })
+        .collect::<Sessions>();
+
+    let mut busy_ancestors = BTreeSet::new();
+    for facts in sessions
+        .values()
+        .filter(|facts| facts.kind == Kind::Subagent && facts.flag("running"))
+    {
+        let mut current = facts;
+        for _ in 0..100 {
+            let Some(parent) = current.extra.get("parent").and_then(Value::as_str) else {
+                break;
+            };
+            let Some(next) = sessions.get(parent) else {
+                break;
+            };
+            if !busy_ancestors.insert(parent.to_owned()) {
+                break;
+            }
+            current = next;
+        }
+    }
+    for id in busy_ancestors {
+        if let Some(parent) = sessions.get_mut(&id) {
+            parent.extra.insert("running".into(), json!(true));
+        }
     }
 
     let children = sessions
@@ -502,7 +974,7 @@ async fn measure(
                 facts.extra.get("parent")?.as_str()?.to_owned(),
                 id.clone(),
                 facts.flag("running"),
-                facts.updated,
+                facts.created,
             ))
         })
         .collect::<Vec<_>>();
@@ -581,7 +1053,7 @@ async fn measure(
     let mut listed = Projects::new();
     let directories = projects
         .iter()
-        .filter(|project| !project.removed)
+        .filter(|project| !project.removed && filing.known(&project.directory).is_none())
         .map(|project| project.directory.as_str())
         .chain(
             sessions
@@ -593,7 +1065,7 @@ async fn measure(
     for directory in directories {
         let rows = project_rows(&sessions, directory);
         let (shown, more) = project_page(&rows, 6, 0);
-        let mut project = json!({ "asking": rows.iter().filter(|(_, facts)| facts.waiting()).count(), "working": rows.iter().filter(|(_, facts)| facts.flag("running")).count(),
+        let mut project = json!({ "asking": rows.iter().filter(|(_, facts)| facts.waiting()).count(), "working": rows.iter().filter(|(_, facts)| !facts.flag("away") && !facts.waiting() && facts.flag("running")).count(),
             "shown": shown, "total": rows.len() });
         if let Some(updated) = rows.iter().map(|(_, facts)| facts.updated).max() {
             project["updated"] = json!(updated);
@@ -610,8 +1082,8 @@ async fn measure(
         }
         listed.insert(directory.to_owned(), project);
     }
-    let archived = archived_groups(&sessions, &listed);
-    Ok((sessions, listed, archived, needs_you))
+    let archived = archived_groups(&sessions, &listed, projects);
+    (sessions, listed, archived, needs_you)
 }
 
 async fn all_sessions(
@@ -626,7 +1098,7 @@ async fn all_sessions(
         .collect()
 }
 
-fn facts(session: &Session, home: &Path, projects: &[Project], running: bool) -> Facts {
+fn facts(session: &Session, home: &Path, filing: &Filing<'_>, running: bool) -> Facts {
     let directory = session.directory();
     let notes = session.notes();
     let note = |key| {
@@ -654,9 +1126,10 @@ fn facts(session: &Session, home: &Path, projects: &[Project], running: bool) ->
         kind,
         directory: directory.to_owned(),
         created: session.time.created.unwrap_or_default(),
-        updated: session
-            .time
-            .activity
+        updated: filing
+            .engine
+            .activity(&session.id)
+            .or(session.time.activity)
             .or(session.time.updated)
             .unwrap_or_default(),
         extra: BTreeMap::new(),
@@ -665,22 +1138,14 @@ fn facts(session: &Session, home: &Path, projects: &[Project], running: bool) ->
         facts.extra.insert(key.to_owned(), value);
     };
     if kind == Kind::Project {
-        let project = projects
-            .iter()
-            .filter(|project| !project.removed)
-            .filter(|project| {
-                Path::new(directory).starts_with(&project.directory)
-                    || project
-                        .folders
-                        .iter()
-                        .any(|folder| Path::new(directory).starts_with(folder))
-            })
-            .max_by_key(|project| project.directory.len())
-            .map(|project| project.directory.as_str())
+        let mark = note("filed");
+        let project = filing
+            .known(directory)
             .or_else(|| {
-                (note("filed")["folder"] == directory)
-                    .then(|| note("filed")["project"].as_str())
-                    .flatten()
+                let named = mark["project"]
+                    .as_str()
+                    .filter(|named| !named.is_empty() && *named != directory)?;
+                (mark["folder"] == directory).then(|| filing.known(named).unwrap_or(named))
             })
             .unwrap_or(directory);
         set("project", json!(project));
@@ -712,6 +1177,9 @@ fn facts(session: &Session, home: &Path, projects: &[Project], running: bool) ->
     } else if let Some(starter) = note("startedBy").as_str().filter(|id| !id.is_empty()) {
         set("line", json!([starter]));
     }
+    if let Some(bot) = note("bot").as_str().filter(|id| !id.is_empty()) {
+        set("bot", json!(bot));
+    }
     if running {
         set("running", json!(true));
     }
@@ -737,7 +1205,17 @@ fn project_rows<'a>(sessions: &'a Sessions, project: &str) -> Vec<(&'a str, &'a 
         .filter(|(_, facts)| facts.project() == Some(project) && !facts.flag("archived"))
         .map(|(id, facts)| (id.as_str(), facts))
         .collect::<Vec<_>>();
-    let rank = |facts: &Facts| (!facts.flag("pinned"), !facts.flag("running"));
+    let rank = |facts: &Facts| {
+        if facts.flag("pinned") {
+            0
+        } else if !facts.flag("away")
+            && (facts.flag("running") || facts.extra.contains_key("asked"))
+        {
+            1
+        } else {
+            2
+        }
+    };
     rows.sort_by(|(a, one), (b, other)| {
         rank(one)
             .cmp(&rank(other))
@@ -762,7 +1240,7 @@ fn project_page<'a>(
     (rows.iter().take(shown).map(|(id, _)| *id).collect(), more)
 }
 
-fn archived_groups(sessions: &Sessions, projects: &Projects) -> Vec<Value> {
+fn archived_groups(sessions: &Sessions, projects: &Projects, saved: &[Project]) -> Vec<Value> {
     let mut rows = sessions
         .iter()
         .filter(|(_, facts)| {
@@ -792,6 +1270,12 @@ fn archived_groups(sessions: &Sessions, projects: &Projects) -> Vec<Value> {
                 projects
                     .get(directory)
                     .and_then(|project| project["name"].as_str())
+                    .or_else(|| {
+                        saved
+                            .iter()
+                            .find(|project| project.directory == directory)
+                            .and_then(|project| project.name.as_deref())
+                    })
                     .or_else(|| {
                         Path::new(directory)
                             .file_name()
@@ -856,10 +1340,22 @@ pub(crate) fn register(
                 .ok_or_else(|| {
                     Refusal::new(StatusCode::BAD_REQUEST, "That cursor isn't one this box gave. Read the list again.")
                 })?;
-            if project.split_once(':').is_some_and(|(key, _)| {
+            let peer_project = project.split_once(':').filter(|(key, _)| {
                 key.len() == 43
                     && key.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
-            }) {
+            });
+            let name = peer_project.map_or(project.as_str(), |(_, name)| name);
+            if name
+                .split(['/', '\\'])
+                .any(|part| part.chars().filter(char::is_ascii).eq("..".chars()))
+            {
+                return Err(Refusal::new(
+                    StatusCode::BAD_REQUEST,
+                    "Name the project: project=<its key>.",
+                ));
+            }
+            // Page keys only select facts from the local or merged inventory.
+            if peer_project.is_some() {
                 return merged_page(&project, shown, step)
                     .map(RouteReply::json::<200>)
                     .ok_or_else(|| {
@@ -879,7 +1375,10 @@ fn parse_cursor(cursor: &str) -> Option<(usize, u32)> {
     let (shown, step) = cursor.strip_prefix('s')?.split_once('.')?;
     if !(1..=5).contains(&shown.len())
         || !(1..=2).contains(&step.len())
-        || !shown.bytes().chain(step.bytes()).all(|c| c.is_ascii_digit())
+        || !shown
+            .bytes()
+            .chain(step.bytes())
+            .all(|c| c.is_ascii_digit())
     {
         return None;
     }

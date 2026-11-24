@@ -172,7 +172,7 @@ function filesOf(text: string): { text: string; paths: string[] } {
   const paths: string[] = [];
   for (const line of found.lines) {
     if ((ATTACHED_HEADINGS as readonly string[]).includes(line)) heading = line;
-    else if (line.startsWith("/") && heading !== ATTACHED_HEADINGS[0]) paths.push(line.endsWith(UNSENT_SUFFIX) ? line.slice(0, -UNSENT_SUFFIX.length) : line);
+    else if (/^(\/|[A-Za-z]:[\\/]|\\\\)/.test(line) && heading !== ATTACHED_HEADINGS[0]) paths.push(line.endsWith(UNSENT_SUFFIX) ? line.slice(0, -UNSENT_SUFFIX.length) : line);
   }
   return { text: found.before, paths };
 }

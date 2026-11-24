@@ -311,7 +311,8 @@ resident's own version.
   `box/1` manifest gains, additively, one pack per target (`aarch64` and
   `x86_64` macOS, `x86_64` and `aarch64` Linux built with musl, `x86_64` Windows) and a `launch`
   field; `kuvo-start` launches `bin/kuvo-box serve` and no separate bridge when `launch` says so.
-  Engine pins don't change. The feed holds no TypeScript build after 0.8.0-beta.1.
+  Engine pins don't change. Once 0.8 ships, the feed points to Rust. Returning TypeScript beta
+  computers can still take the signed bridge beta described below.
 - **Keeper.** On Mac and Linux the shell keeper stays for the first Rust releases: its tested
   switch-and-judge path (rename `bin`, wait for `kuvo/info`, rename back) keeps Rust-to-Rust
   rollback safe. `kuvo-box keep` is native Windows' keeper from the start, with a plain selector
@@ -337,6 +338,14 @@ resident's own version.
     inside the move: 11 and 17 rewrite setup records no public release wrote, and the user's
     computers are past them.
 - **The user's four computers** are the only ones on a TypeScript 0.8 beta, and switch once:
+  - **Bridge beta.** The four computers first take one final TypeScript beta through their
+    normal updater. That beta still runs TypeScript and knows how to prepare and start the
+    signed Rust pack for its target. A computer still on beta.48 or earlier which reaches a Rust
+    fleet takes the signed bridge beta first, from its main computer if necessary, then takes
+    Rust. The handoff runs automatically before the returning computer takes on fleet work.
+    Include the bridge's signed `boxes.json` with `sign-box.mjs --bridge` in each Rust manifest
+    while these betas can still return. Keep its pack at its signed URL so the main computer can
+    fetch it for the returning computers.
   - Before the first start, the Rust box copies the whole `~/.kuvo-code` into
     `~/.kuvo-code/backups/before-rust`, kept until the user says to delete it.
   - It reads the TypeScript beta's home in place, rewriting only what differs from its own layout.
@@ -413,21 +422,21 @@ parallel.
 | 2.5 | **Done.** Version-one encrypted archives, disk, SSH and Relay recovery, journal fences, held-work review, vault routing, and pre-switch and wipe hooks. [Coverage and owner phases](rust-backups-coverage.md) | setup | 2.1 | 6 | A |
 | 2.6 | **Done.** Released Mac and machine homes reach layout 23 through a resumable move. Both tagged Mac destinations match, and the credential move is verified through the Helper interface stand-in. [Coverage](rust-move-coverage.md) | move | 1.2, 2.1 | 6 ×2 | C |
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
-| 3.2 | **Open.** Local OpenCode sessions, queues, draft receipts, asks, waiting, model readiness and search have landed in 3.2a and 3.2b. See [coverage and remaining parity work](rust-engine-coverage.md#phase-32a-local-opencode-conversations). Session cases in `offline-merge.test.ts`, `owner-mutations.test.js`, `documents.test.js`, and `setup-handover.test.js`.<br>Inherits `setup-lists.test.ts`, `peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`, `start-elsewhere.test.js`, `start-elsewhere-rules.test.js`, `reach-elsewhere.test.js`, `reach-elsewhere-rules.test.js`. | engine | 3.1 | 6 ×2 | B |
+| 3.2 | **Done.** Sessions, queues, send-once receipts, asks, waiting, models and search. [Coverage and remaining owners](rust-engine-coverage.md#implementation-and-remaining-parity-work). | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopted across Rust-to-Rust updates; not TypeScript ones), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
 | 4.4 | Claude Code over stream-json and control stdio, with holder handoff and signed-in checks | agents | 4.1, 0.3 | 6 | B |
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4 | 4 ×2 | B |
-| 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`. | work | 3.2 | 5 ×2 | C |
-| 5.2 | Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Queue cases from `setup-shared.test.ts`, `setup-merge.test.ts`, `work-queue-numbering.test.ts`, `offline-merge.test.ts`, `setup-two-boxes.test.js`, `documents.test.js`, `owner-mutations.test.js`, and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`. | work | 2.2 | 5 ×2 | C |
+| 5.1 | Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |
+| 5.2 | Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Queue cases from `setup-shared.test.ts`, `setup-merge.test.ts`, `work-queue-numbering.test.ts`, `offline-merge.test.ts`, `setup-two-boxes.test.js`, `documents.test.js`, `owner-mutations.test.js`, and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`.<br>Reuse 3.2's `kuvo_peers::memory_read` transport for authenticated read-only requests without a disk spool. | work | 2.2 | 5 ×2 | C |
 | 5.3 | Group chats and seats, autopilot. Group clock consumer in `time-zone.test.ts`.<br>Also covers `mac-peers.test.js`. | work | 4.6, 2.2 | 4 ×2 | B |
 | 5.4 | Usage, limits, Insights (SQLite), pricing<br>Also covers `notices-usage.test.ts`. | services | 4.1, 2.2 | 5 ×2 | C |
 | 5.5 | Library, artifacts, marketplace, integrations, skills, MCP catalog. Attachment cases in `offline-merge.test.ts` and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`. | services | 2.2 | 4 ×2 | A |
 | 6.1 | Settings pages and flows, permissions, sandbox (Seatbelt, `fence-exec`) | services | 4.1 | 5 ×2 | D |
-| 6.2 | **Open.** Vault: Helper Keychain, wrapped-key files, broker and SSH agent. The released move uses the TypeScript `security` path for custom Claude Code credentials, verified with a disposable Mac Keychain. Installed Helper and Keychain cases in `setup-mac.test.js` remain open. See the [coverage and remaining gates](rust-vault-coverage.md). | services | 1.3, 4.1, 6.1 | 6 | D |
-| 6.3 | Files, Git, Changes, worktrees, projects, folders. Golden-home projects in `protocol/conformance/compat.test.mjs`. 6.3a files and folders: a file's info, text and bytes, folder lists, a new folder, a folder's tree, finding files and suggested folders ported (`kuvo_services::files`, `files` conformance area, every TS case covered); done on macOS; native Windows runs 8 of 16 (a network path's name, the git cases' setup, verbatim paths in suggested folders, a link loop's answer) and Linux are left ([coverage](rust-files-coverage.md)). | services | 1.4 | 5 ×2 | D |
+| 6.2 | **Done.** (Mac wipe end to end is verified in 2.3; Helper supervision cases are 7.2's, browser and settings cases 6.4 and 6.1.) Vault: Helper Keychain, wrapped-key files, broker and SSH agent. The released move uses the TypeScript `security` path for custom Claude Code credentials, verified with a disposable Mac Keychain. Installed Helper and Keychain cases in `setup-mac.test.js` remain open. See the [coverage and remaining gates](rust-vault-coverage.md). | services | 1.3, 4.1, 6.1 | 6 | D |
+| 6.3 | Files, Git, Changes, worktrees, projects, folders. Golden-home projects in `protocol/conformance/compat.test.mjs`. 6.3a files and folders: a file's info, text and bytes, folder lists, a new folder, a folder's tree, finding files and suggested folders ported (`kuvo_services::files`, `files` conformance area, every TS case covered); **part A done** on macOS and native Windows (15 of 16 there, unreadable files skipped: no mode bits); Linux left ([coverage](rust-files-coverage.md)). | services | 1.4 | 5 ×2 | D |
 | 6.4 | Browser keeper: Chrome for Testing, CDP pipe, browser tools, live view, downloads | services | 4.1 | 5 ×2 | A |
 | 7.1 | **Done.** Portable `kuvo-box keep`, atomic selection and rollback, Windows keeper handover, and `kuvo-start` launching by manifest. [Coverage and remaining owner phases](rust-keeper-coverage.md) | keeper | 1.3 | 5 ×2 | D |
 | 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint. Keep each Rust release's `box.json` beside `bin` with a top-level `launch: "rust"`, including when the previous TypeScript stager moves only `bin`. | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |

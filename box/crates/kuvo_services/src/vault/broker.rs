@@ -158,6 +158,7 @@ impl Broker {
         let mut question = Question::default();
         question.kind = kind;
         question.session = (!caller.root.is_empty()).then(|| caller.root.clone());
+        question.caller_session = (!caller.session.is_empty()).then(|| caller.session.clone());
         question.session_name = caller.name.clone();
         question.bot = caller.bot.as_ref().map(|bot| bot.id.clone());
         question.bot_name = caller.bot.as_ref().map(|bot| bot.name.clone());

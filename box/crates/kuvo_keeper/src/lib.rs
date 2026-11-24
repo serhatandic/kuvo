@@ -4,6 +4,9 @@
 //! only switches executable code and records the trial. It never restores a data snapshot.
 
 mod engine_pack;
+pub mod fleet;
+#[cfg(target_os = "macos")]
+pub mod mac_helper;
 pub mod manifest;
 pub mod prepare_command;
 mod readiness;
@@ -15,6 +18,7 @@ mod worker;
 #[cfg(windows)]
 pub mod windows;
 
+pub use engine_pack::provision_pinned_engine;
 pub use readiness::resident_info;
 pub use release::Release;
 pub use worker::wait_for_stop;

@@ -28,7 +28,7 @@ pub struct Resident {
 pub(super) struct Local {
     pub(super) vault: Vault,
     pub(super) activity: Activity,
-    clients: Clients,
+    pub(super) clients: Clients,
     bots: PathBuf,
     gate: super::broker::Gate,
 }

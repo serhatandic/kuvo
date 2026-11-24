@@ -27,7 +27,7 @@ use crate::{
     devices::Devices,
     directory::{
         AgentKind, AnnouncedAgent, Announcement, Announcements, ComputerKey, Owner, Ownership,
-        RecordScope, Roster, owned_digest,
+        RecordScope, Roster, UpdateFacts, owned_digest,
     },
     kept,
     lists::{self, Computer, Lists, Local},
@@ -65,15 +65,30 @@ pub struct View {
     pub(crate) move_waiting: Arc<BTreeSet<String>>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
+    update: UpdateFacts,
+    bridge_update: Option<BridgeUpdate>,
     work_calls: bool,
     transfers: bool,
     submission_recovery: bool,
+    conversation_search: bool,
     backup_receiver: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
 }
 
 impl View {
+    pub fn peer_updates(&self, key: &ComputerKey, now: Millis) -> (bool, UpdateFacts) {
+        let key = encode(key);
+        let announcement = self.announced.get(&key);
+        let away = self
+            .reach
+            .peer_is_away(&key, announcement.and_then(|entry| entry.heard), now);
+        let facts = announcement
+            .and_then(|entry| entry.computer.as_ref())
+            .map_or_else(UpdateFacts::default, |computer| computer.updates());
+        (away, facts)
+    }
+
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
         self.roster
             .pending(&self.reach, &self.announced, feature, kept)
@@ -152,6 +167,12 @@ impl View {
         }
         if self.submission_recovery {
             features.push("typed.submission-recovery");
+        }
+        if self.conversation_search {
+            features.extend([
+                crate::memory_read::FEATURE,
+                crate::memory_read::SEARCH_FEATURE,
+            ]);
         }
         if self
             .local_lists
@@ -383,14 +404,22 @@ struct SentAgents {
 }
 
 enum Change {
+    Update(UpdateFacts, Option<BridgeUpdate>),
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
     TransferWorker,
     SubmissionRecovery,
+    ConversationSearch,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeUpdate {
+    pub recipients: BTreeSet<ComputerKey>,
+    pub facts: UpdateFacts,
 }
 
 pub struct ResidentPeers {
@@ -564,6 +593,13 @@ impl ResidentPeers {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))
     }
 
+    pub async fn advertise_conversation_search(&self) -> io::Result<()> {
+        self.changes
+            .send(Change::ConversationSearch)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))
+    }
+
     /// Track the roster handed down by setup authority after a durable membership or epoch change.
     pub async fn follow_setup_roster(&self, rosters: watch::Receiver<Option<Arc<Roster>>>) {
         let _ = self.changes.send(Change::SetupRosters(rosters)).await;
@@ -575,6 +611,10 @@ impl ResidentPeers {
 
     pub async fn notices(&self, notices: History) {
         let _ = self.changes.send(Change::Notices(Arc::new(notices))).await;
+    }
+
+    pub async fn announce_update(&self, facts: UpdateFacts, bridge: Option<BridgeUpdate>) {
+        let _ = self.changes.send(Change::Update(facts, bridge)).await;
     }
 }
 
@@ -615,9 +655,12 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             move_waiting: Arc::default(),
             relay_connected: false,
+            update: UpdateFacts::default(),
+            bridge_update: None,
             work_calls: false,
             transfers: false,
             submission_recovery: false,
+            conversation_search: false,
             backup_receiver: false,
             endpoint,
             system: system_name(),
@@ -661,6 +704,13 @@ impl Resident {
                     }
                 }
                 change = changes.recv() => match change {
+                    Some(Change::Update(update, bridge)) => {
+                        self.view.update = update;
+                        self.view.bridge_update = bridge;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::None);
+                        }
+                    }
                     Some(Change::Local(local)) => {
                         self.view.local_lists = local.publication().map(Arc::new);
                         self.view.local = local;
@@ -681,6 +731,12 @@ impl Resident {
                     },
                     Some(Change::SubmissionRecovery) => {
                         self.view.submission_recovery = true;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::All);
+                        }
+                    }
+                    Some(Change::ConversationSearch) => {
+                        self.view.conversation_search = true;
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
@@ -1144,7 +1200,22 @@ async fn publish_round(
     {
         state["computer"]["engine"] = json!(engine);
     }
-    let announcement_digest: [u8; 32] = Sha256::digest(state.to_string()).into();
+    let offer = |update: &UpdateFacts| {
+        let mut state = state.clone();
+        if let (Some(computer), Ok(Value::Object(update))) = (
+            state["computer"].as_object_mut(),
+            serde_json::to_value(update),
+        ) {
+            computer.extend(update);
+        }
+        let digest: [u8; 32] = Sha256::digest(state.to_string()).into();
+        (state, digest)
+    };
+    let current = offer(&view.update);
+    let bridge = view
+        .bridge_update
+        .as_ref()
+        .map(|bridge| (bridge, offer(&bridge.facts)));
     for peer in &view.roster.members {
         let Some(host) = peer.host() else {
             continue;
@@ -1152,10 +1223,14 @@ async fn publish_round(
         let forced = matches!(refresh, Refresh::All)
             || matches!(refresh, Refresh::Peer { key, .. } if key == peer.key);
         let known = view.announced.get(&encode(&peer.key));
+        let (state, announcement_digest) = bridge
+            .as_ref()
+            .filter(|(bridge, _)| bridge.recipients.contains(&peer.key))
+            .map_or(&current, |(_, offer)| offer);
         let before = announcements.get(&peer.key);
         if forced
             || before.is_none_or(|(digest, at)| {
-                *digest != announcement_digest || now.saturating_sub(*at) >= 600_000
+                digest != announcement_digest || now.saturating_sub(*at) >= 600_000
             })
         {
             let at = before.map_or(now, |(_, before)| now.max(before.saturating_add(1)));
@@ -1167,12 +1242,12 @@ async fn publish_round(
                 fields["ask"] = json!("agents");
             }
             if relay.mail(host.clone(), envelope(fields)).await.is_ok() {
-                announcements.insert(peer.key, (announcement_digest, at));
+                announcements.insert(peer.key, (*announcement_digest, at));
             }
         }
         if announcements
             .get(&peer.key)
-            .is_some_and(|(digest, _)| *digest == announcement_digest)
+            .is_some_and(|(digest, _)| digest == announcement_digest)
         {
             let sent = SentAgents {
                 sessions: sessions.clone(),
