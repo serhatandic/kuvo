@@ -106,6 +106,22 @@ impl TestRelay {
         (kind, number, body.to_vec())
     }
 
+    async fn moving(&mut self) -> serde_json::Value {
+        loop {
+            let sent = self.binary().await;
+            if sent.get(1..17) != Some(PEER_ADDRESS.as_slice()) {
+                continue;
+            }
+            let (kind, _, body) = frames::read_frame(&sent[17..]).unwrap();
+            if kind == Kind::Mail {
+                let mail = Envelope::open(body, &PEER_KEY, &public(RUST_KEY)).unwrap();
+                if let Some(moving) = mail.0.get("moving") {
+                    return moving["moves"].clone();
+                }
+            }
+        }
+    }
+
     async fn paired(&mut self, number: u32) -> noise::Transport {
         let mut ik = noise::Initiator::new(PEER_KEY, public(RUST_KEY), noise::PROLOGUE);
         let payload = serde_json::to_vec(&hello()).unwrap();
@@ -1478,18 +1494,6 @@ async fn move_snapshots_refresh_on_a_minute_and_on_request() {
         atomic::{AtomicI64, Ordering},
     };
 
-    async fn moving(wire: &mut TestRelay) -> Value {
-        loop {
-            let (kind, _, body) = wire.frame().await;
-            if kind == Kind::Mail {
-                let mail = Envelope::open(&body, &PEER_KEY, &public(RUST_KEY)).unwrap();
-                if let Some(moving) = mail.0.get("moving") {
-                    return moving["moves"].clone();
-                }
-            }
-        }
-    }
-
     tokio::time::timeout(Duration::from_secs(32), async {
         let home = tempfile::tempdir().unwrap();
         let (relay, mut wire) = TestRelay::connect().await;
@@ -1519,7 +1523,7 @@ async fn move_snapshots_refresh_on_a_minute_and_on_request() {
         )
         .await
         .unwrap();
-        assert_eq!(moving(&mut wire).await, json!([]));
+        assert_eq!(wire.moving().await, json!([]));
 
         let path = home.path().join("run/moves/mov_report.json");
         let mut record = json!({
@@ -1532,40 +1536,163 @@ async fn move_snapshots_refresh_on_a_minute_and_on_request() {
             files::write_atomic(&path, &serde_json::to_vec(record).unwrap()).unwrap()
         };
         save(&record);
-        assert_eq!(moving(&mut wire).await[0]["sent"], 10);
+        assert_eq!(wire.moving().await[0]["sent"], 10);
 
         record["sent"] = 50.into();
         save(&record);
         clock.store(1_059_999, Ordering::Relaxed);
         let check = Duration::from_millis(3500);
         assert!(
-            tokio::time::timeout(check, moving(&mut wire))
-                .await
-                .is_err(),
+            tokio::time::timeout(check, wire.moving()).await.is_err(),
             "More bytes alone do not publish a move"
         );
         clock.store(1_060_000, Ordering::Relaxed);
-        assert_eq!(moving(&mut wire).await[0]["sent"], 50);
+        assert_eq!(wire.moving().await[0]["sent"], 50);
 
         let ask = json!({"at":1_060_001, "ask":"agents"});
         let bytes = Envelope(ask.as_object().unwrap().clone())
             .seal(&PEER_KEY, &here)
             .unwrap();
         wire.send(frames::relay_send(&PEER_ADDRESS, &bytes)).await;
-        assert_eq!(moving(&mut wire).await[0]["id"], "mov_report");
+        assert_eq!(wire.moving().await[0]["id"], "mov_report");
 
         record["stage"] = "switching".into();
         save(&record);
-        assert_eq!(moving(&mut wire).await[0]["stage"], "switching");
+        assert_eq!(wire.moving().await[0]["stage"], "switching");
         files::remove_file_synced(&path).unwrap();
-        assert_eq!(moving(&mut wire).await, json!([]));
+        assert_eq!(wire.moving().await, json!([]));
         clock.store(1_120_000, Ordering::Relaxed);
         assert!(
-            tokio::time::timeout(check, moving(&mut wire))
-                .await
-                .is_err(),
+            tokio::time::timeout(check, wire.moving()).await.is_err(),
             "The clear is published once"
         );
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn incomplete_and_complete_copies_wait_on_different_deadlines() {
+    use kuvo_engine::{Engine, Timing};
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        ownership::{Handle, SetupState},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use serde_json::Value;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+
+    fn waiting(moves: &Value, id: &str) -> bool {
+        moves
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .unwrap()["waiting"]
+            == true
+    }
+
+    tokio::time::timeout(Duration::from_secs(300), async {
+        let home = tempfile::tempdir().unwrap();
+        let (relay, mut wire) = TestRelay::connect().await;
+        let here = public(RUST_KEY);
+        let peer = public(PEER_KEY);
+        let clock = Arc::new(AtomicI64::new(1_000_000));
+        let folder = home.path().join("run/moves");
+        let hash = encode(&[9; 32]);
+        for (id, complete) in [("mov_partial", false), ("mov_complete", true)] {
+            let kept = json!({
+                "formatVersion": 1, "id": id, "kind": "chat", "thing": "ses_notice", "name": id,
+                "from": encode(&peer), "to": encode(&here), "peer": encode(&peer),
+                "role": "to", "stage": "copying", "sessions": ["ses_notice"], "started": 1_000_000,
+                "complete": complete, "setUpAt": complete.then_some(1_000_000), "generation": 1, "hash": hash,
+            });
+            files::write_atomic(&folder.join(format!("{id}.json")), &serde_json::to_vec(&kept).unwrap())
+                .unwrap();
+        }
+        let mut resident = ResidentPeers::start(
+            home.path(),
+            Roster {
+                here: Some(here),
+                main: Some(here),
+                name: "Receiver".into(),
+                members: vec![Member {
+                    key: peer,
+                    address: Some(PEER_ADDRESS),
+                    name: "Sender".into(),
+                    kind: ComputerKind::Machine,
+                }],
+            },
+            Some(relay),
+            None,
+            false,
+            {
+                let clock = clock.clone();
+                Arc::new(move || clock.load(Ordering::Relaxed))
+            },
+        )
+        .await
+        .unwrap();
+        let devices = Devices::load(home.path(), "Receiver".into(), ComputerKind::Machine)
+            .await
+            .unwrap()
+            .devices;
+        let owner = Handle::new(resident.reader(), resident.relay_handle(), devices, SetupState::default);
+        let engine = Engine::new(home.path().to_owned(), Default::default(), Timing::default()).unwrap();
+        resident.attach_moves(engine, owner).await.unwrap();
+
+        let initial = tokio::time::timeout(Duration::from_secs(8), wire.moving())
+            .await
+            .unwrap();
+        assert!(!waiting(&initial, "mov_partial"));
+        assert!(!waiting(&initial, "mov_complete"));
+        tokio::time::pause();
+        // Keep the relay connection alive. Only this move's peer is quiet.
+        clock.store(1_060_000, Ordering::Relaxed);
+        wire.send(vec![0]).await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        assert!(!waiting(&wire.moving().await, "mov_partial"));
+
+        clock.store(1_120_000, Ordering::Relaxed);
+        wire.send(vec![0]).await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let partial_waiting = loop {
+            let seen = wire.moving().await;
+            if waiting(&seen, "mov_partial") {
+                break seen;
+            }
+        };
+        assert!(!waiting(&partial_waiting, "mov_complete"));
+
+        clock.store(1_180_000, Ordering::Relaxed);
+        wire.send(vec![0]).await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let both = loop {
+            let seen = wire.moving().await;
+            if waiting(&seen, "mov_complete") {
+                break seen;
+            }
+        };
+        assert!(waiting(&both, "mov_partial"));
+        let heard = json!({"at": 1_180_000, "move": {
+            "id":"mov_partial", "op":"working", "generation":1, "hash":hash,
+        }});
+        let bytes = Envelope(heard.as_object().unwrap().clone())
+            .seal(&PEER_KEY, &here).unwrap();
+        wire.send(frames::relay_send(&PEER_ADDRESS, &bytes)).await;
+        let heard_again = loop {
+            let seen = wire.moving().await;
+            if !waiting(&seen, "mov_partial") {
+                break seen;
+            }
+        };
+        assert!(waiting(&heard_again, "mov_complete"));
     })
     .await
     .unwrap();
