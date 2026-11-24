@@ -39,6 +39,7 @@ the races that span removal, backup, moves, and an authority change.
 | U9 | [Local uninstall refuses a running main computer before clearing its identity](../../protocol/conformance/removal.test.mjs) | Both binaries refuse before deleting the desktop identity or writing an off marker. The running primary and member keep their setup and the same desktop grant. In the live Noise check, the same connection to the member answers before and after the refusal. |
 | U10 | [The installer waits for an authorized wipe before offering reinstall](../../protocol/conformance/removal.test.mjs) | Both installers wait for a pending wipe, a competing owner or a mismatched directory identity. They finish an authorized detach, preserve a replacement and continue to offer reinstall. U7 verifies successful Rust enrollment consumes the offer. |
 | U11 | [Uninstall reports the desktop identity failure first and can be retried](../../protocol/conformance/removal.test.mjs) | When identity and sign-in cleanup both fail on a stopped Unix machine, the command reports the identity error. After permissions are repaired, retry removes the identity and preserves work. |
+| U12 | [A member misses two handovers and sees the former primary unlinked](../../box/crates/kuvo_setup/tests/live.test.mjs) | The offline member accepts the latest epoch and both receipt pages. The current primary commits the former primary’s unlink in that epoch. The former primary keeps a new standalone setup and both remaining computers receive its acknowledgment. |
 
 ## Stored and inherited cases
 
@@ -189,7 +190,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 24 have coverage and 170 still have open or partial work. Of those, 128 list 2.3 as an owner (101 open, 27 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 24 have coverage and 170 still have open or partial work. Of those, 127 list 2.3 as an owner (100 open, 27 partial).
 
 ### computers-add
 
@@ -440,7 +441,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 24 h
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [an offline member follows two handovers and the former primary can be unlinked](../../box/bridge-tests/setup-handover.test.js#L392) | Open | 2.3, 9.3 |
+| [an offline member follows two handovers and the former primary can be unlinked](../../box/bridge-tests/setup-handover.test.js#L392) | U12 verifies catch-up and the signed unlink in the new epoch. The reference passes on TypeScript. The forged leadership and stale authority variants remain with 9.3. | 9.3 |
 | [an SSH-enrolled member advertises its accepted epoch and catches up](../../box/bridge-tests/setup-handover.test.js#L428) | Open | 2.3 |
 | [unlink retries credential cleanup before acknowledging completion](../../box/bridge-tests/setup-handover-access.test.js#L18) | U3 covers a machine’s durable cleanup fence and restart. Helper and relocated stores remain open. | 2.3, 6.2 |
 | [an unmatched pre-join pairing requires an explicit enrollment decision](../../box/bridge-tests/setup-handover-access.test.js#L96) | Open | 2.3 |
