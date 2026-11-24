@@ -54,7 +54,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The main computer waits for reachable computers to prepare a Rust update before switching. A computer that was offline can catch up when it returns.
 - A returning computer can get a signed update from another computer when the release feed no longer serves it. On a Mac, Kuvo restarts an older Helper when the update is ready.
 - A computer keeps a manual update check until its main computer can receive it, even if the computer restarts first.
-- A failed fleet download can be retried for the same signed release after the computer restarts.
+- A failed release or engine download can be retried for the same signed release after the computer restarts.
 - A reachable computer can retry a failed fleet download when another computer in its setup asks.
 - The computers list reports failed release downloads across the setup and whether they can be retried.
 - The computers list shows when each computer is preparing, ready, switching, up to date, or out of reach during a signed release update.

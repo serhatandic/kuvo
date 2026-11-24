@@ -273,7 +273,7 @@ test("a discarded release signature does not stop the next signed feed check", a
   assert.equal(fs.existsSync(path.join(here.home, "run/fleet-ready.json")), false);
 });
 
-async function fixtureReleaseFeed(t, packBytes, { holdPack = false } = {}) {
+async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {} } = {}) {
   const key = keypair();
   const version = "0.8.0";
   const hash = digest(packBytes ?? "signed target");
@@ -292,7 +292,7 @@ async function fixtureReleaseFeed(t, packBytes, { holdPack = false } = {}) {
   t.after(() => { feed.close(); feed.closeAllConnections(); });
   const pack = { url: `http://127.0.0.1:${feed.address().port}/target.tar.gz`, sha256: hash };
   signed = encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true,
-    launch: "rust", pack, packs: { [target]: pack } }, key));
+    launch: "rust", pack, packs: { [target]: pack }, ...engines }, key));
   const updateEnv = {
     KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`,
     KUVO_TEST_RELEASE_KEY: key.key,
@@ -716,7 +716,7 @@ const targets = {
 };
 const target = targets[`${process.platform}:${process.arch}`];
 
-async function engineFeed(t, release, fixture) {
+async function engineFeed(t, release, fixture, { damageFirst = !fixture } = {}) {
   const executable = process.platform === "win32" ? "opencode.exe" : "opencode";
   const source = path.join(release, "engine-source");
   const engine = path.join(source, "package/bin", executable);
@@ -747,7 +747,7 @@ async function engineFeed(t, release, fixture) {
       createReadStream(workerData.archive).pipe(response);
     });
     server.listen(0, "127.0.0.1", () => parentPort.postMessage(server.address().port));
-  `, { eval: true, workerData: { archive, calls, damageFirst: !fixture } });
+  `, { eval: true, workerData: { archive, calls, damageFirst } });
   t.after(() => feed.terminate());
   const [port] = await once(feed, "message");
   return {
@@ -758,6 +758,62 @@ async function engineFeed(t, release, fixture) {
     },
   };
 }
+
+test("a failed engine download can retry preparation for the same signed release", { timeout: 180000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { computer } = await bench(t);
+  const here = await computer("Standalone", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const engine = "2.2.6";
+  const installed = "0.8.0-beta.1";
+  const version = "0.8.0";
+  const executable = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
+  const files = {
+    [`bin/${executable}`]: fs.readFileSync(binary.file),
+    "bin/box-version": Buffer.from(version + "\n"),
+  };
+  const tree = path.join(root, "tree");
+  for (const [file, data] of Object.entries(files)) {
+    write(path.join(tree, file), data, { mode: 0o700 });
+  }
+  write(path.join(tree, "box.json"), encode({
+    kuvo: "box/1", launch: "rust", version, engine,
+    files: Object.fromEntries(Object.entries(files).map(([file, data]) => [file, digest(data)])),
+  }));
+  const tar = path.join(root, "box.tar");
+  const packed = spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { encoding: "utf8", timeout: 90000 });
+  assert.equal(packed.status, 0, packed.stderr);
+  const bytes = gzipSync(fs.readFileSync(tar), { level: 1 });
+  const standIn = process.platform === "win32" ? undefined : '#!/bin/sh\n[ "$1" = --version ]\n';
+  const feed = await engineFeed(t, path.join(root, "engine"), standIn, { damageFirst: false });
+  const unavailable = feed.archive + ".unavailable";
+  fs.renameSync(feed.archive, unavailable);
+  const system = process.platform === "win32" ? "windows" : process.platform;
+  const architecture = process.arch === "arm64" ? "aarch64" : "x86_64";
+  const { hash, updateEnv } = await fixtureReleaseFeed(t, bytes, { engines: { [system]: { [architecture]: feed.build } } });
+  write(path.join(here.home, "bin/box-version"), installed + "\n");
+  write(path.join(here.home, "run/engine.json"), encode({ ...here.engine.record, version: engine }));
+  const child = here.start(binary, updateEnv);
+  const resident = await child.ready();
+  const failed = path.join(here.home, "run/fleet-cannot.json");
+  const failure = await until(() => fs.existsSync(failed) && readJSON(failed),
+    () => `the engine download failure must be recorded\n${child.log()}`, 90000);
+  assert.deepEqual([failure.version, failure.sha256, failure.fixable], [version, hash, true]);
+  assert.match(failure.reason, /couldn't download the engine/);
+  assert.equal((await request(resident, "GET", "kuvo/update")).json.version, installed);
+  fs.renameSync(unavailable, feed.archive);
+  const retried = await request(resident, "POST", "kuvo/update/retry", { target: version, targetSha256: hash });
+  assert.equal(retried.status, 202, retried.text);
+  const release = path.join(here.home, "versions", `${version}-${hash.slice(0, 12)}`, "pack");
+  await until(() => fs.existsSync(release) && !fs.existsSync(failed), "the same release must prepare after retry", 90000);
+  assert.equal(digest(fs.readFileSync(release)), hash);
+  assert.equal(fs.readFileSync(feed.calls, "utf8"), "download\ndownload\n");
+});
 
 test("Rust prepares its target without changing the selected release and its keeper can start it", async t => {
   const { binary, home, key, release, body, update, env } = box(t);
