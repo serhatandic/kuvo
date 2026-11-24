@@ -4,8 +4,8 @@ use serde_json::Value;
 use tokio::time::{Instant, sleep_until};
 
 use super::{
-    AddError, Completed, Denied, Job, PHONE_LINK, Progress, StepState, address::Address,
-    kept_hosts_files, refuse,
+    AddError, Completed, Denied, Job, Progress, StepState, address::Address, refuse,
+    saved_ssh_destination,
 };
 use crate::{
     Receipt,
@@ -42,40 +42,14 @@ impl Target {
             .iter()
             .find(|peer| peer.key == key && key != setup.position.primary)
             .ok_or_else(missing)?;
-        let kept = kept_hosts_files(files)
-            .read::<Value>(PHONE_LINK)
-            .map_err(|_| missing())?;
-        let hosts = kept
-            .as_ref()
-            .and_then(|whole| whole.get("machines"))
-            .and_then(Value::as_object);
-        let destination = saved
-            .iter()
-            .find_map(|record| {
-                let destination = record["destination"].as_str()?;
-                let bound = hosts
-                    .and_then(|hosts| hosts.get(destination))
-                    .and_then(|host| host["key"].as_str());
-                if let Some(bound) = bound {
-                    return (bound == key).then_some(destination);
-                }
-                // Earlier Rust enrollments saved the address in the roster. The
-                // local issuer's retained claim ties that address to this peer.
-                (peer.extra.get("id").and_then(Value::as_str) == Some(destination)
-                    && link.installer_invites.values().any(|invite| {
-                        invite
-                            .claim
-                            .as_ref()
-                            .is_some_and(|claim| claim.matches(peer))
-                    }))
-                .then_some(destination)
-            })
+        let destination = saved_ssh_destination(files, saved, &link, peer)
+            .map_err(|_| missing())?
             .ok_or_else(missing)?;
         if !setup.checkpointed {
             return Err(refuse(409, SETUP_CHANGED));
         }
         Ok(Self {
-            destination: Address::read(destination).map_err(|_| missing())?,
+            destination: Address::read(&destination).map_err(|_| missing())?,
             name: peer.name.clone(),
             key: key.into(),
             position: setup.position.clone(),
@@ -95,7 +69,11 @@ pub(super) async fn run(job: &Job, target: Target) -> Result<Completed, AddError
         })
         .await
         .map_err(|error| error.to_string())?;
+    let receipt = serde_json::from_value::<Receipt>(answer.value.clone()).ok();
     if answer.status != 200 {
+        if receipt.is_some() {
+            job.send(Progress::UninstallCommitted(receipt)).await?;
+        }
         return Err(answer.value["message"]
             .as_str()
             .unwrap_or("The removal couldn’t be saved.")
@@ -106,15 +84,7 @@ pub(super) async fn run(job: &Job, target: Target) -> Result<Completed, AddError
         .filter(|op| safe_token(op, 22, 43))
         .ok_or("The removal couldn’t be saved.")?
         .to_owned();
-    let receipt = serde_json::from_value::<Receipt>(answer.value).ok();
     job.send(Progress::UninstallCommitted(receipt)).await?;
-    if let Err(error) = forget_address(&job.files, &target) {
-        eprintln!("Removal machines-list cleanup failed: {error}");
-        return Err(
-            "The computer’s access was removed, but the saved machines list couldn’t be updated."
-                .into(),
-        );
-    }
     job.send(Progress::Step(
         "removing",
         StepState::Now,
@@ -153,24 +123,6 @@ pub(super) async fn run(job: &Job, target: Target) -> Result<Completed, AddError
     job.send(Progress::Step("forgetting", StepState::Now, String::new()))
         .await?;
     Ok(Completed::Uninstalled)
-}
-
-fn forget_address(files: &Files, target: &Target) -> Result<(), crate::Error> {
-    let destination = target.destination.as_str();
-    let mut saved = super::saved_machines(files)?;
-    if let Some(kept) = kept_hosts_files(files).read::<Value>(PHONE_LINK)?
-        && kept["machines"][destination]["key"]
-            .as_str()
-            .is_some_and(|key| key != target.key)
-    {
-        return Ok(());
-    }
-    let before = saved.len();
-    saved.retain(|row| row["destination"] != destination);
-    if saved.len() != before {
-        files.write("machines.json", &saved)?;
-    }
-    Ok(())
 }
 
 fn finished(message: impl Into<String>) -> AddError {

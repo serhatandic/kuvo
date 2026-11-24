@@ -254,6 +254,8 @@ pub(crate) struct Link {
     pub leadership: BTreeMap<u64, Envelope>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub installer_invites: BTreeMap<String, crate::installer::Invitation>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_machine_cleanup: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

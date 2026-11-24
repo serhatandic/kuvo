@@ -215,6 +215,30 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   const gone = await fromMember("DELETE", `kuvo/computers/add/${windowsID}`);
   assert.equal(gone.status, 200, gone.text);
   assert.ok(!(await page()).json.tries.some(attempt => attempt.id === windowsID));
+
+  const heldAlias = "held-alias";
+  const heldCheck = path.join(fake, `hold-${heldAlias}`);
+  fs.appendFileSync(path.join(main.home, "ssh", "known_hosts"), `${heldAlias} ssh-ed25519 ${key}\n`);
+  write(heldCheck, "card %s");
+  const heldMail = relay.intercept(Buffer.from(source.address, "base64url"), Buffer.from(lab.address, "base64url"), () => true);
+  t.after(() => {
+    heldMail();
+    fs.rmSync(heldCheck, { force: true });
+  });
+  const holding = await ask("POST", "kuvo/computers/add", { destination: heldAlias }, headers);
+  assert.equal(holding.status, 202, holding.text);
+  await until(() => fs.lstatSync(marker, { throwIfNoEntry: false })?.isSymbolicLink(),
+    "The alias did not reach its account probe.");
+  const unlinked = await ask("POST", `kuvo/computers/${done.computer.key}/unlink`, {}, headers);
+  assert.equal(unlinked.status, 200, unlinked.text);
+  fs.unlinkSync(heldCheck);
+  const ended = await until(async () => {
+    const attempt = (await page()).json.tries.find(attempt => attempt.id === holding.json.try.id);
+    return attempt?.state === "failed" && attempt;
+  }, "The alias was not refused after the computer was removed.");
+  assert.match(ended.failure.message, /was removed from your computers/);
+  assert.deepEqual(readJSON(path.join(main.home, "machines.json")), []);
+  assert.equal((await ask("GET", "kuvo/setup")).json.computers.some(computer => computer.key === done.computer.key), false);
 });
 
 const key = byte => Buffer.concat([
@@ -263,7 +287,7 @@ async function addBench(t) {
     assert.equal(answer.status, 200, answer.text);
     return answer.json;
   };
-  return { main, ask, account, remote, fake, headers, page, releaseMarker };
+  return { computer, main, ask, account, remote, fake, headers, page, releaseMarker };
 }
 
 test("SSH Add explains connection failures and leaves the account and host trust alone", {
@@ -393,6 +417,46 @@ test("uninstall from a saved SSH address commits a signed wipe and waits for con
   assert.equal(closed.save.operation, operation);
   assert.ok(state().left.includes(spare.key));
   assert.deepEqual(addresses(), []);
+});
+
+test("unlink keeps its signed revocation when forgetting the SSH address fails", {
+  skip: process.platform === "win32" || process.getuid?.() === 0, timeout: 30000,
+}, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const { member, save } = seedPeerSetup(studio.home, relay.url);
+  const addresses = [{ destination: "lab", identity: "4".repeat(32) }, { destination: "other" }];
+  save("machines.json", addresses);
+  save("phone-link.json", { machines: { lab: { key: member.key, name: member.name, address: member.address } } });
+  const running = studio.start();
+  const primary = studio.connect(await running.ready());
+  const initial = (await primary("GET", "kuvo/setup")).json;
+  await until(() => leases.leaseFor(initial.setup), "The main computer did not claim its relay lease.");
+  const headers = { "x-kuvo-from": "mac" };
+  const route = `kuvo/computers/${member.key}/unlink`;
+  const operation = Buffer.alloc(16, 67).toString("base64url");
+  const link = () => readJSON(path.join(studio.home, "run", "link.json"));
+  const mode = fs.statSync(studio.home).mode & 0o777;
+  fs.chmodSync(studio.home, mode & ~0o200);
+  try {
+    const blocked = await primary("POST", route, { operation }, headers);
+    assert.equal(blocked.status, 503, blocked.text);
+    assert.equal(blocked.json.operation, operation);
+    assert.equal(typeof blocked.json.proof.s, "string");
+    assert.deepEqual(readJSON(path.join(studio.home, "machines.json")), addresses);
+  } finally {
+    fs.chmodSync(studio.home, mode);
+  }
+  const saved = link().shared.membershipAndAccess;
+  assert.ok(saved.value.left.includes(member.key));
+  assert.equal(link().pendingMachineCleanup[member.key], "lab");
+  await running.stop();
+  const restarted = studio.connect(await studio.start().ready());
+  const replay = await restarted("POST", route, { operation }, headers);
+  assert.equal(replay.status, 200, replay.text);
+  assert.deepEqual(link().shared.membershipAndAccess, saved);
+  assert.equal(link().pendingMachineCleanup, undefined);
+  assert.deepEqual(readJSON(path.join(studio.home, "machines.json")), [addresses[1]]);
 });
 
 test("SSH Add suggests configured addresses and refuses input that cannot name a computer", {
@@ -580,4 +644,44 @@ test("SSH Add reports that it cannot prepare an invalid account lock", {
   assert.equal(fs.readFileSync(sentinel, "utf8"), "do not change this file");
   assert.equal(fs.existsSync(marker), false);
   assert.equal(fs.existsSync(path.join(remote, ".kuvo-code")), false);
+});
+
+test("SSH Add preserves an independent installation that appeared after the probe", {
+  skip: boxBinary().typescript || process.platform === "win32", timeout: 45000,
+}, async t => {
+  const { computer, main, ask, remote, fake, headers, page } = await addBench(t);
+  const independent = await computer("Independent");
+  const existing = independent.connect(await independent.start().ready());
+  const setup = (await existing("GET", "kuvo/setup")).json.setup;
+  assert.notEqual(setup, (await ask("GET", "kuvo/setup")).json.setup);
+  const destination = "enrolled-during-add";
+  const hold = path.join(fake, `hold-${destination}`);
+  write(hold, "ssh-enroll");
+  t.after(() => fs.rmSync(hold, { force: true }));
+  write(path.join(main.home, "ssh", "known_hosts"), `${destination} ssh-ed25519 ${key(8)}\n`);
+  const started = await ask("POST", "kuvo/computers/add", { destination }, headers);
+  assert.equal(started.status, 202, started.text);
+  const readTry = async () => (await page()).tries.find(attempt => attempt.id === started.json.try.id);
+  await until(async () => {
+    const attempt = await readTry();
+    if (attempt?.state === "failed") throw new Error(attempt.failure.message);
+    return attempt?.steps.some(step => step.id === "joining" && step.state === "now");
+  }, "SSH Add did not reach enrollment.", 30000);
+  const installed = path.join(remote, ".kuvo-code");
+  const state = readJSON(path.join(independent.home, "run", "link.json"));
+  assert.equal(state.setup.id, setup);
+  const link = path.join(installed, "run", "link.json");
+  const kept = path.join(installed, "box", "keys", "KUVO_KEY_EXISTING");
+  write(link, JSON.stringify(state));
+  write(kept, "existing key");
+  fs.unlinkSync(hold);
+  const refused = await until(async () => {
+    const attempt = await readTry();
+    return attempt?.state === "failed" && attempt;
+  }, "The second installation was not refused.");
+  assert.match(refused.failure.message, /connect over SSH to your own OS account/);
+  assert.equal(refused.failure.again, false);
+  assert.deepEqual(readJSON(link), state);
+  assert.equal(fs.readFileSync(kept, "utf8"), "existing key");
+  assert.equal((await existing("GET", "kuvo/setup")).json.setup, setup);
 });

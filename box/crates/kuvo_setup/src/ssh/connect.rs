@@ -29,6 +29,7 @@ pub(crate) use reservation::valid_token as is_reservation_token;
 const WINDOWS: &str = "cmd.exe /d /c echo KUVO-WINDOWS-%COMPUTERNAME%";
 const LIST_WSL: &str = "wsl.exe --list --verbose";
 const WSL_READ: &str = "import base64,os,sys; script=base64.b64decode(sys.stdin.buffer.raw.readline(262144)); os.execv('/bin/sh',['sh','-c','kuvo_script=1; '+script.decode()])";
+const OCCUPIED_ACCOUNT: i32 = 79;
 
 pub(super) struct Destination {
     ssh: Connection,
@@ -311,21 +312,29 @@ ln "$T" "$K/bin/kuvo-box"
         account: Option<&mut Reservation<'_>>,
         name: &str,
         code: &str,
-    ) -> Result<(Computer, String), String> {
+    ) -> Result<(Computer, String), AddError> {
         if self.target.os == "windows" {
-            return self.enroll_native(job, name, code).await;
+            return Ok(self.enroll_native(job, name, code).await?);
         }
         let quoted_name = name.replace('\'', "'\"'\"'");
         let account = account.ok_or("The SSH account is no longer reserved.")?;
         let script = format!(
-            "K=\"$HOME/{}\"\nKUVO_HOME=\"$K\" KUVO_SSH_ACCOUNT_TOKEN='{}' exec \"$K/bin/kuvo-box\" ssh-enroll '{quoted_name}'\n",
+            r#"K="$HOME/{}"
+for state in "$K/run/setup-card.json" "$K/run/link.json" "$K/bin/kuvo-link.js"; do
+  if [ -e "$state" ] || [ -L "$state" ]; then exit {OCCUPIED_ACCOUNT}; fi
+done
+KUVO_HOME="$K" KUVO_SSH_ACCOUNT_TOKEN='{}' exec "$K/bin/kuvo-box" ssh-enroll '{quoted_name}'
+"#,
             self.root,
             account.token()
         );
         let mut input = code.as_bytes().to_vec();
         input.push(b'\n');
         let ran = account.run(&script, input, 90).await?;
-        enrollment(ran, name)
+        if ran.status.code() == Some(OCCUPIED_ACCOUNT) {
+            return Err(AddError::occupied(name));
+        }
+        Ok(enrollment(ran, name)?)
     }
 
     pub(super) fn distro(&self) -> Option<String> {

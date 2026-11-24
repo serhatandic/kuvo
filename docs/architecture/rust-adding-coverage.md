@@ -31,6 +31,8 @@ the races that span removal, backup, moves, and an authority change.
 | C21 | [SSH Add excludes another attempt and reports a failed reservation release](../../protocol/conformance/ssh-adding.test.mjs) | A second Rust Add to the same account through another address cannot reach installation. The first finishes. A failed release leaves the committed computer visible, cancel preserves the abandoned marker, and confirmed recovery replaces it while keeping the same member. A real Rust enrollment into WSL also recovers the marker through an alternate SSH address, then unlinks and re-enrolls with fresh keys. |
 | C22 | [SSH Add cannot replace a recovery marker changed while it was asking](../../protocol/conformance/ssh-adding.test.mjs) | Both boxes reject a stale question number and preserve a different marker installed while waiting for confirmation. Real OpenSSH into WSL also verifies that a live writer keeps its lock and the changed marker survives. |
 | C23 | [SSH Add reports a failed account reservation](../../protocol/conformance/ssh-adding.test.mjs) | Both boxes preserve the target of an invalid lock symlink and report the same refusal. In real WSL, a read-only scratch directory rejects marker creation. The SSH diagnostic goes to the log and remains out of the reply. |
+| C24 | [SSH Add preserves an independent installation that appeared after the probe](../../protocol/conformance/ssh-adding.test.mjs) | An already started Add sees the independent setup before enrollment. Its refusal leaves the saved membership and existing credential intact. The TypeScript reference reproduces the same race. |
+| C25 | [The existing SSH address cannot restore a member removed while Add was checking it](../../protocol/conformance/ssh-adding.test.mjs) | The alias starts under the old membership revision. A live main unlinks the member while the probe waits. The stale Add refuses the old key after the signed revision advances, and the saved address stays removed. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -53,6 +55,7 @@ the races that span removal, backup, moves, and an authority change.
 | U20 | [An offline member keeps its data until its configured pre-wipe backup can be verified](../../protocol/conformance/removal.test.mjs) | After the signed offline removal, the source logs the unavailable configured disk and keeps its unprepared wipe and local work. When the disk returns, both boxes publish and verify a pre-wipe archive, erase the source, and replicate the completion to the observing member. |
 | U21 | [A live Unix member uninstalls after its main revokes the local desktop](../../protocol/conformance/removal.test.mjs) | The local CLI waits for the main's signed revocation before stopping the member, removes the local desktop identity and keeps its work. A live Noise session open on the Mac main closes and the revoked identity cannot reconnect. |
 | U22 | [Uninstall from a saved SSH address commits and waits for a signed wipe](../../protocol/conformance/ssh-adding.test.mjs) | Both current setups require an address bound to the member’s key. They revoke the offline member, clear its saved address, report the signed commit, and finish when the member erases and acknowledges. Stop after the commit leaves the attempt active. Recording a lost disk ends the attempt with an unconfirmed erase and preserves its receipt. |
+| U23 | [Unlink keeps its signed revocation when forgetting the SSH address fails](../../protocol/conformance/ssh-adding.test.mjs) | Both boxes commit access revocation before editing the address list. An unwritable list produces an error with the saved proof. After restart, repeating the operation clears the address and its pending cleanup record without advancing membership again. |
 
 ## Stored and inherited cases
 
@@ -79,15 +82,16 @@ the races that span removal, backup, moves, and an authority change.
 
 ## Verification
 
-In the five selected process areas through U21 and C23, Rust passes 43 tests
-on macOS and TypeScript passes 40 with three Rust-specific skips. An earlier
-Rust workspace compile check also passes. The static x86-64 musl build through the configured disk scenario passes
-37 in WSL 2 and 37 in one lokum container capped at one CPU and 1 GB. Both
-Linux runs skip two Mac cases. TypeScript passes 34 in WSL 2 with five skips.
-The native Windows run after 8.1c passes 27 with thirteen platform skips,
+In the five selected process areas through U23 and C25, Rust passes 46 tests
+on macOS and TypeScript passes 42 with four Rust-specific skips. An earlier
+Rust workspace compile check also passes. The static x86-64 musl build passes
+44 in WSL 2 and 44 across the lokum run and a rerun with its discovery fixture
+staged. Each lokum container was capped at one CPU and 1 GB. Both Linux
+environments skip two Mac cases. The native Windows run after 8.1c passes 27 with nineteen platform skips,
 including stopped uninstall when the sign-in task is already absent. The
 original TypeScript fake SSH host, alias, WSL 1 refusal and device-revocation
 scenarios pass as reference checks.
+TypeScript passes 40 with six skips in WSL 2.
 The Windows PC’s WSL 2 account joined a Rust setup,
 acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
 joined, acknowledged unlink and re-enrolled after starting its resident in a
@@ -208,7 +212,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 36 have coverage and 158 still have open or partial work. Of those, 114 list 2.3 as an owner (85 open, 29 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 37 have coverage and 157 still have open or partial work. Of those, 113 list 2.3 as an owner (84 open, 29 partial).
 
 ### computers-add
 
@@ -240,7 +244,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 36 h
 | [a phone's Remove, Uninstall and Forget (the old Mac app's `kuvo/machines/<id>` and `kuvo/hosts/<id>`) are this box's own](../../box/bridge-tests/computers-add.test.js#L697) | Open | 2.3, 7.3 |
 | [a member of a setup, and a request that can't stay, are told where to add from](../../box/bridge-tests/computers-add.test.js#L751) | Open | 2.3 |
 | [a missing or unreadable list of machines isn't overwritten when this box still keeps machines' links (#753)](../../box/bridge-tests/computers-add.test.js#L773) | C14 verifies the Add page and submission, preserves the list, and never runs SSH. The released machines route stays with 7.3. | 7.3 |
-| [an account enrolled after the probe keeps its data when the second setup is refused](../../box/bridge-tests/computers-add-recovery.test.js#L12) | Open | 2.3 |
+| [an account enrolled after the probe keeps its data when the second setup is refused](../../box/bridge-tests/computers-add-recovery.test.js#L12) | C24 and the original TypeScript scenario preserve the independent link and key after the second attempt reaches enrollment. | — |
 | [a second SSH add cannot install or seed an account reserved by the first](../../box/bridge-tests/computers-add-recovery.test.js#L35) | C21 and real OpenSSH into WSL verify exclusion before copying files. U22 covers uninstall in a current setup. SSH credential transfer and legacy SSH uninstall remain open. | 2.3 |
 | [a saved offline computer reconnects over SSH after its Mac rotates keys](../../box/src/link/add/flow.ts#L149) | Open. The original fixture is in the parent of `1336dc3cc`. | 2.3 |
 | [a credential write interrupted by SSH SIGTERM stops Add and recovery waits for the remote writer](../../box/bridge-tests/computers-add-recovery.test.js#L72) | Open | 2.3 |
@@ -251,7 +255,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 36 h
 | [SSH uninstall cannot probe ownership while Add holds the account](../../box/bridge-tests/computers-add-recovery.test.js#L199) | Open | 2.3 |
 | [SSH Add is blocked from the time uninstall probes ownership through deletion](../../box/bridge-tests/computers-add-recovery.test.js#L225) | Open | 2.3 |
 | [a reservation creation error says the account couldn't be prepared and logs the SSH detail](../../box/bridge-tests/computers-add-recovery.test.js#L259) | C23 verifies the reply, separate SSH diagnostic and absence of a new marker. | — |
-| [an alias Add honours only its original pairing and cannot restore a key removed during the Add](../../box/bridge-tests/computers-add-recovery.test.js#L298) | Open | 2.3 |
+| [an alias Add honours only its original pairing and cannot restore a key removed during the Add](../../box/bridge-tests/computers-add-recovery.test.js#L298) | C25 verifies that an in-flight alias cannot restore a revoked key or restore its address. The live Noise check revokes the submitting grant during the probe. Re-enrollment from the same SSH address remains open. | 2.3 |
 | [uninstall revokes the computer even when its desktop identity folder cleanup fails](../../box/bridge-tests/computers-add-recovery.test.js#L335) | Open | 2.3 |
 | [uninstall logs a link-write failure without putting the local path in its result](../../box/bridge-tests/computers-add-recovery.test.js#L369) | Open | 2.3 |
 | [uninstall revokes access before SSH cleanup and reports a lost reply without its diagnostic](../../box/bridge-tests/computers-add-recovery.test.js#L392) | Open | 2.3 |

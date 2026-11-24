@@ -298,6 +298,9 @@ impl Owner {
             if let Some(resolution) = request.resolve {
                 return self.resolve_wipe(roster, record, resolution, saved).await;
             }
+            if let Err(error) = self.clean_saved_ssh_address(&key).await {
+                eprintln!("Removal machines-list cleanup failed: {error}");
+            }
             return Ok(removal_reply(&record, saved));
         }
         if request.resolve.is_some() {
@@ -325,6 +328,21 @@ impl Owner {
             ));
         }
         let mut next = self.link.clone();
+        if let Some(destination) = crate::ssh::saved_machines(&self.files)
+            .and_then(|saved| {
+                crate::ssh::saved_ssh_destination(
+                    &self.files,
+                    &saved,
+                    &self.link,
+                    &roster.boxes[at],
+                )
+            })
+            .ok()
+            .flatten()
+        {
+            next.pending_machine_cleanup
+                .insert(key.clone(), destination);
+        }
         let mut recoveries = installer::recoveries(&next, &roster);
         if recoveries.shift_remove(&key).is_some() {
             installer::keep_recoveries(&mut next, &mut roster, recoveries)?;
@@ -365,7 +383,25 @@ impl Owner {
         if let Err(error) = self.publish(false).await {
             eprintln!("publishing accepted removal: {error}");
         }
-        Ok(removal_reply(&record, Some(proof)))
+        let mut reply = removal_reply(&record, Some(proof));
+        if let Err(error) = self.clean_saved_ssh_address(&key).await {
+            eprintln!("Removal machines-list cleanup failed: {error}");
+            reply.status = 503;
+            reply.value["message"] = json!(
+                "The computer’s access was removed, but the saved machines list couldn’t be updated."
+            );
+        }
+        Ok(reply)
+    }
+
+    async fn clean_saved_ssh_address(&mut self, key: &str) -> Result<(), Error> {
+        let Some(destination) = self.link.pending_machine_cleanup.get(key) else {
+            return Ok(());
+        };
+        crate::ssh::forget_ssh_destination(&self.files, &self.link, destination)?;
+        let mut next = self.link.clone();
+        next.pending_machine_cleanup.remove(key);
+        self.commit(next).await
     }
 
     async fn resolve_wipe(

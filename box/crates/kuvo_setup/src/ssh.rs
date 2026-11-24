@@ -10,7 +10,7 @@ mod uninstall;
 pub(crate) use connect::is_reservation_token;
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -88,6 +88,15 @@ impl AddError {
         Self {
             title: Some(title),
             ..Self::from(message)
+        }
+    }
+
+    fn occupied(name: &str) -> Self {
+        Self {
+            again: false,
+            ..Self::from(format!(
+                "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
+            ))
         }
     }
 }
@@ -343,9 +352,11 @@ enum Progress {
 }
 
 enum Work {
-    Add(Address),
+    Add(Address, RemovalRevisions),
     Uninstall(uninstall::Target, Option<watch::Receiver<()>>),
 }
+
+pub(crate) type RemovalRevisions = BTreeMap<String, u64>;
 
 enum Message {
     Client(Change, oneshot::Sender<Result<Value, Denied>>),
@@ -703,7 +714,7 @@ impl Owner {
         };
         tokio::spawn(async move {
             let result = match work {
-                Work::Add(destination) => job.add(destination).await,
+                Work::Add(destination, revisions) => job.add(destination, revisions).await,
                 Work::Uninstall(target, after) => {
                     if let Some(mut after) = after {
                         let _ = after.changed().await;
@@ -741,7 +752,22 @@ impl Owner {
                     hex::encode(crate::random::<12>().map_err(|_| unavailable())?)
                 );
                 let seen = Attempt::new(id, &destination);
-                self.spawn(seen.clone(), by, windows, out, Work::Add(destination));
+                let revisions = self
+                    .files
+                    .read::<crate::model::Link>(crate::actor::LINK)
+                    .ok()
+                    .flatten()
+                    .and_then(|link| link.member_list().ok())
+                    .and_then(|mut roster| roster.extra.remove("removalRevisions"))
+                    .and_then(|revisions| serde_json::from_value(revisions).ok())
+                    .unwrap_or_default();
+                self.spawn(
+                    seen.clone(),
+                    by,
+                    windows,
+                    out,
+                    Work::Add(destination, revisions),
+                );
                 Ok(json!({"try": seen}))
             }
             Change::Uninstall(target, by) => {
@@ -987,14 +1013,20 @@ impl Job {
         }
     }
 
-    async fn add(&self, destination: Address) -> Result<Completed, AddError> {
+    async fn add(
+        &self,
+        destination: Address,
+        revisions: RemovalRevisions,
+    ) -> Result<Completed, AddError> {
         let name = preferences::truncate(destination.as_str(), 100);
         self.step("checking", StepState::Now, &format!("Connecting to {name}"))
             .await?;
         let remote = Destination::inspect(self, destination.clone(), &name).await?;
         self.admit().await?;
         let mut account = remote.reserve(self).await?;
-        let result = self.add_at(&remote, &destination, account.as_mut()).await;
+        let result = self
+            .add_at(&remote, &destination, account.as_mut(), revisions)
+            .await;
         if let Some(account) = account
             && let Err(message) = account.release(result.as_ref().err()).await
         {
@@ -1013,6 +1045,7 @@ impl Job {
         remote: &Destination,
         destination: &Address,
         mut account: Option<&mut connect::Reservation<'_>>,
+        revisions: RemovalRevisions,
     ) -> Result<Completed, AddError> {
         let name = remote.name();
         if let Some(existing) = remote.inspect_existing(account.as_deref_mut()).await? {
@@ -1023,6 +1056,8 @@ impl Job {
                         identity: identity.clone(),
                         key: existing.key.clone(),
                         destination: destination.as_str().into(),
+                        name: name.into(),
+                        revisions,
                         by: self.by.clone(),
                     })
                     .await
@@ -1043,9 +1078,7 @@ impl Job {
                         .into());
                 }
             }
-            return Err(format!(
-                "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
-            ).into());
+            return Err(AddError::occupied(name));
         }
         if name != preferences::truncate(destination.as_str(), 100) {
             self.send(Progress::Name(name.to_owned())).await?;
@@ -1170,6 +1203,53 @@ pub(crate) fn keep_ssh_host(
     );
     whole.insert("machines".into(), Value::Object(machines));
     files.write(PHONE_LINK, &whole)
+}
+
+pub(crate) fn saved_ssh_destination(
+    files: &Files,
+    saved: &[Value],
+    link: &crate::model::Link,
+    peer: &crate::model::Peer,
+) -> Result<Option<String>, crate::Error> {
+    let kept = kept_hosts_files(files)
+        .read::<Value>(PHONE_LINK)?
+        .unwrap_or_default();
+    Ok(saved.iter().find_map(|row| {
+        let destination = row["destination"].as_str()?;
+        if let Some(bound) = kept["machines"][destination]["key"].as_str() {
+            return (bound == peer.key).then(|| destination.to_owned());
+        }
+        // Earlier Rust enrollments kept their address on the roster. The local
+        // issuer's retained claim ties that record to the same peer.
+        (peer.extra.get("id").and_then(Value::as_str) == Some(destination)
+            && link.installer_invites.values().any(|invite| {
+                invite
+                    .claim
+                    .as_ref()
+                    .is_some_and(|claim| claim.matches(peer))
+            }))
+        .then(|| destination.to_owned())
+    }))
+}
+
+pub(crate) fn forget_ssh_destination(
+    files: &Files,
+    link: &crate::model::Link,
+    destination: &str,
+) -> Result<(), crate::Error> {
+    let mut saved = saved_machines(files)?;
+    if let Some(kept) = kept_hosts_files(files).read::<Value>(PHONE_LINK)?
+        && let Some(key) = kept["machines"][destination]["key"].as_str()
+        && link.member_list()?.boxes.iter().any(|peer| peer.key == key)
+    {
+        return Ok(());
+    }
+    let before = saved.len();
+    saved.retain(|row| row["destination"] != destination);
+    if saved.len() != before {
+        files.write("machines.json", &saved)?;
+    }
+    Ok(())
 }
 
 struct Denied {

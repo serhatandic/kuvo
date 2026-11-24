@@ -123,11 +123,29 @@ impl Owner {
         identity: &str,
         expected_key: Option<&str>,
         destination: &str,
+        name: &str,
+        revisions: &crate::ssh::RemovalRevisions,
         by: &Submitter,
     ) -> Result<Response, Error> {
         let allowed = self.ssh_admission(by)?;
         if allowed.status != 200 {
             return Ok(allowed);
+        }
+        let roster = self.roster()?;
+        if let Some(key) = expected_key {
+            let before = revisions.get(key).copied().unwrap_or_default();
+            let now = roster
+                .extra
+                .get("removalRevisions")
+                .and_then(|revisions| revisions.get(key))
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            if before != now {
+                return Ok(Response {
+                    status: 409,
+                    value: json!({"message": format!("{name} was removed from your computers. Add it again to restore access.")}),
+                });
+            }
         }
         let mut addresses = crate::ssh::saved_machines(&self.files)?;
         let Some(machine) = addresses.iter_mut().find(|row| {
@@ -135,7 +153,6 @@ impl Owner {
         }) else {
             return Ok(refused(404, "That isn't one of your computers."));
         };
-        let roster = self.roster()?;
         let Some(known) = roster.boxes.iter().find(|peer| {
             machine["destination"]
                 .as_str()

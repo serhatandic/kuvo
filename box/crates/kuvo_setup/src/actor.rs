@@ -158,6 +158,8 @@ pub(crate) enum Command {
         identity: String,
         key: Option<String>,
         destination: String,
+        name: String,
+        revisions: crate::ssh::RemovalRevisions,
         by: edits::Submitter,
     },
     SshAddress {
@@ -1271,8 +1273,17 @@ impl Owner {
                 identity,
                 key,
                 destination,
+                name,
+                revisions,
                 by,
-            } => self.keep_ssh_alias(&identity, key.as_deref(), &destination, &by),
+            } => self.keep_ssh_alias(
+                &identity,
+                key.as_deref(),
+                &destination,
+                &name,
+                &revisions,
+                &by,
+            ),
             Command::SshAddress {
                 key,
                 invite,
