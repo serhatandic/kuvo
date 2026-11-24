@@ -24,7 +24,7 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { RELEASE_FILES } from "../add/files";
 import * as scripts from "../add/scripts";
-import { writePrivate } from "../files";
+import { syncDurableFile, writePrivate } from "../files";
 import { PAUSED } from "../at-work";
 import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
@@ -260,6 +260,20 @@ const NO_ENGINE = (here: string) => `The engine couldn't be downloaded. Check th
  * a running program keeps its file). */
 const clearStaging = (home: string): void => fs.rmSync(path.join(home, "updates", "install"), { recursive: true, force: true });
 
+/** Publish completion before deleting anything left in the Linux staging tree. */
+function retireMachineStaging(home: string): void {
+  const updates = path.join(home, "updates");
+  const retired = path.join(updates, `retired-install-${crypto.randomUUID()}`);
+  fs.renameSync(path.join(updates, "install"), retired);
+  syncDurableFile(updates, updates);
+  try {
+    fs.rmSync(retired, { recursive: true, force: true });
+    syncDurableFile(updates, updates);
+  } catch (error) {
+    console.error("Removing retired installer staging:", error);
+  }
+}
+
 /** The engine the installer fetched, gone once the box that's here has that engine itself (the
  * installer runs on the box's own from then on): never two copies kept. Only where nothing is to
  * be made or moved from what's staged. */
@@ -447,7 +461,7 @@ async function newMachine({ home, release, engine }: { home: string; release: st
     writePrivate(path.join(home, "updates", "installed.json"), JSON.stringify(installedFormat.write({ version, files })));
     const tools = launchTools();
     if (!tools) {
-      clearStaging(home);
+      retireMachineStaging(home);
       return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code.", ...setAside };
     }
     // (A test's stand-ins for `crontab` first on the PATH: the script names it plainly, as on a
@@ -461,7 +475,7 @@ async function newMachine({ home, release, engine }: { home: string; release: st
     // (Not started: its mark stays, so whatever the start left, keys or a link too, it's `fresh`
     // still, and made again by trying again.)
     if (!started) return { result: "failed", verdict: judged().verdict, started, message: `Kuvo is installed on this computer, but couldn't be started: ${(ran.stderr ?? "").trim().split("\n").pop() || "it said nothing"}. Try again.`, ...setAside };
-    clearStaging(home);
+    retireMachineStaging(home);
     return { result: "done", verdict: judged().verdict, started, ...setAside };
   } finally {
     giveLock(home);

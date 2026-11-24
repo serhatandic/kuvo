@@ -216,9 +216,13 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         println!("{value}");
         return Ok(1);
     }
-    // The selected home is ready. Retire earlier installer staging as well
-    // so its unfinished-install marker cannot make this home look fresh.
-    files::remove_tree_synced(&install)?;
+    // Publish completion while holding the installer lock. A stopped or
+    // failed cleanup cannot leave a partial tree at the active staging path.
+    let retired = updates.join(format!("retired-install-{}", attempt.aside));
+    files::replace_synced(&install, &retired)?;
+    if let Err(error) = files::remove_tree_synced(&retired) {
+        eprintln!("Removing retired installer staging: {error}");
+    }
     let result = install::judge(&home, None, Platform::Linux, None)?;
     value["verdict"] = json!(result.verdict);
     value["status"] = result.status;

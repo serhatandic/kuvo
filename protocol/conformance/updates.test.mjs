@@ -1544,6 +1544,38 @@ test("a Linux installer clears an earlier incomplete installation after making t
   }
 });
 
+test("a Linux install stays complete when retired installer files cannot be removed", { timeout: 120000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
+  const { home, install, stop } = await freshLinuxInstaller(t, binary);
+  const updates = path.join(home, "updates");
+  const abandoned = path.join(updates, "install/abandoned");
+  write(path.join(updates, "install/making"), "1\n");
+  write(path.join(abandoned, "incomplete-download"), "discard this");
+  fs.chmodSync(abandoned, 0o500);
+  try {
+    const made = install("new");
+    const resident = readJSON(path.join(home, "run/serve.json"));
+    assert.equal((await request(resident, "GET", "kuvo/info")).status, 200);
+    assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
+    const result = JSON.parse(made.stdout);
+    assert.deepEqual([result.result, result.verdict], ["done", "machine"]);
+    assert.equal(fs.existsSync(path.join(updates, "install")), false);
+    const retired = fs.readdirSync(updates).find(folder => folder.startsWith("retired-install-"));
+    assert.ok(retired, "the old staging must be retired even when deletion fails");
+    assert.equal(fs.readFileSync(path.join(updates, retired, "abandoned/incomplete-download"), "utf8"), "discard this");
+    const status = install("status");
+    assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
+    assert.equal(JSON.parse(status.stdout).verdict, "machine");
+  } finally {
+    for (const folder of fs.readdirSync(updates)) {
+      const remaining = path.join(updates, folder, "abandoned");
+      if (fs.existsSync(remaining)) fs.chmodSync(remaining, 0o700);
+    }
+    stop();
+  }
+});
+
 test("signed Linux media moves the two released machines after they return", { timeout: 240000 }, async t => {
   const binary = boxBinary();
   const cache = process.env.KUVO_CONFORMANCE_RELEASED_MACHINES;
