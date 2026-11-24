@@ -876,6 +876,31 @@ test("legacy waiting queues read and future formats are refused before removal o
   assert.equal(fs.readFileSync(index, "utf8"), futureIndex);
 });
 
+test("the next queued prompt waits for the engine's previous turn to settle", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("drain-after-turn");
+  const session = "ses_laterDrain";
+  const first = { id: "msg_first", type: "user", delivery: "queue", payload: { text: "First." } };
+  const second = { id: "msg_second", type: "user", delivery: "queue", payload: { text: "Second." } };
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  here.engine.inboxes.set(session, [first, second]);
+  here.engine.running.add(session);
+  const record = await here.start().ready();
+  assert.equal((await request(record, "GET", "api/session/" + session)).status, 200);
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the running session");
+  const end = () => here.engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+  here.engine.running.delete(session);
+  end();
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  assert.deepEqual([first.delivery, second.delivery], ["queue", "queue"]);
+  end();
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  assert.deepEqual([first.delivery, second.delivery], ["queue", "queue"]);
+  await until(() => first.delivery === "steer", "the first queued item to take its turn");
+  assert.equal(second.delivery, "queue");
+  assert.deepEqual(here.engine.interrupted, []);
+});
+
 test("a restart beside the same engine scans its queues and preserves an explicit stop", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("queue-scan");

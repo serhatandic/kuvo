@@ -2259,16 +2259,19 @@ async fn drain_waiting(engine: &Engine, lease: &Lease, session: &str) -> io::Res
     Ok(sent)
 }
 
-/// The event reader owns delayed external Stops. A new turn can cancel one
-/// before it alters the saved queue.
+/// The event reader owns delayed Stops and drains. A new turn can cancel
+/// them before they alter the saved queue.
+type Delayed = BTreeMap<String, (tokio::time::Instant, tokio_util::sync::CancellationToken)>;
+
 #[derive(Default)]
 pub(crate) struct QueueEvents {
-    stops: BTreeMap<String, (tokio::time::Instant, tokio_util::sync::CancellationToken)>,
+    stops: Delayed,
+    drains: Delayed,
 }
 
 impl Drop for QueueEvents {
     fn drop(&mut self) {
-        for (_, token) in self.stops.values() {
+        for (_, token) in self.stops.values().chain(self.drains.values()) {
             token.cancel();
         }
     }
@@ -2288,6 +2291,7 @@ impl QueueEvents {
         }
         let now = tokio::time::Instant::now();
         self.stops.retain(|_, (expires, _)| *expires > now);
+        self.drains.retain(|_, (expires, _)| *expires > now);
         if matches!(
             kind,
             "session.execution.started"
@@ -2296,6 +2300,16 @@ impl QueueEvents {
                 | "session.execution.interrupted"
                 | "session.deleted"
         ) && let Some((_, pending)) = self.stops.remove(session)
+        {
+            pending.cancel();
+        }
+        if matches!(
+            kind,
+            "session.execution.started"
+                | "session.execution.failed"
+                | "session.execution.interrupted"
+                | "session.deleted"
+        ) && let Some((_, pending)) = self.drains.remove(session)
         {
             pending.cancel();
         }
@@ -2321,14 +2335,21 @@ impl QueueEvents {
         };
         let delay = match &operation {
             QueueEvent::Started | QueueEvent::Reopen => Duration::ZERO,
-            QueueEvent::Hold(_) => Duration::from_millis(1500),
+            QueueEvent::Hold(_) | QueueEvent::Drain => Duration::from_millis(1500),
             _ => Duration::from_millis(100),
         };
         let deadline = now + delay;
         let delay_scope = stop.child_token();
-        if matches!(operation, QueueEvent::Hold(_)) {
-            self.stops
-                .insert(session.to_owned(), (deadline, delay_scope.clone()));
+        let delayed = match &operation {
+            QueueEvent::Hold(_) => Some(&mut self.stops),
+            QueueEvent::Drain => Some(&mut self.drains),
+            _ => None,
+        };
+        if let Some(delayed) = delayed
+            && let Some((_, previous)) =
+                delayed.insert(session.to_owned(), (deadline, delay_scope.clone()))
+        {
+            previous.cancel();
         }
         let engine = engine.clone();
         let session = session.to_owned();
