@@ -145,6 +145,8 @@ leaves. The three additional paths were the Insights database and its two
 journal files, already listed under 5.4 below.
 The run after SSH reservation recovery agreed on both replies. Its 52
 differing leaves were the same paths observed after the pending-wipe projection.
+The differential repeated after the wipe handover and the next TypeScript build.
+Its replies again agreed, and all 52 differing home paths already had verdicts.
 
 Re-enrollment after a TypeScript member's unlink originally failed against
 either main. The released baseline hashed the inode and change time for
@@ -215,7 +217,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 39 have coverage and 155 still have open or partial work. Of those, 110 list 2.3 as an owner (81 open, 29 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 39 have coverage and 155 still have open or partial work. Of those, 109 list 2.3 as an owner (81 open, 28 partial).
 
 ### computers-add
 
@@ -407,7 +409,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 39 h
 | --- | --- | --- |
 | [SSH setup and seed settings reject explicit unknown versions before writing](../../box/bridge-tests/authority-formats.test.js#L28) | Open | 2.3 |
 | [the preceding and current settings seed and guarded setup token reach their deployed operations](../../box/bridge-tests/authority-formats.test.js#L54) | Open | 2.3 |
-| [installer code rejects an older and future prefix before install makes the Box](../../box/bridge-tests/authority-formats.test.js#L69) | C3 proves bad prefixes leave the home untouched through the deployed join entry point, including an absent native Windows directory. Full installer preparation stays open. | 2.3, 7.1 |
+| [installer code rejects an older and future prefix before install makes the Box](../../box/bridge-tests/authority-formats.test.js#L69) | C3 proves both invalid prefixes leave the home untouched through the deployed join entry point, including an absent native Windows directory. The full installer’s packing and startup entry points belong to 7.1. | 7.1 |
 
 ### setup-merge
 
