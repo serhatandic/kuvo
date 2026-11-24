@@ -327,6 +327,14 @@ pub async fn run(
     );
     bots.register(&mut routes);
     let bots_follow_engine = bots.follow_engine();
+    let approvals = kuvo_work::approval::ApprovalService::new(
+        kuvo_work::approval::Approvals::new(home, kind == ComputerKind::Mac),
+        engine.clone(),
+        home.join("bots"),
+        sessions.clone(),
+    );
+    approvals.register(&mut routes);
+    let approvals_kept = approvals.keep();
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -468,6 +476,7 @@ pub async fn run(
     }
     firing.stop().await;
     bots_follow_engine.abort();
+    approvals_kept.abort();
     if let Some(updates) = updates {
         updates.stop().await;
     }

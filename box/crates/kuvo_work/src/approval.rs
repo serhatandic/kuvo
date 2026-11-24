@@ -187,6 +187,8 @@ pub struct Kept {
     pub applied: Option<Approval>,
     pub effective: Approval,
     pub held: Option<Unavailable>,
+    /// A conversation a client made that waits for the box to keep its approval.
+    pub pending: bool,
 }
 
 /// This computer's approvals: what you confirmed and picked last (`box/approval.json`), and its
@@ -198,6 +200,7 @@ pub struct Approvals {
     /// On a machine, its settings are its own only once their file is there.
     owns_settings_by_file: bool,
     windows: bool,
+    is_mac: bool,
 }
 
 impl Approvals {
@@ -210,6 +213,7 @@ impl Approvals {
                 home.join("box/opencode.json")
             },
             owns_settings_by_file: !is_mac,
+            is_mac,
             windows: kuvo_os::platform::Platform::current().is_windows_host(),
         }
     }
@@ -229,6 +233,38 @@ impl Approvals {
         kept.extend(change);
         let text = serde_json::to_string_pretty(&Value::Object(kept)).expect("JSON");
         let _ = kuvo_store::files::write_secret(&self.file, text.as_bytes());
+    }
+
+    /// Full Access switched on or off here; off, a new conversation's default stops being it.
+    pub fn allow_full_access(&self, on: bool) {
+        let mut change = Map::from_iter([("fullAccess".into(), json!(on))]);
+        if !on && self.kept().get("last") == Some(&json!("fullAccess")) {
+            change.insert("last".into(), json!("auto"));
+        }
+        self.keep(change);
+    }
+
+    /// Whether your other computers may start work here: until you say, off on a Mac, on for a
+    /// machine.
+    pub fn other_computers_allowed(&self) -> bool {
+        self.kept()
+            .get("otherComputers")
+            .and_then(Value::as_bool)
+            .unwrap_or(!self.is_mac)
+    }
+
+    pub fn allow_other_computers(&self, on: bool) {
+        self.keep(Map::from_iter([("otherComputers".into(), json!(on))]));
+    }
+
+    /// `approval` kept as the last one you picked here (never Auto where it can't be had at all).
+    pub fn remember(&self, approval: Approval) {
+        if approval == Approval::Auto && self.windows {
+            return;
+        }
+        if self.kept().get("last") != Some(&json!(approval)) {
+            self.keep(Map::from_iter([("last".into(), json!(approval))]));
+        }
     }
 
     /// Whether you confirmed Full Access on this computer.
@@ -387,18 +423,30 @@ impl Approvals {
         made
     }
 
-    /// A bot's conversation's approval (`approvalOf` for a bot): the one kept with it while its
-    /// rules are still those made for it; else one asked for alone; else Ask First where its rules
-    /// ask before commands, and this computer's default otherwise.
+    /// A bot's conversation's approval (`approvalOf` for a bot).
     pub fn of_bot(&self, rules: &[Rule], metadata: Option<&Value>) -> Kept {
-        let own = metadata.and_then(|metadata| metadata.get("kuvo"));
+        let session = json!({ "permissions": rules, "metadata": metadata });
+        self.of(&session, true, self.since(), self.default_approval())
+    }
+
+    /// A conversation's approval (`approvalOf`): the one kept with it while its rules are still
+    /// those the box made for it; one a client made with an approval alone is that, `pending`
+    /// until its rules are made; else as its rules say. Asking before commands is Ask First; for
+    /// one from before this box kept approvals (`since`), nothing asking is Full Access, as it ran;
+    /// for one a client made since with nothing held back as a whole, this computer's default
+    /// (`by_default`), `pending` too. A bot's, unkept, gets the default; one the box made itself,
+    /// a subagent's or one with other rules, Auto (a subagent's, Ask First).
+    pub fn of(&self, session: &Value, bot: bool, since: f64, by_default: Approval) -> Kept {
+        let rules: Vec<Rule> = session["permissions"]
+            .as_array()
+            .map(|rules| rules.iter().filter_map(Rule::of).collect())
+            .unwrap_or_default();
+        let own = session["metadata"].get("kuvo");
         let kept = own.and_then(|own| own.get("approval"));
         let applied = own.and_then(|own| own.get("applied"));
-        // (As TypeScript reads it on every call: kept the first time.)
-        let _ = self.since();
         if let (Some(kept), Some(applied)) =
             (kept.and_then(Approval::of), applied.and_then(Approval::of))
-            && made_for(rules, applied)
+            && made_for(&rules, applied)
         {
             let (effective, held) = self.effective(kept);
             return Kept {
@@ -407,16 +455,52 @@ impl Approvals {
                 applied: Some(applied),
                 effective,
                 held,
+                pending: false,
             };
         }
         let asked = kept.and_then(Approval::of).filter(|_| applied.is_none());
-        let guessed = asked.unwrap_or_else(|| {
-            if asks_for(rules, "shell") {
-                Approval::AskFirst
-            } else {
-                self.default_approval()
-            }
+        let parent = session["parentID"]
+            .as_str()
+            .is_some_and(|parent| !parent.is_empty());
+        let box_made = own.and_then(Value::as_object).is_some_and(|marks| {
+            ["bot", "by", "startedBy", "engineFor", "reviewPart", "seat"]
+                .iter()
+                .any(|mark| marks.contains_key(*mark))
         });
+        let before = session["time"]["created"]
+            .as_f64()
+            .is_some_and(|created| created < since);
+        let whole = rules.iter().any(|rule| {
+            rule.resource == "*"
+                && rule.effect != "allow"
+                && matches!(rule.action.as_str(), "shell" | "edit" | "*")
+        });
+        let fresh = kept.is_none() && !box_made && !parent && !before && !whole;
+        let guessed = asked.unwrap_or(if asks_for(&rules, "shell") {
+            Approval::AskFirst
+        } else if bot {
+            by_default
+        } else if parent {
+            Approval::AskFirst
+        } else if fresh {
+            by_default
+        } else if before && !box_made {
+            Approval::FullAccess
+        } else {
+            Approval::Auto
+        });
+        let pending = (asked.is_some() || fresh) && !parent && !bot;
+        // (One from before runs as it ran, whatever's switched on here now.)
+        if !bot && !pending && before && !box_made && guessed != Approval::Auto {
+            return Kept {
+                approval: guessed,
+                stored: false,
+                applied: None,
+                effective: guessed,
+                held: None,
+                pending,
+            };
+        }
         let (effective, held) = self.effective(guessed);
         Kept {
             approval: guessed,
@@ -424,7 +508,16 @@ impl Approvals {
             applied: None,
             effective,
             held,
+            pending,
         }
+    }
+
+    /// Whether rules made for `applied` lack what Auto and Full Access never hold, or keep the asks
+    /// a box before put in a bot's: then they're made again.
+    pub fn made_before(&self, rules: &[Rule], applied: Approval) -> bool {
+        has_former_asks(rules, &self.permissions_here().unwrap_or_default())
+            || (matches!(applied, Approval::Auto | Approval::FullAccess)
+                && !never_held().iter().all(|rule| rules.contains(rule)))
     }
 }
 
@@ -435,7 +528,9 @@ fn made_for(rules: &[Rule], applied: Approval) -> bool {
 }
 
 mod former;
+mod service;
 pub use former::{has_former_asks, without_former_asks};
+pub use service::ApprovalService;
 
 #[cfg(test)]
 mod tests;

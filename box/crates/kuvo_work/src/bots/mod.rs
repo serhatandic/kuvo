@@ -7,11 +7,11 @@ pub mod kit;
 pub mod list;
 mod make;
 pub mod now;
-mod reach;
+pub(crate) mod reach;
 mod routes;
 mod seen;
 pub mod setup;
-mod tell;
+pub(crate) mod tell;
 
 use std::{
     collections::{BTreeMap, HashMap},
