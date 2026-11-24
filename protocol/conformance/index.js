@@ -12,6 +12,7 @@ const areas = new Map([
   ["holder", "./holder.test.mjs"],
   ["agents", "./holder.test.mjs"],
   ["agent-accounts", "./agent-accounts.test.mjs"],
+  ["agent-sessions", "./agent-sessions.test.mjs"],
   ["compat", "./compat.test.mjs"],
   ["clock", "./clock.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],
