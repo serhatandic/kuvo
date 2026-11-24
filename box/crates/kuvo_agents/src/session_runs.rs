@@ -10,7 +10,8 @@ use crate::{
         turn::{Settings, TurnRules},
     },
     resident::ResidentAgents,
-    session::{Decision, Outcome, Prompt, Thread, TurnInput},
+    runtime::AdoptedTurn,
+    session::{Decision, Outcome, Prompt, Thread, TurnInput, TurnKind},
     session_store::SessionStore,
     turn_projection::{Projection, record_failed_start},
     turn_runtime::RunningTurn,
@@ -30,6 +31,9 @@ use tokio::{
 };
 
 mod line;
+mod update;
+
+pub use update::{HandedTurn, Handover, Update};
 
 type Reply<T> = oneshot::Sender<io::Result<T>>;
 
@@ -66,6 +70,10 @@ enum Command {
         session: String,
         retry: bool,
         remaining: bool,
+    },
+    HandOver {
+        held: BTreeSet<String>,
+        reply: Reply<Handover>,
     },
 }
 
@@ -124,6 +132,8 @@ struct Conversation {
     handing: BTreeMap<String, Arc<AtomicBool>>,
     retired: bool,
     checking: bool,
+    /// The turn an earlier resident left under way, being taken up here.
+    recovered: Option<AdoptedTurn>,
 }
 
 /// How long a turn asked to stop is waited for before its conversation goes
@@ -138,6 +148,7 @@ pub struct SessionRuns {
     commands: mpsc::Sender<Command>,
     running: watch::Receiver<Arc<BTreeSet<String>>>,
     events: broadcast::Sender<InboxEvent>,
+    restoring: Arc<update::Restorings>,
 }
 
 impl SessionRuns {
@@ -147,11 +158,25 @@ impl SessionRuns {
         home: PathBuf,
         location: ConfigLocation,
     ) -> Self {
+        Self::start_after(agents, store, home, location, Update::default())
+    }
+
+    /// Start after an update: the turns the earlier resident's agents went
+    /// on with are taken up before anything else starts.
+    pub fn start_after(
+        agents: ResidentAgents,
+        store: SessionStore,
+        home: PathBuf,
+        location: ConfigLocation,
+        update: Update,
+    ) -> Self {
         let (commands, requests) = mpsc::channel(32);
         let (identities, running) = watch::channel(Arc::new(BTreeSet::new()));
         let (events, _) = broadcast::channel(256);
         let asks = LiveAsks::start();
+        let restoring = Arc::new(watch::channel(update::expected_asks(&update)).0);
         let service = Service {
+            restoring: restoring.clone(),
             agents,
             store: store.clone(),
             asks: asks.clone(),
@@ -160,7 +185,7 @@ impl SessionRuns {
             events: events.clone(),
             commands: commands.downgrade(),
         };
-        tokio::spawn(service.run(requests));
+        tokio::spawn(service.run(requests, update));
         Self {
             stop_grace: STOP_GRACE,
             asks,
@@ -168,7 +193,22 @@ impl SessionRuns {
             commands,
             running,
             events,
+            restoring,
         }
+    }
+
+    /// Make way for the next resident: start nothing more, keep what waits
+    /// behind turns that won't go on, and say what goes on. `held`: the
+    /// conversations whose turns go on in held agents.
+    pub async fn hand_over(&self, held: BTreeSet<String>) -> io::Result<Handover> {
+        self.call(|reply| Command::HandOver { held, reply }).await
+    }
+
+    /// Once the approvals and questions a turn taken up after an update was
+    /// waiting on are shown again (or have had their time): a client's read
+    /// of them then shows them all.
+    pub async fn asks_restored(&self, session: &str) {
+        update::restored(&self.restoring, session).await;
     }
 
     /// Wait this long for a turn asked to stop, rather than the usual eight
@@ -491,6 +531,7 @@ struct Service {
     settings: Settings,
     events: broadcast::Sender<InboxEvent>,
     commands: mpsc::WeakSender<Command>,
+    restoring: Arc<update::Restorings>,
 }
 
 type Prepared = (String, io::Result<Live>, Option<Reply<RunningTurn>>);
@@ -502,6 +543,8 @@ struct State {
     approvals: BTreeMap<String, watch::Sender<Vec<Allowance>>>,
     preparations: JoinSet<Prepared>,
     turns: JoinSet<(String, io::Result<Option<Outcome>>)>,
+    /// Making way for the next resident: nothing more starts here.
+    closing: bool,
 }
 
 impl State {
@@ -511,14 +554,16 @@ impl State {
 }
 
 impl Service {
-    async fn run(self, mut commands: mpsc::Receiver<Command>) {
+    async fn run(self, mut commands: mpsc::Receiver<Command>, update: Update) {
         let mut state = State {
             conversations: BTreeMap::new(),
             approvals: BTreeMap::new(),
             preparations: JoinSet::new(),
             turns: JoinSet::new(),
+            closing: false,
         };
-        self.wake_saved(&mut state).await;
+        let resumed = self.take_up(&mut state, update).await;
+        self.wake_saved(&mut state, &resumed).await;
         loop {
             tokio::select! {
                 next = commands.recv() => {
@@ -550,8 +595,11 @@ impl Service {
                     shown,
                     reply,
                 } = *request;
+                let closing = state.closing;
                 let conversation = state.conversation(&session);
-                let refused = if conversation.retired {
+                let refused = if closing {
+                    Some(stopped())
+                } else if conversation.retired {
                     Some(io::Error::new(
                         ErrorKind::NotFound,
                         "That conversation is being deleted.",
@@ -605,6 +653,9 @@ impl Service {
                 retry,
                 remaining,
             } => self.reconciled(state, &session, retry, remaining).await,
+            Command::HandOver { held, reply } => {
+                let _ = reply.send(Ok(self.hand_over(state, &held).await));
+            }
         }
     }
 
@@ -674,6 +725,11 @@ impl Service {
             Err(_) => {
                 // A turn that never started ends as a failed one.
                 conversation.doing = Doing::Idle;
+                if let Some(recovered) = conversation.recovered.take() {
+                    update::stopped_restoring(&self.restoring, &session);
+                    self.let_go(recovered);
+                }
+                let conversation = state.conversation(&session);
                 if !conversation.retired {
                     self.advance(state, &session, None).await;
                     self.emit_idle(state, &session);
@@ -694,6 +750,12 @@ impl Service {
         let conversation = state.conversation(session);
         let stopped = matches!(conversation.doing, Doing::Stopping(_));
         conversation.doing = Doing::Idle;
+        if let Some(recovered) = conversation.recovered.take() {
+            update::stopped_restoring(&self.restoring, session);
+            if result.is_err() {
+                self.let_go(recovered);
+            }
+        }
         self.publish(state);
         let outcome = match result {
             Ok(outcome) => outcome,
@@ -769,13 +831,13 @@ impl Service {
         let thread = match self.thread(session, &input.model.provider).await {
             Ok(thread) => thread,
             Err(error) => {
-                if let Some(shown) = &shown {
+                if shown.is_some() || matches!(input.kind, TurnKind::Recover { .. }) {
                     let _ = record_failed_start(
                         self.store.clone(),
                         session.into(),
                         agent.into(),
                         &input,
-                        Some(shown),
+                        shown.as_ref(),
                         note,
                         &error,
                     )

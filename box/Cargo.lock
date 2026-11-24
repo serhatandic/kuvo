@@ -1283,6 +1283,7 @@ dependencies = [
  "kuvo_store",
  "percent-encoding",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha1 0.10.7",

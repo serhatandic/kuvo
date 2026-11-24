@@ -11,6 +11,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
+    collections::BTreeSet,
     io::{self, ErrorKind},
     path::PathBuf,
     sync::{
@@ -166,10 +167,17 @@ impl Service {
         {
             return Ok(());
         }
+        // (Sent as the resident makes way: kept for the next, which sends it.)
+        if state.closing {
+            input.held = true;
+            input.delivery = Delivery::Steer;
+        }
         let conversation = state.conversation(session);
         let into = match &conversation.doing {
             Doing::Running(live)
-                if input.delivery != Delivery::Queue && live.thread.takes_steers() =>
+                if !input.held
+                    && input.delivery != Delivery::Queue
+                    && live.thread.takes_steers() =>
             {
                 Some(live.clone())
             }
@@ -177,6 +185,7 @@ impl Service {
         };
         let nothing_runs = matches!(conversation.doing, Doing::Idle);
         input.delivery = if into.is_some()
+            || input.held
             || (nothing_runs && (input.delivery != Delivery::Queue || line.is_empty()))
         {
             Delivery::Steer
@@ -212,7 +221,7 @@ impl Service {
         });
         if let Some(live) = into {
             self.steer_now(state, session, live, input);
-        } else if delivery == Delivery::Steer {
+        } else if delivery == Delivery::Steer && !input.held {
             self.wake(state, session).await;
         }
         Ok(())
@@ -706,8 +715,9 @@ impl Service {
     /// more starts until you say. `ended`: whether the turn that just ended
     /// went through.
     pub(super) async fn advance(&self, state: &mut State, session: &str, ended: Option<bool>) {
+        let closing = state.closing;
         let conversation = state.conversation(session);
-        if !matches!(conversation.doing, Doing::Idle) || conversation.retired {
+        if !matches!(conversation.doing, Doing::Idle) || conversation.retired || closing {
             return;
         }
         let Ok(Some(line)) = self.store.line(session).await else {
@@ -799,14 +809,21 @@ impl Service {
         );
     }
 
-    /// As the resident starts: uncertain handoffs are looked at, and what an
-    /// earlier resident held for this one goes, each once.
-    pub(super) async fn wake_saved(&self, state: &mut State) {
+    /// As the resident starts: a turn an earlier one left unfinished (and
+    /// no agent goes on with) is closed, uncertain handoffs are looked at,
+    /// and what an earlier resident held for this one goes, each once.
+    /// `resumed`: the conversations whose turns go on here.
+    pub(super) async fn wake_saved(&self, state: &mut State, resumed: &BTreeSet<String>) {
         let Ok(headers) = self.store.headers().await else {
             return;
         };
         for header in headers {
             let session = header.id().to_owned();
+            if !resumed.contains(&session)
+                && let Err(error) = self.store.repair(&session).await
+            {
+                eprintln!("Kuvo could not close the unfinished turn in {session}: {error}");
+            }
             let Ok(Some(line)) = self.store.line(&session).await else {
                 continue;
             };

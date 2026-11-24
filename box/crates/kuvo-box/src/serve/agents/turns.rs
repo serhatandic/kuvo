@@ -3,9 +3,6 @@
 use http::StatusCode;
 use kuvo_agents::{
     inbox::{Delivery, Input},
-    permissions::Policy,
-    runtime::AdoptedTurn,
-    session::{TurnInput, TurnKind},
     session_runs::SessionRuns,
     session_store::SessionStore,
 };
@@ -14,63 +11,8 @@ use kuvo_protocol::routes::{
     post_kuvo_agents_api_session_id_prompt as prompt,
 };
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
-use serde_json::{Map, Value};
-use std::{io, path::PathBuf};
-
-pub(crate) async fn restore(
-    runs: &SessionRuns,
-    store: &SessionStore,
-    home: &std::path::Path,
-    adopted: &[AdoptedTurn],
-) {
-    let mut restoring = tokio::task::JoinSet::new();
-    for recovered in adopted {
-        let Some(turn) = recovered.note.turn.clone() else {
-            continue;
-        };
-        let runs = runs.clone();
-        let store = store.clone();
-        let home = home.to_owned();
-        let recovered = recovered.clone();
-        restoring.spawn(async move {
-            let id = recovered.note.session.clone();
-            let result = async {
-                let Some(session) = store.read(&id).await.map_err(super::refuse)? else {
-                    return Ok(());
-                };
-                let Some(directory) = session.directory().map(PathBuf::from) else {
-                    return Ok(());
-                };
-                let (mut input, policy) = turn_setup(
-                    &home,
-                    directory,
-                    &session.into_fields(),
-                    &turn,
-                    TurnKind::Recover {
-                        note: recovered.note,
-                    },
-                )?;
-                input.model.provider = recovered.provider.to_string();
-                let run = runs
-                    .run_turn(id.clone(), input, policy)
-                    .await
-                    .map_err(turn_error)?;
-                tokio::time::timeout(std::time::Duration::from_secs(10), run.ready())
-                    .await
-                    .map_err(|error| turn_error(io::Error::other(error)))?
-                    .map_err(turn_error)
-            }
-            .await;
-            if let Err(error) = result {
-                eprintln!(
-                    "Kuvo could not replay coding-agent turn {id}: {}",
-                    error.reply().status
-                );
-            }
-        });
-    }
-    while restoring.join_next().await.is_some() {}
-}
+use serde_json::Value;
+use std::io;
 
 pub(crate) fn register(runs: SessionRuns, routes: &mut Registry) {
     let as_turns = runs.clone();
@@ -101,16 +43,6 @@ pub(crate) fn register(runs: SessionRuns, routes: &mut Registry) {
             }))
         }
     });
-}
-
-pub(super) fn turn_setup(
-    home: &std::path::Path,
-    folder: PathBuf,
-    header: &Map<String, Value>,
-    turn: &str,
-    kind: TurnKind,
-) -> Result<(TurnInput, Policy), Refusal> {
-    kuvo_agents::turn_setup::turn_setup(home, folder, header, turn, kind).map_err(super::refuse)
 }
 
 /// A message for the conversation's line, as the box hands it over.

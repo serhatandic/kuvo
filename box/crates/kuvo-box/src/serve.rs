@@ -148,6 +148,7 @@ pub async fn run(
         .with_model_stars(Arc::new(super::model_stars::SetupStars(setup.handle())))
         .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
+    let mut agent_handover = None;
     let mut routes = Registry::new();
     let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
     agents::sessions::register(sessions.clone(), &mut routes);
@@ -158,13 +159,22 @@ pub async fn run(
         } else {
             kuvo_agents::permissions::ConfigLocation::Machine
         };
-        let runs = kuvo_agents::session_runs::SessionRuns::start(
+        let handover = kuvo_agents::session_runs::Handover::take(&agents::handover_file(home))
+            .unwrap_or_else(|error| {
+                eprintln!("Kuvo could not read the coding agents' handover: {error}");
+                None
+            });
+        let runs = kuvo_agents::session_runs::SessionRuns::start_after(
             accounts.clone(),
             sessions.clone(),
             home.to_owned(),
             location,
+            kuvo_agents::session_runs::Update {
+                adopted: accounts.adopted_turns().to_vec(),
+                handover,
+            },
         );
-        agents::turns::restore(&runs, &sessions, home, accounts.adopted_turns()).await;
+        agent_handover = Some((runs.clone(), runtime.clone()));
         agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
         let inventory = agents::sessions::Inventory {
             store: sessions.clone(),
@@ -418,6 +428,9 @@ pub async fn run(
             }
         })
         .await;
+    if let Some((runs, runtime)) = agent_handover {
+        agents::hand_over(home, &runs, &runtime).await;
+    }
     if let Some(agents) = agent_shutdown {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),

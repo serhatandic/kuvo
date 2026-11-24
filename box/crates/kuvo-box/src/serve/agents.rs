@@ -34,6 +34,35 @@ pub(super) mod asks;
 pub(super) mod sessions;
 pub(super) mod turns;
 
+/// What a resident making way leaves for the next about the coding agents'
+/// turns that go on.
+pub(super) fn handover_file(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("run/agents-handover.json")
+}
+
+/// Make way for the next resident: the turns that go on in held agents are
+/// handed over with what they were asking and what was approved for them.
+pub(super) async fn hand_over(
+    home: &std::path::Path,
+    runs: &kuvo_agents::session_runs::SessionRuns,
+    runtime: &Runtime,
+) {
+    let result = async {
+        let held = runtime.held_sessions().await?;
+        let handover = tokio::time::timeout(std::time::Duration::from_secs(2), runs.hand_over(held))
+            .await
+            .map_err(io::Error::other)??;
+        if handover.sessions.is_empty() {
+            return Ok(());
+        }
+        handover.save(&handover_file(home))
+    }
+    .await;
+    if let Err(error) = result {
+        eprintln!("Kuvo could not hand the coding agents' turns over: {error}");
+    }
+}
+
 pub(super) fn factories(_home: &std::path::Path) -> HashMap<AgentKind, Arc<dyn Factory>> {
     #[cfg(feature = "agent-runtime-fixture")]
     if let Some(fixture) = fixture::for_home(_home) {

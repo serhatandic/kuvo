@@ -6,7 +6,7 @@ use crate::{
         EventEnvelope, ModelRef, Outcome, Prompt, TextKind, ToolOutput, ToolState, TurnError,
         TurnEvent, TurnInput, TurnKind, TurnResult, Usage,
     },
-    session_store::SessionStore,
+    session_store::{SessionStore, close_rows},
     turn_runtime::TurnWriter,
 };
 use serde_json::{Map, Value, json};
@@ -23,6 +23,8 @@ pub(crate) struct Projection {
     steps: Vec<Step>,
     calls: BTreeMap<String, (usize, usize)>,
     compact: Option<Value>,
+    /// A recovered turn's rows as an earlier resident wrote them. Its
+    /// replay writes them again, by the same IDs.
     prior: BTreeMap<String, Value>,
 }
 
@@ -259,7 +261,8 @@ impl Projection {
 }
 
 /// A message whose agent couldn't start: it's in the conversation with the
-/// turn that failed, as one whose agent broke at once.
+/// turn that failed, as one whose agent broke at once. A recovered turn's
+/// rows stay as they were shown, closed, before its end.
 pub(crate) async fn record_failed_start(
     store: SessionStore,
     session: String,
@@ -270,8 +273,13 @@ pub(crate) async fn record_failed_start(
     error: &io::Error,
 ) -> io::Result<()> {
     let mut projection = Projection::start(store, session, agent, input, shown, note).await?;
+    projection.abandon(error).await
+}
+
+/// A turn's end as failed with `error`, as one whose agent broke.
+fn failed(error: &io::Error) -> EventEnvelope {
     let message = error.to_string();
-    let finished = EventEnvelope {
+    EventEnvelope {
         position: None,
         delivery: crate::session::Delivery::Live,
         event: TurnEvent::Finished(TurnResult {
@@ -288,8 +296,7 @@ pub(crate) async fn record_failed_start(
             took_prompt: false,
             missed: Vec::new(),
         }),
-    };
-    projection.apply(&finished).await
+    }
 }
 
 fn row_prefix(turn: &str) -> String {
@@ -304,10 +311,53 @@ fn saved_time(row: Option<&Value>, kind: &str) -> u64 {
 impl TurnWriter for Projection {
     fn apply<'a>(&'a mut self, event: &'a EventEnvelope) -> AdapterCall<'a, ()> {
         Box::pin(async move {
+            if matches!(event.event, TurnEvent::Finished(_)) {
+                self.drop_unreplayed().await?;
+            }
             let rows = self.rows(&event.event);
             self.write(rows).await?;
             self.update_header(&event.event).await
         })
+    }
+
+    fn abandon<'a>(&'a mut self, error: &'a io::Error) -> AdapterCall<'a, ()> {
+        Box::pin(async move {
+            if self.next == 0 && !self.prior.is_empty() {
+                // A recovered turn never taken up: what was shown of it
+                // stays, closed as a crash leaves it, and its end follows.
+                let mut rows = self.prior.values().cloned().collect::<Vec<_>>();
+                let closed = close_rows(&mut rows);
+                self.write(closed).await?;
+                self.next = self.prior.keys().filter_map(|id| self.index(id)).max().unwrap_or(0);
+                self.prior.clear();
+            }
+            self.apply(&failed(error)).await
+        })
+    }
+}
+
+impl Projection {
+    fn index(&self, id: &str) -> Option<u64> {
+        id.strip_prefix(&row_prefix(&self.turn))?.parse().ok()
+    }
+
+    /// A recovered turn's rows its replay didn't write again: gone, so its
+    /// end and what it said are as the agent made them, once.
+    async fn drop_unreplayed(&mut self) -> io::Result<()> {
+        let stale = self
+            .prior
+            .keys()
+            .filter(|id| self.index(id).is_some_and(|index| index > self.next))
+            .cloned()
+            .collect::<Vec<_>>();
+        if stale.is_empty() {
+            return Ok(());
+        }
+        for id in &stale {
+            self.prior.remove(id);
+        }
+        self.store.remove_messages(&self.session, stale).await?;
+        Ok(())
     }
 }
 
