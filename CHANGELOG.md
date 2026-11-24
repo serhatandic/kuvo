@@ -25,6 +25,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Your other computer learns a newly created conversation’s name before its message arrives.
 - Notes for a moving conversation wait for its new computer to confirm the move, then reach it while the original is being cleaned up.
 - A conversation stays on its current computer while Kuvo indexes the receipts required for its move.
+- Undo and worktree snapshots no longer run a project's own git filters or hooks while saving its files.
 - The Rust box can reopen Work Queue items and attachments, recover an interrupted status migration, and use the main computer’s signed labels and number grants.
 - Undo and worktree snapshots no longer run a project's own git filters or hooks while saving its files.
 - Deleting a conversation while its agent is stopping no longer causes a transcript write error.
