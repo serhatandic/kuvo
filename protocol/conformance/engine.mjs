@@ -87,6 +87,7 @@ export async function standInEngine(root, env) {
           const held = engine.holdImport;
           engine.holdImport = null;
           held.accepted();
+          if (held.finish) held.finish.then(() => send({ data: info }));
           return;
         }
         return send({ data: info });

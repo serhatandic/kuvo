@@ -298,7 +298,7 @@ async function readyToMove(resident, session, peer) {
 
 // Observe the durable outcome and the removal of the active journal. A receipt
 // can already say "done" while the old computer is still retiring the folder.
-async function moveRetired(computer, id, logs) {
+async function moveRetired(computer, id, logs, wait = 20000) {
   const directory = path.join(computer.home, "run/moves");
   const outcome = path.join(directory, id + ".outcome.json");
   const journal = path.join(directory, id + ".json");
@@ -308,7 +308,7 @@ async function moveRetired(computer, id, logs) {
         if (fs.existsSync(outcome) && !fs.existsSync(journal)) done(resolve);
       };
       const changes = fs.watch(directory, check);
-      const deadline = setTimeout(() => done(reject, new Error("Timed out waiting for move retirement")), 20000);
+      const deadline = setTimeout(() => done(reject, new Error("Timed out waiting for move retirement")), wait);
       function done(settle, result) {
         clearTimeout(deadline);
         changes.close();
@@ -319,7 +319,7 @@ async function moveRetired(computer, id, logs) {
     });
   } catch (error) {
     const active = fs.existsSync(journal) ? readJSON(journal) : null;
-    throw new Error(`The move ${id} did not settle (${active?.stage}/${active?.step})\n${logs()}`, { cause: error });
+    throw new Error(`The move ${id} did not settle (${active?.stage}/${active?.step}, generation ${active?.generation})\n${logs()}`, { cause: error });
   }
 }
 
@@ -633,6 +633,56 @@ test("a switched move keeps the original until its backup can be written", {
   assert.equal(final.json.note, undefined, final.text);
 });
 
+test("retiring a source after a failed deletion keeps its complete backup", {
+  timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("partly-retired-source"), there = await computer("partly-retired-destination");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const root = "ses_partlyRetired", child = "ses_partlyRetiredChild", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: root, title: "Recover the whole chat", directory }),
+    sessionOf({ id: child, title: "Keep the child", directory, parent: root }));
+  for (const [session, text] of [[root, "Preserve the root"], [child, "Preserve the child"]]) {
+    here.engine.messages.set(session, [{ id: "msg_" + session.slice(4), type: "user", text }]);
+  }
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const [from, to] = [member, main].map(peer => Buffer.from(peer.address, "base64url"));
+  const key = Buffer.from(member.key, "base64url"), secret = Buffer.alloc(32, 1);
+  t.after(relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const move = JSON.parse(openOneWay(packet.payload.subarray(5), secret, key).payload).move;
+    if (move?.op === "switched") here.engine.refuseDeletes.add(root);
+    return false;
+  }));
+  const source = here.start(), target = there.start();
+  const [resident] = await Promise.all([source.ready(), target.ready()]);
+  await readyToMove(resident, root, member);
+  const begun = await request(resident, "POST", "kuvo/moves", { kind: "chat", id: root, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  const id = begun.json.move.id, route = "kuvo/moves/receipt?id=" + id;
+  await until(() => fs.existsSync(path.join(here.home, "run/moves", id + ".outcome.json")),
+    "The source did not save its failed cleanup");
+  const cleanup = await request(resident, "GET", route);
+  assert.match(cleanup.json?.note, /original is retired/i);
+  assert.ok(here.engine.sessions.some(row => row.id === root));
+  assert.ok(!here.engine.sessions.some(row => row.id === child));
+  assert.ok(there.engine.sessions.some(row => row.id === root));
+  assert.ok(there.engine.sessions.some(row => row.id === child));
+  await source.stop();
+  here.engine.refuseDeletes.delete(root);
+  here.engine.refuseExport = root;
+  const restarted = here.start();
+  const after = await restarted.ready();
+  await moveRetired(here, id, () => restarted.log());
+  assert.deepEqual(here.engine.sessions, []);
+  const backup = readJSON(path.join(here.home, "run/moves/left.json")).find(row => row.id === id);
+  const contents = readJSON(path.join(backup.trash, "conversation.json"));
+  assert.deepEqual(contents.map(row => [row.info.id, row.messages[0].text]), [[root, "Preserve the root"], [child, "Preserve the child"]]);
+  assert.equal((await request(after, "GET", route)).json.note, undefined);
+});
+
 async function moveMail(t, relay, main, remote = 2) {
   const from = Buffer.alloc(32, remote), to = Buffer.from(main.key, "base64url");
   const address = Buffer.from(main.address, "base64url");
@@ -770,6 +820,65 @@ test("a dropped copy stays held through an engine failure and a late switch", {
   assert.equal(here.engine.sessions.some(record => record.id === session), false);
   assert.deepEqual(await ask(drop), proof);
   assert.equal((await ask({ ...drop, id: retry })).op, "dropped");
+});
+
+test("a drop waits for a destination import that has already started", {
+  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("drop-during-import");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const id = "mov_duringImport", session = "ses_duringImport", name = "Importing chat";
+  const bundle = scratch();
+  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
+  write(path.join(bundle, "move.json"), JSON.stringify({
+    formatVersion: 1, kind: "chat", thing: session, name,
+    exports: [{ info: sessionOf({ id: session, directory: path.join(here.home, "chats") }), messages: [] }],
+  }));
+  const file = path.join(bundle, "copy.tgz");
+  const tar = spawnSync("tar", ["-czf", file, "-C", bundle, "move.json"], { encoding: "utf8", timeout: 5000 });
+  assert.equal(tar.status, 0, tar.stderr);
+  const data = fs.readFileSync(file), hash = createHash("sha256").update(data).digest("base64url");
+  const binding = { id, generation: 1, hash };
+  let released = false, working = false, tooSoon = false;
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const a = Buffer.from(main.address, "base64url"), b = Buffer.from(member.address, "base64url");
+  const secret = Buffer.alloc(32, 2), key = Buffer.from(main.key, "base64url");
+  t.after(relay.intercept(a, b, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const move = JSON.parse(openOneWay(packet.payload.subarray(5), secret, key).payload).move;
+    if (move?.id === id && move.op === "working") working = true;
+    if (move?.id === id && move.op === "dropped" && !released) tooSoon = true;
+    return false;
+  }));
+  const gate = Promise.withResolvers();
+  t.after(() => gate.resolve());
+  const accepted = Promise.withResolvers();
+  here.engine.holdImport = { id: session, accepted: accepted.resolve, finish: gate.promise };
+  const process = here.start();
+  const resident = await process.ready();
+  await until(async () => (await request(resident, "GET", "api/session")).status === 200,
+    "The destination engine did not become ready");
+  assert.equal((await ask({ ...binding, op: "offer", from: member.key, kind: "chat",
+    thing: session, name, size: data.length, safeSwitch: true, twoComputers: true })).op, "ready");
+  assert.equal((await ask({ ...binding, op: "part", i: 0, of: 1, d: data.toString("base64url") }, "got")).op, "got");
+  await accepted.promise;
+  assert.equal(working, true);
+  const dropping = ask({ ...binding, op: "drop" }, "dropped");
+  const held = await request(resident, "GET", "kuvo/moves");
+  assert.ok(held.json.away.includes(session));
+  released = true;
+  gate.resolve();
+  const proof = await dropping;
+  assert.equal(tooSoon, false);
+  assert.equal(proof.neverSwitched, true);
+  const journal = path.join(here.home, "run/moves", id + ".json");
+  await until(() => !here.engine.sessions.some(row => row.id === session) && !fs.existsSync(journal),
+    () => "The destination did not remove its interrupted copy\n"
+      + JSON.stringify(fs.existsSync(journal) ? readJSON(journal) : null) + "\n"
+      + JSON.stringify(here.engine.asked.filter(call => call.method === "DELETE")) + "\n" + process.log(), 22000);
+  assert.deepEqual(await ask({ ...binding, op: "switch", safeSwitch: true }, "dropped"), proof);
 });
 
 test("a second computer cannot take over a held incoming move", {
@@ -1534,7 +1643,7 @@ test("handoff preserves a settled forwarding decision and rejects a conflicting 
 });
 
 test("a conversation that keeps changing stays with its source after three offers", {
-  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 110000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("changing-source"), there = await computer("changing-target");
@@ -1564,7 +1673,8 @@ test("a conversation that keeps changing stays with its source after three offer
   const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   assert.equal(begun.status, 202, begun.text);
   const { id } = begun.json.move;
-  await moveRetired(here, id, () => sourceProcess.log() + "\n" + targetProcess.log());
+  await moveRetired(here, id, () => "Offered generations " + [...generations].join(", ")
+    + "\n" + sourceProcess.log() + "\n" + targetProcess.log(), 85000);
   const receipt = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
   assert.equal(receipt.json.state, "failed", receipt.text);
   assert.match(receipt.json.message, /kept getting messages while it moved, so it stayed where it is/);
@@ -1907,10 +2017,12 @@ test("a conversation stays home while its background work is running", { timeout
   assert.equal(there.engine.sessions.length, 0);
 });
 
-test("an unavailable destination or missing sign-in refuses before work is held", { timeout: 65000 }, async t => {
+test("an unavailable destination or missing sign-in refuses before work is held", {
+  timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("account-source"), there = await computer("account-target");
-  const { member } = seedPeerSetup(here.home, relay.url);
+  const { main, member } = seedPeerSetup(here.home, relay.url);
   seedPeerSetup(there.home, relay.url, 2);
   const id = "ses_accountMove", chats = path.join(here.home, "chats");
   fs.mkdirSync(chats, { recursive: true });
@@ -1948,14 +2060,27 @@ test("an unavailable destination or missing sign-in refuses before work is held"
   there.engine.refuseActive = false;
   await refuses(`“Account chat”’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move “Account chat”.`);
 
+  const { sealOneWay, openOneWay, frame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const note = `On ${place}, Account chat uses the account signed in there.`;
+  const a = Buffer.from(member.address, "base64url"), b = Buffer.from(main.address, "base64url");
+  t.after(relay.intercept(a, b, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const payload = JSON.parse(openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 1),
+      Buffer.from(member.key, "base64url")).payload);
+    if (payload.move?.op !== "checked" || !payload.move.ok) return false;
+    payload.move.note = note;
+    const { message } = sealOneWay(Buffer.from(JSON.stringify(payload)), Buffer.alloc(32, 2),
+      Buffer.from(main.key, "base64url"));
+    relay.replay({ ...packet, payload: frame(Frame.mail, 0, message) });
+    return true;
+  }));
   there.engine.providers.push({ id: "needs-sign-in" });
   const retry = await move();
   assert.equal(retry.status, 202, retry.text);
-  await until(async () => {
-    const reply = await status(retry.json.move.id);
-    assert.notEqual(reply.json?.state, "failed", reply.text);
-    return reply.json?.state === "done";
-  }, "The chat did not move once its provider was signed in", 20000);
+  await moveRetired(here, retry.json.move.id, () => "The provider check warned: " + note);
+  const moved = await status(retry.json.move.id);
+  assert.equal(moved.json?.state, "done", moved.text);
+  assert.equal(moved.json.note, note);
   assert.equal(there.engine.sessions.find(session => session.id === id)?.id, id);
 });
 

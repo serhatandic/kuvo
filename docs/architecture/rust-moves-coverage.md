@@ -20,18 +20,20 @@ for addressed work and receipt lookup.
 | Lost part window | Both residents lose the first 16 parts, then retry the first eight and complete the transfer with the whole transcript. |
 | Retry clocks | The Rust resident resumes a switch whose saved timestamp is ahead of its clock. A steady wall clock still allows the next minute's retry, and a backward jump prompts another retry of the same authenticated switch. The part window uses monotonic time separately. The TypeScript reference covers both clocks. |
 | Interrupted import | The engine accepts the import but its reply is cut short by a destination restart. The destination deletes just that copy using the import receipt. The source keeps its original and reports failure. |
+| Drop during import | Both residents hold a copy while setup is in flight. They submit the drop decision after the engine replies, remove the copy and replay that decision to a later switch. |
 | Partial copy | A restarted destination finishes the live transfer using the part it saved earlier. After a week an incomplete copy can be removed with a durable drop decision. A complete two-computer copy still waits for its switch decision. |
 | Replacement offer | Both residents let the same authenticated sender replace its incomplete copy under a new move ID, retain a durable drop decision for the old ID, and require an explicit drop of a complete copy before accepting its replacement. |
 | Restart after a failed offer | Both residents resume requests to drop a failed older offer without sending it again. A journal that requires acknowledgement continues to ask past the normal expiration date, until the destination sends its authenticated receipt. |
 | Import contention | Both residents preserve an unrelated local child after a failed lookup, a second conversation claiming the child's ID after preflight, or a lost import reply. Only their own staged imports are rolled back. |
 | Cleanup | A switched source that cannot export its backup retains the original while its receipt reports cleanup pending and location points at the destination. The next round respects the retry interval and the same resident cleans up once the interval elapses. Restart recovery was also exercised. A destination that cannot delete a dropped copy keeps it held, replays the same drop proof on a late switch, and cleans up once its engine accepts deletion. |
+| Cleanup after partial deletion | Both residents keep a complete backup when the engine removes the child but refuses to remove the original. After restart they finish cleaning up using that backup, while the engine refuses a fresh export. |
 | Waiting and recent requests | On the same live switch the source shows it is waiting for the destination after its reply is lost. A resident also drives a recent request recorded before its first check when it starts, while a second simultaneous request is refused. The live transfer imports children from both engine pages. |
 | Changing conversations | A live move rebuilds a bundle if a replay fence is saved after its first offer. Another move sees a new message on each offer, gives up after three offers, and leaves all four messages on the source. |
 | Retired backup | Only the destination starts the retention clock. The backup stays while a move back is in progress. Once that move is dropped, an expired backup stays recorded through a failed deletion and the next round retries it. A destination distinguishes the first local reply from a carried reply with a future timestamp. |
 | Unproven import | An authenticated drop sends proof that the source can stay active. Both residents keep an older incoming journal held when it has no evidence that its local session came from the move. |
 | Arrival query and size limit | Both residents answer an authenticated repeat with the held copy's generation and hash, report failure for an unknown copy and replay an eight-day-old switch receipt. An offer one byte over 1 GB receives the size-limit refusal without opening a copy. |
 | Archive links | Both residents refuse a linked manifest, a linked wake-up directory, a link outside that directory and a chain of links that would escape it. The destination keeps its own file private and unchanged and creates no conversation or wake-up directory. |
-| Destination checks | Both residents show the destination by name and mention a running turn in the move confirmation. They leave the original active after an unanswered check, an unavailable engine or a missing sign-in. A retry after sign-in moves the original. |
+| Destination checks | Both residents show the destination by name and mention a running turn in the move confirmation. They leave the original active after an unanswered check, an unavailable engine or a missing sign-in. A retry after sign-in moves the original and preserves the destination's account note in the receipt. |
 | Background work | Both residents refuse a move while the source has a running background command. The source also checks children as it discovers them, and ignores background work past the six-hour reporting limit. |
 | Wake-up folder | Both residents hold a wake-up folder on each computer until the switch. The source uses configured roots outside its home. The destination rebases the directory and restores the saved pause. The source retains a backup with its conversation. Both move the unpaused folder back and read the receipt after the journal retires. Letters and notes reach the returned conversation while the full engine list is unavailable. A source wake-up folder over 1 GB is refused and its hold is released. |
 | Legacy wake-up hold | Both residents restore the saved pause in a failed v0 journal, remove an orphaned bare `moving` marker and retain a pause that names another move. |
@@ -125,8 +127,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Sixty-five have full scenario coverage, 23 have partial proof,
-and 124 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Sixty-nine have full scenario coverage, 23 have partial proof,
+and 120 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -149,7 +151,7 @@ separately where they appear.
 | [moves-lanes](../../box/bridge-tests/moves-lanes.test.js) | 1–9 | Native transfer and attachment carry owned by 4.6, with bot placement in 5.1. |
 | [moves-lanes-races](../../box/bridge-tests/moves-lanes-races.test.js) | 1–5 | Native runtime proof belongs to 4.6 and 5.1. The shared comparisons and retry behavior remain open in 2.4 under moves-races. |
 | | 6–16 | Native carry and retained copies owned by 4.6, with bot placement in 5.1. |
-| [moves-races](../../box/bridge-tests/moves-races.test.js) | 9, 24 | Partial, live activation and replay after a lost switch reply, unknown or mismatched proof, and durable drop are exercised. Automatic retry across the complete set of peer and wall-clock interruptions remains 2.4. |
+| [moves-races](../../box/bridge-tests/moves-races.test.js) | 9, 24 | Partial, live activation and replay after a lost switch reply, unknown or mismatched proof, durable drop and a managed setup's legacy switch fence are exercised. Automatic retry across the complete set of peer and wall-clock interruptions remains 2.4. |
 | | 2 | Partial, a missing payload prevents the first offer and a corrupt payload prevents switching. A typed unreadable-queue failure from 3.2 is needed for the same refusal in 2.4. |
 | | 5 | Covered by the source ignoring a drop for another generation and releasing its original after the destination’s matching drop receipt. |
 | | 6 | Covered by a duplicate bundle part before activation and a delayed repeat afterward. There is one import and the same durable switch receipt. |
@@ -162,7 +164,9 @@ separately where they appear.
 | | 18 | Covered by fencing queue removal, undo and resume during transfer and preserving the paused queue after the destination drops its copy. |
 | | 19 | Covered by a conversation location and a queued letter following its newer move announcement, with separate checks for expiry and a conversation still owned here. |
 | | 20 | Partial, switch recovery is exercised. Removal fencing remains 2.3 and 2.4. |
+| | 21 | Covered by a live drop waiting for an outstanding engine import, then removing it and replaying the durable drop decision. |
 | | 22 | Covered by a transient lookup error, a live conflict after preflight, and a lost import reply. Each rolls back only the move's own imports. |
+| | 23, 32 | Covered by a live source surviving an engine deletion error after its confirmed switch, completing cleanup, and retaining the full original backup with its child. |
 | | 25 | Covered by resuming an old failed offer and a journal that requires acknowledgement. The destination's drop receipt retires each journal. |
 | | 26 | Covered by replay of a legacy switch receipt eight days old, after the announcement would have expired. |
 | | 27 | Covered by refusing a bundle that includes a local conversation, claims a different root, has an unrelated child, or contains a cycle. |
@@ -176,12 +180,13 @@ separately where they appear.
 | | 40 | Covered by authenticated switch retries with a future saved time, a steady wall clock and a backward jump. The part-window test checks monotonic retry deadlines. |
 | | 41–42 | Covered by an incomplete copy waiting after 90 seconds and a complete copy waiting after 150 seconds, and by clearing a waiting announcement when the peer answers again. |
 | | 45 | Partial, a live chat returns to the same computer and discards the earlier move's backup. The pre-activation retention and timed cleanup checks remain 2.4. |
-| | 50, 52 | Partial, the receiver refuses an unavailable OpenCode provider before the source holds its work and permits a retry after sign-in. Native coding-agent preflight and replacement account notes remain 2.4 and 4.6. |
+| | 50, 52 | Partial, the receiver refuses an unavailable OpenCode provider before the source holds its work and permits a retry after sign-in. Native coding-agent preflight remains 4.6. |
+| | 51 | Covered by retaining the authenticated destination's replacement-account note in the move receipt. Selecting a replacement for a native agent belongs to 4.6. |
 | | 43–44, 46–47, 49 | Covered by retained backups and retry after failed deletion, first-run replies tied to the carried transcript, and grace-period cleanup of orphaned move bundles. |
 | | 48 | Covered by move choices that count a chat’s delegated work and unanswered questions, including a second level of work. |
 | | 53–54 | Native account fallback is owned by 4.6. Bot key handling is owned by 5.1 with native carry in 4.6. |
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
-| | 1, 3–4, 7, 10–11, 21, 23, 32, 35, 38, 51 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
+| | 1, 3–4, 7, 10–11, 35, 38 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |
