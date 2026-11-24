@@ -2213,6 +2213,71 @@ test("pending letters reach a peer in creation order", { timeout: 40000 }, async
   assert.deepEqual(messages.map(prompt => prompt.text.split("\n\n").at(-1)), ["first", "second", "third"]);
 });
 
+test("only its lead can address an old conversation that is no longer listed", {
+  timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("older-letter-target");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const lead = "ses_remoteLead", unrelated = "ses_remoteOther", old = "ses_olderChat", latest = "ses_newestChat";
+  const arrived = "ses_unlistedArrival", at = Date.now();
+  const directory = path.join(here.home, "chats");
+  here.engine.sessions.push({
+    ...sessionOf({ id: old, title: "Older delegated conversation", directory }),
+    metadata: { kuvo: { startedBy: lead, depth: 1 } },
+  });
+  here.engine.sessions.push(sessionOf({ id: arrived, title: "Recently moved conversation", directory }));
+  save("run/moves/ended.json", { mov_unlistedArrival: { as: "switched", at, peer: member.key, sessions: [arrived] } });
+  save("run/moves/moved.json", [{ session: arrived, key: main.key, at, arrived: true }]);
+  for (let index = 2; index <= 126; index++) {
+    const id = index === 126 ? latest : "ses_filler" + index;
+    here.engine.sessions.push(sessionOf({ id, title: "Recent conversation " + index, directory, updated: index }));
+  }
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const secret = Buffer.alloc(32, 2), key = Buffer.from(main.key, "base64url"), address = Buffer.from(main.address, "base64url");
+  const wire = relay.device(Buffer.alloc(32, 52));
+  t.after(() => wire.leave());
+  const send = data => {
+    const bytes = Buffer.from(JSON.stringify({ ...data, at: Date.now() }));
+    wire.send(address, frame(Frame.mail, 0, sealOneWay(bytes, secret, key).message));
+  };
+  const receive = async () => {
+    const packet = readFrame((await wire.next(15000)).subarray(17));
+    return packet?.kind === Frame.mail && JSON.parse(openOneWay(packet.body, secret, key).payload);
+  };
+  const resident = await here.start().ready();
+  const list = await until(async () => {
+    const mail = await receive();
+    return mail?.agents?.list?.some(row => row.session === latest) && mail.agents.list;
+  }, "The destination did not announce its recent conversations");
+  assert.ok(!list.some(row => row.session === old || row.session === arrived));
+  send({ agents: { at: Date.now(), list: [lead, unrelated].map((session, i) =>
+    ({ session, name: i ? "Unrelated" : "Lead", kind: "session" })) } });
+  await until(async () => {
+    const location = await request(resident, "GET", "kuvo/sessions/" + lead + "/location");
+    return location.json?.on?.id === member.key;
+  }, "The destination did not learn the sender's address");
+  const letter = async (id, from, to) => {
+    send({ letter: { id, from, to, text: "How is it going?", wait: false, at: Date.now() } });
+    return until(async () => {
+      const receipt = (await receive())?.delivered;
+      return receipt?.id === id && receipt;
+    }, "The destination did not acknowledge " + id);
+  };
+  assert.deepEqual(await letter("ltr_deniedOld", unrelated, old), {
+    id: "ltr_deniedOld", ok: false,
+    why: "That conversation isn't one this computer lists, nor one you started: write to one that list_agents names.",
+  });
+  assert.deepEqual(await letter("ltr_allowedOld", lead, old), { id: "ltr_allowedOld", ok: true });
+  assert.deepEqual(await letter("ltr_allowedRecent", unrelated, latest), { id: "ltr_allowedRecent", ok: true });
+  assert.deepEqual(await letter("ltr_allowedArrival", unrelated, arrived), { id: "ltr_allowedArrival", ok: true });
+  assert.deepEqual(here.engine.messages.get(old).map(row => row.text), [
+    `[Message from Lead · ${lead}] (To answer, use send_message to ${lead}.)\n\nHow is it going?`,
+  ]);
+  assert.equal(here.engine.messages.get(latest).length, 1);
+  assert.equal(here.engine.messages.get(arrived).length, 1);
+});
+
 test("an authenticated note's address survives restart and routes later notes", {
   timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

@@ -264,6 +264,20 @@ fn departures(run: &Path) -> Result<Vec<Departure>, kuvo_store::format::Error> {
     departure_rows(run).collect()
 }
 
+pub(crate) fn recently_arrived(
+    run: &Path,
+    session: &str,
+    here: &str,
+    now: Millis,
+) -> Result<bool, kuvo_store::format::Error> {
+    Ok(departures(run)?.into_iter().any(|row| {
+        row.session == session
+            && row.key == here
+            && row.arrived == Some(true)
+            && now.saturating_sub(row.at) < ROUTING_FOR
+    }))
+}
+
 pub(crate) fn locate(run: &Path, ownership: &mut Ownership) {
     apply_owners(
         ownership,

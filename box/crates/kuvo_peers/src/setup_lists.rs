@@ -202,6 +202,45 @@ impl View {
             .collect()
     }
 
+    pub(crate) fn announced_agents(&self) -> Vec<AnnouncedAgent> {
+        let mut agents = vec![];
+        if let Some(lists) = &self.local_lists {
+            let mut sessions: Vec<_> = lists
+                .sessions
+                .iter()
+                .filter(|row| {
+                    row.facts.parent.is_none()
+                        && row.facts.archived != Some(true)
+                        && !row.actions.is_empty()
+                })
+                .collect();
+            sessions.sort_by(|a, b| {
+                b.facts
+                    .updated
+                    .as_f64()
+                    .unwrap_or_default()
+                    .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
+            });
+            agents = sessions
+                .into_iter()
+                .filter_map(|row| {
+                    Some(AnnouncedAgent {
+                        session: row.id.clone(),
+                        name: row.facts.title.clone()?,
+                        kind: if row.facts.kind == lists::Kind::Bot {
+                            AgentKind::Bot
+                        } else {
+                            AgentKind::Session
+                        },
+                        id: row.facts.bot.clone(),
+                    })
+                })
+                .take(120)
+                .collect();
+        }
+        agents
+    }
+
     pub(crate) fn moved(&self, id: &str, now: Millis) -> Option<String> {
         self.moved_with(id, now, &self.local.ownership)
     }
@@ -1056,41 +1095,7 @@ async fn publish_round(
     }
     let owns: String = owned.into_iter().take(5000).map(owned_digest).collect();
     let features = view.features();
-    let mut agents = vec![];
-    if let Some(lists) = lists {
-        let mut sessions: Vec<_> = lists
-            .sessions
-            .iter()
-            .filter(|row| {
-                row.facts.parent.is_none()
-                    && row.facts.archived != Some(true)
-                    && !row.actions.is_empty()
-            })
-            .collect();
-        sessions.sort_by(|a, b| {
-            b.facts
-                .updated
-                .as_f64()
-                .unwrap_or_default()
-                .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
-        });
-        agents = sessions
-            .into_iter()
-            .filter_map(|row| {
-                Some(AnnouncedAgent {
-                    session: row.id.clone(),
-                    name: row.facts.title.clone()?,
-                    kind: if row.facts.kind == lists::Kind::Bot {
-                        AgentKind::Bot
-                    } else {
-                        AgentKind::Session
-                    },
-                    id: row.facts.bot.clone(),
-                })
-            })
-            .take(120)
-            .collect();
-    }
+    let agents = view.announced_agents();
     let mut active = view.at_work();
     let working = active.len();
     active.truncate(20);

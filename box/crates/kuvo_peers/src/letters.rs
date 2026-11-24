@@ -479,6 +479,44 @@ impl Letters {
                 None,
             )));
         }
+        if note.is_none() && view.roster.here != Some(key) {
+            let agents = view.announced_agents();
+            if !agents.is_empty() && !agents.iter().any(|agent| agent.session == letter.to) {
+                let here = view.roster.local();
+                let arrived = crate::moves::recently_arrived(
+                    &self.reader.run,
+                    &letter.to,
+                    &here.id,
+                    self.reader.now(),
+                )
+                .map_err(io::Error::other)?;
+                if !arrived {
+                    let under = match letter.from.as_deref() {
+                        Some(lead) => started_under(&engine, &session, lead).await,
+                        None => Ok(false),
+                    };
+                    match under {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return Ok(Some(refused(
+                                id,
+                                "That conversation isn't one this computer lists, nor one you started: write to one that list_agents names.",
+                                false,
+                                None,
+                            )));
+                        }
+                        Err(error) => {
+                            return Ok(Some(refused(
+                                id,
+                                &format!("It didn't reach it: {error}"),
+                                true,
+                                None,
+                            )));
+                        }
+                    }
+                }
+            }
+        }
         let key_text = encode(&key);
         let counted_as = format!(
             "{}:{key_text}",

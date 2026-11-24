@@ -35,6 +35,7 @@ for addressed work and receipt lookup.
 | Waited letter | Both residents identify the sender by its own announcement. The destination sends an answer after the engine reply. The original tool gets it through its saved letter ID and authenticated destination after the sender restarts with only the awaited record. |
 | Letter ordering and delivery recovery | Both residents send pending letters oldest first. A temporary lookup failure leaves the letter pending. Replaying the same letter after the destination restarts without receiving its engine's acceptance returns the receipt with one prompt ID and one saved message. |
 | Note addresses | Both residents learn session addresses from accepted notes, keep the newer address across a restart and send a pending note there. A redirect from the authenticated recipient is durable. A different computer's redirect is ignored. |
+| Older letter destinations | Both residents allow a lead to write to an unlisted conversation it started and refuse another conversation's letter. Listed conversations and recent arrivals still receive letters. |
 | Tool that stopped waiting | Both residents deliver an ordinary letter without the wait, cancel an unsent transcript request, and deliver a reply that was left behind to the local conversation. Replaying a delivered letter starts no second turn, and an unlisted sender hears that it cannot receive a reply. |
 | Transcript read | Both residents retry a temporarily unavailable page, return excerpts to the waiting tool and skip an undone passage. Only the lead can read its archived work. The read submits no prompt. |
 | Late answer | A saved answer and a new answer from a local conversation wait while the caller is held. Both reach its new owner once. A transcript left by an abandoned read is discarded during the hold. |
@@ -120,8 +121,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Sixty-one have full scenario coverage, 22 have partial proof,
-and 129 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Sixty-two have full scenario coverage, 22 have partial proof,
+and 128 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -206,7 +207,8 @@ separately where they appear.
 | [setup-lists](../../box/test/setup-lists.test.ts) | 16 | Typed drafts, remote queue ordering and lost-effect receipts belong to 3.2, with authenticated transport from 2.2. |
 | | 28 | The 2.4 move projection is covered by the first snapshot pending and away states on the third computer. The other merged views belong to 2.2, 5.1 and 5.2. |
 | [reach-elsewhere](../../box/bridge-tests/reach-elsewhere.test.js) | 1, 3 | Open, 2.4 real move fixtures, with engine effects in 3.2. [2.2](rust-peers-coverage.md) proves the authenticated call transport. |
-| [reach-elsewhere-rules](../../box/bridge-tests/reach-elsewhere-rules.test.js) | 3–4, 11, 14 | Open, 2.4 switched sessions, letters, ancestry and returning results to a moved lead. The last two were numbered 10 and 13 before the stale snapshot scenario was added. |
+| [reach-elsewhere-rules](../../box/bridge-tests/reach-elsewhere-rules.test.js) | 11 | Covered by lead-only letters to an unlisted older conversation and the exception for a conversation that arrived recently. |
+| | 3–4, 14 | Open, 2.4 switched sessions and returning results to a moved lead. Case 14 was numbered 13 before the stale snapshot scenario was added. |
 | [offline-merge](../../box/test/offline-merge.test.ts) | 4 | Open, refinement of an older note passage on the new owner in 2.4 and 3.2. |
 | | 8–9 | Work Queue deletion and former-owner replay owned by 5.2. |
 | [setup-handover, move and owner reads](../../box/bridge-tests/setup-handover.test.js#L15) | v3 compatibility | Partial, v0–v3 storage and the compatibility writer are covered. Old-reader rejection through the archive and queue handoffs remain 2.4 and 5.2. |
