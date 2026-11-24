@@ -17,6 +17,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A conversation’s follow-up notes reach its latest computer even after the sender restarts with an older address.
 - An older conversation can still hear from the conversation that started it, even after it leaves the list of recent conversations.
 - After a restart, Kuvo still asks the destination to remove an unfinished copy of a failed move.
+- An older move that already started switching on a managed setup stays held until the destination confirms ownership.
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
 - Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.

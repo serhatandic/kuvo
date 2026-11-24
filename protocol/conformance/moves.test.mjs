@@ -688,6 +688,32 @@ test("a destination reports the same held copy and refuses an unknown arrival", 
     { op: "switched", id: older });
 });
 
+test("a drop receipt cannot release an older switch in a managed setup", {
+  timeout: 35000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("legacy-switch-fence");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const ask = await moveMail(t, relay, main);
+  const session = "ses_oldSwitch", id = "mov_oldSwitch";
+  const pause = path.join(here.home, "wakes", session, "paused");
+  write(pause, "moving:" + id);
+  here.engine.sessions.push(sessionOf({ id: session, directory: path.join(here.home, "chats") }));
+  const now = Date.now();
+  save("run/moves/" + id + ".json", {
+    id, thing: session, name: "Held legacy move", kind: "chat", from: main.key, to: member.key,
+    peer: member.key, role: "from", stage: "switching", step: "switch", sessions: [session],
+    started: now, switchSince: now, sentAt: now, safeSwitch: true,
+  });
+  const resident = await here.start().ready();
+  await ask({ op: "dropped", id, neverSwitched: true }, false);
+  const ready = await ask({ op: "check", id: "mov_checkpointBarrier", kind: "chat", name: "A separate check" }, "checked");
+  assert.equal(ready.op, "checked");
+  const receipt = await request(resident, "GET", "kuvo/moves/receipt?id=" + id);
+  assert.equal(receipt.json?.state, "moving", receipt.text);
+  assert.equal(fs.readFileSync(pause, "utf8"), "moving:" + id);
+});
+
 test("a dropped copy stays held through an engine failure and a late switch", {
   timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

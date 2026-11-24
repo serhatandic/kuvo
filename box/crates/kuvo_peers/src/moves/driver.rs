@@ -721,7 +721,12 @@ impl Driver {
                 }
                 self.finish(&mut row).await?;
             }
-            "dropped" if row.stage == Stage::Switching && given["neverSwitched"] == true => {
+            "dropped"
+                if row.stage == Stage::Switching
+                    && given["neverSwitched"] == true
+                    && (row.extra.get("twoComputers") == Some(&Value::Bool(true))
+                        || !listing::checkpointed(self.run_dir())) =>
+            {
                 let reason = format!(
                     "{} couldn’t be set up there, so it stayed here. Try again.",
                     row.display_name()
