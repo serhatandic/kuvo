@@ -27,10 +27,12 @@ impl Failure {
     }
 
     pub(super) fn prepare(release: PreparedRelease, error: io::Error) -> Self {
-        use io::ErrorKind::{PermissionDenied, QuotaExceeded, StorageFull, TimedOut, WouldBlock};
+        use io::ErrorKind::{
+            NotConnected, PermissionDenied, QuotaExceeded, StorageFull, TimedOut, WouldBlock,
+        };
         let fixable = matches!(
             error.kind(),
-            PermissionDenied | QuotaExceeded | StorageFull | TimedOut | WouldBlock
+            NotConnected | PermissionDenied | QuotaExceeded | StorageFull | TimedOut | WouldBlock
         );
         Self::new(release, error, fixable)
     }
