@@ -1,16 +1,13 @@
-use std::{
-    io,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use tokio::sync::oneshot;
 
 use super::{Destination, Input, Job, Progress, Ran, SeedTransfer};
-use crate::ssh::AddError;
+use crate::ssh::{
+    AddError,
+    account_scripts::{BAD_ACCOUNT, BUSY, LOST, locked_script, new_token, owns, release_script},
+};
 
-pub(in crate::ssh) const BUSY: i32 = 8;
-pub(in crate::ssh) const LOST: i32 = 73;
-const BAD_ACCOUNT: i32 = 74;
 const RECOVER: i32 = 76;
 const OLD: i32 = 77;
 
@@ -101,7 +98,7 @@ impl Reservation<'_> {
     }
 
     async fn claim(&self, previous: Option<&str>) -> Result<Ran, String> {
-        let script = claim_script(&self.remote.root, &self.token, previous, "");
+        let script = claim_script(&self.remote.root, &self.token, previous);
         self.remote.shell(self.job, &script, Vec::new(), 30).await
     }
 
@@ -252,19 +249,7 @@ impl Reservation<'_> {
     }
 }
 
-pub(in crate::ssh) fn new_token() -> io::Result<String> {
-    Ok(format!(
-        "guarded-{}",
-        hex::encode(crate::random::<24>().map_err(io::Error::other)?)
-    ))
-}
-
-pub(in crate::ssh) fn claim_script(
-    root: &str,
-    token: &str,
-    previous: Option<&str>,
-    preflight: &str,
-) -> String {
+pub(in crate::ssh) fn claim_script(root: &str, token: &str, previous: Option<&str>) -> String {
     let continuation = match previous {
         Some(previous) => format!(
             r#"
@@ -286,7 +271,7 @@ else
         root,
         0,
         &format!(
-            r#"{preflight}
+            r#"
 if claimed; then
   prior=$(readlink "$A") || exit {BAD_ACCOUNT}
   case "$prior" in guarded-*) ;; *) exit {OLD} ;; esac
@@ -295,61 +280,6 @@ fi
 ln -s '{token}' "$A" || exit {BAD_ACCOUNT}"#
         ),
     )
-}
-
-pub(in crate::ssh) fn release_script(root: &str, token: &str) -> String {
-    locked_script(
-        root,
-        5,
-        &format!(
-            r#"
-if claimed; then
-  prior=$(readlink "$A") || exit {BAD_ACCOUNT}
-  if [ "$prior" = '{token}' ]; then rm -f "$A"; fi
-fi"#
-        ),
-    )
-}
-
-pub(in crate::ssh) fn locked_script(root: &str, wait: u8, script: &str) -> String {
-    let (marker, prepare) = if root == ".kuvo-code" {
-        (".kuvo-code-adding".to_owned(), String::new())
-    } else {
-        (
-            format!("{root}/run/ssh-adding"),
-            format!(
-                r#"[ ! -L "$HOME/{root}" ] && [ ! -L "$HOME/{root}/run" ] || exit {BAD_ACCOUNT}
-(umask 077; mkdir -p "$HOME/{root}/run") || exit {BAD_ACCOUNT}"#
-            ),
-        )
-    };
-    format!(
-        r#"{prepare}
-A="$HOME/{marker}"
-claimed() {{ [ -e "$A" ] || [ -L "$A" ]; }}
-if [ -L "$A.lock" ] || {{ [ -e "$A.lock" ] && [ ! -f "$A.lock" ]; }}; then
-  echo 'The Kuvo Code account lock must be a regular file.' >&2
-  exit {BAD_ACCOUNT}
-fi
-(umask 077; : >>"$A.lock") || exit {BAD_ACCOUNT}
-(
-  case "$(uname -s)" in
-    Darwin) /usr/bin/lockf -t {wait} 9 ;;
-    *) flock -w {wait} -E 75 9 ;;
-  esac
-  status=$?
-  if [ "$status" -ne 0 ]; then
-    if [ "$status" -eq 75 ] && claimed; then exit {BUSY}; fi
-    exit {BAD_ACCOUNT}
-  fi
-  trap '' HUP
-  {script}
-) 9<>"$A.lock""#
-    )
-}
-
-pub(in crate::ssh) fn owns(token: &str) -> String {
-    format!("[ \"$(readlink \"$A\" 2>/dev/null)\" = '{token}' ]")
 }
 
 pub(crate) fn valid_token(token: &str) -> bool {
