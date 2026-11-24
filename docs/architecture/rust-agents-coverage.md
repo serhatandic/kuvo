@@ -659,7 +659,7 @@ mode 600 and was deleted with it. The live run also showed that Claude
 Code 2.1.330 records a sent message's UUID as its transcript's user entry.
 Steer receipts rely on that.
 
-The complete home comparison remains part of 4.4.
+The complete home comparison follows, under "Claude conversation differential".
 
 ### Claude account and catalog differential
 
@@ -689,3 +689,40 @@ remaining differences.
 | `run/route/ssh` | 1.4 uses one private resident IPC endpoint. The TypeScript reference creates the old route socket directory. |
 | `run/queues-scanned.json` | 3.2 owns OpenCode queue reconciliation with its stand-in. |
 | `run/notices/` | 2.2 owns peer notices. 5.1 owns the resident scan that publishes notices from work. |
+
+### Claude conversation differential
+
+`protocol/conformance/differential/claude-conversation.mjs` writes a home with one Claude Code
+session, the stand-in's script and a request sequence. Two turns run, one with a tool call and both
+with usage. Then the sequence reads the transcript after each turn, the background list, and the
+session's background bar. Give the runner `KUVO_DIFFERENTIAL_CLAUDE=<folder>/claude.json` with
+`KUVO_CONFORMANCE_AREA=agents-claude`. A transcript read with `idles: n` waits for n ended turns.
+The runner hides only per-run values: row times, the conversation's last-change times, and the
+conversation ID Claude Code is given. It stops the holders each run leaves before it deletes the
+home.
+
+The comparison found three Claude differences, now fixed and covered by both-box cases:
+
+- The session's background bar lacked `activity`, subagent titles and `asking`
+  (`agents-claude-turns`, "a command it leaves running shows in the bar").
+- A turn's context reading had no window until the turn's result said one. TS uses the window
+  Claude Code reported for the model: when its models were listed, or as an earlier turn ended
+  (`agents-claude`, "what Claude Code said a model holds as a turn ended counts for the next
+  conversation on it").
+- A session read keeps the listed window in `session.json`, as the bridge does.
+
+Besides the files in the table above, these differences remain:
+
+| Difference | Owner or reason |
+|---|---|
+| Row IDs: TS mints ascending IDs, Rust derives them from the prompt ID | 4.1b owns the shared turn rows. |
+| `time.origin` on every row, `time.order` on user rows | 4.1b owns the rows. 5.4 reads the origin for usage attribution. The order is `background::WorkOrder`. |
+| Text parts: TS writes `{type, text}` and `time.streamed` on the step; Rust writes `state: null` and `time {created, streamed}` on the part | 4.1b owns the shared turn projection. |
+| `<from-phone>` block and `metadata.kuvo.parts` on a prompt that isn't from the desktop link | 7.3 owns message decoration (see the engine coverage). |
+| `session.json` `contextWindow` before a turn says one | TS keeps the listed window as a side effect: it reads the session before sending to check that the model takes pictures. Rust keeps it on a session read. Both answer the same window to clients. The send-time read goes with attachments (3.2, 7.3). |
+| `agent.json` `snapshots` and the thread's `seen` | 4.6 owns staged Undo's file keeping and the handover's seen cursor (the open `todo` case). |
+| `run/lists/sessions.json` `running`, `working` and `seq` at the stop | TS's list was last written while the second turn ran, before its writer caught up with the end. Rust's shows the ended turn. This is reference timing; 4.1b owns the list. |
+| Held Claude Code at a plain stop: TS's bridge stops every held agent; the Rust resident hands each over, and the holder waits 15 minutes for the next resident | 4.1b owns holders and the handover. A plain stop with no switch should stop them, as TS does. |
+| `run/agents/tmp/claude/catalog-settings.json` | Rust's model probe writes its settings there. TS passes them to the SDK. |
+| `run/work/background.json` `engine` place | The engine's place is written by the engine watcher (5.1). Rust writes the coding agents' `bridge` place. |
+| `run/work-queue/model.json`, `run/work/told.json` | 5.2 and 5.1. |

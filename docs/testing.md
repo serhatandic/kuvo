@@ -148,7 +148,8 @@ Run the tagged-home and holder cases with `KUVO_CONFORMANCE_AREA=compat` and `KU
 For the differential runner, use an offline scratch home with synthetic data and no process
 records. A sequence is a JSON array such as `[{"method":"GET","path":"kuvo/info"}]`. Use
 `{{home}}` in a body or query to refer to each run's copy. The runner returns 0 for a match,
-1 for a difference and 2 for an input or launch error. See the
+1 for a difference and 2 for an input or launch error. For a Claude Code conversation, see
+`protocol/conformance/differential/claude-conversation.mjs`. See the
 [conversion list](architecture/rust-box.md#3-the-contract-the-rust-box-meets).
 
 ## Anti-patterns

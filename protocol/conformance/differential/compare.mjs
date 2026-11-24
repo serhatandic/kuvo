@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "../adapter.mjs";
 import { standInEngine } from "../engine.mjs";
-import { claudeEnvironment, seedSession, startClaudeBridge } from "../claude.mjs";
+import { claudeEnvironment, seedSession, startClaudeBridge, stopFixtureHolders } from "../claude.mjs";
 
 // These are individual fields, scoped to a route or home file. A missing field,
 // a changed type, a changed path, and every other value remain visible.
@@ -301,12 +301,15 @@ async function run(binary, home, sequence, relay, peerSeed, claude) {
       await Promise.all([engine.close(), peerEngine?.close(), bridge?.stop()]);
     }
   }
+  // What the run found, before the holders it left go (with their records).
+  const files = inventory(home, { enginePort: engine.record.port });
+  if (claude) await stopFixtureHolders(home);
   const transcript = normalise({
     sessions: engine.sessions,
     messages: Object.fromEntries(engine.messages),
     inboxes: Object.fromEntries(engine.inboxes),
   }, "engine", home);
-  return { answers, files: inventory(home, { enginePort: engine.record.port }), transcript };
+  return { answers, files, transcript };
 }
 
 export function difference(label, a, b, out) {
