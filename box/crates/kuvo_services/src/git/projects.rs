@@ -41,7 +41,7 @@ pub(crate) fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, 
         .filter(|each| {
             each.get("directory")
                 .and_then(Value::as_str)
-                .is_some_and(|folder| Path::new(folder).is_absolute())
+                .is_some_and(absolute)
         })
         .map(|each| {
             let mut project = each.clone();
@@ -64,6 +64,22 @@ pub(crate) fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, 
             project
         })
         .collect())
+}
+
+/// Whether a folder is named by a full path, as Node's `path.isAbsolute` reads it here: on Windows,
+/// one that starts at a drive's top (`\\work`, `/work`) is too.
+fn absolute(folder: &str) -> bool {
+    if cfg!(windows) {
+        let bytes = folder.as_bytes();
+        let separator = |byte: u8| byte == b'/' || byte == b'\\';
+        bytes.first().is_some_and(|byte| separator(*byte))
+            || (bytes.len() > 2
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && separator(bytes[2]))
+    } else {
+        Path::new(folder).is_absolute()
+    }
 }
 
 fn directory(project: &Map<String, Value>) -> &str {
