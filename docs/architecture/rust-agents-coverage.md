@@ -57,6 +57,35 @@ also cleans up its owned process tree after the agent exits. Windows uses job
 termination for a stop and a numeric exit status. POSIX signals remain
 available on Unix.
 
+## Resident runtime progress (4.1b)
+
+The account index uses the saved `agents/accounts.json` format. The tests
+read a legacy array, retain an added account's original home and unknown
+fields, and refuse to rewrite a future-version index. A new account gets
+its own folder and provider ID. The default account keeps its provider ID
+and leaves home selection to the adapter.
+
+The shared roster instantiates a factory for each configured account. It
+keeps an adapter and its cached answers when the account label changes.
+Account checks keep the last sign-in after a transient failure and ignore
+an answer begun before credentials changed. A failed model lookup keeps
+only the same account's previous catalog. The sign-in attempt book scopes
+status, completion and cancellation to the initiating provider and accepts
+a late-page code when the adapter says a code is needed.
+
+The Rust controller replacement scenario now calls `Runtime::activate`.
+It builds the stand-in adapter's roster, uses the recorded provider to find
+it, and starts complete replay at the oldest active turn's cursor. The
+controller API is unchanged. The saved session header reader supplies the
+working directory without opening the transcript.
+
+The following integration work remains open:
+
+- Production adapter registration and activation before the resident publishes readiness.
+- Graceful keeper release switch with a running resident-owned turn, including authenticated vendor proof.
+- Public sign-in and account routes, default-home migration, model-source wiring, and session, queue and approval routing.
+- Route conformance and differential comparison, saved full golden homes, and platform verification for 4.1b.
+
 ## TypeScript scenario inventory
 
 ### Holders, reload and repair
