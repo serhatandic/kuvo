@@ -29,11 +29,14 @@ const QUIET_GRACE: i64 = 120_000;
 
 pub(super) fn row(
     release: &Candidate,
-    facts: &UpdateFacts,
+    facts: Option<&UpdateFacts>,
     presence: UpdatePresence,
     can_retry: bool,
     now: i64,
 ) -> FleetRow {
+    let known = facts.is_some();
+    let empty = UpdateFacts::default();
+    let facts = facts.unwrap_or(&empty);
     let version = release.version();
     let digest = facts
         .release_target
@@ -47,6 +50,7 @@ pub(super) fn row(
     let ready = facts.staged.as_ref().is_some_and(matches);
     let switching = facts.switching.as_ref().is_some_and(matches);
     let phase = match presence.away_for {
+        Some(_) if !known => Phase::Off,
         Some(age) if !up_to_date && (ready || switching) && age < SWITCH_GRACE => Phase::Switching,
         Some(age) if age >= QUIET_GRACE => Phase::Off,
         _ if up_to_date => Phase::Done,
