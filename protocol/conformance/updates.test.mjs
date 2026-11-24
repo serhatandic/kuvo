@@ -2377,6 +2377,34 @@ test("the Mac installer offers a move when the earlier app still has work", t =>
   }
 });
 
+test("the Mac installer keeps an existing machine in place", t => {
+  if (process.platform !== "darwin") return t.skip("Uses a Mac machine installation.");
+  const fixture = box(t);
+  const { env } = fixture;
+  const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.machine-fixture");
+  const home = path.join(env.HOME, ".kuvo-code");
+  const keeper = "#!/bin/sh\nexit 64\n";
+  write(path.join(home, "box/kind"), "machine\n");
+  write(path.join(home, "bin/kuvo-start"), keeper, { mode: 0o700 });
+  write(path.join(home, "workspace/notes"), "machine work");
+  const [code, status] = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(code, 0);
+  assert.equal(status.verdict, "machine");
+  assert.equal(status.verb, null);
+  const messages = {
+    move: "This Mac is set up as one of your machines already: Kuvo uses what's here.",
+    new: "This computer is set up as one of your machines already: Kuvo uses what's here.",
+  };
+  for (const [verb, message] of Object.entries(messages)) {
+    assert.deepEqual(macInstallerRequest(fixture, bundle, verb), [1, {
+      result: "refused", verdict: "machine", status: status.status, message,
+    }]);
+  }
+  assert.equal(fs.readFileSync(path.join(home, "bin/kuvo-start"), "utf8"), keeper);
+  assert.equal(fs.readFileSync(path.join(home, "workspace/notes"), "utf8"), "machine work");
+  assert.deepEqual(fs.readdirSync(home).sort(), ["bin", "box", "workspace"]);
+});
+
 test("the Mac installer waits for a live move", async t => {
   if (process.platform !== "darwin") return t.skip("Uses the Mac move lock.");
   const fixture = box(t);

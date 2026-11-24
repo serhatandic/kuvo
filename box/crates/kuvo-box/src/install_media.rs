@@ -71,6 +71,16 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     let before = install::judge(&home, Some(&app), Platform::Mac, None)?;
     let declined = match (restart, before.verdict) {
         (_, Verdict::Waits) => Some((4, "waits", "Another move is under way.")),
+        (false, Verdict::Machine) => Some((
+            1,
+            "refused",
+            "This Mac is set up as one of your machines already: Kuvo uses what's here.",
+        )),
+        (true, Verdict::Machine) => Some((
+            1,
+            "refused",
+            "This computer is set up as one of your machines already: Kuvo uses what's here.",
+        )),
         (false, Verdict::Two) => Some((1, "refused", install::TWO_HOMES_MOVE)),
         (true, Verdict::Two) => Some((
             1,
