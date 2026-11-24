@@ -66,17 +66,21 @@ pub(crate) fn canonical(path: &str) -> Option<String> {
     for (index, raw) in query.split('&').filter(|raw| !raw.is_empty()).enumerate() {
         path.push(if index == 0 { '?' } else { '&' });
         let mut folder = false;
+        let mut project_key = false;
         for (index, raw) in raw.splitn(2, '=').enumerate() {
             let folder_value = index == 1 && folder;
-            let part = decode(&raw.replace('+', " "), folder_value)?;
+            let project_value = index == 1 && project_key;
+            let part = decode(&raw.replace('+', " "), folder_value || project_value)?;
             // A folder may be a Windows path: `..` between either separator is still refused.
             let separators: &[char] = if folder_value { &['/', '\\'] } else { &['/'] };
-            if part.split(separators).any(|piece| ascii(piece) == "..") {
+            if !project_value && part.split(separators).any(|piece| ascii(piece) == "..") {
                 return None;
             }
             if index == 1 {
                 path.push('=');
             } else {
+                // The project page validates this inventory key itself.
+                project_key = route == "kuvo/sessions/page" && part == "project";
                 folder = FOLDER_PATHS.contains(&(route.as_str(), part.as_str()));
             }
             path.push_str(&encode(&part, b"$,;:@/?"));

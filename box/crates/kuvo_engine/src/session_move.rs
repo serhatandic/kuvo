@@ -363,7 +363,7 @@ impl SessionMove {
         if self
             .engine
             .queues
-            .keep(session, &prompt, Some(&words), Some(from), None)
+            .keep(session, &prompt, Some(&words), Some(from), None, &[])
             .await
             .map_err(fence_failure)?
         {

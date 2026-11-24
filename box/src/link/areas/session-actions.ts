@@ -236,7 +236,12 @@ export async function* sessionActionRoute(context: RouteContext, match: RegExpMa
           const confirm = await deleteConfirm([{ id, directory: now.location?.directory ?? now.directory ?? "", title: now.title }], context, signal);
           if (sortedJSON(given.was) !== sortedJSON(sessionActionState(now, confirm))) throw new Stale();
         }
-        return call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal);
+        try { return await call(target, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, signal); }
+        catch (error) {
+          if ((error as { status?: number }).status !== 404) throw error;
+          if ("was" in given) throw new Stale();
+          return undefined;
+        }
       }, signal);
     } catch (error) {
       if (error instanceof Stale) return yield* json(409, { message: CHANGED_SINCE });

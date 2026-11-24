@@ -48,14 +48,14 @@ struct Projects {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct Permission {
+pub struct Permission {
     action: String,
     resource: String,
     effect: String,
 }
 
 impl Permission {
-    fn new(action: &str, resource: &str, effect: &str) -> Self {
+    pub fn new(action: &str, resource: &str, effect: &str) -> Self {
         Self {
             action: action.into(),
             resource: resource.into(),
@@ -197,7 +197,12 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         ));
     }
 
-    let settings = disk::read::<Value>(&engine.home.join("box/opencode.json"))
+    let config = if engine.is_mac_box().await {
+        "config/opencode/opencode.json"
+    } else {
+        "box/opencode.json"
+    };
+    let settings = disk::read::<Value>(&engine.home.join(config))
         .await
         .ok()
         .flatten()
@@ -699,7 +704,7 @@ async fn touched_project<'a>(
     best
 }
 
-async fn git(folder: &Path, args: &[&str]) -> Option<String> {
+pub(crate) async fn git(folder: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new("git");
     command
         .kill_on_drop(true)
@@ -828,7 +833,9 @@ async fn make_tree(
         folder,
         record: Value::Null,
     };
-    let prefix = settings["branch_prefix"].as_str().unwrap_or("kuvo/");
+    let prefix = settings["branch_prefix"]
+        .as_str()
+        .map_or_else(|| "kuvo/".to_owned(), clean_branch_prefix);
     let root_name = tree.root.file_name().unwrap_or_default().to_string_lossy();
     let mut branch = format!("{prefix}{root_name}");
     let mut suffix = 1;
@@ -865,6 +872,24 @@ async fn make_tree(
         return Err(failed(error.to_string()));
     }
     Ok(tree)
+}
+
+fn clean_branch_prefix(given: &str) -> String {
+    let mut prefix = String::new();
+    for ch in given.chars() {
+        if ch.is_ascii_control()
+            || ch.is_whitespace()
+            || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\' | '\u{feff}')
+        {
+            continue;
+        }
+        if prefix.is_empty() && matches!(ch, '-' | '/' | '.') || ch == '.' && prefix.ends_with('.')
+        {
+            continue;
+        }
+        prefix.push(ch);
+    }
+    prefix
 }
 
 async fn store_tree(engine: &Engine, tree: &Tree, keep: bool) -> std::io::Result<()> {

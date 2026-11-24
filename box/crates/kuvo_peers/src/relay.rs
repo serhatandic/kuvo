@@ -21,6 +21,7 @@ use tokio_tungstenite::{
 };
 
 use crate::{
+    memory_read::{Fences, is_memory},
     parts::WorkQueueParts,
     session::{self, BoxHello, ClientHello, Id, Output, Sessions},
 };
@@ -196,6 +197,7 @@ enum MailRoute {
 enum Command {
     RemovalCompletion(Address, Vec<u8>, Reply<()>),
     Mail(Host, Envelope, MailRoute, Reply<()>),
+    MemoryMail(Host, Vec<Envelope>, Option<oneshot::Sender<()>>, Reply<()>),
     Installer(Host, Vec<u8>, Reply<()>),
     Start(Host, ClientHello, Reply<Id>),
     Send(Id, session::Message, Reply<()>),
@@ -212,6 +214,7 @@ impl Command {
         match self {
             Self::Mail(_, _, _, reply)
             | Self::RemovalCompletion(_, _, reply)
+            | Self::MemoryMail(_, _, _, reply)
             | Self::Installer(_, _, reply)
             | Self::Send(_, _, reply)
             | Self::Close(_, reply) => {
@@ -251,6 +254,16 @@ impl Sender {
 
     pub async fn mail(&self, to: Host, envelope: Envelope) -> Result<(), Error> {
         self.request(|reply| Command::Mail(to, envelope, MailRoute::Member, reply))
+            .await
+    }
+
+    pub(crate) async fn memory_mail(
+        &self,
+        to: Host,
+        envelopes: Vec<Envelope>,
+        failed: Option<oneshot::Sender<()>>,
+    ) -> Result<(), Error> {
+        self.request(|reply| Command::MemoryMail(to, envelopes, failed, reply))
             .await
     }
 
@@ -352,6 +365,7 @@ impl Relay {
                 observations,
                 sessions: Sessions::default(),
                 work_queue_parts: WorkQueueParts::default(),
+                quiet: Fences::default(),
             }
             .run(),
         );
@@ -376,6 +390,7 @@ struct Owner {
     observations: broadcast::Sender<Arc<RelayEvent>>,
     sessions: Sessions,
     work_queue_parts: WorkQueueParts,
+    quiet: Fences,
 }
 
 impl Owner {
@@ -439,6 +454,7 @@ impl Owner {
 
     async fn serve(&mut self, socket: &mut Socket) -> Result<(), Error> {
         let address = address_of(&self.config.secret);
+        self.quiet = Fences::default();
         let mut last_heard = Instant::now();
         let mut heartbeat = time::interval_at(last_heard + HEARTBEAT_EVERY, HEARTBEAT_EVERY);
         heartbeat.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
@@ -479,6 +495,7 @@ impl Owner {
         relay: FromRelay,
     ) -> Result<(), Error> {
         match relay {
+            FromRelay::Deliver { from, payload } if from == own => self.quiet.echo(&payload),
             FromRelay::Deliver { from, payload } if from != own => {
                 let Some((kind, number, body)) = frames::read_frame(&payload) else {
                     return Ok(());
@@ -499,6 +516,9 @@ impl Owner {
                 }
             }
             FromRelay::Unreachable(address) if address != own => {
+                if self.quiet.unreachable(address) {
+                    return Ok(());
+                }
                 if let Some(event) = self.sessions.forget(address) {
                     self.emit(Event::Session(event))?;
                 }
@@ -548,6 +568,15 @@ impl Owner {
                     if !self.work_queue_parts.receive(peer.key, &mut envelope) {
                         return Ok(());
                     }
+                    if is_memory(&envelope) {
+                        envelope.0.retain(|field, _| field == "workQueue");
+                        let _ = self.observations.send(Arc::new(RelayEvent::Mail {
+                            from,
+                            key: peer.key,
+                            envelope,
+                        }));
+                        return Ok(());
+                    }
                     return self.emit(Event::Mail {
                         from,
                         key: peer.key,
@@ -583,6 +612,29 @@ impl Owner {
                         return Ok(());
                     }
                 }
+                let _ = reply.send(Ok(()));
+            }
+            Command::MemoryMail(host, envelopes, failure, reply) => {
+                let sealed = envelopes
+                    .into_iter()
+                    .map(|envelope| envelope.seal(&self.config.key, &host.key))
+                    .collect::<Result<Vec<_>, _>>();
+                let sealed = match sealed {
+                    Ok(sealed) => sealed,
+                    Err(error) => {
+                        let _ = reply.send(Err(error.into()));
+                        return Ok(());
+                    }
+                };
+                // One command owns the entire interval, so a concurrent tracked
+                // send to this computer cannot consume its reach result.
+                let (before, after) = self.quiet.pair(host.address, failure);
+                let own = address_of(&self.config.secret);
+                write(socket, relay_send(&own, &before)).await?;
+                for payload in sealed {
+                    write(socket, relay_send(&host.address, &payload)).await?;
+                }
+                write(socket, relay_send(&own, &after)).await?;
                 let _ = reply.send(Ok(()));
             }
             Command::Installer(host, payload, reply) => {

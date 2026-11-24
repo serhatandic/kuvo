@@ -1,9 +1,15 @@
 //! Search the local OpenCode transcript, with a cache keyed by the session revision.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+};
 
 use http::StatusCode;
-use kuvo_protocol::routes::get_kuvo_search as route;
+use kuvo_protocol::routes::{get_kuvo_search as route, get_kuvo_setup_search as setup};
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -16,6 +22,46 @@ use crate::{
 };
 
 const MOST_TEXT: usize = 400_000;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SearchResult {
+    pub session: String,
+    pub snippet: String,
+    pub info: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computer: Option<SearchComputer>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SearchComputer {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SearchAvailability {
+    Ready,
+    Away,
+    Unavailable,
+}
+
+pub struct SearchPeer {
+    pub key: crate::ComputerKey,
+    pub computer: SearchComputer,
+    pub availability: SearchAvailability,
+}
+
+pub type PeerSearch<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<SearchResult>, SearchAvailability>> + Send + 'a>>;
+
+pub trait SearchPeers: Send + Sync {
+    fn local(&self) -> SearchComputer;
+    fn peers(&self) -> Vec<SearchPeer>;
+    fn moved(&self, sessions: &[&str]) -> BTreeMap<String, crate::ComputerKey>;
+    fn search(&self, key: crate::ComputerKey, words: String, limit: usize) -> PeerSearch<'_>;
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 struct Kept {
@@ -324,7 +370,7 @@ async fn query(
     lease: &Lease,
     words: &str,
     limit: usize,
-) -> Result<Value, Refusal> {
+) -> Result<Vec<SearchResult>, Refusal> {
     let rows = api::Scan::Sessions
         .read(engine, lease, "api/session")
         .await
@@ -384,12 +430,13 @@ async fn query(
                 continue;
             };
             let at = kept.folded[..at].chars().count();
-            let text = snippet(&kept.text, at, wanted.chars().count());
-            let mut found = json!({ "session": id, "info": top, "snippet": text });
-            if string(row, "id") != *id {
-                found["subagent"] = (*row).clone();
-            }
-            results.push(found);
+            results.push(SearchResult {
+                session: (*id).to_owned(),
+                info: top.clone(),
+                snippet: snippet(&kept.text, at, wanted.chars().count()),
+                subagent: (string(row, "id") != *id).then(|| row.clone()),
+                computer: None,
+            });
             break;
         }
         if results.len() >= limit {
@@ -411,7 +458,145 @@ async fn query(
             }
         }
     }
-    Ok(json!({ "results": results }))
+    Ok(results)
+}
+
+fn limit(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| !value.is_nan() && *value != 0.)
+        .unwrap_or(20.)
+        .clamp(1., 50.) as usize
+}
+
+fn missing_words() -> Refusal {
+    Refusal::new(StatusCode::BAD_REQUEST, "Say what to search for (q).")
+}
+
+impl Engine {
+    pub async fn search_conversations(
+        &self,
+        words: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, Refusal> {
+        let words = words.trim();
+        if words.is_empty() {
+            return Err(missing_words());
+        }
+        let lease = self.acquire(Demand::Passive).await.ok_or_else(|| {
+            Refusal::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "This computer's engine isn't running yet. Search again in a moment.",
+            )
+        })?;
+        query(self, &lease, words, limit.clamp(1, 50)).await
+    }
+
+    pub fn register_setup_search(&self, peers: Arc<dyn SearchPeers>, routes: &mut Registry) {
+        let engine = self.clone();
+        routes.register::<setup::Spec, _, _>(Access::Any, move |call| {
+            let engine = engine.clone();
+            let peers = peers.clone();
+            async move {
+                let words = crate::query(&call.request.path, "q").unwrap_or_default();
+                let words = words.trim();
+                if words.is_empty() || words.encode_utf16().count() > 512 {
+                    return Err(missing_words());
+                }
+                let limit = limit(crate::query(&call.request.path, "limit").as_deref());
+                let value = search_setup(&engine, peers.as_ref(), words, limit);
+                let result = call
+                    .cancel
+                    .run_until_cancelled(value)
+                    .await
+                    .ok_or_else(|| {
+                        Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The search was stopped.")
+                    })?;
+                Ok(RouteReply::json::<200>(sessions::typed(result)?))
+            }
+        });
+    }
+}
+
+async fn search_setup(
+    engine: &Engine,
+    peers: &dyn SearchPeers,
+    words: &str,
+    limit: usize,
+) -> Value {
+    let reads = peers.peers().into_iter().map(|peer| async move {
+        let results = match peer.availability {
+            SearchAvailability::Ready => peers.search(peer.key, words.to_owned(), limit).await,
+            unavailable => Err(unavailable),
+        };
+        (peer.computer, results)
+    });
+    let (local, remote) = futures_util::future::join(
+        engine.search_conversations(words, limit),
+        futures_util::future::join_all(reads),
+    )
+    .await;
+    let here = peers.local();
+    let mut away = Vec::new();
+    let mut unavailable = Vec::new();
+    let mut results = Vec::new();
+    let mut add = |computer: SearchComputer, matches: Vec<SearchResult>| {
+        for mut row in matches {
+            row.computer = Some(computer.clone());
+            results.push(row);
+        }
+    };
+    match local {
+        Ok(found) => add(here, found),
+        Err(_) => unavailable.push(here),
+    }
+    for (computer, found) in remote {
+        match found {
+            Ok(found) => add(computer, found),
+            Err(SearchAvailability::Away) => away.push(computer),
+            Err(_) => unavailable.push(computer),
+        }
+    }
+    let sessions = results
+        .iter()
+        .map(|row| row.session.as_str())
+        .collect::<Vec<_>>();
+    let moved = peers.moved(&sessions);
+    results.retain(|row| {
+        moved.get(&row.session).is_none_or(|key| {
+            row.computer
+                .as_ref()
+                .is_some_and(|computer| kuvo_wire::keys::encode(key) == computer.id)
+        })
+    });
+    results.sort_by(|a, b| {
+        updated(&b.info)
+            .cmp(&updated(&a.info))
+            .then_with(|| compare_ids(&a.session, &b.session))
+            .then_with(|| {
+                let a = a.computer.as_ref().map_or("", |computer| &computer.id);
+                let b = b.computer.as_ref().map_or("", |computer| &computer.id);
+                compare_ids(a, b)
+            })
+    });
+    let mut seen = BTreeSet::new();
+    results.retain(|row| seen.insert(row.session.clone()));
+    results.truncate(limit);
+    json!({ "results": results, "awayComputers": away, "unavailableComputers": unavailable })
+}
+
+// Session IDs and encoded computer keys use ASCII. Their order follows the
+// reference's default collation for that alphabet.
+fn compare_ids(a: &str, b: &str) -> Ordering {
+    let primary = |byte: u8| match byte {
+        b'_' => 0,
+        b'-' => 1,
+        _ => byte.to_ascii_lowercase(),
+    };
+    a.bytes()
+        .map(primary)
+        .cmp(b.bytes().map(primary))
+        .then_with(|| b.cmp(a))
 }
 
 pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
@@ -420,26 +605,10 @@ pub(crate) fn register(engine: &Engine, routes: &mut Registry) {
         let engine = engine.clone();
         async move {
             let words = crate::query(&call.request.path, "q").unwrap_or_default();
-            let words = words.trim();
-            if words.is_empty() {
-                return Err(Refusal::new(
-                    StatusCode::BAD_REQUEST,
-                    "Say what to search for (q).",
-                ));
-            }
-            let limit = crate::query(&call.request.path, "limit")
-                .and_then(|limit| limit.parse::<f64>().ok())
-                .filter(|limit| !limit.is_nan() && *limit != 0.)
-                .unwrap_or(20.)
-                .clamp(1., 50.) as usize;
-            let lease = engine.acquire(Demand::Passive).await.ok_or_else(|| {
-                Refusal::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "This computer's engine isn't running yet. Search again in a moment.",
-                )
-            })?;
+            let limit = limit(crate::query(&call.request.path, "limit").as_deref());
+            let found = engine.search_conversations(&words, limit).await?;
             Ok(RouteReply::json::<200>(sessions::typed(
-                query(&engine, &lease, words, limit).await?,
+                json!({ "results": found }),
             )?))
         }
     });
