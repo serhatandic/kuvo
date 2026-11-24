@@ -78,7 +78,7 @@ pub async fn run(
     } else {
         bootstrap.devices
     };
-    let factories = agents::factories(home);
+    let factories = agents::factories(home).await;
     let resident_agents = if factories.is_empty() {
         None
     } else {

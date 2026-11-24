@@ -1,5 +1,7 @@
 //! Sign-in attempts are scoped to the initiating provider and live in the resident.
 
+pub mod command;
+
 use std::{collections::HashMap, io, sync::Arc, time::Duration};
 
 use serde::Serialize;
