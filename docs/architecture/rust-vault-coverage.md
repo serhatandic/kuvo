@@ -71,26 +71,26 @@ this row. Installed Helper cases still need the released supervision path.
 | [a conversation whose root the engine can't say just then asks you, whatever everyone may use](../../box/bridge-tests/vault-tools.test.js#L268) | Partial | 6.2 |
 | [a vault wait finds an arrival even without a filesystem notification](../../box/bridge-tests/vault-waits.test.js#L11) | Open | 6.4 browser waiting |
 | [a machine's vault is described, changed and followed as a settings page, and no value is ever on it](../../box/bridge-tests/settings-vault-live.test.js#L92) | Open | 6.1 settings |
-| [an old helper still running after an update is handed over once, at once, whatever is at work: the new build runs, and is left as it is](../../box/bridge-tests/helper-handover.test.js#L182) | Open | 7.1 and 7.2 Helper supervision |
-| [not while an update is under way: the old helper is handed over once it's done](../../box/bridge-tests/helper-handover.test.js#L215) | Open | 7.1 and 7.2 Helper supervision |
-| [one launchd refuses to start is opened instead, so this Mac is never left without its helper](../../box/bridge-tests/helper-handover.test.js#L240) | Open | 7.1 and 7.2 Helper supervision |
-| [a helper still old after its one try is noted, never tried again](../../box/bridge-tests/helper-handover.test.js#L255) | Open | 7.1 and 7.2 Helper supervision |
-| [Kuvo stopped on this Mac: its helper is never handed over, nor started, before or as it goes](../../box/bridge-tests/helper-handover.test.js#L296) | Open | 7.1 and 7.2 Helper supervision |
-| [a helper that renews itself is never handed over by the box](../../box/bridge-tests/helper-handover.test.js#L322) | Open | 7.1 and 7.2 Helper supervision |
-| [helper install: the launch agent starts Kuvo Helper at login, with this box's folder, under Kuvo Code in Login Items](../../box/bridge-tests/own-box-helper.test.js#L51) | Open | 7.1 and 7.2 Helper supervision |
-| [helper install --load waits for launchd to let go of the one before, and starts it again once it has](../../box/bridge-tests/own-box-helper.test.js#L85) | Open | 7.1 and 7.2 Helper supervision |
-| [helper install: a path with characters XML reserves is written as launchd reads it](../../box/bridge-tests/own-box-helper.test.js#L103) | Open | 7.1 and 7.2 Helper supervision |
-| [helper start: the whole start through the helper, its launch agent put in place, loaded and started as each needs, one running left as it is](../../box/bridge-tests/own-box-helper.test.js#L115) | Open | 7.1 and 7.2 Helper supervision |
-| [helper install refuses what isn't a Mac's own box in a home of its own, and writes nothing](../../box/bridge-tests/own-box-helper.test.js#L183) | Open | 7.1 and 7.2 Helper supervision |
-| [helper says what it doesn't know](../../box/bridge-tests/own-box-helper.test.js#L202) | Open | 7.1 and 7.2 Helper supervision |
+| [an old helper still running after an update is handed over once, at once, whatever is at work: the new build runs, and is left as it is](../../box/bridge-tests/helper-handover.test.js#L182) | Covered | 7.2 U14 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [not while an update is under way: the old helper is handed over once it's done](../../box/bridge-tests/helper-handover.test.js#L215) | Covered | 7.2 U14 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [one launchd refuses to start is opened instead, so this Mac is never left without its helper](../../box/bridge-tests/helper-handover.test.js#L240) | Covered | 7.2 U14 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [a helper still old after its one try is noted, never tried again](../../box/bridge-tests/helper-handover.test.js#L255) | Covered | 7.2 U14 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [Kuvo stopped on this Mac: its helper is never handed over, nor started, before or as it goes](../../box/bridge-tests/helper-handover.test.js#L296) | Covered | 7.2 U14 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [a helper that renews itself is never handed over by the box](../../box/bridge-tests/helper-handover.test.js#L322) | Covered | 7.2 U14 and U16 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [helper install: the launch agent starts Kuvo Helper at login, with this box's folder, under Kuvo Code in Login Items](../../box/bridge-tests/own-box-helper.test.js#L51) | Covered | 7.2 U15 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [helper install --load waits for launchd to let go of the one before, and starts it again once it has](../../box/bridge-tests/own-box-helper.test.js#L85) | Covered | 7.2 U15 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [helper install: a path with characters XML reserves is written as launchd reads it](../../box/bridge-tests/own-box-helper.test.js#L103) | Covered | 7.2 U15 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [helper start: the whole start through the helper, its launch agent put in place, loaded and started as each needs, one running left as it is](../../box/bridge-tests/own-box-helper.test.js#L115) | Partial | 7.2 U11 and U15 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62). Signed launchd rehearsal is in 9.3. |
+| [helper install refuses what isn't a Mac's own box in a home of its own, and writes nothing](../../box/bridge-tests/own-box-helper.test.js#L183) | Covered | 7.2 U15 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
+| [helper says what it doesn't know](../../box/bridge-tests/own-box-helper.test.js#L202) | Covered | 7.2 U15 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
 | [a Mac's box in a home of its own says where its server answers, as its helper starts it, and takes it away as it goes](../../box/bridge-tests/own-box-helper.test.js#L211) | Partial | 6.2 |
 | [kuvo/box/permissions: what macOS allows Kuvo Helper, as the helper running this box noted it](../../box/bridge-tests/own-box-helper.test.js#L270) | Open | 6.1 settings |
 | [kuvo/box/permissions: a permission switched on in System Settings is said as a client asks, the helper asked to look again first](../../box/bridge-tests/own-box-helper.test.js#L340) | Open | 6.1 settings |
 | [kuvo/box/permissions: a machine's box runs under no such program, and says so](../../box/bridge-tests/own-box-helper.test.js#L387) | Open | 6.1 settings |
 | [Kuvo's desktop app says where it is as it opens: kept for Open Kuvo, never taken for the app the browser opens](../../box/bridge-tests/own-box-helper.test.js#L398) | Open | 7.1 and 7.2 Helper supervision |
-| [kuvo/box/at-work and kuvo/box/stop: what Kuvo Helper draws in the menu bar, and Stop Kuvo on this Mac, which the box's keeper does](../../box/bridge-tests/own-box-helper.test.js#L416) | Open | 7.1 and 7.2 Helper supervision |
+| [kuvo/box/at-work and kuvo/box/stop: what Kuvo Helper draws in the menu bar, and Stop Kuvo on this Mac, which the box's keeper does](../../box/bridge-tests/own-box-helper.test.js#L416) | Partial | 7.2 U14 covers the stop markers. The Helper routes belong to 7.1 and 7.2. |
 | [kuvo/box/stop: a machine's box isn't stopped so (nothing would start it again at login)](../../box/bridge-tests/own-box-helper.test.js#L437) | Open | 7.1 and 7.2 Helper supervision |
-| [helper start after Stop Kuvo on this Mac waits for the stopped helper to go before starting it again](../../box/bridge-tests/own-box-helper.test.js#L447) | Open | 7.1 and 7.2 Helper supervision |
+| [helper start after Stop Kuvo on this Mac waits for the stopped helper to go before starting it again](../../box/bridge-tests/own-box-helper.test.js#L447) | Covered | 7.2 U15 in [Rust updates coverage](rust-updates-coverage.md#mac-helper-supervision-from-62) |
 | [a Darwin machine under Kuvo Helper reports Files from the Helper's note](../../box/bridge-tests/own-box-helper.test.js#L470) | Open | 7.1 and 7.2 Helper supervision |
 | [it's one of this computer's sections, and before there's a vault it says where its first item is added](../../box/test/settings-vault.test.ts#L77) | Open | 6.1 settings |
 | [the items are listed by name with what each is and how it's used, and never a value](../../box/test/settings-vault.test.ts#L92) | Open | 6.1 settings |
@@ -118,9 +118,9 @@ this row. Installed Helper cases still need the released supervision path.
 | [a socket the agent can't open is an error on it, never a crash of the box](../../box/test/ssh-agent.test.ts#L212) | Partial | 6.2 bind errors handled; specific refusal case open |
 | [a conversation the launcher notes gets its agent at once, though the folder's watch says nothing](../../box/test/ssh-agents-kept.test.ts#L38) | Partial | 6.2 filesystem registration covered; dropped-notification fallback open |
 | [a group chat's seat steered to another site pauses its bot, and the notice opens the chat](../../box/test/vault-tripwire-seat.test.ts#L12) | Partial | 6.2 |
-| [A loaded Mac Helper that has ended is started again](../../box/test/helper-running.test.ts#L35) | Open | 7.1 and 7.2 Helper supervision |
-| [An already running Mac Helper is left running](../../box/test/helper-running.test.ts#L40) | Open | 7.1 and 7.2 Helper supervision |
-| [A Helper launch job that was never loaded is installed](../../box/test/helper-running.test.ts#L45) | Open | 7.1 and 7.2 Helper supervision |
+| [A loaded Mac Helper that has ended is started again](../../box/test/helper-running.test.ts#L35) | Partial | 7.2 U15 checks kickstart. Actual launchd rehearsal is in 9.3. |
+| [An already running Mac Helper is left running](../../box/test/helper-running.test.ts#L40) | Partial | 7.2 U15 checks the existing job. Actual launchd rehearsal is in 9.3. |
+| [A Helper launch job that was never loaded is installed](../../box/test/helper-running.test.ts#L45) | Partial | 7.2 U11 checks load and restart. Actual launchd rehearsal is in 9.3. |
 | [vault-phones.test.js](../../box/bridge-tests/vault-phones.test.js) | dropped: phone app (retired) | — |
 | [vault-waits.js](../../box/bridge-tests/vault-waits.js) | Open | 6.4 browser waiting helper |
 | [make-vault-fixture.ts](../../box/test/make-vault-fixture.ts) | Open | 6.1 settings fixture |

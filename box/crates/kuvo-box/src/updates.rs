@@ -1,11 +1,14 @@
 //! Connect the keeper's update preparation to live setup and peer facts.
 
+mod mail;
+
 use std::{io, path::Path, sync::Arc, time::Duration};
 
 use kuvo_keeper::{
     fleet::{self, Candidate, Fetcher},
     manifest::{UPDATE_KEY, local_target},
     prepare_command::is_scratch,
+    update_status,
 };
 use kuvo_peers::{
     directory::{PreparedRelease, UpdateFacts},
@@ -35,6 +38,10 @@ pub fn start(
         }
         _ => return None,
     };
+    let mail = peers
+        .relay_handle()
+        .map(|relay| mail::Mail::new(relay, peers.reader(), key.clone()));
+    let pack_server = mail.as_ref().and_then(|mail| mail.serve(home.clone()));
     let mut fleet = Fleet {
         home,
         peers,
@@ -47,6 +54,8 @@ pub fn start(
         last_sent: None,
         attempted: None,
         pending: None,
+        mail,
+        pack_server,
     };
     Some(tokio::spawn(async move {
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
@@ -72,12 +81,17 @@ struct Fleet {
     last_sent: Option<UpdateFacts>,
     attempted: Option<PreparedRelease>,
     pending: Option<JoinHandle<io::Result<()>>>,
+    mail: Option<mail::Mail>,
+    pack_server: Option<JoinHandle<()>>,
 }
 
 impl Drop for Fleet {
     fn drop(&mut self) {
         if let Some(pending) = &self.pending {
             pending.abort();
+        }
+        if let Some(server) = &self.pack_server {
+            server.abort();
         }
     }
 }
@@ -120,10 +134,16 @@ impl Fleet {
             {
                 self.next_check = Instant::now() + CHECK_EVERY;
                 match self.fetcher.candidate(&self.url, &self.key).await {
-                    Ok(fetched) if self.test_feed || fetched.old_enough_for_automatic_check() => {
-                        self.consider(&mut candidate, fetched.envelope().to_owned(), &version)?
+                    Ok(fetched) => {
+                        if let Err(error) =
+                            update_status::note_check(&self.home, fetched.version(), now)
+                        {
+                            eprintln!("Recording the release check: {error}");
+                        }
+                        if self.test_feed || fetched.old_enough_for_automatic_check() {
+                            self.consider(&mut candidate, fetched.envelope().to_owned(), &version)?;
+                        }
                     }
-                    Ok(_) => {}
                     Err(error) => eprintln!("Checking Kuvo's release: {error}"),
                 }
             }
@@ -184,7 +204,19 @@ impl Fleet {
                 let candidate = candidate.clone();
                 let home = self.home.clone();
                 let fetcher = self.fetcher.clone();
-                self.pending = Some(tokio::spawn(candidate.prepare(home, fetcher)));
+                let mail = self.mail.clone();
+                self.pending = Some(tokio::spawn(async move {
+                    let pack = match candidate.download(&fetcher).await {
+                        Ok(pack) => pack,
+                        Err(error) => {
+                            let Some(mail) = mail else {
+                                return Err(error);
+                            };
+                            mail.pull(&candidate.local()?).await.map_err(|_| error)?
+                        }
+                    };
+                    candidate.prepare(home, pack).await
+                }));
             }
         }
         let prepared = facts.staged.is_some();

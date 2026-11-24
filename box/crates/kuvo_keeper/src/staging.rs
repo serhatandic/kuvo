@@ -65,6 +65,7 @@ pub fn prepare(
     signed: &SignedRelease,
     target: &str,
     bytes: &[u8],
+    envelope: &[u8],
 ) -> io::Result<ReleaseRef> {
     let pack = signed.pack_for(target)?;
     if bytes.len() as u64 > MAX_PACK || sha256(bytes) != pack.sha256 {
@@ -135,6 +136,9 @@ pub fn prepare(
     files::write_secret(&bin.join(".installed.json"), &receipt)?;
     engine.publish(home)?;
     publish(home, draft.path(), &release, &receipt, &actual)?;
+    let folder = release.folder(home.root());
+    files::write_secret(&folder.join("pack"), bytes)?;
+    files::write_secret(&folder.join("boxes.json"), envelope)?;
     files::write_secret(
         &home.run().join("fleet-ready.json"),
         &serde_json::to_vec(&reference)?,

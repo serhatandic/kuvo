@@ -28,6 +28,24 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if word(0) == Some("install-media") {
         return Ok(install_media::run(&args[1..]));
     }
+    #[cfg(target_os = "macos")]
+    if (word(0), args.len()) == (Some("helper-hand-over"), 1) {
+        let home = Home::new(PathBuf::from(
+            env::var_os("KUVO_HOME").ok_or("Expected KUVO_HOME")?,
+        ))?;
+        kuvo_keeper::mac_helper::run_handover(&home)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    #[cfg(target_os = "macos")]
+    if word(0) == Some("helper") {
+        let home = Home::new(PathBuf::from(
+            env::var_os("KUVO_HOME").ok_or("Expected KUVO_HOME")?,
+        ))?;
+        return Ok(ExitCode::from(kuvo_keeper::mac_helper::command(
+            &home,
+            &args[1..],
+        )?));
+    }
     if word(0) == Some("update") {
         return Ok(kuvo_keeper::prepare_command::run(&args[1..])?);
     }

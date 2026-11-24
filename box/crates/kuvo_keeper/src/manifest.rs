@@ -82,6 +82,10 @@ pub struct ReleaseRef {
 }
 
 impl ReleaseRef {
+    pub fn matches_bytes(&self, bytes: &[u8]) -> bool {
+        self.sha256 == sha256(bytes)
+    }
+
     pub fn target(&self) -> io::Result<Release> {
         if !is_sha256(&self.sha256) {
             return Err(invalid());

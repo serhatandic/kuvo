@@ -1,6 +1,11 @@
 //! Preparation and activation of a signed fleet release.
 
-use std::{fs, io, path::Path, time::Duration};
+use std::{
+    fs::{self, File},
+    io::{self, Read, Seek, SeekFrom},
+    path::Path,
+    time::Duration,
+};
 
 use kuvo_store::{files, home::Home};
 use serde::{Deserialize, Serialize};
@@ -102,18 +107,26 @@ impl Candidate {
         }
     }
 
-    pub async fn prepare(self, home: Home, fetcher: Fetcher) -> io::Result<()> {
-        let target = local_target()?;
-        let pack = self.signed.pack_for(target)?;
-        let bytes = download(
+    pub async fn download(&self, fetcher: &Fetcher) -> io::Result<Vec<u8>> {
+        let pack = self.signed.pack_for(local_target()?)?;
+        download(
             &fetcher.0,
             &pack.url,
             staging::MAX_PACK,
             Duration::from_secs(300),
         )
-        .await?;
+        .await
+    }
+
+    pub async fn prepare(self, home: Home, bytes: Vec<u8>) -> io::Result<()> {
         tokio::task::spawn_blocking(move || {
-            staging::prepare(&home, &self.signed, target, &bytes)?;
+            staging::prepare(
+                &home,
+                &self.signed,
+                local_target()?,
+                &bytes,
+                self.envelope.as_bytes(),
+            )?;
             Ok(())
         })
         .await
@@ -176,6 +189,87 @@ impl Candidate {
         } else {
             shell_switch(home, release).await
         }
+    }
+}
+
+pub const PACK_PART: usize = 30_000;
+
+pub struct HeldPack {
+    pub candidate: Candidate,
+    pub reference: ReleaseRef,
+    pub size: usize,
+    file: File,
+}
+
+impl HeldPack {
+    pub fn find(
+        home: &Home,
+        key: &str,
+        version: &str,
+        hash: Option<&str>,
+    ) -> io::Result<Option<Self>> {
+        let exact = match hash {
+            Some(hash) => ReleaseRef {
+                version: version.into(),
+                sha256: hash.into(),
+            }
+            .target()
+            .ok(),
+            None => None,
+        };
+        let (_, running) = installed(home)?;
+        let kept =
+            Candidate::kept(home, key)?.and_then(|candidate| candidate.local().ok()?.target().ok());
+        for target in [exact, running, kept]
+            .into_iter()
+            .flatten()
+            .filter(|target| target.version() == version)
+        {
+            let folder = target.folder(home.root());
+            let Some(text) = files::text_of(&folder.join("boxes.json")) else {
+                continue;
+            };
+            let Ok(candidate) = Candidate::verify(text, key) else {
+                continue;
+            };
+            let reference = candidate.local()?;
+            if reference.target()? != target || hash.is_some_and(|hash| hash != reference.sha256) {
+                continue;
+            }
+            let pack = folder.join("pack");
+            let Ok(path) = pack.canonicalize() else {
+                continue;
+            };
+            if path != target.folder(&home.root().canonicalize()?).join("pack")
+                || !fs::symlink_metadata(&pack)?.is_file()
+            {
+                continue;
+            }
+            let file = File::open(pack)?;
+            let size = file.metadata()?.len();
+            if size > 0 && size <= staging::MAX_PACK {
+                return Ok(Some(Self {
+                    candidate,
+                    reference,
+                    file,
+                    size: size as usize,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn part(&mut self, index: usize) -> io::Result<Option<Vec<u8>>> {
+        let Some(start) = index
+            .checked_mul(PACK_PART)
+            .filter(|start| *start < self.size)
+        else {
+            return Ok(None);
+        };
+        let mut bytes = vec![0; (self.size - start).min(PACK_PART)];
+        self.file.seek(SeekFrom::Start(start as u64))?;
+        self.file.read_exact(&mut bytes)?;
+        Ok(Some(bytes))
     }
 }
 

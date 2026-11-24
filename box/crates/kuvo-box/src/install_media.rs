@@ -78,7 +78,7 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
             "{}",
             json!({"result":"nothing", "verdict":before.verdict, "status":before.status,
                 "started":launched.is_some(),
-                "message":launched.unwrap_or("It's made, and starts by itself only in ~/.kuvo-code.")})
+                "message":launched.map_or("It's made, and starts by itself only in ~/.kuvo-code.", |started| started.message())})
         );
         return Ok(0);
     }
@@ -131,7 +131,7 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         match agent.start(&home, &app_id) {
             Ok(message) => {
                 value["started"] = true.into();
-                value["message"] = message.into();
+                value["message"] = message.message().into();
             }
             Err(error) => eprintln!("helper start: {error}"),
         }
