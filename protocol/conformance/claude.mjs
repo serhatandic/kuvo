@@ -93,9 +93,9 @@ export async function stopPids(pids) {
   while (pids.some(alive) && Date.now() < deadline) await new Promise(done => setTimeout(done, 50));
 }
 
-export function seedSession(home, id, { directory = home, model = "opus" } = {}) {
+export function seedSession(home, id, { directory = home, model = "opus", permissions } = {}) {
   write(path.join(home, "agents/sessions", id, "session.json"), JSON.stringify({
-    id, title: "Claude fixture", projectID: "fixture", agent: "build",
+    id, title: "Claude fixture", projectID: "fixture", agent: "build", ...(permissions && { permissions }),
     location: { directory }, model: { providerID: provider, id: model },
     time: { created: 1, updated: 1 }, cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },

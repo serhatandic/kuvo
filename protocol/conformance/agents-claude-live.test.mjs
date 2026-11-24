@@ -42,7 +42,9 @@ test("a real Claude Code turn on Haiku waits on an approval across a Rust releas
     const system = process.platform === "win32" ? path.join(base.SystemRoot, "System32") : "/usr/bin:/bin";
     const env = { ...base, KUVO_TEST_PATH_ONLY: "1", KUVO_SANDBOX: "off", PATH: [bin, system].join(path.delimiter) };
     write(path.join(home, "folder-version.json"), '{"version":23}\n');
-    seedSession(home, session, { directory: project, model: "haiku" });
+    // Ask First, as the clients set it: a command is a card before it runs.
+    const askFirst = ["edit", "write", "patch", "shell"].map(action => ({ action, resource: "*", effect: "ask" }));
+    seedSession(home, session, { directory: project, model: "haiku", permissions: askFirst });
     const { old, next, control } = twoReleases(binary, home, env, relay);
     try {
       await control(["select", old]);
