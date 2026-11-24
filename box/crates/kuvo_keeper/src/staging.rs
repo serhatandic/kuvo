@@ -67,7 +67,14 @@ pub fn check_install_media(source: &Path, key: &str) -> io::Result<()> {
         if !signed.launches_rust() {
             return Ok(false);
         }
-        let pack = signed.pack_for(crate::manifest::local_target()?)?;
+        let target = crate::manifest::local_target()?;
+        if let Some(engine) = signed.engine_build(target)
+            && !reqwest::Url::parse(&engine.url)
+                .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        {
+            return Ok(false);
+        }
+        let pack = signed.pack_for(target)?;
         let archive = File::open(source.join(pack.filename()?))?;
         let metadata = archive.metadata()?;
         if !metadata.is_file() || metadata.len() > MAX_PACK {
