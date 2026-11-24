@@ -935,7 +935,7 @@ fn has_work(files: &Files, link: &Link, staged: bool) -> Result<bool, Error> {
         if name.starts_with("opencode")
             && name.ends_with(".db")
             && (!staged
-                || !super::released::staged_database_is_empty(
+                || !super::released::staged_database_has_no_sessions(
                     &files.path("data/opencode").join(name),
                 ))
         {

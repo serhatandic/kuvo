@@ -465,7 +465,7 @@ function addRelease(installed, implementation) {
   return release;
 }
 
-function stageEngine(t, home, { holdReady = false, holdImport = false, verifiedProcess = false } = {}) {
+function stageEngine(t, home, { holdReady = false, holdImport = false, verifiedProcess = false, legacyDatabase = false } = {}) {
   const version = readJSON(new URL("../../box/src/shared/engine-pin.json", import.meta.url)).version;
   const folder = fs.realpathSync(scratch());
   const fixture = path.join(folder, "ssh-engine.mjs");
@@ -478,6 +478,9 @@ function stageEngine(t, home, { holdReady = false, holdImport = false, verifiedP
   if (holdReady) write(gate, "");
   if (holdImport) write(importGate, "");
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+  const sessionTables = legacyDatabase ? ["session", "message", "part"] : ["session_v2", "session_message", "session_part"];
+  const schema = ["CREATE TABLE IF NOT EXISTS credential (value TEXT);",
+    ...sessionTables.map(table => `CREATE TABLE IF NOT EXISTS ${table} (id TEXT);`)].join(" ");
   write(fixture, `import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -502,7 +505,7 @@ const server = http.createServer(async (req, res) => {
     fs.mkdirSync(data, { recursive: true });
     const db = new DatabaseSync(path.join(data, "opencode.db"));
     try {
-      db.exec("CREATE TABLE IF NOT EXISTS credential (value TEXT); CREATE TABLE IF NOT EXISTS session (id TEXT); CREATE TABLE IF NOT EXISTS message (id TEXT); CREATE TABLE IF NOT EXISTS part (id TEXT)");
+      db.exec(${JSON.stringify(schema)});
       db.prepare("INSERT INTO credential (value) VALUES (?)").run(JSON.stringify(credential));
     } finally { db.close(); }
     credentials.push(credential);
@@ -632,7 +635,7 @@ for (const disconnect of ["SIGTERM", "255"]) {
     const fixture = await addBench(t);
     const { main, ask, remote, fake, headers, page } = fixture;
     const target = path.join(remote, ".kuvo-code");
-    const engine = stageEngine(t, target, { holdImport: true });
+    const engine = stageEngine(t, target, { holdImport: true, legacyDatabase: disconnect === "SIGTERM" });
     const { credentials } = await selectedSshCredentials(fixture);
     const trace = path.join(fake, "trace");
     const cut = path.join(fake, "drop-rust-seed-lab");
@@ -709,9 +712,11 @@ remote.stdin.on("error", () => {});
   });
 }
 
-for (const shouldStop of [true, false]) test(shouldStop
-  ? "stopping SSH Add waits for the credential writer and rolls back the staged engine and keys"
-  : "SSH Add rolls back the staged engine and credentials if enrollment fails", {
+for (const [failure, name] of [
+  ["stop", "stopping SSH Add waits for the credential writer and rolls back the staged engine and keys"],
+  ["enrollment", "SSH Add rolls back the staged engine and credentials if enrollment fails"],
+  ["work", "SSH Add keeps sessions written while the pinned engine is staged"],
+]) test(name, {
   skip: process.platform === "win32" || boxBinary().typescript, timeout: 65_000,
 }, async t => {
   const fixture = await addBench(t);
@@ -725,6 +730,7 @@ for (const shouldStop of [true, false]) test(shouldStop
   const id = added.json.try.id;
   const current = async () => (await page()).tries.find(attempt => attempt.id === id);
   const reservation = path.join(remote, ".kuvo-code-adding");
+  const database = path.join(target, "data", "opencode", "opencode.db");
   let pid;
   try {
     await until(() => fs.existsSync(engine.importing), "The credential writer did not reach the staged engine.", 30_000);
@@ -733,11 +739,16 @@ for (const shouldStop of [true, false]) test(shouldStop
     assert.equal(fs.readFileSync(path.join(target, "box", "keys", selectedKey), "utf8"), "selected fixture key");
     await until(async () => (await current()).steps.some(step => step.id === "seeding" && step.state === "now"),
       "The Add page did not reach the credential copy.");
-    if (shouldStop) {
+    if (failure === "stop") {
       const stopped = await ask("DELETE", `kuvo/computers/add/${id}`, undefined, headers);
       assert.equal(stopped.status, 200, stopped.text);
-    } else {
+    } else if (failure === "enrollment") {
       write(path.join(fake, "fail"), "ssh-enroll");
+    } else {
+      fs.mkdirSync(path.dirname(database), { recursive: true });
+      const db = new DatabaseSync(database);
+      try { db.exec("CREATE TABLE session_v2 (id TEXT); INSERT INTO session_v2 VALUES ('ses_retained');"); }
+      finally { db.close(); }
     }
     assert.equal(fs.lstatSync(reservation).isSymbolicLink(), true);
     assert.doesNotThrow(() => process.kill(pid, 0));
@@ -745,7 +756,7 @@ for (const shouldStop of [true, false]) test(shouldStop
     engine.finishImport();
   }
   await until(() => !fs.lstatSync(reservation, { throwIfNoEntry: false }), "Stop did not release the account after rollback.", 25_000);
-  if (shouldStop) {
+  if (failure === "stop") {
     await until(async () => (await current()) === undefined, "The stopped Add did not leave the page.");
   } else {
     const failed = await until(async () => {
@@ -758,8 +769,11 @@ for (const shouldStop of [true, false]) test(shouldStop
     assert.equal(fs.existsSync(path.join(target, relative)), false, relative);
   }
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-  const db = new DatabaseSync(path.join(target, "data", "opencode", "opencode.db"), { readOnly: true });
-  try { assert.equal(db.prepare("SELECT COUNT(*) AS count FROM credential").get().count, 0); }
+  const db = new DatabaseSync(database, { readOnly: true });
+  try {
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM credential").get().count, 0);
+    if (failure === "work") assert.equal(db.prepare("SELECT id FROM session_v2").get().id, "ses_retained");
+  }
   finally { db.close(); }
 });
 

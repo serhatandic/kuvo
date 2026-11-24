@@ -15,7 +15,7 @@ const SCAN_TIME: Duration = Duration::from_millis(1500);
 
 /// The engine makes a database before a fresh SSH applicant has joined. A
 /// read-only snapshot distinguishes its imported sign-ins from saved sessions.
-pub(in crate::installer) fn staged_database_is_empty(path: &Path) -> bool {
+pub(in crate::installer) fn staged_database_has_no_sessions(path: &Path) -> bool {
     let Some(parent) = path.parent() else {
         return false;
     };
@@ -50,12 +50,19 @@ pub(in crate::installer) fn staged_database_is_empty(path: &Path) -> bool {
         db.busy_timeout(Duration::ZERO)?;
         db.pragma_update(None, "trusted_schema", false)?;
         let tx = db.transaction()?;
-        for table in ["session", "message", "part"] {
-            if tx.query_row(
-                &format!("SELECT EXISTS (SELECT 1 FROM {table})"),
-                [],
-                |row| row.get::<_, bool>(0),
-            )? {
+        for table in ["session", "session_v2"] {
+            let present: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get(0),
+            )?;
+            if present
+                && tx.query_row(
+                    &format!("SELECT EXISTS (SELECT 1 FROM {table})"),
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )?
+            {
                 return Ok(false);
             }
         }
