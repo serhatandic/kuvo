@@ -32,8 +32,8 @@ mod work;
 pub(crate) use new_install::interrupted as unfinished_install;
 pub use new_install::{new_home, new_readiness};
 pub use publication::{
-    ClaudeKeychain, CutoverStep, GenericPassword, KeychainItems, Outcome, Run, back, resume,
-    resume_with_keychain, settle, settle_started, unfinished,
+    ClaudeKeychain, CutoverStep, GenericPassword, KeychainItems, Outcome, Run, back,
+    owns_sign_ins_home, resume, resume_with_keychain, settle, settle_started, sign_ins, unfinished,
 };
 
 const STAGE: &str = "updates/rehome/rust-stage";

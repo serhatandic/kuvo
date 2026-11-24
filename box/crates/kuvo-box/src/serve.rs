@@ -166,6 +166,10 @@ pub async fn run(
         vault_machine,
     );
     vault.register(&mut routes);
+    #[cfg(target_os = "macos")]
+    if kind == ComputerKind::Mac {
+        super::sign_ins::register(&mut routes, kuvo_store::home::Home::new(home.to_owned())?);
+    }
     let daily_backups = kuvo_setup::backup::routes::register(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,

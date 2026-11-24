@@ -380,6 +380,9 @@ test("the Mac resident keeps vault values and generations in Helper's disposable
   const mac = macBox(t, binary);
   const { home, start } = mac;
   let ask = await start();
+  assert.equal((await ask("GET", "kuvo/box/rehome")).status, 200);
+  assert.equal((await ask("POST", "kuvo/box/rehome", { signIns: true }, {})).status, 403);
+  assert.equal((await ask("POST", "kuvo/box/rehome", { signIns: true }, header)).status, 409);
   const secret = value();
   const made = await ask("POST", vault + "/items", { kind: "key", name: "Fixture credential", values: { token: secret } });
   assert.equal(made.status, 200, made.json?.message);
