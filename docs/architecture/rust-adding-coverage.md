@@ -95,6 +95,13 @@ including stopped uninstall when the sign-in task is already absent. The
 original TypeScript fake SSH host, alias, WSL 1 refusal and device-revocation
 scenarios pass as reference checks.
 TypeScript passes 40 with six skips in WSL 2.
+The later wipe handover, older Mac Add, and transient SSH checks pass on
+macOS. The `kuvo_server` SSH tests also pass, including startup forwarding,
+revocation during authentication, and refusing unauthenticated input. The later
+WSL 2 run passes 47 Rust cases with three Mac skips and 43 TypeScript cases
+with seven skips. The static lokum run repeats the wipe handover successfully.
+A new native Windows run passes the earlier
+27 cases and verifies invalid input while the target directory is absent.
 The Windows PC’s WSL 2 account joined a Rust setup,
 acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
 joined, acknowledged unlink and re-enrolled after starting its resident in a
@@ -217,7 +224,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 39 have coverage and 155 still have open or partial work. Of those, 109 list 2.3 as an owner (81 open, 28 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 39 have coverage and 155 still have open or partial work. Of those, 108 list 2.3 as an owner (81 open, 27 partial).
 
 ### computers-add
 
@@ -437,7 +444,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 39 h
 
 | Reference scenario | Rust status | Owner of remaining work |
 | --- | --- | --- |
-| [a machine its main computer's Mac removes leaves that setup with it, and leads one of its own](../../box/bridge-tests/documents.test.js#L273) | U2 and U3 prove a Rust member starts its own setup after plain unlink. Released-Mac signed roster compatibility stays with 7.3. | 2.3, 7.3 |
+| [a machine its main computer's Mac removes leaves that setup with it, and leads one of its own](../../box/bridge-tests/documents.test.js#L273) | U4 verifies that a machine acknowledges its signed unlink from a Rust Mac main and starts its own setup. The TypeScript reference passes. Receiving the earlier signed Mac roster belongs to 7.3. | 7.3 |
 | [a machine's Mac sets it up again signing with a new key: it follows that Mac's setup as its new documents say](../../box/bridge-tests/documents.test.js#L285) | Open | 2.3 |
 | [a machine no Mac set up leads a setup of its own; once a Mac sets it up, it follows the Mac's (an empty setup joins); its Mac stops naming a setup, and it follows none, keeping the epoch it had](../../box/bridge-tests/documents.test.js#L361) | Open | 2.3 |
 | [a Mac lets a machine go only by a document that names it in `left` and no longer among its boxes](../../box/bridge-tests/documents.test.js#L582) | Open | 2.3 |
