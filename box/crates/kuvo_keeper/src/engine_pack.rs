@@ -15,7 +15,7 @@ use sha2::{Digest, Sha512};
 
 use crate::{
     manifest::{EngineBuild, EngineCatalogue, SignedRelease, local_target},
-    staging::check_engine_version,
+    staging::check_engine,
 };
 
 const EXECUTABLE: &str = if cfg!(windows) {
@@ -76,10 +76,10 @@ fn provision(home: &Home, version: &str, build: Option<EngineBuild>) -> io::Resu
         .prefix(".provision-")
         .tempdir_in(&engine)?;
     let pack = EnginePack::in_home(installed.clone(), || build, scratch.path())?;
-    check_engine_version(pack.executable(), scratch.path(), version)?;
+    check_engine(pack.executable(), scratch.path())?;
     match pack.publish(&home) {
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            check_engine_version(&installed, scratch.path(), version)
+            check_engine(&installed, scratch.path())
         }
         outcome => outcome,
     }
@@ -208,7 +208,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let home = Home::new(root.path().canonicalize()?)?;
         let mut archive = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
-        let program = b"#!/bin/sh\nprintf '2.2.6\\n'\n";
+        let program = b"#!/bin/sh\nprintf 'opencode v2.2.6\\n'\n";
         let mut entry = tar::Header::new_gnu();
         entry.set_mode(0o700);
         entry.set_size(program.len() as u64);
@@ -235,12 +235,12 @@ mod tests {
         assert_eq!(fs::read(&installed)?, program);
         provision(&home, "2.2.6", None)?;
 
-        let wrong = b"#!/bin/sh\nprintf '2.2.5\\n'\n";
+        let wrong = b"#!/bin/sh\nprintf 'opencode v2.2.6\\n'\nexit 1\n";
         fs::write(&installed, wrong)?;
         fs::set_permissions(&installed, fs::Permissions::from_mode(0o700))?;
         assert_eq!(
             provision(&home, "2.2.6", None).unwrap_err().to_string(),
-            "The engine doesn't report the pinned version."
+            "The engine doesn't run on this computer."
         );
         assert_eq!(fs::read(&installed)?, wrong);
         assert_eq!(files::list_of(&home.root().join("engine")).len(), 1);

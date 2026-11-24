@@ -46,6 +46,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
 - A Rust computer can add a fresh account over SSH when it has the compatible release to copy.
+- Adding a computer over SSH accepts the engine when its verified download runs successfully.
 - An installer code can carry the sign-ins and keys you select from a Rust computer. Retry the same code if the new computer’s engine could not save them.
 - Uninstall on a stopped, standalone Rust computer can clear its desktop identity and local credentials while retaining its saved work.
 - Wiping the last standalone Rust computer stops its Unix resident and erases its installation when it has no keeper or configured backup.
