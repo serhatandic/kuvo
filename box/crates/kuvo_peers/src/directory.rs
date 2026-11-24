@@ -15,7 +15,7 @@ use kuvo_protocol::routes::types::{
 };
 use kuvo_wire::keys::{Address, Host, encode};
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde_json::{Number, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -186,6 +186,8 @@ pub struct UpdateFacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub switching: Option<PreparedRelease>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub receiving: Option<ReleaseProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cannot: Option<CannotUpdate>,
 }
 
@@ -193,6 +195,13 @@ pub struct UpdateFacts {
 pub struct PreparedRelease {
     pub version: String,
     pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ReleaseProgress {
+    #[serde(flatten)]
+    pub release: PreparedRelease,
+    pub fill: Number,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -272,6 +281,10 @@ impl ComputerFacts {
                 .extra
                 .get("switching")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            receiving: self
+                .extra
+                .get("receiving")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
             cannot: self
                 .extra
                 .get("cannot")
@@ -340,6 +353,7 @@ impl<'de> Deserialize<'de> for ComputerFacts {
                         | "layout"
                         | "installedSha256"
                         | "staged"
+                        | "receiving"
                         | "cannot"
                         | "candidate"
                         | "releaseManifest"
