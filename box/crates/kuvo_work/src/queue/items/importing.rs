@@ -39,18 +39,35 @@ impl Writer {
                 })
                 .await
                 .map_err(internal)??;
-                typed(writer.import(owner, parsed).await?)
+                typed(writer.import(owner, parsed, json!({"user":true})).await?)
             }
         });
     }
 
-    async fn import(&self, owner: String, backlog: Backlog) -> Result<Value, Refusal> {
+    pub(super) async fn agent_import(
+        &self,
+        owner: String,
+        given: Value,
+        actor: Value,
+    ) -> Result<Value, Refusal> {
+        self.admit(&owner)?;
+        let store = self.store.clone();
+        let setup = self.setup.queue_setup();
+        let parsed = tokio::task::spawn_blocking(move || {
+            let labels = labels::shown(&store, setup.as_ref()).map_err(storage_refusal)?;
+            parse::agent_items(&given, &labels).map_err(bad)
+        })
+        .await
+        .map_err(internal)??;
+        self.import(owner, parsed, actor).await
+    }
+
+    async fn import(&self, owner: String, backlog: Backlog, who: Value) -> Result<Value, Refusal> {
         let guard = self.lock().await?;
         self.admit(&owner)?;
         let now = Timestamp::now().as_millisecond();
         let used = self.numbers.used().await.map_err(storage_refusal)?;
         let writer = self.clone();
-        let who = json!({"user":true});
         let (mut book, plan, compaction) = tokio::task::spawn_blocking(move || {
             let (items, compaction) = writer.changes(now)?;
             let mut book = Book::new(items);

@@ -1,13 +1,20 @@
 //! Queue tool calls from a verified running conversation.
 
+mod definitions;
+mod mutate;
+mod read;
 mod receipt;
 
 use super::*;
 use kuvo_engine::ActiveTool;
-use kuvo_protocol::routes::post_kuvo_work_queue_tools as route;
+use kuvo_protocol::routes::{
+    get_kuvo_work_queue_tools as list, post_kuvo_work_queue_tools as route,
+};
 
 impl Writer {
     pub(super) fn register_tools(&self, registry: &mut Registry, engine: Engine) {
+        registry
+            .register::<list::Spec, _, _>(Access::Any, |_| async { typed(definitions::offered()) });
         let writer = self.clone();
         registry.register::<route::Spec, _, _>(Access::Any, move |call| {
             let engine = engine.clone();
@@ -34,13 +41,10 @@ impl Writer {
                     return typed(previous);
                 }
                 let answer = match engine.active_tool(session, name, args).await {
-                    Some(caller) if name == "queue_add" && args.get("issue").is_some() => match writer.add_issue(
-                        args.clone(), caller, operation.as_ref().map(|op| op.id.clone())
-                    ).await {
+                    Some(caller) => match writer.run_tool(name, args.clone(), caller, operation.as_ref().map(|op| op.id.clone())).await {
                         Ok(answer) => answer,
                         Err(error) => tool_refusal(error).await,
                     },
-                    Some(_) => refused("This Work Queue tool isn’t available yet."),
                     None => refused("Only a conversation's own tool call can use Work Queue tools, and this one isn't running in it."),
                 };
                 if let Some(operation) = operation {
@@ -52,12 +56,48 @@ impl Writer {
         });
     }
 
-    async fn add_issue(
+    async fn run_tool(
         &self,
+        name: &str,
         args: Value,
         caller: ActiveTool,
         operation: Option<String>,
     ) -> Result<Value, Refusal> {
+        if args.get("category").is_some() && name != "queue_import" {
+            return Err(bad(format!(
+                "Items have a status and labels now, not a category. Give status ({}) for where it stands, and labels for what kind of work it is (queue_labels lists them).",
+                STATUSES
+                    .iter()
+                    .map(|status| status.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        match name {
+            "queue_add" if args.get("issue").is_some() => {
+                self.add_issue(args, caller, operation).await
+            }
+            "queue_add" => self.add_ordinary(args, caller, operation).await,
+            "queue_list" => {
+                let owner = self.tool_owner(&caller, false)?;
+                self.list_words(args, owner).await
+            }
+            "queue_show" => {
+                self.show_words(&args["item"], self.tool_owner(&caller, false)?)
+                    .await
+            }
+            "queue_import" => {
+                let owner = self.tool_owner(&caller, true)?;
+                let result = self
+                    .agent_import(owner, args["items"].clone(), actor(&caller))
+                    .await?;
+                Ok(said(result["said"].as_str().unwrap_or_default()))
+            }
+            _ => Ok(refused("This Work Queue tool isn’t available yet.")),
+        }
+    }
+
+    fn computer_words(&self) -> (&'static str, &'static str) {
         let home = self
             .store
             .root
@@ -66,35 +106,48 @@ impl Writer {
             .expect("Work Queue under home");
         let is_mac = std::env::var_os("KUVO_BOX").is_some_and(|kind| kind == "mac")
             || fs::read_to_string(home.join("box/kind")).is_ok_and(|kind| kind.trim() == "mac");
-        let computer = if is_mac { "this Mac" } else { "this machine" };
-        let computer_title = if is_mac { "This Mac" } else { "This machine" };
-        let owner = if caller.seat {
-            let Some(group) = caller.group else {
-                return Err(bad(
-                    "A group chat's seat keeps the group's queue, and this one's group isn't known here.",
-                ));
-            };
-            let group = format!("grp_{}", group.strip_prefix("grp_").unwrap_or(&group));
-            match self
-                .peers
-                .view()
-                .owner_of(RecordScope::Group, &group, self.peers.now())
-            {
-                Some(found) if found.local => group,
-                Some(_) => {
-                    return Err(bad(
-                        "This group chat lives on another of the user's computers, and its Work Queue is kept there: a seat on this one can't change it yet. Say what to add in the chat, and the seat there adds it.",
-                    ));
-                }
-                None => {
-                    return Err(bad(format!(
-                        "{computer_title} can't tell where this group chat lives right now. Try again in a moment."
-                    )));
-                }
-            }
+        if is_mac {
+            ("this Mac", "This Mac")
         } else {
-            caller.root.clone()
-        };
+            ("this machine", "This machine")
+        }
+    }
+
+    fn tool_owner(&self, caller: &ActiveTool, needs_own: bool) -> Result<String, Refusal> {
+        if !caller.seat {
+            return Ok(caller.root.clone());
+        }
+        let group = caller.group.as_deref().ok_or_else(|| bad(
+            "A group chat's seat keeps the group's queue, and this one's group isn't known here.",
+        ))?;
+        let group = format!("grp_{}", group.strip_prefix("grp_").unwrap_or(group));
+        if !needs_own {
+            return Ok(group);
+        }
+        match self
+            .peers
+            .view()
+            .owner_of(RecordScope::Group, &group, self.peers.now())
+        {
+            Some(found) if found.local => Ok(group),
+            Some(_) => Err(bad(
+                "This group chat lives on another of the user's computers, and its Work Queue is kept there: a seat on this one can't change it yet. Say what to add in the chat, and the seat there adds it.",
+            )),
+            None => Err(bad(format!(
+                "{} can't tell where this group chat lives right now. Try again in a moment.",
+                self.computer_words().1
+            ))),
+        }
+    }
+
+    async fn add_issue(
+        &self,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+    ) -> Result<Value, Refusal> {
+        let (computer, _) = self.computer_words();
+        let owner = self.tool_owner(&caller, true)?;
         self.admit(&owner)?;
         let issue = args["issue"].as_str().and_then(|ref_item| self.refs.issue(ref_item))
             .ok_or_else(|| bad("Give the issue or pull request (issue) as gh:owner/repo#12, or its address on github.com."))?;
@@ -145,8 +198,7 @@ impl Writer {
             let mut random = [0; 15];
             getrandom::fill(&mut random).map_err(internal)?;
             let id = format!("wqi_{}", kuvo_wire::keys::encode(&random));
-            let name = caller.name.as_deref().unwrap_or("An agent");
-            let who = json!({"session":caller.root,"name":name});
+            let who = actor(&caller);
             let stamp = json!({"at":now,"by":who});
             let title = seen["title"].as_str().expect("GitHub issue title");
             let source = json!({"kind":seen["kind"],"ref":reference,"url":seen["url"],"host":"github.com","id":seen["id"]});
@@ -170,14 +222,9 @@ impl Writer {
                 row["sessions"] = json!([{"session":caller.root, "at":now, "by":who}]);
                 append_event(&mut row, json!({"at":now,"by":who,"kind":"started"}));
             }
-            let seen_words = match seen["state"].as_str().unwrap_or_default() {
-                "draft" => "a draft",
-                "completed" => "closed",
-                "not_planned" => "closed as not planned",
-                "closed" => "closed without merging",
-                other => other,
-            };
-            let where_ = STATUSES.iter().find(|each| each.id == status).map_or(status, |each| each.name);
+            let seen_words = seen_words(seen["state"].as_str().unwrap_or_default());
+            mutate::fields(&mut row, &args, now, &who)?;
+            let where_ = status_name(status);
             let working_words = if working { ", linked to you" } else { "" };
             let merged = if seen["kind"] == "github-pr" { " or merged" } else { "" };
             let ignored = match (args.get("title").is_some(), args.get("body").is_some()) {
@@ -277,20 +324,47 @@ impl Writer {
     }
 }
 
+fn actor(caller: &ActiveTool) -> Value {
+    json!({"session":caller.root,"name":caller.name.as_deref().unwrap_or("An agent")})
+}
+
+fn status_name(status: &str) -> &str {
+    STATUSES
+        .iter()
+        .find(|known| known.id == status)
+        .map_or(status, |known| known.name)
+}
+
+fn seen_words(state: &str) -> &str {
+    match state {
+        "draft" => "a draft",
+        "completed" => "closed",
+        "not_planned" => "closed as not planned",
+        "closed" => "closed without merging",
+        other => other,
+    }
+}
+
 async fn tool_refusal(error: Refusal) -> Value {
+    refused(refusal_message(error.reply()).await)
+}
+
+async fn refusal_message(reply: kuvo_server::Reply) -> String {
     use http_body_util::BodyExt;
-    let reply = error.reply();
-    let message = reply
+    reply
         .body
         .collect()
         .await
         .ok()
         .and_then(|body| serde_json::from_slice::<Value>(&body.to_bytes()).ok())
         .and_then(|body| body["message"].as_str().map(str::to_owned))
-        .unwrap_or_else(|| "The Work Queue couldn't do that.".into());
-    refused(message)
+        .unwrap_or_else(|| "The Work Queue couldn't do that.".into())
 }
 
 fn refused(text: impl Into<String>) -> Value {
     json!({"text":text.into(),"isError":true})
+}
+
+fn said(text: impl Into<String>) -> Value {
+    json!({"text":text.into(),"isError":false})
 }

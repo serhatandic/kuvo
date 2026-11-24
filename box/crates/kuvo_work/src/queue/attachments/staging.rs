@@ -105,11 +105,62 @@ impl ClientFiles {
                 digest: kuvo_wire::keys::encode(&Sha256::digest(&bytes)),
                 path,
                 id: None,
+                client: true,
             });
         }
         Ok(Staged {
             _folder: Some(folder),
             entries: staged,
+        })
+    }
+
+    pub fn stage_agent(
+        &self,
+        store: &Store,
+        given: Option<&Value>,
+        directory: Option<&Path>,
+    ) -> Result<Staged, Refusal> {
+        let Some(given) = given else {
+            return Ok(Staged::default());
+        };
+        let names = given
+            .as_array()
+            .map_or(std::slice::from_ref(given), Vec::as_slice)
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            return Ok(Staged::default());
+        }
+        if names.len() > MOST_FILES {
+            return Err(refused("An item keeps 50 files at most."));
+        }
+        let places = AgentPlaces::read(store, directory);
+        let root = store.root.join("staging");
+        files::create_private_dirs(&root).map_err(internal)?;
+        let folder = tempfile::Builder::new()
+            .prefix("attach-")
+            .tempdir_in(&root)
+            .map_err(internal)?;
+        let mut entries = Vec::with_capacity(names.len());
+        for (index, given) in names.into_iter().enumerate() {
+            let (name, bytes) = places.read_file(given)?;
+            let path = folder.path().join(index.to_string());
+            files::write_new(&path, &bytes).map_err(internal)?;
+            entries.push(Entry {
+                digest: kuvo_wire::keys::encode(&Sha256::digest(&bytes)),
+                size: bytes.len(),
+                name,
+                path,
+                id: None,
+                client: false,
+            });
+        }
+        Ok(Staged {
+            _folder: Some(folder),
+            entries,
         })
     }
 
@@ -197,13 +248,16 @@ impl ClientFiles {
                     "There are too many files with that name. Rename the attachment and try again.",
                 )
             })?;
-            let mut random = [0; 12];
-            getrandom::fill(&mut random).map_err(internal)?;
-            let anchor = random
-                .into_iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>();
-            let mut file = json!({"name":name,"size":entry.size,"sha256":entry.digest,"type":media_type(&name),"at":now,"anchor":anchor});
+            let mut file = json!({"name":name,"size":entry.size,"sha256":entry.digest,"type":media_type(&name),"at":now});
+            if entry.client {
+                let mut random = [0; 12];
+                getrandom::fill(&mut random).map_err(internal)?;
+                let anchor = random
+                    .into_iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                file["anchor"] = anchor.into();
+            }
             if let Some(id) = &entry.id {
                 file["id"] = id.clone().into();
             }
@@ -320,6 +374,183 @@ impl ClientFiles {
     }
 }
 
+struct AgentPlaces {
+    own: Option<PathBuf>,
+    roots: Vec<PathBuf>,
+    private: Vec<PathBuf>,
+    library: Vec<PathBuf>,
+    mac_app_temp: Option<Regex>,
+}
+
+impl AgentPlaces {
+    fn read(store: &Store, directory: Option<&Path>) -> Self {
+        let home = store
+            .root
+            .parent()
+            .and_then(Path::parent)
+            .expect("Work Queue under home");
+        let own = directory.and_then(|folder| folder.canonicalize().ok());
+        let projects: Value = fs::read(home.join("box/projects.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let others = store::array(projects.get("projects"))
+            .iter()
+            .find(|project| {
+                directory.is_some_and(|directory| {
+                    project["directory"].as_str().map(Path::new) == Some(directory)
+                })
+            })
+            .map(|project| store::array(project.get("folders")))
+            .unwrap_or_default();
+        let roots = own
+            .iter()
+            .cloned()
+            .chain(
+                others
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(PathBuf::from)
+                    .chain([std::env::temp_dir(), PathBuf::from("/tmp")])
+                    .filter_map(|root| root.canonicalize().ok()),
+            )
+            .collect();
+        let app = std::env::var_os("KUVO_BOX").is_some_and(|kind| kind == "mac");
+        let bots = std::env::var_os("KUVO_BOTS").map_or_else(|| home.join("bots"), PathBuf::from);
+        let private = [
+            Some(home.to_owned()),
+            Some(bots),
+            home.parent().filter(|_| app).map(Path::to_owned),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|root| root.canonicalize().ok())
+        .collect();
+        let on_mac = cfg!(target_os = "macos") && !app;
+        let library = if on_mac {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .into_iter()
+                .chain(
+                    kuvo_os::platform::Account::current()
+                        .ok()
+                        .map(|account| account.home),
+                )
+                .map(|home| home.canonicalize().unwrap_or(home).join("Library"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mac_app_temp = on_mac.then(|| {
+            Regex::new(r"(?i)^/private/var/folders/[^/]+/[^/]+/[^/]+/run\.kuvo\.code[^/]*(/|$)")
+                .expect("Mac app temporary folders")
+        });
+        Self {
+            own,
+            roots,
+            private,
+            library,
+            mac_app_temp,
+        }
+    }
+
+    fn read_file(&self, given: &str) -> Result<(String, Vec<u8>), Refusal> {
+        let path = Path::new(given);
+        if !path.is_absolute() {
+            return Err(refused(&format!("Give {given} as a full path.")));
+        }
+        let file = path
+            .canonicalize()
+            .map_err(|_| refused(&format!("There's no file at {given}.")))?;
+        let denied = || {
+            refused(&format!(
+                "{given} isn't in this conversation's folder, its project or a temporary folder: only files from there are kept with an item."
+            ))
+        };
+        let root = self
+            .roots
+            .iter()
+            .find(|root| file.starts_with(root))
+            .ok_or_else(denied)?;
+        let own_private = Some(root) == self.own.as_ref()
+            && self.private.iter().any(|base| root.starts_with(base));
+        let mac_private = self
+            .mac_app_temp
+            .as_ref()
+            .is_some_and(|pattern| pattern.is_match(&file.to_string_lossy()))
+            || self.library.iter().any(|library| {
+                file.strip_prefix(library)
+                    .ok()
+                    .and_then(|path| path.components().nth(1))
+                    .is_some_and(|component| {
+                        component
+                            .as_os_str()
+                            .to_string_lossy()
+                            .to_ascii_lowercase()
+                            .starts_with("run.kuvo.code")
+                    })
+            });
+        if !own_private && (mac_private || self.private.iter().any(|base| file.starts_with(base))) {
+            return Err(denied());
+        }
+        if file
+            .strip_prefix(root)
+            .expect("attachment under root")
+            .components()
+            .any(|part| {
+                part.as_os_str()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with('.'))
+            })
+        {
+            return Err(refused(&format!(
+                "{given} is hidden (a name starting with a dot): it isn't kept with an item."
+            )));
+        }
+        let unreadable = |_| refused(&format!("{given} can't be read."));
+        let meta = fs::symlink_metadata(&file).map_err(unreadable)?;
+        if !meta.is_file() || is_link(&meta) {
+            return Err(refused(&format!("{given} isn't a file.")));
+        }
+        if meta.len() > MOST_FILE {
+            return Err(refused(&format!(
+                "{given} is over 25 MB: too big to keep with an item."
+            )));
+        }
+        let changed = || refused(&format!("{given} changed as it was read: try again."));
+        let stamp = files::file_stamp(&file)
+            .map_err(unreadable)?
+            .ok_or_else(changed)?;
+        let opened = files::open_payload(&file).map_err(|error| {
+            if error.kind() == io::ErrorKind::InvalidData {
+                refused(&format!(
+                    "{given} has other names (a hard link): it isn't kept with an item."
+                ))
+            } else {
+                unreadable(error)
+            }
+        })?;
+        if files::opened_file_stamp(&opened).map_err(unreadable)? != stamp
+            || path.canonicalize().ok().as_ref() != Some(&file)
+        {
+            return Err(changed());
+        }
+        let mut bytes = Vec::with_capacity(stamp.size.min(MOST_FILE) as usize);
+        opened
+            .take(stamp.size.min(MOST_FILE))
+            .read_to_end(&mut bytes)
+            .map_err(unreadable)?;
+        if path.canonicalize().ok().as_ref() != Some(&file) {
+            return Err(changed());
+        }
+        let name = file
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or("file".into());
+        Ok((name, bytes))
+    }
+}
+
 #[derive(Default)]
 pub(in crate::queue) struct Staged {
     _folder: Option<tempfile::TempDir>,
@@ -345,6 +576,7 @@ struct Entry {
     size: usize,
     digest: String,
     id: Option<String>,
+    client: bool,
 }
 
 #[derive(Default)]

@@ -526,39 +526,7 @@ impl Writer {
                 })).unwrap_or_else(|| "usr_you".into());
             writer.admit(&owner)?;
             let staged = writer.files.stage(&writer.store, body.get("files"), local)?;
-            let title = text(body.get("title").filter(|title| !title.is_null()).unwrap_or(&Value::String(String::new())), 800, "The title")?;
-            let title = limit(&plain_name(&title), 200);
-            if title.is_empty() {
-                return Err(bad("Say what it is (title), in a line."));
-            }
-            if all.iter().filter(|item| item.owner == owner && item.removed.is_none() && !status::closed(&item.status)).count() >= 2000 {
-                return Err(bad("Your queue has 2000 open items already: mark some done or remove them first."));
-            }
-            let status = body.get("status").map(status_of).transpose()?.unwrap_or("todo");
-            let position = place(&all, None, status, body["top"].as_bool() == Some(true));
-            let label_book = labels::shown(&writer.store, setup.as_ref()).map_err(storage_refusal)?;
-            let labels = body.get("labels").map(|given| labels_of(given, &label_book)).transpose()?.unwrap_or_default();
-            let stamp = json!({"at":now,"by":{"user":true}});
-            let mut item = json!({
-                "id":id, "owner":owner, "title":title, "body":"", "status":status, "order":position,
-                "labels":labels, "notes":[], "files":[], "links":[], "sessions":[],
-                "created":stamp, "updated":stamp, "mentionIndex":{"body":[],"notes":[],"targets":[]},
-            });
-            if status::closed(status) {
-                item["doneAt"] = now.into();
-            }
-            if let Some(assignee) = assignee {
-                item["assignee"] = assignee;
-            }
-            if let Some(value) = body.get("body") {
-                item["body"] = text(value, 100_000, "The description (body)")?.into();
-            }
-            if let Some(priority) = body.get("priority").map(priority_of).transpose()?.flatten() {
-                item["priority"] = priority.into();
-            }
-            if let Some(due) = body.get("due").map(due_of).transpose()?.flatten() {
-                item["due"] = due.into();
-            }
+            let item = writer.new_row(&id, &owner, &body, &all, &assignees, now, &json!({"user":true}))?;
             if let Some(images) = body.get("removeInlineImages") {
                 let parsed = Item::read(&owner, &item).expect("new queue item");
                 edit::pictures_to_remove(&parsed, images)?;
@@ -615,6 +583,76 @@ impl Writer {
         })
         .await
         .map_err(internal)?
+    }
+
+    fn new_row(
+        &self,
+        id: &str,
+        owner: &str,
+        body: &Value,
+        all: &[Item],
+        assignees: &Assignees,
+        now: i64,
+        who: &Value,
+    ) -> Result<Value, Refusal> {
+        let title = text(
+            body.get("title")
+                .filter(|title| !title.is_null())
+                .unwrap_or(&Value::String(String::new())),
+            800,
+            "The title",
+        )?;
+        let title = limit(&plain_name(&title), 200);
+        if title.is_empty() {
+            return Err(bad("Say what it is (title), in a line."));
+        }
+        if all
+            .iter()
+            .filter(|item| {
+                item.owner == owner && item.removed.is_none() && !status::closed(&item.status)
+            })
+            .count()
+            >= 2000
+        {
+            return Err(bad(
+                "Your queue has 2000 open items already: mark some done or remove them first.",
+            ));
+        }
+        let status = body
+            .get("status")
+            .map(status_of)
+            .transpose()?
+            .unwrap_or("todo");
+        let position = place(&all, None, status, body["top"].as_bool() == Some(true));
+        let label_book = labels::shown(&self.store, self.setup.queue_setup().as_ref())
+            .map_err(storage_refusal)?;
+        let labels = body
+            .get("labels")
+            .map(|given| labels_of(given, &label_book))
+            .transpose()?
+            .unwrap_or_default();
+        let stamp = json!({"at":now,"by":who});
+        let mut item = json!({
+            "id":id, "owner":owner, "title":title, "body":"", "status":status, "order":position,
+            "labels":labels, "notes":[], "files":[], "links":[], "sessions":[],
+            "created":stamp, "updated":stamp, "mentionIndex":{"body":[],"notes":[],"targets":[]},
+        });
+        if status::closed(status) {
+            item["doneAt"] = now.into();
+        }
+        if let Some(assignee) = assignee(body, assignees)? {
+            item["assignee"] = assignee;
+        }
+        if let Some(value) = body.get("body") {
+            item["body"] = text(value, 100_000, "The description (body)")?.into();
+        }
+        if let Some(priority) = body.get("priority").map(priority_of).transpose()?.flatten() {
+            item["priority"] = priority.into();
+        }
+        if let Some(due) = body.get("due").map(due_of).transpose()?.flatten() {
+            item["due"] = due.into();
+        }
+        Ok(item)
     }
 
     async fn change(&self, name: String, removal: Removal) -> Result<Value, Refusal> {

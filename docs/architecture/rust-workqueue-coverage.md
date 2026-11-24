@@ -23,23 +23,28 @@ verified tool call, and a second computer can read its full item. Device sign-in
 keeps the located attempt and code tied to the requesting client. The full
 client feature is still gated on the remaining routes.
 
+Verified queue tools add and number ordinary items, list and read work, and
+import structured backlogs. An agent's attachments are staged from its allowed
+folders after checking saved paths and file identity. The tool read encloses a
+GitHub description in a fence that cannot be closed by the description itself.
+
 Case numbers follow declaration order in each TypeScript file. Partial means a
 conformance scenario exercises part of the TypeScript case. Open cases are
 assigned to the indicated row for the rest of the port.
 
 | TypeScript suite | Cases | Status and owner |
 |---|---:|---|
-| [work-queue](../../box/bridge-tests/work-queue.test.js) | 1, 5, 10, 16, 23, 25, 28, 32, 48, 57 | Partial, 5.2. Creation retry, summary counts and order, local delete and restore, label writes, saved attachment download and a view change written by another process. A Markdown file imports through the client route with its statuses, bodies and numbers. A member queues an import and receives its claimed number from the main. The multiple-file, collision and refusal variants need scenarios. |
-| | 2–4, 6–9, 11–15, 17–22, 24, 26–27, 29–31, 33–47, 49–56, 58–60 | Open, 5.2. Agent operations, live session variations, edits, remaining import cases, staging, recovery and handoff. |
+| [work-queue](../../box/bridge-tests/work-queue.test.js) | 1–5, 10–11, 16, 23, 25, 28, 31–32, 48, 57 | Partial, 5.2. Creation retry, summary counts and order, local delete and restore, label writes, saved attachment download and a view change written by another process. A verified agent adds, lists and reads numbered work, including progress, history and attachments. Changed invocation arguments fail admission. Expired attachments are retired. Both client Markdown and agent structured imports preserve status and number, and a member receives its claimed numbers from the main. Subagent, one-shot, working changes, project folder, mixed import and failure variants need scenarios. |
+| | 6–9, 12–15, 17–22, 24, 26–27, 29–30, 33–47, 49–56, 58–60 | Open, 5.2. Agent operations, live session variations, edits, remaining import cases, staging, recovery and handoff. |
 | [work-queue-across](../../box/bridge-tests/work-queue-across.test.js) | 1, 4, 20, 24 | Partial, 5.2. Authenticated snapshots and acknowledgements carry remote rows and chips through the relay. The shared memory transport reads the keeper's full item and file. Edits, deletes and restores reach the keeper through another computer. Mixed peers, partition and receipt replay cases, scoped forwarding and attachments still need scenarios. |
 | | 2–3, 5–19, 21–23, 25–32 | Open, 5.2 and 2.4. Numbering and leases, further projections, forwarding, handoff and deduplication. Retain retired ranked numbering checks in TS. |
 | [work-queue-two-boxes](../../box/bridge-tests/work-queue-two-boxes.test.js) | 1 | Partial, 5.2. A member spends an ordinary block from the main after it goes away and the main's combined view shows the member's rows. Handoff remains open. |
 | | 2 | Partial, 5.2. Both computers see deletion and restoration. Either computer can initiate the changes, and the keeper preserves their history. The other computer can read the full item and its file and change its priority. Partition and mixed-peer cases remain open. |
 | [work-queue-statuses](../../box/bridge-tests/work-queue-statuses.test.js) | 1, 3, 9–10, 13–15 | Partial, 5.2. Local migration, retry, creation, search, one filter, label saves and a local move between statuses. Remaining edit, filter and view variants need scenarios. |
 | | 2, 4–8, 11–12, 16 | Open, 5.2. Settling active work after migration, writer locks and recovery, reassignment to a bot queue, action limits and agent tools. |
-| [work-queue-github](../../box/bridge-tests/work-queue-github.test.js) | 1–2, 5, 7 | Partial, 5.2. The stand-in verifies `gh` arguments, adding an issue without a number, replay, remote projection and a full remote item. Fresh reads preserve item bytes and a closed issue's stored status. A current lock holds off reads, abandoned locks are reclaimed, and a signed-out host backs off. Reopening, update, missing-command and detailed peer freshness variants remain open. |
+| [work-queue-github](../../box/bridge-tests/work-queue-github.test.js) | 1–2, 5–7 | Partial, 5.2. The stand-in verifies `gh` arguments, adding an issue without a number, replay, remote projection and a full remote item. Fresh reads preserve item bytes and a closed issue's stored status. A current lock holds off reads, abandoned locks are reclaimed, and a signed-out host backs off. Tool reads fence GitHub text. Reopening, update, missing-command and detailed peer freshness variants remain open. |
 | | 9 | Covered. A glance uses cached issue state and makes no `gh` call. |
-| | 3–4, 6, 8, 10–15 | Open, 5.2. Linking an existing item, pull request cases, agent description wording, one-shot reads, held and moved records, and competing live and deleted references. |
+| | 3–4, 8, 10–15 | Open, 5.2. Linking an existing item, pull request cases, one-shot reads, held and moved records, and competing live and deleted references. |
 | [work-queue-github-envelope](../../box/bridge-tests/work-queue-github-envelope.test.js) | 1 | Partial, 5.2. The resident returns the located reply with the code and original attempt. It rejects reuse from another client and supports status and cancellation. The bridge-to-link path needs its own scenario. |
 | [work-queue-migrate](../../box/test/work-queue-migrate.test.ts) | 1–2, 4 | Partial, 5.2. The original bytes and unknown fields survive, an interrupted migration resumes and a future owner file stops startup. Future-file refusal during an edit and the complete snapshots need scenarios. |
 | | 3, 5–7 | Open, 5.2. Read when copying fails, legacy label writes, future model and labels during edits, and peer summaries. |
@@ -51,7 +56,7 @@ assigned to the indicated row for the rest of the port.
 | | 11 | Open, 5.2. Dispatch responsiveness with a held writer lock. |
 | [queue-live](../../box/bridge-tests/queue-live.test.js), [queue-stop](../../box/test/queue-stop.test.ts), [queue-items](../../box/test/queue-items.test.ts) | 1, 1–6, 1–25 respectively | Conversation message queues. See the case-by-case [engine map](rust-engine-coverage.md) for status and rows 3.2, 4.1 and 5.1. |
 
-Of the 182 directly named cases, 4 are covered, 42 are partial, 104 are open in
+Of the 182 directly named cases, 4 are covered, 48 are partial, 98 are open in
 Work Queue and 32 are tracked in the engine map. The Work Queue conformance area also
 checks the initial migration and future-format refusal through a real resident.
 

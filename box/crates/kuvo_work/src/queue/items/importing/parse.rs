@@ -290,3 +290,90 @@ fn numbers<'a>(line: &'a str, separators: &'a str) -> impl Iterator<Item = (&'a 
         Some((digits, number))
     })
 }
+
+pub(super) fn agent_items(given: &Value, library: &[QueueLabel]) -> Result<Backlog, String> {
+    let given = given
+        .as_array()
+        .filter(|items| !items.is_empty())
+        .ok_or("Give the items (items), each with its number and title.")?;
+    if given.len() > 200 {
+        return Err("At most 200 items a call: import the rest in another.".into());
+    }
+    let label_of = |value: &Value| {
+        let target = value.as_str()?.trim().to_lowercase();
+        library
+            .iter()
+            .find(|label| label.id == target || label.name.to_lowercase() == target)
+            .map(|label| label.id.clone())
+    };
+    let show = |value: &Value| {
+        value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| value.to_string())
+    };
+    let mut items = Vec::new();
+    let mut skipped = Vec::new();
+    for each in given {
+        let title = limit(&plain_name(each["title"].as_str().unwrap_or_default()), 200);
+        let Some(number) = each["number"]
+            .as_f64()
+            .filter(|number| {
+                (1.0..1_000_000.0).contains(number) && number.fract() == 0.0 && !title.is_empty()
+            })
+            .map(|number| number as u64)
+        else {
+            skipped.push(if let Some(number) = each.get("number") {
+                format!(
+                    "#{} (it needs a whole number of six digits at most, and a title)",
+                    show(number)
+                )
+            } else {
+                "an item with no number".into()
+            });
+            continue;
+        };
+        let where_ = each
+            .get("status")
+            .filter(|value| !value.is_null())
+            .or_else(|| each.get("category"));
+        let status = where_.and_then(|given| super::status_of(given).ok());
+        let old_label = where_
+            .filter(|_| status.is_none() && each.get("status").is_none())
+            .and_then(label_of);
+        let status = if each["done"] == true {
+            "done"
+        } else if old_label.is_some() || where_.is_none() {
+            "todo"
+        } else if let Some(status) = status {
+            status
+        } else {
+            skipped.push(format!(
+                "#{number} (there's no status {})",
+                show(where_.expect("import status"))
+            ));
+            continue;
+        };
+        let label = if let Some(given) = each.get("label") {
+            let Some(label) = label_of(given) else {
+                skipped.push(format!(
+                    "#{number} (there's no label {}: queue_labels makes one)",
+                    show(given)
+                ));
+                continue;
+            };
+            Some(label)
+        } else {
+            old_label
+        };
+        let body = limit(each["body"].as_str().unwrap_or_default(), 100_000);
+        items.push(Imported {
+            number,
+            title,
+            body,
+            status,
+            label,
+        });
+    }
+    Ok(Backlog { items, skipped })
+}
