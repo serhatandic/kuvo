@@ -15,9 +15,14 @@ hex = "0.4"
 jiff = "0.2"
 kuvo_os = { path = "../kuvo_os" }
 kuvo_store = { path = "../kuvo_store" }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "0.10"
 subtle = "2"
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "rt", "signal", "sync", "time"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }

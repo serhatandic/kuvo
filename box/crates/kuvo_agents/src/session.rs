@@ -7,8 +7,9 @@ use std::{
     sync::Arc,
 };
 
-/// Stored as the vendor's additive `agent.json` object. Keys and values within
-/// this object belong to the adapter.
+/// Stored as the agent's own slot of the conversation's `agent.json`
+/// (`threads.<provider>.state`), beside the inbox and other agents' slots.
+/// Keys and values within this object belong to the adapter.
 pub type VendorState = Map<String, Value>;
 
 pub struct SessionContext {

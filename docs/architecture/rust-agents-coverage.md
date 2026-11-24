@@ -170,11 +170,65 @@ different words from the TypeScript model rule (engine start, 3.2), and
 wake-up notes on a coding agent's conversation wait for the shared note
 writer.
 
+Each agent's native state lives in its own slot of the bridge's
+`agent.json` (`threads.<provider>.state`), beside the inbox, Undo notes
+and the other agents' slots. A turn opens with its agent's slot, and a
+checkpoint rewrites only that slot. A conversation from before slots
+gives its single state to the agent that wrote its last reply, as the
+bridge does, the first time the record is saved.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.
 - Unified sign-in and account status, default-home migration, and shared session, queue and approval routing.
 - Differential and golden-home runs for the remaining routes, with platform verification.
+
+## Tools, shared RPC and sidecar progress (4.1c)
+
+`kuvo_agents::rpc` is the agent-neutral JSON-RPC connection over a held
+agent's lines: bare messages for Codex's app-server and `jsonrpc: "2.0"`
+for ACP agents. One task owns the holder's input and output, numbers
+requests from a chosen first ID, and hands the agent's own requests and
+notifications to the adapter, which answers by ID. It reads each journal
+line once unless the holder sends an unanswered request again,
+acknowledges what it took in every 200 ms and before it lets go, and
+keeps the last 8,000 characters of stderr. An answer after a timeout, or
+to an earlier resident's request, reaches the adapter as a stray. An
+exit ends open requests with the last three stderr lines or the exit
+code. A lost holder connection ends them as exit -1 (`lost`); a fenced
+one hands the agent over quietly. Six scenarios cover these rules and a
+process test runs a request, the agent's own request and its exit
+through a real holder. The holder suite's first two TypeScript cases
+(offset first IDs, a fenced connection, a successor answering) map to
+them.
+
+`kuvo_agents::runtime_packages` installs an agent's npm packages (the
+Cursor SDK for its Bun sidecar) the first time they are needed, into
+`runtime/<agent>`, with the engine's Bun, its cache in the box's own
+folder and emptied after each install, one install per agent at a time,
+and the same `package.json` and messages as the bridge. Unlike the
+bridge, it stages the install beside the folder and publishes it with a
+rename, and retires an old folder by renaming it before deleting it, so
+an interruption never leaves a folder whose versions look installed. Two
+scenarios run it with a stand-in installer. The bridge has no tests of
+its own for this.
+
+`kuvo-box mcp` is the stdio MCP forwarder an agent starts in its sandbox
+(`kuvo_agents::tool_forwarder`). It sends each message to the tools
+relay with the session's key, never through a proxy, keeps the relay's
+MCP session, and forwards a cancel only for a call still open. While the
+relay restarts it waits up to 80 seconds and sends a call again with the
+same `kuvo.operation`; a browser call is never sent twice. Three
+scenarios against a stand-in relay cover these rules, including
+[toolrelay](../../box/test/agents/toolrelay.test.ts) case 1. When the
+tool's time runs out it answers "Kuvo Code's tools didn't answer."
+where the bridge's script passed on its timer's abort message. The
+relay itself (keys, programs, the computer's MCP servers and stand-ins,
+cases 2–9) and the browser's MCP mode remain open.
+
+The agent-slot store, the JSON-RPC connection (with its real-holder
+process test), the runtime package installer and the stdio forwarder
+passed on macOS, Linux (lokum), WSL2 and native Windows.
 
 ## TypeScript scenario inventory
 

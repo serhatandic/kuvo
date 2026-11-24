@@ -12,7 +12,7 @@ async fn saved_session_headers_keep_vendor_state_and_ignore_incomplete_folders()
     .unwrap();
     std::fs::write(
         saved.join("agent.json"),
-        br#"{"thread":"native-id","generation":2}"#,
+        br#"{"threads":{"codex-cli":{"state":{"thread":"native-id","generation":2},"seen":"msg_1"}},"inbox":[{"id":"msg_2"}]}"#,
     )
     .unwrap();
     std::fs::create_dir(temp.path().join("ses_empty")).unwrap();
@@ -29,32 +29,92 @@ async fn saved_session_headers_keep_vendor_state_and_ignore_incomplete_folders()
         headers.into_iter().next().unwrap().into_fields()["vendorExtension"],
         true
     );
-    let context = store.context("ses_legacy").await.unwrap().unwrap();
+    let context = store
+        .context("ses_legacy", "codex-cli")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(context.session_id, "ses_legacy");
     assert_eq!(context.directory, std::path::Path::new("project"));
     assert_eq!(context.state["thread"], "native-id");
     assert_eq!(context.state["generation"], 2);
+    // Another agent's turn in the same conversation starts with nothing of its own.
+    let other = store.context("ses_legacy", "claude-code").await.unwrap().unwrap();
+    assert!(other.state.is_empty());
     assert!(
         store
-            .save_state("ses_legacy", Default::default())
+            .save_state("ses_legacy", "codex-cli", Default::default())
             .await
             .unwrap()
     );
     assert!(
         store
-            .context("ses_legacy")
+            .context("ses_legacy", "codex-cli")
             .await
             .unwrap()
             .unwrap()
             .state
             .is_empty()
     );
+    // The inbox and the slot's other notes stay where the bridge keeps them.
+    assert_eq!(
+        std::fs::read_to_string(saved.join("agent.json")).unwrap(),
+        r#"{"threads":{"codex-cli":{"state":{},"seen":"msg_1"}},"inbox":[{"id":"msg_2"}]}"#
+    );
     assert!(store.delete("ses_legacy").await.unwrap());
-    assert!(!store.save_state("ses_legacy", context.state).await.unwrap());
+    assert!(
+        !store
+            .save_state("ses_legacy", "codex-cli", context.state)
+            .await
+            .unwrap()
+    );
     assert!(!saved.exists());
     assert!(store.read("ses_../../ses_legacy").await.unwrap().is_none());
     assert!(store.read("ses_future").await.is_err());
     assert_eq!(std::fs::read(future.join("session.json")).unwrap(), unknown);
+}
+
+#[tokio::test]
+async fn a_single_agents_older_state_becomes_the_slot_of_the_agent_that_replied() {
+    use kuvo_agents::session_store::SessionStore;
+    use serde_json::json;
+
+    let temp = tempfile::tempdir().unwrap();
+    let folder = temp.path().join("ses_old");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(
+        folder.join("session.json"),
+        json!({"id":"ses_old","location":{"directory":"p"},"model":{"providerID":"claude-code","id":"opus"}})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("messages.json"),
+        json!([{"id":"msg_a","type":"assistant","model":{"providerID":"codex-cli","id":"gpt"},"content":[]}])
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("agent.json"),
+        br#"{"inbox":[],"codexThread":"thr_1","snapshots":{}}"#,
+    )
+    .unwrap();
+    let store = SessionStore::new(temp.path().to_path_buf());
+    // Codex replied last, so the old single state is its own.
+    let codex = store.context("ses_old", "codex-cli").await.unwrap().unwrap();
+    assert_eq!(codex.state, *json!({"codexThread":"thr_1"}).as_object().unwrap());
+    let claude = store.context("ses_old", "claude-code").await.unwrap().unwrap();
+    assert!(claude.state.is_empty());
+    let mut state = codex.state;
+    state.insert("codexThread".into(), json!("thr_2"));
+    assert!(store.save_state("ses_old", "claude-code", Default::default()).await.unwrap());
+    assert_eq!(
+        std::fs::read_to_string(folder.join("agent.json")).unwrap(),
+        r#"{"inbox":[],"snapshots":{},"threads":{"codex-cli":{"state":{"codexThread":"thr_1"}},"claude-code":{"state":{}}}}"#
+    );
+    assert!(store.save_state("ses_old", "codex-cli", state).await.unwrap());
+    let reread = store.context("ses_old", "codex-cli").await.unwrap().unwrap();
+    assert_eq!(reread.state["codexThread"], "thr_2");
 }
 
 #[tokio::test]
