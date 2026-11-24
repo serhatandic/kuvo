@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -790,6 +790,55 @@ test("a failed SSH Add leaves a previously uninstalled computer's credentials an
   for (const file of [`box/keys/${selectedKey}`, "run/.ssh-fresh-add", "run/engine.json"]) {
     assert.equal(fs.existsSync(path.join(target, file)), false, file);
   }
+});
+
+test("SSH Add recovers a selected integration after the target saved its settings", {
+  skip: process.platform === "win32" || boxBinary().typescript, timeout: 45_000,
+}, async t => {
+  const { main, ask, remote, headers, page } = await addBench(t);
+  const target = path.join(remote, ".kuvo-code");
+  const catalogKey = "KUVO_KEY_GITHUB_TOKEN";
+  const trusted = "https://api.githubcopilot.com/mcp/";
+  const catalog = { integrations: [{ id: "github", variables: { TOKEN: catalogKey }, settings: {
+    type: "remote", url: trusted, oauth: false, codemode: false,
+    headers: { Authorization: `Bearer {file:~/.kuvo-code/box/keys/${catalogKey}}` },
+  } }] };
+  write(path.join(main.home, "bin", "integrations.json"), JSON.stringify(catalog));
+  write(path.join(main.home, "box", "opencode.json"), JSON.stringify({ model: "source/model", mcp: {
+    github: { disabled: true, url: "https://not-the-catalog.invalid" },
+  } }));
+  write(path.join(main.home, "box", "keys", catalogKey), "new fixture key", { mode: 0o600 });
+  write(path.join(main.home, "ssh", "known_hosts"), `lab ssh-ed25519 ${key(8)}\n`);
+  const checklist = await ask("GET", "kuvo/computers/add/credentials", undefined, headers);
+  assert.equal(checklist.status, 200, checklist.text);
+  const choice = checklist.json.items.find(item => item.label === catalogKey);
+  assert.ok(choice);
+  const { setup, you } = (await ask("GET", "kuvo/setup")).json;
+  const digest = data => createHash("sha256").update(JSON.stringify(data)).digest("hex");
+  write(path.join(target, "folder-version.json"), '{"version":23}');
+  write(path.join(target, "run", ".ssh-fresh-add"), `v1 ${digest([setup, you.key])} ${digest([choice.id])} copying\n`);
+  write(path.join(target, "bin", "integrations.json"), JSON.stringify(catalog));
+  const retained = { type: "local", command: ["target-owned"] };
+  write(path.join(target, "box", "opencode.json"), JSON.stringify({ model: "target/model", mcp: { servers: { retained } } }));
+  const keyFile = path.join(target, "box", "keys", catalogKey);
+  write(keyFile, "key from the interrupted copy", { mode: 0o600 });
+  const engine = stageEngine(t, target);
+  const started = await ask("POST", "kuvo/computers/add", { destination: "lab", credentials: [choice.id] }, headers);
+  assert.equal(started.status, 202, started.text);
+  const result = await until(async () => {
+    const entry = (await page()).tries.find(each => each.id === started.json.try.id);
+    return ["done", "failed"].includes(entry?.state) && entry;
+  }, "The interrupted key-only Add did not settle.", 35_000);
+  assert.equal(result.state, "done", result.failure?.message);
+  const service = readJSON(path.join(target, "run", "serve.json"));
+  t.after(() => { try { process.kill(service.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; } });
+  const settings = readJSON(path.join(target, "box", "opencode.json"));
+  assert.equal(settings.model, "target/model");
+  assert.deepEqual(settings.mcp.servers.retained, retained);
+  assert.equal(settings.mcp.servers.github?.url, trusted);
+  assert.equal(settings.mcp.servers.github?.disabled, true);
+  assert.equal(fs.readFileSync(keyFile, "utf8"), "key from the interrupted copy");
+  assert.equal(fs.existsSync(engine.imported), false, "A key-only recovery sent no sign-ins.");
 });
 
 test("an SSH-enrolled member follows the next primary after reconnecting", {

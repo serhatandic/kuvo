@@ -3,13 +3,20 @@
 
 use std::{fs, io, path::Path, time::Duration};
 
-use kuvo_store::files::{remove_file_synced, remove_tree_synced};
+use kuvo_store::{
+    files::{remove_file_synced, remove_tree_synced},
+    locks::OwnedLock,
+};
 use rusqlite::{Connection, OpenFlags};
 
 use crate::storage::Files;
 
 pub(crate) fn clear(files: &Files) -> io::Result<()> {
-    let _copy = crate::seed::lock(files)?;
+    let copy = crate::seed::lock(files)?;
+    clear_with_copy_lock(files, &copy)
+}
+
+pub(crate) fn clear_with_copy_lock(files: &Files, _copy: &OwnedLock) -> io::Result<()> {
     for name in [
         "KUVO_ENGINE_DATA",
         "KUVO_ENGINE_DB_FOLDER",

@@ -243,8 +243,10 @@ pub(crate) async fn capture_ssh(
         let (keys, credentials) = inventory.selected(files, selection)?;
         (keys, credentials, renewing)
     };
-    let settings = starting_settings(files, &keys);
-    let settings = encode_seed(json!({"formatVersion": 1, "settings": settings, "keys": keys}))?;
+    let (settings, integrations) = starting_settings(files, &keys);
+    let settings = encode_seed(
+        json!({"formatVersion": 1, "settings": settings, "keys": keys, "integrations": integrations}),
+    )?;
     let sign_ins = encode_seed(json!({"formatVersion": 1, "credentials": credentials}))?;
     Ok(SshSeed {
         settings,
@@ -323,7 +325,10 @@ fn list(value: &Value) -> &[Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-fn starting_settings(files: &Files, selected: &Map<String, Value>) -> Map<String, Value> {
+fn starting_settings(
+    files: &Files,
+    selected: &Map<String, Value>,
+) -> (Map<String, Value>, Vec<Value>) {
     let original = files
         .read::<Value>(SETTINGS)
         .ok()
@@ -349,24 +354,35 @@ fn starting_settings(files: &Files, selected: &Map<String, Value>) -> Map<String
             local_server(entry, selected).map(|config| (name.clone(), config))
         })
         .collect();
+    let mut integrations = Vec::new();
     for entry in selected_integrations(files, selected) {
         let Some(id) = entry["id"].as_str() else {
             continue;
         };
-        if kept.contains_key(id) || !servers[id].is_object() {
+        if !servers[id].is_object() {
             continue;
         }
-        if let Some(mut config) = entry["settings"].as_object().cloned() {
-            if servers[id]["disabled"] == true {
+        let disabled = servers[id]["disabled"] == true;
+        if !kept.contains_key(id)
+            && let Some(mut config) = entry["settings"].as_object().cloned()
+        {
+            if disabled {
                 config.insert("disabled".into(), json!(true));
             }
             kept.insert(id.into(), Value::Object(config));
+        }
+        if kept.contains_key(id) {
+            integrations.push(if disabled {
+                json!({"id": id, "disabled": true})
+            } else {
+                json!({"id": id})
+            });
         }
     }
     if !kept.is_empty() {
         settings.insert("mcp".into(), Value::Object(kept));
     }
-    settings
+    (settings, integrations)
 }
 
 fn safe_model(model: &str) -> bool {

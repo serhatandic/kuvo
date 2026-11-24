@@ -132,7 +132,7 @@ impl SshSeedCopy {
             path: self.files.path("box/keys"),
             source,
         })?;
-        let _guard = settings_lock(&self.files).map_err(|source| crate::Error::File {
+        let settings_guard = settings_lock(&self.files).map_err(|source| crate::Error::File {
             action: "claiming SSH settings at",
             path: self.files.path(SETTINGS),
             source,
@@ -142,19 +142,38 @@ impl SshSeedCopy {
             path: self.files.path(SETTINGS),
             source,
         })?;
+        if let Some(settings) = self.files.read::<Value>(SETTINGS)? {
+            let mcp = &settings["mcp"];
+            let servers = if mcp["servers"].is_object() {
+                &mcp["servers"]
+            } else {
+                mcp
+            };
+            let integrations = &self.given["integrations"];
+            let missing = integrations.as_array().into_iter().flatten().any(|entry| {
+                entry["id"]
+                    .as_str()
+                    .is_some_and(|id| servers.get(id).is_none())
+            });
+            drop(settings_guard);
+            if missing {
+                take_integrations(&self.files, keys, integrations)?;
+            }
+            return Ok(kept);
+        }
         let mut selected = self.given["settings"].clone();
         name_key_paths(
             &mut selected,
             &self.files.path("box/keys").to_string_lossy(),
         );
-        let mut settings: Map<String, Value> = self.files.read(SETTINGS)?.unwrap_or_default();
-        for name in ["model", "mcp"] {
-            if let Some(value) = selected.get(name) {
-                settings
-                    .entry(name.to_owned())
-                    .or_insert_with(|| value.clone());
-            }
-        }
+        let settings: Map<String, Value> = ["model", "mcp"]
+            .into_iter()
+            .filter_map(|name| {
+                selected
+                    .get(name)
+                    .map(|value| (name.to_owned(), value.clone()))
+            })
+            .collect();
         self.files.write(SETTINGS, &settings)?;
         Ok(kept)
     }
@@ -183,11 +202,12 @@ impl SshSeedCopy {
 
     pub fn rollback(self) -> Result<(), crate::Error> {
         self.check()?;
-        drop(self.copy);
-        crate::cleanup::clear(&self.files).map_err(|source| crate::Error::File {
-            action: "rolling back SSH credential copy at",
-            path: self.files.root().into(),
-            source,
+        crate::cleanup::clear_with_copy_lock(&self.files, &self.copy).map_err(|source| {
+            crate::Error::File {
+                action: "rolling back SSH credential copy at",
+                path: self.files.root().into(),
+                source,
+            }
         })
     }
 }
