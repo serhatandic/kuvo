@@ -138,7 +138,7 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Ninety have full scenario coverage, 17 have partial proof,
+below counts 212 declarations. Ninety-one have full scenario coverage, 16 have partial proof,
 and 105 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
@@ -246,7 +246,7 @@ separately where they appear.
 | | 28 | The 2.4 move projection is covered by the first snapshot pending and away states on the third computer. The other merged views belong to 2.2, 5.1 and 5.2. |
 | [reach-elsewhere](../../box/bridge-tests/reach-elsewhere.test.js) | 1, 3 | Open, 2.4 real move fixtures, with engine effects in 3.2. [2.2](rust-peers-coverage.md) proves the authenticated call transport. |
 | [reach-elsewhere-rules](../../box/bridge-tests/reach-elsewhere-rules.test.js) | 11 | Covered by lead-only letters to an unlisted older conversation and the exception for a conversation that arrived recently. |
-| | 4 | Partial, a switched chat kept on the source still names the speaker before the new owner lists it. The reply reaches the new owner. The in-flight switch and unrelated speaker checks remain 2.4. |
+| | 4 | Covered for ordinary chats while the source is switching and retiring. Only the authenticated new owner speaks for the chat before its announcement. The reply reaches that owner. Bot moves remain 5.1. |
 | | 3, 14 | Open, 2.4 switched sessions and returning results to a moved lead. Case 14 was numbered 13 before the stale snapshot scenario was added. |
 | [offline-merge](../../box/test/offline-merge.test.ts) | 4 | Open, refinement of an older note passage on the new owner in 2.4 and 3.2. |
 | | 8–9 | Work Queue deletion and former-owner replay owned by 5.2. |

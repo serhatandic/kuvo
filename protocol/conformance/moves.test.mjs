@@ -557,30 +557,39 @@ test("a failed old offer sends only its drop and waits for the destination's rec
 });
 
 test("a switched move keeps the original until its backup can be written", {
-  timeout: 115000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 130000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("cleanup-source"), there = await computer("cleanup-target");
-  const { main, member } = seedPeerSetup(here.home, relay.url);
-  seedPeerSetup(there.home, relay.url, 2);
+  const { main, member, spare } = seedPeerSetup(here.home, relay.url, 1, 3);
+  seedPeerSetup(there.home, relay.url, 2, 3);
   const session = "ses_cleanupBackup", local = "ses_waitingAtSource", directory = path.join(here.home, "chats");
   const probe = "mov_cleanupRound";
   fs.mkdirSync(directory, { recursive: true });
   here.engine.sessions.push(sessionOf({ id: session, title: "Lead on the move", directory }),
     sessionOf({ id: local, title: "Work at the source", directory }));
-  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const { openOneWay, sealOneWay, frame, Frame } = await testMail(t, boxBinary(wireFixture));
   const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
   const key = Buffer.from(member.key, "base64url"), secret = Buffer.alloc(32, 1);
   const exports = () => here.engine.asked.filter(call =>
     call.method === "GET" && call.path === "/api/experimental/session/" + session + "/export").length;
   let beforeCleanup, checked = false;
+  let arrivedPacket, switchedPacket, permitArrival = false, permitRetirement = false;
   const stop = relay.intercept(to, from, packet => {
     if (packet.payload[0] !== Frame.mail) return false;
     const { payload } = openOneWay(packet.payload.subarray(5), secret, key);
     const mail = JSON.parse(payload);
+    if (mail.move?.op === "arrived" && !permitArrival) {
+      arrivedPacket ??= packet;
+      return true;
+    }
     if (mail.move?.op === "switched") {
       beforeCleanup ??= exports();
       here.engine.refuseExport = session;
+      if (!permitRetirement) {
+        switchedPacket ??= packet;
+        return true;
+      }
     }
     return Boolean(mail.agents?.list?.some(agent => agent.session === session));
   });
@@ -599,6 +608,30 @@ test("a switched move keeps the original until its backup can be written", {
   const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   assert.equal(begun.status, 202, begun.text);
   const id = begun.json.move.id;
+  const journal = path.join(here.home, "run/moves", id + ".json");
+  const sendAsLead = async (computer, seed, id, text) => {
+    const content = Buffer.from(JSON.stringify({ at: Date.now(), letter: {
+      id, from: session, to: local, text, wait: false, at: Date.now(),
+    } }));
+    const sealed = sealOneWay(content, Buffer.alloc(32, seed), Buffer.from(main.key, "base64url")).message;
+    relay.replay({ from: Buffer.from(computer.address, "base64url"), to: from, payload: frame(Frame.mail, 0, sealed) });
+    return until(() => here.engine.messages.get(local)?.find(message => message.text.endsWith("\n\n" + text)),
+      "The source did not receive " + id, 15000);
+  };
+  await until(() => arrivedPacket, "The copy did not reach the destination", 20000);
+  assert.equal(readJSON(journal).stage, "copying");
+  const early = await sendAsLead(member, 2, "ltr_movedLeadEarly", "Sent before ownership changed.");
+  assert.ok(early.text.startsWith(`[Message from an agent on ${member.name} · unknown]`), early.text);
+  permitArrival = true;
+  relay.replay(arrivedPacket);
+  await until(() => switchedPacket, "The new owner did not acknowledge the switch", 12000);
+  assert.equal(readJSON(journal).stage, "switching");
+  const switched = await sendAsLead(member, 2, "ltr_movedLeadSwitch", "Sent from the new owner.");
+  assert.ok(switched.text.startsWith(`[Message from “Lead on the move” · ${session}]`), switched.text);
+  const stranger = await sendAsLead(spare, 3, "ltr_movedLeadStranger", "Sent from a third computer.");
+  assert.ok(stranger.text.startsWith(`[Message from an agent on ${spare.name} · unknown]`), stranger.text);
+  permitRetirement = true;
+  relay.replay(switchedPacket);
   await until(() => fs.existsSync(path.join(here.home, "run/moves", id + ".outcome.json")),
     "The source did not record its cleanup outcome", 15000);
   const outcome = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
@@ -618,10 +651,9 @@ test("a switched move keeps the original until its backup can be written", {
   write(path.join(there.home, "run/outbox/sending", idOfLetter + ".json"), JSON.stringify({
     from: session, to: local, text: words, peer: main.key, wait: true, at: Date.now(),
   }));
-  const sent = await until(() => here.engine.messages.get(local)?.[0],
+  const sent = await until(() => here.engine.messages.get(local)?.find(message => message.text.endsWith("\n\n" + words)),
     "The moved lead's message did not reach its work at the source", 20000);
   assert.equal(sent.text, `[Message from “Lead on the move” · ${session}] (They're waiting for your reply: just answer, in your words.)\n\n` + words);
-  const journal = path.join(here.home, "run/moves", id + ".json");
   assert.equal(readJSON(journal).stage, "finishing");
   here.engine.messages.get(local).push({ id: sent.id.slice(0, -1) + "z0", type: "assistant",
     content: [{ type: "text", text: "The checks passed." }] });
