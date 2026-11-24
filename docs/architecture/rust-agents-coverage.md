@@ -193,7 +193,8 @@ it again, also by the next resident. A message whose agent can't start is
 kept, failed. A handoff token the box cancelled refuses its late message.
 Twenty Rust scenarios with a scripted agent (`kuvo_agents/tests/inbox.rs`)
 port `sessions.test.ts` cases 3–7, 10, 11, 13–17, 48 and 54–58 and 61, and
-Codex's uncertain-handoff rule. The compatibility prompt route now puts the
+Codex's uncertain-handoff rule; they passed on macOS, Linux (lokum), WSL2
+and native Windows with the agent conformance areas. The compatibility prompt route now puts the
 message in the line (`delivery`, `metadata`, `handoffToken`) and interrupt
 takes `resume`.
 
