@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { request, until, write } from "./adapter.mjs";
+import { request, scratch, until, write } from "./adapter.mjs";
+import { generateCurrent } from "./compat/generate.mjs";
 import { withAgentFixture } from "./agent-fixture.mjs";
 
 test("saved agent transcript pages honor order and cursor without reopening the agent",
@@ -171,5 +172,66 @@ test("starting a coding agent's conversation saves it with the agent's notes and
         user: { ...user, id: "<id>", time: "<time>" },
       };
       if (trace) write(trace, JSON.stringify(log) + "\n", { flag: "wx" });
+    });
+  });
+
+test("the current beta's coding-agent conversation, its waiting message and account open the same",
+  { timeout: 90000 }, async t => {
+    const golden = scratch();
+    t.after(() => rmSync(golden, { recursive: true, force: true }));
+    let source;
+    try {
+      source = generateCurrent(path.join(golden, "current")).home;
+    } catch (error) {
+      t.skip("The golden home is written by the TypeScript reference bundle with Bun: " + error.message);
+      return;
+    }
+    const trace = process.env.KUVO_CONFORMANCE_AGENT_GOLDEN;
+    const id = "ses_golden";
+    const app = { "x-kuvo-from": "app" };
+    return withAgentFixture(t, home => {
+      for (const part of ["sessions/ses_golden", "accounts.json", "codex"]) {
+        cpSync(path.join(source, "agents", part), path.join(home, "agents", part), { recursive: true });
+      }
+    }, async (listener, home) => {
+      const get = async route => {
+        const answer = await request(listener, "GET", route, undefined, app);
+        assert.equal(answer.status, 200, route + ": " + answer.text);
+        return answer.json;
+      };
+      // Its turn was left open: the resident closes it as one a restart cut short.
+      const messages = await until(async () => {
+        const rows = (await get(`kuvo/agents/api/session/${id}/message?order=asc`)).data;
+        return rows.at(-1)?.type === "idle" && rows;
+      }, "The golden conversation's open turn was not closed.");
+      assert.deepEqual(messages.map(row => [row.type, row.id === "msg_golden" ? row.id : "new"]),
+        [["user", "msg_golden"], ["idle", "new"]]);
+      assert.equal(messages[0].text, "Keep this conversation.");
+      assert.equal(messages[1].outcome, "interrupted");
+      assert.equal(messages[1].reason, "restart");
+      const queue = await get(`kuvo/sessions/${id}/queue`);
+      assert.deepEqual(queue, { paused: false, held: [] });
+      // The account index is kept as the TypeScript box wrote it.
+      const accounts = readFileSync(path.join(home, "agents", "accounts.json"), "utf8");
+      assert.equal(accounts, readFileSync(path.join(source, "agents", "accounts.json"), "utf8"));
+      const folder = path.join(home, "agents", "sessions", id);
+      const agent = JSON.parse(readFileSync(path.join(folder, "agent.json"), "utf8"));
+      assert.equal(agent.threads["codex-cli"].state.codexThread, "thr_golden");
+      assert.deepEqual(agent.inbox.map(input => input.id), ["msg_goldeninbox"]);
+      const header = JSON.parse(readFileSync(path.join(folder, "session.json"), "utf8"));
+      assert.equal(header.outcome, "interrupted");
+      if (trace) {
+        // (Generated per run: the account's ID and the scratch folder. The
+        // bridge also adds an empty Undo record as it closes the turn; Undo is 4.6.)
+        const { snapshots, ...kept } = agent;
+        assert.deepEqual(snapshots ?? {}, {});
+        const log = {
+          messages: messages.map(row => row.type === "idle" ? { ...row, id: "<idle>" } : row),
+          queue, agent: kept,
+          accounts: JSON.parse(accounts).map(account => account.id ? { ...account, id: "<id>" } : account),
+          header: { ...header, location: { directory: "<project>" } },
+        };
+        write(trace, JSON.stringify(log) + "\n", { flag: "wx" });
+      }
     });
   });

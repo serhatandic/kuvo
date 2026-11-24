@@ -254,11 +254,26 @@ is refused, the answer reaches the agent once, and the message queued before
 the update goes next, once. Without the wait, that first read is empty. The
 keeper switch case still passes.
 
-The following integration work remains open:
+The current beta's golden home (`compat/current-world.ts`) now also keeps a
+waiting message and an agent's slot in its coding-agent conversation, written
+by the TypeScript store. The `agent-sessions` case copies that conversation,
+its account index and the account's folder into a fresh home and opens them
+through either box. Both close the conversation's open turn as a restart's
+and keep its waiting message, its agent's slot and the account index. Their
+normalized answers and files match. The traces differ only in the run's
+scratch folder, the generated account ID, and an empty Undo record
+(`snapshots`) that the bridge adds as it closes the turn; Undo is row 4.6.
 
-- Production vendor factory registration as the adapters land.
-- Unified sign-in and account status, default-home migration, and shared session, queue and approval routing.
-- Differential and golden-home runs for the remaining routes, with platform verification.
+Carried to the rows that bring them:
+
+- Production vendor factory registration, as each adapter lands (4.2–4.5).
+- `sessions.test.ts` 9 (a program update's drain) and 12 (a model whose
+  account is signed out): 4.2, with the first program updater and production
+  account status.
+- 59–60 and 127–139 (turns an agent starts on its own, and Stop or Send Now
+  while one is handed over): 4.2 and 4.4, whose agents start them.
+- Moves and wake-ups into a coding agent's conversation: 4.6, with carry and
+  handover.
 
 ## Tools, shared RPC and sidecar progress (4.1c)
 
@@ -332,7 +347,7 @@ Case numbers use the order in the cited source file.
 | [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. |
 | [toolrelay](../../box/test/agents/toolrelay.test.ts), 9, and [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 4.1c owns persisted address and keys, session attribution, reconnect and cancel, and engine tool registration. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
-| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. Still 4.1b: 9 and 12 (program drains, signed-out models), 59–60 and 127–139 (turns an agent starts itself, Stop and Send Now while a message is handed). Shared agent session store, queue, and event projection → 4.1b. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
+| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 and 12 (program drains, signed-out models) → 4.2; 59–60 and 127–139 (turns an agent starts itself, Stop and Send Now while a message is handed) → 4.2 and 4.4. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
 | [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 134, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |
 | [agent-tools.test.js](../../box/bridge-tests/agent-tools.test.js), [artifacts](../../box/test/artifacts.test.ts), [subagents](../../box/test/agents/subagents.test.ts), [carry-agents](../../box/test/agents/carry-agents.test.ts), [to-agents](../../box/bridge-tests/to-agents.test.js) and [agents-handover](../../box/bridge-tests/agents-handover.test.js) | Agent registration and tools dispatch share 4.1b/c. Tool handler semantics span 2.4 ownership and messages, 4.6 subagents and transfers, 5.1 starts and bot work, 5.5 artifacts, and 6.1 permissions. |
 | Agent account imports in [usage tests](../../box/test/usage), and [settings-agents-live](../../box/bridge-tests/settings-agents-live.test.js) | 5.4 owns usage and limits. 6.1 owns the engine Agents settings file and the live engine settings page. Both consume 4.1b account state. |
@@ -354,7 +369,8 @@ and existing partial coverage remain in [the engine map](rust-engine-coverage.md
 | attachment-paths, attachments-go | 1; 1–4 |
 | session-models | 6–9, 11, 15–16, 18, 21, 23–24, 26–27, 31–32 |
 
-The saved-home checks for the account index, agent sessions and legacy
-`run/agents.json` projection remain in 4.1b. Authenticated vendor runs, live
-resident adoption during a fleet rollout, route-level differential comparison,
-and golden-home compatibility are still open.
+The golden-home check above covers the account index and a saved agent
+conversation. The legacy `run/agents.json` projection is the peer directory,
+regenerated at start (2.6 and 7.3). Authenticated vendor runs belong to
+4.2–4.5 (Claude Code's to 4.4), and live adoption during a fleet rollout to
+7.2.

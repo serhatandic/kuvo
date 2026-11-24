@@ -424,7 +424,7 @@ parallel.
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
 | 3.2 | **Done.** Sessions, queues, send-once receipts, asks, waiting, models and search. [Coverage and remaining owners](rust-engine-coverage.md#implementation-and-remaining-parity-work). | engine | 3.1 | 6 ×2 | B |
 | 4.1a | **Done.** Rust holder command, private IPC, journal, recovery records and shared Rust controller. [Coverage](rust-agents-coverage.md) | agents | 1.3 | — | B |
-| 4.1b | Resident agent runtime and holder adoption through keeper updates, roster, accounts and sign-in, session and model integration. Authenticated resident and keeper proof is owned by 4.4. [Coverage](rust-agents-coverage.md) | agents | 3.2, 4.1a | — | B |
+| 4.1b | **Done.** Resident agent runtime and holder adoption through keeper updates, roster, accounts and sign-in, session and model integration. Authenticated resident and keeper proof is owned by 4.4; the carried cases are named in the [coverage](rust-agents-coverage.md). | agents | 3.2, 4.1a | — | B |
 | 4.1c | Tools relay, `mcp` mode, shared RPC, Bun sidecar | agents | 4.1a | — | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
