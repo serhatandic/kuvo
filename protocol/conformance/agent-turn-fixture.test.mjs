@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
+import { existsSync, readdirSync } from "node:fs";
 import { boxBinary, readJSON, request, until, write } from "./adapter.mjs";
 import { withAgentFixture } from "./agent-fixture.mjs";
 
@@ -217,5 +218,9 @@ test("a resident replaced while its agent asks: the next shows the ask once, ref
       assert.deepEqual(done.filter(row => row.type === "idle").map(row => row.outcome), ["succeeded", "succeeded"]);
       assert.deepEqual(readJSON(path.join(home, "agents", "sessions", id, "agent.json")).inbox, []);
       assert.equal((await call("POST", `/permission/${asked.id}/reply`, { decision: "once" })).status, 404);
+      // Both turns' held agents end with them: their holders leave nothing behind.
+      const holders = path.join(home, "run", "agents", "hold");
+      const left = () => existsSync(holders) ? readdirSync(holders).filter(name => name !== "lifecycle.log") : [];
+      await until(() => left().length === 0, () => "Holders were left: " + left().join(", "), 30000);
     });
   });

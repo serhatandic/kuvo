@@ -365,7 +365,10 @@ What the servers are and how they're renewed comes from a host trait
 (`ServerHost`). So does running a command in the sandbox: the engine
 supplies the servers (3.x) and the sandbox supplies the command runner
 (6.1). Three scenarios cover an unreachable server, the sign-in loop (the
-bridge's `relay-live` case) and command servers per connection.
+bridge's `relay-live` case) and command servers per connection. The
+relay's nine scenarios passed on macOS, Linux (lokum), WSL2 and native
+Windows, with the agent conformance areas. The update case now also checks
+that both turns' holders end with their turns.
 
 Still open in 4.1c: re-checking, on a timer, a server the relay stood in
 for; the desktop compatibility path (case 8); the sandbox note (case 9,
