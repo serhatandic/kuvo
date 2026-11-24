@@ -53,6 +53,8 @@ pub struct Scope {
     pub here: Option<ComputerKey>,
     pub owner: Option<PeerOwner>,
     pub(crate) letter_home: Option<(ComputerKey, Option<crate::reach::Millis>)>,
+    /// Letters can follow the confirmed destination even while cleanup fences the source.
+    pub(crate) letter_held: bool,
     pub receipt_issuer: Option<ComputerKey>,
     pub held: bool,
 }
@@ -249,6 +251,9 @@ impl Handle {
                 reachable: owner.local || (view.relay_connected && owner.reachable),
             }
         });
+        let held = inventory.frozen.contains(session);
+        let retiring = inventory.journal.get(&(RecordScope::Session, session.into()))
+            .is_some_and(|move_to| move_to.retiring);
         Ok(Scope {
             setup: setup.id,
             here: view.roster.here,
@@ -258,9 +263,10 @@ impl Handle {
             letter_home: view
                 .move_address(session, now, &inventory)
                 .and_then(|(key, at)| Some((decode_exact(&key)?, at))),
+            letter_held: held && !retiring,
             receipt_issuer: original_issuer
                 .map(|key| *inventory.replacements.get(&key).unwrap_or(&key)),
-            held: inventory.frozen.contains(session),
+            held,
         })
     }
 

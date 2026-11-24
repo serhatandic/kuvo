@@ -212,10 +212,10 @@ impl Letters {
             let Ok(scope) = self.ownership.scope(&each.letter.to, None) else {
                 continue;
             };
-            let owner = scope.owner;
-            if scope.held && owner.as_ref().is_none_or(|owner| owner.local) {
+            if scope.letter_held {
                 continue;
             }
+            let owner = scope.owner;
             let learned = homes.get(&each.letter.to).filter(|home| {
                 each.letter.note.is_some()
                     && !owner.as_ref().is_some_and(|owner| owner.local)
@@ -359,7 +359,7 @@ impl Letters {
                 let Ok(scope) = self.ownership.scope(&to, None) else {
                     continue;
                 };
-                if scope.held {
+                if scope.letter_held {
                     continue;
                 }
                 let name = reply.name.as_deref().unwrap_or("another agent");

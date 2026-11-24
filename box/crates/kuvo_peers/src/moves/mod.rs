@@ -374,6 +374,7 @@ fn apply_owners(
                 .or_insert(MoveLocation {
                     key,
                     departed_at: Some(departure.at),
+                    retiring: false,
                 });
         }
     }
@@ -399,6 +400,7 @@ fn apply_owners(
                     MoveLocation {
                         key: destination,
                         departed_at: None,
+                        retiring: movement.stage == Stage::Finishing,
                     },
                 );
             }

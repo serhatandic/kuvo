@@ -681,6 +681,15 @@ test("a switched move keeps the original until its backup can be written", {
   }, "The lead on the new computer did not receive its reply", 22000, 500);
   assert.deepEqual(answer, { from: local, to: session, name: "Work at the source", text: "The checks passed." });
 
+  const pendingNote = path.join(here.home, "run/outbox/sending/ltr_cleanupNote.json");
+  const note = "The work at your previous computer finished.";
+  write(pendingNote, JSON.stringify({ to: session, text: note, peer: main.key, wait: false, at: Date.now(),
+    note: { from: "Its sessions", words: note, delivery: "queue" } }));
+  await until(() => !fs.existsSync(pendingNote), "The new owner did not confirm the note during cleanup", 16000);
+  assert.equal(readJSON(journal).stage, "finishing");
+  assert.equal(there.engine.messages.get(session).filter(message => message.text === note).length, 1);
+  assert.ok(!here.engine.messages.get(session)?.some(message => message.text === note));
+
   // A later saved request proves the same driver took another look at the
   // move journals. The failed backup should wait for its retry interval.
   const probeFile = path.join(here.home, "run/moves", probe + ".json");
@@ -3000,14 +3009,24 @@ test("an answer left by a tool reaches the new owner once", {
   const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
   const sender = Buffer.from(main.key, "base64url"), secret = Buffer.alloc(32, 2);
   let switching;
+  const sentNotes = [], noteReceipts = [];
   const release = relay.intercept(from, to, packet => {
     if (packet.payload[0] !== Frame.mail) return false;
     const { payload } = openOneWay(packet.payload.subarray(5), secret, sender);
-    if (JSON.parse(payload).move?.op !== "switch") return false;
+    const mail = JSON.parse(payload);
+    if (mail.letter?.note) sentNotes.push(mail.letter.id);
+    if (mail.move?.op !== "switch") return false;
     switching = packet;
     return true;
   });
   t.after(release);
+  t.after(relay.intercept(to, from, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 1), Buffer.from(member.key, "base64url"));
+    const { delivered } = JSON.parse(payload);
+    if (delivered) noteReceipts.push(delivered);
+    return false;
+  }));
   const sourceProcess = here.start(), targetProcess = there.start();
   const [source] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
   const logs = () => sourceProcess.log() + "\n" + targetProcess.log();
@@ -3041,6 +3060,15 @@ test("an answer left by a tool reaches the new owner once", {
   write(reply + ".gaveup", "");
   write(reply + ".json", JSON.stringify({ to: session, from: "ses_scout", name: "Scout", text: answer }));
   write(abandonedRead, JSON.stringify({ read: true, to: session, text: "The transcript." }));
+  const heldNotes = [
+    ["ltr_lateSessionNews", "[Session failed] The sign-in stopped with an error.",
+      { from: "Its sessions", words: "The sign-in stopped with an error.", line: "Sign-in failed", delivery: "queue", about: [responder] }],
+    ["ltr_lateAskAnswer", "[The user answered] The user said no to making Site.",
+      { from: "Your answer", words: "The user said no to making Site.", line: "You answered: The user said no to making Site.", delivery: "queue" }],
+  ];
+  for (const [id, text, note] of heldNotes) {
+    write(path.join(sending, id + ".json"), JSON.stringify({ to: session, text, note, wait: false, at: Date.now() }));
+  }
   await until(() => !fs.existsSync(abandonedRead), "The resident did not process abandoned tool replies");
   const localAnswer = "The table is reserved.";
   conversation.push({ id: conversation[0].id.slice(0, -1) + "z0", type: "assistant",
@@ -3051,8 +3079,12 @@ test("an answer left by a tool reaches the new owner once", {
     catch (error) { if (error.code !== "ENOENT") throw error; return false; }
   })), () => "The local reply did not wait with the held conversation\n" + logs(), 18000);
   assert.equal(readJSON(reply + ".json").text, answer, "The reply is kept while its conversation is held");
+  for (const [id] of heldNotes) {
+    assert.ok(fs.existsSync(path.join(sending, id + ".json")), "The note stays pending during the hold");
+  }
   assert.equal(here.engine.messages.has(session), false);
   assert.deepEqual(there.engine.messages.get(session) ?? [], []);
+  assert.deepEqual(sentNotes, []);
   release();
   relay.replay(switching);
   await moveRetired(here, begun.json.move.id, logs);
@@ -3067,6 +3099,14 @@ test("an answer left by a tool reaches the new owner once", {
   const replies = there.engine.messages.get(session).filter(message => message.text?.includes(localAnswer));
   assert.equal(replies.length, 1);
   assert.equal(replies[0].text, `[Message from Ada · ${responder}] (To answer, use send_message to ${responder}.)\n\n${localAnswer}`);
+  for (const [id, text, note] of heldNotes) {
+    await until(() => !fs.existsSync(path.join(sending, id + ".json")),
+      () => `The new computer did not acknowledge ${id}\n${JSON.stringify(noteReceipts)}\n${logs()}`);
+    const delivered = there.engine.messages.get(session).filter(message => message.text === text);
+    assert.equal(delivered.length, 1);
+    assert.equal(delivered[0].delivery, "queue");
+    assert.deepEqual(delivered[0].metadata.kuvo.note, { from: note.from, line: note.line });
+  }
   assert.equal(here.engine.messages.has(session), false);
   assert.ok(!fs.existsSync(reply + ".gaveup"));
 });

@@ -469,6 +469,8 @@ pub struct MoveLocation {
     /// A committed departure has a time. A switch still in the journal
     /// takes precedence over announcements until it settles.
     pub departed_at: Option<Millis>,
+    /// The destination confirmed activation. Only source cleanup remains.
+    pub(crate) retiring: bool,
 }
 
 #[derive(Clone, Debug)]
