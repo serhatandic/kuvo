@@ -2023,11 +2023,17 @@ async fn a_quiet_peer_can_retry_a_second_offer_until_the_transfer_deadline() {
     source_deadline(SourceDeadline::SecondOffer).await;
 }
 
+#[tokio::test]
+async fn an_undriven_move_can_wait_half_an_hour_without_a_hold_time() {
+    source_deadline(SourceDeadline::Undriven).await;
+}
+
 #[derive(PartialEq)]
 enum SourceDeadline {
     Parts,
     Preparation,
     SecondOffer,
+    Undriven,
 }
 
 async fn source_deadline(deadline: SourceDeadline) {
@@ -2168,6 +2174,50 @@ async fn source_deadline(deadline: SourceDeadline) {
         Timing::default(),
     )
     .unwrap();
+    let outcome = run.join("moves").join(format!("{id}.outcome.json"));
+    if deadline == SourceDeadline::Undriven {
+        let mut reader = resident.reader();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !reader.view().relay_connected {
+                reader.changed().await.unwrap();
+            }
+            drop(wire);
+            while reader.view().relay_connected {
+                reader.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        resident.attach_moves(engine, owner).await.unwrap();
+        tokio::time::pause();
+        clock.store(1_000_000 + 29 * 60_000, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(journal.exists(), "The move was retired before half an hour");
+        assert!(!outcome.exists());
+        assert!(!wake.join("paused").exists());
+
+        clock.store(1_000_000 + 31 * 60_000, Ordering::Relaxed);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !outcome.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let failed: Value = serde_json::from_slice(&std::fs::read(outcome).unwrap()).unwrap();
+        assert_eq!(failed["status"], 409);
+        assert!(
+            failed["message"]
+                .as_str()
+                .unwrap()
+                .contains("took too long")
+        );
+        assert!(!wake.join("paused").exists());
+        assert_eq!(std::fs::read(wake.join("answer")).unwrap(), b"keep this");
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+        return;
+    }
     resident.attach_moves(engine, owner).await.unwrap();
 
     let mail = |movement: Value| {
@@ -2183,7 +2233,6 @@ async fn source_deadline(deadline: SourceDeadline) {
     assert_eq!(check["id"], id);
     wire.send(mail(json!({"id":id,"op":"checked","ok":true})))
         .await;
-    let outcome = run.join("moves").join(format!("{id}.outcome.json"));
     if slow_exports {
         tokio::time::timeout(Duration::from_secs(10), exports.recv())
             .await

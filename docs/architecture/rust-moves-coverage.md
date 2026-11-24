@@ -138,7 +138,7 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Eighty-five have full scenario coverage, 18 have partial proof,
+below counts 212 declarations. Eighty-six have full scenario coverage, 17 have partial proof,
 and 109 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
@@ -207,7 +207,7 @@ separately where they appear.
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
 | | 7, 35 | Open, 2.4 transfer and retry. OpenCode import effects depend on 3.2. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
-| | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
+| | 10 | Covered by driving a request saved before its first check and retiring one with no hold time after thirty minutes waiting for the relay. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |
 | | 3 | Covered by a failed deletion keeping the copy held and repeating its proof, followed by minute-based retry and removal once the engine allows it. |
 | | 11 | Covered by a sparse source wake-up file over 1 GB. The source releases its hold and keeps the original without offering the copy. |

@@ -104,6 +104,8 @@ pub(crate) fn start(
     files::create_private_dirs(&reader.run.join("moves"))?;
     let (tx, commands) = mpsc::channel(16);
     let driver = Driver {
+        starting: Some(reader.now()),
+        interrupted: HashSet::new(),
         reader,
         relay,
         engine,
@@ -135,6 +137,8 @@ struct RetryClock {
 }
 
 struct Driver {
+    starting: Option<Millis>,
+    interrupted: HashSet<String>,
     reader: Reader,
     relay: RelayHandle,
     engine: Engine,
@@ -315,6 +319,17 @@ impl Driver {
         let view = self.reader.view();
         let now = self.reader.now();
         let rows = journals(self.run_dir()).map_err(io::Error::other)?;
+        if let Some(started) = self.starting.take() {
+            self.interrupted.extend(
+                rows.iter()
+                    .filter(|row| {
+                        row.role == Role::From
+                            && row.stage == Stage::Holding
+                            && started.saturating_sub(row.started) >= STARTING_ON_RESTART
+                    })
+                    .map(|row| row.id.clone()),
+            );
+        }
         if let Err(error) =
             remove_orphaned_bundles(&self.reader.run, &mut self.orphans, Instant::now())
         {
@@ -437,7 +452,7 @@ impl Driver {
         if !self.owned.contains(&row.id) {
             let just_requested = row.stage == Stage::Holding
                 && matches!(row.step.as_deref(), None | Some("check"))
-                && now.saturating_sub(row.started) < STARTING_ON_RESTART;
+                && !self.interrupted.contains(&row.id);
             if !just_requested {
                 return self
                     .fail_source(
@@ -448,6 +463,15 @@ impl Driver {
                         409,
                     )
                     .await;
+            }
+            let holding_since = row
+                .extra
+                .get("holdSince")
+                .and_then(Value::as_i64)
+                .unwrap_or(row.started);
+            if now.saturating_sub(holding_since) > PREPARE_AT_MOST.as_millis() as Millis {
+                let reason = preparation_timeout(self.run_dir(), row);
+                return self.fail_source(view, key, row, reason, 409).await;
             }
             if !view.relay_connected {
                 return Ok(());
@@ -483,17 +507,7 @@ impl Driver {
                     return Ok(());
                 }
                 Ok(Err(error)) => error.to_string(),
-                Err(_) => {
-                    let place = if listing::is_mac(self.run_dir()) {
-                        "this Mac"
-                    } else {
-                        "this machine"
-                    };
-                    format!(
-                        "{} took too long to get ready to move on {place}, so it stayed here. Try again in a moment.",
-                        row.display_name()
-                    )
-                }
+                Err(_) => preparation_timeout(self.run_dir(), row),
             };
             return self.fail_source(view, key, row, message, 409).await;
         } else {
@@ -1314,6 +1328,7 @@ impl Driver {
     }
 
     fn retire_memory(&mut self, id: &str) {
+        self.interrupted.remove(id);
         self.logged_stuck.remove(id);
         self.retry.remove(id);
         self.owned.remove(id);
@@ -2118,6 +2133,18 @@ fn local_place(run: &Path, view: &View) -> String {
     } else {
         name
     }
+}
+
+fn preparation_timeout(run: &Path, row: &Journal) -> String {
+    let place = if listing::is_mac(run) {
+        "this Mac"
+    } else {
+        "this machine"
+    };
+    format!(
+        "{} took too long to get ready to move on {place}, so it stayed here. Try again in a moment.",
+        row.display_name()
+    )
 }
 
 async fn snapshot(
