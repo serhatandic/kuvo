@@ -76,6 +76,7 @@ Intel Mac: checked without running; a real run waits for an Intel Mac.
 | U57 | A verified release with an unavailable engine download offers retry and keeps the current release. Once the pinned engine is available, retry prepares the same signed target. The invalid pack control stays blocked. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U58 | An installed machine answers installer status while the engine feed is offline. A new install is refused and update is left to the fleet updater. No engine is fetched or installer staging left, and the resident, machine identity and selected release stay in place. Passed on native Linux and WSL2. |
 | U59 | The Mac installer reports that a machine installation and an earlier app home coexist. It returns the TypeScript refusal for both move and new, and keeps both sets of work in place. Passed on Mac with the TypeScript reference. |
+| U60 | The native Mac installer accepts an alternate case spelling of the selected home and returns the same status. It refuses a different home and the production app identifier in a scratch home, without creating either path. The TypeScript installer references cover app ownership and alternate spelling. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -363,7 +364,7 @@ dependencies.
 | Same 700, 725, launch retry after move and deferred key settlement | Partial. U11 checks installer restart after a missing Helper registration. 2.6 covers resumable settlement with stand-ins. Actual launchd and authenticated Keychain settlement remain open. | 6.2, 7.2 |
 | Same 750, two installations preserved | U59 checks status, move, and new through the native Mac installer. | — |
 | Same 766, Linux move refusal | Covered by U26. | — |
-| Same 774 and 793, Mac app copy and case spelling | Partial. 2.6 checks the Mac command's matching home. The installer entry remains open. | 7.2 |
+| Same 774 and 793, Mac app copy and case spelling | U60 checks the installer entry for an alternate spelling and keeps production and scratch homes separate. 2.6 checks the Mac command's matching home. | — |
 | Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. U27 covers interruption after publication and retiring earlier incomplete staging. U36 covers a cleanup failure after startup. U37 replays interruption during archival and between the engine and release moves. | — |
 | [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 checks missing Helper registration and restart with a stand-in. Live readiness (45, 57, 128), restarted fresh making (74), and Linux starter admission (169) remain open. | 6.2, 7.2 |
 

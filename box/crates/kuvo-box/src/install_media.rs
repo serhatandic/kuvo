@@ -55,10 +55,7 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         .canonicalize()?;
     let system = account.home.canonicalize()?;
     let target = profile.join(root);
-    let located = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
-    let real = located(&target)
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&located(&system.join(".kuvo-code")).to_string_lossy());
+    let real = kuvo_move::install::same_mac_home(&target, &system.join(".kuvo-code"));
     let app_id = kuvo_move::mac::bundle_id(bundle)?;
     if real != (app_id == "run.kuvo.code") {
         return Err(io::Error::other(if real {
