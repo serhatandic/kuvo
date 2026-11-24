@@ -104,7 +104,13 @@ pub(crate) struct Suggested {
 
 /// A folder as the system names it (links resolved), or as given where it can't say.
 pub(crate) fn located(folder: &Path) -> PathBuf {
-    fs::canonicalize(folder).map_or_else(|_| resolved(folder), platform::as_node_names)
+    real(folder).unwrap_or_else(|| resolved(folder))
+}
+
+/// Where a path really is, its links followed, as Node's `realpath` names it; none where it isn't
+/// there.
+pub(crate) fn real(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok().map(platform::as_node_names)
 }
 
 #[cfg(not(windows))]
