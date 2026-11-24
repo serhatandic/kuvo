@@ -663,6 +663,164 @@
      }
     }
    ]
+  },
+  {
+   "name": "what can't answer now: an account's paid models and one model held, until its account changes or a session on it answers",
+   "steps": [
+    {
+     "send": "GET kuvo/work/unanswering",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": []
+      }
+     }
+    },
+    {
+     "given": {
+      "models": [
+       {
+        "id": "opus",
+        "providerID": "opencode",
+        "name": "Opus",
+        "cost": [
+         {
+          "input": 5,
+          "output": 25
+         }
+        ]
+       },
+       {
+        "id": "flash-free",
+        "providerID": "opencode",
+        "name": "Flash Free",
+        "cost": [
+         {
+          "input": 0,
+          "output": 0
+         }
+        ]
+       },
+       {
+        "id": "flash",
+        "providerID": "opencode-go",
+        "name": "Flash",
+        "cost": [
+         {
+          "input": 0.2,
+          "output": 0.8
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_paid",
+       "title": "Build",
+       "model": {
+        "providerID": "opencode",
+        "id": "opus"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{home}}/run/work/unanswering.json",
+       "text": "[{\"key\": \"opencode\", \"scope\": \"provider\", \"paid\": true, \"why\": \"Insufficient account funds\", \"at\": 1000, \"until\": 9999999999999}, {\"key\": \"opencode-go/flash\", \"scope\": \"model\", \"why\": \"Rate limited\", \"at\": 1000, \"until\": 9999999999999}, {\"key\": \"gone\", \"scope\": \"provider\", \"why\": \"Over\", \"at\": 1, \"until\": 2}]"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "One over by now isn't held; a hold on an account's paid ones names the models it covers.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": [
+        {
+         "provider": "opencode",
+         "model": "<absent>",
+         "only": "paid",
+         "models": [
+          "opus"
+         ],
+         "why": "Insufficient account funds",
+         "since": 1000,
+         "until": 9999999999999
+        },
+        {
+         "provider": "opencode-go",
+         "model": "flash",
+         "only": "<absent>",
+         "models": "<absent>",
+         "why": "Rate limited",
+         "since": 1000,
+         "until": 9999999999999
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "credential.updated",
+       "data": null
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "credential.switched",
+       "data": {
+        "integrationID": "opencode-go",
+        "credentialID": "cred_1"
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "A new key for that account offers its models again; the bare credential.updated says nothing.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": [
+        {
+         "provider": "opencode",
+         "only": "paid"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_paid"
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "A paid model of it answering: the account can again.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": []
+      }
+     }
+    }
+   ]
   }
  ]
 }

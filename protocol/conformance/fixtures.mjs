@@ -31,7 +31,7 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
   const botsRoot = path.join(home, "bots");
   const wakesRoot = path.join(home, "wakes");
   const vars = { chats: path.join(home, "chats"), skills: path.join(home, "config", "opencode", "skills"),
-    work: path.join(root, "work"), keys: path.join(home, "box", "keys") };
+    work: path.join(root, "work"), keys: path.join(home, "box", "keys"), home };
   let browserProcess;
 
   const look = { color: "mint", shape: "round", face: "calm" };
@@ -43,7 +43,7 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
       // The resident starts services itself.
     },
     session(given) {
-      engine.sessions.push(sessionOf(given));
+      engine.sessions.push({ ...sessionOf(given), ...(given.model ? { model: given.model } : {}) });
       if (given.running) engine.running.add(given.id);
       engine.emit({ type: "session.created", data: { sessionID: given.id } });
       if (given.running) engine.emit({ type: "session.execution.started", data: { sessionID: given.id } });
@@ -118,6 +118,14 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
         throw new Error(`Fixture write escapes its scratch folder: ${given.path}`);
       }
       write(given.path, given.text);
+    },
+    // The engine's models, as `api/model` lists them.
+    models(given) {
+      engine.models = given;
+    },
+    // One of the engine's events, as its feed tells it.
+    engineEvent(given) {
+      engine.emit(given);
     },
     // What a conversation asks before it's done (`run/work/asks.json`), asked just now: making a
     // project unless it says otherwise.
