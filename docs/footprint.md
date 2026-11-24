@@ -19,6 +19,8 @@ Kuvo Code must never spread files across the user's Mac or their machines. Every
   A staged Rust release keeps its signed manifest and archive in its version's
   folder beside `bin`. The running computer can send that archive to one of
   your other computers through the relay, including after the feed drops it.
+  During the TypeScript switch, Rust also keeps one signed bridge beta and
+  its pack in `updates/bridge` for computers that missed it.
   The active box also keeps its engine data under the keeper's `XDG_DATA_HOME`,
   with bridge and group stores in the box home.
 - **Removing the folders removes everything**: `uninstall.md` and `privacy.md` list them all; anything new keeps that true and updates them. After a change, list what's new in the computer's home folder and `/tmp`.

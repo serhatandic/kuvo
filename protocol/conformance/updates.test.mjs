@@ -61,12 +61,12 @@ function box(t) {
     kuvo: "box/1", version: "0.8.0", engine: "2.2.6",
     spreads: true, pack: { url: "https://example.invalid/box.tar.gz", sha256: digest("pack") },
   };
-  function update(signed, pack = "pack") {
+  function update(signed, pack = "pack", implementation = binary) {
     write(path.join(release, "boxes.json"), JSON.stringify(signed));
     write(path.join(release, "box.tar.gz"), pack);
     const args = ["update", "--phase", "prepare", "--from", release, "--key", key.key];
-    const run = spawnSync(binary.typescript ? typescriptRuntime() : binary.file,
-      binary.typescript ? [`--config=${process.platform === "win32" ? "NUL" : "/dev/null"}`, "--no-env-file", binary.file, ...args] : args, {
+    const run = spawnSync(implementation.typescript ? typescriptRuntime() : implementation.file,
+      implementation.typescript ? [`--config=${process.platform === "win32" ? "NUL" : "/dev/null"}`, "--no-env-file", implementation.file, ...args] : args, {
         cwd: home, env: { ...env, KUVO_HOME: home, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
         encoding: "utf8", timeout: 90000,
       });
@@ -339,6 +339,8 @@ test("Rust prepares its target without changing the selected release and its kee
 test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
 test("a new main finishes a prepared release after the old main goes away", { timeout: 240000 }, t => fleetRun(t, { failover: true }));
 test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true }));
+test("the deployed beta refuses a direct Rust pack", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true, expectRefusal: true }));
+test("the deployed beta takes the bridge before joining a Rust fleet", { timeout: 360000 }, t => fleetRun(t, { returningTypescript: true, bridgeBeta: true }));
 
 test("the shell keeper records a failed first Rust launch without selecting TypeScript again", async t => {
   if (boxBinary().typescript || process.platform === "win32") {
@@ -384,17 +386,21 @@ if [ -e "$KUVO_FIXTURE_CLOCK" ]; then echo 1121; else touch "$KUVO_FIXTURE_CLOCK
   }
 });
 
-async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
+async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal }) {
   const binary = boxBinary();
   const windows = process.platform === "win32";
   if (binary.typescript || (windows && !failover)) {
     return t.skip("This fixture needs the corresponding Rust keeper.");
   }
-  const typescript = process.env.KUVO_CONFORMANCE_TS_BIN;
-  if (returningTypescript && !typescript) return t.skip("Set KUVO_CONFORMANCE_TS_BIN to the TypeScript bundle.");
-  const previousKeeper = returningTypescript && process.env.KUVO_CONFORMANCE_TS_KEEPER;
-  const previousVersion = returningTypescript && process.env.KUVO_CONFORMANCE_TS_VERSION;
-  assert.equal(Boolean(previousKeeper), Boolean(previousVersion), "select both the predecessor's keeper and its version");
+  const deployed = bridgeBeta || expectRefusal;
+  const typescript = deployed ? process.env.KUVO_CONFORMANCE_DEPLOYED_TS_BIN : process.env.KUVO_CONFORMANCE_TS_BIN;
+  const previousKeeper = deployed && process.env.KUVO_CONFORMANCE_DEPLOYED_TS_KEEPER;
+  const previousVersion = deployed && "0.8.0-beta.48";
+  const bridgeLink = process.env.KUVO_CONFORMANCE_TS_BIN;
+  const bridgeAgents = process.env.KUVO_CONFORMANCE_TS_AGENTS;
+  if (deployed && (!typescript || !previousKeeper)) return t.skip("Supply the deployed beta bundle and keeper.");
+  if (returningTypescript && !typescript) return t.skip("Supply the TypeScript bundle.");
+  if (bridgeBeta && (!bridgeLink || !bridgeAgents)) return t.skip("Supply the bridge beta's link and agents bundles.");
   const { release, key, body } = box(t);
   const { computer, leases, relay } = await bench(t);
   const create = name => computer(name, undefined, folder => {
@@ -424,6 +430,7 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
   const keeperFile = name => fileURLToPath(new URL(`../../box/src/keeper/${name}`, import.meta.url));
   const starter = fs.readFileSync(keeperFile("kuvo-start"), "utf8").replaceAll("@ENGINE@", body.engine);
   const setsid = fs.readFileSync(keeperFile("kuvo-setsid"));
+  const launcher = bridgeBeta && fs.readFileSync(keeperFile("kuvo-launch"), "utf8").replaceAll("@ENGINE@", body.engine);
   const files = {
     [`bin/${program}`]: executable,
     "bin/box-version": Buffer.from(version + "\n"),
@@ -441,14 +448,36 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
   const pack = gzipSync(fs.readFileSync(packFile), { level: 1 });
   const hash = digest(pack);
   const selected = `versions/${version}-${hash.slice(0, 12)}/bin`;
+  const bridgeVersion = "0.8.0-beta.49";
+  let bridgePack, bridgeHash;
+  if (bridgeBeta) {
+    const tree = path.join(release, "bridge-source");
+    const files = {
+      "bin/kuvo-start": starter, "bin/kuvo-setsid": setsid, "bin/kuvo-launch": launcher,
+      "bin/box-version": bridgeVersion + "\n",
+      "bin/kuvo-link.js": fs.readFileSync(bridgeLink), "bin/kuvo-agents.js": fs.readFileSync(bridgeAgents),
+    };
+    for (const [file, bytes] of Object.entries(files)) write(path.join(tree, file), bytes, { mode: 0o700 });
+    write(path.join(tree, "box.json"), encode({
+      kuvo: "box/1", version: bridgeVersion, engine: body.engine,
+      files: Object.fromEntries(Object.entries(files).map(([file, bytes]) => [file, digest(bytes)])),
+    }));
+    const archive = path.join(release, "bridge.tar");
+    const done = spawnSync("tar", ["cf", archive, "-C", tree, "box.json", "bin"], { encoding: "utf8" });
+    assert.equal(done.status, 0, done.stderr);
+    bridgePack = gzipSync(fs.readFileSync(archive), { level: 1 });
+    bridgeHash = digest(bridgePack);
+  }
   const waiting = [];
   let hold = true;
   let retryDownload = false;
   let peerOnly = false;
   let refusedPacks = 0;
+  let refusedBridges = 0;
   let downloads = 0;
   let holdChecks = false;
   let heldChecks = 0;
+  let signedBridgeRelease;
   const feed = createServer((req, res) => {
     const url = `http://127.0.0.1:${feed.address().port}/fleet.tar.gz`;
     if (req.url === "/boxes.json") {
@@ -457,7 +486,7 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
         return;
       }
       const descriptor = { url, sha256: hash };
-      const signed = envelope({ ...body, pack: descriptor, launch: "rust", packs: { [target]: descriptor } }, key);
+      const signed = signedBridgeRelease ?? envelope({ ...body, pack: descriptor, launch: "rust", packs: { [target]: descriptor } }, key);
       res.end(encode(signed));
     } else if (req.url === "/fleet.tar.gz") {
       if (peerOnly) {
@@ -469,12 +498,36 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
         res.writeHead(503).end();
       } else if (++downloads > 1 && hold) waiting.push(res);
       else res.end(pack);
+    } else if (req.url === "/bridge.tar.gz" && bridgePack) {
+      if (peerOnly) {
+        refusedBridges += 1;
+        res.writeHead(404).end();
+      } else res.end(bridgePack);
     } else {
       res.writeHead(404).end();
     }
   });
   feed.listen(0, "127.0.0.1");
   await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  if (bridgeBeta) {
+    const base = `http://127.0.0.1:${feed.address().port}`;
+    const bridge = path.join(release, "bridge-boxes.json");
+    write(bridge, encode(envelope({ ...body, version: bridgeVersion,
+      pack: { url: `${base}/bridge.tar.gz`, sha256: bridgeHash } }, key)));
+    const archive = path.join(release, "fleet.tar.gz");
+    write(archive, pack);
+    const signer = fileURLToPath(new URL("../../scripts/sign-box.mjs", import.meta.url));
+    const addresses = Object.values(targets).flatMap(triple => ["--target", triple, archive, `${base}/fleet.tar.gz`]);
+    const signed = spawnSync(process.execPath, [signer, version, archive, `${base}/fleet.tar.gz`,
+      path.join(packRoot, "box.json"), "--bridge", bridge, ...addresses], {
+      env: { ...isolatedEnv(release), KUVO_BOX_SPREADS: "1",
+        KUVO_BOX_SIGNING_KEY: key.privateKey.export({ type: "pkcs8", format: "pem" }) },
+      encoding: "utf8", timeout: 15000,
+    });
+    assert.equal(signed.status, 0, signed.error?.message ?? signed.stderr);
+    signedBridgeRelease = JSON.parse(signed.stdout);
+  }
   const feedURL = `http://127.0.0.1:${feed.address().port}/boxes.json`;
   const env = computer => ({
     ...computer.env, KUVO_HOME: computer.home, KUVO_TEST_RELAY: relay.url, KUVO_RELAY_URL: relay.url,
@@ -511,6 +564,30 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers }) {
       // Let the shell keeper use Bun in place of the embedded runtime.
       const quote = word => "'" + word.replaceAll("'", "'\\''") + "'";
       let fixtureTrust = "";
+      let fixtureEngine = "";
+      if (bridgeBeta) {
+        // The normal TS trial checks a live engine and agents bridge before confirming.
+        // Run its own launcher and answer engine traffic through the bench engine.
+        write(path.join(peer.home, "run/launch.env"), "TZ=UTC\n");
+        const proxy = path.join(peer.home, "engine-fixture.cjs");
+        write(proxy, `const http = require("node:http");
+const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+http.createServer((request, response) => {
+  if (request.method === "GET" && request.url.split("?")[0] === "/api/debug/location") {
+    response.writeHead(200, { "content-type":"application/json" }).end('{"data":[]}');
+    return;
+  }
+  const forward = http.request({ host:"127.0.0.1", port:${peer.engine.record.port}, path:request.url,
+    method:request.method, headers:request.headers }, reply => {
+    response.writeHead(reply.statusCode, reply.headers);
+    reply.pipe(response);
+  });
+  forward.on("error", () => response.destroy());
+  response.on("close", () => forward.destroy());
+  request.pipe(forward);
+}).listen(port, "127.0.0.1", () => console.log("server listening"));\n`);
+        fixtureEngine = `if [ "$1" = serve ]; then exec ${quote(process.execPath)} ${quote(proxy)} "$0" "$@"; fi\n`;
+      }
       if (previousKeeper) {
         // This resident predates the fixture-key environment switch. Keep the bundled
         // program unchanged, and substitute only the public trust anchor it decodes.
@@ -524,7 +601,7 @@ Buffer.from = function (value, encoding, ...args) {
         // The resident starts another Bun process to verify and stage the pack.
         fixtureTrust = `export BUN_OPTIONS=${quote(`--preload=${preload}`)}\n`;
       }
-      write(engine, `#!/bin/sh\n[ "$1" != --version ] || exit 0\n${fixtureTrust}exec ${quote(typescriptRuntime())} "$@"\n`, { mode: 0o700 });
+      write(engine, `#!/bin/sh\n[ "$1" != --version ] || exit 0\n${fixtureEngine}${fixtureTrust}exec ${quote(typescriptRuntime())} "$@"\n`, { mode: 0o700 });
       continue;
     }
     write(path.join(peer.home, bin, program), executable, { mode: 0o700 });
@@ -549,7 +626,7 @@ Buffer.from = function (value, encoding, ...args) {
   const staged = peer => fs.existsSync(path.join(peer.home, "run/fleet-ready.json"));
   const confirmed = peer => active(peer) === selected && !fs.existsSync(path.join(peer.home, "run/previous"));
   const diagnose = () => [...keepers.keys()].map(peer => {
-    return ["serve.log", "update-start.log", "update.log", "update.json", "repair.log", "fleet-ready.json", "fleet-stage-clock.json", "peer-reach.json", "setup-relay-lease.json"].map(name => {
+    return ["serve.log", "engine.log", "agents.log", "update-start.log", "update.log", "update.json", "repair.log", "fleet-ready.json", "fleet-stage-clock.json", "peer-reach.json", "setup-relay-lease.json"].map(name => {
       const log = path.join(peer.home, "run", name);
       return fs.existsSync(log) ? `${peer.home} ${name}\n${fs.readFileSync(log, "utf8")}` : "";
     }).join("\n") + keepers.get(peer).log();
@@ -617,16 +694,31 @@ Buffer.from = function (value, encoding, ...args) {
     retryDownload = Boolean(shellKeepers);
     peerOnly = Boolean(failover || returningTypescript);
     start(away);
-    await until(() => {
+    const refused = () => {
       const cannot = path.join(away.home, "run/fleet-cannot.json");
-      if (previousVersion && fs.existsSync(cannot)) {
-        const failure = readJSON(cannot);
-        if (failure.version === version) {
-          t.diagnostic(`returning ${previousVersion} refused the release in ${Math.round(performance.now() - returned)} ms`);
-          assert.equal(active(away), initial(away));
-          throw new Error(failure.reason);
-        }
-      }
+      return fs.existsSync(cannot) ? readJSON(cannot) : undefined;
+    };
+    if (expectRefusal) {
+      const failure = await until(() => {
+        const failure = refused();
+        return failure?.version === version && failure;
+      }, diagnose, 120000);
+      assert.equal(failure.reason, "The new link doesn't work with it here.");
+      assert.equal(active(away), initial(away));
+      assert.ok(refusedPacks > 0);
+      t.diagnostic(`returning ${previousVersion} refused the release in ${Math.round(performance.now() - returned)} ms`);
+      return;
+    }
+    const bridgeBin = bridgeBeta ? `versions/${bridgeVersion}-${bridgeHash.slice(0, 12)}/bin` : undefined;
+    if (bridgeBin) {
+      await until(() => active(away) === bridgeBin && !fs.existsSync(path.join(away.home, "run/previous")), diagnose, 120000);
+      assert.ok(refusedBridges > 0, "the old beta must have reached a peer for its bridge pack");
+      t.diagnostic(`returning ${previousVersion} confirmed the bridge in ${Math.round(performance.now() - returned)} ms`);
+    }
+    const rustBegan = performance.now();
+    await until(() => {
+      const failure = bridgeBeta && refused();
+      if (failure?.version === version) throw new Error(failure.reason);
       return confirmed(away);
     }, diagnose, peerOnly ? 120000 : 65000);
     const resident = readJSON(path.join(away.home, "run/serve.json"));
@@ -636,10 +728,11 @@ Buffer.from = function (value, encoding, ...args) {
     if (peerOnly) assert.ok(refusedPacks > 0);
     if (returningTypescript) {
       const copy = path.join(away.home, "backups/before-rust");
-      assert.equal(fs.readlinkSync(path.join(copy, "bin")), initial(away));
-      assert.equal(fs.readFileSync(path.join(copy, "bin/box-version"), "utf8"), versionBefore(away) + "\n");
+      assert.equal(fs.readlinkSync(path.join(copy, "bin")), bridgeBin ?? initial(away));
+      assert.equal(fs.readFileSync(path.join(copy, "bin/box-version"), "utf8"), (bridgeBin ? bridgeVersion : versionBefore(away)) + "\n");
       assert.equal(readJSON(path.join(away.home, selected, "..", "box.json")).launch, "rust");
     }
+    if (bridgeBin) t.diagnostic(`the bridge then confirmed Rust in ${Math.round(performance.now() - rustBegan)} ms`);
     t.diagnostic(`returning computer confirmed in ${Math.round(performance.now() - returned)} ms`);
   } finally {
     feed.close();
@@ -794,6 +887,11 @@ test("a TypeScript updater stages the signed Rust pack for its own target", t =>
     ...body, version, launch: "rust",
     packs: { [target]: { url: "https://example.invalid/transition.tar.gz", sha256: hash } },
   }, key);
+  if (process.env.KUVO_CONFORMANCE_DEPLOYED_TS_BIN) {
+    const old = boxBinary(process.env.KUVO_CONFORMANCE_DEPLOYED_TS_BIN);
+    assert.equal(old.typescript, true);
+    assert.deepEqual(update(signed, "pack", old), { result: "failed", version, message: "no box.json" });
+  }
   assert.deepEqual(update(signed), { result: "waiting", version });
   const prepared = path.join(home, "versions", `${version}-${hash.slice(0, 12)}`);
   assert.equal(readJSON(path.join(prepared, "box.json")).launch, "rust");

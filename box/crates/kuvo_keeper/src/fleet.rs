@@ -3,7 +3,7 @@
 use std::{
     fs::{self, File},
     io::{self, Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -18,6 +18,7 @@ use crate::{
 };
 
 const STAGE_WAIT: i64 = 300_000;
+const MAX_BRIDGE_ENVELOPE: usize = 8192;
 
 #[derive(Clone)]
 pub struct Candidate {
@@ -67,6 +68,70 @@ impl Candidate {
         Ok(self
             .signed
             .reference(self.signed.pack_for(local_target()?)?))
+    }
+
+    pub fn bridge(&self, key: &str) -> io::Result<Option<Self>> {
+        let Some(envelope) = self.signed.bridge() else {
+            return Ok(None);
+        };
+        if envelope.len() > MAX_BRIDGE_ENVELOPE {
+            return Err(io::Error::other(
+                "The TypeScript bridge manifest is too large.",
+            ));
+        }
+        let bridge = Self::verify(envelope.into(), key)?;
+        if !self.signed.launches_rust()
+            || bridge.signed.launches_rust()
+            || bridge.signed.bridge().is_some()
+            || !self.newer_than(Some(bridge.version()))
+            || self.signed.engine() != bridge.signed.engine()
+        {
+            return Err(io::Error::other(
+                "That release has an invalid TypeScript bridge.",
+            ));
+        }
+        Ok(Some(bridge))
+    }
+
+    /// Keep the last TypeScript release available for computers that missed it.
+    pub fn held_bridge(&self, home: &Home) -> io::Result<bool> {
+        let folder = bridge_folder(home)?;
+        Ok(
+            files::read(&folder.join("boxes.json"))?.as_deref() == Some(self.envelope.as_bytes())
+                && fs::symlink_metadata(folder.join("pack"))
+                    .is_ok_and(|entry| entry.is_file() && entry.len() <= staging::MAX_PACK),
+        )
+    }
+
+    pub async fn retain_bridge(&self, home: &Home, fetcher: &Fetcher) -> io::Result<()> {
+        if self.held_bridge(home)? {
+            return Ok(());
+        }
+        let reference = self.local()?;
+        let pack = self.signed.pack_for(local_target()?)?;
+        let file = pack.filename()?;
+        let prior = ["running", "release", "previous-choice"]
+            .into_iter()
+            .find_map(|name| {
+                let folder = home.updates().join(name);
+                let manifest = files::text_of(&folder.join("boxes.json"))?;
+                (manifest.trim() == self.envelope.trim()).then(|| folder.join(&file))
+            });
+        let bytes = match prior {
+            Some(path) => match staging::read_release(&path, staging::MAX_PACK) {
+                Ok(bytes) if reference.matches_bytes(&bytes) => bytes,
+                _ => self.download(fetcher).await?,
+            },
+            None => self.download(fetcher).await?,
+        };
+        if !reference.matches_bytes(&bytes) {
+            return Err(io::Error::other(
+                "The TypeScript bridge doesn't match its signed manifest.",
+            ));
+        }
+        let folder = bridge_folder(home)?;
+        files::write_secret(&folder.join("pack"), &bytes)?;
+        files::write_secret(&folder.join("boxes.json"), self.envelope.as_bytes())
     }
 
     pub fn kept(home: &Home, key: &str) -> io::Result<Option<Self>> {
@@ -192,6 +257,24 @@ impl Candidate {
     }
 }
 
+fn bridge_folder(home: &Home) -> io::Result<PathBuf> {
+    let updates = home.updates();
+    let folder = updates.join("bridge");
+    for path in [&updates, &folder] {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(io::Error::other(
+                    "The TypeScript bridge folder is not a directory.",
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(folder)
+}
+
 pub const PACK_PART: usize = 30_000;
 
 pub struct HeldPack {
@@ -220,12 +303,15 @@ impl HeldPack {
         let (_, running) = installed(home)?;
         let kept =
             Candidate::kept(home, key)?.and_then(|candidate| candidate.local().ok()?.target().ok());
-        for target in [exact, running, kept]
+        let bridge = (home.updates().join("bridge"), None);
+        let root = home.root().canonicalize()?;
+        for (folder, target) in [exact, running, kept]
             .into_iter()
             .flatten()
             .filter(|target| target.version() == version)
+            .map(|target| (target.folder(home.root()), Some(target)))
+            .chain(std::iter::once(bridge))
         {
-            let folder = target.folder(home.root());
             let Some(text) = files::text_of(&folder.join("boxes.json")) else {
                 continue;
             };
@@ -233,14 +319,20 @@ impl HeldPack {
                 continue;
             };
             let reference = candidate.local()?;
-            if reference.target()? != target || hash.is_some_and(|hash| hash != reference.sha256) {
+            if reference.version != version
+                || target.is_some_and(|target| reference.target().ok() != Some(target))
+                || hash.is_some_and(|hash| hash != reference.sha256)
+            {
                 continue;
             }
             let pack = folder.join("pack");
             let Ok(path) = pack.canonicalize() else {
                 continue;
             };
-            if path != target.folder(&home.root().canonicalize()?).join("pack")
+            if path
+                != root
+                    .join(folder.strip_prefix(home.root()).map_err(io::Error::other)?)
+                    .join("pack")
                 || !fs::symlink_metadata(&pack)?.is_file()
             {
                 continue;

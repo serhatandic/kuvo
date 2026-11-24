@@ -66,6 +66,7 @@ pub struct View {
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
     update: UpdateFacts,
+    bridge_update: Option<BridgeUpdate>,
     work_calls: bool,
     transfers: bool,
     submission_recovery: bool,
@@ -324,7 +325,7 @@ impl Reader {
 }
 
 enum Change {
-    Update(UpdateFacts),
+    Update(UpdateFacts, Option<BridgeUpdate>),
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
@@ -333,6 +334,12 @@ enum Change {
     SubmissionRecovery,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BridgeUpdate {
+    pub recipients: BTreeSet<ComputerKey>,
+    pub facts: UpdateFacts,
 }
 
 pub struct ResidentPeers {
@@ -508,8 +515,8 @@ impl ResidentPeers {
         let _ = self.changes.send(Change::Notices(Arc::new(notices))).await;
     }
 
-    pub async fn announce_update(&self, facts: UpdateFacts) {
-        let _ = self.changes.send(Change::Update(facts)).await;
+    pub async fn announce_update(&self, facts: UpdateFacts, bridge: Option<BridgeUpdate>) {
+        let _ = self.changes.send(Change::Update(facts, bridge)).await;
     }
 }
 
@@ -551,6 +558,7 @@ impl Resident {
             move_waiting: Arc::default(),
             relay_connected: false,
             update: UpdateFacts::default(),
+            bridge_update: None,
             work_calls: false,
             transfers: false,
             submission_recovery: false,
@@ -596,8 +604,9 @@ impl Resident {
                     }
                 }
                 change = changes.recv() => match change {
-                    Some(Change::Update(update)) => {
+                    Some(Change::Update(update, bridge)) => {
                         self.view.update = update;
+                        self.view.bridge_update = bridge;
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::None);
                         }
@@ -1101,12 +1110,6 @@ async fn publish_round(
     let mut state = json!({"list": agents, "owns": owns, "features": features, "computer": {
         "working":working, "atWork":active,
     }});
-    if let (Some(computer), Ok(serde_json::Value::Object(update))) = (
-        state["computer"].as_object_mut(),
-        serde_json::to_value(&view.update),
-    ) {
-        computer.extend(update);
-    }
     if let Some(system) = view.system.as_deref() {
         state["computer"]["system"] = json!(system);
     }
@@ -1117,7 +1120,22 @@ async fn publish_round(
     {
         state["computer"]["engine"] = json!(engine);
     }
-    let announcement_digest: [u8; 32] = Sha256::digest(state.to_string()).into();
+    let offer = |update: &UpdateFacts| {
+        let mut state = state.clone();
+        if let (Some(computer), Ok(Value::Object(update))) = (
+            state["computer"].as_object_mut(),
+            serde_json::to_value(update),
+        ) {
+            computer.extend(update);
+        }
+        let digest: [u8; 32] = Sha256::digest(state.to_string()).into();
+        (state, digest)
+    };
+    let current = offer(&view.update);
+    let bridge = view
+        .bridge_update
+        .as_ref()
+        .map(|bridge| (bridge, offer(&bridge.facts)));
     for peer in &view.roster.members {
         let Some(host) = peer.host() else {
             continue;
@@ -1125,10 +1143,14 @@ async fn publish_round(
         let forced = matches!(refresh, Refresh::All)
             || matches!(refresh, Refresh::Peer { key, .. } if key == peer.key);
         let known = view.announced.get(&encode(&peer.key));
+        let (state, announcement_digest) = bridge
+            .as_ref()
+            .filter(|(bridge, _)| bridge.recipients.contains(&peer.key))
+            .map_or(&current, |(_, offer)| offer);
         let before = announcements.get(&peer.key);
         if forced
             || before.is_none_or(|(digest, at)| {
-                *digest != announcement_digest || now.saturating_sub(*at) >= 600_000
+                digest != announcement_digest || now.saturating_sub(*at) >= 600_000
             })
         {
             let at = before.map_or(now, |(_, before)| now.max(before.saturating_add(1)));
@@ -1140,7 +1162,7 @@ async fn publish_round(
                 fields["ask"] = json!("agents");
             }
             if relay.mail(host.clone(), envelope(fields)).await.is_ok() {
-                announcements.insert(peer.key, (announcement_digest, at));
+                announcements.insert(peer.key, (*announcement_digest, at));
             }
         }
         let activity_key = (peer.key, "activity");

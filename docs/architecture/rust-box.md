@@ -337,6 +337,14 @@ resident's own version.
     inside the move: 11 and 17 rewrite setup records no public release wrote, and the user's
     computers are past them.
 - **The user's four computers** are the only ones on a TypeScript 0.8 beta, and switch once:
+  - **Bridge beta.** The four computers first take one final TypeScript beta through their
+    normal updater. That beta still runs TypeScript and knows how to prepare and start the
+    signed Rust pack for its target. A computer still on beta.48 or earlier which reaches a Rust
+    fleet takes the signed bridge beta first, from its main computer if necessary, then takes
+    Rust. The handoff runs automatically before the returning computer takes on fleet work.
+    Include the bridge's signed `boxes.json` with `sign-box.mjs --bridge` in each Rust manifest
+    while these betas can still return. Keep its pack at its signed URL so the main computer can
+    fetch it for the returning computers.
   - Before the first start, the Rust box copies the whole `~/.kuvo-code` into
     `~/.kuvo-code/backups/before-rust`, kept until the user says to delete it.
   - It reads the TypeScript beta's home in place, rewriting only what differs from its own layout.

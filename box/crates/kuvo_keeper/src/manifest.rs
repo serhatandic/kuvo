@@ -61,6 +61,7 @@ struct Manifest {
     spreads: Option<Value>,
     released: Option<Value>,
     launch: Option<Value>,
+    bridge: Option<String>,
     pack: Pack,
     #[serde(default)]
     packs: BTreeMap<String, Pack>,
@@ -164,12 +165,20 @@ impl SignedRelease {
         self.manifest.spreads == Some(Value::Bool(true))
     }
 
+    pub fn launches_rust(&self) -> bool {
+        self.manifest.launch.as_ref().and_then(Value::as_str) == Some("rust")
+    }
+
+    pub(crate) fn bridge(&self) -> Option<&str> {
+        self.manifest.bridge.as_deref()
+    }
+
     pub(crate) fn released(&self) -> Option<jiff::Timestamp> {
         self.manifest.released.as_ref()?.as_str()?.parse().ok()
     }
 
     pub fn pack_for(&self, target: &str) -> io::Result<&Pack> {
-        if self.manifest.launch.as_ref().and_then(Value::as_str) == Some("rust") {
+        if self.launches_rust() {
             self.manifest.packs.get(target).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,

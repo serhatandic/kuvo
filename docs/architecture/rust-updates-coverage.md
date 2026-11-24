@@ -25,12 +25,14 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U9 | The old main goes down while its member's pack download is held. Advancing the relay and computer test clocks expires the lease. The new main completes the release even while its manifest request hangs. A returning computer pulls the retained pack from the new main. |
 | U10 | A returning TypeScript beta reads the Rust main's signed offer, stages its own target, and starts Rust through the shell keeper. The old home is copied before selection. |
 | U11 | The published v0.7.2 and v0.8.0-beta.1 Mac golden homes take signed Rust installer media through `kuvo-install` into the actual move. The resulting home retains the original notes and the Rust launch manifest. The installer starts the Helper through a scratch launchctl stand-in and recovers a missing registration through `status` and `new`. |
-| U12 | A TypeScript updater prepares the target-specific Rust pack while the old selection stays active. |
+| U12 | The bridge beta prepares the target-specific Rust pack while the old selection stays active. The deployed beta.48 chooses the unusable legacy descriptor in the same signed envelope and fails before staging. |
 | U13 | A failed first Rust launch leaves the Rust selection and writes the keeper's refusal record. |
 | U14 | A disposable Mac Helper hands over once for each replacement of the sealed bundle. The resident waits through an update, falls back to opening the Helper after launchd refuses, records a Helper that remains old, honors Stop before and during handover, and leaves a self-renewing Helper alone. |
 | U15 | `helper install` writes the launch agent with its login item, keep-alive policy, and XML-escaped arguments. Loading waits for the previous job and retries a refused bootstrap. Status, existing-job start, disabled Login Items, and explicit restart after Stop use scratch launchctl and open stand-ins. |
 | U16 | An ad-hoc signed Swift Helper uses a disposable Keychain and a Rust resident. When its signed bundle changes, the Helper exits 75 for launchd without a Rust handover. |
 | U17 | The authenticated local Mac resident starts `kuvo-start pause` as a separate process with the scratch account as `HOME`. A machine returns the same refusal on both boxes and creates no pause marker. |
+| U18 | The deployed beta.48 reaches the Rust main and takes its signed pack via relay. Its fixed JavaScript link probe refuses the Rust-only pack and beta.48 remains selected. |
+| U19 | The deployed beta.48 returns after two computers confirm Rust. The Rust main offers the separately signed TypeScript bridge beta and serves both packs over authenticated relay mail while their URLs return 404. The returning computer confirms the bridge with its keeper, engine stand-in and agents process, then confirms Rust with a private copy of its old home. |
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -75,6 +77,19 @@ selection stayed active. Its updater runs fixed JavaScript probes and reads
 the legacy `pack` descriptor. The fixture used a Bun preload to substitute
 the public verification key for both the original resident and its detached
 updater. The copied bundle and keeper came unchanged from the revision.
+In the two-step run, the online Rust computers first prepared in 44.8 seconds
+and confirmed 21.3 and 25.3 seconds after their held download resumed. The
+returning beta.48 confirmed the bridge in 21.2 seconds and Rust 50.3 seconds
+later, taking 71.5 seconds in total. Both packs came from the Rust main after
+their HTTP requests returned 404. `sign-box.mjs --bridge` signed the outer
+Rust manifest with the test signing key.
+
+To check U18–U19, run `scripts/built-at.sh 44d71568d` with `BUILT_AT_CACHE`
+set to scratch. Set `KUVO_CONFORMANCE_DEPLOYED_TS_BIN` to its `kuvo-link.js`
+and `KUVO_CONFORMANCE_DEPLOYED_TS_KEEPER` to that revision's `kuvo-start`.
+Set `KUVO_CONFORMANCE_TS_BIN` and `KUVO_CONFORMANCE_TS_AGENTS` to the bridge
+beta build's link and agents bundles. The deployed build's trust anchor is
+substituted only in its disposable Bun runtime.
 The v0.7.2 move took 44.0 seconds and the beta.1 move took 27.0 seconds.
 Their Helper restarts took 0.8 and 1.1 seconds through the launchctl
 stand-in. Those timings exclude generation of the golden homes.
@@ -126,6 +141,14 @@ in 4.8 seconds, changed main in 6.2 seconds from boot with the test clock
 advanced, confirmed in 5.8 seconds after the download resumed, and caught up
 the returning computer in 14.1 seconds. The fixture resolved the llvm-mingw
 runtime DLL from the scratch folder for every executable copy.
+
+The static Linux musl run including the bridge-offer code passed nine checks
+under WSL2. The shell fleet first prepared in 4.4 seconds and confirmed on the
+main and member 7.8 and 10.8 seconds after the download resumed. The returning
+computer confirmed in 12.2 seconds. With lease failover, the new main took
+over 6.1 seconds after boot with the test clock advanced, confirmed 5.9 seconds
+after the held download resumed, and served the returning computer in 14.0
+seconds. The deployed-beta and Mac fixtures ran on macOS.
 
 ## TypeScript reference cases
 
@@ -211,7 +234,7 @@ or desktop updater, and 22 are open. The inherited and live-proof table has
 | Same, engine swap holds, rollback, expiry, and downgrade fence | Open as release tests. | 3.2, 7.2 |
 | [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Partial. U10 checks the saved TypeScript home, and U13 checks the one-time refusal to roll back. Interrupted handoff and wipe generation in this workflow remain open. | 7.2, 9.1 |
 | Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Partial. U8 uses the shell keeper and U9 uses the native keeper. A stand-in turn stays alive. Before-rejoin work admission and native holder adoption remain open. | 4.1, 7.2 |
-| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10–U11 pass in scratch homes. U10 uses the checkout's transition-capable TypeScript bundle. U11 uses released Mac app homes, a stand-in engine, and a scratch launchctl. The released Linux machine upgrade and real Helper job remain open. | 6.2, 7.2, 9.3 |
+| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10 checks the bridge beta taking Rust directly. U18–U19 check the exact deployed beta's refusal and automatic two-step catch-up. U11 moves released Mac app homes with a stand-in engine and launchctl. Shipping the bridge beta, a released Linux machine upgrade, and a real Helper job remain open. | 7.2, 9.1, 9.3 |
 | Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers stopped standalone scratch installations on Mac, native Windows, and Linux musl under WSL. The live shared, Helper-owned and installer flows remain open. | 2.3, 7.2 |
 | [Setup](rust-setup-coverage.md) add and fleet authority, [Windows](rust-windows-coverage.md) case 18 | Partial. U9 checks a new main's lease and U4 checks an automatic Windows selection. Shared Windows activation, on-return admission, and cleanup of a busy previous release remain open. | 2.3, 7.2, 8.1 |
 

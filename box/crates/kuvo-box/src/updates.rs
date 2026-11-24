@@ -12,7 +12,7 @@ use kuvo_keeper::{
 };
 use kuvo_peers::{
     directory::{PreparedRelease, UpdateFacts},
-    setup_lists::{ResidentPeers, View},
+    setup_lists::{BridgeUpdate, ResidentPeers, View},
 };
 use kuvo_setup::SetupHandle;
 use kuvo_store::home::Home;
@@ -52,6 +52,8 @@ pub fn start(
         next_check: Instant::now() + delay,
         fetcher: Fetcher::default(),
         checking: None,
+        bridge_fetch: None,
+        next_bridge: Instant::now(),
         last_sent: None,
         attempted: None,
         pending: None,
@@ -115,7 +117,9 @@ struct Fleet {
     next_check: Instant,
     fetcher: Fetcher,
     checking: Option<JoinHandle<io::Result<Candidate>>>,
-    last_sent: Option<UpdateFacts>,
+    bridge_fetch: Option<JoinHandle<io::Result<()>>>,
+    next_bridge: Instant,
+    last_sent: Option<(UpdateFacts, Option<BridgeUpdate>)>,
     attempted: Option<PreparedRelease>,
     pending: Option<JoinHandle<io::Result<()>>>,
     mail: Option<mail::Mail>,
@@ -126,6 +130,9 @@ impl Drop for Fleet {
     fn drop(&mut self) {
         if let Some(checking) = &self.checking {
             checking.abort();
+        }
+        if let Some(bridge) = &self.bridge_fetch {
+            bridge.abort();
         }
         if let Some(pending) = &self.pending {
             pending.abort();
@@ -227,10 +234,12 @@ impl Fleet {
             .as_ref()
             .and_then(|working| fleet::installed_envelope(&self.home, working));
         let target = local_target()?;
-        let installed_sha256 = running_manifest
+        let running = running_manifest
             .as_ref()
-            .and_then(|body| Candidate::verify(body.clone(), &self.key).ok())
-            .and_then(|release| release.local().ok())
+            .and_then(|body| Candidate::verify(body.clone(), &self.key).ok());
+        let installed_sha256 = running
+            .as_ref()
+            .and_then(|running| running.local().ok())
             .map(|pack| pack.sha256);
         let mut facts = UpdateFacts {
             kuvo: Some(version),
@@ -259,6 +268,7 @@ impl Fleet {
                 let home = self.home.clone();
                 let fetcher = self.fetcher.clone();
                 let mail = self.mail.clone();
+                let key = self.key.clone();
                 self.pending = Some(tokio::spawn(async move {
                     let pack = match candidate.download(&fetcher).await {
                         Ok(pack) => pack,
@@ -269,14 +279,25 @@ impl Fleet {
                             mail.pull(&candidate.local()?).await.map_err(|_| error)?
                         }
                     };
+                    if let Some(bridge) = candidate.bridge(&key)? {
+                        bridge.retain_bridge(&home, &fetcher).await?;
+                    }
                     candidate.prepare(home, pack).await
                 }));
             }
         }
         let prepared = facts.staged.is_some();
-        if self.last_sent.as_ref() != Some(&facts) {
-            self.last_sent = Some(facts.clone());
-            self.peers.announce_update(facts).await;
+        let bridge = if local_main && let Some(running) = &running {
+            self.bridge_offer(running, &view, now).await?
+        } else {
+            None
+        };
+        let publication = (facts, bridge);
+        if self.last_sent.as_ref() != Some(&publication) {
+            self.last_sent = Some(publication.clone());
+            self.peers
+                .announce_update(publication.0, publication.1)
+                .await;
         }
 
         if let Some(candidate) = candidate {
@@ -300,6 +321,55 @@ impl Fleet {
             }
         }
         Ok(())
+    }
+
+    async fn bridge_offer(
+        &mut self,
+        running: &Candidate,
+        view: &View,
+        now: i64,
+    ) -> io::Result<Option<BridgeUpdate>> {
+        let Some(bridge) = running.bridge(&self.key)? else {
+            return Ok(None);
+        };
+        let recipients = view
+            .roster
+            .members
+            .iter()
+            .filter_map(|peer| {
+                let (_, offered) = view.peer_updates(&peer.key, now);
+                (offered.release_target.is_none() && bridge.newer_than(offered.kuvo.as_deref()))
+                    .then_some(peer.key)
+            })
+            .collect();
+        if self
+            .bridge_fetch
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+            && let Some(fetch) = self.bridge_fetch.take()
+            && let Err(error) = fetch.await.map_err(io::Error::other)?
+        {
+            eprintln!("Keeping the TypeScript bridge: {error}");
+        }
+        let reference = bridge.local()?;
+        let facts = if bridge.held_bridge(&self.home)? {
+            UpdateFacts {
+                kuvo: Some(reference.version),
+                installed_sha256: Some(reference.sha256),
+                running_manifest: Some(bridge.envelope().into()),
+                ..UpdateFacts::default()
+            }
+        } else {
+            if self.bridge_fetch.is_none() && Instant::now() >= self.next_bridge {
+                self.next_bridge = Instant::now() + Duration::from_secs(60);
+                let (home, fetcher) = (self.home.clone(), self.fetcher.clone());
+                self.bridge_fetch = Some(tokio::spawn(async move {
+                    bridge.retain_bridge(&home, &fetcher).await
+                }));
+            }
+            UpdateFacts::default()
+        };
+        Ok(Some(BridgeUpdate { recipients, facts }))
     }
 
     fn consider(
