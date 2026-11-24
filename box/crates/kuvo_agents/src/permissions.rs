@@ -219,7 +219,11 @@ pub fn outside_card(
     (asks && own != Effect::Deny && (own == Effect::Allow || allowed_before) && !allowed_outside)
         .then(|| PermissionAsk {
             action: "external_directory".into(),
-            resources: outside.iter().map(|path| policy_name(path)).collect(),
+            // The paths as the computer writes them; the folders to save, as your rules do.
+            resources: outside
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
             save: folders,
             unclassified: false,
             ..ask.clone()
