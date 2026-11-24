@@ -1022,6 +1022,11 @@ async function freshLinuxInstaller(t, binary, beforeStart = "") {
   const cronBefore = "30 7 * * * /bin/true\n";
   write(cron, cronBefore);
   write(path.join(tools, "crontab"), `#!/bin/sh
+hold="$KUVO_TEST_UNINSTALL_TOOLS/hold-crontab"
+if [ "$1" = -l ] && [ -f "$hold" ]; then
+  printf '%s\\n' "$$" > "$hold.pid"
+  exec /bin/sleep 300
+fi
 case "$1" in
   -l) cat "$KUVO_TEST_UNINSTALL_TOOLS/table" ;;
   -) cat >"$KUVO_TEST_UNINSTALL_TOOLS/table" ;;
@@ -1030,7 +1035,8 @@ esac
 `, { mode: 0o700 });
   const fixtureEnv = { ...env, PATH: `${tools}${path.delimiter}${env.PATH}`, KUVO_TEST_UNINSTALL_TOOLS: tools,
     KUVO_TEST_RELEASE_KEY: key.key };
-  const install = verb => spawnSync("/bin/sh", [path.join(media, "kuvo-install"), verb], {
+  const entry = path.join(media, "kuvo-install");
+  const install = verb => spawnSync("/bin/sh", [entry, verb], {
     cwd: env.HOME, env: fixtureEnv, encoding: "utf8", timeout: 90000,
   });
   const stop = () => {
@@ -1040,7 +1046,8 @@ esac
     });
     assert.equal(stopped.status, 0, stopped.stderr);
   };
-  return { env, home, cron, cronBefore, version, pack, install, stop };
+  const begin = verb => launch("/bin/sh", [entry, verb], fixtureEnv, env.HOME);
+  return { env, home, cron, cronBefore, version, pack, install, begin, stop };
 }
 
 test("signed Linux installer makes a fresh machine and keeps unrelated reboot jobs", { timeout: 120000 }, async t => {
@@ -1124,7 +1131,7 @@ fi
     assert.notEqual(fs.readFileSync(path.join(home, "machine-id"), "utf8"), firstId);
     assert.equal(fs.readFileSync(path.join(failure.setAside, previousWork), "utf8"), "keep earlier work");
     assert.equal(fs.readFileSync(cron, "utf8"), table);
-    assert.deepEqual(fs.readdirSync(path.join(home, "updates/install")), []);
+    assert.equal(fs.existsSync(path.join(home, "updates/install")), false);
   } finally {
     stop();
   }
@@ -1151,6 +1158,75 @@ test("a fresh Linux install leaves the earlier home alone while its keeper is st
     assert.equal(fs.readFileSync(cron, "utf8"), cronBefore);
   } finally {
     await writer.stop();
+  }
+});
+
+test("a Linux installer resumes after it was interrupted between publication and startup", { timeout: 120000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
+  const { home, cron, cronBefore, install, begin, stop } = await freshLinuxInstaller(t, binary);
+  const hold = path.join(path.dirname(cron), "hold-crontab");
+  const oldWork = path.join("workspace", "old-work");
+  write(path.join(home, oldWork), "keep earlier work");
+  write(hold, "");
+  const interrupted = begin("new");
+  let cronPid;
+  try {
+    cronPid = await until(() => {
+      const file = `${hold}.pid`;
+      if (!fs.existsSync(file)) return;
+      const value = Number(fs.readFileSync(file, "utf8"));
+      return value > 1 ? value : undefined;
+    }, "the installer reaches the pre-start crontab command", 60000);
+    const machineId = path.join(home, "machine-id");
+    const publishedId = fs.readFileSync(machineId, "utf8");
+    const selected = fs.readlinkSync(path.join(home, "bin"));
+    assert.equal(fs.existsSync(path.join(home, "run/serve.json")), false);
+    assert.equal(fs.readFileSync(cron, "utf8"), cronBefore);
+    assert.equal((await interrupted.stop()).signal, "SIGTERM");
+    process.kill(cronPid);
+    cronPid = undefined;
+    fs.rmSync(hold);
+    const pending = install("status");
+    assert.equal(pending.status, 0, pending.error?.message ?? pending.stdout + pending.stderr);
+    const { verdict, verb } = JSON.parse(pending.stdout);
+    assert.deepEqual({ verdict, verb }, { verdict: "fresh", verb: "new" });
+    const resumed = install("new");
+    assert.equal(resumed.status, 0, resumed.error?.message ?? resumed.stdout + resumed.stderr);
+    const result = JSON.parse(resumed.stdout);
+    assert.deepEqual([result.result, result.verdict, result.started], ["done", "machine", true]);
+    assert.equal(fs.readFileSync(machineId, "utf8"), publishedId);
+    assert.equal(fs.readlinkSync(path.join(home, "bin")), selected);
+    assert.equal(fs.readFileSync(path.join(result.setAside, oldWork), "utf8"), "keep earlier work");
+    assert.equal(fs.readdirSync(path.join(home, "trash")).length, 1);
+    assert.equal(fs.existsSync(path.join(home, "updates/install")), false);
+  } finally {
+    await interrupted.stop();
+    if (cronPid !== undefined) process.kill(cronPid);
+    stop();
+  }
+});
+
+test("a Linux installer clears an earlier incomplete installation after making the new home", { timeout: 120000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
+  const { home, install, stop } = await freshLinuxInstaller(t, binary);
+  const making = path.join(home, "updates/install/making");
+  write(making, "1\n");
+  write(path.join(home, "bin/kuvo-start"), "half an installation", { mode: 0o700 });
+  try {
+    const before = install("status");
+    assert.equal(before.status, 0, before.error?.message ?? before.stdout + before.stderr);
+    assert.equal(JSON.parse(before.stdout).verdict, "fresh");
+    const made = install("new");
+    assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
+    const result = JSON.parse(made.stdout);
+    assert.deepEqual([result.result, result.verdict, result.started], ["done", "machine", true]);
+    assert.equal(fs.readFileSync(path.join(result.setAside, "bin/kuvo-start"), "utf8"), "half an installation");
+    assert.equal(fs.existsSync(making), false);
+    assert.equal(fs.existsSync(path.dirname(making)), false);
+  } finally {
+    stop();
   }
 });
 

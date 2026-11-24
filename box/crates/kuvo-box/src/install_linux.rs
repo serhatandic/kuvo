@@ -216,8 +216,9 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         println!("{value}");
         return Ok(1);
     }
-    files::remove_tree_synced(staged.root())?;
-    files::remove_file_synced(&marker)?;
+    // The selected home is ready. Retire earlier installer staging as well
+    // so its unfinished-install marker cannot make this home look fresh.
+    files::remove_tree_synced(&install)?;
     let result = install::judge(&home, None, Platform::Linux, None)?;
     value["verdict"] = json!(result.verdict);
     value["status"] = result.status;
