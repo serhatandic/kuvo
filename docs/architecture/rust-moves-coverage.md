@@ -19,6 +19,7 @@ for addressed work and receipt lookup.
 | Lost part, arrival and switch replies | The relay holds the live Rust transfer's first packets for `check`, `checked`, `offer`, `ready`, `part`, `got`, `working`, `arrive`, `arrived`, `switch` and `switched`. The source resends the part whose acknowledgement was lost, and retries arrival after a minute. The destination restarts after committing the switch. The source reconnects and recovers the acknowledgement through its next scheduled switch retry. |
 | Lost part window | Both residents lose the first 16 parts, then retry the first eight and complete the transfer with the whole transcript. |
 | Retry clocks | The Rust resident resumes a switch whose saved timestamp is ahead of its clock. A steady wall clock still allows the next minute's retry, and a backward jump prompts another retry of the same authenticated switch. The part window uses monotonic time separately. The TypeScript reference covers both clocks. |
+| Quiet destination | After the first part goes unanswered, the source shows that it is waiting. Authenticated progress clears the notice. Ten more minutes without progress release the original and save a failure receipt. |
 | Interrupted import | The engine accepts the import but its reply is cut short by a destination restart. The destination deletes just that copy using the import receipt. The source keeps its original and reports failure. |
 | Drop during import | Both residents hold a copy while setup is in flight. They submit the drop decision after the engine replies, remove the copy and replay that decision to a later switch. |
 | Partial copy | A restarted destination finishes the live transfer using the part it saved earlier. After a week an incomplete copy can be removed with a durable drop decision. A complete two-computer copy still waits for its switch decision. |
@@ -106,7 +107,7 @@ The later macOS move-area runs passed 53 Rust and 51 applicable TypeScript scena
 including the two-binary reach comparison. Focused checks added afterward passed on
 both residents. Native Windows passed nine focused cases on its latest build. The
 latest WSL2 GNU and static Linux musl builds each passed four focused queue, letter
-replay and attachment scenarios. Close-by-close results are recorded below.
+replay and attachment scenarios.
 
 Live TS↔Rust beta transfer and seeded mixed switch replay are **dropped: TS-beta
 interop (user 11-23)**. The released Mac and beta.1 manifest readers remain in
@@ -137,8 +138,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Seventy-nine have full scenario coverage, 18 have partial proof,
-and 115 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Eighty-one have full scenario coverage, 18 have partial proof,
+and 113 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -171,6 +172,7 @@ separately where they appear.
 | | 8 | Covered by dropping the entire first window, retrying eight parts, and verifying the completed move contains its original transcript. |
 | | 9 | Covered by an unknown switch, drop and decision query yielding no ownership proof. |
 | | 10 | Covered by rolling back an earlier child or root import and its installed wake-up folder after another import fails. |
+| | 11 | Covered by an unanswered part reaching its deadline and leaving the original with a failed receipt. |
 | | 12 | Covered by a live destination refusing an offer over an existing chat and leaving its original unchanged. |
 | | 13–14, 28, 33 | Covered by refusing four invalid archive links while preserving the destination's unrelated file and conversations. |
 | | 15 | Covered by a second authenticated computer trying the held move’s ID and a different ID for the same conversation. |
@@ -191,6 +193,7 @@ separately where they appear.
 | | 31 | Covered by the live lost switch acknowledgement and by a restarted destination replying only with its durable decision. |
 | | 36 | Covered by the authenticated oversized offer, exact refusal and empty destination. |
 | | 37 | Covered by the source and recipient listing the named computers while a two-part transfer is held between acknowledgements. |
+| | 38 | Covered by waiting progress, clearing it on authenticated contact and releasing the original when the destination goes quiet again. |
 | | 39 | Covered by a live source whose durable switch is unanswered for 90 seconds and whose repeated switch later recovers the destination receipt. |
 | | 40 | Covered by authenticated switch retries with a future saved time, a steady wall clock and a backward jump. The part-window test checks monotonic retry deadlines. |
 | | 41–42 | Covered by an incomplete copy waiting after 90 seconds and a complete copy waiting after 150 seconds, and by clearing a waiting announcement when the peer answers again. |
@@ -201,7 +204,7 @@ separately where they appear.
 | | 48 | Covered by move choices that count a chat’s delegated work and unanswered questions, including a second level of work. |
 | | 53–54 | Native account fallback is owned by 4.6. Bot key handling is owned by 5.1 with native carry in 4.6. |
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
-| | 3, 7, 11, 35, 38 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. |
+| | 3, 7, 35 | Open, 2.4 transfer and retry. OpenCode import and queue effects depend on 3.2. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |
@@ -264,6 +267,10 @@ order and count a parameterized declaration once.
   tool paths for letters and transcript reads.
 - 3.2 owns the effect and receipt adapter behind the new ownership handle, typed consent
   and restored queue effects. 2.4's peer forwarding carries both draft limits through multipart mail.
+- The queue effects still need Stop admission while the source waits for an active turn,
+  the paused reason in awaited-letter receipts, and typed errors for unreadable held prompts.
+  The Rust owner transport handles submissions, delivery and receipt lookup. Owner snapshot
+  reads, including authoritative absence and out-of-order replies, still need their read route.
 - 4.6, 5.1 and 5.3 own native coding-agent carry and bot and group runtime placement.
   They use the shared relay steps, journals and immutable decisions delivered in 2.4.
 - 5.2 owns the Work Queue item and file placement, with 2.4 responsible for preserving

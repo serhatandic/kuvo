@@ -65,11 +65,17 @@ impl TestRelay {
     }
 
     async fn connect_with(change: impl FnOnce(&mut Config)) -> (Relay, Self) {
+        let (mut relay, test, address) = Self::welcome(change).await;
+        assert!(matches!(relay.events.recv().await, Some(Event::Connected(got)) if got == address));
+        (relay, test)
+    }
+
+    async fn welcome(change: impl FnOnce(&mut Config)) -> (Relay, Self, Address) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut config = config(format!("ws://{}", listener.local_addr().unwrap()));
         change(&mut config);
         let secret = config.secret;
-        let mut relay = Relay::start(config);
+        let relay = Relay::start(config);
         let mut test = Self(
             accept_async(listener.accept().await.unwrap().0)
                 .await
@@ -78,8 +84,7 @@ impl TestRelay {
         assert_eq!(test.binary().await, frames::relay_hello(&secret));
         let address = keys::address_of(&secret);
         test.send([&[1], &address[..]].concat()).await;
-        assert!(matches!(relay.events.recv().await, Some(Event::Connected(got)) if got == address));
-        (relay, test)
+        (relay, test, address)
     }
 
     async fn send(&mut self, bytes: Vec<u8>) {
@@ -117,6 +122,23 @@ impl TestRelay {
                 let mail = Envelope::open(body, &PEER_KEY, &public(RUST_KEY)).unwrap();
                 if let Some(moving) = mail.0.get("moving") {
                     return moving["moves"].clone();
+                }
+            }
+        }
+    }
+
+    async fn move_step(&mut self, op: &str) -> serde_json::Value {
+        loop {
+            let sent = self.binary().await;
+            if sent.get(1..17) != Some(PEER_ADDRESS.as_slice()) {
+                continue;
+            }
+            if let Some((Kind::Mail, _, bytes)) = frames::read_frame(&sent[17..]) {
+                let mail = Envelope::open(bytes, &PEER_KEY, &public(RUST_KEY)).unwrap();
+                if let Some(movement) = mail.0.get("move")
+                    && movement["op"] == op
+                {
+                    return movement.clone();
                 }
             }
         }
@@ -1715,23 +1737,6 @@ async fn switch_retry_survives_wall_clock_changes() {
         atomic::{AtomicI64, Ordering},
     };
 
-    async fn next_switch(wire: &mut TestRelay) -> Value {
-        loop {
-            let sent = wire.binary().await;
-            if sent.get(1..17) != Some(PEER_ADDRESS.as_slice()) {
-                continue;
-            }
-            if let Some((Kind::Mail, _, bytes)) = frames::read_frame(&sent[17..]) {
-                let mail = Envelope::open(bytes, &PEER_KEY, &public(RUST_KEY)).unwrap();
-                if let Some(movement) = mail.0.get("move")
-                    && movement["op"] == "switch"
-                {
-                    return movement.clone();
-                }
-            }
-        }
-    }
-
     tokio::time::timeout(Duration::from_secs(180), async {
         let home = tempfile::tempdir().unwrap();
         let (relay, mut wire) = TestRelay::connect().await;
@@ -1779,7 +1784,7 @@ async fn switch_retry_survives_wall_clock_changes() {
         let engine = Engine::new(home.path().to_owned(), Default::default(), Timing::default()).unwrap();
         resident.attach_moves(engine, owner).await.unwrap();
 
-        let first = next_switch(&mut wire).await;
+        let first = wire.move_step("switch").await;
         assert_eq!(first["id"], id);
         assert_eq!(first["hash"], hash);
         assert_eq!(first["generation"], 1);
@@ -1788,17 +1793,17 @@ async fn switch_retry_survives_wall_clock_changes() {
 
         tokio::time::pause();
         clock.store(1_000_001, Ordering::Relaxed);
-        assert!(tokio::time::timeout(Duration::from_secs(10), next_switch(&mut wire)).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_secs(10), wire.move_step("switch")).await.is_err());
         assert_eq!(sent_at(), 1_000_000);
         wire.send(vec![0]).await;
         tokio::time::advance(Duration::from_secs(52)).await;
-        assert_eq!(next_switch(&mut wire).await, first);
+        assert_eq!(wire.move_step("switch").await, first);
         assert_eq!(sent_at(), 1_000_001);
-        assert!(tokio::time::timeout(Duration::from_secs(1), next_switch(&mut wire)).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_secs(1), wire.move_step("switch")).await.is_err());
 
         clock.store(990_000, Ordering::Relaxed);
         wire.send(vec![0]).await;
-        assert_eq!(tokio::time::timeout(Duration::from_secs(6), next_switch(&mut wire)).await.unwrap(), first);
+        assert_eq!(tokio::time::timeout(Duration::from_secs(6), wire.move_step("switch")).await.unwrap(), first);
         assert_eq!(sent_at(), 990_000);
     })
     .await
@@ -2001,4 +2006,194 @@ async fn dropped_copies_retry_each_minute_then_each_hour() {
     .await
     .unwrap();
     server.abort();
+}
+
+#[tokio::test]
+async fn a_quiet_peer_keeps_the_original_until_the_transfer_deadline() {
+    use kuvo_engine::{Engine, Timing};
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        ownership::{Handle, SetupState},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use serde_json::Value;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let home = tempfile::tempdir().unwrap();
+    let run = home.path().join("run");
+    let here = public(RUST_KEY);
+    let peer = public(PEER_KEY);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let session = "ses_waitingSource";
+    let id = "mov_waitingSource";
+    let endpoint =
+        json!({"pid":std::process::id(),"port":port,"password":"fixture","version":"fixture"});
+    files::write_atomic(
+        &run.join("engine.json"),
+        &serde_json::to_vec(&endpoint).unwrap(),
+    )
+    .unwrap();
+    let journal = run.join("moves").join(format!("{id}.json"));
+    let row = json!({
+        "formatVersion":1, "id":id, "kind":"chat", "thing":session, "name":"Quiet chat",
+        "from":encode(&here), "to":encode(&peer), "peer":encode(&peer), "role":"from",
+        "stage":"holding", "step":"check", "sessions":[session], "started":1_000_000,
+        "twoComputers":true,
+    });
+    files::write_atomic(&journal, &serde_json::to_vec(&row).unwrap()).unwrap();
+    let server = tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let mut socket = BufReader::new(socket);
+            let mut request = String::new();
+            if socket.read_line(&mut request).await.unwrap() == 0 {
+                continue;
+            }
+            let mut header = String::new();
+            while socket.read_line(&mut header).await.unwrap() > 2 {
+                header.clear();
+            }
+            let route = request.split_whitespace().nth(1).unwrap_or_default();
+            assert!(!request.starts_with("DELETE"));
+            let body =
+                if route.starts_with("/api/experimental/session/") && route.ends_with("/export") {
+                    json!({"data":{"info":{"id":session,"title":"Quiet chat"},"messages":[]}})
+                } else if route == format!("/api/session/{session}") {
+                    json!({"data":{"id":session,"title":"Quiet chat"}})
+                } else {
+                    json!({"data":[]})
+                };
+            let body = body.to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
+    });
+    let (relay, mut wire, _) = TestRelay::welcome(|_| {}).await;
+    let clock = Arc::new(AtomicI64::new(1_000_000));
+    let mut resident = ResidentPeers::start(
+        home.path(),
+        Roster {
+            here: Some(here),
+            main: Some(here),
+            name: "Source".into(),
+            members: vec![Member {
+                key: peer,
+                address: Some(PEER_ADDRESS),
+                name: "Destination".into(),
+                kind: ComputerKind::Machine,
+            }],
+        },
+        Some(relay),
+        None,
+        false,
+        {
+            let clock = clock.clone();
+            Arc::new(move || clock.load(Ordering::Relaxed))
+        },
+    )
+    .await
+    .unwrap();
+    let devices = Devices::load(home.path(), "Source".into(), ComputerKind::Machine)
+        .await
+        .unwrap()
+        .devices;
+    let owner = Handle::new(
+        resident.reader(),
+        resident.relay_handle(),
+        devices,
+        SetupState::default,
+    );
+    let engine = Engine::new(
+        home.path().to_owned(),
+        Default::default(),
+        Timing::default(),
+    )
+    .unwrap();
+    resident.attach_moves(engine, owner).await.unwrap();
+
+    let mail = |movement: Value| {
+        let packet = json!({"at":clock.load(Ordering::Relaxed), "move":movement});
+        let bytes = Envelope(packet.as_object().unwrap().clone())
+            .seal(&PEER_KEY, &here)
+            .unwrap();
+        frames::relay_send(&PEER_ADDRESS, &bytes)
+    };
+    let check = tokio::time::timeout(Duration::from_secs(10), wire.move_step("check"))
+        .await
+        .unwrap();
+    assert_eq!(check["id"], id);
+    wire.send(mail(json!({"id":id,"op":"checked","ok":true})))
+        .await;
+    let offer = tokio::time::timeout(Duration::from_secs(10), wire.move_step("offer"))
+        .await
+        .unwrap();
+    let step = |op| {
+        json!({"id":id,"op":op,"hash":offer["hash"],"generation":offer["generation"],
+        "safeSwitch":true,"verifyPayloads":true,"typedAttachmentPaths":true})
+    };
+    wire.send(mail(step("ready"))).await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), wire.move_step("part"))
+            .await
+            .unwrap()["i"],
+        0
+    );
+
+    let waiting = |shown: &Value| {
+        shown
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .map(|row| row["waiting"] == true)
+    };
+    tokio::time::pause();
+    clock.store(1_094_000, Ordering::Relaxed);
+    wire.send(vec![0]).await;
+    tokio::time::advance(Duration::from_secs(94)).await;
+    tokio::time::timeout(Duration::from_secs(12), async {
+        while waiting(&wire.moving().await) != Some(true) {}
+    })
+    .await
+    .unwrap();
+    wire.send(mail(step("working"))).await;
+    tokio::time::timeout(Duration::from_secs(12), async {
+        while waiting(&wire.moving().await) != Some(false) {}
+    })
+    .await
+    .unwrap();
+
+    let outcome = run.join("moves").join(format!("{id}.outcome.json"));
+    clock.store(1_699_000, Ordering::Relaxed);
+    wire.send(vec![0]).await;
+    tokio::time::advance(Duration::from_secs(605)).await;
+    tokio::time::timeout(Duration::from_secs(12), async {
+        while !outcome.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let failed: Value = serde_json::from_slice(&std::fs::read(outcome).unwrap()).unwrap();
+    assert_eq!(failed["status"], 503);
+    assert!(
+        failed["message"]
+            .as_str()
+            .unwrap()
+            .contains("stopped answering")
+    );
+    let parsed: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    assert_eq!(parsed["step"], "drop");
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
 }
