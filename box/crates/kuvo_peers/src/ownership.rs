@@ -446,6 +446,16 @@ impl Handle {
             .ok_or(Error::UnknownPeer)?;
         Ok((here, host))
     }
+
+    /// The accepted member destination of an ordinary Work Queue action.
+    pub fn work_queue_destination(
+        &self,
+        peer: ComputerKey,
+    ) -> Result<(Arc<View>, String, kuvo_wire::keys::Host), Error> {
+        let setup = (self.accepted)().id.ok_or(Error::SetupChanged)?;
+        let (_, host) = self.address(peer, &setup)?;
+        Ok((self.reader.view(), setup, host))
+    }
 }
 
 impl IncomingRequests {

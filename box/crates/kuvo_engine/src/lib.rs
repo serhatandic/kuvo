@@ -1,5 +1,6 @@
 //! The resident's on-demand OpenCode and its API passthrough.
 
+mod active_tool;
 mod agent_models;
 mod api;
 mod asks;
@@ -56,6 +57,7 @@ pub const FEATURES: &[&str] = &[
     "typed.submission-recovery",
 ];
 
+pub use active_tool::ActiveTool;
 pub use agent_models::{
     AgentCatalog, AgentModel, AgentModelSource, AutoModel, CatalogRead, ModelAccount,
 };

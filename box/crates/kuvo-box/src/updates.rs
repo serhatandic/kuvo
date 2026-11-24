@@ -1,6 +1,7 @@
 //! Connect the keeper's update preparation to live setup and peer facts.
 
 mod mail;
+mod released_machines;
 
 use std::{
     io,
@@ -104,6 +105,7 @@ pub fn start(
         checking: None,
         bridge_fetch: None,
         next_bridge: Instant::now(),
+        released_machines: released_machines::Checks::new(scratch),
         last_sent: None,
         attempted: None,
         pending: None,
@@ -222,6 +224,7 @@ struct Fleet {
     checking: Option<FeedCheck>,
     bridge_fetch: Option<JoinHandle<io::Result<()>>>,
     next_bridge: Instant,
+    released_machines: released_machines::Checks,
     last_sent: Option<(UpdateFacts, Option<BridgeUpdate>)>,
     attempted: Option<PreparedRelease>,
     pending: Option<JoinHandle<io::Result<()>>>,
@@ -269,14 +272,13 @@ impl Fleet {
                 .map(|member| member.name.as_str())
                 .filter(|name| !name.is_empty());
             let name = named.unwrap_or("your main computer");
-            let (away, _) = view.peer_updates(&main, now);
-            let message = if away {
+            let message = if view.kept_peer_is_away(&self.home.run(), &main, now) {
                 let place = named.map_or_else(
                     || name.to_owned(),
                     |name| format!("{name} (your main computer)"),
                 );
                 let (installed, _) = fleet::installed(&self.home)?;
-                match Candidate::kept(&self.home, &self.key)?
+                match Candidate::kept(&self.home, &self.key)
                     .filter(|held| held.newer_than(installed.as_deref()))
                 {
                     Some(held) => {
@@ -320,8 +322,7 @@ impl Fleet {
                 .filter(|main| Some(*main) != view.roster.here),
         ) && now.saturating_sub(kept) <= CHECK_KEPT
         {
-            let (away, _) = view.peer_updates(&main, now);
-            if away {
+            if view.kept_peer_is_away(&self.home.run(), &main, now) {
                 return Ok(());
             }
             let Some((mail, host)) = self
@@ -357,7 +358,7 @@ impl Fleet {
             eprintln!("Asking the main to check Kuvo's release: {error}");
         }
         let mut candidate =
-            Candidate::kept(&self.home, &self.key)?.filter(|next| next.newer_than(Some(&version)));
+            Candidate::kept(&self.home, &self.key).filter(|next| next.newer_than(Some(&version)));
         let mut committed = false;
         if standalone || local_main {
             for peer in &view.roster.members {
@@ -440,6 +441,18 @@ impl Fleet {
         let running = running_manifest
             .as_ref()
             .and_then(|body| Candidate::verify(body.clone(), &self.key).ok());
+        let held_for_released = running
+            .as_ref()
+            .filter(|_| (local_main || standalone) && candidate.is_none());
+        self.released_machines
+            .tick(
+                &self.home,
+                held_for_released,
+                &self.fetcher,
+                &self.setup,
+                standalone,
+            )
+            .await;
         let installed_sha256 = running
             .as_ref()
             .and_then(|running| running.local().ok())

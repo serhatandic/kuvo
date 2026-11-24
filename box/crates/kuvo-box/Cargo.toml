@@ -9,6 +9,9 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+agent-runtime-fixture = []
+
 [dependencies]
 base64 = "0.22"
 hostname = "0.4"
@@ -25,10 +28,14 @@ kuvo_server = { path = "../kuvo_server" }
 kuvo_setup = { path = "../kuvo_setup" }
 kuvo_store = { path = "../kuvo_store" }
 kuvo_wire = { path = "../kuvo_wire" }
+kuvo_work = { path = "../kuvo_work" }
+percent-encoding = "2"
 serde_json = "1"
 tokio = { version = "1", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 
 [dev-dependencies]
+http-body-util = "0.1"
+tokio-util = "0.7"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 futures-util = { version = "0.3", features = ["sink"] }

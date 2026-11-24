@@ -57,6 +57,65 @@ also cleans up its owned process tree after the agent exits. Windows uses job
 termination for a stop and a numeric exit status. POSIX signals remain
 available on Unix.
 
+## Resident runtime progress (4.1b)
+
+The account index uses the saved `agents/accounts.json` format. The tests
+read a legacy array, retain an added account's original home and unknown
+fields, and refuse to rewrite a future-version index. A new account gets
+its own folder and provider ID. The default account keeps its provider ID
+and leaves home selection to the adapter.
+
+The shared roster instantiates a factory for each configured account. It
+keeps an adapter and its cached answers when the account label changes.
+Account checks keep the last sign-in after a transient failure and ignore
+an answer begun before credentials changed. A failed model lookup keeps
+only the same account's previous catalog. The sign-in attempt book scopes
+status, completion and cancellation to the initiating provider and accepts
+a late-page code when the adapter says a code is needed.
+
+The Rust controller replacement scenario now calls `Runtime::activate`.
+It builds the stand-in adapter's roster, uses the recorded provider to find
+it, and starts complete replay at the oldest active turn's cursor. The
+controller API is unchanged. The saved session header reader supplies the
+working directory without opening the transcript. The keeper switch case
+passed on macOS, Linux (lokum), WSL2 and native Windows. It replaced the
+resident during a running fixture turn and checked that the same holder
+and child finished it. Authenticated keeper and resident proof belongs to
+4.4.
+
+On all four platforms, the foundation passed seven account tests, two
+resident dispatcher tests, three holder process tests and twelve binary
+conformance cases. The account fixture ran against both boxes on macOS.
+The normalized HTTP replies and saved files matched, including the
+legacy account home.
+
+The vendor entry point is `Agent::open_thread`. Each thread receives a
+new prompt or attaches the resident's sink to a recovered turn through
+`Thread::start`. The sink handles transcript events, vendor-state
+checkpoints and independent permission and question promises.
+
+Saved-session checks read the bridge's header, native conversation state,
+legacy JSON transcript and SQLite transcript. The binary transcript case
+pages a saved conversation in both directions on both boxes. The replies
+and unchanged transcript files match. On the first write Rust stages a
+legacy import beside the original array and publishes it after commit.
+Updates keep the existing message's position and carry the bridge's
+usage and artifact projections. A late checkpoint or transcript write
+after deletion cannot recreate the conversation.
+
+The resident turn sink waits for a transcript writer to acknowledge each
+event and saves native state before acknowledging that checkpoint.
+Permission and form requests are scoped to their session and turn.
+Tests cover withdrawing an ask, duplicate request IDs in separate
+sessions, denying a late ask, and withholding acknowledgement until a
+checkpoint has been written.
+
+The following integration work remains open:
+
+- Production vendor factory registration as the adapters land.
+- Unified sign-in and account status, default-home migration, and shared session, queue and approval routing.
+- Differential and golden-home runs for the remaining routes, with platform verification.
+
 ## TypeScript scenario inventory
 
 ### Holders, reload and repair

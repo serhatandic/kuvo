@@ -12,7 +12,7 @@ use kuvo_store::{
     },
     home::Home,
     layout,
-    locks::{OnBusy, StaleLock},
+    locks::OwnedLock,
 };
 use serde_json::{Value, json};
 
@@ -341,12 +341,7 @@ pub(super) fn queue_manifests(paths: impl IntoIterator<Item = PathBuf>) -> Resul
 }
 
 fn queue_snapshot(home: &Home, roots: &Roots, scratch: &Path) -> Result<Vec<Entry>> {
-    let _lock = StaleLock::acquire(
-        &home.run().join("work-queue/.lock"),
-        Duration::from_secs(10),
-        Duration::from_secs(3),
-        OnBusy::Refuse,
-    )?;
+    let _lock = OwnedLock::acquire(&home.run().join("work-queue/.lock"), Duration::from_secs(3))?;
     let files = file_entries(roots, true)?;
     let manifests = queue_manifests(
         files

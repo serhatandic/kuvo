@@ -25,6 +25,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Your other computer learns a newly created conversation’s name before its message arrives.
 - Notes for a moving conversation wait for its new computer to confirm the move, then reach it while the original is being cleaned up.
 - A conversation stays on its current computer while Kuvo indexes the receipts required for its move.
+- The Rust box can reopen Work Queue items and attachments, recover an interrupted status migration, and use the main computer’s signed labels and number grants.
 - Deleting a conversation while its agent is stopping no longer causes a transcript write error.
 - Undo waits for file recovery when it is the first action after a restart.
 
@@ -34,6 +35,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Windows uninstall completes when there is no sign-in task to remove.
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.
+- The Mac installer can set up a new computer directly from the signed Rust release and start Kuvo Helper.
+- Uninstall on a stopped Mac removes Kuvo Helper’s login job and retains your saved work.
+- Uninstall removes Kuvo’s reboot entry from a stopped computer’s crontab and preserves the other jobs.
 
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
@@ -42,6 +46,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The main computer waits for reachable computers to prepare a Rust update before switching. A computer that was offline can catch up when it returns.
 - A returning computer can get a signed update from another computer when the release feed no longer serves it. On a Mac, Kuvo restarts an older Helper when the update is ready.
 - A computer keeps a manual update check until its main computer can receive it, even if the computer restarts first.
+- A computer keeps checking the signed release feed if a saved update has an untrusted signature.
+- A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
 
 - An acknowledgement for the wrong part no longer advances a move before that part arrives.
 - A moved conversation opens on its new computer while the original is still being cleaned up.

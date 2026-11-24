@@ -340,7 +340,7 @@ resident's own version.
 - **The user's four computers** are the only ones on a TypeScript 0.8 beta, and switch once:
   - **Bridge beta.** The four computers first take one final TypeScript beta through their
     normal updater. That beta still runs TypeScript and knows how to prepare and start the
-    signed Rust pack for its target. A computer still on beta.48 or earlier which reaches a Rust
+    signed Rust pack for its target. A computer still on beta.48 which reaches a Rust
     fleet takes the signed bridge beta first, from its main computer if necessary, then takes
     Rust. The handoff runs automatically before the returning computer takes on fleet work.
     Include the bridge's signed `boxes.json` with `sign-box.mjs --bridge` in each Rust manifest
@@ -424,7 +424,7 @@ parallel.
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
 | 3.2 | **Done.** Sessions, queues, send-once receipts, asks, waiting, models and search. [Coverage and remaining owners](rust-engine-coverage.md#implementation-and-remaining-parity-work). | engine | 3.1 | 6 ×2 | B |
 | 4.1a | **Done.** Rust holder command, private IPC, journal, recovery records and shared Rust controller. [Coverage](rust-agents-coverage.md) | agents | 1.3 | — | B |
-| 4.1b | Resident agent runtime and holder adoption through keeper updates, roster, accounts and sign-in, session and model integration | agents | 3.2, 4.1a | — | B |
+| 4.1b | Resident agent runtime and holder adoption through keeper updates, roster, accounts and sign-in, session and model integration. Authenticated resident and keeper proof is owned by 4.4. [Coverage](rust-agents-coverage.md) | agents | 3.2, 4.1a | — | B |
 | 4.1c | Tools relay, `mcp` mode, shared RPC, Bun sidecar | agents | 4.1a | — | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
@@ -441,7 +441,7 @@ parallel.
 | 6.3 | Files, Git, Changes, worktrees, projects, folders. Golden-home projects in `protocol/conformance/compat.test.mjs`. 6.3a files and folders: a file's info, text and bytes, folder lists, a new folder, a folder's tree, finding files and suggested folders ported (`kuvo_services::files`, `files` conformance area, every TS case covered); **part A done** on macOS and native Windows (15 of 16 there, unreadable files skipped: no mode bits); Linux left ([coverage](rust-files-coverage.md)). 6.3b1 projects list: `GET kuvo/projects` ported (`kuvo_services::git`, `git` conformance area, macOS, Windows, Linux); the safe git runner and the Changes reads next ([coverage](rust-git-coverage.md)). | services | 1.4 | 5 ×2 | D |
 | 6.4 | Browser keeper: Chrome for Testing, CDP pipe, browser tools, live view, downloads | services | 4.1 | 5 ×2 | A |
 | 7.1 | **Done.** Portable `kuvo-box keep`, atomic selection and rollback, Windows keeper handover, and `kuvo-start` launching by manifest. [Coverage and remaining owner phases](rust-keeper-coverage.md) | keeper | 1.3 | 5 ×2 | D |
-| 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint. Keep each Rust release's `box.json` beside `bin` with a top-level `launch: "rust"`, including when the previous TypeScript stager moves only `bin`. | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |
+| 7.2 | Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint. Keep each Rust release's `box.json` beside `bin` with a top-level `launch: "rust"`, including when the previous TypeScript stager moves only `bin`. TypeScript beta interoperability is limited to the deployed beta.48 taking the bridge and then Rust. | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |
 | 7.3 | For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote. Released Mac coexistence, legacy roster mail and leave-running integration from `documents.test.js`, `setup-mac.test.js`, `time-zone.test.ts`, `personalities-box.test.js`, `setup-handover.test.js`, and tagged `compat.test.mjs`.<br>Also covers `peers.test.js`, `mac-peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`. | move | 7.1, 2.4 | 6 | D |
 | 8.1 | Native Windows: profile ACLs, logon task and starter, Git Bash, path vectors, long paths | os, keeper | 7.1 | 5 ×2 | D |
 | 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |

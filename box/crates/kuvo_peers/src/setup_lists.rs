@@ -78,6 +78,14 @@ pub struct View {
 }
 
 impl View {
+    /// Check for Updates uses the already persisted observation even while the
+    /// receiver is still publishing its new in-memory view.
+    pub fn kept_peer_is_away(&self, run: &Path, key: &ComputerKey, now: Millis) -> bool {
+        let key = encode(key);
+        let heard = self.announced.get(&key).and_then(|entry| entry.heard);
+        Reach::load(run).peer_is_away(&key, heard, now)
+    }
+
     pub fn peer_updates(&self, key: &ComputerKey, now: Millis) -> (bool, UpdateFacts) {
         let key = encode(key);
         let announcement = self.announced.get(&key);
@@ -115,6 +123,39 @@ impl View {
             .collect()
     }
 
+    pub fn peer_session_name(&self, key: &ComputerKey, session: &str) -> Option<&str> {
+        self.announced
+            .get(&encode(key))
+            .and_then(|copy| copy.list.iter().find(|agent| agent.session == session))
+            .map(|agent| agent.name.as_str())
+            .or_else(|| {
+                self.lists
+                    .get(key)?
+                    .value
+                    .sessions
+                    .iter()
+                    .find(|row| row.id == session)?
+                    .facts
+                    .title
+                    .as_deref()
+            })
+    }
+
+    pub fn peer_bot_named(&self, name: &str) -> Option<&AnnouncedAgent> {
+        let lowered = name.to_lowercase();
+        let mut candidates = self
+            .roster
+            .members
+            .iter()
+            .filter_map(|member| self.announced.get(&encode(&member.key)))
+            .flat_map(|copy| &copy.list)
+            .filter(|agent| agent.kind == AgentKind::Bot && agent.name.to_lowercase() == lowered);
+        let found = candidates.next()?;
+        candidates
+            .all(|agent| agent.session == found.session)
+            .then_some(found)
+    }
+
     pub fn announced_sessions(&self) -> Vec<String> {
         self.roster
             .members
@@ -150,6 +191,7 @@ impl View {
 
     pub(crate) fn features(&self) -> Vec<&'static str> {
         let mut features = crate::routes::FEATURES.to_vec();
+        features.push("data.queued-device-authority");
         if self.backup_receiver {
             features.push("box.backups.relay");
         }

@@ -37,12 +37,13 @@ refuse() {
 step() { printf '{"step":"%s","title":"%s"}\n' "$1" "$2"; }
 
 VERB=${1:-}
-case "$VERB" in status | new | move | join) shift ;; *) usage ;; esac
-APP="" ROOT=.kuvo-code
+case "$VERB" in status | new | move | join | released-machine) shift ;; *) usage ;; esac
+APP="" ROOT=.kuvo-code IDENTITY=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --app) [ $# -ge 2 ] || usage; APP=$2; shift 2 ;;
         --root) [ $# -ge 2 ] || usage; ROOT=$2; shift 2 ;;
+        --identity) [ "$VERB" = released-machine ] && [ $# -ge 2 ] && [ -z "$IDENTITY" ] || usage; IDENTITY=$2; shift 2 ;;
         *) usage ;;
     esac
 done
@@ -116,13 +117,20 @@ for name in $(env | sed -n 's/^\(KUVO_[A-Za-z0-9_]*\)=.*/\1/p'); do
     case "$name" in KUVO_TEST_*) ;; *) unset "$name" ;; esac
 done
 
+# Only the authenticated legacy SSH updater uses this installer entry.
+if [ "$VERB" = released-machine ]; then
+    [ "$ROOT" = .kuvo-code ] && [ -n "$IDENTITY" ] || usage
+    [ -x "$D/kuvo-install-bin" ] || fail "$DAMAGED"
+    exec "$D/kuvo-install-bin" install-released-machine "$D" "$IDENTITY"
+fi
+
 # The native bootstrap is part of the installer media. It validates the signed
 # per-target pack before passing its prepared files to the released-app move.
 if [ "$SYSTEM" = darwin ] && [ -x "$D/kuvo-install-bin" ]; then
     case "$VERB" in
         status) KUVO_HOME="$HOME/$ROOT" exec "$D/kuvo-install-bin" install --status --root "$ROOT" --app "$APP" ;;
         move) exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" ;;
-        new) if [ -x "$HOME/$ROOT/bin/kuvo-box" ]; then exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" --start; fi ;;
+        new) exec "$D/kuvo-install-bin" install-media "$D" "$ROOT" "$APP" --start ;;
     esac
 fi
 
