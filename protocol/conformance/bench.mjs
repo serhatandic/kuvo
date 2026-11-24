@@ -67,7 +67,7 @@ export async function bench(t, { handover = false } = {}) {
           await legacy?.stop();
         }
       };
-      const connect = record => (method, route, body, headers) => request(record, method, route, body, headers);
+      const connect = record => (method, route, body, headers, timeout) => request(record, method, route, body, headers, timeout);
       const command = async (args, input) => {
         const child = boxCommand(implementation, home, env, relay, args, {}, "pipe");
         children.push(child);

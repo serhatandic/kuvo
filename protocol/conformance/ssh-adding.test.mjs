@@ -874,7 +874,10 @@ test("an SSH-enrolled member follows the next primary after reconnecting", {
   const secondKey = (await readSetup(other)).you.key;
   const handover = async (from, next) => {
     const old = await readSetup(from);
-    const result = await from("POST", "kuvo/setup/handover", { primary: next, epoch: old.epoch }, headers);
+    const successor = next === firstKey ? main : delegate;
+    await until(() => readJSON(path.join(successor.home, "run", "link.json")).leadership?.[old.epoch],
+      "The handover target did not receive the current leadership certificate.", 20000);
+    const result = await from("POST", "kuvo/setup/handover", { primary: next, epoch: old.epoch }, headers, 25_000);
     assert.equal(result.status, 202, result.text);
     for (const each of [ask, other]) {
       await until(async () => {
