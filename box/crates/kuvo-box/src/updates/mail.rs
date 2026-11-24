@@ -1,6 +1,10 @@
 //! Target packs over the existing authenticated peer release mail.
 
-use std::{io, time::Duration};
+use std::{
+    io,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use kuvo_keeper::{
@@ -14,7 +18,7 @@ use kuvo_peers::{
 };
 use kuvo_store::home::Home;
 use kuvo_wire::{keys::Host, mail::Envelope};
-use serde_json::{Value, json};
+use serde_json::{Number, Value, json};
 use tokio::{
     sync::{broadcast, mpsc},
     task::JoinHandle,
@@ -25,6 +29,24 @@ use super::Check;
 
 const WINDOW: usize = 16;
 const QUIET: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Default)]
+pub(super) struct PullProgress(Arc<Mutex<Option<f64>>>);
+
+impl PullProgress {
+    fn note(&self, received: usize, parts: usize) {
+        let mut fill = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = received as f64 / parts as f64;
+        *fill = Some(fill.map_or(next, |previous| previous.max(next)));
+    }
+
+    pub(super) fn fraction(&self) -> Option<Number> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .and_then(Number::from_f64)
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct Mail {
@@ -106,7 +128,11 @@ impl Mail {
         self.send(peer, json!({"retry":release})).await
     }
 
-    pub(super) async fn pull(&self, release: &ReleaseRef) -> io::Result<Vec<u8>> {
+    pub(super) async fn pull(
+        &self,
+        release: &ReleaseRef,
+        progress: &PullProgress,
+    ) -> io::Result<Vec<u8>> {
         let mut events = self.relay.subscribe().ok_or_else(unavailable)?;
         let view = self.reader.view();
         let now = self.reader.now();
@@ -124,7 +150,7 @@ impl Mail {
         for peer in peers {
             if let Ok(Ok(pack)) = timeout(
                 kuvo_keeper::fleet::peer_transfer_limit(),
-                self.pull_from(&mut events, &peer, release),
+                self.pull_from(&mut events, &peer, release, progress),
             )
             .await
             {
@@ -139,6 +165,7 @@ impl Mail {
         events: &mut broadcast::Receiver<std::sync::Arc<RelayEvent>>,
         peer: &Host,
         release: &ReleaseRef,
+        progress: &PullProgress,
     ) -> io::Result<Vec<u8>> {
         self.send(
             peer,
@@ -162,6 +189,8 @@ impl Mail {
             return Err(unavailable());
         }
         let parts = size.div_ceil(PACK_PART);
+        let mut received = 0;
+        progress.note(received, parts);
         let mut pack = vec![0; size];
         for first in (0..parts).step_by(WINDOW) {
             let end = (first + WINDOW).min(parts);
@@ -193,6 +222,8 @@ impl Mail {
                         }
                         slice.copy_from_slice(&bytes);
                         missing.retain(|part| *part != index);
+                        received += 1;
+                        progress.note(received, parts);
                     }
                     Ok(())
                 })

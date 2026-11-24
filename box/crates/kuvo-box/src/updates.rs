@@ -21,7 +21,7 @@ use kuvo_keeper::{
     update_status,
 };
 use kuvo_peers::{
-    directory::{PreparedRelease, UpdateFacts},
+    directory::{PreparedRelease, ReleaseProgress, UpdateFacts},
     reach::UpdatePresence,
     setup_lists::{BridgeUpdate, ResidentPeers, UpdatePublication, View},
 };
@@ -120,6 +120,7 @@ pub fn start(
         last_sent: None,
         summary,
         attempted: None,
+        receiving: None,
         pending: None,
         mail,
         pack_server,
@@ -243,6 +244,7 @@ struct Fleet {
     last_sent: Option<Arc<UpdatePublication>>,
     summary: summary::History,
     attempted: Option<PreparedRelease>,
+    receiving: Option<(PreparedRelease, mail::PullProgress)>,
     pending: Option<JoinHandle<Result<(), retry::Failure>>>,
     mail: Option<mail::Mail>,
     pack_server: Option<JoinHandle<()>>,
@@ -501,6 +503,13 @@ impl Fleet {
                 version: local.version.clone(),
                 sha256: local.sha256.clone(),
             };
+            let transfer = self
+                .receiving
+                .get_or_insert_with(|| (prepared.clone(), mail::PullProgress::default()));
+            if transfer.0 != prepared {
+                *transfer = (prepared.clone(), mail::PullProgress::default());
+            }
+            let progress = &transfer.1;
             facts.candidate = Some(candidate.version().into());
             facts.release_manifest = Some(candidate.envelope().into());
             facts.cannot = retry::Failure::for_release(&self.home, &prepared)?;
@@ -518,6 +527,8 @@ impl Fleet {
                 let fetcher = self.fetcher.clone();
                 let mail = self.mail.clone();
                 let key = self.key.clone();
+                let progress = progress.clone();
+                let prepared = prepared.clone();
                 self.pending = Some(tokio::spawn(async move {
                     let pack = match candidate.download(&fetcher).await {
                         Ok(pack) => pack,
@@ -525,7 +536,7 @@ impl Fleet {
                             let Some(mail) = mail else {
                                 return Err(retry::Failure::download(prepared, error));
                             };
-                            mail.pull(&local)
+                            mail.pull(&local, &progress)
                                 .await
                                 .map_err(|_| retry::Failure::download(prepared.clone(), error))?
                         }
@@ -544,6 +555,12 @@ impl Fleet {
                         .await
                         .map_err(|error| retry::Failure::prepare(prepared, error))
                 }));
+            }
+            if !failed && facts.staged.is_none() && facts.switching.is_none() {
+                facts.receiving = progress.fraction().map(|fill| ReleaseProgress {
+                    release: prepared,
+                    fill,
+                });
             }
         }
         let prepared = facts.staged.is_some();

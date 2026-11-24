@@ -703,6 +703,7 @@ test("Rust prepares its target without changing the selected release and its kee
 test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
 test("a new main finishes a prepared release after the old main goes away", { timeout: failoverTestMs }, t => fleetRun(t, { failover: true }));
 test("the main takes a signed release from a member already running it", { timeout: 150000 }, t => fleetRun(t, { aheadMember: true }));
+test("a release pulled over relay reports its checked progress on both computers", { timeout: failoverTestMs }, t => fleetRun(t, { aheadMember: true, pullProgress: true }));
 test("a slow member can catch up after the main's preparation deadline", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true, stageDeadline: true }));
 test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true }));
 test("the deployed beta refuses a direct Rust pack", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true, expectRefusal: true }));
@@ -752,7 +753,7 @@ if [ -e "$KUVO_FIXTURE_CLOCK" ]; then echo 1121; else touch "$KUVO_FIXTURE_CLOCK
   }
 });
 
-async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal, aheadMember, stageDeadline }) {
+async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal, aheadMember, stageDeadline, pullProgress }) {
   const binary = boxBinary();
   const windows = process.platform === "win32";
   if (binary.typescript || (windows && !failover && !aheadMember)) {
@@ -1008,6 +1009,48 @@ Buffer.from = function (value, encoding, ...args) {
       return { rows, summary: answer.json.fleetUpdate };
     } catch { return { rows: {} }; }
   };
+  const startOnline = () => {
+    start(main);
+    start(member);
+  };
+  const checkPullProgress = async () => {
+    const addressOf = peer => relayAddress(Buffer.from(readJSON(path.join(peer.home, "run/link.json")).secret, "base64url"));
+    const partSize = 30_000;
+    const held = [];
+    const stopHolding = relay.intercept(addressOf(member), addressOf(main), packet => {
+      if (packet.payload.length <= partSize) return false;
+      held.push(packet);
+      return true;
+    });
+    const expectFill = async count => {
+      const fill = count / Math.ceil(pack.length / partSize);
+      let last;
+      const rows = await until(async () => {
+        const local = (await computers(main)).rows.Studio;
+        const peer = (await computers(member)).rows.Studio;
+        last = [local, peer];
+        return local?.fill === fill && peer?.fill === fill && [local, peer];
+      }, () => `both computers must report ${count} accepted release parts, last rows ${JSON.stringify(last)}`);
+      for (const row of rows) {
+        assert.deepEqual([row.state, row.target, row.targetSha256], ["getting-ready", version, hash]);
+        assert.deepEqual(row.line, { words: `Getting ready · ${Math.floor(fill * 100)}%`, tone: "working", phase: "getting-ready", fill });
+      }
+    };
+    try {
+      startOnline();
+      await until(() => held.length >= 8, "the relay must hold signed release parts", firstPreparationMs);
+      await expectFill(0);
+      const received = held.splice(0, 4);
+      for (const packet of received) relay.replay(packet);
+      await expectFill(4);
+      for (const packet of received) relay.replay(packet);
+      relay.replay(held.shift());
+      await expectFill(5);
+    } finally {
+      stopHolding();
+      for (const packet of held) relay.replay(packet);
+    }
+  };
   const staged = peer => fs.existsSync(path.join(peer.home, "run/fleet-ready.json"));
   const confirmed = peer => active(peer) === selected && !fs.existsSync(path.join(peer.home, "run/previous"));
   const diagnose = () => [...keepers.keys()].map(peer => {
@@ -1041,10 +1084,10 @@ Buffer.from = function (value, encoding, ...args) {
   try {
     const began = performance.now();
     if (aheadMember) assert.equal(active(main), initial(main));
-    start(main);
-    start(member);
+    if (pullProgress) await checkPullProgress();
+    else startOnline();
     if (aheadMember) {
-      await until(() => confirmed(main), diagnose, 90000);
+      await until(() => confirmed(main), diagnose, pullProgress ? failoverReturnMs : firstPreparationMs);
       assert.equal(active(member), selected);
       assert.equal(active(away), initial(away));
       assert.ok(refusedPacks > 0, "the main must get the pack from its member after the download fails");

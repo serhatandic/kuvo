@@ -21,6 +21,7 @@ use kuvo_protocol::{
         PostKuvoUpdateRetryStatus202UpdatingState as SwitchingState,
     },
 };
+use serde_json::Number;
 
 use super::retry;
 
@@ -70,7 +71,15 @@ pub(super) fn row(
     } else {
         None
     };
-    let line = Some(line(phase, current, version, seen, now));
+    let progress = facts
+        .receiving
+        .as_ref()
+        .filter(|progress| phase == Phase::GettingReady && matches(&progress.release))
+        .and_then(|progress| progress.fill.as_f64())
+        .map(|fill| fill.clamp(0.0, 1.0));
+    let line = line(phase, current, version, seen, now, progress);
+    let fill = line.fill.clone();
+    let line = Some(line);
 
     // These protocol variants share the same release and line fields.
     macro_rules! wire_row {
@@ -79,7 +88,7 @@ pub(super) fn row(
                 can_retry: false,
                 current: current.map_or(Nullable::Null(Null), |current| Nullable::Value(current.into())),
                 current_sha256: facts.installed_sha256.clone(),
-                fill: None,
+                fill,
                 last_failure_at: None,
                 line,
                 requires_update: None,
@@ -107,7 +116,14 @@ pub(super) fn row(
     }
 }
 
-fn line(phase: Phase, current: Option<&str>, target: &str, seen: Option<i64>, now: i64) -> Line {
+fn line(
+    phase: Phase,
+    current: Option<&str>,
+    target: &str,
+    seen: Option<i64>,
+    now: i64,
+    fill: Option<f64>,
+) -> Line {
     let (words, tone) = match phase {
         Phase::Done => (
             format!("{} · Up to date", short(current.unwrap_or(target))),
@@ -115,14 +131,20 @@ fn line(phase: Phase, current: Option<&str>, target: &str, seen: Option<i64>, no
         ),
         Phase::Ready => (format!("Ready for {}", short(target)), Tone::Done),
         Phase::Switching => (format!("Switching to {}…", short(target)), Tone::Working),
-        Phase::GettingReady => ("Getting ready…".into(), Tone::Working),
+        Phase::GettingReady => {
+            let words = fill.filter(|fill| *fill < 1.0).map_or_else(
+                || "Getting ready…".into(),
+                |fill| format!("Getting ready · {:.0}%", (fill * 100.0).floor()),
+            );
+            (words, Tone::Working)
+        }
         Phase::Off => (off_words(current, seen, now), Tone::Off),
     };
     Line {
         words,
         tone,
         phase: Some(phase),
-        fill: None,
+        fill: fill.and_then(Number::from_f64),
         short: None,
     }
 }
