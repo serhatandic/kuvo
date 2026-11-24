@@ -1,4 +1,5 @@
 mod agents;
+mod library_artifacts;
 
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -78,7 +79,8 @@ pub async fn run(
     } else {
         bootstrap.devices
     };
-    let factories = agents::factories(home);
+    let tools = agents::tools::relay(home, engine.clone())?;
+    let factories = agents::factories(home, &tools).await;
     let resident_agents = if factories.is_empty() {
         None
     } else {
@@ -100,6 +102,9 @@ pub async fn run(
             }
         }
     };
+    if let Some((runtime, _)) = &resident_agents {
+        agents::tools::take_up(&tools, runtime).await;
+    }
     let info = info(
         home,
         &roster.name,
@@ -148,17 +153,54 @@ pub async fn run(
         .with_model_stars(Arc::new(super::model_stars::SetupStars(setup.handle())))
         .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
+    let mut agent_handover = None;
     let mut routes = Registry::new();
     let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
-    agents::sessions::register(sessions, &mut routes);
+    agents::sessions::register(sessions.clone(), &mut routes);
     let engine = if let Some((runtime, accounts)) = resident_agents {
         agents::register(accounts.clone(), &mut routes);
-        engine.with_agent_model_source(Arc::new(agents::Models {
-            runtime,
-            agents: accounts,
-        }))
-    } else {
+        let location = if kind == ComputerKind::Mac {
+            kuvo_agents::permissions::ConfigLocation::Desktop
+        } else {
+            kuvo_agents::permissions::ConfigLocation::Machine
+        };
+        let handover = kuvo_agents::session_runs::Handover::take(&agents::handover_file(home))
+            .unwrap_or_else(|error| {
+                eprintln!("Kuvo could not read the coding agents' handover: {error}");
+                None
+            });
+        let runs = kuvo_agents::session_runs::SessionRuns::start_after(
+            accounts.clone(),
+            sessions.clone(),
+            home.to_owned(),
+            location,
+            kuvo_agents::session_runs::Update {
+                adopted: accounts.adopted_turns().to_vec(),
+                handover,
+            },
+        );
+        agent_handover = Some((runs.clone(), runtime.clone()));
+        agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
+        let inventory = agents::sessions::Inventory {
+            store: sessions.clone(),
+            running: Some(runs.clone()),
+            home: home.to_owned(),
+            agents: Some(accounts.clone()),
+        };
+        agents::turns::register(runs, &mut routes);
         engine
+            .with_agent_model_source(Arc::new(agents::Models {
+                runtime,
+                agents: accounts,
+            }))
+            .with_agent_sessions(Arc::new(inventory))
+    } else {
+        engine.with_agent_sessions(Arc::new(agents::sessions::Inventory {
+            store: sessions,
+            running: None,
+            home: home.to_owned(),
+            agents: None,
+        }))
     };
     if kind == ComputerKind::Machine {
         let setup = setup.handle();
@@ -219,14 +261,28 @@ pub async fn run(
         engine.clone(),
     );
     read_owner.register(&mut routes);
+    let library_artifacts = Arc::new(
+        library_artifacts::ResidentLibraryArtifacts::start(
+            home,
+            peers.reader().view().roster.local().name,
+            peers.reader(),
+            peers.relay_handle(),
+            memory.clone(),
+            &mut routes,
+        )
+        .await,
+    );
+    let library_reader = library_artifacts.clone();
     let memory_reads = memory.serve(move |_, read| {
         let owner = read_owner.clone();
         let queues = queue_reads.clone();
         let engine = search_engine.clone();
+        let library_reader = library_reader.clone();
         async move {
             match read.area.as_deref() {
                 Some("ownership") => owner.answer(read).await,
                 Some("search") => super::setup_search::answer(engine, read).await,
+                Some("library") => library_reader.answer_library_read(read).await,
                 _ => queues.answer(read).await,
             }
         }
@@ -300,12 +356,9 @@ pub async fn run(
         kuvo_store::home::Home::new(home.to_owned())?,
         kind == ComputerKind::Mac,
     );
-    let updates = crate::updates::start(
-        kuvo_store::home::Home::new(home.to_owned())?,
-        &account,
-        peers.clone(),
-        setup.handle(),
-    );
+    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let bridge_version = crate::updates::bridge_version(&update_home, &account);
+    let updates = crate::updates::start(update_home, &account, peers.clone(), setup.handle());
     crate::updates::register_check(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
@@ -325,7 +378,7 @@ pub async fn run(
         backup_mail,
         Some(vault.clone()),
     );
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), bridge_version);
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
@@ -394,6 +447,10 @@ pub async fn run(
             }
         })
         .await;
+    if let Some((runs, runtime)) = agent_handover {
+        agents::hand_over(home, &runs, &runtime).await;
+    }
+    tools.shutdown().await;
     if let Some(agents) = agent_shutdown {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -430,6 +487,9 @@ pub async fn run(
     }
     if let Some(holder) = vault_holder {
         holder.shutdown().await;
+    }
+    if let Ok(library_artifacts) = Arc::try_unwrap(library_artifacts) {
+        library_artifacts.stop().await;
     }
     let _ = session_source.await;
     drop(daily_backups);
@@ -491,6 +551,8 @@ fn info(
     features.push(kuvo_peers::memory_read::FEATURE);
     features.push(kuvo_peers::owner_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
+    features.extend_from_slice(kuvo_services::artifacts::FEATURES);
+    features.extend_from_slice(kuvo_services::library::FEATURES);
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
     if permits_pairing {
         features.push("devices.pair");

@@ -155,7 +155,7 @@ impl WakeEngine {
     /// Whether this wake-up's note waits in the engine's own inbox for the conversation still.
     pub async fn waits_in_inbox(&self, session: &str, note: &str) -> bool {
         let text = format!("{WAKE_MARKER}{note}");
-        queue::inbox(&self.engine, &self.lease, session)
+        queue::inbox(&self.engine, queue::Target::Engine(&self.lease), session)
             .await
             .is_ok_and(|inbox| inbox.iter().any(|item| item.text_is(&text)))
     }
@@ -208,7 +208,7 @@ impl WakeEngine {
             self.engine.queues.notify();
             return Ok(Delivered::Held);
         }
-        crate::send::post(&self.engine, &self.lease, session, &prompt)
+        crate::send::post(&self.engine, crate::queue::Target::Engine(&self.lease), session, &prompt)
             .await
             .map_err(|_| Unreachable("The wake-up couldn’t be sent.".into()))?;
         self.engine.queues.notify();

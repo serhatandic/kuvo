@@ -31,6 +31,14 @@ pub trait Adoption: Send + Sync {
         turns: BTreeMap<String, TurnNote>,
         controller: Controller,
     ) -> AdapterCall<'a, ()>;
+
+    /// The resident won't take up this attached turn after all: its
+    /// conversation is gone or has moved on, or `Thread::start` with
+    /// `TurnKind::Recover` failed. Stop the held agent unless another turn
+    /// taken up in it still runs.
+    fn let_go<'a>(&'a self, _turn: &'a TurnNote) -> AdapterCall<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[derive(Clone)]
@@ -44,6 +52,12 @@ pub struct Runtime {
 pub struct RecoveryFailure {
     pub holder: String,
     pub error: io::Error,
+}
+
+#[derive(Clone)]
+pub struct AdoptedTurn {
+    pub provider: Provider,
+    pub note: TurnNote,
 }
 
 impl Runtime {
@@ -73,10 +87,34 @@ impl Runtime {
         &self,
         factories: &HashMap<AgentKind, Arc<dyn Factory>>,
     ) -> io::Result<(Roster, Vec<RecoveryFailure>)> {
+        let (roster, failures, _) = self.activate_with_turns(factories).await?;
+        Ok((roster, failures))
+    }
+
+    pub(crate) async fn activate_with_turns(
+        &self,
+        factories: &HashMap<AgentKind, Arc<dyn Factory>>,
+    ) -> io::Result<(Roster, Vec<RecoveryFailure>, Vec<AdoptedTurn>)> {
         let mut roster = Roster::default();
         roster.reconcile(&self.accounts, factories).await?;
-        let failures = self.recover(&roster.recovery_adapters()).await?;
-        Ok((roster, failures))
+        let (failures, turns) = self.recover_with_turns(&roster.recovery_adapters()).await?;
+        Ok((roster, failures, turns))
+    }
+
+    /// The conversations whose turns go on in held agents: the next
+    /// resident can take them up.
+    pub async fn held_sessions(&self) -> io::Result<std::collections::BTreeSet<String>> {
+        let mut held = std::collections::BTreeSet::new();
+        for record in self.holders.records().await? {
+            let Ok(turns) = record.turns() else { continue };
+            held.extend(
+                turns
+                    .into_values()
+                    .filter(|turn| turn.turn.is_some())
+                    .map(|turn| turn.session),
+            );
+        }
+        Ok(held)
     }
 
     /// Read only the saved session header. Model routing does not need to open
@@ -95,8 +133,17 @@ impl Runtime {
         &self,
         adapters: &HashMap<Provider, Arc<dyn Adoption>>,
     ) -> io::Result<Vec<RecoveryFailure>> {
+        let (failures, _) = self.recover_with_turns(adapters).await?;
+        Ok(failures)
+    }
+
+    async fn recover_with_turns(
+        &self,
+        adapters: &HashMap<Provider, Arc<dyn Adoption>>,
+    ) -> io::Result<(Vec<RecoveryFailure>, Vec<AdoptedTurn>)> {
         let accounts = self.accounts.all().await?;
         let mut failed = Vec::new();
+        let mut adopted = Vec::new();
         for record in self.holders.records().await? {
             let Some(provider) = record
                 .meta
@@ -115,11 +162,15 @@ impl Runtime {
                 continue;
             };
             let holder = record.id.clone();
-            if let Err(error) = self.take_up(adapter.as_ref(), account, record).await {
-                failed.push(RecoveryFailure { holder, error });
+            match self.take_up(adapter.as_ref(), account, record).await {
+                Ok(turns) => adopted.extend(turns.into_values().map(|note| AdoptedTurn {
+                    provider: provider.clone(),
+                    note,
+                })),
+                Err(error) => failed.push(RecoveryFailure { holder, error }),
             }
         }
-        Ok(failed)
+        Ok((failed, adopted))
     }
 
     async fn take_up(
@@ -127,10 +178,10 @@ impl Runtime {
         adapter: &dyn Adoption,
         account: &Account,
         record: Record,
-    ) -> io::Result<()> {
+    ) -> io::Result<BTreeMap<String, TurnNote>> {
         let turns = record.turns()?;
         if !adapter.accepts(&record, &turns) {
-            return Ok(());
+            return Ok(BTreeMap::new());
         }
         let replay = turns
             .values()
@@ -138,6 +189,9 @@ impl Runtime {
             .min()
             .map_or(Replay::Idle, Replay::Complete);
         let controller = self.holders.adopt(&record, replay).await?;
-        adapter.attach(account, record, turns, controller).await
+        adapter
+            .attach(account, record, turns.clone(), controller)
+            .await?;
+        Ok(turns)
     }
 }

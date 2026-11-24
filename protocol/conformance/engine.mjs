@@ -291,8 +291,7 @@ export async function standInEngine(root, env) {
         const session = decodeURIComponent(interrupt[1]);
         const resume = url.searchParams.get("resume") === "true";
         engine.interrupted.push({ session, resume });
-        if (!resume && engine.running.delete(session)) publish({ type: "session.idle", data: { sessionID: session } });
-        return send({});
+        return send({ interrupted: engine.running.has(session) });
       }
       const view = url.pathname.match(/^\/api\/session\/([^/]+)\/view$/);
       if (view && request.method === "POST") {

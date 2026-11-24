@@ -74,7 +74,7 @@ const PART_AGAIN = 20_000;
 const STEP_AGAIN = 60_000;
 // A persisted time estimates elapsed time on restart. Once observed, a step uses elapsed time
 // on this process's clock, including when the wall clock stops advancing.
-const retryClocks = new Map<string, { step: string; stamp: number; since: number }>();
+const retryClocks = new Map<string, { step: string; stamp: number; since: number; unsent?: true }>();
 const retryStep = (record: MoveRecord) => `${record.stage}/${record.step}/${record.generation}/${Boolean(record.activation)}/${Boolean(record.dropping)}`;
 const retryStamp = (record: MoveRecord) => record.againAt ?? record.sentAt ?? 0;
 
@@ -82,11 +82,16 @@ function markedRetry(record: MoveRecord, ticks = performance.now()): void {
   retryClocks.set(record.id, { step: retryStep(record), stamp: retryStamp(record), since: ticks });
 }
 
+function markUnsent(record: MoveRecord): void {
+  retryClocks.set(record.id, { step: retryStep(record), stamp: retryStamp(record), since: 0, unsent: true });
+}
+
 function retryDue(record: MoveRecord, now: number, ticks: number, delay = STEP_AGAIN): boolean {
-  const stamp = retryStamp(record);
-  if (stamp > now) return true;
   const step = retryStep(record);
   let clock = retryClocks.get(record.id);
+  if (clock?.unsent && clock.step === step) return true;
+  const stamp = retryStamp(record);
+  if (stamp > now) return true;
   if (!clock || clock.step !== step || clock.stamp !== stamp) {
     clock = { step, stamp, since: ticks - (now - stamp) };
     retryClocks.set(record.id, clock);
@@ -842,9 +847,11 @@ const bundleIdentity = ({ generation, hash }: BundleIdentity): BundleIdentity =>
 const sameBundle = (record: BundleIdentity, given: Record<string, unknown>): boolean => record.generation === given.generation &&
   (record.generation === undefined ? (given.hash === undefined || record.hash === given.hash) : record.hash === given.hash);
 
-function offer(record: MoveRecord, ticks = performance.now()): void {
-  markedRetry(record, ticks);
-  tell(record.peer, { op: "offer", safeSwitch: true, ...(record.verifyPayloads ? { verifyPayloads: true } : {}), ...(record.twoComputers ? { twoComputers: true } : {}), id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...(record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}), from: record.from, ...(record.members ? { members: record.members } : {}), ...(record.lane ? { lane: true } : {}) });
+function offer(record: MoveRecord, ticks = performance.now()): boolean {
+  const sent = tell(record.peer, { op: "offer", safeSwitch: true, ...(record.verifyPayloads ? { verifyPayloads: true } : {}), ...(record.twoComputers ? { twoComputers: true } : {}), id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...(record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}), from: record.from, ...(record.members ? { members: record.members } : {}), ...(record.lane ? { lane: true } : {}) });
+  if (sent) markedRetry(record, ticks);
+  else markUnsent(record);
+  return sent;
 }
 
 // The next parts to the other box, up to `IN_FLIGHT` on their way.
@@ -932,12 +939,12 @@ function switchSource(record: MoveRecord): void {
   const sending = outgoing.get(record.id);
   if (sending) sending.since = performance.now();
   if (!now) return;
-  markedRetry(now);
-  sendSwitch(now);
+  if (sendSwitch(now)) markedRetry(now);
+  else markUnsent(now);
 }
 
-function sendSwitch(record: MoveRecord): void {
-  tell(record.peer, { op: "switch", safeSwitch: true, id: record.id, ...bundleIdentity(record) });
+function sendSwitch(record: MoveRecord): boolean {
+  return tell(record.peer, { op: "switch", safeSwitch: true, id: record.id, ...bundleIdentity(record) });
 }
 
 /** Confirmed ownership, independent of whether the original could be archived yet. */
@@ -2007,11 +2014,14 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
     // Older sources sometimes left a switch with step "drop". Ask for the decision again.
     if (record.stage === "switching") {
       if (due) {
-        const pending = changeMove(record.id, each => { each.sentAt = now; each.againAt = undefined; each.step = "switch"; });
-        if (pending) {
-          markedRetry(pending, ticks);
-          if (pending.generation === undefined) tell(record.peer, { op: "decision?", id: record.id });
-          else sendSwitch(pending);
+        const sent = record.generation === undefined
+          ? tell(record.peer, { op: "decision?", id: record.id })
+          : sendSwitch(record);
+        if (sent) {
+          const pending = changeMove(record.id, each => { each.sentAt = now; each.againAt = undefined; each.step = "switch"; });
+          if (pending) markedRetry(pending, ticks);
+        } else {
+          markUnsent(record);
         }
       }
       continue;
@@ -2033,16 +2043,21 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
         if (record.tries === 0 && sentAgo > NO_ANSWER && !sent?.got.size) {
           inTurn(record.id, () => takeBack(record.id, say.notConnected(nameOf(record.peer)), 503)).catch(() => {});
         } else if (due) {
-          const pending = changeMove(record.id, each => { each.againAt = now; });
-          if (pending) offer(pending, ticks);
+          if (offer(record, ticks)) {
+            const pending = changeMove(record.id, each => { each.againAt = now; });
+            if (pending) markedRetry(pending, ticks);
+          }
         }
         break;
       // Its copy all there, and no word of it set up (that word lost, say): asked again.
       case "arrive":
         if (due) {
-          const pending = changeMove(record.id, each => { each.againAt = now; });
-          if (pending) markedRetry(pending, ticks);
-          tell(record.peer, { op: "arrive", id: record.id, ...bundleIdentity(record) });
+          if (tell(record.peer, { op: "arrive", id: record.id, ...bundleIdentity(record) })) {
+            const pending = changeMove(record.id, each => { each.againAt = now; });
+            if (pending) markedRetry(pending, ticks);
+          } else {
+            markUnsent(record);
+          }
         }
         break;
       case "parts":
@@ -2051,9 +2066,12 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
         break;
       case "drop":
         if (due) {
-          const pending = changeMove(record.id, each => { each.sentAt = now; });
-          if (pending) markedRetry(pending, ticks);
-          tell(record.peer, { op: "drop", id: record.id, ...bundleIdentity(record) });
+          if (tell(record.peer, { op: "drop", id: record.id, ...bundleIdentity(record) })) {
+            const pending = changeMove(record.id, each => { each.sentAt = now; });
+            if (pending) markedRetry(pending, ticks);
+          } else {
+            markUnsent(record);
+          }
         }
         break;
     }

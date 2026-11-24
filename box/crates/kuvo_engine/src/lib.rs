@@ -2,6 +2,7 @@
 
 mod active_tool;
 mod agent_models;
+mod agent_sessions;
 mod api;
 mod asks;
 mod attachment_retention;
@@ -62,6 +63,10 @@ pub const FEATURES: &[&str] = &[
 pub use active_tool::ActiveTool;
 pub use agent_models::{
     AgentCatalog, AgentModel, AgentModelSource, AutoModel, CatalogRead, ModelAccount,
+};
+pub use agent_sessions::{
+    AgentCall, AgentEvent, AgentLinePrompt, AgentPrompt, AgentSessionPatch, AgentSessionRead,
+    AgentSessionRow, AgentSessionSource, AgentTakeBack, NewAgentSession,
 };
 pub use attachment_retention::{AttachmentConversation, AttachmentRead, AttachmentSource};
 pub use external_asks::{

@@ -8,7 +8,7 @@ import {
 } from "./adapter.mjs";
 
 // Use the TypeScript bridge or the built-in Rust fixture with the same home.
-export async function withAgentFixture(t, seed, run) {
+export async function withAgentFixture(t, seed, run, { env: extra = {} } = {}) {
   const binary = boxBinary();
   if (binary.typescript && process.platform === "win32") {
     t.skip("The reference bridge runs on Unix.");
@@ -24,7 +24,7 @@ export async function withAgentFixture(t, seed, run) {
   let resident, bridge;
   try {
     privateHome(home);
-    const env = isolatedEnv(root);
+    const env = { ...isolatedEnv(root), ...extra };
     if (process.platform !== "win32") env.PATH = "/usr/bin:/bin";
     write(path.join(home, "folder-version.json"), '{"version":23}\n');
     await seed(home);
@@ -42,12 +42,19 @@ export async function withAgentFixture(t, seed, run) {
       write(path.join(home, "run", "agent-fixture-program"), process.execPath);
     }
     resident = startBox({ binary, home, env, relay });
-    await run(await resident.ready(), home);
+    // The resident replaced on the same computer, as an update replaces it.
+    const restart = async () => {
+      await resident.stop();
+      resident = startBox({ binary, home, env, relay });
+      return resident.ready();
+    };
+    await run(await resident.ready(), home, { restart });
   } finally {
     await resident?.stop();
     await bridge?.stop();
     await relay.close();
-    rmSync(root, { recursive: true, force: true });
+    // (A holder whose agent just ended can keep its folder open on Windows for a moment.)
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }
 

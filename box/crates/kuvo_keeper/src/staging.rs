@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Release, SELECTOR,
-    engine_pack::EnginePack,
+    engine_pack::{EnginePack, check_installer_engine},
     manifest::{ReleaseRef, SignedRelease, sha256},
 };
 
@@ -57,6 +57,43 @@ pub fn read_release(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
         return Err(unreadable());
     }
     Ok(bytes)
+}
+
+/// Verify the signed media carried by the installer before reporting its status.
+pub fn check_install_media(home: &Home, source: &Path, key: &str) -> io::Result<()> {
+    let checked: io::Result<(SignedRelease, &str)> = (|| {
+        let envelope = read_release(&source.join("boxes.json"), MAX_ENVELOPE)?;
+        let signed = SignedRelease::verify(&envelope, &[key])?;
+        if !signed.launches_rust() {
+            return Err(damaged());
+        }
+        let target = crate::manifest::local_target()?;
+        if let Some(engine) = signed.engine_build(target)
+            && !reqwest::Url::parse(&engine.url)
+                .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        {
+            return Err(damaged());
+        }
+        let pack = signed.pack_for(target)?;
+        let archive = File::open(source.join(pack.filename()?))?;
+        let metadata = archive.metadata()?;
+        if !metadata.is_file() || metadata.len() > MAX_PACK {
+            return Err(damaged());
+        }
+        let mut digest = Sha256::new();
+        let size = io::copy(&mut archive.take(MAX_PACK + 1), &mut digest)?;
+        if size > MAX_PACK || pack.sha256 != format!("{:x}", digest.finalize()) {
+            return Err(damaged());
+        }
+        Ok((signed, target))
+    })();
+    let (signed, target) = checked.map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "This copy of Kuvo is damaged. Download it again, then try again.",
+        )
+    })?;
+    check_installer_engine(home, &signed, target)
 }
 
 /// Probe the new programs in a private folder and leave the selected release in place.
@@ -162,6 +199,9 @@ fn prepare_pack(
             &home.run().join("fleet-ready.json"),
             &serde_json::to_vec(&reference)?,
         )?;
+        if let Err(error) = crate::retirement::sweep(home, &release) {
+            eprintln!("Sweeping superseded Kuvo releases: {error}");
+        }
     }
     Ok(reference)
 }

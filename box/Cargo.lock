@@ -1274,17 +1274,31 @@ dependencies = [
 name = "kuvo_agents"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "jiff",
  "kuvo_os",
  "kuvo_store",
+ "percent-encoding",
+ "regex",
+ "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
  "subtle",
  "tempfile",
  "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1482,6 +1496,7 @@ dependencies = [
  "http",
  "http-body-util",
  "icu_collator",
+ "jiff",
  "kuvo_os",
  "kuvo_protocol",
  "kuvo_server",
@@ -1494,6 +1509,7 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "rsa 0.10.0",
+ "rusqlite",
  "ryu-js",
  "serde",
  "serde_json",
@@ -1502,10 +1518,12 @@ dependencies = [
  "ssh-key",
  "subtle",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-util",
  "unicode-normalization",
  "url",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

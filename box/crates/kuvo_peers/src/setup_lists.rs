@@ -9,7 +9,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use kuvo_protocol::routes::types::GetKuvoComputersStatus200ComputersItemAtWorkItem;
+use kuvo_protocol::routes::types::{
+    GetKuvoComputersStatus200ComputersItemAtWorkItem, GetKuvoComputersStatus200FleetUpdate,
+    PostKuvoUpdateRetryStatus202 as FleetRow,
+};
 use kuvo_store::files::{FileStamp, file_stamp};
 use kuvo_wire::{
     keys::{Host, encode},
@@ -34,7 +37,7 @@ use crate::{
     lists::{self, Computer, Lists, Local},
     notices::{self, History},
     parts::{self, Part, Parts},
-    reach::{Millis, Reach, Standing},
+    reach::{Millis, Reach, Standing, UpdatePresence},
     relay::{self, Relay},
     relay_routes, remote_work,
 };
@@ -66,8 +69,7 @@ pub struct View {
     pub(crate) move_waiting: Arc<BTreeSet<String>>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
-    update: UpdateFacts,
-    bridge_update: Option<BridgeUpdate>,
+    update: Arc<UpdatePublication>,
     work_calls: bool,
     transfers: bool,
     submission_recovery: bool,
@@ -78,6 +80,18 @@ pub struct View {
 }
 
 impl View {
+    pub(crate) fn local_update_row(&self) -> Option<&FleetRow> {
+        self.update.local_row.as_ref()
+    }
+
+    pub(crate) fn peer_update_row(&self, key: &ComputerKey) -> Option<&FleetRow> {
+        self.update.peer_rows.get(key)
+    }
+
+    pub(crate) fn fleet_summary(&self) -> Option<&GetKuvoComputersStatus200FleetUpdate> {
+        self.update.summary.as_ref()
+    }
+
     /// Check for Updates uses the already persisted observation even while the
     /// receiver is still publishing its new in-memory view.
     pub fn kept_peer_is_away(&self, run: &Path, key: &ComputerKey, now: Millis) -> bool {
@@ -87,15 +101,24 @@ impl View {
     }
 
     pub fn peer_updates(&self, key: &ComputerKey, now: Millis) -> (bool, UpdateFacts) {
+        let (presence, facts) = self.peer_update(key, now);
+        (presence.away_for.is_some(), facts.unwrap_or_default())
+    }
+
+    pub fn peer_update(
+        &self,
+        key: &ComputerKey,
+        now: Millis,
+    ) -> (UpdatePresence, Option<UpdateFacts>) {
         let key = encode(key);
         let announcement = self.announced.get(&key);
-        let away = self
-            .reach
-            .peer_is_away(&key, announcement.and_then(|entry| entry.heard), now);
+        let presence =
+            self.reach
+                .update_presence(&key, announcement.and_then(|entry| entry.heard), now);
         let facts = announcement
             .and_then(|entry| entry.computer.as_ref())
-            .map_or_else(UpdateFacts::default, |computer| computer.updates());
-        (away, facts)
+            .map(|computer| computer.updates());
+        (presence, facts)
     }
 
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
@@ -448,7 +471,7 @@ struct SentAgents {
 }
 
 enum Change {
-    Update(Box<(UpdateFacts, Option<BridgeUpdate>)>),
+    Update(Arc<UpdatePublication>),
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
@@ -469,6 +492,15 @@ struct PublishedViews {
 pub struct BridgeUpdate {
     pub recipients: BTreeSet<ComputerKey>,
     pub facts: UpdateFacts,
+}
+
+#[derive(Default, PartialEq)]
+pub struct UpdatePublication {
+    pub facts: UpdateFacts,
+    pub bridge: Option<BridgeUpdate>,
+    pub local_row: Option<FleetRow>,
+    pub peer_rows: BTreeMap<ComputerKey, FleetRow>,
+    pub summary: Option<GetKuvoComputersStatus200FleetUpdate>,
 }
 
 pub struct ResidentPeers {
@@ -656,11 +688,8 @@ impl ResidentPeers {
         let _ = self.changes.send(Change::Notices(Arc::new(notices))).await;
     }
 
-    pub async fn announce_update(&self, facts: UpdateFacts, bridge: Option<BridgeUpdate>) {
-        let _ = self
-            .changes
-            .send(Change::Update(Box::new((facts, bridge))))
-            .await;
+    pub async fn announce_update(&self, update: Arc<UpdatePublication>) {
+        let _ = self.changes.send(Change::Update(update)).await;
     }
 }
 
@@ -702,8 +731,7 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             move_waiting: Arc::default(),
             relay_connected: false,
-            update: UpdateFacts::default(),
-            bridge_update: None,
+            update: Arc::default(),
             work_calls: false,
             transfers: false,
             submission_recovery: false,
@@ -756,10 +784,10 @@ impl Resident {
                 }
                 change = changes.recv() => match change {
                     Some(Change::Update(update)) => {
-                        let (update, bridge) = *update;
+                        let announce = self.view.update.facts != update.facts
+                            || self.view.update.bridge != update.bridge;
                         self.view.update = update;
-                        self.view.bridge_update = bridge;
-                        if let Some(publisher) = &mut publisher {
+                        if announce && let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::None);
                         }
                     }
@@ -1296,9 +1324,10 @@ async fn publish_round(
         let digest: [u8; 32] = Sha256::digest(state.to_string()).into();
         (state, digest)
     };
-    let current = offer(&view.update);
+    let current = offer(&view.update.facts);
     let bridge = view
-        .bridge_update
+        .update
+        .bridge
         .as_ref()
         .map(|bridge| (bridge, offer(&bridge.facts)));
     for peer in &view.roster.members {

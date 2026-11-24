@@ -6,6 +6,27 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{io, path::Path};
 
+pub const TWO_HOMES_MOVE: &str = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
+
+/// Match the Mac installer's account check for present and prospective homes.
+#[cfg(target_os = "macos")]
+pub fn same_mac_home(left: &Path, right: &Path) -> bool {
+    use std::{fs, os::unix::fs::MetadataExt as _};
+
+    if let (Ok(left), Ok(right)) = (fs::metadata(left), fs::metadata(right)) {
+        return left.dev() == right.dev() && left.ino() == right.ino();
+    }
+    let placed = |path: &Path| {
+        path.canonicalize()
+            .ok()
+            .or_else(|| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?)))
+            .unwrap_or_else(|| path.to_owned())
+    };
+    placed(left)
+        .as_os_str()
+        .eq_ignore_ascii_case(placed(right).as_os_str())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Verdict {
@@ -34,6 +55,16 @@ pub struct Judgement {
     pub verdict: Verdict,
     pub verb: Option<Verb>,
     pub status: Value,
+}
+
+impl Judgement {
+    pub fn unreadable_move(&self) -> Option<&str> {
+        if self.verdict == Verdict::Stuck && self.status["step"].is_null() {
+            self.status["failed"]["message"].as_str()
+        } else {
+            None
+        }
+    }
 }
 
 /// Inspect the folders without starting Kuvo. Helper readiness comes from

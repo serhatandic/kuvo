@@ -41,6 +41,17 @@ impl AgentKind {
         }
     }
 
+    /// The agent's name, as people read it.
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Cursor => "Cursor",
+            Self::Grok => "Grok",
+            Self::Antigravity => "Antigravity",
+        }
+    }
+
     pub const fn provider(self) -> &'static str {
         match self {
             Self::Claude => "claude-code",
@@ -199,6 +210,61 @@ impl Accounts {
                 }
                 return Err(error);
             }
+            Ok(account)
+        })
+        .await?
+    }
+
+    /// Register an existing managed folder in place, keeping native credentials bound to its path.
+    pub async fn adopt_home(
+        &self,
+        kind: AgentKind,
+        folder: String,
+        label: Option<String>,
+    ) -> io::Result<Account> {
+        if !valid_folder(kind, &folder) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Invalid account folder.",
+            ));
+        }
+        let accounts = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _lock = accounts.lock()?;
+            let mut records = accounts.read()?;
+            let folder = folder.replace('\\', "/");
+            let home = accounts.root.join(&folder);
+            accounts.check_containment(&home)?;
+            if !fs::metadata(&home)?.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "Invalid account folder.",
+                ));
+            }
+            if let Some(account) = records
+                .iter()
+                .find(|row| row.kind == kind && accounts.home(row).as_ref() == Some(&home))
+            {
+                return Ok(account.clone());
+            }
+            let mut bytes = [0; 4];
+            getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+            let id = hex::encode(bytes);
+            if records.iter().any(|row| row.kind == kind && row.id == id) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "An account with this ID already exists.",
+                ));
+            }
+            let account = Account {
+                kind,
+                id,
+                label: clean_label(label),
+                folder: Some(folder),
+                other: Map::new(),
+            };
+            records.push(account.clone());
+            accounts.save(&records)?;
             Ok(account)
         })
         .await?

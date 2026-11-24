@@ -61,14 +61,18 @@ impl OwnedLock {
             platform::private_file(&file)?;
         }
         with_deadline(wait, Duration::from_millis(10), || {
+            // On Windows a lock its owner is removing refuses to be opened
+            // until it's gone: busy, as one held.
             match fs::symlink_metadata(path) {
-                Ok(meta) if meta.is_dir() => {
-                    if !reap(path, rehome_pid)? {
-                        return Ok(None);
-                    }
-                }
+                Ok(meta) if meta.is_dir() => match reap(path, rehome_pid) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(None),
+                    Err(err) if platform::directory_conflict(&err) => return Ok(None),
+                    Err(err) => return Err(err),
+                },
                 Ok(_) => return Ok(None),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => (),
+                Err(err) if platform::directory_conflict(&err) => return Ok(None),
                 Err(err) => return Err(err),
             }
             match fs::rename(pending.path(), path) {
@@ -152,14 +156,25 @@ impl Drop for OwnedLock {
 
 /// Kernel-held lock for Rust-only writers. The lock file remains after release.
 pub fn try_file_lock(path: &Path) -> io::Result<File> {
-    let file = File::options()
+    let file = open_lock(path)?;
+    file.try_lock().map_err(io::Error::from)?;
+    Ok(file)
+}
+
+/// Hold a published resource open while readers are still using it.
+pub fn try_shared_file_lock(path: &Path) -> io::Result<File> {
+    let file = open_lock(path)?;
+    file.try_lock_shared().map_err(io::Error::from)?;
+    Ok(file)
+}
+
+fn open_lock(path: &Path) -> io::Result<File> {
+    File::options()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(path)?;
-    file.try_lock().map_err(io::Error::from)?;
-    Ok(file)
+        .open(path)
 }
 
 #[derive(Clone, Copy, Debug)]

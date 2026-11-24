@@ -33,8 +33,30 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    let _release = if matches!(word(0), Some("serve" | "keep" | "hold" | "mcp")) {
+        env::var_os("KUVO_HOME")
+            .filter(|home| std::path::Path::new(home).is_absolute())
+            .map(|home| kuvo_keeper::lease_running_release(std::path::Path::new(&home)))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if word(0) == Some("hold") {
         kuvo_agents::hold::run(&args[1..])?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The stdio MCP forwarder an agent starts in its sandbox.
+    if (word(0), args.len()) == (Some("mcp"), 1) {
+        let relay = kuvo_agents::tool_forwarder::Relay::from_env()?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(kuvo_agents::tool_forwarder::forward(
+                relay,
+                tokio::io::BufReader::new(tokio::io::stdin()),
+                tokio::io::stdout(),
+            ))?;
         return Ok(ExitCode::SUCCESS);
     }
     #[cfg(target_os = "macos")]
@@ -646,15 +668,18 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
     use std::{ffi::OsStr, path::Path};
 
     let usage = || {
-        eprintln!("usage: kuvo-box install --status --root <name> [--app <bundle>]");
+        eprintln!(
+            "usage: kuvo-box install --status --root <name> [--app <bundle>] [--media <folder>]"
+        );
         Ok(ExitCode::from(2))
     };
     let mut words = args.iter().filter(|word| *word != "--status");
-    let (mut root, mut bundle) = (None, None);
+    let (mut root, mut bundle, mut media) = (None, None, None);
     while let Some(word) = words.next() {
         let slot = match word.to_str() {
             Some("--root") if root.is_none() => &mut root,
             Some("--app") if bundle.is_none() => &mut bundle,
+            Some("--media") if media.is_none() => &mut media,
             _ => return usage(),
         };
         *slot = words.next().map(Path::new);
@@ -673,9 +698,14 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         .filter(|path| path != OsStr::new(""))
         .map_or_else(|| folder.join(".kuvo-code"), PathBuf::from);
     let located = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.into());
-    if located(home.root()) != located(&selected) {
+    #[cfg(target_os = "macos")]
+    let same_place = kuvo_move::install::same_mac_home;
+    #[cfg(not(target_os = "macos"))]
+    let same_place = |left: &Path, right: &Path| located(left) == located(right);
+    if !same_place(home.root(), &selected) {
         return usage();
     }
+    let real = same_place(home.root(), &account.home.join(".kuvo-code"));
     #[cfg(target_os = "macos")]
     let source = {
         let Some(id) = bundle
@@ -690,7 +720,6 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
             );
             return Ok(ExitCode::FAILURE);
         };
-        let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
         if real != (id == "run.kuvo.code") {
             let message = if real {
                 "Only Kuvo itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own."
@@ -710,11 +739,26 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
+    if let Some(media) = media {
+        if !media.is_absolute() {
+            return usage();
+        }
+        let key = (!real)
+            .then(|| env::var("KUVO_TEST_RELEASE_KEY").ok())
+            .flatten();
+        let key = key.as_deref().unwrap_or(kuvo_keeper::manifest::UPDATE_KEY);
+        if let Err(error) = kuvo_keeper::staging::check_install_media(&home, media, key) {
+            println!(
+                "{}",
+                serde_json::json!({"result":"failed","message":error.to_string()})
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+    }
     let helper_ready = {
         #[cfg(target_os = "macos")]
         {
             let profile = located(&folder);
-            let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
             home.bin()
                 .join("kuvo-box")
                 .is_file()
@@ -726,10 +770,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         None
     };
     let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, helper_ready)?;
-    if judge.verdict == kuvo_move::install::Verdict::Stuck
-        && judge.status["step"].is_null()
-        && let Some(message) = judge.status["failed"]["message"].as_str()
-    {
+    if let Some(message) = judge.unreadable_move() {
         println!(
             "{}",
             serde_json::json!({"result":"refused","message":message})
@@ -738,7 +779,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
     }
     let mut reply = serde_json::to_value(judge)?;
     if reply["verdict"] == "two" {
-        reply["message"] = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.".into();
+        reply["message"] = kuvo_move::install::TWO_HOMES_MOVE.into();
     }
     println!("{reply}");
     Ok(ExitCode::SUCCESS)

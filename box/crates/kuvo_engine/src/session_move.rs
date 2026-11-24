@@ -514,7 +514,7 @@ impl SessionMove {
                 queue.letter_wait_reason(&self.engine.home),
             ));
         }
-        if queue::reached(&self.engine, &self.lease, session, &letter.id)
+        if queue::reached(&self.engine, queue::Target::Engine(&self.lease), session, &letter.id)
             .await
             .map_err(fence_failure)?
         {
@@ -558,7 +558,7 @@ impl SessionMove {
         if letter.steer {
             prompt.delivery = queue::Delivery::Steer;
         }
-        crate::send::post(&self.engine, &self.lease, session, &prompt).await?;
+        crate::send::post(&self.engine, queue::Target::Engine(&self.lease), session, &prompt).await?;
         Ok(LetterDelivery::Accepted)
     }
 
@@ -676,7 +676,7 @@ impl SessionMove {
         unpaused: &[String],
     ) -> Result<(), MoveEngineError> {
         for session in unpaused {
-            queue::resume_move(&self.engine, &self.lease, session, move_id)
+            queue::resume_move(&self.engine, queue::Target::Engine(&self.lease), session, move_id)
                 .await
                 .map_err(|error| {
                     MoveEngineError::Storage(io::Error::other(format!(

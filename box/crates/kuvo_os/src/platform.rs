@@ -68,6 +68,18 @@ pub fn env_value<'a>(platform: Platform, env: &'a Environment, key: &str) -> Opt
         .map(OsString::as_os_str)
 }
 
+/// This process's user ID, where the system has one (Unix).
+pub fn user_id() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        Some(rustix::process::getuid().as_raw())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Account {
     pub name: OsString,

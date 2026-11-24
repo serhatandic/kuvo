@@ -102,7 +102,7 @@ impl Destination {
         disk: &Disk,
         time: u64,
         mut first: impl FnMut(),
-    ) -> Result<(), Error> {
+    ) -> Result<Option<PathBuf>, Error> {
         let aside = aside(time)?;
         for (index, entry) in self.entries.iter().enumerate() {
             let (original, kept) = entry.paths(disk, &aside)?;
@@ -118,7 +118,10 @@ impl Destination {
                 _ => return Err(Error::Busy(original)),
             }
         }
-        Ok(())
+        (!self.entries.is_empty())
+            .then(|| disk.path(&aside))
+            .transpose()
+            .map_err(Error::from)
     }
 
     pub(super) fn undo(&self, disk: &Disk, time: u64) -> Result<(), Error> {

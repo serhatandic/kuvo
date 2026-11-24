@@ -11,8 +11,14 @@ pub type Millis = i64;
 const CHECKED_EVERY: Millis = 300_000;
 const HEARD_FOR: Millis = 30 * 60_000;
 const LIVE_FOR: Millis = 60_000;
-const SWITCH_GRACE: Millis = 10 * 60_000;
+pub const SWITCH_GRACE: Millis = 10 * 60_000;
 pub const COPY_QUIET_AFTER: Millis = 180_000;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UpdatePresence {
+    pub away_for: Option<Millis>,
+    pub heard: Option<Millis>,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Standing {
@@ -114,6 +120,22 @@ impl Reach {
         self.away.contains_key(key) || heard.is_some_and(|at| now.saturating_sub(at) > HEARD_FOR)
     }
 
+    pub(crate) fn update_presence(
+        &self,
+        key: &str,
+        heard: Option<Millis>,
+        now: Millis,
+    ) -> UpdatePresence {
+        let away_for = self.peer_is_away(key, heard, now).then(|| {
+            heard
+                .filter(|at| now.saturating_sub(*at) <= HEARD_FOR)
+                .map_or(Millis::MAX, |at| {
+                    now.saturating_sub(self.away_since(key).unwrap_or(at))
+                })
+        });
+        UpdatePresence { away_for, heard }
+    }
+
     pub fn copy_standing(
         &self,
         key: &str,
@@ -173,4 +195,57 @@ fn read_times(path: &Path) -> BTreeMap<String, Number> {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn brief_unreachable_drop_stays_live_and_clears_on_hearing_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = dir.path();
+        let mut reach = Reach::default();
+        let seen = 1_000_000;
+        let dropped = seen + 10_000;
+
+        reach.unreachable(run, "peerA", dropped).unwrap();
+        assert_eq!(reach.away_since("peerA"), Some(dropped));
+        assert_eq!(reach.last_found_away("peerA"), Some(dropped));
+
+        // Under the live grace window, copied rows remain live rather than flapping to away.
+        assert_eq!(
+            reach.copy_standing("peerA", Some(seen), None, dropped + LIVE_FOR - 1),
+            Standing::Live
+        );
+        // Updating peers keep their updating standing across the longer switch grace window.
+        assert_eq!(
+            reach.copy_standing(
+                "peerA",
+                Some(seen),
+                Some(ReleaseState::Updating),
+                dropped + SWITCH_GRACE - 1,
+            ),
+            Standing::Updating
+        );
+        // Once the grace period elapses without hearing back, standing transitions to away.
+        assert_eq!(
+            reach.copy_standing("peerA", Some(seen), None, dropped + LIVE_FOR),
+            Standing::Away {
+                last_seen: Some(seen)
+            }
+        );
+
+        // Hearing from the peer clears both persisted reach files and restores live standing.
+        assert!(reach.heard(run, "peerA").unwrap());
+        assert_eq!(reach.away_since("peerA"), None);
+        assert_eq!(reach.last_found_away("peerA"), None);
+        assert_eq!(
+            reach.copy_standing("peerA", Some(dropped), None, dropped + LIVE_FOR + 10_000),
+            Standing::Live
+        );
+        let reloaded = Reach::load(run);
+        assert_eq!(reloaded.away_since("peerA"), None);
+        assert_eq!(reloaded.last_found_away("peerA"), None);
+    }
 }

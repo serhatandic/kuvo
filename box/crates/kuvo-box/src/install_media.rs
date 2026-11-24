@@ -13,6 +13,7 @@ use kuvo_keeper::{
     manifest::{SignedRelease, UPDATE_KEY},
     staging::{self, MAX_ENVELOPE},
 };
+use kuvo_move::install::{self, Verb, Verdict};
 use kuvo_os::platform::{Account, Platform};
 use kuvo_store::{files, home::Home, locks};
 use serde_json::json;
@@ -55,10 +56,7 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         .canonicalize()?;
     let system = account.home.canonicalize()?;
     let target = profile.join(root);
-    let located = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
-    let real = located(&target)
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&located(&system.join(".kuvo-code")).to_string_lossy());
+    let real = install::same_mac_home(&target, &system.join(".kuvo-code"));
     let app_id = kuvo_move::mac::bundle_id(bundle)?;
     if real != (app_id == "run.kuvo.code") {
         return Err(io::Error::other(if real {
@@ -70,7 +68,67 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     }
     let home = Home::new(target)?;
     let app = profile.join("Library/Application Support").join(&app_id);
-    let before = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
+    let before = install::judge(&home, Some(&app), Platform::Mac, None)?;
+    if let Some(message) = before.unreadable_move() {
+        println!("{}", json!({"result":"refused", "message":message}));
+        return Ok(1);
+    }
+    let declined = match (restart, before.verdict) {
+        (_, Verdict::Waits) => Some((4, "waits", "Another move is under way.")),
+        (false, Verdict::Machine) => Some((
+            1,
+            "refused",
+            "This Mac is set up as one of your machines already: Kuvo uses what's here.",
+        )),
+        (true, Verdict::Machine) => Some((
+            1,
+            "refused",
+            "This computer is set up as one of your machines already: Kuvo uses what's here.",
+        )),
+        (false, Verdict::Two) => Some((1, "refused", install::TWO_HOMES_MOVE)),
+        (true, Verdict::Two) => Some((
+            1,
+            "refused",
+            "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: both stay as they are.",
+        )),
+        (true, Verdict::App07 | Verdict::AppBox) => Some((
+            1,
+            "refused",
+            "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.",
+        )),
+        (false, Verdict::Fresh) => Some((
+            1,
+            "refused",
+            "There's nothing of an earlier Kuvo Code's on this Mac to move.",
+        )),
+        (_, Verdict::Back) => Some((
+            1,
+            "refused",
+            "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
+        )),
+        (true, Verdict::Moving) => Some((
+            1,
+            "refused",
+            "Kuvo is moving your sessions to their new place on this Mac: that's finished first.",
+        )),
+        (true, Verdict::Stuck) => Some((
+            1,
+            "refused",
+            "Kuvo was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
+        )),
+        (true, Verdict::Fresh | Verdict::Ours)
+        | (
+            false,
+            Verdict::Ours | Verdict::App07 | Verdict::AppBox | Verdict::Moving | Verdict::Stuck,
+        ) => None,
+    };
+    if let Some((code, result, message)) = declined {
+        println!(
+            "{}",
+            json!({"result":result, "verdict":before.verdict, "message":message, "status":before.status})
+        );
+        return Ok(code);
+    }
     let verified = || -> io::Result<(SignedRelease, Vec<u8>)> {
         let key = (!real)
             .then(|| std::env::var("KUVO_TEST_RELEASE_KEY").ok())
@@ -79,7 +137,7 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         let signed = SignedRelease::verify(&envelope, &[key.as_deref().unwrap_or(UPDATE_KEY)])?;
         Ok((signed, envelope))
     };
-    if restart && before.verdict == kuvo_move::install::Verdict::Ours {
+    if restart && before.verdict == Verdict::Ours {
         files::create_private_dirs(&home.updates())?;
         let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
         if fs::symlink_metadata(home.bin()).is_ok_and(|entry| entry.is_dir())
@@ -100,12 +158,8 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         );
         return Ok(0);
     }
-    if restart && before.verdict != kuvo_move::install::Verdict::Fresh {
-        println!("{}", json!({"result":"refused","verdict":before.verdict}));
-        return Ok(1);
-    }
-    if !restart && before.verb != Some(kuvo_move::install::Verb::Move) {
-        let ours = before.verdict == kuvo_move::install::Verdict::Ours;
+    if !restart && before.verb != Some(Verb::Move) {
+        let ours = before.verdict == Verdict::Ours;
         println!(
             "{}",
             json!({"result":if ours {"nothing"} else {"refused"}, "verdict":before.verdict})
@@ -117,10 +171,14 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     let _lock = locks::try_file_lock(&home.updates().join(".install-media.lock"))?;
     let media = staging::prepare_install(&home, &signed, source)?;
     if restart {
-        let result = kuvo_move::mac::new_home_from_media(&home, &app.join("box"), &system, &media);
+        let (result, set_aside) =
+            kuvo_move::mac::new_home_from_media(&home, &app.join("box"), &system, &media);
         let mut value = serde_json::to_value(&result)?;
+        if let Some(path) = set_aside {
+            value["setAside"] = serde_json::to_value(path)?;
+        }
         let code = result.exit_code();
-        let after = kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?;
+        let after = install::judge(&home, Some(&app), Platform::Mac, None)?;
         value["verdict"] = serde_json::to_value(after.verdict)?;
         if code == 0 {
             staging::select_install(&home, &signed, source, &envelope)?;
@@ -181,9 +239,8 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
             }
         }
     }
-    value["verdict"] = serde_json::to_value(
-        kuvo_move::install::judge(&home, Some(&app), Platform::Mac, None)?.verdict,
-    )?;
+    value["verdict"] =
+        serde_json::to_value(install::judge(&home, Some(&app), Platform::Mac, None)?.verdict)?;
     let _ = writeln!(io::stdout().lock(), "{value}");
     if !real && move_result.exit_code() == 0 && home.updates().join("install").is_dir() {
         files::remove_tree_synced(&home.updates().join("install"))?;

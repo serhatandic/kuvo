@@ -2,16 +2,16 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use http::{Method, StatusCode};
+use http::StatusCode;
 use kuvo_os::process::ProcessIdentity;
 use kuvo_server::Refusal;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Delivery, Inbox, Queue, inbox, queue_failed, reached, save_failed, saved_removal,
+    Delivery, Inbox, Queue, Target, inbox, queue_failed, reached, save_failed, saved_removal,
     transcript_has,
 };
-use crate::{Engine, api, lifetime::Lease, sessions};
+use crate::{Engine, api};
 
 // The native fields also occur in interrupted sends from older residents.
 #[derive(Clone, Default, Deserialize, PartialEq, Serialize)]
@@ -75,7 +75,7 @@ fn settled(error: &api::Error) -> bool {
 
 pub(super) async fn send(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     id: &str,
     steer: bool,
@@ -95,7 +95,7 @@ pub(super) async fn send(
     else {
         return Ok(false);
     };
-    if !reached(engine, lease, session, id)
+    if !reached(engine, target, session, id)
         .await
         .map_err(queue_failed)?
     {
@@ -109,20 +109,13 @@ pub(super) async fn send(
         if steer {
             prompt.delivery = Delivery::Steer;
         }
-        let prompt = serde_json::to_value(prompt).map_err(|error| save_failed(error.into()))?;
         engine
             .queues
-            .put(session, |state| state.handoffs.start(id, lease.record.pid))
+            .put(session, |state| state.handoffs.start(id, target.pid()))
             .await
             .map_err(save_failed)?;
-        let result = engine
-            .call_raw(
-                lease,
-                Method::POST,
-                &format!("{}/prompt", sessions::path(session)),
-                Some(&prompt),
-                Duration::from_secs(120),
-            )
+        let result = target
+            .prompt(engine, session, &prompt, Duration::from_secs(120))
             .await;
         if result.as_ref().is_ok() || result.as_ref().is_err_and(settled) {
             engine
@@ -134,7 +127,7 @@ pub(super) async fn send(
                 .map_err(save_failed)?;
         }
         result.map_err(queue_failed)?;
-        if !reached(engine, lease, session, id)
+        if !reached(engine, target, session, id)
             .await
             .map_err(queue_failed)?
         {
@@ -152,7 +145,7 @@ pub(super) async fn send(
 /// Absence can only settle a completed native POST or one whose process died.
 pub(super) async fn removable(
     engine: &Engine,
-    lease: Option<&Lease>,
+    target: Option<Target<'_>>,
     session: &str,
     id: &str,
     saved: &Handoffs,
@@ -162,33 +155,33 @@ pub(super) async fn removable(
         return Ok(true);
     }
     saved.check(id)?;
-    let lease = lease.ok_or_else(|| busy("The engine isn't answering."))?;
+    let target = target.ok_or_else(|| busy("The engine isn't answering."))?;
     let read;
     let items = match items {
         Some(items) => items,
         None => {
-            read = inbox(engine, lease, session).await.map_err(queue_failed)?;
+            read = inbox(engine, target, session).await.map_err(queue_failed)?;
             &read
         }
     };
     if items.iter().any(|entry| entry.id == id) {
         return Err(busy("The engine still holds this message."));
     }
-    Ok(!transcript_has(engine, lease, session, id)
+    Ok(!transcript_has(engine, target, session, id)
         .await
         .map_err(queue_failed)?)
 }
 
 pub(super) async fn pending(
     engine: &Engine,
-    lease: &Lease,
+    target: Target<'_>,
     session: &str,
     mut queue: Queue,
     items: &[Inbox],
 ) -> Result<Queue, Refusal> {
     for id in &queue.handoffs.handoff {
         if !items.iter().any(|entry| entry.id == *id)
-            && transcript_has(engine, lease, session, id)
+            && transcript_has(engine, target, session, id)
                 .await
                 .map_err(queue_failed)?
         {

@@ -18,6 +18,12 @@ pub trait TurnPolicy: Send + Sync {
     /// Leave the decision to the person when the current policy calls for
     /// interaction. A caller can also apply a previous decision here.
     fn permission(&self, ask: &PermissionAsk) -> AdapterCall<'_, Option<Decision>>;
+
+    /// The card you're shown for an ask the policy leaves to you: the ask as
+    /// it is, unless the policy asks it as something else.
+    fn card(&self, ask: PermissionAsk) -> AdapterCall<'_, PermissionAsk> {
+        Box::pin(async move { Ok(ask) })
+    }
 }
 
 pub struct EventWrite {
@@ -34,6 +40,8 @@ impl EventWrite {
 
 pub struct ResidentSink {
     session: String,
+    /// The agent whose slot its checkpoints write.
+    provider: String,
     store: SessionStore,
     asks: TurnAsks,
     policy: Arc<dyn TurnPolicy>,
@@ -43,6 +51,7 @@ pub struct ResidentSink {
 impl ResidentSink {
     pub fn channel(
         session: String,
+        provider: String,
         store: SessionStore,
         asks: TurnAsks,
         policy: Arc<dyn TurnPolicy>,
@@ -50,6 +59,7 @@ impl ResidentSink {
         let (events, writes) = mpsc::channel(32);
         let sink = Self {
             session,
+            provider,
             store,
             asks,
             policy,
@@ -60,6 +70,10 @@ impl ResidentSink {
 
     pub async fn retire(&self) -> io::Result<()> {
         self.asks.end().await
+    }
+
+    pub(crate) fn retirement(&self) -> TurnAsks {
+        self.asks.clone()
     }
 }
 
@@ -80,7 +94,10 @@ impl TurnSink for ResidentSink {
 
     fn save_state(&self, state: VendorState) -> AdapterCall<'_, ()> {
         Box::pin(async move {
-            if !self.asks.is_ended() && self.store.save_state(&self.session, state).await? {
+            if !self.asks.is_ended() && self
+                    .store
+                    .save_state(&self.session, &self.provider, state)
+                    .await? {
                 Ok(())
             } else {
                 Err(closed())
@@ -108,6 +125,7 @@ impl TurnSink for ResidentSink {
                     decision
                 });
             }
+            let ask = self.policy.card(ask).await?;
             self.asks.permission(ask).await
         })
     }

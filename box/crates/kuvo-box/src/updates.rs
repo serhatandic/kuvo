@@ -1,10 +1,13 @@
 //! Connect the keeper's update preparation to live setup and peer facts.
 
 mod mail;
+mod progress;
 mod released_machines;
 mod retry;
+mod summary;
 
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -18,8 +21,9 @@ use kuvo_keeper::{
     update_status,
 };
 use kuvo_peers::{
-    directory::{PreparedRelease, UpdateFacts},
-    setup_lists::{BridgeUpdate, ResidentPeers, View},
+    directory::{PreparedRelease, ReleaseProgress, UpdateFacts},
+    reach::UpdatePresence,
+    setup_lists::{BridgeUpdate, ResidentPeers, UpdatePublication, View},
 };
 use kuvo_setup::SetupHandle;
 use kuvo_store::{files, home::Home};
@@ -60,6 +64,7 @@ enum Check {
         retry::Request,
         oneshot::Sender<Result<retry::Answer, kuvo_server::Refusal>>,
     ),
+    PeerRetry(PreparedRelease),
 }
 
 enum CheckReply {
@@ -73,22 +78,41 @@ struct FeedCheck {
     task: JoinHandle<io::Result<Candidate>>,
 }
 
+fn feed(home: &Home, profile: &Path) -> Option<(String, String, bool)> {
+    let config = std::env::var("KUVO_TEST_RELEASE_FEED")
+        .ok()
+        .zip(std::env::var("KUVO_TEST_RELEASE_KEY").ok());
+    let scratch = is_scratch(home).ok()?;
+    match config {
+        Some((url, key)) if scratch => Some((url, key, true)),
+        _ if !scratch && fleet::checked_home(home, profile) => {
+            Some((FEED.into(), UPDATE_KEY.into(), false))
+        }
+        _ => None,
+    }
+}
+
+pub fn bridge_version(home: &Home, profile: &Path) -> Option<String> {
+    let (_, key, _) = feed(home, profile)?;
+    let selected = fleet::selected(home).ok()??;
+    let running = Candidate::verify(fleet::installed_envelope(home, &selected)?, &key).ok()?;
+    if running.local().ok()?.target().ok()? != selected {
+        return None;
+    }
+    Some(running.bridge(&key).ok()??.version().into())
+}
+
 pub fn start(
     home: Home,
     profile: &Path,
     peers: Arc<ResidentPeers>,
     setup: SetupHandle,
 ) -> Option<Worker> {
-    let config = std::env::var("KUVO_TEST_RELEASE_FEED")
-        .ok()
-        .zip(std::env::var("KUVO_TEST_RELEASE_KEY").ok());
-    let scratch = is_scratch(&home).ok()?;
-    let (url, key, delay) = match config {
-        Some((url, key)) if scratch => (url, key, Duration::ZERO),
-        _ if !scratch && fleet::checked_home(&home, profile) => {
-            (FEED.into(), UPDATE_KEY.into(), Duration::from_secs(60))
-        }
-        _ => return None,
+    let (url, key, scratch) = feed(&home, profile)?;
+    let delay = if scratch {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(60)
     };
     let mail = peers
         .relay_handle()
@@ -97,6 +121,7 @@ pub fn start(
     let pack_server = mail
         .as_ref()
         .and_then(|mail| mail.serve(home.clone(), checks.clone()));
+    let summary = summary::History::load(&home);
     let mut fleet = Fleet {
         home,
         peers,
@@ -112,7 +137,9 @@ pub fn start(
         next_bridge: Instant::now(),
         released_machines: released_machines::Checks::new(scratch),
         last_sent: None,
+        summary,
         attempted: None,
+        receiving: None,
         pending: None,
         mail,
         pack_server,
@@ -126,7 +153,8 @@ pub fn start(
                 request = requests.recv() => match request {
                     Some(Check::Local(answer)) => { let _ = answer.send(fleet.request_check(true)); }
                     Some(Check::Peer) => { let _ = fleet.request_check(false); }
-                    Some(Check::Retry(given, answer)) => { let _ = answer.send(fleet.retry(given)); }
+                    Some(Check::Retry(given, answer)) => { let _ = answer.send(fleet.retry(given).await); }
+                    Some(Check::PeerRetry(release)) => { let _ = fleet.retry_local(&release.version, Some(&release.sha256)); }
                     None => return,
                 }
             }
@@ -232,8 +260,10 @@ struct Fleet {
     bridge_fetch: Option<JoinHandle<io::Result<()>>>,
     next_bridge: Instant,
     released_machines: released_machines::Checks,
-    last_sent: Option<(UpdateFacts, Option<BridgeUpdate>)>,
+    last_sent: Option<Arc<UpdatePublication>>,
+    summary: summary::History,
     attempted: Option<PreparedRelease>,
+    receiving: Option<(PreparedRelease, mail::PullProgress)>,
     pending: Option<JoinHandle<Result<(), retry::Failure>>>,
     mail: Option<mail::Mail>,
     pack_server: Option<JoinHandle<()>>,
@@ -349,7 +379,7 @@ impl Fleet {
             && let Some(pending) = self.pending.take()
             && let Err(error) = pending.await.map_err(io::Error::other)?
         {
-            eprintln!("Preparing Kuvo's release: {}", error.reason);
+            eprintln!("Preparing Kuvo's release: {}", error.0.reason);
             error.save(&self.home)?;
         }
         let (version, working) = fleet::installed(&self.home)?;
@@ -465,11 +495,24 @@ impl Fleet {
             .as_ref()
             .and_then(|running| running.local().ok())
             .map(|pack| pack.sha256);
+        let trial = fleet::trial_release(&self.home)?.and_then(|selected| {
+            let envelope = fleet::installed_envelope(&self.home, &selected)?;
+            let release = Candidate::verify(envelope, &self.key).ok()?;
+            let local = release.local().ok()?;
+            (local.target().ok()? == selected).then_some((
+                release,
+                PreparedRelease {
+                    version: local.version,
+                    sha256: local.sha256,
+                },
+            ))
+        });
         let mut facts = UpdateFacts {
             kuvo: Some(version),
             release_target: Some(target.into()),
             installed_sha256,
             running_manifest,
+            switching: trial.as_ref().map(|(_, local)| local.clone()),
             ..UpdateFacts::default()
         };
         if let Some(candidate) = &candidate {
@@ -479,9 +522,17 @@ impl Fleet {
                 version: local.version.clone(),
                 sha256: local.sha256.clone(),
             };
+            let transfer = self
+                .receiving
+                .get_or_insert_with(|| (prepared.clone(), mail::PullProgress::default()));
+            if transfer.0 != prepared {
+                *transfer = (prepared.clone(), mail::PullProgress::default());
+            }
+            let progress = &transfer.1;
             facts.candidate = Some(candidate.version().into());
             facts.release_manifest = Some(candidate.envelope().into());
-            let failed = retry::Failure::for_release(&self.home, &prepared)?.is_some();
+            facts.cannot = retry::Failure::for_release(&self.home, &prepared)?;
+            let failed = facts.cannot.is_some();
             if !failed && candidate.is_prepared(&self.home)? {
                 facts.staged = Some(prepared.clone());
             } else if !failed
@@ -495,6 +546,8 @@ impl Fleet {
                 let fetcher = self.fetcher.clone();
                 let mail = self.mail.clone();
                 let key = self.key.clone();
+                let progress = progress.clone();
+                let prepared = prepared.clone();
                 self.pending = Some(tokio::spawn(async move {
                     let pack = match candidate.download(&fetcher).await {
                         Ok(pack) => pack,
@@ -502,7 +555,7 @@ impl Fleet {
                             let Some(mail) = mail else {
                                 return Err(retry::Failure::download(prepared, error));
                             };
-                            mail.pull(&local)
+                            mail.pull(&local, &progress)
                                 .await
                                 .map_err(|_| retry::Failure::download(prepared.clone(), error))?
                         }
@@ -522,6 +575,12 @@ impl Fleet {
                         .map_err(|error| retry::Failure::prepare(prepared, error))
                 }));
             }
+            if !failed && facts.staged.is_none() && facts.switching.is_none() {
+                facts.receiving = progress.fraction().map(|fill| ReleaseProgress {
+                    release: prepared,
+                    fill,
+                });
+            }
         }
         let prepared = facts.staged.is_some();
         let bridge = if local_main && let Some(running) = &running {
@@ -529,12 +588,47 @@ impl Fleet {
         } else {
             None
         };
-        let publication = (facts, bridge);
-        if self.last_sent.as_ref() != Some(&publication) {
-            self.last_sent = Some(publication.clone());
-            self.peers
-                .announce_update(publication.0, publication.1)
-                .await;
+        let signed_release = trial
+            .as_ref()
+            .map(|(release, _)| release)
+            .or(candidate.as_ref())
+            .or(running.as_ref());
+        let (local_row, peer_rows, summary) = signed_release
+            .map(|release| {
+                let local =
+                    progress::row(release, Some(&facts), UpdatePresence::default(), true, now);
+                let members = view.roster.members_by_name();
+                let peers: BTreeMap<_, _> = members
+                    .iter()
+                    .map(|peer| {
+                        let (presence, facts) = view.peer_update(&peer.key, now);
+                        let can_retry = self.mail.is_some() && peer.host().is_some();
+                        let row = progress::row(release, facts.as_ref(), presence, can_retry, now);
+                        (peer.key, row)
+                    })
+                    .collect();
+                let here = view.roster.local();
+                let named = std::iter::once((here.name.as_str(), &local)).chain(
+                    members
+                        .iter()
+                        .filter_map(|peer| Some((peer.name.as_str(), peers.get(&peer.key)?))),
+                );
+                let digest = release.pack_digest(target).map(str::to_owned);
+                let summary = self.summary.summarize(release, digest, named, now);
+                (Some(local), peers, Some(summary))
+            })
+            .unwrap_or_default();
+        let publication = UpdatePublication {
+            facts,
+            bridge,
+            local_row,
+            peer_rows,
+            summary,
+        };
+        if self.last_sent.as_deref() != Some(&publication) {
+            let publication = Arc::new(publication);
+            self.last_sent = Some(Arc::clone(&publication));
+            self.peers.announce_update(publication).await;
         }
 
         if let Some(candidate) = candidate {

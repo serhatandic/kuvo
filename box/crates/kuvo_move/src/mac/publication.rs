@@ -43,7 +43,6 @@ const DEFERRED_START: &str =
 const STUCK: &str = "Kuvo was stopped part way through moving your sessions and couldn't finish by itself, so it's changing nothing more. The earlier Kuvo Code's own folder is as it was. Try again; if this stays, send ~/.kuvo-code/updates/rehome/run.log to Kuvo's support.";
 const FAILED: &str =
     "Kuvo couldn't move your sessions this time, and left everything as it was. Try again.";
-const TWO: &str = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
 const OURS: &str = "Kuvo is set up on this Mac already, so nothing was moved over it. An earlier Kuvo Code's sessions are still in its own folder.";
 const NOT_BACK: &str = "Kuvo on this Mac was moved from an earlier Kuvo Code, whose own folder is as it was: there's nothing to move back.";
 const NOT_MOVED: &str = "Kuvo on this Mac hasn't moved: there's nothing to move back.";
@@ -1352,7 +1351,7 @@ fn occupied_home(disk: &Disk) -> Result<Option<&'static str>, Error> {
     }
     Ok(facts
         .machine_owned(disk, kuvo_os::platform::Platform::Mac)?
-        .then_some(TWO))
+        .then_some(crate::install::TWO_HOMES_MOVE))
 }
 
 fn refused(message: &str) -> Outcome {

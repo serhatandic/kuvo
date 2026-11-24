@@ -9,7 +9,7 @@ use tokio::{
 use crate::{
     accounts::{Account, AgentKind, Provider},
     roster::{Factory, Roster},
-    runtime::{RecoveryFailure, Runtime},
+    runtime::{AdoptedTurn, RecoveryFailure, Runtime},
     sign_in::{Request, SignIns, Started, Status, Time},
 };
 
@@ -26,6 +26,7 @@ pub struct ResidentAgents {
     commands: mpsc::Sender<Command>,
     roster: watch::Receiver<Arc<Roster>>,
     sign_ins: Arc<Mutex<SignIns>>,
+    adopted: Arc<[AdoptedTurn]>,
 }
 
 impl ResidentAgents {
@@ -33,7 +34,7 @@ impl ResidentAgents {
         runtime: Runtime,
         factories: HashMap<AgentKind, Arc<dyn Factory>>,
     ) -> io::Result<(Self, Vec<RecoveryFailure>)> {
-        let (roster, failures) = runtime.activate(&factories).await?;
+        let (roster, failures, adopted) = runtime.activate_with_turns(&factories).await?;
         let (published, updates) = watch::channel(Arc::new(roster.clone()));
         let (commands, requests) = mpsc::channel(16);
         let sign_ins = Arc::new(Mutex::new(SignIns::default()));
@@ -54,6 +55,7 @@ impl ResidentAgents {
                 commands,
                 roster: updates,
                 sign_ins,
+                adopted: adopted.into(),
             },
             failures,
         ))
@@ -61,6 +63,10 @@ impl ResidentAgents {
 
     pub fn roster(&self) -> Arc<Roster> {
         self.roster.borrow().clone()
+    }
+
+    pub fn adopted_turns(&self) -> &[AdoptedTurn] {
+        &self.adopted
     }
 
     pub async fn start_sign_in(
