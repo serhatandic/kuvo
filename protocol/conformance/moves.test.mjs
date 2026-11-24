@@ -1222,6 +1222,14 @@ test("a transcript read returns to its tool without prompting the conversation",
   });
   there.engine.sessions.push(sessionOf({ id: archivedSession, title: "Archived trip", archived: true,
     directory: path.join(there.home, "chats") }));
+  const startedByReader = "ses_readOwnArchivedWork";
+  there.engine.sessions.push({
+    ...sessionOf({ id: startedByReader, title: "Archived work", directory: path.join(there.home, "chats") }),
+    metadata: { "kuvo.archived": true, kuvo: { startedBy: sender } },
+  });
+  there.engine.messages.set(startedByReader, [
+    { id: "msg_answered", type: "user", text: "[The user answered] Use the window table." },
+  ]);
   there.engine.messagePages = new Map([[recipient, new Map([
     [null, { data: [{ id: "msg_undoBoundary", type: "user", text: "Undo this café detail." }],
       cursor: { next: "page/2" } }],
@@ -1236,33 +1244,27 @@ test("a transcript read returns to its tool without prompting the conversation",
       "The conversation's engine did not become ready")));
   await until(() => [main, member].every(peer => relay.has(Buffer.from(peer.address, "base64url"))),
     "The computers did not join the relay");
-  const id = "ltr_readConversation";
-  const tool = path.join(here.home, "run/replies", id);
-  write(tool + ".alive", "");
-  write(path.join(here.home, "run/outbox/sending", id + ".json"), JSON.stringify({
-    from: sender, to: recipient, text: "Read the conversation", peer: member.key, wait: true,
-    read: { query: "cafe" }, at: Date.now(),
-  }));
-  const answer = await until(() => {
-    fs.utimesSync(tool + ".alive", new Date(), new Date());
-    return fs.existsSync(tool + ".json") && readJSON(tool + ".json");
-  }, "The original tool did not receive the transcript", 20000, 250);
+  async function read(id, to, read) {
+    const tool = path.join(here.home, "run/replies", id);
+    write(tool + ".alive", "");
+    write(path.join(here.home, "run/outbox/sending", id + ".json"), JSON.stringify({
+      from: sender, to, text: "Read the conversation", peer: member.key, wait: true, read, at: Date.now(),
+    }));
+    return until(() => {
+      fs.utimesSync(tool + ".alive", new Date(), new Date());
+      return fs.existsSync(tool + ".json") && readJSON(tool + ".json");
+    }, "The original tool did not receive an answer for " + to, 15000, 250);
+  }
+  const answer = await read("ltr_readConversation", recipient, { query: "cafe" });
   assert.deepEqual(answer, {
     read: true, text: "1 place mentions \"cafe\" (the rest left out as […]):\n\n**Reservations**\n\nThe café is booked.\n",
   });
-  const archived = "ltr_readArchived";
-  const archivedTool = path.join(here.home, "run/replies", archived);
-  write(archivedTool + ".alive", "");
-  write(path.join(here.home, "run/outbox/sending", archived + ".json"), JSON.stringify({
-    from: sender, to: archivedSession, text: "Read the conversation", peer: member.key, wait: true,
-    read: {}, at: Date.now(),
-  }));
-  const refused = await until(() => {
-    fs.utimesSync(archivedTool + ".alive", new Date(), new Date());
-    return fs.existsSync(archivedTool + ".json") && readJSON(archivedTool + ".json");
-  }, "The original tool did not receive the archived conversation refusal", 12000, 250);
+  const refused = await read("ltr_readArchived", archivedSession, {});
   assert.deepEqual(refused, {
     failed: "It's archived, and only the conversation that started this work can read it.",
+  });
+  assert.deepEqual(await read("ltr_readItsOwnWork", startedByReader, {}), {
+    read: true, text: "# Archived work\n\n**Your answer**\n\n[The user answered] Use the window table.\n",
   });
   assert.ok(!there.engine.asked.some(call => call.method === "POST" && call.path.endsWith("/prompt")));
   assert.equal(here.engine.messages.has(sender), false);

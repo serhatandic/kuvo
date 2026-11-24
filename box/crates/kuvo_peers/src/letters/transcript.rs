@@ -1,11 +1,12 @@
 //! Read an engine transcript through the resident's normal dispatcher.
+use std::{collections::HashSet, time::Duration};
+
 use http::{HeaderMap, Method, StatusCode};
 use http_body_util::{BodyExt, Limited};
 use kuvo_server::{Caller, DispatchRequest, Dispatcher, LocalOrigin, Transport};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
@@ -38,20 +39,27 @@ pub(super) async fn read(
     let root = format!("api/session/{session}/message?limit=200");
     let mut page: Page =
         request(dispatcher, Method::GET, format!("{root}&order=desc"), None).await?;
-    let mut messages = vec![];
+    let mut messages = Vec::new();
+    let mut ids = HashSet::new();
     let mut missing = None;
     let undo = info.pointer("/revert/messageID").and_then(Value::as_str);
-    for _ in 0..=100 {
+    for pages in 0..=100 {
         if page.data.is_empty()
-            || page
-                .data
-                .first()
-                .zip(messages.last())
-                .is_some_and(|(new, old): (&Value, &Value)| new["id"] == old["id"])
+            || page.data[0]["id"]
+                .as_str()
+                .is_some_and(|id| ids.contains(id))
         {
             break;
         }
+        ids.extend(
+            page.data
+                .iter()
+                .filter_map(|message| message["id"].as_str().map(str::to_owned)),
+        );
         messages.extend(page.data);
+        if pages == 100 {
+            break;
+        }
         let Some(cursor) = page
             .cursor
             .and_then(|cursor| cursor.next.or(cursor.previous))
@@ -198,7 +206,7 @@ async fn markdown(
         steps: vec![],
         agent: title,
     };
-    for page in messages.chunks(200) {
+    for (page_index, page) in messages.chunks(200).enumerate() {
         let parse: Value = request(dispatcher, Method::POST, "kuvo/messages/parts".into(), Some(json!({
             "texts": page.iter().map(|message| message["text"].as_str().unwrap_or("")).collect::<Vec<_>>()
         }))).await?;
@@ -210,10 +218,7 @@ async fn markdown(
                         .pointer("/metadata/kuvo/parts")
                         .unwrap_or(&parse["parts"][index]);
                     let words = parts["words"].as_str().unwrap_or(written);
-                    if let Some(from) = message
-                        .pointer("/metadata/kuvo/note/from")
-                        .and_then(Value::as_str)
-                    {
+                    if let Some(from) = note_speaker(message, written) {
                         text.say(from, written.trim().into());
                     } else if let Some(name) = parts.pointer("/mail/name").and_then(Value::as_str) {
                         text.say(&format!("Message from {name}"), words.into());
@@ -313,7 +318,9 @@ async fn markdown(
                     text.say("User", words);
                 }
                 Some("idle") if message["outcome"] == "failed" => {
-                    let previous = index.checked_sub(1).and_then(|at| page.get(at));
+                    let previous = (page_index * 200 + index)
+                        .checked_sub(1)
+                        .and_then(|at| messages.get(at));
                     if previous.is_some_and(|before| {
                         before["type"] == "compaction"
                             && before["status"] == "failed"
@@ -340,6 +347,36 @@ async fn markdown(
     }
     text.flush();
     Ok(text.blocks.join("\n\n") + "\n")
+}
+
+fn note_speaker<'a>(message: &'a Value, written: &str) -> Option<&'a str> {
+    let note = message
+        .pointer("/metadata/kuvo/note")
+        .and_then(Value::as_object);
+    if let Some(note) = note
+        && let Some(from) = note.get("from").and_then(Value::as_str)
+        && note.get("line").and_then(Value::as_str).is_some()
+    {
+        return Some(from);
+    }
+    if written.starts_with("[The user answered] ") {
+        return Some("Your answer");
+    }
+    let news = written
+        .strip_prefix("[Session ")
+        .and_then(|tail| tail.split_once("] \""));
+    if let Some((action, rest)) = news
+        && matches!(
+            action,
+            "finished" | "still working" | "failed" | "asks" | "stopped"
+        )
+        && rest
+            .split_once('"')
+            .is_some_and(|(title, _)| !title.contains('\n'))
+    {
+        return Some("Its sessions");
+    }
+    note.map(|_| "Kuvo Code")
 }
 
 fn prefix(text: &str, count: usize) -> String {
