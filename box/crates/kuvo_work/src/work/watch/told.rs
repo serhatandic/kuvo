@@ -280,4 +280,61 @@ impl Kept {
             });
         }
     }
+
+    /// A finish waiting for what its session left running, if it waits.
+    pub fn waited(&self, session: &str) -> Option<Waited> {
+        let told = self.told()?;
+        serde_json::from_value(told["waiting"][session].clone()).ok()
+    }
+
+    /// Each finish waiting for what its session left running.
+    pub fn all_waited(&self) -> Vec<(String, Waited)> {
+        let told = self.told().unwrap_or_default();
+        let waiting = told["waiting"].as_object().cloned().unwrap_or_default();
+        let parsed = waiting
+            .into_iter()
+            .map(|(id, each)| Some((id, serde_json::from_value(each).ok()?)));
+        parsed.flatten().collect()
+    }
+
+    /// `session`'s finish noted as waiting.
+    pub fn wait(&self, session: &str, waited: &Waited) {
+        self.change_told(|told| told["waiting"][session] = json!(waited), None, now());
+    }
+
+    /// A finish waiting for what its session left running, no longer.
+    pub fn let_go_of(&self, session: &str) {
+        if self.waited(session).is_none() {
+            return;
+        }
+        self.change_told(
+            |told| {
+                let Some(waiting) = told["waiting"].as_object_mut() else {
+                    return;
+                };
+                waiting.shift_remove(session);
+                if waiting.is_empty() {
+                    told.as_object_mut().expect("told").shift_remove("waiting");
+                }
+            },
+            None,
+            now(),
+        );
+    }
+}
+
+/// A finish waiting for what its session left running: the place it runs, since when, and when the
+/// question its turn answered was asked (what ran before that doesn't hold it).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Waited {
+    pub from: String,
+    pub at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<u64>,
+    #[serde(
+        default,
+        rename = "askedOrder",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub asked_order: Option<super::background::WorkOrder>,
 }

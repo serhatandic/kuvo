@@ -4,13 +4,20 @@
 //! so none is lost to the box starting again; `run/work/told.json` says what each starter was
 //! told. Each changes its bot's work, for clients to read again.
 
+pub mod background;
+mod catchup;
+mod held;
 pub mod lines;
+pub mod services;
 pub mod told;
 pub mod turns;
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -90,6 +97,15 @@ fn encoded(id: &str) -> String {
     percent_encoding::utf8_percent_encode(id, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
+/// Marks the watcher over as its task ends: what it was still to look at later isn't.
+struct Over(Arc<Inner>);
+
+impl Drop for Over {
+    fn drop(&mut self) {
+        self.0.over.store(true, Ordering::Relaxed);
+    }
+}
+
 /// The work watcher: what's gathered for each conversation, sent one message at a time.
 #[derive(Clone)]
 pub struct Watcher {
@@ -102,6 +118,27 @@ struct Inner {
     due: Mutex<HashSet<String>>,
     sending: Mutex<HashSet<String>>,
     failures: Mutex<HashMap<String, u32>>,
+    background: background::EngineBackground,
+    // Finishes held for a starter's own wait, those looked at while they wait, and those settling.
+    holding: Mutex<HashSet<String>>,
+    looking: Mutex<HashSet<String>>,
+    settling: Mutex<HashSet<String>>,
+    // A bot's sessions nobody is told of, shown to their bot once what they left running is over.
+    mark_later: Mutex<HashMap<String, String>>,
+    // Whether what happened while the box was down has been looked at: until then, what it hears
+    // doesn't move when it last heard of everything.
+    caught: AtomicBool,
+    over: AtomicBool,
+}
+
+impl Inner {
+    fn caught(&self) {
+        self.caught.store(true, Ordering::Relaxed);
+    }
+
+    fn over(&self) -> bool {
+        self.over.load(Ordering::Relaxed)
+    }
 }
 
 impl Work {
@@ -125,16 +162,30 @@ impl Work {
 impl Watcher {
     pub fn new(work: Work) -> Self {
         let kept = Kept::new(&work.home.join("run"));
-        let inner = Inner {
-            work,
-            kept,
-            due: Mutex::default(),
-            sending: Mutex::default(),
-            failures: Mutex::default(),
-        };
-        Self {
-            inner: Arc::new(inner),
-        }
+        let inner = Arc::new_cyclic(|this: &std::sync::Weak<Inner>| {
+            let this = this.clone();
+            // (What runs stopping counting at its limit is looked at as an end is.)
+            let ran_out = Arc::new(move || {
+                if let Some(inner) = this.upgrade() {
+                    Watcher { inner }.background_ended();
+                }
+            });
+            Inner {
+                background: background::EngineBackground::new(work.clone(), ran_out),
+                work,
+                kept,
+                due: Mutex::default(),
+                sending: Mutex::default(),
+                failures: Mutex::default(),
+                holding: Mutex::default(),
+                looking: Mutex::default(),
+                settling: Mutex::default(),
+                mark_later: Mutex::default(),
+                caught: AtomicBool::new(false),
+                over: AtomicBool::new(false),
+            }
+        });
+        Self { inner }
     }
 
     fn work(&self) -> &Work {
@@ -148,25 +199,48 @@ impl Watcher {
     /// Follows the engine's events, and sends what's added from outside; what a box left waiting as
     /// it stopped is sent now.
     pub fn start(self, mut added: mpsc::UnboundedReceiver<String>) -> tokio::task::JoinHandle<()> {
-        let mut events = self.work().list.engine().events();
+        let engine = self.work().list.engine().clone();
+        let (mut events, mut states) = (engine.events(), engine.states());
         for starter in self.kept().waiting().keys() {
             self.soon(starter, GATHER);
         }
+        let before = self.kept().told();
         // A box with nothing told yet has heard of everything until now.
-        if self.kept().told().is_none() {
+        if before.is_none() {
             self.kept().change_told(|_| {}, Some(ENGINE), now());
         }
+        self.catch_up(before);
         tokio::spawn(async move {
+            let _over = Over(self.inner.clone());
             loop {
                 tokio::select! {
                     starter = added.recv() => match starter {
                         Some(starter) => self.soon(&starter, GATHER),
                         None => return,
                     },
+                    changed = states.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        // The engine stopped: what ran there went with it; started, looked at again.
+                        let running = matches!(*states.borrow_and_update(), kuvo_engine::State::Running { .. });
+                        let background = self.inner.background.clone();
+                        if running {
+                            tokio::spawn(async move { background.start().await });
+                        } else {
+                            background.gone();
+                        }
+                    },
                     event = events.recv() => match event {
                         Ok(event) => {
                             let watcher = self.clone();
-                            tokio::spawn(async move { watcher.heard(event).await });
+                            tokio::spawn(async move {
+                                let (heard, noted) = tokio::join!(watcher.heard(event.clone()), watcher.inner.background.noted(&event));
+                                let () = heard;
+                                if noted {
+                                    watcher.background_ended();
+                                }
+                            });
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(_) => return,
@@ -388,7 +462,9 @@ impl Watcher {
     }
 
     fn note_told(&self, session: &str, note: Note) {
-        self.kept().note_told(session, note, Some(ENGINE));
+        let caught = self.inner.caught.load(Ordering::Relaxed) && !self.inner.over();
+        self.kept()
+            .note_told(session, note, caught.then_some(ENGINE));
     }
 
     /// Whether a session stopped hasn't been set going since, so nothing of it is news. What it
@@ -501,9 +577,11 @@ impl Watcher {
                         );
                         self.tell(starter, line, false);
                     }
+                    let _ = self.settle(&session_id).await;
                     return;
                 }
                 if summary["status"] == "completed" && kind == "session.execution.succeeded" {
+                    let _ = self.settle(&session_id).await;
                     return;
                 }
             }
@@ -518,11 +596,9 @@ impl Watcher {
         if kind == "session.execution.succeeded"
             && (starter.is_none() || !wakes.contains(&"finished"))
         {
-            // Quiet to its starter, but still its bot's to see.
-            if let Some(bot) = bot.filter(|_| !is_archived(&session) && !stopped) {
-                self.work()
-                    .records
-                    .note_oversight(&bot, &session_id, "finished");
+            // Quiet to its starter, but still its bot's to see, once it's really done.
+            if let Some(bot) = bot {
+                self.finished_quietly(&session, &bot).await;
             }
             return;
         }
@@ -531,7 +607,7 @@ impl Watcher {
             return;
         };
         match kind {
-            "session.execution.succeeded" => self.finish(&engine, &session, &starter).await,
+            "session.execution.succeeded" => self.finish(&engine, &session, &starter, None).await,
             "session.execution.failed" => {
                 self.failed(&engine, &session, &starter, &data["error"])
                     .await
@@ -596,69 +672,98 @@ impl Watcher {
         }
     }
 
-    /// A turn of a session that started by someone's asking ended well: told to who started it, if
-    /// it's news.
-    async fn finish(&self, engine: &BotEngine, session: &Value, starter: &str) {
+    /// A turn of a session that started by someone's asking ended well. Told to who started it, if
+    /// it's news and nothing it left running still goes on; while that does, held, and looked at as
+    /// it ends. `known`: its last reply, if it's read.
+    async fn finish(
+        &self,
+        engine: &BotEngine,
+        session: &Value,
+        starter: &str,
+        known: Option<LastReply>,
+    ) {
         let id = session["id"].as_str().unwrap_or_default();
         let at = now();
         // (As its engine says it last changed, before its reply is read: what it wrote by then.)
         let upto = session["time"]["updated"].as_f64().map(|at| at as u64);
-        let last = turns::last_reply(engine, id).await;
+        let last = match known {
+            Some(known) => Some(known),
+            None => turns::last_reply(engine, id).await,
+        };
         let reply = last.as_ref().and_then(|last| last.id.clone());
+        let only = |reply| Note {
+            reply,
+            ..Note::default()
+        };
         if is_archived(session) || self.stays_stopped(id, last.as_ref()) {
-            return self.note_told(
-                id,
-                Note {
-                    reply,
-                    ..Note::default()
-                },
-            );
+            self.kept().let_go_of(id);
+            return self.note_told(id, only(reply));
         }
         // Its reply unread (the engine slow), and at work again by now: told as that turn ends.
         if last.is_none() && Self::at_work(engine, id).await {
             return;
         }
-        // A turn the user had with it is theirs: nothing to tell.
-        let was = self.kept().session_told(id);
-        let news = last
+        let still = self
+            .inner
+            .background
+            .of(id, lines::folder_of(session))
+            .await;
+        let waited = self.kept().waited(id);
+        // A turn the user had with it is theirs: nothing to tell, unless a turn its starter asked
+        // for waits on what it left running. That waits on as it did, and then its starter hears
+        // it's done, though not the user's answer as its report.
+        let yours = last
             .as_ref()
-            .is_none_or(|last| last.began.kind != BeganBy::You && turns::is_news(&was, last));
-        if !news {
-            return self.note_told(
-                id,
-                Note {
-                    reply,
-                    ..Note::default()
-                },
-            );
+            .is_some_and(|last| last.began.kind == BeganBy::You);
+        if yours && waited.is_none() {
+            return self.note_told(id, only(reply));
         }
-        let rows = turns::newest(engine, id, 6).await.unwrap_or_default();
-        let line = self
-            .work()
-            .finished_line(session, turns::reply_in(&rows), &[]);
+        // (Someone's question isn't held up by what was running before they asked: a dev server.)
+        let began = last
+            .as_ref()
+            .map(|last| &last.began)
+            .filter(|began| began.kind == BeganBy::Asked);
+        let (asked, order) = match (&waited, yours) {
+            (Some(waited), true) => (waited.asked, waited.asked_order.clone()),
+            _ => (
+                began.and_then(|began| began.at),
+                began.and_then(|began| began.order.clone()),
+            ),
+        };
+        if held::holds(still.as_ref(), asked, order.as_ref()) {
+            let since = waited.as_ref().map_or(at, |waited| waited.at);
+            return self.wait_for(id, since, asked, order);
+        }
+        let was = self.kept().session_told(id);
+        self.kept().let_go_of(id);
+        if let Some(last) = last
+            .as_ref()
+            .filter(|last| !yours && !turns::is_news(&was, last))
+        {
+            return self.note_told(id, only(last.id.clone()));
+        }
+        let line = if yours {
+            self.work().done_since_line(session)
+        } else {
+            let rows = turns::newest(engine, id, 6).await.unwrap_or_default();
+            let serving = still
+                .as_ref()
+                .map(background::Running::services_words)
+                .unwrap_or_default();
+            self.work()
+                .finished_line(session, turns::reply_in(&rows), &serving)
+        };
         let seen = upto.max(last.as_ref().and_then(|last| last.at));
         // Told meanwhile by another look at the same finish.
         let told = self.kept().session_told(id);
         if reply.is_some() && told.reply == reply {
-            return self.note_told(
-                id,
-                Note {
-                    reply,
-                    ..Note::default()
-                },
-            );
+            return self.note_told(id, only(reply));
         }
         if (reply.is_none() || told.unread)
             && seen.is_some_and(|seen| told.upto.is_some_and(|upto| seen <= upto))
         {
             if reply.is_some() {
-                self.note_told(
-                    id,
-                    Note {
-                        reply,
-                        ..Note::default()
-                    },
-                );
+                self.note_told(id, only(reply));
             }
             return;
         }
@@ -674,6 +779,7 @@ impl Watcher {
                 turns::hashed(&last.text)
             }
         });
+        let early = Some(still.is_some() || waited.is_some());
         let unread = reply.is_none();
         self.note_told(
             id,
@@ -681,7 +787,7 @@ impl Watcher {
                 reply,
                 at: Some(at),
                 said,
-                early: Some(false),
+                early,
                 upto: seen,
                 unread,
                 ..Note::default()
@@ -705,6 +811,7 @@ impl Watcher {
             ..Note::default()
         };
         if is_archived(session) || self.stays_stopped(id, last.as_ref()) {
+            self.kept().let_go_of(id);
             return self.note_told(id, noted(reply, turn));
         }
         // (One the user started, writing to it: theirs to see, as its answer would be.)
@@ -729,7 +836,30 @@ impl Watcher {
         {
             return self.note_told(id, noted(reply, turn));
         }
-        // Why, in its engine's words (the event's own, else read from its conversation).
+        let line = self.failed_line_of(engine, session, error).await;
+        self.kept().let_go_of(id);
+        self.tell(starter, line, false);
+        self.note_told(
+            id,
+            Note {
+                reply,
+                at: Some(at),
+                turn,
+                failure: Some(failure),
+                ..Note::default()
+            },
+        );
+    }
+
+    /// A failed session's line: why, in its engine's words (the event's own, else read from its
+    /// conversation); one at its account or its limit holds that model back, and says so.
+    async fn failed_line_of(
+        &self,
+        engine: &BotEngine,
+        session: &Value,
+        error: Option<super::unanswering::TurnError>,
+    ) -> String {
+        let id = session["id"].as_str().unwrap_or_default();
         let error = match error {
             Some(error) => Some(error),
             None => {
@@ -737,12 +867,13 @@ impl Watcher {
                 let end = turns::last_turn_end(&rows).filter(|end| end["outcome"] == "failed");
                 end.map(|end| {
                     let at = end["time"]["created"].as_f64().map(|at| at as u64);
-                    error_of(&end["error"], at).unwrap_or(super::unanswering::TurnError {
+                    let none = super::unanswering::TurnError {
                         kind: String::new(),
                         message: String::new(),
                         at: None,
                         limit: None,
-                    })
+                    };
+                    error_of(&end["error"], at).unwrap_or(none)
                 })
             }
         };
@@ -759,17 +890,6 @@ impl Watcher {
         };
         let held = held.map(|held| hold_words(&held, &self.work().home));
         let why = error.as_ref().map(|error| error.message.as_str());
-        let line = self.work().failed_line(session, why, held);
-        self.tell(starter, line, false);
-        self.note_told(
-            id,
-            Note {
-                reply,
-                at: Some(at),
-                turn,
-                failure: Some(failure),
-                ..Note::default()
-            },
-        );
+        self.work().failed_line(session, why, held)
     }
 }

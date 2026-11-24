@@ -60,6 +60,31 @@ impl BotEngine {
         Ok(value)
     }
 
+    /// One of the engine's routes about `folder` (its commands, its tools), its answer's `data`.
+    pub async fn call_in(
+        &self,
+        method: Method,
+        path: &str,
+        folder: &str,
+        wait: Duration,
+    ) -> Result<Value, Unreachable> {
+        let named = http::HeaderValue::from_str(&crate::api::segment(folder));
+        let named =
+            named.map_err(|_| Unreachable("That folder can't be named to the engine.".into()))?;
+        let headers = http::HeaderMap::from_iter([(
+            http::HeaderName::from_static("x-opencode-directory"),
+            named,
+        )]);
+        let mut value = self
+            .engine
+            .call_with_headers(&self.lease, method, path, None, wait, headers)
+            .await?;
+        if let Some(data) = value.get_mut("data").filter(|data| !data.is_null()) {
+            value = data.take();
+        }
+        Ok(value)
+    }
+
     /// One of the engine's routes, its answer whole (a page of sessions with its `cursor`).
     pub async fn call_whole(
         &self,

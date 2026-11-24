@@ -371,6 +371,18 @@ fn write_place(
     from: &str,
     place: serde_json::Value,
 ) -> std::io::Result<()> {
+    // (Under the file's lock, as the engine's place is written beside it.)
+    let lock = file.with_file_name(".background.lock");
+    let (stale, wait) = (
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(3),
+    );
+    let _lock = kuvo_store::locks::StaleLock::acquire(
+        &lock,
+        stale,
+        wait,
+        kuvo_store::locks::OnBusy::Proceed,
+    );
     let mut all = std::fs::read(file)
         .ok()
         .and_then(|bytes| {

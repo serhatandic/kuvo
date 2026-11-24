@@ -172,6 +172,13 @@ pub enum BeganBy {
 pub struct Began {
     pub kind: BeganBy,
     pub at: Option<u64>,
+    /// Where in its run it was written (`time.order`), where the engine says.
+    pub order: Option<super::background::WorkOrder>,
+}
+
+fn order_of(message: &Value) -> Option<super::background::WorkOrder> {
+    let order = &message["time"]["order"];
+    Some((order[0].as_str()?.to_owned(), order[1].as_u64()?))
 }
 
 fn time_of(message: Option<&Value>) -> Option<u64> {
@@ -191,15 +198,14 @@ fn began_by(turn: &[Value]) -> Began {
     if let Some(asked) = askers.first() {
         let yours = askers.iter().all(|message| written_by_you(message));
         let kind = if yours { BeganBy::You } else { BeganBy::Asked };
-        return Began {
-            kind,
-            at: time_of(Some(asked)),
-        };
+        let (at, order) = (time_of(Some(asked)), order_of(asked));
+        return Began { kind, at, order };
     }
     let Some(first) = starters.last() else {
         return Began {
             kind: BeganBy::Asked,
             at: None,
+            order: None,
         };
     };
     let at = time_of(Some(first));
@@ -216,7 +222,11 @@ fn began_by(turn: &[Value]) -> Began {
             BeganBy::Other
         }
     };
-    Began { kind, at }
+    Began {
+        kind,
+        at,
+        order: None,
+    }
 }
 
 /// A session's last reply (its id, and when it was written), the end of a turn started after it
