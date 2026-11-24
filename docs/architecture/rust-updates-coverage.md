@@ -40,6 +40,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U24 | The signed installer admits the stopped released-machine homes by their saved machine identity. It rejects the wrong identity and waits if a recorded old process is still alive. The v0.7.2 and beta.1 fixtures moved, kept their keys and saved work, and answered through the selected Rust keeper in 17.2 and 21.1 seconds on Mac and 4.7 and 4.7 seconds on Linux musl under WSL2. |
 | U25 | A Rust main tries the saved SSH address while its v0.7.2 machine is offline. When the address answers, it checks the saved machine identity, sends the retained signed target pack, and starts `kuvo-install`. If the first keeper launch fails after selection, the next round resumes it. The Rust keeper answers and the SSH reservation and installer staging clear. The old key, secret and work remain in place. |
 | U26 | The signed Linux installer judges a fresh home and refuses a move without creating the home. It installs its target pack, preserves earlier work and the desktop identity, adds one tagged reboot job, and waits for the new resident to answer. A failed startup leaves the fresh verdict available. A retry preserves the partial identity and link alongside the earlier work and makes a new setup. If an earlier keeper is still running, the installer leaves the home and crontab untouched. |
+| U27 | A Linux installer stopped after publication and before keeper startup resumes with the same selected release, saved SSH identity and work archive. A successful install retires earlier incomplete installer staging and preserves its partial launcher in the work archive. Both cases passed on native Linux and WSL2. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -315,7 +316,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same 750, two installations preserved | Partial. 2.6 covers the verdict and fence. Installer invocation remains open. | 7.2 |
 | Same 766, Linux move refusal | Covered by U26. | — |
 | Same 774 and 793, Mac app copy and case spelling | Partial. 2.6 checks the Mac command's matching home. The installer entry remains open. | 7.2 |
-| Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. Interruptions during file publication remain open. | 7.2 |
+| Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. U27 covers interruption after publication and retiring earlier incomplete staging. Interruptions during file publication remain open. | 7.2 |
 | [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 checks missing Helper registration and restart with a stand-in. Live readiness (45, 57, 128), restarted fresh making (74), and Linux starter admission (169) remain open. | 6.2, 7.2 |
 
 ## Inherited cases and system proof

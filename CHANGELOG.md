@@ -38,6 +38,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Windows installer codes can enroll a computer before enabling sign-in startup.
 - The Mac installer can set up a new computer directly from the signed Rust release and start Kuvo Helper.
 - The Linux installer can set up a computer from a signed Rust release and retry a failed first start while keeping earlier work.
+- After a successful Linux install, earlier unfinished installer staging no longer makes the computer look uninstalled.
 - Uninstall on a stopped Mac removes Kuvo Helper’s login job and retains your saved work.
 - Uninstall removes Kuvo’s reboot entry from a stopped computer’s crontab and preserves the other jobs.
 
