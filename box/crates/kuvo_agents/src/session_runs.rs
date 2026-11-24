@@ -293,6 +293,21 @@ impl SessionRuns {
         .await
     }
 
+    /// Whether the conversation's transcript has this message.
+    pub async fn has_message(&self, session: &str, id: &str) -> io::Result<bool> {
+        self.store.has_message(session, id).await
+    }
+
+    /// The conversation's last `limit` rows, newest first.
+    pub async fn recent(&self, session: &str, limit: u32) -> io::Result<Vec<Value>> {
+        Ok(self
+            .store
+            .message_page(session, None, limit, crate::session_store::MessageOrder::NewestFirst)
+            .await?
+            .map(|page| page.messages)
+            .unwrap_or_default())
+    }
+
     /// What waits in the conversation's line, as clients list it.
     pub async fn inbox(&self, session: &str) -> io::Result<Option<Vec<Input>>> {
         self.store.line(session).await
@@ -634,6 +649,9 @@ impl Service {
                     .turns
                     .spawn(async move { (ended, turn.finished().await) });
                 self.publish(state);
+                let _ = self.events.send(InboxEvent::Started {
+                    session: session.clone(),
+                });
             }
             Err(_) => {
                 // A turn that never started ends as a failed one.
@@ -666,6 +684,11 @@ impl Service {
                 None
             }
         };
+        let _ = self.events.send(InboxEvent::Ended {
+            session: session.to_owned(),
+            outcome: outcome.clone(),
+            stopped,
+        });
         let exited = !stopped && matches!(outcome, Some(Outcome::AgentExited(_)));
         let succeeded = !stopped && matches!(outcome, Some(Outcome::Succeeded));
         let conversation = state.conversation(session);

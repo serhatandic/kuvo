@@ -106,3 +106,60 @@ test("a new Block keeps an outgoing approval from releasing a pending action",
       assert.equal((await call("POST", reply, { decision: "once" })).status, 404);
     });
   });
+
+test("the shared send, queue, Stop and Resume routes work on a coding agent's conversation",
+  { timeout: 45000 }, t => {
+    if (boxBinary().typescript) {
+      t.skip("The stand-in implements the Rust adapter contract.");
+      return;
+    }
+    const id = "ses_fixture_queue";
+    const headers = { "x-kuvo-from": "app" };
+    return withAgentFixture(t, home => {
+      write(path.join(home, "agents", "sessions", id, "session.json"), JSON.stringify({
+        id, projectID: "fixture", agent: "build", location: { directory: home },
+        model: { providerID: "codex-cli", id: "stand-in" },
+        time: { created: 1, updated: 1 },
+      }));
+    }, async listener => {
+      const call = (method, route, body) => request(listener, method, `kuvo/sessions/${id}${route}`, body, headers);
+      const rows = async () => (await request(listener, "GET",
+        `kuvo/agents/api/session/${id}/message?order=asc`, undefined, headers)).json.data;
+      const sent = await call("POST", "/send", { id: "msg_queueFirst", words: "wait for interrupt" });
+      assert.equal(sent.status, 200, sent.text);
+      await until(async () => (await rows()).some(row =>
+        row.content?.[0]?.text === "Fixture received wait for interrupt"), "The first turn didn't start.");
+      const queued = await call("POST", "/send", { id: "msg_queueSecond", words: "after it", delivery: "queue" });
+      assert.equal(queued.status, 200, queued.text);
+      const line = await until(async () => {
+        const answer = await call("GET", "/queue?items=1");
+        assert.equal(answer.status, 200, answer.text);
+        return answer.json.items?.length && answer.json;
+      }, "The queued message didn't show in the queue.");
+      assert.deepEqual(line.items.map(item => item.id), ["msg_queueSecond"]);
+      const stopped = await call("POST", "/stop", {});
+      assert.equal(stopped.status, 200, stopped.text);
+      await until(async () => (await rows()).at(-1)?.outcome === "interrupted", "Stop didn't end the turn.");
+      const held = await until(async () => {
+        const answer = (await call("GET", "/queue?items=1")).json;
+        return answer.paused && answer;
+      }, "Stop didn't hold the queue.");
+      assert.deepEqual(held.items.map(item => item.id), ["msg_queueSecond"]);
+      assert.equal((await rows()).filter(row => row.type === "user").length, 1);
+      const resumed = await call("POST", "/queue/resume", {});
+      assert.equal(resumed.status, 200, resumed.text);
+      const after = await until(async () => {
+        const saved = await rows();
+        return saved.at(-1)?.type === "idle" && saved.at(-1)?.outcome === "succeeded" && saved;
+      }, "Resume didn't send the held message.");
+      assert.deepEqual(after.filter(row => row.type === "user").map(row => row.id),
+        ["msg_queueFirst", "msg_queueSecond"]);
+      assert.equal(after.at(-2).content[0].text, "Fixture received after it");
+      // (A read answers what the last one saw, and looks again.)
+      const empty = await until(async () => {
+        const answer = (await call("GET", "/queue?items=1")).json;
+        return answer.items?.length === 0 && answer;
+      }, "The sent message stayed in the queue.");
+      assert.equal(empty.paused, false);
+    });
+  });

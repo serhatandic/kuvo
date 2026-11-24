@@ -623,7 +623,9 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                     .await
                     .is_ok()
             }
-            None => send::post(engine, lease.get().await?, id, &prompt).await.is_ok(),
+            None => send::post(engine, crate::queue::Target::Engine(lease.get().await?), id, &prompt)
+                .await
+                .is_ok(),
         };
         if !sent {
             return Err(Refusal::json(

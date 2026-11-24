@@ -2,7 +2,7 @@
 
 use http::StatusCode;
 use kuvo_agents::{
-    session_runs::SessionRuns,
+    session_runs::{Cancelled, SessionRuns},
     session_store::{MessageOrder, SessionStore},
 };
 use kuvo_agents::{
@@ -14,7 +14,7 @@ use kuvo_agents::{
     session_view,
 };
 use kuvo_engine::{
-    AgentCall, AgentPrompt, AgentSessionPatch, AgentSessionRead, AgentSessionRow,
+    AgentCall, AgentEvent, AgentLinePrompt, AgentPrompt, AgentTakeBack, AgentSessionPatch, AgentSessionRead, AgentSessionRow,
     AgentSessionSource, NewAgentSession,
 };
 use std::io;
@@ -26,13 +26,21 @@ use kuvo_protocol::routes::{
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use percent_encoding::percent_decode_str;
 use std::{collections::BTreeSet, sync::Arc};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 pub(crate) struct Inventory {
     pub store: SessionStore,
     pub running: Option<SessionRuns>,
     pub home: std::path::PathBuf,
     pub agents: Option<ResidentAgents>,
+}
+
+impl Inventory {
+    fn runs(&self) -> io::Result<&SessionRuns> {
+        self.running
+            .as_ref()
+            .ok_or_else(|| io::Error::other("The coding agents aren't running here."))
+    }
 }
 
 fn no_model() -> io::Error {
@@ -157,6 +165,92 @@ impl AgentSessionSource for Inventory {
             input.metadata = metadata;
             runs.prompt(id.to_owned(), input, None).await
         })
+    }
+
+    fn line<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {
+        Box::pin(async move {
+            Ok(self.store.line(id).await?.map(|line| {
+                line.iter()
+                    .map(|input| input.listed(id))
+                    .collect()
+            }))
+        })
+    }
+
+    fn put_in_line<'a>(&'a self, id: &'a str, prompt: AgentLinePrompt) -> AgentCall<'a, ()> {
+        Box::pin(async move {
+            let runs = self.runs()?;
+            let AgentLinePrompt {
+                id: message,
+                text,
+                files,
+                queue,
+                metadata,
+            } = prompt;
+            let delivery = if queue { Delivery::Queue } else { Delivery::Steer };
+            let mut input = Input::new(message, text, files, delivery);
+            input.metadata = metadata;
+            runs.prompt(id.to_owned(), input, None).await
+        })
+    }
+
+    fn set_delivery<'a>(&'a self, id: &'a str, item: &'a str, queue: bool) -> AgentCall<'a, ()> {
+        Box::pin(async move {
+            let delivery = if queue { Delivery::Queue } else { Delivery::Steer };
+            self.runs()?
+                .set_delivery(id.to_owned(), item.to_owned(), delivery, false)
+                .await
+        })
+    }
+
+    fn take_back<'a>(&'a self, id: &'a str, item: &'a str) -> AgentCall<'a, AgentTakeBack> {
+        Box::pin(async move {
+            Ok(
+                match self
+                    .runs()?
+                    .cancel_input(id.to_owned(), item.to_owned(), false)
+                    .await?
+                {
+                    Cancelled::Removed => AgentTakeBack::Removed,
+                    Cancelled::Missing => AgentTakeBack::Missing,
+                    Cancelled::Busy => AgentTakeBack::Busy,
+                },
+            )
+        })
+    }
+
+    fn interrupt<'a>(&'a self, id: &'a str, resume: bool) -> AgentCall<'a, bool> {
+        Box::pin(async move { self.runs()?.interrupt_and(id.to_owned(), resume).await })
+    }
+
+    fn has_message<'a>(&'a self, id: &'a str, message: &'a str) -> AgentCall<'a, bool> {
+        Box::pin(async move { self.store.has_message(id, message).await })
+    }
+
+    fn recent<'a>(&'a self, id: &'a str, limit: u32) -> AgentCall<'a, Vec<Value>> {
+        Box::pin(async move { self.runs()?.recent(id, limit).await })
+    }
+
+    fn events(&self) -> Option<broadcast::Receiver<AgentEvent>> {
+        let mut line = self.running.as_ref()?.events();
+        let (words, heard) = broadcast::channel(256);
+        tokio::spawn(async move {
+            loop {
+                match line.recv().await {
+                    Ok(event) => {
+                        let (session, kind, data) = event.engine_words();
+                        let _ = words.send(AgentEvent {
+                            session: session.to_owned(),
+                            kind,
+                            data,
+                        });
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        Some(heard)
     }
 
     fn stop_if_waiting<'a>(&'a self, id: &'a str) -> AgentCall<'a, bool> {

@@ -5,7 +5,7 @@
 use std::{collections::BTreeSet, future::Future, io, pin::Pin, sync::Arc};
 
 use serde_json::{Map, Value};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 pub struct AgentSessionRow {
     pub header: Map<String, Value>,
@@ -45,6 +45,36 @@ pub struct AgentPrompt {
     pub metadata: Option<Map<String, Value>>,
 }
 
+/// A message for a coding agent's line, as the box's queue hands it over.
+#[derive(Debug)]
+pub struct AgentLinePrompt {
+    pub id: String,
+    pub text: String,
+    pub files: Vec<Value>,
+    /// After the turn under way, rather than into it.
+    pub queue: bool,
+    pub metadata: Option<Map<String, Value>>,
+}
+
+/// What became of a message taken back from a coding agent's line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentTakeBack {
+    Removed,
+    Missing,
+    /// Being handed to the agent, or Kuvo is checking whether it took it.
+    Busy,
+}
+
+/// An event of a coding agent's conversation in the engine's words
+/// (`session.inbox.enqueued`, `session.execution.succeeded`, ...), for the
+/// box's queue to follow as it follows the engine's.
+#[derive(Clone, Debug)]
+pub struct AgentEvent {
+    pub session: String,
+    pub kind: &'static str,
+    pub data: Value,
+}
+
 pub trait AgentSessionSource: Send + Sync {
     fn inventory(&self) -> AgentSessionRead<'_>;
 
@@ -82,6 +112,53 @@ pub trait AgentSessionSource: Send + Sync {
         Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
     }
 
+    /// What waits in the conversation's line, as the engine lists its inbox,
+    /// or `None` when the coding agents don't keep it.
+    fn line<'a>(&'a self, _id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Put a message in the conversation's line.
+    fn put_in_line<'a>(&'a self, _id: &'a str, _prompt: AgentLinePrompt) -> AgentCall<'a, ()> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    /// Steer or queue a waiting message.
+    fn set_delivery<'a>(
+        &'a self,
+        _id: &'a str,
+        _item: &'a str,
+        _queue: bool,
+    ) -> AgentCall<'a, ()> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    /// Take a waiting message back.
+    fn take_back<'a>(&'a self, _id: &'a str, _item: &'a str) -> AgentCall<'a, AgentTakeBack> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    /// Stop the turn under way; `resume` starts what you steered next. True
+    /// when a turn was under way.
+    fn interrupt<'a>(&'a self, _id: &'a str, _resume: bool) -> AgentCall<'a, bool> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    /// Whether the conversation's transcript has this message.
+    fn has_message<'a>(&'a self, _id: &'a str, _message: &'a str) -> AgentCall<'a, bool> {
+        Box::pin(async { Ok(false) })
+    }
+
+    /// The conversation's last `limit` transcript rows, newest first.
+    fn recent<'a>(&'a self, _id: &'a str, _limit: u32) -> AgentCall<'a, Vec<Value>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// The conversations' line and turn events, in the engine's words.
+    fn events(&self) -> Option<broadcast::Receiver<AgentEvent>> {
+        None
+    }
+
     /// Stop a turn that waits on an approval or a question. True when one did.
     fn stop_if_waiting<'a>(&'a self, _id: &'a str) -> AgentCall<'a, bool> {
         Box::pin(async { Ok(false) })
@@ -90,7 +167,11 @@ pub trait AgentSessionSource: Send + Sync {
 
 impl crate::Engine {
     pub fn with_agent_sessions(mut self, source: Arc<dyn AgentSessionSource>) -> Self {
+        let events = source.events();
         self.agent_sessions = Some(source);
+        if let Some(events) = events {
+            crate::queue::follow_agents(self.clone(), events);
+        }
         self
     }
 
