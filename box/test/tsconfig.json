@@ -13,6 +13,8 @@
     "../src/release"
   ],
   "exclude": [
-    "agents"
+    "agents",
+    // This Rust scenario's relay fixture is checked with the relay's own dependencies.
+    "fixtures/rust-relay-peer.ts"
   ]
 }

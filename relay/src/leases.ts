@@ -20,9 +20,10 @@ const key = (value: unknown): value is string => typeof value === 'string' && KE
 const counter = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 
 function authorizedRoster(value: unknown, computer: string, sign: string): Roster | undefined {
-  if (!object(value) || value[computer] !== sign) return;
+  if (!object(value) || value[computer] !== sign) return undefined;
   const entries = Object.entries(value);
   if (entries.length <= 128 && entries.every(([computer, sign]) => key(computer) && key(sign))) return value as Roster;
+  return undefined;
 }
 
 export class SetupLeases {

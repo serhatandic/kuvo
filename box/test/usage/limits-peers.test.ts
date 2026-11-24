@@ -716,12 +716,12 @@ test("usage names a reachable computer while its first limits snapshot is in fli
     self: { key: near.key, name: near.name },
     boxes: [{ key: far.key, name: far.name, seats: true, limits }], bots: [],
   })
-  const current = async () => (await (await limitsRoutes(near.limits, "GET", [])).json()).data
+  const current = async () => (await limitsRoutes(near.limits, "GET", [])).json()
   try {
     near.directory.set(roster("connected"))
-    expect(await current()).toMatchObject({ pendingComputers: [{ id: far.key, name: far.name }] })
+    expect(await current()).toMatchObject({ data: { pendingComputers: [{ id: far.key, name: far.name }] } })
     near.directory.set(roster("away"))
-    expect(await current()).toMatchObject({ pendingComputers: [] })
+    expect(await current()).toMatchObject({ data: { pendingComputers: [] } })
   } finally {
     near.stop()
     far.stop()

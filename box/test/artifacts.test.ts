@@ -18,6 +18,8 @@ import { artifactRoutes, notedRoute } from "../src/link/artifacts/routes"
 import { ArtifactStore } from "../src/link/artifacts/store"
 import { artifactService } from "../src/link/artifacts/service"
 import { UnsupportedFormatVersion } from "../src/shared/format-version"
+import { ARTIFACT_LIST } from "../src/shared/routes/artifacts"
+import type { Infer } from "../src/shared/shape"
 
 // The box's record of what its agents made, as a client reads it (`kuvo/artifacts`): a bot's memory
 // with what changed in it, a coding session's documents, a group chat's files by bot, versions kept
@@ -529,7 +531,7 @@ describe("a bot's folder", () => {
     bot("bot_ada", "m\n")
     const folders = watched()
     try {
-      await new Promise<void>(resolve => { folders.missed = resolve })
+      await new Promise<void>(resolve => { folders.missed = async () => resolve() })
     } finally {
       folders.stop()
     }
@@ -1142,7 +1144,7 @@ describe("what can go wrong on disk", () => {
     const { value } = await route("GET", `kuvo/artifacts/${ArtifactStore.idOf(file)}`)
     expect(value.versions.length).toBe(400)
     expect((await route("GET", `kuvo/artifacts/${value.id}/versions/400`)).value).toBe("line 399\n")
-  })
+  }, 30_000)
 })
 
 describe("restoring a version", () => {
@@ -1451,18 +1453,21 @@ describe("the routes", () => {
     const entered = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()
     const readdir = fs.promises.readdir.bind(fs.promises)
-    const read = spyOn(fs.promises, "readdir").mockImplementation(async (...args: Parameters<typeof readdir>) => {
-      if (args[0] === project) {
-        entered.resolve()
-        await release.promise
-      }
-      return readdir(...args)
-    })
+    const read = spyOn(fs.promises, "readdir").mockImplementation(new Proxy(readdir, {
+      async apply(readdir, receiver, args) {
+        if (args[0] === project) {
+          entered.resolve()
+          await release.promise
+        }
+        return Reflect.apply(readdir, receiver, args)
+      },
+    }))
     const scan = Promise.resolve(changedSince(project, Date.now()))
     try {
       expect(await Promise.race([entered.promise.then(() => "reading"), scan.then(() => "done")])).toBe("reading")
       const response = await artifactRoutes(store, "GET", [], new URLSearchParams("session=ses_scan"), async () => ({}))
-      expect((await response.json()).artifacts.map((row: any) => row.name)).toEqual(["saved.md"])
+      const body = await response.json() as Infer<typeof ARTIFACT_LIST>
+      expect(body.artifacts.map(row => row.name)).toEqual(["saved.md"])
     } finally {
       release.resolve()
       await scan

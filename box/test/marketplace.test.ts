@@ -16,13 +16,14 @@ import { BOTS, K, RUN } from "../src/link/home";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, readDoc, signingKeyOf } from "../src/link/documents/format";
 import { publishedShared, takeShared } from "../src/link/setup/shared";
-import { newSetupID } from "../src/link/setup/record";
+import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { readLink, writeLink, type LinkState } from "../src/link/state";
 import { grantRelayLease } from "./relay-lease";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { setServerSource, computerServers, forgetServers } from "../src/agents/servers";
 import { setSkillSource, skillsFor, skillsFolder, copySkillsInto, forgetSkills } from "../src/agents/skills";
 import type { EngineLink } from "../src/agents/engine";
+import { isObject } from "../src/shared/json";
 
 // The real routes, filesystem, vault, signed setup mail and bridge projections. Only external
 // HTTP is stood in for. No running box or native coding-agent account is used.
@@ -182,6 +183,7 @@ test("OAuth exchanges a state-checked PKCE code and keeps the resulting tokens i
       if (url.pathname === "/token") {
         const parameters = new URLSearchParams(String(init?.body));
         expect(parameters.get("code")).toBe("valid-code");
+        if (challenge === null) throw new Error("The authorization page did not include a code challenge.");
         expect(crypto.createHash("sha256").update(parameters.get("code_verifier")!).digest("base64url")).toBe(challenge);
         return Response.json({ access_token: "test-oauth-access", refresh_token: "test-oauth-renewal", token_type: "Bearer" });
       }
@@ -285,7 +287,8 @@ test("Marketplace › Skills keeps what Settings › Skills did on this computer
   const edit = details.actions.find((action: any) => action.id === "edit");
   expect(edit.form.fields.map((field: any) => [field.id, field.value])).toEqual([["description", "Write a short summary"], ["instructions", "Pinned instructions."]]);
   expect((await route("PATCH", "/skills/release", { description: "Write a shorter summary", instructions: "Keep it short.", was: details.revision })).status).toBe(200);
-  expect((await route("GET", "/skills/release")).json.summary).toBe("Write a shorter summary");
+  const edited = (await route("GET", "/skills/release")).json;
+  expect(edited.summary).toBe("Write a shorter summary");
   expect(area.actions.find((action: any) => action.id === "create").form.fields.map((field: any) => field.id)).toEqual(["name", "description", "instructions"]);
   expect((await route("POST", "/skills/preview", { from: "~/no-such-skill-folder" })).status).toBe(400);
 
@@ -298,7 +301,7 @@ test("Marketplace › Skills keeps what Settings › Skills did on this computer
   expect((await route("DELETE", "/skills/places", { index: 0 })).status).toBe(200);
   expect((await skills()).here.places.items).toEqual([]);
 
-  expect((await route("DELETE", "/skills/release")).status).toBe(200);
+  expect((await route("DELETE", "/skills/release", { was: edited.revision })).status).toBe(200);
   area = await skills();
   expect(area.items.some((skill: any) => skill.id === "release")).toBe(false);
   const [deleted] = area.here.deleted.items;
@@ -323,7 +326,7 @@ test("another computer receives the installed skill through the signed setup doc
     return { seed: key.toString("base64url"), key: publicOf(key).toString("base64url"), sign, signer: signingKeyOf(sign), address: addressOf(key).toString("base64url") };
   };
   const primary = identity(), member = identity();
-  const setup = { id: newSetupID(), epoch: 1, primary: primary.key, sign: primary.signer, managed: true, checkpointed: true };
+  const setup: Omit<SetupRecord, "role"> = { id: newSetupID(), epoch: 1, primary: primary.key, sign: primary.signer, managed: true, checkpointed: true };
   const boxes = [primary, member].map(box => ({ key: box.key, sign: box.signer, address: box.address, kind: "machine", name: "Marketplace box" }));
   const a: LinkState = {
     key: primary.seed, sign: primary.sign, phones: [], setup: { ...setup, role: "primary" }, sharedSetup: setup.id,
@@ -335,7 +338,7 @@ test("another computer receives the installed skill through the signed setup doc
   const added = await route("POST", "/skills/create", { name: "shared-skill", description: "Confirm the handoff", instructions: "Check the next action." });
   expect(added.status).toBe(200);
   const docs = publishedShared(readLink()!).map(envelope => readDoc(envelope)!);
-  const doc = docs.find(doc => doc.body.replica?.marketplaceInstallations);
+  const doc = docs.find(({ body }) => isObject(body.replica) && body.replica.marketplaceInstallations);
   expect(doc).toBeDefined();
   takeShared(b, primary.key, doc!);
   writeLink(b);

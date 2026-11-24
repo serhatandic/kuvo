@@ -10,6 +10,7 @@ const areas = new Map([
   ["moves", "./moves.test.mjs"],
   ["rehome", "./rehome.test.mjs"],
   ["holder", "./holder.test.mjs"],
+  ["agents", "./holder.test.mjs"],
   ["compat", "./compat.test.mjs"],
   ["clock", "./clock.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],
@@ -23,6 +24,7 @@ const areas = new Map([
   ["backups", "./backups.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
   ["files", "./files.test.mjs"],
+  ["git", "./git.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
 ]);

@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs"
 import { TOOLS } from "../src/browser/tools"
 import { messageWordsPage } from "../src/shared/message-words"
 import { SANDBOX_TOOLS } from "../src/link/fence/outside"
-import { knownTools, OWN_TOOL_WORDS } from "../src/link/server/known-tools"
+import { knownTools } from "../src/link/server/known-tools"
 import { VAULT_TOOLS } from "../src/link/vault/tools"
 import { stoppedLine, wakeText } from "../src/link/work/wakes"
 import { QUEUE_TOOLS } from "../src/link/work-queue/tools"
@@ -140,16 +140,17 @@ describe("tool steps", () => {
   })
 
   test("every one of Kuvo Code's tools has its title and its words", () => {
+    const { own } = knownTools(settings)
     const listed = [...TOOLS, ...VAULT_TOOLS, ...SANDBOX_TOOLS, ...QUEUE_TOOLS] as { name: string; title?: string }[]
     for (const tool of listed) {
-      const words = OWN_TOOL_WORDS.get(tool.name)
+      const words = own.get(tool.name)
       expect(words, tool.name).toBeDefined()
       expect(tool.title, tool.name).toBe(words!.title)
       for (const said of [words!.title, words!.done, words!.doing]) expect(said.trim().length, tool.name).toBeGreaterThan(0)
       // Listed as MCP has it: its title after its name.
       expect(Object.keys(tool).slice(0, 2), tool.name).toEqual(["name", "title"])
     }
-    expect(OWN_TOOL_WORDS.size).toBe(listed.length)
+    expect(own.size).toBe(listed.length)
   })
 })
 

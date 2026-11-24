@@ -24,6 +24,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
 import { writeSecret } from "../shared/files"
+import { isObject } from "../shared/json"
 import { fenceRules, fenceServer } from "./fence"
 import { kuvoTools, type KuvoTools } from "./kuvotools"
 import { machineHome, onMachine, ownEnvironment } from "./machine"
@@ -425,8 +426,11 @@ async function compatibilityCall(message: any, session: string, run: string, can
       return retry()
     }
     const answer = await response.json()
+    if (!isObject(answer)) return retry()
     const isError = !response.ok || answer.isError === true
-    return Response.json({ jsonrpc: "2.0", id: message.id, result: { isError, content: [{ type: "text", text: answer.text ?? answer.message ?? "Kuvo Code could not answer this tool call." }] } })
+    const text = typeof answer.text === "string" ? answer.text
+      : typeof answer.message === "string" ? answer.message : "Kuvo Code could not answer this tool call."
+    return Response.json({ jsonrpc: "2.0", id: message.id, result: { isError, content: [{ type: "text", text }] } })
   } catch {
     return retry()
   }
