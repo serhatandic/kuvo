@@ -1,4 +1,5 @@
 mod agents;
+mod library_artifacts;
 
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -246,14 +247,28 @@ pub async fn run(
         engine.clone(),
     );
     read_owner.register(&mut routes);
+    let library_artifacts = Arc::new(
+        library_artifacts::ResidentLibraryArtifacts::start(
+            home,
+            peers.reader().view().roster.local().name,
+            peers.reader(),
+            peers.relay_handle(),
+            memory.clone(),
+            &mut routes,
+        )
+        .await,
+    );
+    let library_reader = library_artifacts.clone();
     let memory_reads = memory.serve(move |_, read| {
         let owner = read_owner.clone();
         let queues = queue_reads.clone();
         let engine = search_engine.clone();
+        let library_reader = library_reader.clone();
         async move {
             match read.area.as_deref() {
                 Some("ownership") => owner.answer(read).await,
                 Some("search") => super::setup_search::answer(engine, read).await,
+                Some("library") => library_reader.answer_library_read(read).await,
                 _ => queues.answer(read).await,
             }
         }
@@ -454,6 +469,9 @@ pub async fn run(
     if let Some(holder) = vault_holder {
         holder.shutdown().await;
     }
+    if let Ok(library_artifacts) = Arc::try_unwrap(library_artifacts) {
+        library_artifacts.stop().await;
+    }
     let _ = session_source.await;
     drop(daily_backups);
     drop(backup_receiver);
@@ -514,6 +532,8 @@ fn info(
     features.push(kuvo_peers::memory_read::FEATURE);
     features.push(kuvo_peers::owner_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
+    features.extend_from_slice(kuvo_services::artifacts::FEATURES);
+    features.extend_from_slice(kuvo_services::library::FEATURES);
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
     if permits_pairing {
         features.push("devices.pair");

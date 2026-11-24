@@ -67,7 +67,7 @@ function normalise(value, name, home, enginePort, field = "") {
 // Compare schema and typed rows from a private read copy. The inventory still
 // checks that the journal and its rebuildable shared-memory index paths exist.
 const insights = "agents/usage/insights.sqlite";
-const databases = new Set([insights, "data/opencode/opencode.db"]);
+const databases = new Set([insights, "data/opencode/opencode.db", "artifacts/index-v1.sqlite"]);
 export function sqliteContents(file, home, { migrationClockAfter } = {}) {
   const tmp = scratch();
   const target = path.join(tmp, "copy.sqlite");
