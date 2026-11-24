@@ -41,6 +41,33 @@ pub fn pause(home: &Home) -> io::Result<()> {
     Ok(())
 }
 
+/// Inspect or unregister the login job for the account's own Mac installation.
+/// A scratch profile can only use launch tools inside that profile.
+pub fn uninstall(home: &Home, check: bool) -> io::Result<Option<bool>> {
+    if files::text_of(&home.root().join("box/kind"))
+        .as_deref()
+        .map(str::trim)
+        != Some("mac")
+    {
+        return Ok(None);
+    }
+    let account = Account::current()?;
+    let profile = account
+        .home_folder(
+            kuvo_os::platform::Platform::Mac,
+            &std::env::vars_os().collect(),
+        )?
+        .canonicalize()?;
+    if home.root().canonicalize()? != profile.join(".kuvo-code") {
+        return Ok(None);
+    }
+    let real = profile == account.home.canonicalize()?;
+    let Some(agent) = LaunchAgent::for_account(&profile, real) else {
+        return Ok(None);
+    };
+    agent.unregister(home, &profile, check).map(Some)
+}
+
 #[derive(Clone, Copy)]
 pub enum Started {
     Installed,
@@ -236,6 +263,61 @@ impl LaunchAgent {
         })
     }
 
+    fn unregister(&self, home: &Home, profile: &Path, check: bool) -> io::Result<bool> {
+        let exists = match fs::symlink_metadata(&self.plist) {
+            Ok(entry) => {
+                let program = home.bin().join(HELPER).join("Contents/MacOS/Kuvo Helper");
+                if !entry.is_file()
+                    || !self.plist.canonicalize()?.starts_with(profile)
+                    || !self.job_field("Label", LABEL.as_ref())?
+                    || !self.job_field("ProgramArguments.0", program.as_os_str())?
+                    || !self.job_field("ProgramArguments.1", "keep".as_ref())?
+                    || !self.job_field("ProgramArguments.2", "--home".as_ref())?
+                    || !self.job_field("ProgramArguments.3", home.root().as_os_str())?
+                {
+                    return Err(io::Error::other(
+                        "Kuvo couldn’t confirm that the login job belongs to this installation.",
+                    ));
+                }
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        if check {
+            return Ok(exists);
+        }
+        let service = format!("{}/{LABEL}", domain()?);
+        let mut status = self.run(["print", &service])?;
+        if exists && status.status.success() && self.run(["bootout", &service])?.status.success() {
+            for _ in 0..100 {
+                status = self.run(["print", &service])?;
+                if job_missing(&status) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+        if !job_missing(&status) {
+            return Err(io::Error::other(
+                "Kuvo couldn’t confirm that its Helper login job had stopped.",
+            ));
+        }
+        files::remove_file_synced(&self.plist)?;
+        Ok(exists)
+    }
+
+    fn job_field(&self, key: &str, expected: &OsStr) -> io::Result<bool> {
+        let value = output(
+            Command::new("/usr/bin/plutil")
+                .args(["-extract", key, "raw", "-o", "-"])
+                .arg(&self.plist),
+        )?;
+        Ok(value.status.success()
+            && value.stdout.strip_suffix(b"\n").unwrap_or(&value.stdout)
+                == expected.as_encoded_bytes())
+    }
+
     fn run(&self, args: [&str; 2]) -> io::Result<Output> {
         output(Command::new(&self.launchctl).args(args))
     }
@@ -289,6 +371,14 @@ impl LaunchAgent {
             String::from_utf8_lossy(&failed.stderr).trim().to_owned(),
         ))
     }
+}
+
+fn job_missing(status: &Output) -> bool {
+    status.status.code() == Some(113)
+        || (!status.status.success()
+            && String::from_utf8_lossy(&status.stderr)
+                .to_ascii_lowercase()
+                .contains("could not find service"))
 }
 
 pub fn command(home: &Home, args: &[std::ffi::OsString]) -> io::Result<u8> {

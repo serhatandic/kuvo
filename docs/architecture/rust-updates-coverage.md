@@ -35,6 +35,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U19 | The deployed beta.48 returns after two computers confirm Rust. The Rust main offers the separately signed TypeScript bridge beta and serves both packs over authenticated relay mail while their URLs return 404. The returning computer confirms the bridge with its keeper, engine stand-in and agents process, then confirms Rust with a private copy of its old home. |
 | U20 | A member's manual check makes its main check the signed feed. If the main is away, the member keeps the request across its own restart and asks the main when it reconnects. The macOS scenario took 5.6 seconds, including enrollment. |
 | U21 | An untrusted signature in the retained release does not prevent a check against the signed feed. The previous resident stayed on the installed version and made no feed request. The fixed resident checked in 2.2 seconds. |
+| U22 | The stopped Mac uninstall reports its Helper login job, refuses a job for another folder and a failed launchctl removal, then unregisters and removes its own job on retry. It retains work and other login jobs in the scratch account. A second uninstall succeeds with no login job left. |
 
 On macOS the update area passed five Rust cases and four shared TypeScript
 cases. U4 rejected a damaged engine from a loopback feed, then prepared and
@@ -233,7 +234,7 @@ or desktop updater, and 20 are open. The inherited and live-proof table has
 | Same, Mac integrations | Open for Rust release builds. | 7.2 |
 | Same, legacy files byte-for-byte where preserved | Open for Rust release builds. | 7.2 |
 | Same, files writer stays below destination | Partial. U4 prepares in a private home. Full release assembly and uninstall footprint need proof. | 7.2 |
-| [add-uninstall](../../box/test/add-uninstall.test.ts), stopped uninstall deletes desktop identity | 2.3 U5 covers stopped standalone. SSH wrapper and live keeper path remain open. | 2.3, 7.2 |
+| [add-uninstall](../../box/test/add-uninstall.test.ts), stopped uninstall deletes desktop identity | 2.3 U5 covers stopped standalone. U22 also covers a stopped Mac with a Helper job. SSH wrapper and live keeper path remain open. | 2.3, 7.2 |
 | Same, incomplete desktop cleanup reported | Open. | 2.3, 7.2 |
 | Same, failed departure keeps identity | Open. | 2.3 |
 | [install-offer](../../box/test/install-offer.test.ts), last wipe approval follows old identity | Partial. 2.3 U8 covers detachment identity. Installer re-entry remains open. | 2.3, 6.2, 7.2 |
@@ -265,7 +266,7 @@ or desktop updater, and 20 are open. The inherited and live-proof table has
 | [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Partial. U10 checks the saved TypeScript home, and U13 checks the one-time refusal to roll back. Interrupted handoff and wipe generation in this workflow remain open. | 7.2, 9.1 |
 | Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Partial. U8 uses the shell keeper and U9 uses the native keeper. A stand-in turn stays alive. Before-rejoin work admission and native holder adoption remain open. | 4.1, 7.2 |
 | Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10 checks the bridge beta taking Rust directly. U18–U19 check the exact deployed beta.48's refusal and automatic two-step catch-up. U11 moves released Mac app homes with a stand-in engine and launchctl. Shipping the bridge beta, a released machine upgrade, and a real Helper job remain open. | 7.2, 9.1, 9.3 |
-| Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers stopped standalone scratch installations on Mac, native Windows, and Linux musl under WSL. The live shared, Helper-owned and installer flows remain open. | 2.3, 7.2 |
+| Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers stopped standalone scratch installations on Mac, native Windows, and Linux musl under WSL. U22 verifies stopped Helper-owned uninstall in a scratch profile. Live shared uninstall, Linux startup entry removal, and installer flows after wipe remain open. | 2.3, 7.2 |
 | [Setup](rust-setup-coverage.md) add and fleet authority, [Windows](rust-windows-coverage.md) case 18 | Partial. U9 checks a new main's lease and U4 checks an automatic Windows selection. Shared Windows activation, on-return admission, and cleanup of a busy previous release remain open. | 2.3, 7.2, 8.1 |
 
 ## Mac Helper supervision from 6.2

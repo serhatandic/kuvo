@@ -184,7 +184,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
     }
     if let Some(check) = uninstall {
-        let outcome = kuvo_setup::uninstall::run(&home, check);
+        #[cfg(target_os = "macos")]
+        let launch_agent = |check| kuvo_keeper::mac_helper::uninstall(&home, check);
+        #[cfg(not(target_os = "macos"))]
+        let launch_agent = |_| Ok(None);
+        let outcome = kuvo_setup::uninstall::run(&home, check, launch_agent);
         #[cfg(windows)]
         if !check
             && outcome.status == 0

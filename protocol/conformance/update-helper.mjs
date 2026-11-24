@@ -217,6 +217,71 @@ test("the Mac Helper can ask the local resident to pause its keeper", async t =>
   assert.equal(read(asked), `pause\n${env.HOME}\n`);
 });
 
+test("uninstall removes only the stopped Mac's own Helper login job", t => {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "darwin") return t.skip("The fixture runs the Rust Mac installer.");
+  const root = fs.realpathSync(scratch());
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const env = isolatedEnv(root);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const tools = path.join(env.HOME, "tools");
+  const jobs = path.join(env.HOME, "Library/LaunchAgents");
+  const plist = path.join(jobs, "run.kuvo.code.machine.plist");
+  const other = path.join(jobs, "some-other-job.plist");
+  const notes = path.join(home, "workspace/notes");
+  Object.assign(env, { KUVO_HOME: home, KUVO_TEST_UNINSTALL_TOOLS: tools });
+  write(path.join(home, "box/kind"), "mac\n");
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "bin/kuvo-start"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  write(path.join(home, "bin/Kuvo Helper.app/Contents/MacOS/Kuvo Helper"), "#!/bin/sh\n", { mode: 0o700 });
+  write(path.join(home, "run/paused"), "");
+  write(path.join(home, "desktop/identity"), "local identity");
+  write(notes, "saved work");
+  write(other, "other job");
+  write(path.join(tools, "launchctl"), `#!/bin/sh
+tools="$KUVO_TEST_UNINSTALL_TOOLS"
+[ "$2" = "gui/$(/usr/bin/id -u)/run.kuvo.code.machine" ] || exit 2
+case "$1" in
+  print) [ -f "$tools/registered" ] || exit 113 ;;
+  bootout) [ ! -f "$tools/refuse" ] || exit 1; rm "$tools/registered" ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o700 });
+  const call = (...args) => spawnSync(binary.file, args, { env, cwd: home, encoding: "utf8", timeout: 15000 });
+  const job = call("helper", "install");
+  assert.equal(job.status, 0, job.stderr);
+  const original = read(plist);
+  write(path.join(tools, "registered"), "");
+  const profileEntries = fs.readdirSync(env.HOME).sort();
+  const check = call("uninstall", "--check");
+  assert.equal(check.status, 0, check.stderr);
+  assert.deepEqual(JSON.parse(check.stdout).starts, { launchAgent: true, crontab: false, checked: true });
+
+  write(plist, original.replace("/bin/Kuvo Helper.app", "/elsewhere/Kuvo Helper.app"));
+  assert.equal(call("uninstall").status, 1);
+  assert.equal(fs.existsSync(path.join(tools, "registered")), true);
+  assert.equal(read(path.join(home, "desktop/identity")), "local identity");
+  write(plist, original);
+  write(path.join(tools, "refuse"), "");
+  assert.equal(call("uninstall").status, 1);
+  assert.equal(read(plist), original);
+  fs.rmSync(path.join(tools, "refuse"));
+  const removed = call("uninstall");
+  assert.equal(removed.status, 0, removed.stderr);
+  assert.equal(JSON.parse(removed.stdout).launchAgent, true);
+  assert.deepEqual(JSON.parse(removed.stdout).startsAgain, []);
+  assert.equal(fs.existsSync(plist), false);
+  assert.equal(fs.existsSync(path.join(tools, "registered")), false);
+  assert.equal(fs.existsSync(path.join(home, "desktop/identity")), false);
+  assert.equal(read(other), "other job");
+  assert.equal(read(notes), "saved work");
+  assert.deepEqual(fs.readdirSync(env.HOME).sort(), profileEntries);
+  assert.deepEqual(fs.readdirSync(env.TMPDIR), []);
+  const again = call("uninstall");
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(JSON.parse(again.stdout).launchAgent, false);
+});
+
 test("the Mac Helper install writes a launchd job and can reload it once the old job goes", t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "darwin") return t.skip("The fixture runs the Rust Mac Helper command.");

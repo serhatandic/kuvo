@@ -10,6 +10,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.
 - The Mac installer can set up a new computer directly from the signed Rust release and start Kuvo Helper.
+- Uninstall on a stopped Mac removes Kuvo Helper’s login job and retains your saved work.
 
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
