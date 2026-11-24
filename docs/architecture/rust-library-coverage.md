@@ -26,6 +26,25 @@ Row 5.5 ports the Library, Artifacts, Marketplace, Integrations, Skills, MCP Cat
   - `KUVO_CONFORMANCE_AREA=artifacts`: 3/3 pass.
   - `KUVO_CONFORMANCE_AREA=library`: 12/12 pass.
 
+## Platform verification (5.5b & combined 5.5)
+
+- **Code size (non-test Rust vs TS reference)**:
+  - **5.5a** (23 Rust files vs 26 TS files): TS **5,014 lines / 234,518 chars (213,803 no-indent)** vs Rust **6,416 lines (1.28×) / 279,579 chars (1.19×) / 227,291 no-indent (1.06×)**.
+  - **5.5b** (22 Rust files vs 19 TS files): TS **3,770 lines / 220,639 chars (207,607 no-indent)** vs Rust **4,821 lines (1.28×) / 269,960 chars (1.22×) / 234,607 no-indent (1.13×)**.
+  - **Combined 5.5**: TS **8,784 lines / 455,157 chars (421,410 no-indent)** vs Rust **11,237 lines (1.28×) / 549,539 chars (1.21×) / 461,898 no-indent (1.10×)**.
+- **macOS (aarch64-apple-darwin)**:
+  - `cargo test -p kuvo_services --lib --test library_artifacts --test marketplace_skills_integrations`: 44 lib tests + 6 + 5 integration tests pass.
+  - `cargo test -p kuvo_setup --test runtime the_main_reads_and_saves_marketplace_installations_across_restarts`: 1/1 passes.
+  - Conformance against both `box/dist/kuvo-link.js` and `box/target/debug/kuvo-box`: `artifacts` **3/3**, `library` **16/16**, `integrations` **7/7**, `skills` **7/7** (**33/33** on each box).
+  - Differential run (25 requests across `programs`, `mcp/catalog`, `config`, `integrations`, `keys`, `skills`, `skill-trash`, `skill-library`, `marketplace` overview/skills/apps/agents + skill create/get/delete + custom app add): **0 response diffs, 0 5.5b file diffs** (exact `skillRevision` match).
+  - Golden home (`protocol/conformance/compat/generate.mjs` current fixture): identical reads across `config`, `skills`, `skill-trash`, `skill-library`, `mcp/catalog`, `marketplace`, `library`, and `artifacts`.
+  - Scoped clippy (`cargo clippy -p kuvo_services -p kuvo_setup -p kuvo-box --no-deps --all-targets`): 0 warnings in all 5.5 code and `kuvo_setup/src/actor/marketplace.rs`.
+  - `cd box && bun run check` passes; `node --test box/bridge-tests/skills.test.js` (14/14) and `box/bridge-tests/integrations.test.js` (11/11) pass.
+- **Linux (x86_64-unknown-linux-musl under WSL Ubuntu-24.04)**:
+  - `artifacts` **3/3**, `library` **16/16**, `integrations` **7/7**, `skills` **7/7** (**33/33**).
+- **Native Windows (x86_64-pc-windows-gnullvm)**:
+  - `artifacts` **3/3**, `library` **16/16**, `integrations` **7/7**, `skills` **7/7** (**33/33**).
+
 ## Deliberate structural differences from TypeScript (5.5a)
 
 1. **Decoupled peer and engine seams (`kuvo_services` vs `kuvo-box`)**: `kuvo_services` defines narrow traits (`SessionSource`, `OutputsPeers`, `LibraryPeers`) instead of importing peer or engine globals. `kuvo-box/src/serve/library_artifacts.rs` adapts `kuvo_peers::{Reader, RelayHandle, memory_read::Handle}` and loopback engine SSE.
