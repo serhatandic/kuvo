@@ -8,7 +8,7 @@
 #   box        the box's whole suites (bun test, node --test) and runs on a test machine. Two slots,
 #              as mac-build has (below).
 #   rust       Desktop Cargo builds, tests and shots. One slot across all checkouts.
-#   rust-box   Box Cargo builds and tests. One separate slot across all checkouts.
+#   rust-box   Box Cargo builds and tests. Two slots across all checkouts (each worktree has its own target).
 #
 # Jobs of one kind share their build folders, which two builds at once break, so each slot of a kind
 # (mac, rust and rust-box have one; mac-build and box two, below) runs one job at a time, each waiting on its
@@ -235,11 +235,11 @@ case "$kind" in rust | rust-box) cargo_lane=1 ;; esac
 DIR="${KUVO_HEAVY_DIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp/)}"
 DIR="${DIR%/}"
 LOCK="$DIR/kuvo-code-heavy-$kind-$(id -u).lock"
-# The mac-build and box lanes have a second slot.
+# The mac-build, box and rust-box lanes have a second slot.
 LOCK2=
 SLOTS=1
 case "$kind" in
-    mac-build | box)
+    mac-build | box | rust-box)
         LOCK2="$DIR/kuvo-code-heavy-$kind-2-$(id -u).lock"
         SLOTS=2
         ;;
