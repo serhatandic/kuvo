@@ -231,19 +231,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let (key, identity) = kuvo_setup::installer::enrolled_ssh_identity(&home)?;
                 #[cfg(not(windows))]
                 start_ssh_resident(&home, &identity).await?;
-                #[cfg(windows)]
-                start_windows(&home).await?;
                 println!("{}", serde_json::json!({"setup": joined.setup, "primary": joined.primary, "key": key, "identity": identity}));
             } else {
-                #[cfg(not(windows))]
                 let joined = kuvo_setup::installer::join(&home, name, &code).await?;
-                #[cfg(windows)]
-                let joined = {
-                    kuvo_keeper::windows::stage_local_release(home.root(), &env::current_exe()?)?;
-                    let joined = kuvo_setup::installer::join_ssh(&home, name, &code).await?;
-                    start_windows(&home).await?;
-                    joined
-                };
                 println!("{}", serde_json::to_string(&joined)?);
             }
             Ok(())
