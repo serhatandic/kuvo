@@ -9,9 +9,9 @@ import { boxBinary, isolatedEnv, launch, localRelay, request, scratch, startBox,
 const pinned = process.env.KUVO_CONFORMANCE_OPENCODE;
 const credential = process.env.KUVO_CONFORMANCE_OPENCODE_GO;
 const model = { providerID: "opencode-go", id: "deepseek-v4.1-flash" };
-test("a real model’s question holds a queue through edits, delivery and restart", {
+test("a real model’s question holds a queue through edits, delivery, restart and Stop", {
   skip: !(pinned && credential) && "Set KUVO_CONFORMANCE_OPENCODE and KUVO_CONFORMANCE_OPENCODE_GO to isolated test inputs.",
-  timeout: 120000,
+  timeout: 240000,
 }, async () => {
   const root = fs.realpathSync(scratch());
   const home = path.join(root, "box");
@@ -55,12 +55,13 @@ test("a real model’s question holds a queue through edits, delivery and restar
     const start = () => startBox({ binary, home, env: { ...env, KUVO_SANDBOX: "off" }, relay });
     box = start();
     let record = await box.ready();
-    const started = await request(engine, "POST", "api/session", {
-      title: "Scratch live queue", location: { directory: home }, model,
-    });
-    assert.equal(started.status, 200, started.text);
-    const session = started.json.data.id;
-    const base = "kuvo/sessions/" + session;
+    const newSession = async title => {
+      const started = await request(engine, "POST", "api/session", { title, location: { directory: home }, model });
+      assert.equal(started.status, 200, started.text);
+      return started.json.data.id;
+    };
+    let session = await newSession("Scratch live queue");
+    let base = "kuvo/sessions/" + session;
     const headers = { "x-kuvo-from": "app" };
     const call = (method, route, body) => request(record, method, route, body, headers);
     const send = async (id, words, delivery = "queue") => {
@@ -127,6 +128,44 @@ test("a real model’s question holds a queue through edits, delivery and restar
       const actual = await request(engine, "GET", `api/session/${session}/message?limit=50&order=desc`);
       return actual.json?.data?.filter(row => row.id === draft.id && row.type === "user").length === 1;
     }, "the queued draft to reach the transcript once", 30000);
+
+    session = await newSession("Scratch Stop and Resume");
+    base = "kuvo/sessions/" + session;
+    await send("msg_liveStopQuestion", "Call the question tool now with one question asking me to choose tea or coffee and those two options. Wait for my choice. Do not answer in ordinary text first.", "steer");
+    await until(question, "the real model to ask before Stop", 45000);
+    const first = "msg_liveBeforeStop";
+    const second = "msg_liveWhileStopped";
+    await send(first, "Reply only with FIRST.");
+    await inbox([first]);
+    const stopped = await call("POST", base + "/stop");
+    assert.equal(stopped.status, 200, stopped.text);
+    assert.equal(stopped.json.paused, true);
+    await until(async () => {
+      const active = await request(engine, "GET", "api/session/active");
+      const running = active.json?.data;
+      return active.status === 200 && running && (Array.isArray(running) ? !running.includes(session) : !Object.hasOwn(running, session));
+    }, "the stopped turn to end", 20000);
+    await send(second, "Reply only with SECOND.");
+    await inbox([first, second]);
+    const waitingBeforeResume = await call("GET", base + "/queue");
+    assert.deepEqual(waitingBeforeResume.json.waiting.map(row => row.id), [second]);
+    const engineInbox = await request(engine, "GET", `api/session/${session}/inbox`);
+    assert.deepEqual(engineInbox.json.data.map(row => row.id), [first]);
+
+    const resumed = await call("POST", base + "/queue/resume");
+    assert.equal(resumed.status, 200, resumed.text);
+    const transcript = await until(async () => {
+      const reply = await request(engine, "GET", `api/session/${session}/message?limit=50&order=desc`);
+      const rows = reply.json?.data;
+      return rows?.some(row => row.id === second && row.type === "user") && rows.toReversed();
+    }, "both prompts to reach the real conversation in sequence", 50000);
+    const firstAt = transcript.findIndex(row => row.type === "user" && row.id === first);
+    const secondAt = transcript.findIndex(row => row.type === "user" && row.id === second);
+    assert.ok(firstAt >= 0 && secondAt > firstAt);
+    assert.equal(transcript.filter(row => row.id === first).length, 1);
+    assert.equal(transcript.filter(row => row.id === second).length, 1);
+    assert.ok(transcript.slice(firstAt + 1, secondAt).some(row => row.type === "idle" && row.outcome === "succeeded"));
+    await inbox([]);
   } finally {
     await box?.stop();
     await worker?.stop();
