@@ -2494,6 +2494,33 @@ esac
       assert.equal(fs.readFileSync(path.join(freshTools, "calls"), "utf8"), "print\nbootstrap\n");
       assert.deepEqual(fs.readdirSync(path.join(fresh, "tmp")), []);
       t.diagnostic(`fresh signed Mac media installed and started in ${Math.round(performance.now() - starts)} ms`);
+
+      const interrupted = path.join(root, "interrupted");
+      const interruptedTools = path.join(interrupted, "launch-fixture");
+      const unfinished = path.join(interrupted, ".kuvo-code");
+      fs.mkdirSync(path.join(interrupted, "tmp"), { recursive: true });
+      fs.cpSync(tools, interruptedTools, { recursive: true });
+      write(path.join(unfinished, "updates/rehome/new"), "1\n");
+      write(path.join(unfinished, "bin/kuvo-link.js"), "// half of the earlier install");
+      write(path.join(unfinished, "bin.new/kuvo-start"), "half");
+      write(path.join(unfinished, "updates/install/release.new/bin/kuvo-link.js"), "half");
+      write(path.join(unfinished, "updates/install/engine/.fetch.1/engine.tgz"), "half");
+      const before = install("status", interrupted, interruptedTools);
+      assert.equal(before.status, 0, before.error?.message ?? before.stdout + before.stderr);
+      assert.equal(JSON.parse(before.stdout).verdict, "fresh");
+      const resumed = install("new", interrupted, interruptedTools);
+      assert.equal(resumed.status, 0, resumed.error?.message ?? resumed.stdout + resumed.stderr);
+      const resumedAnswer = JSON.parse(resumed.stdout);
+      assert.deepEqual([resumedAnswer.result, resumedAnswer.verdict, resumedAnswer.started], ["done", "ours", true]);
+      assert.equal(typeof resumedAnswer.setAside, "string", "the reply should name the saved earlier files");
+      assert.equal(path.dirname(resumedAnswer.setAside), path.join(unfinished, "trash"));
+      assert.match(path.basename(resumedAnswer.setAside), /^earlier-box-/);
+      assert.equal(fs.readFileSync(path.join(resumedAnswer.setAside, "bin/kuvo-link.js"), "utf8"), "// half of the earlier install");
+      for (const old of ["bin.new", "updates/install", "updates/rehome/new"]) {
+        assert.equal(fs.existsSync(path.join(unfinished, old)), false, old);
+      }
+      installedRelease(unfinished);
+      assert.equal(fs.readFileSync(path.join(interruptedTools, "calls"), "utf8"), "print\nbootstrap\n");
     }
     const verdict = install("status");
     assert.equal(verdict.status, 0, verdict.error?.message ?? verdict.stdout + verdict.stderr);

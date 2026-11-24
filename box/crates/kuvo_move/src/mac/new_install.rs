@@ -166,9 +166,15 @@ pub fn new_home(
         None,
         keeps_awake_off,
     )
+    .0
 }
 
-pub fn new_home_from_media(home: &Home, app_box: &Path, account: &Path, media: &Home) -> Outcome {
+pub fn new_home_from_media(
+    home: &Home,
+    app_box: &Path,
+    account: &Path,
+    media: &Home,
+) -> (Outcome, Option<PathBuf>) {
     make_home(
         home,
         Some(app_box),
@@ -188,49 +194,47 @@ fn make_home(
     release: Option<&Path>,
     staged_engine: Option<&Path>,
     keeps_awake_off: bool,
-) -> Outcome {
+) -> (Outcome, Option<PathBuf>) {
     let say = |result, message| Outcome {
         result,
         message,
         started: None,
         status: crate::rehome_status(home),
     };
-    let make = || -> Result<Outcome, Error> {
+    let make = || -> Result<(Outcome, Option<PathBuf>), Error> {
         let admit = || -> Result<Option<Outcome>, Error> {
             let readiness = check(home, app_box, engine_data, account, staged_engine)?;
             Ok(if readiness.made {
                 Some(say("nothing", None))
-            } else if let Some(why) = readiness.why {
-                Some(say("refused", Some(why)))
             } else {
-                None
+                readiness.why.map(|why| say("refused", Some(why)))
             })
         };
         if let Some(outcome) = admit()? {
-            return Ok(outcome);
+            return Ok((outcome, None));
         }
         let Some(release) = release else {
-            return Ok(say("refused", Some(RELEASE_NEEDED.into())));
+            return Ok((say("refused", Some(RELEASE_NEEDED.into())), None));
         };
         if let Some(why) = release_refusal(release)? {
-            return Ok(say("refused", Some(why.into())));
+            return Ok((say("refused", Some(why.into())), None));
         }
         let disk = Disk(home.root().to_owned());
         let wait = Duration::from_secs(3);
         let _layout = match layout::lock_for_move(home, wait) {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                return Ok(say("waits", Some(WAITS.into())));
+                return Ok((say("waits", Some(WAITS.into())), None));
             }
             other => other?,
         };
         let _rehome = match OwnedLock::acquire_rehome(&disk.path("updates/rehome/lock")?, wait) {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                return Ok(say("waits", Some(WAITS.into())));
+                return Ok((say("waits", Some(WAITS.into())), None));
             }
             other => other?,
         };
         if let Some(outcome) = admit()? {
-            return Ok(outcome);
+            return Ok((outcome, None));
         }
         let app = app_box
             .and_then(Path::parent)
@@ -243,7 +247,7 @@ fn make_home(
             &serde_json::to_vec(&json!({"at":began,"formatVersion":1}))
                 .map_err(io::Error::other)?,
         )?;
-        if let Err(error) = publish(
+        let set_aside = match publish(
             &disk,
             release,
             staged_engine.unwrap_or(&app.join("engine")),
@@ -252,17 +256,20 @@ fn make_home(
             interrupted,
             staged_engine.is_some(),
         ) {
-            files::remove_tree_synced(&disk.path(STAGE)?)?;
-            if !disk.path("box/kind")?.is_file() {
-                files::remove_file_synced(&marker)?;
+            Ok(path) => path,
+            Err(error) => {
+                files::remove_tree_synced(&disk.path(STAGE)?)?;
+                if !disk.path("box/kind")?.is_file() {
+                    files::remove_file_synced(&marker)?;
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         layout::publish(home)?;
         files::remove_file_synced(&marker)?;
-        Ok(say("done", None))
+        Ok((say("done", None), set_aside))
     };
-    make().unwrap_or_else(|error| say("failed", Some(error.to_string())))
+    make().unwrap_or_else(|error| (say("failed", Some(error.to_string())), None))
 }
 
 fn release_refusal(release: &Path) -> Result<Option<&'static str>, Error> {
@@ -293,7 +300,7 @@ fn publish(
     keeps_awake_off: bool,
     interrupted: bool,
     native_media: bool,
-) -> Result<(), Error> {
+) -> Result<Option<PathBuf>, Error> {
     let stage = disk.path(STAGE)?;
     files::remove_tree_synced(&stage)?;
     if interrupted {
@@ -333,7 +340,7 @@ fn publish(
     }
     files::write_new(&stage.join("box/kind"), b"mac\n")?;
     files::sync_tree(&stage, &disk.0)?;
-    Destination::fresh(disk, began)?.take(disk, began, || {})?;
+    let set_aside = Destination::fresh(disk, began)?.take(disk, began, || {})?;
     for name in ["bin", "config", "engine"] {
         files::place_mac_entry(&stage.join(name), &disk.path(name)?)?;
     }
@@ -342,5 +349,5 @@ fn publish(
     }
     files::place_mac_entry(&stage.join("box"), &disk.path("box")?)?;
     files::remove_empty_dir_synced(&stage)?;
-    Ok(())
+    Ok(set_aside)
 }
