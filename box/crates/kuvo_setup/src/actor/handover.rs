@@ -47,6 +47,8 @@ impl Owner {
             }
             Some("device-save") => self.receive_device_change(from, value).await?,
             Some("device-saved") => self.receive_device_result(from, value)?,
+            Some("queue-label-save") => self.receive_queue_labels_save(from, value).await?,
+            Some("queue-label-saved") => self.receive_queue_labels_saved(from, value)?,
             Some("handover-request")
                 if setup.role == Role::Primary && epoch == Some(setup.position.epoch) =>
             {

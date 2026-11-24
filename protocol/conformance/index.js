@@ -22,6 +22,7 @@ const areas = new Map([
   ["engine-worktree", "./engine-worktree.test.mjs"],
   ["backups", "./backups.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
+  ["work-queue", "./work-queue.test.mjs"],
   ["files", "./files.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],

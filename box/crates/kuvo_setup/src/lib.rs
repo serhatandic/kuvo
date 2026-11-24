@@ -79,7 +79,8 @@ fn random<const N: usize>() -> Result<[u8; N], Error> {
 }
 
 pub use actor::{
-    ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, PreparedSetup, SetupHandle,
+    AcceptedQueueLabels, ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, PreparedSetup,
+    QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease, QueueSetup, SetupHandle,
     SetupRuntime,
 };
 pub use discovery::locate;

@@ -113,6 +113,9 @@ pub async fn run(
     let sessions = engine.register_with_merged_pages(&mut routes, move |project, shown, step| {
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
+    let _work_queue = kuvo_work::queue::register(
+        &mut routes, home, peers.reader(), sessions.clone(), setup.handle(), peers.relay_handle(),
+    ).await?;
     setup.handle().register(&mut routes);
     setup.handle().register_ssh(&mut routes, home);
     let account = kuvo_os::platform::Account::current()?.home_folder(

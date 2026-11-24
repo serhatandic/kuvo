@@ -41,9 +41,11 @@ mod handover;
 mod predecessor;
 mod removal;
 mod replication;
+mod work_queue;
 pub(crate) use removal::Unlink;
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
+pub use work_queue::{AcceptedQueueLabels, QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease, QueueSetup};
 use handover::{Handover, HandoverReply};
 
 pub(crate) const LINK: &str = "run/link.json";
@@ -125,6 +127,7 @@ pub(crate) struct View {
     pub setup: Value,
     pub personalities: Result<Value, String>,
     pub clock: Value,
+    work_queue: Option<QueueSetup>,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
     local_wipe: bool,
@@ -172,6 +175,8 @@ pub(crate) enum Command {
     EditOutbox,
     Attached,
     Personalities(preferences::PersonalityChange),
+    QueueNumberLease,
+    QueueLabelsSave(work_queue::Save),
     Zone {
         zone: String,
         revision: Option<String>,
@@ -357,6 +362,7 @@ impl PreparedSetup {
             pending_handover: None,
             unlink_challenge: None,
             pending_devices: HashMap::new(),
+            pending_queue_labels: HashMap::new(),
             forwarding: computer_requests::Forwarding::default(),
             ssh,
             forwarded_handover: None,
@@ -850,6 +856,7 @@ fn make_view(
             Err(error) => return Err(error),
         },
         clock: preferences::clock(files, link, name)?,
+        work_queue: work_queue::accepted(link),
     })
 }
 
@@ -872,6 +879,7 @@ struct Owner {
     pending_handover: Option<Handover>,
     unlink_challenge: Option<removal::Challenge>,
     pending_devices: HashMap<String, device_access::Pending>,
+    pending_queue_labels: HashMap<String, work_queue::Pending>,
     forwarding: computer_requests::Forwarding,
     ssh: watch::Receiver<Option<std::sync::Weak<crate::ssh::Adding>>>,
     forwarded_handover: Option<Handover>,
@@ -963,6 +971,7 @@ impl Owner {
                 if old.setup == view.setup
                     && old.personalities == view.personalities
                     && old.clock == view.clock
+                    && old.work_queue == view.work_queue
                     && old.access == view.access
                 {
                     return false;
@@ -1149,6 +1158,10 @@ impl Owner {
             if let Err(error) = self.begin_computer_request(request, by, reply).await {
                 eprintln!("sending installer request: {error}");
             }
+            return;
+        }
+        if let Command::QueueLabelsSave(change) = command {
+            self.ask_queue_labels(change, reply).await;
             return;
         }
         let result = self.execute(command).await;
@@ -1391,7 +1404,9 @@ impl Owner {
                     .await?;
                 Ok(Response::ok(json!(receipt)))
             }
-            Command::Handover { .. } | Command::DeviceChange(_) | Command::ComputerViaMain(..) => {
+            Command::QueueNumberLease => Ok(Response::ok(json!(self.work_queue_number_lease()))),
+            Command::Handover { .. } | Command::DeviceChange(_) | Command::ComputerViaMain(..) |
+            Command::QueueLabelsSave(_) => {
                 unreachable!("this request can wait on relay mail")
             }
         }

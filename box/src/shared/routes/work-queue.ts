@@ -19,9 +19,11 @@ const MESSAGE = object({ message: string });
 // (You, an agent, or another shape kept as it came: an outside tracker's change, later.)
 const WHO = oneOf(object({ user: bool }), object({ session: string, name: string }), map(any));
 const STAMP = object({ at: number, by: WHO });
-const NOTE = object({ at: number, by: WHO, text: string });
+const NOTE = object({ at: number, by: WHO, text: string, "id?": string });
+const MENTION = object({ start: number, end: number, number, item: string });
+const ITEM_RELATION = object({ id: string, kind: string, title: string, "number?": number });
 /** Activity history. An edit can name its fields and a stop can name the affected session. */
-const EVENT = object({ at: number, by: WHO, kind: string, "from?": string, "to?": string, "top?": bool, "fields?": list(string), "session?": string });
+const EVENT = object({ at: number, by: WHO, kind: string, "from?": string, "to?": string, "top?": bool, "fields?": list(string), "session?": string, "fromLabel?": string, "toLabel?": string });
 const PROGRESS = object({ "value?": number, "note?": string });
 
 /** An outside source's item (an issue or a pull request), named by its ref, never numbered; `name`
@@ -46,7 +48,7 @@ const ASSIGNEE = object({ kind: words("bot", "agent"), id: string, name: string,
 /** What whoever asked may do to an item (a client's view and answers; not what's told between
  * computers): change its title and description; where it stands among the open statuses, its
  * priority, labels, assignee, due day and place; close it (Done, Canceled); delete it; bring it back. */
-const CAN = object({ edit: bool, set: bool, assign: bool, close: bool, delete: bool, restore: bool, "why?": string });
+const CAN = object({ edit: bool, set: bool, assign: bool, close: bool, delete: bool, restore: bool, "attach?": bool, "why?": string });
 
 /** An item as a list shows it: everything but its body and notes (how many, and the last). */
 const NUMBER_ALIASES = list(object({ setup: string, name: string, number }));
@@ -56,6 +58,7 @@ export const QUEUE_ITEM = object({
   "number?": number,
   "numberPending?": bool,
   "numberAliases?": NUMBER_ALIASES,
+  "mentionTargets?": list(string),
   "wanted?": number,
   owner: string,
   title: string,
@@ -97,9 +100,12 @@ export const QUEUE_ITEM_WHOLE = object({
   ...QUEUE_ITEM.object,
   "told?": bool,
   body: string,
-  notes: list(NOTE),
+  notes: list(object({ ...NOTE.object, "mentions?": list(MENTION) })),
+  "bodyMentions?": list(MENTION),
+  "itemRelations?": list(ITEM_RELATION),
+  "canLinkItems?": bool,
   events: list(EVENT),
-  files: list(object({ name: string, size: number, type: string, at: number })),
+  files: list(object({ name: string, size: number, type: string, at: number, "id?": string, "anchor?": string, "sha256?": string })),
   links: list(object({ url: string, "title?": string, "kind?": string, "ref?": string })),
   handed: list(object({ from: string, to: string, at: number })),
 });

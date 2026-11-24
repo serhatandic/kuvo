@@ -1,6 +1,6 @@
 // Launch the selected box in a private home and use the same endpoint as a desktop client.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -12,6 +12,17 @@ import { createHash } from "node:crypto";
 export function scratch() {
   // Keep Unix socket paths short even under macOS's long default TMPDIR.
   return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "kc-"));
+}
+
+// Rust opens an existing Windows home only with the same private ACL as the installer.
+export function prepareHome(home, binary) {
+  if (process.platform !== "win32" || binary.typescript) return;
+  fs.mkdirSync(home, { recursive: true });
+  const sid = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" })
+    .match(/S-1-[0-9-]+/)?.[0];
+  assert.ok(sid, "The Windows test needs the current user's SID.");
+  execFileSync("icacls.exe", [home, "/setowner", `*${sid}`], { stdio: "pipe" });
+  execFileSync("icacls.exe", [home, "/grant:r", `*${sid}:(OI)(CI)F`, "/inheritance:r"], { stdio: "pipe" });
 }
 
 export function write(file, data, options) {
