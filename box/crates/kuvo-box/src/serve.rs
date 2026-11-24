@@ -148,8 +148,23 @@ pub async fn run(
         .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
     let mut routes = Registry::new();
+    let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
+    agents::sessions::register(sessions.clone(), &mut routes);
     let engine = if let Some((runtime, accounts)) = resident_agents {
         agents::register(accounts.clone(), &mut routes);
+        let location = if kind == ComputerKind::Mac {
+            kuvo_agents::permissions::ConfigLocation::Desktop
+        } else {
+            kuvo_agents::permissions::ConfigLocation::Machine
+        };
+        let runs = kuvo_agents::session_runs::SessionRuns::start(
+            accounts.clone(),
+            sessions.clone(),
+            home.to_owned(),
+            location,
+        );
+        agents::turns::restore(&runs, &sessions, home, accounts.adopted_turns()).await;
+        agents::turns::register(runs, sessions, home.to_owned(), &mut routes);
         engine.with_agent_model_source(Arc::new(agents::Models {
             runtime,
             agents: accounts,

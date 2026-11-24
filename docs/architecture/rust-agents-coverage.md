@@ -94,6 +94,42 @@ new prompt or attaches the resident's sink to a recovered turn through
 `Thread::start`. The sink handles transcript events, vendor-state
 checkpoints and independent permission and question promises.
 
+Saved-session checks read the bridge's header, native conversation state,
+legacy JSON transcript and SQLite transcript. The binary transcript case
+pages a saved conversation in both directions on both boxes. The replies
+and unchanged transcript files match. On the first write Rust stages a
+legacy import beside the original array and publishes it after commit.
+Updates keep the existing message's position and carry the bridge's
+usage and artifact projections. A late checkpoint or transcript write
+after deletion cannot recreate the conversation.
+
+The resident turn sink waits for a transcript writer to acknowledge each
+event and saves native state before acknowledging that checkpoint.
+Permission and form requests are scoped to their session and turn.
+Tests cover withdrawing an ask, duplicate request IDs in separate
+sessions, denying a late ask, and withholding acknowledgement until a
+checkpoint has been written.
+
+The transcript and sink checkpoint passed on macOS, Linux (lokum), WSL2
+and native Windows. The two-box transcript fixture compared five HTTP
+responses and the saved SQLite bytes, and the account fixture compared
+the normalized replies and account index.
+
+4.1b owns the read-only Blocks loader, command analysis and preflight
+evaluation. The Rust tests cover the four command parsing cases in
+`bridge.test.ts` and the `Sessions.checkPermission` cases for Blocks,
+unavailable settings, native Plan mode, Auto outside the sandbox and
+paths outside the project. Row 6.1 owns editing Blocks, the Settings
+pages and sandbox setup and can reuse this evaluator.
+
+The resident starts and interrupts a saved coding-agent session through
+the compatibility routes. The macOS binary case follows a stand-in
+through two turns and checks the saved conversation and vendor state.
+The keeper case also checks that its replacement resident connects the
+recovered adapter to the shared sink and saves the replayed text and
+final outcome. The holder and child PIDs are unchanged. The controller
+contract and roster factory signature are unchanged.
+
 The following integration work remains open:
 
 - Production vendor factory registration as the adapters land.

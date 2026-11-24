@@ -412,6 +412,18 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
         env::current_exe().unwrap().to_str().unwrap(),
     )
     .unwrap();
+    let session = root.join("agents/sessions/ses_keeper_fixture");
+    fs::create_dir_all(&session).unwrap();
+    fs::write(
+        session.join("session.json"),
+        json!({
+            "id":"ses_keeper_fixture", "projectID":"fixture", "agent":"build",
+            "location":{"directory":root}, "time":{"created":1,"updated":1},
+            "model":{"providerID":"codex-cli","id":"stand-in"},
+        })
+        .to_string(),
+    )
+    .unwrap();
     let profile = scratch.path().join("profile");
     fs::create_dir(&profile).unwrap();
 
@@ -444,6 +456,28 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
     assert_eq!(finished["agent"], started["agent"]);
     assert_eq!(finished["holder"], started["holder"]);
     assert_eq!(finished["generation"], 2);
+    let db =
+        kuvo_store::sqlite::open_index(&session.join("messages-v1.sqlite"), Duration::from_secs(1))
+            .unwrap();
+    let assistant: String = db
+        .query_row(
+            "SELECT body FROM message WHERE id = 'msg_keeper_fixture_1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let assistant: serde_json::Value = serde_json::from_str(&assistant).unwrap();
+    assert_eq!(assistant["content"][0]["text"], "before after");
+    let completed: String = db
+        .query_row(
+            "SELECT body FROM message WHERE id = 'msg_keeper_fixture_2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let completed: serde_json::Value = serde_json::from_str(&completed).unwrap();
+    assert_eq!(completed["outcome"], "succeeded");
+    drop(db);
     fixture_until(
         "the new resident to answer and the keeper to confirm its trial",
         || {

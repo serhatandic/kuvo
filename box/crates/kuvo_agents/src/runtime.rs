@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeMap, HashMap},
     future::Future,
     io,
-    path::PathBuf,
     pin::Pin,
     sync::Arc,
 };
@@ -13,8 +12,9 @@ use crate::{
     accounts::{Account, Accounts, AgentKind, Provider},
     hold::{Controller, Directory, Record, Replay, TurnNote},
     roster::{Factory, Roster},
+    session_store::SessionStore,
 };
-use kuvo_store::{format::ObjectFormat, home::Home};
+use kuvo_store::home::Home;
 
 pub type AdapterCall<'a, T> = Pin<Box<dyn Future<Output = io::Result<T>> + Send + 'a>>;
 
@@ -37,7 +37,7 @@ pub trait Adoption: Send + Sync {
 pub struct Runtime {
     accounts: Accounts,
     holders: Directory,
-    sessions: PathBuf,
+    sessions: SessionStore,
 }
 
 #[derive(Debug)]
@@ -46,12 +46,18 @@ pub struct RecoveryFailure {
     pub error: io::Error,
 }
 
+#[derive(Clone)]
+pub struct AdoptedTurn {
+    pub provider: Provider,
+    pub note: TurnNote,
+}
+
 impl Runtime {
     pub fn for_home(home: &Home) -> Self {
         Self {
             accounts: Accounts::for_home(home),
             holders: Directory::for_home(home),
-            sessions: home.root().join("agents/sessions"),
+            sessions: SessionStore::new(home.root().join("agents/sessions")),
         }
     }
 
@@ -63,47 +69,38 @@ impl Runtime {
         &self.holders
     }
 
+    pub fn sessions(&self) -> &SessionStore {
+        &self.sessions
+    }
+
     /// Initialize the adapters and restore their holders before publishing
     /// readiness. The caller supplies the compiled vendor factories.
     pub async fn activate(
         &self,
         factories: &HashMap<AgentKind, Arc<dyn Factory>>,
     ) -> io::Result<(Roster, Vec<RecoveryFailure>)> {
+        let (roster, failures, _) = self.activate_with_turns(factories).await?;
+        Ok((roster, failures))
+    }
+
+    pub(crate) async fn activate_with_turns(
+        &self,
+        factories: &HashMap<AgentKind, Arc<dyn Factory>>,
+    ) -> io::Result<(Roster, Vec<RecoveryFailure>, Vec<AdoptedTurn>)> {
         let mut roster = Roster::default();
         roster.reconcile(&self.accounts, factories).await?;
-        let failures = self.recover(&roster.recovery_adapters()).await?;
-        Ok((roster, failures))
+        let (failures, turns) = self.recover_with_turns(&roster.recovery_adapters()).await?;
+        Ok((roster, failures, turns))
     }
 
     /// Read only the saved session header. Model routing does not need to open
     /// the conversation or resume the agent to find its working directory.
     pub async fn session_folder(&self, id: &str) -> io::Result<Option<String>> {
-        if !id.starts_with("ses_")
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
-        {
-            return Ok(None);
-        }
-        let path = self.sessions.join(id).join("session.json");
-        let id = id.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let format = ObjectFormat::additive("Coding-agent session");
-            let saved = format
-                .read(&path)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            let Some(saved) = saved else { return Ok(None) };
-            if saved.fields.get("id").and_then(serde_json::Value::as_str) != Some(id.as_str()) {
-                return Ok(None);
-            }
-            Ok(saved
-                .fields
-                .get("location")
-                .and_then(|location| location.get("directory"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned))
-        })
-        .await?
+        Ok(self
+            .sessions
+            .read(id)
+            .await?
+            .and_then(|session| session.directory().map(str::to_owned)))
     }
 
     /// Give each recoverable stream to its account's adapter. An unavailable
@@ -112,8 +109,17 @@ impl Runtime {
         &self,
         adapters: &HashMap<Provider, Arc<dyn Adoption>>,
     ) -> io::Result<Vec<RecoveryFailure>> {
+        let (failures, _) = self.recover_with_turns(adapters).await?;
+        Ok(failures)
+    }
+
+    async fn recover_with_turns(
+        &self,
+        adapters: &HashMap<Provider, Arc<dyn Adoption>>,
+    ) -> io::Result<(Vec<RecoveryFailure>, Vec<AdoptedTurn>)> {
         let accounts = self.accounts.all().await?;
         let mut failed = Vec::new();
+        let mut adopted = Vec::new();
         for record in self.holders.records().await? {
             let Some(provider) = record
                 .meta
@@ -132,11 +138,15 @@ impl Runtime {
                 continue;
             };
             let holder = record.id.clone();
-            if let Err(error) = self.take_up(adapter.as_ref(), account, record).await {
-                failed.push(RecoveryFailure { holder, error });
+            match self.take_up(adapter.as_ref(), account, record).await {
+                Ok(turns) => adopted.extend(turns.into_values().map(|note| AdoptedTurn {
+                    provider: provider.clone(),
+                    note,
+                })),
+                Err(error) => failed.push(RecoveryFailure { holder, error }),
             }
         }
-        Ok(failed)
+        Ok((failed, adopted))
     }
 
     async fn take_up(
@@ -144,10 +154,10 @@ impl Runtime {
         adapter: &dyn Adoption,
         account: &Account,
         record: Record,
-    ) -> io::Result<()> {
+    ) -> io::Result<BTreeMap<String, TurnNote>> {
         let turns = record.turns()?;
         if !adapter.accepts(&record, &turns) {
-            return Ok(());
+            return Ok(BTreeMap::new());
         }
         let replay = turns
             .values()
@@ -155,6 +165,9 @@ impl Runtime {
             .min()
             .map_or(Replay::Idle, Replay::Complete);
         let controller = self.holders.adopt(&record, replay).await?;
-        adapter.attach(account, record, turns, controller).await
+        adapter
+            .attach(account, record, turns.clone(), controller)
+            .await?;
+        Ok(turns)
     }
 }

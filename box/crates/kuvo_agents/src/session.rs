@@ -2,7 +2,10 @@
 
 use crate::{hold::TurnNote, runtime::AdapterCall};
 use serde_json::{Map, Value};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// Stored as the vendor's additive `agent.json` object. Keys and values within
 /// this object belong to the adapter.
@@ -81,6 +84,12 @@ pub trait Thread: Send + Sync {
         input: TurnInput,
         sink: Arc<dyn TurnSink>,
     ) -> AdapterCall<'_, Arc<dyn ActiveTurn>>;
+
+    /// The adapter's own conversation files, which count as part of its
+    /// working area when the resident checks tool permissions.
+    fn owns_path(&self, _path: &Path) -> bool {
+        false
+    }
 
     /// Look for a previously uncertain delivery in the native conversation.
     /// Return `None` while it is still uncertain.
