@@ -55,8 +55,9 @@ const VALUED = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "
 
 // Commands that only read names and objects: never a file's content through a filter or a
 // converter, nor a ref or the index written (which runs hooks), so nothing settings name runs and
-// they needn't be read first.
-const PLAIN = new Set(["rev-parse", "for-each-ref", "rev-list", "config", "merge-base", "show-ref", "check-ignore", "ls-tree", "ls-files", "commit-tree", "write-tree", "pack-objects", "index-pack", "count-objects", "var"])
+// they needn't be read first. (Not `write-tree`, which writes the index: a hook named in settings
+// runs, and a file that looks changed since goes through its filter.)
+const PLAIN = new Set(["rev-parse", "for-each-ref", "rev-list", "config", "merge-base", "show-ref", "check-ignore", "ls-tree", "ls-files", "commit-tree", "pack-objects", "index-pack", "count-objects", "var"])
 
 // Commands that convert a file for showing and take --no-textconv; and those that can't be told not to.
 const CONVERTS = new Set(["blame", "annotate", "grep"])
