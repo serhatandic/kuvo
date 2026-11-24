@@ -81,7 +81,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The computers list shows when it last heard from an unreachable computer even if that computer sent no update status.
 - The installer reports damaged release media, a local engine archive path, or a failed engine download during its status check, before it writes to the computer’s home.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
-- A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
+- A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address, including when its earlier engine and link are still running.
 
 - An acknowledgement for the wrong part no longer advances a move before that part arrives.
 - A moved conversation opens on its new computer while the original is still being cleaned up.

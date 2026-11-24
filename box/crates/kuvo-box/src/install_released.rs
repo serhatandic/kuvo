@@ -1,4 +1,7 @@
-//! Signed installer handoff for an identified, stopped released machine.
+//! Signed installer handoff for an identified released machine.
+
+#[cfg(target_os = "linux")]
+mod legacy;
 
 use std::{
     ffi::OsString,
@@ -127,14 +130,13 @@ fn upgrade(args: &[OsString]) -> Result<bool, Box<dyn std::error::Error>> {
     if saved.as_ref().is_some_and(|saved| saved != &attempt) {
         return Err(io::Error::other("A different installation move is still pending.").into());
     }
+    let selected = fs::read_link(home.bin()).is_ok_and(|path| path == Path::new(&target));
+    let installed = files::text_of(&home.bin().join("box-version"));
     if saved.is_none() {
         let layout = layout::inspect(&home)?;
-        if layout == Layout::Current
-            && fs::read_link(home.bin()).is_ok_and(|path| path == Path::new(&target))
-        {
+        if layout == Layout::Current && selected {
             return Ok(false);
         }
-        let installed = files::text_of(&home.bin().join("box-version"));
         if !matches!(
             layout,
             Layout::Unmarked
@@ -154,16 +156,46 @@ fn upgrade(args: &[OsString]) -> Result<bool, Box<dyn std::error::Error>> {
             )
             .into());
         }
-        check_stopped(&home)?;
-        staging::prepare_install_selection(&home, &signed, source, &envelope)?;
-        files::write_secret(&journal, &serde_json::to_vec(&attempt)?)?;
     }
-    let selected = fs::read_link(home.bin()).is_ok_and(|path| path == Path::new(&target));
+    #[cfg(target_os = "linux")]
+    let launch = Some(locks::ReleasedLaunch::acquire(&home.run())?);
+    #[cfg(not(target_os = "linux"))]
+    let launch = None;
     if !selected {
+        if home.run().join("update-trial").exists() {
+            return Err(installation_busy().into());
+        }
+        #[cfg(target_os = "linux")]
+        let workers = if installed
+            .as_deref()
+            .is_none_or(|version| version.trim() == "0.7.2")
+        {
+            Some(legacy::Workers::inspect(&home)?)
+        } else {
+            check_processes_stopped(&home)?;
+            None
+        };
+        #[cfg(not(target_os = "linux"))]
         check_stopped(&home)?;
-        kuvo_move::open(&home, platform, Some(&profile), |_| {})?;
+        if saved.is_none() {
+            staging::prepare_install_selection(&home, &signed, source, &envelope)?;
+            files::write_secret(&journal, &serde_json::to_vec(&attempt)?)?;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(workers) = workers {
+            workers.stop(&home)?;
+        }
+        check_processes_stopped(&home)?;
+        kuvo_move::open_with_released_launch(
+            &home,
+            platform,
+            Some(&profile),
+            launch.as_ref(),
+            |_| {},
+        )?;
         staging::select_initial(&home, &selection)?;
     }
+    drop(launch);
     let launched = Command::new("/bin/sh")
         .arg(home.bin().join("kuvo-start"))
         .arg("box")
@@ -234,11 +266,40 @@ pub(super) async fn wait_for_resident(home: &Home) -> io::Result<()> {
 
 pub(super) fn check_stopped(home: &Home) -> io::Result<()> {
     if home.run().join(".launching").exists() || home.run().join("update-trial").exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "Another installation change is under way.",
-        ));
+        return Err(installation_busy());
     }
+    check_processes_stopped(home)
+}
+
+fn installation_busy() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "Another installation change is under way.",
+    )
+}
+
+fn running() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "Kuvo is still running on this computer.",
+    )
+}
+
+fn process_pid(home: &Home, file: &str) -> io::Result<Option<u32>> {
+    let path = home.run().join(file);
+    regular(&path, false)?;
+    let Some(bytes) = files::read(&path)? else {
+        return Ok(None);
+    };
+    let value: Value = serde_json::from_slice(&bytes)?;
+    Ok(value
+        .as_u64()
+        .or_else(|| value["pid"].as_u64())
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 1))
+}
+
+fn check_processes_stopped(home: &Home) -> io::Result<()> {
     for file in [
         "box.pid",
         "link.pid",
@@ -247,23 +308,10 @@ pub(super) fn check_stopped(home: &Home) -> io::Result<()> {
         "agents.pid",
         "serve.json",
     ] {
-        let path = home.run().join(file);
-        regular(&path, false)?;
-        let Some(bytes) = files::read(&path)? else {
-            continue;
-        };
-        let value: Value = serde_json::from_slice(&bytes)?;
-        let pid = value
-            .as_u64()
-            .or_else(|| value["pid"].as_u64())
-            .and_then(|pid| u32::try_from(pid).ok());
-        if let Some(pid) = pid.filter(|pid| *pid > 1)
+        if let Some(pid) = process_pid(home, file)?
             && ProcessIdentity::read(pid)?.is_some()
         {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Kuvo is still running on this computer.",
-            ));
+            return Err(running());
         }
     }
     Ok(())
