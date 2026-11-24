@@ -11,6 +11,8 @@
 # `kuvo-install` (box/src/install), written beside them.
 #   scripts/box-release.sh --files <version> <folder>
 #       Only the files, laid out as ~/.kuvo-code is, into <folder> (new or empty). No key.
+#   scripts/box-release.sh --rust-pack <target> <executable> <version> <folder> [<bundle>.app…]
+#       An unsigned Rust target pack and its box.json, ready for sign-box.mjs. No key.
 #   KUVO_BOX_SIGNING_KEY=<PEM> scripts/box-release.sh <version> <pack's URL> <folder> [<bundle>.app…]
 #       The pack and boxes.json, into <folder>.
 #   <pack's URL>   where the pack is published, ending in box-<version>.tar.gz: a box finds the pack
@@ -29,11 +31,28 @@ set -eu
 
 usage() {
     echo "Usage: scripts/box-release.sh --files <version> <folder>" >&2
+    echo "       scripts/box-release.sh --rust-pack <target> <executable> <version> <folder> [<bundle>.app…]" >&2
     echo "       KUVO_BOX_SIGNING_KEY=<PEM> scripts/box-release.sh <version> <pack's URL> <folder> [<bundle>.app…]" >&2
     exit 2
 }
 ONLY_FILES=0
-if [ "${1:-}" = "--files" ]; then
+RUST_TARGET=""
+if [ "${1:-}" = "--rust-pack" ]; then
+    [ $# -ge 5 ] || usage
+    RUST_TARGET=$2 VERSION=$4
+    case "$RUST_TARGET" in
+        aarch64-apple-darwin | x86_64-apple-darwin | aarch64-unknown-linux-musl | x86_64-unknown-linux-musl) RUST_KIND=unix ;;
+        x86_64-pc-windows-gnullvm) RUST_KIND=windows ;;
+        *) usage ;;
+    esac
+    case "$RUST_TARGET" in
+        *-apple-darwin) ;;
+        *) [ $# -eq 5 ] || usage ;;
+    esac
+    RUST_EXECUTABLE=$(cd "$(dirname "$3")" && pwd -P)/$(basename "$3")
+    [ -f "$RUST_EXECUTABLE" ] || { echo "No Rust executable at $RUST_EXECUTABLE." >&2; exit 2; }
+    shift 4
+elif [ "${1:-}" = "--files" ]; then
     [ $# -eq 3 ] || usage
     ONLY_FILES=1 VERSION=$2 URL=""
     shift 2
@@ -99,7 +118,13 @@ real_app_guard "scripts/box-release.sh" "$BUN"
 # (Never with the key: writing the files needs none.)
 # (ENGINE_CHECK, where given: what scripts/engine-check.mjs found, for box.json's `engines` and
 # `downgradeSafe`; without it, box.json names the pinned engine alone.)
-files() { BUN_BE_BUN=1 "$BUN" box/src/release/files.ts "${BOX_SOURCES:-$PWD}" "$VERSION" "$1"; }
+files() {
+    if [ -n "$RUST_TARGET" ]; then
+        BUN_BE_BUN=1 "$BUN" box/src/release/files.ts "${BOX_SOURCES:-$PWD}" "$VERSION" "$1" "$RUST_KIND" "$RUST_EXECUTABLE"
+    else
+        BUN_BE_BUN=1 "$BUN" box/src/release/files.ts "${BOX_SOURCES:-$PWD}" "$VERSION" "$1"
+    fi
+}
 
 if [ "$ONLY_FILES" = 1 ]; then
     files "$OUT"
@@ -110,9 +135,11 @@ fi
 # (Without the last slash a Mac's temporary folder ends in.)
 temporary=${TMPDIR:-/tmp}
 work=$(mktemp -d "${temporary%/}/kuvo-box-release.XXXXXXXX")
-trap 'rm -rf "$work"; rm -f "$OUT/box-$VERSION.tar.gz.new" "$OUT/boxes.json.new" "$OUT/kuvo-install.new"' EXIT
+pack=""
+trap 'rm -rf "$work"; [ -z "$pack" ] || rm -f "$pack.new"; rm -f "$OUT/box.json.new" "$OUT/boxes.json.new" "$OUT/kuvo-install.new" "$OUT/kuvo-install-bin.new"' EXIT
 box="$work/box"
 files "$box"
+pack="$OUT/box-$VERSION${RUST_TARGET:+-$RUST_TARGET}.tar.gz"
 
 # Its bundles, whole, and named in box.json's `bundles` file by file, as a box checks and swaps
 # them (a box from before bundles passes them over).
@@ -152,7 +179,6 @@ for (const name of fs.readdirSync(path.join(box, "bin")).filter(name => name.end
 fs.writeFileSync(record, JSON.stringify(manifest, null, 2) + "\n");
 EOF
 
-pack="$OUT/box-$VERSION.tar.gz"
 # Every entry by name, in order, with the one time (see the top).
 (cd "$box" && find . -exec env TZ=UTC touch -t 202601010000 {} + && find . | LC_ALL=C sort >"$work/entries")
 # No owners, and on a Mac no extended attributes or AppleDouble files (so a helper's signature has
@@ -175,6 +201,20 @@ if command -v codesign >/dev/null 2>&1 && [ $# -gt 0 ]; then
     for helper in "$work/unpacked/bin/"*.app; do
         codesign --verify --strict --deep "$helper" || { rm -f "$pack.new"; echo "$(basename "$helper") isn't signed as it was once packed." >&2; exit 1; }
     done
+fi
+if [ -n "$RUST_TARGET" ]; then
+    cp "$box/box.json" "$OUT/box.json.new"
+    if [ "$RUST_KIND" = unix ]; then
+        cp box/src/install/kuvo-install "$OUT/kuvo-install.new"
+        cp "$RUST_EXECUTABLE" "$OUT/kuvo-install-bin.new"
+        chmod 755 "$OUT/kuvo-install.new" "$OUT/kuvo-install-bin.new"
+        mv -f "$OUT/kuvo-install.new" "$OUT/kuvo-install"
+        mv -f "$OUT/kuvo-install-bin.new" "$OUT/kuvo-install-bin"
+    fi
+    mv -f "$pack.new" "$pack"
+    mv -f "$OUT/box.json.new" "$OUT/box.json"
+    echo "Packed $VERSION for $RUST_TARGET into $OUT"
+    exit 0
 fi
 # Signed before either is put in place: a signing that fails leaves no pack without its
 # boxes.json, nor a new pack beside an older one's.

@@ -19,5 +19,11 @@
       "url": "https://registry.npmjs.org/@opencode/cli-darwin-x64/-/cli-darwin-x64-2.2.6.tgz",
       "integrity": "sha512-wZ+5gMEV11Fbzk+ElfJmYvZ+UseCw82jxBB5DhqNZOELG9SZNNPVco5B1ZY5ZpKq72GPWEmH6/KgTi5bjSC/MQ=="
     }
+  },
+  "windows": {
+    "x86_64": {
+      "url": "https://registry.npmjs.org/@opencode/cli-windows-x64/-/cli-windows-x64-2.2.6.tgz",
+      "integrity": "sha512-Wcmduf9DaGQgJG3GMliHilaI+YvdckW7O6aLzRwz1r3iIkP82MSoUlSU+ovlOEDj8O+Gy5Ywy5LL6Iv77YuzFw=="
+    }
   }
 }
