@@ -193,6 +193,10 @@ export async function scriptedClaude(fixture = {}) {
         return rows.filter(row => row.type === "idle").length >= count && rows;
       }, () => why + "\n" + claude.log(), 20000);
     },
+    /** Asks for a summary now: its state, or the refusal. */
+    async compact(id) {
+      return request(listener, "POST", claude.route(id) + "/compact", {}, headers, 20000);
+    },
     async interrupt(id) {
       const answer = await request(listener, "POST", claude.route(id) + "/interrupt", {}, headers, 20000);
       assert.equal(answer.status, 200, answer.text);

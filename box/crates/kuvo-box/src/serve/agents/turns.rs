@@ -7,6 +7,7 @@ use kuvo_agents::{
     session_store::SessionStore,
 };
 use kuvo_protocol::routes::{
+    post_kuvo_agents_api_session_id_compact as compact,
     post_kuvo_agents_api_session_id_interrupt as interrupt,
     post_kuvo_agents_api_session_id_prompt as prompt,
 };
@@ -26,6 +27,19 @@ pub(crate) fn register(runs: SessionRuns, routes: &mut Registry) {
                 .await
                 .map_err(super::refuse)?;
             Ok(RouteReply::json::<200>(prompt::Status200 {}))
+        }
+    });
+    let summaries = runs.clone();
+    routes.register::<compact::Spec, _, _>(Access::DesktopOrPaired, move |call| {
+        let runs = summaries.clone();
+        async move {
+            let id = session_id(call.param("id"))?;
+            let state = runs.compact(id).await.map_err(super::refuse)?;
+            Ok(RouteReply::json::<200>(compact::Status200 {
+                data: kuvo_protocol::routes::types::GetKuvoMarketplaceAppsIdStatusStatus200 {
+                    state: state.as_str().into(),
+                },
+            }))
         }
     });
     routes.register::<interrupt::Spec, _, _>(Access::DesktopOrPaired, move |call| {

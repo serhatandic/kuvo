@@ -434,6 +434,8 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/agents/api/session/:id/message", feature: "agents", answers: { 200: object({ data: list(any), cursor: object({ "next?": string }) }), 404: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/agents/api/session/:id/prompt", feature: "agents", body: any, answers: { 200: object({}), 400: REFUSED, 404: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/agents/api/session/:id/interrupt", feature: "agents", answers: { 200: object({ interrupted: bool }), 404: REFUSED, 503: REFUSED } },
+  // Summarize a coding-agent conversation now, or once its turn ends (`waiting`).
+  { route: "POST kuvo/agents/api/session/:id/compact", feature: "agents", answers: { 200: object({ data: object({ state: string }) }), 400: REFUSED, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/agents/api/session/:id/permission", feature: "agents", answers: { 200: object({ data: list(any) }), 404: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/agents/api/session/:id/permission/:request/reply", feature: "agents", body: any, answers: { 200: object({}), 400: REFUSED, 403: REFUSED, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/agents/api/session/:id/form", feature: "agents", answers: { 200: object({ data: list(any) }), 404: REFUSED, 503: REFUSED } },

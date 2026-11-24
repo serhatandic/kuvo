@@ -1,7 +1,7 @@
 //! The line of messages waiting for a conversation's agent: when each goes,
 //! into the turn under way or as a turn of its own.
 
-use super::{Cancelled, Command, Doing, Live, Reply, Service, State};
+use super::{Cancelled, Command, Compacting, Doing, Live, Reply, Service, State};
 use crate::{
     inbox::{Delivery, InboxEvent, Input, SavedReceipt, next_in_line},
     session::{Steer, TurnKind},
@@ -60,6 +60,10 @@ pub(super) enum Request {
         resume: bool,
         reply: Reply<Stopping>,
     },
+    Compact {
+        session: String,
+        reply: Reply<Compacting>,
+    },
 }
 
 pub(super) enum Stopping {
@@ -77,6 +81,10 @@ pub(super) struct Steered {
     receipt: Option<SavedReceipt>,
     answer: Steer,
     cancelled: Arc<AtomicBool>,
+}
+
+fn refused(why: &str) -> io::Error {
+    io::Error::new(ErrorKind::InvalidInput, why.to_owned())
 }
 
 fn missing(session: &str) -> io::Error {
@@ -135,7 +143,125 @@ impl Service {
                 let answer = self.interrupt(state, &session, resume).await;
                 let _ = reply.send(Ok(answer));
             }
+            Request::Compact { session, reply } => {
+                let _ = reply.send(self.compact(state, &session).await);
+            }
         }
+    }
+
+    /// A summary of the conversation, first in line: it goes now, or once the
+    /// turn under way ends. One asked for already is the same one.
+    async fn compact(&self, state: &mut State, session: &str) -> io::Result<Compacting> {
+        if state.conversation(session).retired {
+            return Err(missing(session));
+        }
+        let header = self
+            .store
+            .read(session)
+            .await?
+            .ok_or_else(|| missing(session))?;
+        if header.parent().is_some() {
+            return Err(refused(
+                "A subagent's conversation can't be summarized: summarize the conversation that started it.",
+            ));
+        }
+        let line = self
+            .store
+            .line(session)
+            .await?
+            .ok_or_else(|| missing(session))?;
+        let running = state.conversation(session).doing.live().cloned();
+        let summarizing = running.as_ref().is_some_and(|live| live.compacting);
+        if !summarizing && !line.iter().any(Input::is_compaction) {
+            let fields = header.into_fields();
+            if let Some(why) = self
+                .why_not_compact(session, &fields, running.is_some())
+                .await
+            {
+                return Err(refused(&why));
+            }
+            let mut input = Input::new(
+                crate::session_store::SessionStore::make_id("msg")?,
+                String::new(),
+                Vec::new(),
+                Delivery::Steer,
+            );
+            input.other.insert("compact".into(), true.into());
+            let saved = input.clone();
+            self.store
+                .edit_line(session, move |line| {
+                    line.inputs.insert(0, saved);
+                    ((), true)
+                })
+                .await?
+                .ok_or_else(|| missing(session))?;
+            let _ = self.events.send(InboxEvent::Enqueued {
+                session: session.to_owned(),
+                input: Box::new(input),
+            });
+        }
+        self.wake(state, session).await;
+        let running = state.conversation(session).doing.live();
+        Ok(match running {
+            Some(live) if !live.compacting => Compacting::Waiting,
+            _ => Compacting::Now,
+        })
+    }
+
+    /// Why the conversation can't be summarized now, in a sentence. `working`:
+    /// its agent is at it, and will have something to summarize.
+    pub(super) async fn why_not_compact(
+        &self,
+        session: &str,
+        header: &serde_json::Map<String, Value>,
+        working: bool,
+    ) -> Option<String> {
+        let nothing = || Some("There's nothing to summarize yet.".to_owned());
+        let Some(provider) = header
+            .get("model")
+            .and_then(|model| model.get("providerID"))
+            .and_then(Value::as_str)
+        else {
+            return nothing();
+        };
+        let found = {
+            let roster = self.agents.roster();
+            crate::accounts::Provider::parse(provider)
+                .and_then(|parsed| roster.find(&parsed))
+                .map(|entry| (entry.account.kind.display_name(), entry.agent.compacts()))
+        };
+        let Some((name, compacts)) = found else {
+            return Some(
+                "This model's agent isn't available: sign in to it in Settings › Accounts, or pick another model."
+                    .into(),
+            );
+        };
+        if !compacts {
+            return Some(format!(
+                "{name} can't summarize on request: it does so by itself when the conversation fills up."
+            ));
+        }
+        // (An agent that has its conversation keeps something of it in its slot.)
+        let started = self
+            .store
+            .context(session, provider)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|context| !context.state.is_empty());
+        if !working && !started {
+            return Some(format!(
+                "There's nothing to summarize yet: {name} hasn't started on this conversation."
+            ));
+        }
+        // The next message makes the undo final, which takes what came after it.
+        if header.get("revert").is_some_and(|revert| !revert.is_null()) {
+            return Some(
+                "Redo what you undid or send a message first: a summary now would be thrown away with it."
+                    .into(),
+            );
+        }
+        None
     }
 
     /// A message (yours, or a note from the app) in line: into the turn
@@ -773,6 +899,11 @@ impl Service {
         let Some(folder) = header.directory().map(PathBuf::from) else {
             return;
         };
+        if input.is_compaction() {
+            return self
+                .start_compaction(state, session, folder, header.into_fields(), input)
+                .await;
+        }
         let note = input.metadata.clone();
         let setup = turn_setup(
             &self.settings.home,
@@ -807,6 +938,58 @@ impl Service {
             Some(shown),
             None,
         );
+    }
+
+    /// The conversation summarized by the agent that holds it. Asked before the
+    /// turn that ran ended, it may have moved on: it fails, saying why.
+    async fn start_compaction(
+        &self,
+        state: &mut State,
+        session: &str,
+        folder: PathBuf,
+        header: serde_json::Map<String, Value>,
+        input: Input,
+    ) {
+        let why = self.why_not_compact(session, &header, false).await;
+        let setup = turn_setup(
+            &self.settings.home,
+            folder,
+            &header,
+            &input.id,
+            TurnKind::Compact,
+        );
+        let (turn, policy) = match setup {
+            Ok(setup) => setup,
+            Err(error) => {
+                eprintln!("Kuvo could not summarize coding-agent session {session}: {error}");
+                return;
+            }
+        };
+        let _ = self.events.send(InboxEvent::Delivered {
+            session: session.to_owned(),
+            id: input.id.clone(),
+            row: Value::Null,
+        });
+        if let Some(why) = why {
+            let error = io::Error::new(ErrorKind::InvalidInput, why);
+            let agent = if turn.plan { "plan" } else { "build" };
+            let _ = crate::turn_projection::record_failed_start(
+                self.store.clone(),
+                session.to_owned(),
+                agent.into(),
+                &turn,
+                None,
+                None,
+                &error,
+            )
+            .await;
+            return;
+        }
+        state.conversation(session).doing = Doing::Starting {
+            stop: false,
+            id: input.id.clone(),
+        };
+        self.spawn_start(state, session.to_owned(), turn, policy, None, None, None);
     }
 
     /// As the resident starts: a turn an earlier one left unfinished (and

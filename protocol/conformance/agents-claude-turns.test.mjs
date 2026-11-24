@@ -424,3 +424,98 @@ describe("Claude Code, nothing dropped", { skip }, () => {
     ]);
   });
 });
+
+describe("summarizing when you ask (/compact)", { skip }, () => {
+  const box = resident();
+  // What Claude Code 2.1.318 sends for it, in order.
+  const compacts = (more = {}) => [
+    { type: "system", subtype: "status", status: "compacting" },
+    { type: "system", subtype: "hook_started", hook_name: "SessionStart:compact", hook_event: "SessionStart", hook_id: "h1" },
+    { type: "system", subtype: "hook_response", hook_name: "SessionStart:compact", hook_event: "SessionStart", hook_id: "h1", outcome: "success", exit_code: 0 },
+    { type: "system", subtype: "status", status: null, compact_result: "success", ...more },
+    { type: "system", subtype: "init", session_id: "$SESSION" },
+    { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 32985, post_tokens: 10541 } },
+    { type: "user", isSynthetic: true, message: { role: "user", content: "This session is being continued from a previous conversation." } },
+    { type: "user", isReplay: true, message: { role: "user", content: "<local-command-stdout>Compacted </local-command-stdout>" } },
+    { type: "command_lifecycle", command: "compact" },
+    { type: "result", subtype: "success", is_error: false, result: "", num_turns: 0, session_id: "$SESSION" },
+  ];
+  const words = rows => rows.flatMap(row => row.type === "synthetic" ? [row.text] : []);
+  const users = rows => rows.filter(row => row.type === "user").map(row => row.text.split("\n", 1)[0]);
+
+  /** A session after a turn, and what its summary plays. */
+  async function afterATurn(summary) {
+    const { id } = await box.begin([...streams("$UUID", [{ type: "text", text: "HARBOUR" }]), result(["$UUID"])]);
+    await box.claude.idles(id);
+    box.claude.script("/compact", summary);
+    return id;
+  }
+  const compact = async id => {
+    const answer = await box.claude.compact(id);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.data;
+  };
+
+  test("it's typed as you would, and ends on its first result: the row shows it, the conversation stays as it was", async () => {
+    const id = await afterATurn(compacts());
+    const before = heardUser(box.claude, "/compact").length;
+    assert.equal((await compact(id)).state, "compacting");
+    const rows = await box.claude.idles(id, 2);
+    assert.equal(heardUser(box.claude, "/compact").length, before + 1);
+    const typed = heardUser(box.claude, "/compact").at(-1).message.content;
+    assert.equal(typed.filter(part => part.type === "text").map(part => part.text).join(""), "/compact");
+    assert.equal(idles(rows)[1].outcome, "succeeded");
+    assertMatch(rows.find(row => row.type === "compaction"), { status: "completed", reason: "manual" });
+    assert.deepEqual(words(rows), []);
+    assert.deepEqual(texts(rows), ["HARBOUR"]);
+    assert.deepEqual(users(rows), [`go ${id}`]);
+  });
+
+  test("one Claude Code hasn't started on is refused, saying why", async () => {
+    const { id } = box.next();
+    const answer = await box.claude.compact(id);
+    assert.equal(answer.status, 400, answer.text);
+    assert.match(answer.text, /There's nothing to summarize yet: Claude Code hasn't started on this conversation\./);
+  });
+
+  test("one that fails shows why, though its result says it went through", async () => {
+    const id = await afterATurn([
+      { type: "system", subtype: "status", status: null, compact_result: "failed", compact_error: "Not enough messages to compact." },
+      { type: "result", subtype: "success", is_error: false, result: "", num_turns: 0 },
+    ]);
+    await compact(id);
+    const rows = await box.claude.idles(id, 2);
+    assertMatch(rows.find(row => row.type === "compaction"), { status: "failed" });
+    assert.equal(idles(rows)[1].error?.message, "Claude Code couldn't summarize the conversation: Not enough messages to compact.");
+  });
+
+  test("Stop during it: Claude Code is told to stop, and the row says it didn't", async () => {
+    const id = await afterATurn([{ wait: "interrupt" }, result(["$UUID"], "error_during_execution")]);
+    const before = heardUser(box.claude, "/compact").length;
+    await compact(id);
+    await until(() => heardUser(box.claude, "/compact").length === before + 1, "Claude Code was never asked.");
+    await box.claude.interrupt(id);
+    const rows = await box.claude.idles(id, 2);
+    assert.equal(box.claude.heard().filter(line => line.type === "control_request" && line.request?.subtype === "interrupt").length, 1);
+    assert.equal(idles(rows)[1].outcome, "interrupted");
+    assertMatch(rows.find(row => row.type === "compaction"), { status: "failed" });
+    assert.deepEqual(texts(rows), ["HARBOUR"]);
+  });
+
+  test("a hook that fails as it compacts still says so", async () => {
+    const id = await afterATurn([
+      { type: "system", subtype: "hook_response", hook_name: "SessionStart:compact", hook_event: "SessionStart", outcome: "error", stderr: "Failed to run" },
+      ...compacts(),
+    ]);
+    await compact(id);
+    const rows = await box.claude.idles(id, 2);
+    assert.deepEqual(words(rows), ["Your SessionStart:compact hook failed: Failed to run."]);
+  });
+
+  test("shows as one row, not a second one for what Claude Code says as it summarizes", async () => {
+    const id = await afterATurn(compacts());
+    await compact(id);
+    const rows = await box.claude.idles(id, 2);
+    assertMatch(rows.filter(row => row.type === "compaction"), [{ status: "completed", reason: "manual" }]);
+  });
+});

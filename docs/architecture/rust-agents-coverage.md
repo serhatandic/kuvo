@@ -495,7 +495,19 @@ what Claude Code says it cost. The shared turn projection gained
 `TurnEvent::Cost` (additive) and the session's token and cost totals.
 Tools still running when a turn ends are stopped. A summary reported only
 once it's done gets its own row. A repeated note is written once. Stop
-tells Claude Code no for an open ask. The Rust session store keeps a
+tells Claude Code no for an open ask.
+
+`POST kuvo/agents/api/session/:id/compact` is now declared with the other
+coding-agent session routes, and the Rust resident serves it from the shared
+session runs. A summary goes first in line, now or once the turn under way
+ends. It is refused in the reference bridge's words for a subagent's
+conversation, a model whose agent isn't here, an agent that only summarizes
+by itself (`Agent::compacts`, false unless an adapter says so), a
+conversation the agent hasn't started, and a pending undo. The Rust resident
+counts a conversation as started when the agent's slot has vendor state,
+because Rust has no handover `seen` cursor yet. The summary's row carries
+its own ID with `reason: "manual"`, and the conversation's last outcome stays
+as it was. The Rust session store keeps a
 transcript's data pictures as files under `attachments/<session>/transcript-pictures`,
 as the reference store does.
 
@@ -529,7 +541,7 @@ The two rows expanded from the bot and session steering loop count separately.
 | 86–92 | 4.4b sandbox launch, file copies, sign-out and adoption. 6.1 owns sandbox policy and 6.3 owns worktree paths. |
 | 93–103 | 4.4b Claude permissions, Plan mode and question fields. 4.1b owns the cards and session rules. 6.1 supplies the computer's permission rules. |
 | 104–109 | Ported to [agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs) on both boxes. After Stop, the reference bridge under its holder starts Claude Code again, while its own test expects the same process to take the next message. Rust does that, and only Rust checks it. |
-| 110–114 | 4.4b typed `/compact`. The Rust resident has no `session/:id/compact` route yet. |
+| 110–114 | Ported to agents-claude-turns on both boxes, with a refusal for a conversation Claude Code hasn't started. |
 | 115–122 | Ported to agents-claude-turns on both boxes, except the `session.compaction.*` events, which the conformance cases don't read. |
 | 123–127 | 4.4b notices and one-time instruction updates. 4.6 owns carry and handover. |
 | 128–131 | 4.4b credential attribution and generation fences. 5.4 owns the account's gathered usage and limits. |

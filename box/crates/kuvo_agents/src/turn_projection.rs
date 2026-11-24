@@ -32,6 +32,10 @@ pub(crate) struct Projection {
     prior: BTreeMap<String, Value>,
     /// What this turn used and cost, added to the session's as it ends.
     spent: Usage,
+    /// A summary you asked for: its row (the turn's own ID) says how it went,
+    /// and the conversation's last outcome stays as it was.
+    summary: bool,
+    summary_started: Option<u64>,
 }
 
 impl Projection {
@@ -68,7 +72,31 @@ impl Projection {
             last_notice: None,
             prior,
             spent: Usage::default(),
+            summary: false,
+            summary_started: None,
         };
+        let mut projection = projection;
+        projection.summary = match &input.kind {
+            TurnKind::Compact => true,
+            // A summary taken up again: its row is there, under the turn's own ID.
+            TurnKind::Recover { .. } => projection
+                .store
+                .turn_messages(&projection.session, input.id.clone())
+                .await?
+                .iter()
+                .any(|row| row["id"] == input.id.as_str() && row["type"] == "compaction"),
+            _ => false,
+        };
+        if matches!(input.kind, TurnKind::Compact) {
+            let created = now();
+            projection.summary_started = Some(created);
+            projection
+                .write(vec![json!({
+                    "type":"compaction", "id":input.id, "time":{"created":created},
+                    "status":"running", "reason":"manual"
+                })])
+                .await?;
+        }
         if let TurnKind::Prompt(prompt) = &input.kind {
             let mut row = user(shown.unwrap_or(prompt));
             if let Some(note) = note {
@@ -194,6 +222,10 @@ impl Projection {
         if let Some(cost) = usage.cost.filter(|cost| cost.is_finite() && *cost > 0.0) {
             spent.cost = Some(spent.cost.unwrap_or_default() + cost);
         }
+    }
+
+    fn summary_created(&self) -> u64 {
+        self.summary_started.unwrap_or_else(now)
     }
 
     /// Tools still running as the turn ends are stopped (`aborted`, when it was) or failed.
@@ -359,6 +391,14 @@ impl Projection {
                     .collect::<Vec<_>>();
                 rows.extend(self.finish_step(None, None, error));
                 rows.extend(self.stop_tools(interrupted));
+                if self.summary {
+                    let done = matches!(result.outcome, Outcome::Succeeded);
+                    rows.push(json!({
+                        "type":"compaction", "id":self.turn, "reason":"manual",
+                        "status":if done { "completed" } else { "failed" },
+                        "time":{"created":self.summary_created(), "completed":now()}
+                    }));
+                }
                 let id = self.id();
                 let at = saved_time(self.prior.get(&id), "created");
                 rows.push(idle(id, at, result));
@@ -440,7 +480,12 @@ impl TurnWriter for Projection {
                 let mut rows = self.prior.values().cloned().collect::<Vec<_>>();
                 let closed = close_rows(&mut rows);
                 self.write(closed).await?;
-                self.next = self.prior.keys().filter_map(|id| self.index(id)).max().unwrap_or(0);
+                self.next = self
+                    .prior
+                    .keys()
+                    .filter_map(|id| self.index(id))
+                    .max()
+                    .unwrap_or(0);
                 self.prior.clear();
             }
             self.apply(&failed(error)).await
@@ -487,6 +532,7 @@ impl Projection {
         let event = event.clone();
         let model = model(&self.model);
         let spent = self.spent.clone();
+        let summary = self.summary;
         let kept = self
             .store
             .change_header(&self.session, move |header| match event {
@@ -518,7 +564,10 @@ impl Projection {
                         Outcome::Failed(_) => "failed",
                         Outcome::Interrupted | Outcome::AgentExited(_) => "interrupted",
                     };
-                    header.insert("outcome".into(), json!(outcome));
+                    // (A summary is no turn of its work: how the conversation ended stays.)
+                    if !summary {
+                        header.insert("outcome".into(), json!(outcome));
+                    }
                     let time = object(header, "time");
                     let at = now();
                     for key in ["activity", "updated", "idle"] {
