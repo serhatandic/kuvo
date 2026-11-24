@@ -1537,6 +1537,8 @@ export class Sessions {
    */
   async stageRevert(id: string, messageID: string): Promise<NonNullable<Session["revert"]>> {
     const record = this.record(id)
+    // Loading the transcript can start recovery of a cut-short turn's file changes.
+    void record.messages
     const live = this.state(id)
     if (onFiles(live.doing)) await this.whenFiles(live)
     this.mustBeIdle(id, live)
@@ -2418,6 +2420,8 @@ export class Sessions {
     } catch (error) {
       result = { outcome: "failed", error: failure(error) }
     }
+    // Deletion can finish while the agent is winding down. Its transcript is gone.
+    if (this.store.get(id) !== record) return
     const agentExited = !abort.signal.aborted && result.agentExited === true
     const outcome: Outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome
     if (outcome !== "succeeded") this.dropCompaction(id, record, turn)
@@ -2473,10 +2477,11 @@ export class Sessions {
       held.gate.release(held.thread)
       await held.gate.activated
     }
+    this.transferred.delete(id)
+    if (this.store.get(id) !== record) return
     const agentExited = !abort.signal.aborted && result.agentExited === true
     const outcome: Outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome
     // Never taken up by its agent: what was kept of it stays, its tools closed as a crash's are.
-    this.transferred.delete(id)
     if (!run.heldTaken) this.closeTools(record)
     const before = record.messages[record.messages.length - 1]?.id
     turn.finish(outcome, outcome === "interrupted" ? undefined : runError(result), agentExited ? "agent-exit" : undefined)
