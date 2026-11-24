@@ -25,6 +25,7 @@ const areas = new Map([
   ["stored-formats", "./stored-formats.test.mjs"],
   ["work-queue", "./work-queue.test.mjs"],
   ["files", "./files.test.mjs"],
+  ["git", "./git.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
 ]);

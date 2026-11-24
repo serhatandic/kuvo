@@ -55,6 +55,9 @@ export function readProjects(file = PROJECTS_FILE): Project[] {
     return list.filter(each => typeof each?.directory === "string" && path.isAbsolute(each.directory)).map(each => {
       const project = { ...each };
       delete project.terminal;
+      // Removed or not, as the route says it: one marked any other way by hand reads as it's filed.
+      if (project.removed) project.removed = true;
+      else delete project.removed;
       project.folders = Array.isArray(each.folders) ? each.folders.filter((folder: unknown) => typeof folder === "string") : [];
       return project;
     });
