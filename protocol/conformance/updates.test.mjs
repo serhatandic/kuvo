@@ -1924,16 +1924,37 @@ test("signed Linux installer makes a fresh machine and keeps unrelated reboot jo
     assert.equal(fs.readFileSync(path.join(home, "desktop/identity"), "utf8"), "keep this desktop");
     assert.equal(fs.readlinkSync(path.join(home, "bin")), `versions/${version}-${pack.sha256.slice(0, 12)}/bin`);
     assert.equal(readJSON(path.join(home, "run/link.json")).setup.role, "primary");
-    const info = await request(readJSON(path.join(home, "run/serve.json")), "GET", "kuvo/info");
+    const resident = readJSON(path.join(home, "run/serve.json"));
+    const info = await request(resident, "GET", "kuvo/info");
     assert.equal(info.status, 200, info.text);
-    assert.match(fs.readFileSync(path.join(home, "machine-id"), "utf8"), /^[a-f0-9]{32}$/);
+    const identity = fs.readFileSync(path.join(home, "machine-id"), "utf8");
+    assert.match(identity, /^[a-f0-9]{32}$/);
     assert.match(fs.readFileSync(path.join(home, "run/launch.env"), "utf8"), /^PATH=/m);
     assert.equal(fs.readFileSync(cron, "utf8"), cronBefore +
       '@reboot sh "$HOME/.kuvo-code/bin/kuvo-start" >/dev/null 2>&1 # kuvo-code: starts its engine again after a restart\n');
     t.diagnostic(`fresh Linux machine made and answered in ${Math.round(performance.now() - began)} ms`);
-    const refused = install("new");
-    assert.equal(refused.status, 1, refused.stdout + refused.stderr);
-    assert.equal(JSON.parse(refused.stdout).verdict, "machine");
+    const downloads = fs.readFileSync(feed.calls);
+    const unavailable = feed.archive + ".unavailable";
+    fs.renameSync(feed.archive, unavailable);
+    try {
+      const status = install("status");
+      assert.equal(status.status, 0, status.stdout + status.stderr);
+      const { verdict, verb } = JSON.parse(status.stdout);
+      assert.deepEqual({ verdict, verb }, { verdict: "machine", verb: null });
+      const refused = install("new");
+      assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+      assert.deepEqual(JSON.parse(refused.stdout), {
+        result: "refused", verdict: "machine",
+        message: "This computer is set up as one of your machines already: Kuvo uses what's here.",
+      });
+      assert.equal(install("update").status, 2);
+      assert.deepEqual(fs.readFileSync(feed.calls), downloads);
+    } finally {
+      fs.renameSync(unavailable, feed.archive);
+    }
+    assert.equal(fs.readFileSync(path.join(home, "machine-id"), "utf8"), identity);
+    assert.equal(readJSON(path.join(home, "run/serve.json")).pid, resident.pid);
+    assert.equal(fs.existsSync(path.join(home, "updates/install")), false);
     assert.equal(fs.readlinkSync(path.join(home, "bin")), `versions/${version}-${pack.sha256.slice(0, 12)}/bin`);
     assert.deepEqual(fs.readdirSync(env.TMPDIR), []);
   } finally {
