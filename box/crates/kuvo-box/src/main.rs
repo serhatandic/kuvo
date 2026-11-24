@@ -2,6 +2,7 @@ mod model_stars;
 mod serve;
 mod session_ownership;
 mod setup_search;
+mod vault_asks;
 
 use std::{env, io, path::PathBuf, process::ExitCode};
 

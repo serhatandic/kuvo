@@ -90,11 +90,25 @@ pub async fn run(
     peers.attach_moves(engine.clone(), owners.clone()).await?;
     let peers = Arc::new(peers);
     peers.follow_setup_roster(setup.handle().rosters()).await;
+    let identity = kuvo_os::platform::Account::current()?;
+    let account = identity.home_folder(
+        kuvo_os::platform::Platform::current(),
+        &std::env::vars_os().collect(),
+    )?;
+    let vault = kuvo_services::vault::Resident::new(
+        home,
+        kind == ComputerKind::Mac,
+        vault_launch,
+        account.clone(),
+        &identity.home,
+        vault_machine,
+    );
     let engine = engine
         .with_session_ownership(Arc::new(super::session_ownership::OwnerPort(
             owners.clone(),
         )))
-        .with_model_stars(Arc::new(super::model_stars::SetupStars(setup.handle())));
+        .with_model_stars(Arc::new(super::model_stars::SetupStars(setup.handle())))
+        .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let mut routes = Registry::new();
     if kind == ComputerKind::Machine {
         let setup = setup.handle();
@@ -144,10 +158,6 @@ pub async fn run(
     }
     setup.handle().register(&mut routes);
     setup.handle().register_ssh(&mut routes, home);
-    let account = kuvo_os::platform::Account::current()?.home_folder(
-        kuvo_os::platform::Platform::current(),
-        &std::env::vars_os().collect(),
-    )?;
     kuvo_services::files::register(
         &mut routes,
         kuvo_services::files::Places {
@@ -180,14 +190,6 @@ pub async fn run(
             })
         }
     });
-    let vault = kuvo_services::vault::Resident::new(
-        home,
-        kind == ComputerKind::Mac,
-        vault_launch,
-        account.clone(),
-        &kuvo_os::platform::Account::current()?.home,
-        vault_machine,
-    );
     vault.register(&mut routes);
     let daily_backups = kuvo_setup::backup::routes::register(
         &mut routes,
