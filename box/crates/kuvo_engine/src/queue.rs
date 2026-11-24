@@ -147,6 +147,10 @@ impl Inbox {
             .or(self.text.as_deref())
     }
 
+    pub(crate) fn text_is(&self, text: &str) -> bool {
+        self.text() == Some(text)
+    }
+
     fn is_message(&self) -> bool {
         self.kind.as_deref() != Some("compaction")
     }
@@ -395,6 +399,10 @@ impl QueueStore {
 }
 
 impl Queue {
+    pub(crate) fn is_paused(&self) -> bool {
+        self.paused
+    }
+
     pub(crate) fn letter_wait_reason(&self, home: &Path) -> String {
         let returns = "Its answer, if it writes one, comes to you as a message.";
         if !self.paused {
@@ -446,6 +454,13 @@ impl Queue {
 
     pub(crate) fn contains(&self, id: &str) -> bool {
         self.waiting.iter().any(|item| item.id == id)
+    }
+
+    /// Whether something from `from` waits here on the box with these words.
+    pub(crate) fn waits_from(&self, from: &str, words: &str) -> bool {
+        self.waiting
+            .iter()
+            .any(|item| item.from.as_deref() == Some(from) && item.text == words)
     }
 
     fn keep_held(&mut self, mut moved: Vec<String>, inbox: &[Inbox]) {

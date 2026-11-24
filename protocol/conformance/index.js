@@ -30,6 +30,8 @@ const areas = new Map([
   ["git", "./git.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
+  // Bots, wake-ups and work: their route scenarios (`bots.json` and `wakes.json`).
+  ["bots", "./routes.test.mjs"],
 ]);
 const area = process.env.KUVO_CONFORMANCE_AREA;
 if (!area) {

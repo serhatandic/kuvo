@@ -108,6 +108,7 @@ pub async fn run(
         resident_agents.is_some(),
     )?;
     let vault_machine = (kind != ComputerKind::Mac).then(|| roster.name.clone());
+    let bot_name = roster.name.clone();
     let mut peers = ResidentPeers::start(
         home,
         roster,
@@ -253,6 +254,20 @@ pub async fn run(
         },
     );
     kuvo_services::git::register(&mut routes, home.to_owned());
+    let wakes = kuvo_work::wakes::Wakes::new(home, engine.clone());
+    wakes.register(&mut routes);
+    let bots = kuvo_work::bots::Bots::new(
+        kuvo_work::bots::Setting {
+            home: home.to_owned(),
+            account: account.clone(),
+            name: bot_name,
+            is_mac: kind == ComputerKind::Mac,
+        },
+        wakes.clone(),
+        peers.reader(),
+        sessions.clone(),
+    );
+    bots.register(&mut routes);
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -351,7 +366,14 @@ pub async fn run(
             }
         });
     }
-    let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
+    let session_source = tokio::spawn(publish_local_sessions(
+        home.join("run"),
+        peers,
+        sessions,
+        bots,
+        wakes.changes(),
+    ));
+    let firing = wakes.start();
     let finishing = setup.handle();
     let result = resident
         .serve(dispatcher, Arc::new(devices), async {
@@ -384,6 +406,7 @@ pub async fn run(
             Err(_) => eprintln!("Kuvo timed out checkpointing the coding agents."),
         }
     }
+    firing.stop().await;
     if let Some(updates) = updates {
         updates.stop().await;
     }
@@ -416,19 +439,30 @@ async fn publish_local_sessions(
     run: std::path::PathBuf,
     peers: Arc<ResidentPeers>,
     mut sessions: kuvo_engine::LocalSessions,
+    bots: kuvo_work::bots::Bots,
+    mut wakes: tokio::sync::watch::Receiver<u64>,
 ) {
     loop {
         if let Some(record) = sessions.latest_record()
             && let Ok(list) = serde_json::from_value(record)
         {
-            let run = run.clone();
-            if let Ok(mut local) = tokio::task::spawn_blocking(move || Local::load(&run)).await {
+            let (run, bots) = (run.clone(), bots.clone());
+            if let Ok(mut local) = tokio::task::spawn_blocking(move || {
+                let mut local = Local::load(&run);
+                local.bots = serde_json::to_value(bots.peer_activity())
+                    .and_then(serde_json::from_value)
+                    .ok();
+                local
+            })
+            .await
+            {
                 local.list = Some(list);
                 peers.local(local).await;
             }
         }
-        if !sessions.changed().await {
-            break;
+        tokio::select! {
+            changed = sessions.changed() => if !changed { break },
+            _ = wakes.changed() => {}
         }
     }
 }
@@ -453,6 +487,7 @@ fn info(
     features.push(kuvo_peers::memory_read::FEATURE);
     features.push(kuvo_peers::owner_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
+    features.extend_from_slice(kuvo_work::wakes::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
     }

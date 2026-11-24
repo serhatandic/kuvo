@@ -1586,6 +1586,7 @@ dependencies = [
  "async-stream",
  "base64 0.22.1",
  "filetime",
+ "futures-core",
  "getrandom 0.4.3",
  "http",
  "http-body-util",
@@ -1610,6 +1611,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "unicode-normalization",
+ "unicode-segmentation",
  "url",
  "windows-sys 0.61.2",
 ]

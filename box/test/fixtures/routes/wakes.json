@@ -92,6 +92,29 @@
         { "send": "GET kuvo/wakes/ses_plan", "expect": { "status": 200, "json": { "wakes": [] } } },
         { "send": "POST kuvo/wakes/ses_plan/now", "body": { "wake": "Wk1" }, "expect": { "status": 404, "json": {} } }
       ]
+    },
+    {
+      "name": "an archived conversation's first wake-up waits with it and goes on as it's brought back; a pause of your own outlasts both",
+      "steps": [
+        {"given": {"session": {"id": "ses_old", "title": "Old plans", "directory": "{{work}}", "archived": true}}},
+        {"send": "POST kuvo/wakes/ses_old", "body": {"due": "{{now+3600}}", "note": "Later"}, "expect": {"status": 200, "json": {"wakes": [{"note": "Later"}], "paused": true}}},
+        {"send": "POST kuvo/wakes/ses_old/pause", "body": {"archived": false}, "expect": {"status": 200, "json": {"paused": false}}},
+        {"send": "POST kuvo/wakes/ses_old/pause", "body": {"paused": true}, "expect": {"status": 200, "json": {"paused": true}}},
+        {"send": "POST kuvo/wakes/ses_old/pause", "body": {"archived": true, "stop": false}, "expect": {"status": 200, "json": {"paused": true}}},
+        {"send": "POST kuvo/wakes/ses_old/pause", "body": {"archived": false}, "expect": {"status": 200, "json": {"paused": true}}}
+      ]
+    },
+    {
+      "name": "a watch is made as its agent makes one, and what can't be one is said in kuvo-wake's words",
+      "steps": [
+        {"given": {"session": {"id": "ses_plan", "title": "Plan the launch", "directory": "{{work}}"}}},
+        {"send": "POST kuvo/wakes/ses_plan/watch", "body": {"every": "30m", "check": "true", "note": "Tell me"}, "expect": {"status": 200, "json": {"watches": [{"letters": "<string>", "every": "30m", "check": "true", "note": "Tell me"}]}}},
+        {"send": "POST kuvo/wakes/ses_plan/watch", "body": {"every": "1m", "check": "true", "note": "Too often"}, "expect": {"status": 400, "json": {"message": "Couldn't read how often, \"1m\". Use 5m or more, 2h or 1d."}}},
+        {"send": "POST kuvo/wakes/ses_plan/watch", "body": {"every": "5m"}, "expect": {"status": 400, "json": {"message": "<string>"}}},
+        {"send": "POST kuvo/wakes/ses_plan", "body": {"due": "{{now+3600}}", "every": "4m", "note": "Too often"}, "expect": {"status": 400, "json": {"message": "Couldn't read the repeat \"4m\". Use 30m, 2h, 1d, 1w (at least 5m), or weekdays."}}},
+        {"send": "POST kuvo/wakes/ses_nobody/watch", "body": {"every": "5m", "check": "true", "note": "Hi"}, "expect": {"status": 404}},
+        {"send": "GET kuvo/wakes", "expect": {"status": 200, "json": {"sessions": [{"session": "ses_plan", "watching": true, "wakes": []}]}}}
+      ]
     }
   ]
 }
