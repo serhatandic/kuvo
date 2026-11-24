@@ -1,5 +1,5 @@
-//! The last headless computer can erase its own installation after its signed
-//! removal decision and process shutdown. The journal follows the old inode.
+//! A verified removal can erase its installation after its writers stop. The
+//! durable journal follows the directory's original inode.
 
 use std::{
     fs, io,
@@ -170,6 +170,99 @@ pub struct ReinstallReceipt {
 pub enum InstallState {
     Pending,
     Erased(ReinstallReceipt),
+}
+
+/// The box supplies the vault operation. The path is the original App Support
+/// folder even after it has been detached. Clearing the same identity again is safe.
+pub trait AppWipeKeychain {
+    fn clear_app_link_keys(&self, app_folder: &Path) -> io::Result<()>;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AppWipeKind {
+    LastComputer,
+    Member,
+}
+
+/// Recover the erasing or detached phase of an app-owned wipe. For a member,
+/// finish clearing the app identity after detaching and before deleting its data.
+pub fn resume_app_wipe(
+    app_folder: &Path,
+    account_home: &Path,
+    kind: AppWipeKind,
+    keychain: &dyn AppWipeKeychain,
+) -> io::Result<bool> {
+    let Some(root) = app_boundary(app_folder, account_home)? else {
+        return Ok(false);
+    };
+    let parent = parent(&root)?;
+    let id = root
+        .file_name()
+        .and_then(|id| id.to_str())
+        .ok_or_else(|| io::Error::other(UNSUPPORTED))?;
+    let receipts = parent.join(format!(".{id}-removal-receipts"));
+    let marker = receipts.join(match kind {
+        AppWipeKind::LastComputer => "last-setup-wipe",
+        AppWipeKind::Member => "app-member-wipe",
+    });
+    let Some(journal) = read_journal(&marker)? else {
+        return Ok(false);
+    };
+    if !matches!(journal.phase, Some(Phase::Erasing | Phase::Detached)) {
+        return Ok(journal.phase.is_none() && !root.exists());
+    }
+    let _guard = OwnedLock::acquire(&parent.join(format!("{id}-wipe.lock")), Duration::ZERO)?;
+    let Some(journal) = read_journal(&marker)? else {
+        return Ok(false);
+    };
+    if !matches!(journal.phase, Some(Phase::Erasing | Phase::Detached)) {
+        return Ok(journal.phase.is_none() && !root.exists());
+    }
+    erase_approved(
+        &root,
+        &receipts,
+        journal,
+        |journal| files::write_atomic_through(&marker, &serde_json::to_vec(journal)?, parent),
+        || {
+            if kind == AppWipeKind::Member {
+                if identity(&root)?.is_some() {
+                    return Err(io::Error::other(
+                        "The app-owned Box’s identity could not be removed safely.",
+                    ));
+                }
+                keychain.clear_app_link_keys(&root)?;
+            }
+            Ok(())
+        },
+    )?;
+    Ok(true)
+}
+
+fn app_boundary(folder: &Path, account: &Path) -> io::Result<Option<PathBuf>> {
+    if Platform::current() != Platform::Mac {
+        return Ok(None);
+    }
+    let Some(id) = folder.file_name().and_then(|id| id.to_str()) else {
+        return Ok(None);
+    };
+    let valid_id = id.strip_prefix("run.kuvo.code").is_some_and(|suffix| {
+        suffix.is_empty()
+            || suffix.strip_prefix('.').is_some_and(|parts| {
+                parts.split('.').all(|part| {
+                    !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+            })
+    });
+    if !valid_id {
+        return Ok(None);
+    }
+    let support = account.canonicalize()?.join("Library/Application Support");
+    let actual = match parent(folder)?.canonicalize() {
+        Ok(actual) => actual,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok((actual == support).then(|| support.join(id)))
 }
 
 impl InstallState {
@@ -369,9 +462,24 @@ pub fn finish(home: &Path) -> io::Result<bool> {
         guard = Some((owner, link));
         kept = Some(approval);
     }
-    let Some(mut journal) = kept else {
+    let Some(journal) = kept else {
         return Ok(false);
     };
+    erase_approved(&root, receipts, journal, save, || {
+        // OwnedLock drops only its own token, leaving any replacement alone.
+        drop(guard);
+        Ok(())
+    })?;
+    Ok(true)
+}
+
+fn erase_approved(
+    root: &Path,
+    receipts: &Path,
+    mut journal: Journal,
+    save: impl Fn(&Journal) -> io::Result<()>,
+    after_detach: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     let target = receipts.join(format!("erase-{}", journal.operation));
     let old = identity(&target)?;
     if old
@@ -383,22 +491,20 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     journal.format_version = 1;
     if journal.phase == Some(Phase::Erasing) {
         if old.is_none() {
-            if identity(&root)? != journal.source {
+            if identity(root)? != journal.source {
                 return Err(io::Error::other("The folder to erase has changed."));
             }
-            files::replace_synced(&root, &target)?;
+            files::replace_synced(root, &target)?;
         }
         journal.phase = Some(Phase::Detached);
         save(&journal)?;
     }
-    // Neither an installer nor another startup should remove locks from a new
-    // installation at the now-vacant path. OwnedLock drops only its own token.
-    drop(guard);
+    after_detach()?;
     files::remove_tree_synced(&target)?;
     journal.source = None;
     journal.phase = None;
     save(&journal)?;
-    Ok(true)
+    Ok(())
 }
 
 fn identity(path: &Path) -> io::Result<Option<String>> {
