@@ -1082,6 +1082,8 @@ describe("Claude Code's background commands", { skip }, () => {
     const bar = await box.claude.work(`/${id}`);
     assert.equal(bar.commands.length, 1);
     assertMatch(bar.commands[0], { command: "npm run dev", agents: true });
+    // What's at work under it besides itself, as the session lists say: nothing.
+    assert.deepEqual(bar.activity, { working: 0, asking: 0, sessions: [] });
     const output = `/${id}/commands/${bar.commands[0].id}/output`;
     assertMatch(await box.claude.work(output), { output: "ready on :3000", cut: false, state: "running" });
     // It ends: the bar lets it go, and what it printed stands.

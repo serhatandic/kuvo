@@ -157,7 +157,7 @@ pub async fn run(
     let mut routes = Registry::new();
     let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
     agents::sessions::register(sessions.clone(), &mut routes);
-    agents::background::register(home, sessions.background().clone(), &mut routes);
+    let agent_background = sessions.background().clone();
     let engine = if let Some((runtime, accounts)) = resident_agents {
         // What its coding agents keep going, for the work routes and those that read the file.
         let _published = sessions
@@ -229,6 +229,16 @@ pub async fn run(
     let sessions = engine.register_with_merged_pages(&mut routes, move |project, shown, step| {
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
+    agents::background::register(
+        home,
+        agent_background,
+        agents::background::Listed {
+            sessions: sessions.clone(),
+            peers: peers.reader(),
+            bots: home.join("bots"),
+        },
+        &mut routes,
+    );
     let owner_requests = if let Ok(requests) = owners.incoming() {
         peers.advertise_engine_submissions().await?;
         Some(tokio::spawn(super::session_ownership::serve(

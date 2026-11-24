@@ -29,6 +29,8 @@ struct Cache {
     generation: u64,
     loading: Option<Loading>,
     models: Option<Models>,
+    /// How much each model holds, as Claude Code said: by its value (`default`, `opus`, or an id).
+    heard: HashMap<String, u64>,
 }
 
 impl Catalog {
@@ -61,6 +63,28 @@ impl Catalog {
             .context
     }
 
+    /// How much `model` holds, as Claude Code said (its `/context` as the models were listed, or a
+    /// turn's result since): by its value, or as the model a listed alias stands for.
+    pub async fn heard_window(&self, model: &str) -> Option<u64> {
+        let cache = self.cache.lock().await;
+        cache.heard.get(model).copied().or_else(|| {
+            let listed = cache.models.as_ref()?.models.iter();
+            let named = listed
+                .filter(|each| each.aliases.iter().any(|alias| alias == model))
+                .map(|each| each.id.as_str())
+                .next()
+                .unwrap_or(model);
+            cache.heard.get(named).copied()
+        })
+    }
+
+    /// What Claude Code said `model` holds, as a turn ended.
+    pub async fn note(&self, model: &str, size: u64) {
+        if size > 0 {
+            self.cache.lock().await.heard.insert(model.to_owned(), size);
+        }
+    }
+
     pub async fn clear(&self) {
         let mut cache = self.cache.lock().await;
         *cache = Cache {
@@ -83,18 +107,18 @@ impl Catalog {
                         let catalog = self.clone();
                         let program = program.clone();
                         let task = async move {
-                            let result = load(program)
-                                .await
-                                .map(|models| catalog.stamp(models, generation))
-                                .map_err(Arc::new);
+                            let result = load(program).await.map_err(Arc::new);
                             let mut cache = catalog.cache.lock().await;
                             if generation == cache.generation {
                                 cache.loading = None;
-                                if let Ok(models) = &result {
-                                    cache.models = Some(models.clone());
+                                if let Ok((models, heard)) = &result {
+                                    cache.models = Some(catalog.stamp(models.clone(), generation));
+                                    cache
+                                        .heard
+                                        .extend(heard.iter().map(|(k, v)| (k.clone(), *v)));
                                 }
                             }
-                            result
+                            result.map(|(models, _)| catalog.stamp(models, generation))
                         }
                         .boxed()
                         .shared();
@@ -115,13 +139,15 @@ impl Catalog {
     }
 }
 
-async fn load(program: Program) -> io::Result<Models> {
+/// The account's models, and how much each holds as Claude Code said.
+async fn load(program: Program) -> io::Result<(Models, HashMap<String, u64>)> {
     let (list, windows) = tokio::task::spawn_blocking(move || probe(program)).await??;
-    Ok(Models {
+    let models = Models {
         complete: true,
         models: named_models(list, &windows),
         ..Models::default()
-    })
+    };
+    Ok((models, windows))
 }
 
 /// Claude Code's models on this account, as it lists them, and how much each holds, as its

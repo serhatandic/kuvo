@@ -161,6 +161,11 @@ impl Projection {
     }
 
     /// Why the turn the `result` ends failed, or none: it went through.
+    /// The model the conversation's last request ran on, as Claude Code said.
+    pub fn context_model(&self) -> Option<&str> {
+        self.context_model.as_deref()
+    }
+
     pub fn failure(&self, frame: &Value) -> Option<TurnError> {
         let succeeded =
             frame["subtype"] == "success" && frame["is_error"] != true && !self.compact_failed;

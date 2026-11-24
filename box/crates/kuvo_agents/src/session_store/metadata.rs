@@ -178,6 +178,26 @@ impl SessionStore {
         .await
     }
 
+    /// Keep how much a conversation's model holds, as its agent's list says, until a turn says:
+    /// only while it has none and still runs on `model` (a turn or a model change since wins).
+    pub async fn keep_listed_window(&self, id: &str, model: Value, window: u64) -> io::Result<()> {
+        self.change_header(id, move |header| {
+            let current = header.get("contextModel").or_else(|| header.get("model"));
+            let same = current.is_some_and(|current| {
+                current["providerID"] == model["providerID"] && current["id"] == model["id"]
+            });
+            if header.contains_key("contextWindow") || !same || window == 0 {
+                return;
+            }
+            header.insert("contextWindow".into(), window.into());
+            if let Some(context) = header.get_mut("context").and_then(Value::as_object_mut) {
+                context.insert("window".into(), window.into());
+            }
+        })
+        .await
+        .map(|_| ())
+    }
+
     /// Apply a client's change to a saved conversation, as the bridge does: its
     /// own notes (whose agent it is, how a subagent is written to) survive a
     /// metadata replacement. `None` when the conversation isn't here.

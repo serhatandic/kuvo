@@ -814,7 +814,10 @@ impl Actor {
             .and_then(|window| window["size"].as_u64());
         let window = match heard {
             Some(size) => Some(size),
-            None => self.models.clone().window(model).await,
+            None => match self.models.clone().heard_window(model).await {
+                Some(size) => Some(size),
+                None => self.models.clone().window(model).await,
+            },
         };
         Ok(match choice.as_deref() {
             Some("200000") => Some(200_000),
@@ -1154,6 +1157,27 @@ impl Actor {
             turn.sink.save_state(self.state.clone()).await?;
         }
         let mut events = events;
+        // How much the model holds, as Claude Code said: a turn's result says (and it's known for
+        // every conversation from then on); a reading before that, as it said last.
+        let model = turn
+            .projection
+            .context_model()
+            .unwrap_or(&turn.model.id)
+            .to_owned();
+        for event in &mut events {
+            match event {
+                TurnEvent::Context {
+                    window: Some(size), ..
+                } if message["type"] == "result" => {
+                    self.models.note(&model, *size).await;
+                    self.models.note(&turn.model.id, *size).await;
+                }
+                TurnEvent::Context { window, .. } if window.is_none() => {
+                    *window = self.models.heard_window(&model).await;
+                }
+                _ => {}
+            }
+        }
         events.retain_mut(|event| match (event, &heard_under) {
             (TurnEvent::PlanLimit(reading), Some(Some(sign_in))) => {
                 reading.sign_in = sign_in.clone();
