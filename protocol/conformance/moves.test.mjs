@@ -1094,6 +1094,55 @@ test("a move carries replay evidence saved after the first offer", {
   assert.deepEqual(readJSON(installed), evidence);
 });
 
+test("handoff preserves a settled forwarding decision and rejects a conflicting one", { timeout: 60000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("handoff-source"), there = await computer("handoff-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const setup = readJSON(path.join(here.home, "run/link.json")).setup.id;
+  const directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  const cases = [
+    { session: "ses_keepSettledDecision", operation: "settledQueue", conflict: false },
+    { session: "ses_conflictingDecision", operation: "differentQueue", conflict: true },
+  ];
+  for (const entry of cases) {
+    const { session, operation, conflict } = entry;
+    here.engine.sessions.push(sessionOf({ id: session, directory }));
+    const address = createHash("sha256").update(JSON.stringify(["scoped-forward", setup, operation])).digest("base64url");
+    const file = "run/owned-data/mutations/" + address + ".json";
+    const record = { formatVersion: 1, digest: "A".repeat(43), at: 1, forward: {
+      kind: "forwardedSessionDecisions", setup, operation, owner: main.key, submitter: { kind: "computer" },
+      area: "ownership", record: session, ref: { kind: "sessionQueue", id: session },
+    } };
+    const settled = { ...record, at: 2, answer: { status: 200, value: { paused: true } } };
+    const sending = conflict ? { ...record, answer: { status: 200, value: { paused: false } } } : record;
+    write(path.join(here.home, file), JSON.stringify(sending));
+    write(path.join(there.home, file), JSON.stringify(settled));
+    Object.assign(entry, { file, settled });
+  }
+  const sourceProcess = here.start(), targetProcess = there.start();
+  const [source] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  await until(() => {
+    try { return readJSON(path.join(here.home, "run/peer-agents.json"))[member.key]?.features?.includes("data.forward-evidence"); }
+    catch { return false; }
+  }, "The destination did not announce support for forwarding evidence");
+  for (const { session, conflict, file, settled } of cases) {
+    await readyToMove(source, session, member);
+    const begun = await request(source, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+    assert.equal(begun.status, 202, begun.text);
+    const { id } = begun.json.move;
+    await moveRetired(here, id, () => sourceProcess.log() + "\n" + targetProcess.log());
+    const result = await request(source, "GET", "kuvo/moves/receipt?id=" + id);
+    assert.equal(result.status, 200, result.text);
+    assert.equal(result.json.state, conflict ? "failed" : "done", result.text);
+    assert.deepEqual(readJSON(path.join(there.home, file)), settled);
+    assert.equal(here.engine.sessions.some(row => row.id === session), conflict);
+    await until(() => there.engine.sessions.some(row => row.id === session) === !conflict,
+      "The destination kept the wrong conversation after handoff");
+  }
+});
+
 test("a conversation that keeps changing stays with its source after three offers", {
   timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
