@@ -10,6 +10,7 @@ pub mod resident;
 pub mod roster;
 pub mod rpc;
 pub mod runtime;
+pub mod runtime_packages;
 pub mod session;
 pub mod session_runs;
 pub mod session_store;

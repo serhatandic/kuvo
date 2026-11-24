@@ -202,6 +202,17 @@ through a real holder. The holder suite's first two TypeScript cases
 (offset first IDs, a fenced connection, a successor answering) map to
 them.
 
+`kuvo_agents::runtime_packages` installs an agent's npm packages (the
+Cursor SDK for its Bun sidecar) the first time they are needed, into
+`runtime/<agent>`, with the engine's Bun, its cache in the box's own
+folder and emptied after each install, one install per agent at a time,
+and the same `package.json` and messages as the bridge. Unlike the
+bridge, it stages the install beside the folder and publishes it with a
+rename, and retires an old folder by renaming it before deleting it, so
+an interruption never leaves a folder whose versions look installed. Two
+scenarios run it with a stand-in installer. The bridge has no tests of
+its own for this.
+
 ## TypeScript scenario inventory
 
 ### Holders, reload and repair
