@@ -482,6 +482,7 @@ test("Rust prepares its target without changing the selected release and its kee
 
 test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
 test("a new main finishes a prepared release after the old main goes away", { timeout: 240000 }, t => fleetRun(t, { failover: true }));
+test("the main takes a signed release from a member already running it", { timeout: 150000 }, t => fleetRun(t, { aheadMember: true }));
 test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true }));
 test("the deployed beta refuses a direct Rust pack", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true, expectRefusal: true }));
 test("the deployed beta takes the bridge before joining a Rust fleet", { timeout: 360000 }, t => fleetRun(t, { returningTypescript: true, bridgeBeta: true }));
@@ -530,10 +531,10 @@ if [ -e "$KUVO_FIXTURE_CLOCK" ]; then echo 1121; else touch "$KUVO_FIXTURE_CLOCK
   }
 });
 
-async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal }) {
+async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal, aheadMember }) {
   const binary = boxBinary();
   const windows = process.platform === "win32";
-  if (binary.typescript || (windows && !failover)) {
+  if (binary.typescript || (windows && !failover && !aheadMember)) {
     return t.skip("This fixture needs the corresponding Rust keeper.");
   }
   const deployed = bridgeBeta || expectRefusal;
@@ -615,23 +616,26 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridge
   const waiting = [];
   let hold = true;
   let retryDownload = false;
-  let peerOnly = false;
+  let peerOnly = Boolean(aheadMember);
   let refusedPacks = 0;
   let refusedBridges = 0;
   let downloads = 0;
   let holdChecks = false;
   let heldChecks = 0;
   let signedBridgeRelease;
+  const descriptor = () => ({ url: `http://127.0.0.1:${feed.address().port}/fleet.tar.gz`, sha256: hash });
+  const signedTarget = () => {
+    const pack = descriptor();
+    return envelope({ ...body, pack, launch: "rust", packs: { [target]: pack } }, key);
+  };
   const feed = createServer((req, res) => {
-    const url = `http://127.0.0.1:${feed.address().port}/fleet.tar.gz`;
     if (req.url === "/boxes.json") {
+      if (aheadMember) return res.writeHead(404).end();
       if (holdChecks) {
         heldChecks += 1;
         return;
       }
-      const descriptor = { url, sha256: hash };
-      const signed = signedBridgeRelease ?? envelope({ ...body, pack: descriptor, launch: "rust", packs: { [target]: descriptor } }, key);
-      res.end(encode(signed));
+      res.end(encode(signedBridgeRelease ?? signedTarget()));
     } else if (req.url === "/fleet.tar.gz") {
       if (peerOnly) {
         refusedPacks += 1;
@@ -679,7 +683,7 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridge
   });
   const legacy = peer => returningTypescript && peer === away;
   const versionBefore = peer => legacy(peer) && previousVersion ? previousVersion : "0.8.0-beta.1";
-  const initial = peer => `versions/${versionBefore(peer)}-000000000000/bin`;
+  const initial = peer => aheadMember && peer === member ? selected : `versions/${versionBefore(peer)}-000000000000/bin`;
   const shell = peer => shellKeepers || legacy(peer);
   function control(computer, ...args) {
     const result = shell(computer)
@@ -748,10 +752,17 @@ Buffer.from = function (value, encoding, ...args) {
       write(engine, `#!/bin/sh\n[ "$1" != --version ] || exit 0\n${fixtureEngine}${fixtureTrust}exec ${quote(typescriptRuntime())} "$@"\n`, { mode: 0o700 });
       continue;
     }
-    write(path.join(peer.home, bin, program), executable, { mode: 0o700 });
-    write(path.join(peer.home, bin, "..", "box.json"), encode({
-      kuvo: "box/1", version: versionBefore(peer), launch: "rust", engine: body.engine,
-    }));
+    if (aheadMember && peer === member) {
+      const folder = path.join(peer.home, bin, "..");
+      fs.cpSync(packRoot, folder, { recursive: true });
+      write(path.join(folder, "boxes.json"), encode(signedTarget()));
+      write(path.join(folder, "pack"), pack);
+    } else {
+      write(path.join(peer.home, bin, program), executable, { mode: 0o700 });
+      write(path.join(peer.home, bin, "..", "box.json"), encode({
+        kuvo: "box/1", version: versionBefore(peer), launch: "rust", engine: body.engine,
+      }));
+    }
     write(path.join(peer.home, "run/engine.json"), encode({ ...peer.engine.record, version: body.engine }));
     if (windows) write(engine, fs.readFileSync(process.execPath));
     else write(engine, '#!/bin/sh\n[ "$1" = --version ]\n', { mode: 0o700 });
@@ -799,8 +810,23 @@ Buffer.from = function (value, encoding, ...args) {
   }));
   try {
     const began = performance.now();
+    if (aheadMember) assert.equal(active(main), initial(main));
     start(main);
     start(member);
+    if (aheadMember) {
+      await until(() => confirmed(main), diagnose, 90000);
+      assert.equal(active(member), selected);
+      assert.equal(active(away), initial(away));
+      assert.ok(refusedPacks > 0, "the main must get the pack from its member after the download fails");
+      await until(async () => {
+        try {
+          const record = readJSON(path.join(main.home, "run/serve.json"));
+          const answer = await request(record, "GET", "kuvo/update");
+          return answer.status === 200 && answer.json.version === version;
+        } catch { return false; }
+      }, diagnose, 15000);
+      return;
+    }
     await until(() => waiting.length && (staged(main) || staged(member)), diagnose, 90000);
     assert.equal(readJSON(path.join(main.home, "run/update.json")).latest, version);
     assert.equal(active(main), initial(main));
