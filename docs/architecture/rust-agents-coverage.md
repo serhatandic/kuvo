@@ -77,14 +77,28 @@ The Rust controller replacement scenario now calls `Runtime::activate`.
 It builds the stand-in adapter's roster, uses the recorded provider to find
 it, and starts complete replay at the oldest active turn's cursor. The
 controller API is unchanged. The saved session header reader supplies the
-working directory without opening the transcript.
+working directory without opening the transcript. The keeper switch case
+passed on macOS, Linux (lokum), WSL2 and native Windows. It replaced the
+resident during a running fixture turn and checked that the same holder
+and child finished it. Authenticated keeper and resident proof belongs to
+4.4.
+
+On all four platforms, the foundation passed seven account tests, two
+resident dispatcher tests, three holder process tests and twelve binary
+conformance cases. The account fixture ran against both boxes on macOS.
+The normalized HTTP replies and saved files matched, including the
+legacy account home.
+
+The vendor entry point is `Agent::open_thread`. Each thread receives a
+new prompt or attaches the resident's sink to a recovered turn through
+`Thread::start`. The sink handles transcript events, vendor-state
+checkpoints and independent permission and question promises.
 
 The following integration work remains open:
 
-- Production adapter registration and activation before the resident publishes readiness.
-- Graceful keeper release switch with a running resident-owned turn, including authenticated vendor proof.
-- Public sign-in and account routes, default-home migration, model-source wiring, and session, queue and approval routing.
-- Route conformance and differential comparison, saved full golden homes, and platform verification for 4.1b.
+- Production vendor factory registration as the adapters land.
+- Unified sign-in and account status, default-home migration, and shared session, queue and approval routing.
+- Differential and golden-home runs for the remaining routes, with platform verification.
 
 ## TypeScript scenario inventory
 

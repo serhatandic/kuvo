@@ -7,4 +7,5 @@ pub mod hold;
 pub mod resident;
 pub mod roster;
 pub mod runtime;
+pub mod session;
 pub mod sign_in;
