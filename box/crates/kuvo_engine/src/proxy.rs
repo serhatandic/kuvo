@@ -338,6 +338,7 @@ async fn forward(engine: Engine, request: DispatchRequest, cancel: CancellationT
                     }
                 } else {
                     crate::conversation::compaction_page(&mut page);
+                    engine.tool_words.fill_page(&engine, &mut page).await;
                 }
                 let mut reply = Reply::json(status, page);
                 reply.headers = headers;

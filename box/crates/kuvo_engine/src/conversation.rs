@@ -1,6 +1,7 @@
 //! Shared treatment of stored and streaming conversation summaries.
 
 mod reasoning;
+pub(crate) mod tool_words;
 
 use std::{collections::BTreeSet, sync::Arc};
 

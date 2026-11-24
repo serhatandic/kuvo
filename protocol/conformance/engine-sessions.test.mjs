@@ -2021,6 +2021,61 @@ test("a message removed while on its way can be taken back when it arrives", { t
   assert.deepEqual(here.engine.messages.get(id) ?? [], []);
 });
 
+test("assistant tool steps carry the same words on message pages and single reads", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("conversation-tool-words");
+  const session = "ses_toolWords";
+  here.engine.sessions.push(sessionOf({ id: session, directory: here.home }));
+  const fixture = JSON.parse(fs.readFileSync(new URL("../../box/test/fixtures/message-words.json", import.meta.url)));
+  write(path.join(here.home, "box", "opencode.json"), JSON.stringify({ mcp: { servers: Object.fromEntries(
+    [...fixture.servers, "my-server-two"].map(id => [id, {}]),
+  ) } }));
+  const cases = fixture.cases.filter(entry => entry.message.type === "assistant").map((entry, index) => {
+    const id = `msg_words${index}`;
+    return { ...entry, message: { ...entry.message, id }, read: { ...entry.read, id } };
+  });
+  const call = (name, input) => ({ type: "tool", name, state: { status: "running", input } });
+  const extra = [call("my-server-two_getIssue", {}), call("kuvo-browser_some_new_tool", {}),
+    call("kuvo-browser_read_conversation", { of: "Mira" }), call("kuvo-browser_queue_add", { title: "Fix the sign-in" }),
+    call("kuvo-browser_vault_run", {}), call("kuvo-browser_sandbox_ask", {}), call("atlassian_list_issues", {})];
+  const expected = [
+    ["My server two · Get issue", "My server two · Get issue"], ["Some new tool", "Some new tool"],
+    ["Read Mira’s conversation", "Reading Mira’s conversation"],
+    ["Added “Fix the sign-in” to the Work Queue", "Adding “Fix the sign-in” to the Work Queue"],
+    ["Ran a command with vault values", "Running a command with vault values"],
+    ["Asked to run a command outside the sandbox", "Asking to run a command outside the sandbox"],
+    ["Jira and Confluence · List issues", "Jira and Confluence · List issues"],
+  ];
+  cases.push({ name: "tool catalogs and the longest configured prefix", message: { type: "assistant", id: "msg_extra", content: extra },
+    read: { type: "assistant", id: "msg_extra", content: extra.map((step, index) => ({ ...step, title: expected[index][0], doing: expected[index][1] })) } });
+  const failures = [
+    ["edit", { error: { type: "tool", message: "The tool use was rejected." } }, "Edited 1 file", "declined", "The tool use was rejected."],
+    ["shell", { error: { type: "aborted", message: "Not running." } }, "Ran 1 command", "stopped", "Not running."],
+    ["read", { error: "Tool error: <tool_use_error>File does not exist. /tmp/a</tool_use_error>" }, "Read 1 file", "not found", "File does not exist. /tmp/a"],
+    ["shell", { error: { message: "Exit code 1\nnpm ERR! missing script: lint" } }, "Ran 1 command", "exit code 1", "Exit code 1\nnpm ERR! missing script: lint"],
+    ["grep", { error: "Error: ripgrep failed to start" }, "Searched once", "failed", "ripgrep failed to start"],
+    ["shell", { content: [{ type: "text", text: "Permission denied: /tmp/a" }] }, "Ran 1 command", "blocked", "Permission denied: /tmp/a"],
+    ["webfetch", {}, "Read 1 web page", "failed", "It failed without saying why."],
+  ];
+  const failed = failures.map(([name, state]) => ({ type: "tool", name, state: { status: "failed", ...state } }));
+  cases.push({ name: "failure reasons and the original step", message: { type: "assistant", id: "msg_failed", content: failed },
+    read: { type: "assistant", id: "msg_failed", content: failed.map((step, index) => {
+      const [, , said, reason, error] = failures[index];
+      return { ...step, failure: { line: `${said} · ${reason}`, reason, error } };
+    }) } });
+  here.engine.messages.set(session, cases.map(entry => entry.message));
+  const record = await here.start().ready();
+  const route = `api/session/${session}/message`;
+  const page = await request(record, "GET", route);
+  assert.equal(page.status, 200, page.text);
+  for (const [index, entry] of cases.entries()) {
+    assert.deepEqual(page.json.data[index], entry.read, entry.name);
+    const single = await request(record, "GET", route + "/" + entry.message.id);
+    assert.equal(single.status, 200, single.text);
+    assert.deepEqual(single.json.data, entry.read, entry.name);
+  }
+});
+
 test("summary titles agree between a conversation's message page and its live line", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-summary");

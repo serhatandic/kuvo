@@ -52,6 +52,7 @@ pub struct Engine {
     pub(crate) account_home: PathBuf,
     pub(crate) queues: crate::queue::QueueStore,
     pub(crate) attachment_expiry: crate::attachments::Expiry,
+    pub(crate) tool_words: std::sync::Arc<crate::conversation::tool_words::ToolWords>,
     pub(crate) attachment_source: Option<std::sync::Arc<dyn crate::AttachmentSource>>,
     pub(crate) legacy_attachments: Option<PathBuf>,
     pub(crate) agent_models: Option<std::sync::Arc<dyn crate::AgentModelSource>>,
@@ -114,6 +115,9 @@ impl Engine {
             .and_then(|account| account.home_folder(kuvo_os::platform::Platform::current(), &env))
             .unwrap_or_default();
         let upstream = Upstream::new().map_err(io::Error::other)?;
+        let tool_words = std::sync::Arc::new(
+            crate::conversation::tool_words::ToolWords::new().map_err(io::Error::other)?,
+        );
         let version = launch::pinned_version();
         let (commands, inbox) = mpsc::unbounded_channel();
         let initial = if home.join("run/stopped").exists() {
@@ -150,6 +154,7 @@ impl Engine {
             catalogs: crate::models::CatalogCache::new(),
             queues: crate::queue::QueueStore::open(&home),
             attachment_expiry: Default::default(),
+            tool_words,
             attachment_source: None,
             legacy_attachments: None,
             agent_models: None,
