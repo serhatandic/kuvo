@@ -2271,15 +2271,45 @@ exec /bin/sh -c "$command"
   }
 });
 
+function macInstallerBundle(profile, identifier) {
+  const bundle = path.join(profile, "Fixture.app");
+  write(path.join(bundle, "Contents/Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string></dict></plist>`);
+  return bundle;
+}
+
+test("the Mac installer recognizes another spelling of the same home", t => {
+  if (boxBinary().typescript || process.platform !== "darwin") return t.skip("Uses the native Mac installer.");
+  const { binary, env } = box(t);
+  const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.alias-fixture");
+  const home = path.join(env.HOME, ".kuvo-code");
+  const ask = root => spawnSync(binary.file, ["install", "--status", "--root", root, "--app", bundle], {
+    cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+  });
+  const current = ask(".kuvo-code");
+  const alias = ask(".KuVo-CoDe");
+  for (const answer of [current, alias]) {
+    assert.equal(answer.status, 0, answer.error?.message ?? answer.stdout + answer.stderr);
+  }
+  assert.deepEqual(JSON.parse(alias.stdout), JSON.parse(current.stdout));
+  assert.equal(ask(".kuvo-demo").status, 2);
+  macInstallerBundle(env.HOME, "run.kuvo.code");
+  const refused = ask(".KuVo-CoDe");
+  assert.equal(refused.status, 1, refused.error?.message ?? refused.stdout + refused.stderr);
+  assert.deepEqual(JSON.parse(refused.stdout), {
+    result: "refused", message: "Kuvo itself sets up ~/.kuvo-code only.",
+  });
+  assert.equal(fs.existsSync(home), false);
+  assert.equal(fs.existsSync(path.join(env.HOME, ".KuVo-CoDe")), false);
+});
+
 test("the Mac installer preserves a machine and the earlier app's home", t => {
   if (boxBinary().typescript || process.platform !== "darwin") return t.skip("Uses the native Mac installer.");
   const { binary, env, key, release, body } = box(t);
   const identifier = "run.kuvo.code.installer-fixture";
-  const bundle = path.join(env.HOME, "Fixture.app");
+  const bundle = macInstallerBundle(env.HOME, identifier);
   const home = path.join(env.HOME, ".kuvo-code");
   const legacy = path.join(env.HOME, "Library/Application Support", identifier);
-  write(path.join(bundle, "Contents/Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string></dict></plist>`);
   write(path.join(home, "box/kind"), "machine\n");
   write(path.join(home, "bin/kuvo-start"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
   write(path.join(home, `engine/${body.engine}/opencode`), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
