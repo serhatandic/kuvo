@@ -63,6 +63,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U47 | The native keeper replaces the resident while its real Rust holder is running a stand-in agent turn. The new resident takes the next controller generation with the same holder and agent PIDs. The turn completes once in the saved conversation and the keeper confirms the release. Passed on Mac, native Linux, WSL2 and native Windows. |
 | U48 | Four simultaneous installer status calls check the same verified media, return identical fresh verdicts and leave the home absent. The ordinary installation then succeeds. Passed on Mac, native Linux and WSL2. |
 | U49 | The native shell installer rejects a signed engine descriptor that names a local file. Status leaves the home absent and the restored network descriptor proceeds to installation. Passed on Mac, native Linux and WSL2. Native Windows passed the keeper status control. |
+| U50 | The release builder assembles Rust target packs with the native executable and common catalogs, browser, and configuration. Mac arm64, native Linux x64, WSL2, and native Windows x64 verify and prepare their pack from the same signed manifest. The Mac pack retains the ad-hoc Helper signature, and the Windows pack ships the runtime library and probes the pinned engine. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -293,8 +294,8 @@ dependencies.
 | Same, pinned signatures and signed bytes | Covered by U1 and U21. | — |
 | Same, stale Mac launcher marks | Open. | 7.2 |
 | Same, partial rollback reported once | Partial. 7.1 writes the refusal record and U6 reads it. The interrupted in-place restore and its one-time settlement need the predecessor fixture. | 7.2 |
-| Same, signed release with Helper kept for peers | Partial. U4 covers signing and selecting a target. U9–U10 pull the signed pack from a peer. Assembling published target packs with a validated Helper remains open. | 7.2, 6.2, 9.3 |
-| Same, full packaged contents | Partial. U4 checks the shipped executable and manifest in isolation. Complete per-target artifacts remain open. | 7.2 |
+| Same, signed release with Helper kept for peers | Partial. U9–U10 pull the signed pack from a peer. U50 prepares locally assembled target packs, including a Mac Helper with a verified ad-hoc signature. Release-signed Helper media and publication remain open. | 7.2, 6.2, 9.3 |
+| Same, full packaged contents | Partial. U50 prepares the complete local Mac arm64, Linux x64, and Windows x64 packs. Mac x64 and Linux arm64 builds and published media remain open. | 7.2, 9.3 |
 | [update-follows-peers](../../box/bridge-tests/update-follows-peers.test.js), installed version and app version | Partial. U8 and U10 follow the main's signed installed version. Installer and app offers remain open. | 7.2 |
 | Same, desktop looks for its own update | TypeScript reference and desktop updater. | — |
 | Same, six-hour check | Partial. The resident schedules checks every six hours. U20 covers manual checks forwarded by a member. The elapsed-round cases remain open. | 7.2 |
@@ -331,10 +332,10 @@ dependencies.
 | Same, continue only interrupted engine turn | Open. | 3.2, 4.1, 7.2 |
 | Same, guard commits after selected resident answers | 7.1 keeper scenario covers this. | — |
 | Same, resident switch preserves the engine and sandbox files | Partial. 7.1 keeps workers during the shell switch. The prepared-release engine and plugins need an end-to-end test. | 7.2 |
-| [release-catalogs](../../box/test/release-catalogs.test.ts), integrations and popular servers in fixture | Open for Rust release builds. | 7.2 |
-| Same, Mac integrations | Open for Rust release builds. | 7.2 |
-| Same, legacy files byte-for-byte where preserved | Open for Rust release builds. | 7.2 |
-| Same, files writer stays below destination | Partial. U4 prepares in a private home. Full release assembly and uninstall footprint need proof. | 7.2 |
+| [release-catalogs](../../box/test/release-catalogs.test.ts), integrations and popular servers in fixture | U50 checks the catalogs in assembled Rust releases against the TypeScript catalogs. | — |
+| Same, Mac integrations | U50 checks the Mac catalog in the signed target packs. | — |
+| Same, legacy files byte-for-byte where preserved | The legacy writer checks still pass with the new Rust packing option. U50 compares the bytes and modes of shared release files with the TypeScript writer. | — |
+| Same, files writer stays below destination | The common destination-bound writer check still passes. U50 prepares full packs in private homes, and the Unix installer status leaves a fresh home absent. The live uninstall footprint remains open. | 7.2 |
 | [add-uninstall](../../box/test/add-uninstall.test.ts), stopped uninstall deletes desktop identity | 2.3 U5 covers stopped standalone. U22 also covers a stopped Mac with a Helper job. SSH wrapper and live keeper path remain open. | 2.3, 7.2 |
 | Same, incomplete desktop cleanup reported | Open. | 2.3, 7.2 |
 | Same, failed departure keeps identity | Open. | 2.3 |

@@ -4,8 +4,9 @@
 // written there too would leave every box's runner on a catalog no release has.
 import "./safety"
 import { expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { boxFiles, writeBoxFiles } from "../src/release/files"
@@ -91,6 +92,56 @@ test("writing a release's files changes nothing above their folder, however the 
     }
   } finally {
     rmSync(parent, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("the release builder packs Rust target executables with the common release files", () => {
+  const root = sources("2.2.6")
+  const checkout = join(import.meta.dir, "../..")
+  try {
+    const pinFile = join(root, "box/src/shared/engine-pin.json")
+    const pin = JSON.parse(readFileSync(pinFile, "utf8"))
+    pin.windows = { x86_64: pin.linux.x86_64 }
+    writeFileSync(pinFile, JSON.stringify(pin))
+    const common = boxFiles(root, "0.8.0").filter(file => file.path !== "bin/kuvo-link.js" && file.path !== "bin/kuvo-agents.js")
+    for (const [target, program, windows] of [
+      ["x86_64-unknown-linux-musl", "kuvo-box", false],
+      ["x86_64-pc-windows-gnullvm", "kuvo-box.exe", true],
+    ] as const) {
+      const executable = join(root, program)
+      const programBytes = Buffer.from(`fixture executable for ${target}`)
+      writeFileSync(executable, programBytes)
+      if (windows) writeFileSync(join(root, "libunwind.dll"), "runtime library")
+      const output = join(root, target)
+      const packed = spawnSync("sh", ["scripts/box-release.sh", "--rust-pack", target, executable, "0.8.0", output], {
+        cwd: checkout, env: { ...process.env, BOX_SOURCES: root, BUN: process.execPath }, encoding: "utf8",
+      })
+      expect(packed.status, packed.stderr).toBe(0)
+      const extracted = join(output, "extracted")
+      mkdirSync(extracted)
+      const tar = spawnSync("tar", ["-xzf", join(output, `box-0.8.0-${target}.tar.gz`), "-C", extracted], { encoding: "utf8" })
+      expect(tar.status, tar.stderr).toBe(0)
+      const manifest = JSON.parse(readFileSync(join(extracted, "box.json"), "utf8"))
+      expect(manifest).toMatchObject({ kuvo: "box/1", launch: "rust", version: "0.8.0", windows: pin.windows })
+      expect(readFileSync(join(output, "box.json"))).toEqual(readFileSync(join(extracted, "box.json")))
+      expect(manifest.files[`bin/${program}`]).toBe(createHash("sha256").update(programBytes).digest("hex"))
+      expect(readFileSync(join(extracted, "bin", program))).toEqual(programBytes)
+      for (const file of common) {
+        const bundled = join(extracted, file.path)
+        expect(readFileSync(bundled), file.path).toEqual(file.data)
+        expect(statSync(bundled).mode & 0o777, file.path).toBe(file.mode)
+      }
+      expect(existsSync(join(extracted, "bin/kuvo-link.js"))).toBe(false)
+      expect(existsSync(join(extracted, "bin/kuvo-agents.js"))).toBe(false)
+      if (windows) {
+        expect(readFileSync(join(extracted, "bin/libunwind.dll"), "utf8")).toBe("runtime library")
+      } else {
+        expect(readFileSync(join(output, "kuvo-install-bin"))).toEqual(programBytes)
+        expect(existsSync(join(output, "kuvo-install"))).toBe(true)
+      }
+    }
+  } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })
