@@ -171,6 +171,15 @@ The latest macOS workspace build passed. In its focused beta.48 rerun, the
 returning computer took 11.9 seconds to confirm the bridge and 42.7 seconds
 more to confirm Rust through authenticated relay transfers.
 
+The refreshed Linux run passed 11 checks with a static x86_64 musl binary on
+Ubuntu 24.04 under WSL2. The release-pack fixture removed debug symbols to
+fit the signed pack's size limit. The shell fleet prepared in 6.4 seconds,
+confirmed on the main and member in 8.9 and 13.0 seconds after the held
+download resumed, and confirmed the returning computer in 13.3 seconds.
+The failover fixture prepared in 6.4 seconds, changed main in 8.2 seconds
+from boot with the test clock advanced, confirmed 7.9 seconds after the
+download resumed, and brought the returning computer back in 20.0 seconds.
+
 ## TypeScript reference cases
 
 `Covered` means the exposed behaviour is checked. `Partial` records which
