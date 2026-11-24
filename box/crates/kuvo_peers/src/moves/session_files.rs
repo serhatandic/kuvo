@@ -37,7 +37,7 @@ pub(crate) fn owner_attachment_files(
             roots.iter().any(|root| {
                 path.strip_prefix(root).ok().is_some_and(|relative| {
                     relative.starts_with(session)
-                        && checked_path(root, relative).is_ok_and(|path| {
+                        && checked_source_path(root, relative).is_ok_and(|path| {
                             fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
                         })
                 })
@@ -382,13 +382,7 @@ pub(super) fn checked_path(root: &Path, relative: &Path) -> io::Result<PathBuf> 
     Ok(target)
 }
 
-fn measure(
-    root: &Path,
-    relative: &Path,
-    copy: Option<&Path>,
-    limit: u64,
-    expected: Option<&FileProof>,
-) -> io::Result<FileProof> {
+fn checked_source_path(root: &Path, relative: &Path) -> io::Result<PathBuf> {
     // The source path on Windows uses native separators. Archive paths have
     // already been validated as portable slash-separated components.
     let portable = relative
@@ -396,7 +390,17 @@ fn measure(
         .map(|part| part.to_str().ok_or_else(invalid))
         .collect::<io::Result<Vec<_>>>()?
         .join("/");
-    let path = checked_path(root, Path::new(&portable))?;
+    checked_path(root, Path::new(&portable))
+}
+
+fn measure(
+    root: &Path,
+    relative: &Path,
+    copy: Option<&Path>,
+    limit: u64,
+    expected: Option<&FileProof>,
+) -> io::Result<FileProof> {
+    let path = checked_source_path(root, relative)?;
     let mut file = files::open_payload(&path)?;
     let before = files::opened_file_stamp(&file)?;
     if before.size > limit
