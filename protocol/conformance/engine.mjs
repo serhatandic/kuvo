@@ -86,7 +86,9 @@ export async function standInEngine(root, env) {
         return send({ data: info });
       }
       if (one && request.method === "GET") {
-        const found = engine.sessions.find(each => each.id === decodeURIComponent(one[1]));
+        const id = decodeURIComponent(one[1]);
+        if (engine.refuseLookup === id) return send({ message: "The conversation is temporarily unavailable." }, 503);
+        const found = engine.sessions.find(each => each.id === id);
         return found ? send({ data: found }) : send({ message: "No such session." }, 404);
       }
       // What's changed, kept, as the engine keeps it (each field given in place of its own).
@@ -125,7 +127,8 @@ export async function standInEngine(root, env) {
       if (prompt && request.method === "POST") {
         const session = decodeURIComponent(prompt[1]);
         if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
-        const held = engine.holdPrompt?.id === given.id ? engine.holdPrompt : null;
+        const hold = engine.holdPrompt;
+        const held = hold && (hold.id ? hold.id === given.id : hold.session === session) ? hold : null;
         if (held) engine.holdPrompt = null;
         if (held?.beforeAcceptance) {
           held.accepted();

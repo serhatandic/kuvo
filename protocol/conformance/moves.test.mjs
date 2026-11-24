@@ -2006,6 +2006,98 @@ test("a letter that waits hears the authenticated answer after the sender restar
   assert.equal(conversation.at(-1).text, `[Message from an agent on ${main.name} · unknown] (It can't be answered: who sent it isn't known.)\n\nIs lunch booked?`);
 });
 
+test("pending letters reach a peer in creation order", { timeout: 40000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("ordered-letter-source"), there = await computer("ordered-letter-target");
+  const { member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const recipient = "ses_orderedRecipient";
+  there.engine.sessions.push(sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") }));
+  const target = await there.start().ready();
+  await until(async () => (await request(target, "GET", "api/session/" + recipient)).status === 200,
+    "The destination's engine did not become ready");
+  const now = Date.now(), folder = path.join(here.home, "run/outbox/sending");
+  for (const [index, name] of ["third", "second", "first"].entries()) {
+    write(path.join(folder, "ltr_order_" + index + ".json"), JSON.stringify({
+      to: recipient, text: name, peer: member.key, wait: false, at: now - (index + 1) * 1000,
+    }));
+  }
+  await here.start().ready();
+  const messages = await until(() => {
+    const prompts = there.engine.messages.get(recipient);
+    return prompts?.length === 3 && prompts;
+  }, "The ordered letters did not all arrive", 18000);
+  assert.deepEqual(messages.map(prompt => prompt.text.split("\n\n").at(-1)), ["first", "second", "third"]);
+});
+
+test("a letter survives a failed lookup and a restart after engine acceptance", {
+  timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("unconfirmed-letter-source"), there = await computer("unconfirmed-letter-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const sender = "ses_unconfirmedSender", recipient = "ses_unconfirmedTarget";
+  here.engine.sessions.push(sessionOf({ id: sender, title: "Reader", directory: path.join(here.home, "chats") }));
+  const id = "ltr_unconfirmedAcceptance";
+  const pending = path.join(here.home, "run/outbox/sending", id + ".json");
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
+  const unpack = (packet, peer, secret) =>
+    packet.payload[0] === Frame.mail && JSON.parse(openOneWay(packet.payload.subarray(5), Buffer.alloc(32, secret),
+      Buffer.from(peer.key, "base64url")).payload);
+  let first, retry, lastReceipt, announced = false;
+  t.after(relay.intercept(from, to, packet => {
+    if (unpack(packet, main, 2)?.letter?.id === id) first = packet;
+    return false;
+  }));
+  t.after(relay.intercept(to, from, packet => {
+    const mail = unpack(packet, member, 1);
+    if (mail?.agents?.list?.some(agent => agent.session === recipient)) announced = true;
+    const receipt = mail?.delivered;
+    if (receipt?.id === id) {
+      lastReceipt = receipt;
+      if (receipt.retry) retry = receipt;
+    }
+    return false;
+  }));
+  const sourceProcess = here.start(), targetProcess = there.start();
+  const [source, target] = await Promise.all([sourceProcess.ready(), targetProcess.ready()]);
+  await Promise.all([
+    until(async () => (await request(source, "GET", "api/session/" + sender)).status === 200, "The sender did not become ready"),
+    until(async () => (await request(target, "GET", "api/session")).status === 200, "The destination's engine did not become ready"),
+  ]);
+  there.engine.refuseLookup = recipient;
+  write(pending, JSON.stringify({ from: sender, to: recipient, text: "Check the live build.", wait: false, peer: member.key, at: Date.now() }));
+  await until(() => retry, () => "No retry receipt after a failed lookup " + JSON.stringify(lastReceipt)
+    + "\n" + sourceProcess.log() + "\n" + targetProcess.log(), 20000);
+  assert.equal(retry.ok, false);
+  assert.ok(fs.existsSync(pending));
+  assert.ok(!there.engine.messages.has(recipient));
+
+  there.engine.refuseLookup = null;
+  const made = sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") });
+  there.engine.sessions.push(made);
+  there.engine.emit({ type: "session.created", data: { sessionID: recipient, info: made } });
+  const accepted = new Promise(resolve => { there.engine.holdPrompt = { session: recipient, accepted: resolve }; });
+  relay.replay(first);
+  await accepted;
+  const conversation = there.engine.messages.get(recipient);
+  assert.equal(conversation.length, 1);
+  await targetProcess.stop();
+  await until(() => !relay.has(to), "The stopped destination stayed on the relay");
+  announced = false;
+  const restarted = there.start();
+  await restarted.ready();
+  await until(() => announced, () => "The restarted destination did not announce its conversation\n" + restarted.log(), 15000);
+  relay.replay(first);
+  await until(() => !fs.existsSync(pending), () => "The retried letter was not acknowledged " + JSON.stringify(lastReceipt)
+    + "\n" + restarted.log(), 15000);
+  assert.equal(conversation.length, 1);
+  const prompts = there.engine.asked.filter(call => call.method === "POST" && call.path === "/api/session/" + recipient + "/prompt");
+  assert.deepEqual([...new Set(prompts.map(call => call.json.id))], [conversation[0].id]);
+});
+
 test("a refused letter becomes one queued note to the conversation that sent it", {
   timeout: 65000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
