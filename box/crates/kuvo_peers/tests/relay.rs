@@ -1804,3 +1804,201 @@ async fn switch_retry_survives_wall_clock_changes() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn dropped_copies_retry_each_minute_then_each_hour() {
+    use kuvo_engine::{Engine, Timing};
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        ownership::{Handle, SetupState},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::encode;
+    use std::sync::Arc;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        sync::mpsc,
+    };
+
+    const MINUTE: Duration = Duration::from_secs(60);
+    const HOUR: Duration = Duration::from_secs(3600);
+    const NOW: i64 = 10 * 24 * 3_600_000;
+    let home = tempfile::tempdir().unwrap();
+    let here = public(RUST_KEY);
+    let peer = public(PEER_KEY);
+    let hash = encode(&[17; 32]);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let run = home.path().join("run");
+    let endpoint =
+        json!({"pid":std::process::id(),"port":port,"password":"fixture","version":"fixture"});
+    files::write_atomic(
+        &run.join("engine.json"),
+        &serde_json::to_vec(&endpoint).unwrap(),
+    )
+    .unwrap();
+    let copies = [
+        ("mov_recentDrop", "ses_recentDrop", NOW - 5000),
+        (
+            "mov_overdueDrop",
+            "ses_overdueDrop",
+            NOW - 8 * 24 * 3_600_000,
+        ),
+    ];
+    for (id, session, since) in copies {
+        let row = json!({
+            "formatVersion":1, "id":id, "kind":"chat", "thing":session, "name":session,
+            "from":encode(&peer), "to":encode(&here), "peer":encode(&peer), "role":"to",
+            "stage":"copying", "sessions":[session], "complete":true, "setUpAt":since,
+            "dropping":true, "dropSince":since, "started":since, "safeSwitch":true,
+            "twoComputers":true, "generation":1, "hash":hash, "createdSessions":[session],
+        });
+        files::write_atomic(
+            &run.join("moves").join(format!("{id}.json")),
+            &serde_json::to_vec(&row).unwrap(),
+        )
+        .unwrap();
+    }
+    let (delete, mut deletions) = mpsc::unbounded_channel();
+    let hashes = hash.clone();
+    let server = tokio::spawn(async move {
+        let mut attempted = std::collections::HashSet::new();
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut head = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !head.ends_with(b"\r\n\r\n") {
+                let count = socket.read(&mut buffer).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                head.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8_lossy(&head);
+            let mut parts = request.split_whitespace();
+            let (Some(method), Some(route)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            let session = route.rsplit('/').next().unwrap();
+            let Some((id, session, _)) = copies.iter().find(|(_, found, _)| *found == session)
+            else {
+                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}").await;
+                continue;
+            };
+            let (status, body) = if method == "DELETE" {
+                let first = attempted.insert(*session);
+                delete.send(*session).unwrap();
+                (
+                    if first {
+                        "503 Service Unavailable"
+                    } else {
+                        "200 OK"
+                    },
+                    json!({}),
+                )
+            } else {
+                (
+                    "200 OK",
+                    json!({"data":{"id":session, "metadata":{"kuvo.moveImport":format!("{id}:1:{hashes}")}}}),
+                )
+            };
+            let body = body.to_string();
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        }
+    });
+    let (relay, _wire) = TestRelay::connect().await;
+    let mut resident = ResidentPeers::start(
+        home.path(),
+        Roster {
+            here: Some(here),
+            main: Some(here),
+            name: "Destination".into(),
+            members: vec![Member {
+                key: peer,
+                address: Some(PEER_ADDRESS),
+                name: "Source".into(),
+                kind: ComputerKind::Machine,
+            }],
+        },
+        Some(relay),
+        None,
+        false,
+        Arc::new(|| NOW),
+    )
+    .await
+    .unwrap();
+    let devices = Devices::load(home.path(), "Destination".into(), ComputerKind::Machine)
+        .await
+        .unwrap()
+        .devices;
+    let owner = Handle::new(
+        resident.reader(),
+        resident.relay_handle(),
+        devices,
+        SetupState::default,
+    );
+    let engine = Engine::new(
+        home.path().to_owned(),
+        Default::default(),
+        Timing::default(),
+    )
+    .unwrap();
+    let probe = tokio::time::timeout(Duration::from_secs(5), engine.session_move())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        probe.lookup("ses_recentDrop").await.unwrap().unwrap()["id"],
+        "ses_recentDrop"
+    );
+    drop(probe);
+    resident.attach_moves(engine, owner).await.unwrap();
+
+    let mut first = vec![];
+    for _ in copies {
+        first.push(
+            tokio::time::timeout(Duration::from_secs(10), deletions.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    first.sort_unstable();
+    assert_eq!(first, ["ses_overdueDrop", "ses_recentDrop"]);
+    tokio::time::pause();
+    assert!(
+        tokio::time::timeout(MINUTE - Duration::from_secs(2), deletions.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(6), deletions.recv())
+            .await
+            .unwrap(),
+        Some("ses_recentDrop")
+    );
+    tokio::time::advance(HOUR - 2 * MINUTE).await;
+    assert!(deletions.try_recv().is_err());
+    assert_eq!(
+        tokio::time::timeout(2 * MINUTE, deletions.recv())
+            .await
+            .unwrap(),
+        Some("ses_overdueDrop")
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for (id, _, _) in copies {
+            let journal = run.join("moves").join(format!("{id}.json"));
+            while journal.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    server.abort();
+}

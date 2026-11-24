@@ -27,6 +27,7 @@ for addressed work and receipt lookup.
 | Import contention | Both residents preserve an unrelated local child after a failed lookup, a second conversation claiming the child's ID after preflight, or a lost import reply. Only their own staged imports are rolled back. |
 | Cleanup | A switched source that cannot export its backup retains the original while its receipt reports cleanup pending and location points at the destination. The next round respects the retry interval and the same resident cleans up once the interval elapses. Restart recovery was also exercised. A destination that cannot delete a dropped copy keeps it held, replays the same drop proof on a late switch, and cleans up once its engine accepts deletion. |
 | Cleanup after partial deletion | Both residents keep a complete backup when the engine removes the child but refuses to remove the original. After restart they finish cleaning up using that backup, while the engine refuses a fresh export. |
+| Dropped-copy retry | Failed deletion keeps each copy held. The Rust resident tries again each minute for a recent drop and each hour after a week. Both copies are released when deletion succeeds. The TypeScript reference covers the failed deletion and the late warning. |
 | Waiting and recent requests | On the same live switch the source shows it is waiting for the destination after its reply is lost. A resident also drives a recent request recorded before its first check when it starts, while a second simultaneous request is refused. The live transfer imports children from both engine pages. |
 | Changing conversations | A live move rebuilds a bundle if a replay fence is saved after its first offer. Another move sees a new message on each offer, gives up after three offers, and leaves all four messages on the source. |
 | Retired backup | Only the destination starts the retention clock. The backup stays while a move back is in progress. Once that move is dropped, an expired backup stays recorded through a failed deletion and the next round retries it. A destination distinguishes the first local reply from a carried reply with a future timestamp. |
@@ -127,7 +128,7 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Sixty-nine have full scenario coverage, 23 have partial proof,
+below counts 212 declarations. Seventy-one have full scenario coverage, 21 have partial proof,
 and 120 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
@@ -190,12 +191,12 @@ separately where they appear.
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |
-| | 3 | Partial, a destination that cannot delete a dropped copy stays held, repeats its proof and removes the import when the engine accepts deletion again. Timer-driven retry still needs 2.4 proof. |
+| | 3 | Covered by a failed deletion keeping the copy held and repeating its proof, followed by minute-based retry and removal once the engine allows it. |
 | | 11 | Covered by a sparse source wake-up file over 1 GB. The source releases its hold and keeps the original without offering the copy. |
 | | 15 | Covered by dropping an unfinished bundle while the engine cannot answer its readiness check. |
 | | 18 | Covered by an abandoned tool reply that stays held until the switch and follows the conversation once. |
 | | 16, 22 | Covered by an offer retried while a dropped copy is held and again after cleanup succeeds, and by dating the week-long warning from the drop. |
-| | 17 | Partial, an overdue dropped copy warns once and stays held. The hourly retry schedule still needs 2.4 proof. |
+| | 17 | Covered by the overdue drop warning once and staying held, followed by hourly retry and cleanup. |
 | | 19–20 | Covered by a reply from a local conversation following its held caller to the new owner, and by a resident delivering a saved reply to its local conversation. |
 | | 23–24 | Covered by queued notices retaining their text, author and presentation on the new computer and after a return home. |
 | | 8–9 | Open, 2.4 replay and rollback, with engine effects from 3.2. |
