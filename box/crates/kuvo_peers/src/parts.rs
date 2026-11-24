@@ -106,7 +106,24 @@ pub fn split(bytes: &[u8]) -> Option<Arc<[Part]>> {
 /// Work Queue mail uses the same part spelling and digest as documents. The
 /// whole is the compact JSON before the enclosing mail's version and clock.
 pub fn work_queue_mails(payload: Value, at: i64) -> Option<Vec<Envelope>> {
-    let mail = |work_queue| {
+    queue_mails(payload, at, false)
+}
+
+/// Quiet Work Queue reads mark every frame, including a one-frame reply.
+/// The marker is outside the assembled JSON and its digest.
+pub(crate) fn memory_work_queue_mails(payload: Value, at: i64) -> Option<Vec<Envelope>> {
+    queue_mails(payload, at, true)
+}
+
+fn queue_mails(payload: Value, at: i64, memory: bool) -> Option<Vec<Envelope>> {
+    if !payload.is_object() {
+        return None;
+    }
+    let unmarked = memory.then(|| ordinary(&payload));
+    let mail = |mut work_queue: Value| {
+        if memory {
+            work_queue["memory"] = true.into();
+        }
         Envelope(
             [("workQueue".into(), work_queue), ("at".into(), at.into())]
                 .into_iter()
@@ -117,7 +134,7 @@ pub fn work_queue_mails(payload: Value, at: i64) -> Option<Vec<Envelope>> {
     if one.encode().len() <= MAX_PLAINTEXT {
         return Some(vec![one]);
     }
-    let payload = ordinary(&one.0["workQueue"]);
+    let payload = unmarked.unwrap_or_else(|| ordinary(&one.0["workQueue"]));
     let parts = split(payload.as_bytes())?;
     Some(
         parts
@@ -125,6 +142,45 @@ pub fn work_queue_mails(payload: Value, at: i64) -> Option<Vec<Envelope>> {
             .map(|part| mail(json!({"part": part})))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quiet_work_queue_parts_mark_each_frame_and_keep_an_independent_assembly() {
+        let small = json!({"act":{"method":"GET"}});
+        let one = memory_work_queue_mails(small.clone(), 42).unwrap();
+        let mut marked = small;
+        marked["memory"] = true.into();
+        assert_eq!(one[0].0["workQueue"], marked);
+
+        let large = json!({"acted":{"body":"x".repeat(128 * 1024)}});
+        let mut tracked = work_queue_mails(large.clone(), 42).unwrap();
+        let mut quiet = memory_work_queue_mails(large.clone(), 42).unwrap();
+        assert!(tracked.len() > 1);
+        assert_eq!(tracked.len(), quiet.len());
+        for (tracked, quiet) in tracked.iter().zip(&quiet) {
+            let quiet = &quiet.0["workQueue"];
+            assert_eq!(quiet["part"], tracked.0["workQueue"]["part"]);
+            assert_eq!(quiet["memory"], true);
+        }
+        let mut receiver = WorkQueueParts::default();
+        let key = [3; 32];
+        assert!(receiver.receive(key, &mut tracked[0]));
+        for piece in &mut quiet[1..] {
+            assert!(!receiver.receive(key, piece));
+        }
+        assert!(receiver.receive(key, &mut quiet[0]));
+        let mut marked = large.clone();
+        marked["memory"] = true.into();
+        assert_eq!(quiet[0].0["workQueue"], marked);
+        for piece in &mut tracked[1..] {
+            receiver.receive(key, piece);
+        }
+        assert_eq!(tracked.last().unwrap().0["workQueue"], large);
+    }
 }
 
 #[derive(Default)]

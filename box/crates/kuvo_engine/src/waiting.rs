@@ -6,15 +6,37 @@ use kuvo_protocol::routes::{get_kuvo_waiting as read, get_kuvo_waiting_events as
 use kuvo_server::{Access, JsonLine, Registry, RouteReply};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::watch;
 
 use crate::{Engine, LocalSessions, session_list::Snapshot, sessions::typed};
+
+/// Current asking activity reported by peers. The work runtime filters away
+/// computers and superseded copies before publishing this snapshot.
+#[derive(Clone)]
+pub struct PeerWaiting {
+    pub session: String,
+    pub line: Vec<String>,
+    pub bot: Option<String>,
+}
+
+impl Engine {
+    pub fn with_peer_waiting(mut self, activity: watch::Receiver<Arc<Vec<PeerWaiting>>>) -> Self {
+        self.peer_waiting = Some(activity);
+        self
+    }
+}
 
 #[derive(Deserialize)]
 struct Item {
     id: String,
-    status: String,
+    #[serde(rename = "title")]
+    _title: String,
+    status: Option<String>,
+    category: Option<String>,
     #[serde(default)]
     removed: Value,
+    #[serde(default)]
+    created: Value,
     #[serde(default)]
     updated: Value,
     #[serde(default)]
@@ -26,27 +48,81 @@ struct Linked {
     session: String,
 }
 
+impl Item {
+    fn status(&self) -> &str {
+        self.status
+            .as_deref()
+            .filter(|status| !status.is_empty())
+            .unwrap_or(match self.category.as_deref() {
+                Some("done") => "done",
+                Some("cat_waiting-on-you") => "needs-you",
+                _ => "todo",
+            })
+    }
+
+    fn updated(&self) -> f64 {
+        self.updated["at"]
+            .as_f64()
+            .or_else(|| self.created["at"].as_f64())
+            .unwrap_or_default()
+    }
+}
+
+fn prefixed_id(
+    value: &str,
+    prefix: &str,
+    size: std::ops::RangeInclusive<usize>,
+    valid: impl Fn(u8) -> bool,
+) -> bool {
+    value
+        .strip_prefix(prefix)
+        .is_some_and(|rest| size.contains(&rest.len()) && rest.bytes().all(valid))
+}
+
+fn queue_owner(owner: &str) -> bool {
+    owner == "usr_you"
+        || prefixed_id(owner, "ses_", 1..=60, |ch| ch.is_ascii_alphanumeric())
+        || prefixed_id(owner, "grp_", 1..=60, |ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit()
+        })
+}
+
 async fn queue_count(folder: &Path, list: Option<&Snapshot>) -> usize {
     let mut items = BTreeMap::<String, Item>::new();
     let Ok(mut files) = tokio::fs::read_dir(folder).await else {
         return 0;
     };
+    let mut paths = Vec::new();
     while let Ok(Some(file)) = files.next_entry().await {
-        if file.path().extension().is_none_or(|ext| ext != "json") {
-            continue;
+        if file
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_suffix(".json"))
+            .is_some_and(queue_owner)
+        {
+            paths.push(file.path());
         }
-        let Ok(bytes) = tokio::fs::read(file.path()).await else {
+    }
+    paths.sort();
+    for path in paths {
+        let Ok(bytes) = tokio::fs::read(path).await else {
             continue;
         };
         let Ok(stored) = serde_json::from_slice::<Value>(&bytes) else {
             continue;
         };
         let rows = stored["items"].as_array().into_iter().flatten();
+        let mut seen = std::collections::BTreeSet::new();
         for item in rows.filter_map(|row| serde_json::from_value::<Item>(row.clone()).ok()) {
-            let at = item.updated["at"].as_u64().unwrap_or_default();
+            if !prefixed_id(&item.id, "wqi_", 20..=20, |ch| {
+                ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-')
+            }) || !seen.insert(item.id.clone())
+            {
+                continue;
+            }
             if items
                 .get(&item.id)
-                .is_none_or(|old| old.updated["at"].as_u64().unwrap_or_default() <= at)
+                .is_none_or(|old| old.updated() <= item.updated())
             {
                 items.insert(item.id.clone(), item);
             }
@@ -55,22 +131,21 @@ async fn queue_count(folder: &Path, list: Option<&Snapshot>) -> usize {
     items
         .values()
         .filter(|item| {
-            let open = !matches!(item.status.as_str(), "done" | "canceled")
-                && matches!(item.removed, Value::Null | Value::Bool(false));
-            open && (item.status == "needs-you"
+            let status = item.status();
+            let open = !matches!(status, "done" | "canceled") && !item.removed["at"].is_number();
+            open && (status == "needs-you"
                 || list.is_some_and(|list| {
-                    item.sessions
-                        .iter()
-                        .any(|linked| list.asking(&linked.session))
+                    item.sessions.iter().any(|linked| {
+                        prefixed_id(&linked.session, "ses_", 1..=60, |ch| {
+                            ch.is_ascii_alphanumeric()
+                        }) && list.asking(&linked.session)
+                    })
                 }))
         })
         .count()
 }
 
-async fn bot_count(folder: &Path, list: Option<&Snapshot>) -> usize {
-    let Some(list) = list else {
-        return 0;
-    };
+async fn bot_count(folder: &Path, list: Option<&Snapshot>, peers: &[PeerWaiting]) -> usize {
     let Ok(mut folders) = tokio::fs::read_dir(folder).await else {
         return 0;
     };
@@ -94,43 +169,81 @@ async fn bot_count(folder: &Path, list: Option<&Snapshot>) -> usize {
             && stored["id"] == id
             && stored["name"].is_string()
             && let Ok(session) = tokio::fs::read_to_string(bot.path().join("session")).await
-            && list.asking(session.trim())
+            && !session.trim().is_empty()
         {
-            asking += 1;
+            let session = session.trim();
+            let local = list.is_some_and(|list| list.bot_waits(session, id));
+            let away = peers.iter().any(|activity| {
+                !list.is_some_and(|list| list.has_local(&activity.session))
+                    && (activity.session == session
+                        || activity.line.iter().any(|root| root == session)
+                        || activity.bot.as_deref() == Some(id))
+            });
+            if local || away {
+                asking += 1;
+            }
         }
     }
     asking
 }
 
-async fn counts(home: &Path, list: Option<Arc<Snapshot>>) -> Value {
+async fn counts(home: &Path, list: Option<Arc<Snapshot>>, peers: &[PeerWaiting]) -> Value {
     let list = list.as_deref();
     let bots = home.join("bots");
     let queues = home.join("run/work-queue/queues");
-    let (bots, queue) = tokio::join!(bot_count(&bots, list), queue_count(&queues, list));
+    let (bots, queue) = tokio::join!(bot_count(&bots, list, peers), queue_count(&queues, list));
     json!({"sessions":list.map_or(0, Snapshot::waiting_sessions),"bots":bots,"queue":queue})
 }
 
 pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Registry) {
     let home = engine.home.clone();
     let session_list = list.clone();
-    routes.register::<read::Spec, _, _>(Access::Any, move |_| {
+    let activity = engine.peer_waiting.clone();
+    let here = engine.clone();
+    routes.register::<read::Spec, _, _>(Access::Any, move |call| {
         let home = home.clone();
-        let list = session_list.snapshot_now();
-        async move { Ok(RouteReply::json::<200>(typed(counts(&home, list).await)?)) }
+        let mut list = session_list.clone();
+        let engine = here.clone();
+        let peers = activity
+            .as_ref()
+            .map(|activity| activity.borrow().clone())
+            .unwrap_or_default();
+        async move {
+            let mut snapshot = list.snapshot_now();
+            if snapshot.is_none()
+                && engine
+                    .acquire(crate::lifetime::Demand::Passive)
+                    .await
+                    .is_some()
+            {
+                snapshot = list.current(&call.cancel).await.ok();
+            }
+            Ok(RouteReply::json::<200>(typed(
+                counts(&home, snapshot, &peers).await,
+            )?))
+        }
     });
 
     let home = engine.home.clone();
+    let activity = engine.peer_waiting.clone();
+    let here = engine.clone();
     routes.register::<events::Spec, _, _>(Access::Any, move |call| {
         let home = home.clone();
         let mut list = list.clone();
+        let mut activity = activity.clone();
+        let engine = here.clone();
         async move {
+            if list.snapshot_now().is_none() && engine.acquire(crate::lifetime::Demand::Passive).await.is_some() {
+                let _ = list.current(&call.cancel).await;
+            }
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut last = Value::Null;
                 let mut next = tokio::time::interval(Duration::from_secs(1));
                 next.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     let snapshot = list.snapshot_now();
-                    let current = counts(&home, snapshot).await;
+                    let peers = activity.as_ref().map(|activity| activity.borrow().clone()).unwrap_or_default();
+                    let current = counts(&home, snapshot, &peers).await;
                     if current != last {
                         let value: events::Status200 = serde_json::from_value(current.clone()).map_err(io::Error::other)?;
                         yield JsonLine::new(value)?;
@@ -138,6 +251,12 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                     }
                     tokio::select! {
                         changed = list.changed() => if !changed { break; },
+                        changed = async {
+                            match &mut activity {
+                                Some(activity) => activity.changed().await,
+                                None => std::future::pending().await,
+                            }
+                        } => if changed.is_err() { activity = None; },
                         () = call.cancel.cancelled() => break,
                         _ = next.tick() => {},
                     }

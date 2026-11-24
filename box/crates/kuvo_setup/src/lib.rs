@@ -79,7 +79,7 @@ fn random<const N: usize>() -> Result<[u8; N], Error> {
 }
 
 pub use actor::{
-    AcceptedQueueLabels, ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, PreparedSetup,
+    AcceptedQueueLabels, ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, ModelStar, PreparedSetup,
     QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease, QueueSetup, SetupHandle,
     SetupRuntime,
 };

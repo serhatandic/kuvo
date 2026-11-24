@@ -53,7 +53,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - The Rust server keeps local OpenCode queues and can settle a retried send after a restart.
 - The Rust server retains local drafts and their receipts, reads OpenCode questions and permissions, and searches local conversations.
+- The Rust server lets you take back, steer, or send a draft waiting on this computer. It keeps the draft you take back until the composer restores it.
 - Retrying a desktop message after a server restart confirms a message already received, without sending another copy.
+- On the Rust box, a draft can wait for its conversation’s computer, starred models appear across the setup, and conversation search includes other computers.
+- Windows project keys open their session lists, and branches keep attachments they refer to by Windows paths.
 - The Rust box shows the coding-agent status reported by each computer and leaves conversations waiting for you out of its working count.
 
 - The Rust box pairs your desktop app across your computers and learns about removed devices when it reconnects, even while your main computer is away.
