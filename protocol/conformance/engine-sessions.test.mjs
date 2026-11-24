@@ -1303,6 +1303,7 @@ test("the first inventory never publishes a conversation deleted while its page 
   const form = { id: "form_afterDelete", sessionID: kept.id, title: "After deletion", fields: [] };
   here.engine.forms.set(kept.id, [form]);
   here.engine.emit({ type: "form.created", data: { form } });
+  assert.equal(fs.existsSync(path.join(here.home, "run", "lists", "sessions.json")), false);
   const asks = path.join(here.home, "run", "glance", "asks.json");
   await until(() => fs.existsSync(asks) && readJSON(asks).asks[form.id], "the resident to hear the deletion");
   here.engine.holdSessionList = null;
@@ -1312,6 +1313,64 @@ test("the first inventory never publishes a conversation deleted while its page 
   assert.equal(initial.json.full, true);
   assert.deepEqual(Object.keys(initial.json.sessions), [kept.id]);
   assert.equal(initial.json.gone, undefined);
+});
+
+test("an earlier session read cannot bring back an old name or undo a pin or deletion", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-list-stale-event");
+  const before = sessionOf({ id: "ses_changes", directory: here.home, title: "Original" });
+  const safe = sessionOf({ id: "ses_safe", directory: here.home, title: "Keep this one" });
+  here.engine.sessions.push(before, safe);
+  const resident = await here.start().ready();
+  const listing = async () => {
+    const response = await request(resident, "GET", "kuvo/sessions/list");
+    assert.equal(response.status, 200, response.text);
+    return response.json;
+  };
+  await until(async () => (await listing()).sessions[before.id]?.title === "Original" && here.engine.subscribers() > 0,
+    "the original inventory and event stream");
+
+  const hold = async (change, event = "session.updated") => {
+    const gate = Promise.withResolvers();
+    const exact = Promise.withResolvers();
+    const inventories = here.engine.heldInventories ?? 0;
+    let exactRead = false;
+    void exact.promise.then(() => { exactRead = true; });
+    here.engine.holdSessionRead = { when: id => id === before.id, accepted: exact.resolve, release: gate.promise };
+    here.engine.holdSessionList = gate.promise;
+    here.engine.emit({ type: event, data: { sessionID: before.id } });
+    try {
+      await until(() => exactRead || (here.engine.heldInventories ?? 0) > inventories, "the earlier engine read");
+      change();
+    } finally {
+      here.engine.holdSessionRead = null;
+      here.engine.holdSessionList = null;
+      gate.resolve();
+    }
+  };
+  here.engine.sessions[0] = { ...before, title: "The earlier name" };
+  await hold(() => {
+    here.engine.sessions[0] = { ...before, title: "Newest name" };
+    here.engine.emit({ type: "session.renamed", data: { sessionID: before.id } });
+  });
+  await until(async () => (await listing()).sessions[before.id]?.title === "Newest name",
+    "the newest title to replace the earlier read");
+  here.engine.sessions[0].metadata = { "kuvo.pinned": true };
+  await hold(() => {
+    for (let i = 0; i < 12; i++) here.engine.emit({ type: "session.text.delta", data: { sessionID: before.id, delta: "x" } });
+  }, "session.metadata.updated");
+  await until(async () => (await listing()).sessions[before.id]?.pinned === true,
+    "streaming text to leave the pinned session update intact");
+  await hold(() => {
+    here.engine.sessions.shift();
+    here.engine.emit({ type: "session.deleted", data: { sessionID: before.id } });
+  });
+  const gone = await until(async () => {
+    const list = await listing();
+    return !list.sessions[before.id] && list;
+  }, "the deleted session to stay gone");
+  assert.equal(gone.sessions[safe.id].title, safe.title);
+  assert.ok(!(await listing()).sessions[before.id]);
 });
 
 test("session list cursors carry changes and tombstones, then read whole after a restart", { timeout: 60000 }, async t => {

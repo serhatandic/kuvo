@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 152 of
-411 declarations are covered, 88 are partial and 171 are gaps.
-Row 3.2 retains 127 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 155 of
+411 declarations are covered, 89 are partial and 167 are gaps.
+Row 3.2 retains 124 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -111,7 +111,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
 | `box/test/session-actions.test.ts` (26) | 1, 4, 9, 14, 25 | 3, 5, 20, 23, 26 | 2, 6–8, 10–13, 15–19, 21–22, 24 | 3.2 · 6–8, 10, 15–16, 20, 24<br>4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–23, 26<br>6.3 · 7–8, 15–16, 24 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
-| `box/test/session-lists.test.ts` (47) | 1, 4–6, 10, 22, 24, 26–27 | 3, 15–16, 19–20, 23, 29, 46 | 2, 7–9, 11–14, 17–18, 21, 25, 28, 30–45, 47 | 3.2 · 2–3, 7–9, 11–17, 19–21, 23, 28, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25, 28–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
+| `box/test/session-lists.test.ts` (47) | 1, 4–10, 22, 24, 26–27 | 3, 12, 15–16, 19–20, 23, 29, 46 | 2, 11, 13–14, 17–18, 21, 25, 28, 30–45, 47 | 3.2 · 2–3, 11–17, 19–21, 23, 28, 46–47<br>4.1 · 14<br>5.1 · 18, 23, 25, 28–45<br>6.3 · 11, 16–17, 46<br>2.4 · 45<br>7.3 · 16 |
 | `box/test/session-notes.test.ts` (8) | 1–3, 6 | — | 4–5, 7–8 | 3.2 · 4–5, 7–8 |
 | `box/test/session-notes-writers.test.ts` (7) | 3 | 1 | 2, 4–7 | 3.2 · 1–2, 4–7<br>7.3 · 6 |
 | `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39, 52–53 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 51, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–50, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51, 54–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
@@ -314,7 +314,7 @@ publishes receipt changes through a watch channel.
 
 | Platform | Phase 3.2c checks |
 | --- | --- |
-| macOS | 82 deterministic engine cases against each binary after merging move admission. Both also passed the beta fixture and the OpenCode Go live scenario. The Rust resident scenario verifies the owner adapters and revoked delivery. |
+| macOS | All 97 deterministic engine cases passed against each binary. Both also passed the beta fixture and the OpenCode Go live scenario. The Rust resident scenario verifies the owner adapters, revoked delivery and bounded transcript reads. A later held read scenario passed against both boxes. |
 | WSL GNU | 75 deterministic Rust cases after merging the move fences, plus the earlier OpenCode Go live scenario, with Mac-built executables. The held-inventory, old waiting-list, and concurrent-delete scenarios also passed. |
 | Native Windows | 82 deterministic Rust cases, including the native project key, Windows attachment paths and the delete race. The staged OpenCode pin reports version 2.2.6. |
 | Linux musl | 82 deterministic Rust cases with the Mac-built static executable under WSL. An earlier 35 cases passed on Lokum. |
