@@ -94,11 +94,15 @@ impl Destination {
         let mut first = run(job, &connection, "true".into(), Vec::new(), 30)
             .await
             .map_err(|_| unreachable(name))?;
+        let changed = first
+            .stderr
+            .contains("REMOTE HOST IDENTIFICATION HAS CHANGED");
+        let replace = changed
+            .then(|| connection.changed_key(&first.stderr))
+            .flatten();
         if first.status.code() == Some(255)
-            && first.stderr.contains("Host key verification failed")
-            && !first
-                .stderr
-                .contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
+            && (replace.is_some()
+                || !changed && first.stderr.contains("Host key verification failed"))
         {
             let stop = job.stop.clone();
             let ssh = connection.clone();
@@ -110,12 +114,13 @@ impl Destination {
                 return Err(format!("Couldn’t read {name}’s host key.").into());
             }
             let (answer, answered) = oneshot::channel();
-            job.send(Progress::HostKey(keys.clone(), answer)).await?;
+            job.send(Progress::HostKey(keys.clone(), replace.is_some(), answer))
+                .await?;
             answered.await.map_err(|_| "The Add was stopped.")?;
             // Recheck the submitter's grant after the interactive wait.
             job.admit().await?;
             let ssh = connection.clone();
-            tokio::task::spawn_blocking(move || ssh.trust(&keys))
+            tokio::task::spawn_blocking(move || ssh.trust(&keys, replace.as_ref()))
                 .await
                 .map_err(|_| unreachable(name))?
                 .map_err(|_| format!("Kuvo couldn’t save the SSH host key for {name}."))?;

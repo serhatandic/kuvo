@@ -394,6 +394,60 @@ async function addBench(t) {
   return { computer, main, ask, account, remote, fake, headers, page, releaseMarker };
 }
 
+test("SSH Add asks again before replacing a changed key that Kuvo trusted", {
+  skip: process.platform === "win32", timeout: 20000,
+}, async t => {
+  const { main, ask, account, remote, fake, headers, page } = await addBench(t);
+  const file = path.join(main.home, "ssh", "known_hosts");
+  const localKeys = path.join(account, ".ssh", "known_hosts");
+  const previous = `lab ssh-ed25519 ${key(7)}\nlab.lan ssh-ed25519 ${key(7)}\n`;
+  const userOwned = `other ssh-ed25519 ${key(9)}\n`;
+  write(file, previous, { mode: 0o600 });
+  write(localKeys, userOwned, { mode: 0o600 });
+  const begin = async () => {
+    const reply = await ask("POST", "kuvo/computers/add", { destination: "lab" }, headers);
+    assert.equal(reply.status, 202, reply.text);
+    const id = reply.json.try.id;
+    const current = async () => (await page()).tries.find(each => each.id === id);
+    const question = await until(async () => {
+      const attempt = await current();
+      if (attempt?.state === "failed") throw new Error(attempt.failure.message);
+      return attempt?.question;
+    }, "The changed saved key was not shown.");
+    assert.equal(question.id, "hostKeyChanged");
+    assert.equal(question.title, "lab’s host key changed");
+    assert.equal(question.facts[1].label, "Fingerprint (ED25519)");
+    assert.match(question.facts[1].value, /^SHA256:/);
+    assert.deepEqual(question.answers.map(({ id, label, kind }) => [id, label, kind]), [
+      ["cancel", "Cancel", "plain"], ["trust", "Trust New Key", "danger"],
+    ]);
+    const answer = choice => ask("POST", `kuvo/computers/add/${id}/answer`, { answer: choice, at: question.at }, headers);
+    return { current, answer };
+  };
+  const cancelled = await begin();
+  assert.equal((await cancelled.answer("cancel")).status, 200);
+  await until(async () => !await cancelled.current(), "The declined trust question was not closed.");
+  assert.equal(fs.readFileSync(file, "utf8"), previous);
+  const stale = await begin();
+  const newer = previous.replace(`lab ssh-ed25519 ${key(7)}`, `lab ssh-ed25519 ${key(6)}`);
+  write(file, newer, { mode: 0o600 });
+  write(path.join(fake, "refuse"), "");
+  assert.equal((await stale.answer("trust")).status, 200);
+  await until(async () => (await stale.current())?.state === "failed", "Approval of a stale key did not fail.");
+  assert.equal(fs.readFileSync(file, "utf8"), newer, "An old approval must not replace a different saved key.");
+  write(file, previous, { mode: 0o600 });
+  fs.unlinkSync(path.join(fake, "refuse"));
+  const approved = await begin();
+  write(path.join(fake, "refuse"), "");
+  assert.equal((await approved.answer("trust")).status, 200);
+  await until(async () => (await approved.current())?.state === "failed", "The next command did not try the explicitly trusted key.");
+  assert.deepEqual(fs.readFileSync(file, "utf8").trim().split("\n").sort(), [
+    `lab ssh-ed25519 ${key(8)}`, `lab.lan ssh-ed25519 ${key(7)}`,
+  ]);
+  assert.equal(fs.readFileSync(localKeys, "utf8"), userOwned);
+  assert.deepEqual(fs.readdirSync(remote), []);
+});
+
 test("SSH Add explains connection failures and leaves the account and host trust alone", {
   skip: process.platform === "win32",
   timeout: 45000,

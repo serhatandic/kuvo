@@ -261,21 +261,28 @@ export async function readHostKey(destination: string, signal?: AbortSignal): Pr
   }
 }
 
+export function savedHostLine(line: number): string | undefined {
+  try { return fs.readFileSync(KNOWN_HOSTS, "utf8").split("\n")[line - 1]; } catch { return undefined; }
+}
+
 /** Keeps `keys` as trusted, in this box's own file (yours alone to read). `replacing`: the line
  * there (counted from 1, as `ssh` names it) that holds the key the host had before, which you saw
  * change and took the new one for: that line goes, whichever way its host is written (a name, or
  * hashed, as `HashKnownHosts` writes them). */
-export function trustHostKeys(keys: HostKey[], replacing?: number): void {
+export function trustHostKeys(keys: HostKey[], replacing?: { line: number; previous: string }): boolean {
   fs.mkdirSync(path.dirname(KNOWN_HOSTS), { recursive: true, mode: 0o700 });
   let had = "";
   try { had = fs.readFileSync(KNOWN_HOSTS, "utf8"); } catch {}
+  const lines = had.split("\n");
+  if (replacing && lines[replacing.line - 1] !== replacing.previous) return false;
   // (With it, every other key kept under that host's name: only the one you just saw stays.)
   const hosts = new Set(replacing ? keys.map(key => key.line.split(" ")[0]!) : []);
-  const kept = had.split("\n").filter((line, index) => line.trim() && index + 1 !== replacing && !hosts.has(line.trim().split(/\s+/)[0]!) && !keys.some(key => key.line === line.trim()));
+  const kept = lines.filter((line, index) => line.trim() && index + 1 !== replacing?.line && !hosts.has(line.trim().split(/\s+/)[0]!) && !keys.some(key => key.line === line.trim()));
   const text = [...kept, ...keys.map(key => key.line)].join("\n") + "\n";
   const next = `${KNOWN_HOSTS}.${process.pid}.new`;
   fs.writeFileSync(next, text, { mode: 0o600 });
   fs.renameSync(next, KNOWN_HOSTS);
+  return true;
 }
 
 /** How a connection that didn't come about went wrong, from what `ssh` said (status 255). */

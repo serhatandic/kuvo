@@ -42,7 +42,7 @@ import { ENGINE_VERSION, RELEASE_FILES, engineFor, machineHelperPack, ownFiles, 
 import * as scripts from "./scripts";
 import { credentialSeedFormat, isSetupReservation, RESERVATION_PREFIX, settingsSeedFormat, setupInputFormat, UNSUPPORTED_RESERVATION } from "./command-formats";
 import { gatherSeed, sshCopyScope, sshCopySelection } from "./seed";
-import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, remoteCommand, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
+import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, remoteCommand, savedHostLine, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { WINDOWS_PROBE, WSL_LIST, scriptHeader, selectDistro, windowsHost, wslBootstrap } from "./windows";
 import { distroName } from "../../shared/wsl";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
@@ -269,6 +269,8 @@ class Reach {
 
   // Reads the host's key without signing in, shows it, and keeps it once you say so.
   private async askKey(id: string, title: string, message: string, label: string, replacing?: number): Promise<void> {
+    const previous = replacing === undefined ? undefined : savedHostLine(replacing);
+    if (replacing !== undefined && previous === undefined) throw new Failed(`Kuvo couldn’t save the SSH host key for ${this.name}.`);
     const read = await readHostKey(this.destination, this.tell.signal);
     this.tell.check();
     if (!read.keys.length) {
@@ -288,7 +290,9 @@ class Reach {
       throw new Stopped();
     }
     this.tell.check();
-    trustHostKeys(read.keys, replacing);
+    if (!trustHostKeys(read.keys, replacing === undefined ? undefined : { line: replacing, previous: previous! })) {
+      throw new Failed(`Kuvo couldn’t save the SSH host key for ${this.name}.`);
+    }
   }
 
   async close(): Promise<void> {

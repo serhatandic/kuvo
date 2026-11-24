@@ -349,7 +349,7 @@ enum WindowsMode {
 enum Progress {
     Step(&'static str, StepState, String),
     Name(String),
-    HostKey(Vec<HostKey>, oneshot::Sender<()>),
+    HostKey(Vec<HostKey>, bool, oneshot::Sender<()>),
     RecoverAccount(String, oneshot::Sender<()>),
     UninstallCommitted(Option<crate::Receipt>),
     Done(Result<Completed, AddError>),
@@ -872,7 +872,7 @@ impl Owner {
                     }
                 }
             }
-            Progress::HostKey(keys, answer) => {
+            Progress::HostKey(keys, changed, answer) => {
                 self.asks += 1;
                 let here = local_name(&self.setup);
                 let name = &now.seen.name;
@@ -886,11 +886,25 @@ impl Owner {
                     "value": key.fingerprint, "code": true})
                         }),
                 );
+                let (id, title, message, label, kind) = if changed {
+                    ("hostKeyChanged", format!("{name}’s host key changed"),
+                     "It isn’t the key you trusted when you added it. If you expect that (it was reinstalled, say), trust the new one. If not, someone may be intercepting the connection: cancel.".to_owned(),
+                     "Trust New Key", "danger")
+                } else {
+                    (
+                        "hostKey",
+                        format!("Is this {name}?"),
+                        format!(
+                            "{here} hasn’t connected to {name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it."
+                        ),
+                        "Trust",
+                        "primary",
+                    )
+                };
                 now.seen.question = Some(json!({
-                    "id": "hostKey", "title": format!("Is this {name}?"),
-                    "message": format!("{here} hasn’t connected to {name} before. Check that the fingerprint is its own (on that computer: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub), then trust it."),
+                    "id": id, "title": title, "message": message,
                     "at": self.asks, "facts": facts,
-                    "answers": [{"id":"cancel","label":"Cancel","kind":"plain"},{"id":"trust","label":"Trust","kind":"primary"}],
+                    "answers": [{"id":"cancel","label":"Cancel","kind":"plain"},{"id":"trust","label":label,"kind":kind}],
                 }));
                 now.seen.state = State::Asking;
                 now.answer = Some(answer);

@@ -52,6 +52,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
 - A Rust computer can add a fresh account over SSH when it has the compatible release to copy.
 - Adding over SSH explains changed host keys and refused sign-ins, and preserves an unreadable saved list of computers.
+- Add over SSH asks you to confirm a changed key you previously trusted in Kuvo. An old answer cannot replace a newer saved key.
 - Adding a second SSH address for a known Mac preserves older Kuvo work stored beside its current installation.
 - Adding a Mac over SSH tells you when its older Kuvo Code data needs an update and leaves that data in place.
 - Adding over SSH explains how to clear a reservation left by an older Kuvo Code after restarting the other computer.

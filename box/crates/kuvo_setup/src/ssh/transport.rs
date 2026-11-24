@@ -59,6 +59,11 @@ pub(super) struct HostKey {
     line: String,
 }
 
+pub(super) struct ChangedKey {
+    line: usize,
+    previous: String,
+}
+
 impl Connection {
     pub(super) fn open(home: PathBuf, address: Address) -> io::Result<Self> {
         let platform = Platform::current();
@@ -140,7 +145,25 @@ impl Connection {
         Ok(text.lines().filter_map(host_key).take(8).collect())
     }
 
-    pub(super) fn trust(&self, keys: &[HostKey]) -> io::Result<()> {
+    pub(super) fn changed_key(&self, diagnostic: &str) -> Option<ChangedKey> {
+        let place = diagnostic.lines().find_map(|line| {
+            let (_, place) = line.strip_prefix("Offending ")?.split_once("key in ")?;
+            Some(place)
+        })?;
+        let (file, line) = place.rsplit_once(':')?;
+        if Path::new(file) != self.known() {
+            return None;
+        }
+        let line = line.trim_end().parse::<usize>().ok()?.checked_sub(1)?;
+        let previous = fs::read_to_string(self.known())
+            .ok()?
+            .lines()
+            .nth(line)?
+            .to_owned();
+        Some(ChangedKey { line, previous })
+    }
+
+    pub(super) fn trust(&self, keys: &[HostKey], changed: Option<&ChangedKey>) -> io::Result<()> {
         let path = self.known();
         let _lock = OwnedLock::acquire(
             &self.home.join("ssh/.known_hosts.lock"),
@@ -153,10 +176,28 @@ impl Connection {
                 Err(error)
             }
         })?;
+        if let Some(changed) = changed
+            && kept.lines().nth(changed.line) != Some(changed.previous.as_str())
+        {
+            return Err(io::Error::other(
+                "The known host key changed while awaiting confirmation.",
+            ));
+        }
         let mut lines: Vec<_> = kept
             .lines()
             .map(str::trim)
-            .filter(|line| !line.is_empty())
+            .enumerate()
+            .filter_map(|(index, text)| {
+                let same_host = || {
+                    keys.iter().any(|key| {
+                        key.line.split_ascii_whitespace().next()
+                            == text.split_ascii_whitespace().next()
+                    })
+                };
+                (!text.is_empty()
+                    && !changed.is_some_and(|changed| changed.line == index || same_host()))
+                .then_some(text)
+            })
             .collect();
         for key in keys {
             if !lines.contains(&key.line.as_str()) {
