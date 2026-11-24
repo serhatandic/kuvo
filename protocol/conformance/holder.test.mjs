@@ -120,6 +120,9 @@ async function withHolder(t, settings, scenario) {
         async read() {
           const frame = await read(incoming);
           capture(controller, "holder", frame);
+          // (The reference holder also says whether its agent's error output ended, `heardAll`:
+          // what its own bridge reads, beside the shared frame.)
+          for (const exit of [frame?.x, frame?.exited]) if (exit && typeof exit === "object") delete exit.heardAll;
           return frame;
         },
       };
