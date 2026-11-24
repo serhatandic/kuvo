@@ -186,8 +186,8 @@ download resumed, and brought the returning computer back in 20.0 seconds.
 underlying Rust path is proven and what the update or installer still owes.
 Bridge-specific checks only for unpublished TypeScript betas and desktop app
 update prompts follow the switch-over scope in [the design](rust-box.md#4-switch-over).
-The reference table groups related TypeScript cases into 58 rows. Three rows
-are covered, 32 have partial proof, three are specific to the TypeScript bridge
+The reference table groups related TypeScript cases into 58 rows. Four rows
+are covered, 31 have partial proof, three are specific to the TypeScript bridge
 or desktop updater, and 20 are open. The inherited and live-proof table has
 11 rows, nine with partial proof and two open.
 
@@ -225,7 +225,7 @@ or desktop updater, and 20 are open. The inherited and live-proof table has
 | Same, member asks main to check | Covered by U20. | — |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |
 | Same, Helper starts the new code after the resident exits | Partial. 7.1 dispatches Helper `serve` to a Rust pack. Live Helper update remains open. | 6.2, 7.2, 9.3 |
-| [update-switch](../../box/test/update-switch.test.ts), broken route probe and beta.35 switch | Partial. U4 rejects a signed pack whose Rust program fails the self-test. U10 checks a live switch with the transition-capable beta. A historical beta.35 rehearsal remains open. | 7.2 |
+| [update-switch](../../box/test/update-switch.test.ts), broken route probe and beta.35 switch | Covered in scope. U4 rejects a signed pack whose Rust program fails the self-test. U10 checks a live switch with the transition-capable beta. The historical beta.35 switch is outside the scope of section 4. | — |
 | Same, continue only interrupted engine turn | Open. | 3.2, 4.1, 7.2 |
 | Same, guard commits after selected resident answers | 7.1 keeper scenario covers this. | — |
 | Same, resident switch preserves the engine and sandbox files | Partial. 7.1 keeps workers during the shell switch. The prepared-release engine and plugins need an end-to-end test. | 7.2 |
@@ -264,7 +264,7 @@ or desktop updater, and 20 are open. The inherited and live-proof table has
 | Same, engine swap holds, rollback, expiry, and downgrade fence | Open as release tests. | 3.2, 7.2 |
 | [Backups](rust-backups-coverage.md) durable pre-switch backup and wipe generation check | Partial. U10 checks the saved TypeScript home, and U13 checks the one-time refusal to roll back. Interrupted handoff and wipe generation in this workflow remain open. | 7.2, 9.1 |
 | Rust-to-Rust live three-computer switch, running turn, offline return, and failover | Partial. U8 uses the shell keeper and U9 uses the native keeper. A stand-in turn stays alive. Before-rejoin work admission and native holder adoption remain open. | 4.1, 7.2 |
-| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10 checks the bridge beta taking Rust directly. U18–U19 check the exact deployed beta's refusal and automatic two-step catch-up. U11 moves released Mac app homes with a stand-in engine and launchctl. Earlier unpublished betas still need a returning-peer rehearsal. Betas through .40 with an accepted setup use the signed shared release decision, which Rust's peer offer does not supply. Shipping the bridge beta, a released Linux machine upgrade, and a real Helper job remain open. | 7.2, 9.1, 9.3 |
+| Golden 0.7.2 and beta.1 through `kuvo-install`, and a TS-beta computer catching up after the switch | Partial. U10 checks the bridge beta taking Rust directly. U18–U19 check the exact deployed beta.48's refusal and automatic two-step catch-up. U11 moves released Mac app homes with a stand-in engine and launchctl. Shipping the bridge beta, a released machine upgrade, and a real Helper job remain open. | 7.2, 9.1, 9.3 |
 | Uninstall footprint and Mac, Linux, WSL and native-Windows proof | Partial. U7 covers stopped standalone scratch installations on Mac, native Windows, and Linux musl under WSL. The live shared, Helper-owned and installer flows remain open. | 2.3, 7.2 |
 | [Setup](rust-setup-coverage.md) add and fleet authority, [Windows](rust-windows-coverage.md) case 18 | Partial. U9 checks a new main's lease and U4 checks an automatic Windows selection. Shared Windows activation, on-return admission, and cleanup of a busy previous release remain open. | 2.3, 7.2, 8.1 |
 
