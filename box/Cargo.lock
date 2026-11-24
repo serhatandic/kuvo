@@ -1490,6 +1490,7 @@ dependencies = [
  "http",
  "http-body-util",
  "icu_collator",
+ "jiff",
  "kuvo_os",
  "kuvo_protocol",
  "kuvo_server",
@@ -1502,6 +1503,7 @@ dependencies = [
  "percent-encoding",
  "reqwest",
  "rsa 0.10.0",
+ "rusqlite",
  "ryu-js",
  "serde",
  "serde_json",
@@ -1510,10 +1512,12 @@ dependencies = [
  "ssh-key",
  "subtle",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-util",
  "unicode-normalization",
  "url",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

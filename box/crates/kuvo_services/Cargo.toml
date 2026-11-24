@@ -22,6 +22,7 @@ hmac = "0.12"
 http = "1"
 http-body-util = "0.1"
 icu_collator = "2"
+jiff = "0.2"
 kuvo_os = { path = "../kuvo_os" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
@@ -30,17 +31,22 @@ kuvo_store = { path = "../kuvo_store" }
 libc = "0.2"
 percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+rusqlite = "0.37"
 ryu-js = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 subtle = "2"
 tempfile = "3"
+thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 unicode-normalization = "0.1"
 url = { version = "2", features = ["serde"] }
 zeroize = { version = "1", features = ["serde"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [target.'cfg(unix)'.dependencies]
 ssh-key = { version = "0.6.7", features = ["ed25519", "p256", "p384", "p521"] }
