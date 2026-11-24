@@ -48,8 +48,10 @@ if (!args.includes("stream-json")) process.exit(1);
 const models = ${JSON.stringify(models)};
 const send = message => process.stdout.write(JSON.stringify(message) + "\\n");
 const answer = (request_id, said) => send({ type: "control_response", response: { request_id, ...said } });
-const native = args.find(arg => arg.startsWith("--session-id="))?.split("=")[1]
-  ?? args[args.indexOf("--session-id") + 1];
+const flag = name => args.find(arg => arg.startsWith(name + "="))?.slice(name.length + 1)
+  ?? (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const resumed = flag("--resume");
+const native = resumed ?? flag("--session-id");
 const scriptedTurns = ${turns};
 let held, step = 0;
 const textOf = value => value.message.content.find(block => block.type === "text")?.text;
@@ -71,7 +73,7 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
       held = message.uuid;
       say("Before the switch.");
     } else {
-      say("Claude fixture received " + text.split("\\n", 1)[0]);
+      say("Claude fixture received " + text.split("\\n", 1)[0] + (resumed ? " in " + native : ""));
       finish(message.uuid);
     }
     return;
