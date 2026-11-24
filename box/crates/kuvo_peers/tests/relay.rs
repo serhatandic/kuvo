@@ -122,19 +122,7 @@ impl TestRelay {
     }
 
     async fn moving(&mut self) -> serde_json::Value {
-        loop {
-            let sent = self.binary().await;
-            if sent.get(1..17) != Some(PEER_ADDRESS.as_slice()) {
-                continue;
-            }
-            let (kind, _, body) = frames::read_frame(&sent[17..]).unwrap();
-            if kind == Kind::Mail {
-                let mail = Envelope::open(body, &PEER_KEY, &public(RUST_KEY)).unwrap();
-                if let Some(moving) = mail.0.get("moving") {
-                    return moving["moves"].clone();
-                }
-            }
-        }
+        self.mailed("moving").await["moves"].clone()
     }
 
     async fn move_step(&mut self, op: &str) -> serde_json::Value {
@@ -147,6 +135,10 @@ impl TestRelay {
     }
 
     async fn next_move(&mut self) -> serde_json::Value {
+        self.mailed("move").await
+    }
+
+    async fn mailed(&mut self, field: &str) -> serde_json::Value {
         loop {
             let sent = self.binary().await;
             if sent.get(1..17) != Some(PEER_ADDRESS.as_slice()) {
@@ -154,8 +146,8 @@ impl TestRelay {
             }
             if let Some((Kind::Mail, _, bytes)) = frames::read_frame(&sent[17..]) {
                 let mail = Envelope::open(bytes, &PEER_KEY, &public(RUST_KEY)).unwrap();
-                if let Some(movement) = mail.0.get("move") {
-                    return movement.clone();
+                if let Some(value) = mail.0.get(field) {
+                    return value.clone();
                 }
             }
         }
@@ -1630,6 +1622,196 @@ async fn move_snapshots_refresh_on_a_minute_and_on_request() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn a_saved_letter_retries_each_minute_until_its_recipient_replies() {
+    use kuvo_engine::{Engine, Timing};
+    use kuvo_peers::{
+        devices::Devices,
+        directory::{Member, Roster},
+        ownership::{Handle, SetupState},
+        setup_lists::ResidentPeers,
+    };
+    use kuvo_store::files;
+    use kuvo_wire::keys::{Host, encode};
+    use serde_json::Value;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+
+    let home = tempfile::tempdir().unwrap();
+    let run = home.path().join("run");
+    let here = public(RUST_KEY);
+    let peer = public(PEER_KEY);
+    let other = public([23; 32]);
+    let other_address = [7; 16];
+    let clock = Arc::new(AtomicI64::new(1_000_000));
+    let id = "ltr_waitingAgain";
+    let pending = run.join(format!("outbox/sending/{id}.json"));
+    let waiting = run.join(format!("replies/{id}.wait"));
+    let reply = run.join(format!("replies/{id}.json"));
+    let text = "😀".repeat(30_000);
+    let letter =
+        json!({"to":"ses_destination","peer":encode(&peer),"text":text,"at":1_000_000,"wait":true});
+    files::write_atomic(&pending, &serde_json::to_vec(&letter).unwrap()).unwrap();
+    files::write_atomic(&run.join(format!("replies/{id}.alive")), b"").unwrap();
+
+    let (relay, mut wire, _) = TestRelay::welcome(|config| {
+        config.peers.push(Host {
+            key: other,
+            address: other_address,
+        })
+    })
+    .await;
+    let mut resident = ResidentPeers::start(
+        home.path(),
+        Roster {
+            here: Some(here),
+            main: Some(here),
+            name: "Source".into(),
+            members: vec![
+                Member {
+                    key: peer,
+                    address: Some(PEER_ADDRESS),
+                    name: "Recipient".into(),
+                    kind: ComputerKind::Machine,
+                },
+                Member {
+                    key: other,
+                    address: Some(other_address),
+                    name: "Another computer".into(),
+                    kind: ComputerKind::Machine,
+                },
+            ],
+        },
+        Some(relay),
+        None,
+        false,
+        {
+            let clock = clock.clone();
+            Arc::new(move || clock.load(Ordering::Relaxed))
+        },
+    )
+    .await
+    .unwrap();
+    let devices = Devices::load(home.path(), "Source".into(), ComputerKind::Machine)
+        .await
+        .unwrap()
+        .devices;
+    let ownership = Handle::new(
+        resident.reader(),
+        resident.relay_handle(),
+        devices,
+        SetupState::default,
+    );
+    let engine = Engine::new(
+        home.path().to_owned(),
+        Default::default(),
+        Timing::default(),
+    )
+    .unwrap();
+    resident.attach_moves(engine, ownership).await.unwrap();
+    let sealed = |fields: Value, key, address| {
+        let bytes = Envelope(fields.as_object().unwrap().clone())
+            .seal(&key, &here)
+            .unwrap();
+        frames::relay_send(&address, &bytes)
+    };
+
+    let first = tokio::time::timeout(Duration::from_secs(10), wire.mailed("letter"))
+        .await
+        .unwrap();
+    assert_eq!(first["id"], id);
+    assert_eq!(first["wait"], true);
+    let prefix = first["text"].as_str().unwrap();
+    assert!(text.starts_with(prefix) && !prefix.is_empty() && prefix.len() <= 24_000);
+    tokio::time::pause();
+    clock.store(1_059_000, Ordering::Relaxed);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(4), wire.mailed("letter"))
+            .await
+            .is_err()
+    );
+    wire.send(sealed(json!({"at":1_059_000,"delivered":{"id":id,"ok":false,"why":"The engine is restarting.","retry":true}}), PEER_KEY, PEER_ADDRESS)).await;
+    wire.send(sealed(
+        json!({"at":1_059_000,"delivered":{"id":id,"ok":true}}),
+        [23; 32],
+        other_address,
+    ))
+    .await;
+    clock.store(1_061_000, Ordering::Relaxed);
+    tokio::time::advance(Duration::from_secs(58)).await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(6), wire.mailed("letter"))
+            .await
+            .unwrap(),
+        first
+    );
+    assert!(pending.exists());
+    assert!(!waiting.exists());
+
+    wire.send(vec![0]).await;
+    clock.store(1_122_000, Ordering::Relaxed);
+    tokio::time::advance(Duration::from_secs(61)).await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(6), wire.mailed("letter"))
+            .await
+            .unwrap(),
+        first
+    );
+    wire.send(sealed(
+        json!({"at":1_122_000,"delivered":{"id":id,"ok":true}}),
+        PEER_KEY,
+        PEER_ADDRESS,
+    ))
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !waiting.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!pending.exists());
+    assert!(!reply.exists());
+    wire.send(sealed(json!({"at":1_122_000,"letter":{"id":"ltr_answerAfterRetries","from":"ses_destination","to":"ses_source","text":"Done.","answers":id,"at":1_122_000}}), PEER_KEY, PEER_ADDRESS)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !reply.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let answer: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(answer["text"], "Done.");
+    assert!(!waiting.exists());
+
+    let unheard = "ltr_beforeReceipt";
+    let pending = run.join(format!("outbox/sending/{unheard}.json"));
+    let reply = run.join(format!("replies/{unheard}.json"));
+    let waiting = run.join(format!("replies/{unheard}.wait"));
+    files::write_atomic(&pending, &serde_json::to_vec(&letter).unwrap()).unwrap();
+    files::write_atomic(&run.join(format!("replies/{unheard}.alive")), b"").unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(6), wire.mailed("letter"))
+            .await
+            .unwrap()["id"],
+        unheard
+    );
+    wire.send(sealed(json!({"at":1_122_000,"letter":{"id":"ltr_answerWithoutReceipt","from":"ses_destination","to":"ses_source","text":"Done without a receipt.","answers":unheard,"at":1_122_000}}), PEER_KEY, PEER_ADDRESS)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !reply.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let answer: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(answer["text"], "Done without a receipt.");
+    assert!(!pending.exists());
+    assert!(!waiting.exists());
 }
 
 #[tokio::test]
