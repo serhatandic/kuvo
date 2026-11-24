@@ -33,6 +33,7 @@ use serde_json::json;
 
 pub(super) mod asks;
 pub(super) mod sessions;
+pub(super) mod tools;
 pub(super) mod turns;
 
 /// What a resident making way leaves for the next about the coding agents'
@@ -64,9 +65,15 @@ pub(super) async fn hand_over(
     }
 }
 
-pub(super) async fn factories(home: &std::path::Path) -> HashMap<AgentKind, Arc<dyn Factory>> {
+/// The adapters, each given the resident's tools relay for its agents'
+/// tools (the 4.2–4.5 adapters take it up).
+pub(super) async fn factories(
+    home: &std::path::Path,
+    #[cfg_attr(not(feature = "agent-runtime-fixture"), allow(unused_variables))]
+    relay: &kuvo_agents::tool_relay::ToolRelay,
+) -> HashMap<AgentKind, Arc<dyn Factory>> {
     #[cfg(feature = "agent-runtime-fixture")]
-    if let Some(fixture) = fixture::for_home(home) {
+    if let Some(fixture) = fixture::for_home(home, relay.clone()) {
         return HashMap::from([(AgentKind::Codex, fixture)]);
     }
 

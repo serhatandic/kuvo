@@ -769,10 +769,7 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         None
     };
     let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, helper_ready)?;
-    if judge.verdict == kuvo_move::install::Verdict::Stuck
-        && judge.status["step"].is_null()
-        && let Some(message) = judge.status["failed"]["message"].as_str()
-    {
+    if let Some(message) = judge.unreadable_move() {
         println!(
             "{}",
             serde_json::json!({"result":"refused","message":message})

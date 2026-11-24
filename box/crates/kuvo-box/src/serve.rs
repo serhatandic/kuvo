@@ -79,7 +79,8 @@ pub async fn run(
     } else {
         bootstrap.devices
     };
-    let factories = agents::factories(home).await;
+    let tools = agents::tools::relay(home, engine.clone())?;
+    let factories = agents::factories(home, &tools).await;
     let resident_agents = if factories.is_empty() {
         None
     } else {
@@ -101,6 +102,9 @@ pub async fn run(
             }
         }
     };
+    if let Some((runtime, _)) = &resident_agents {
+        agents::tools::take_up(&tools, runtime).await;
+    }
     let info = info(
         home,
         &roster.name,
@@ -349,12 +353,9 @@ pub async fn run(
         kuvo_store::home::Home::new(home.to_owned())?,
         kind == ComputerKind::Mac,
     );
-    let updates = crate::updates::start(
-        kuvo_store::home::Home::new(home.to_owned())?,
-        &account,
-        peers.clone(),
-        setup.handle(),
-    );
+    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let bridge_version = crate::updates::bridge_version(&update_home, &account);
+    let updates = crate::updates::start(update_home, &account, peers.clone(), setup.handle());
     crate::updates::register_check(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
@@ -374,7 +375,7 @@ pub async fn run(
         backup_mail,
         Some(vault.clone()),
     );
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), bridge_version);
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
@@ -446,6 +447,7 @@ pub async fn run(
     if let Some((runs, runtime)) = agent_handover {
         agents::hand_over(home, &runs, &runtime).await;
     }
+    tools.shutdown().await;
     if let Some(agents) = agent_shutdown {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),

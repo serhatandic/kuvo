@@ -10,8 +10,12 @@
 //! same address with the same key. The next resident keeps only the keys of
 //! the conversations whose agents it took up.
 
+mod engine_servers;
+mod places;
 mod servers;
 
+pub use engine_servers::{EngineApi, EngineServers, Sandbox};
+pub use places::{TOOL_SERVER_NAME, ToolPlaces};
 pub use servers::{
     ComputerServer, ComputerServers, Launch, RelayedServer, ServerHost, ServerKind,
 };
@@ -26,7 +30,7 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use kuvo_os::{
-    platform::{Environment, Executable},
+    platform::{Environment, Executable, which},
     process::{ChildGroup, Spawn, Stdio},
 };
 use kuvo_store::files;
@@ -37,7 +41,7 @@ use std::{
     convert::Infallible,
     ffi::OsString,
     io::{self, BufRead, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, Weak},
     time::Duration,
 };
@@ -49,26 +53,17 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-/// Where a conversation's Kuvo Code tools are.
+/// Kuvo Code's tools for a conversation: a program run here, outside the
+/// sandbox, one per conversation, which all of its agent's connections
+/// share. `key` names how it's set up: a change starts it again.
 #[derive(Clone, Debug)]
-pub enum Tools {
-    /// The app's server: each call goes there with its headers (the app's
-    /// password and the conversation), whatever the agent's said.
-    Http {
-        url: String,
-        headers: Vec<(String, String)>,
-        timeout: Duration,
-    },
-    /// A program run here, outside the sandbox, one per conversation, which
-    /// all of its agent's connections share. `key` names how it's set up: a
-    /// change starts it again.
-    Program {
-        key: String,
-        command: PathBuf,
-        args: Vec<OsString>,
-        env: Environment,
-        timeout: Duration,
-    },
+pub struct Tools {
+    pub key: String,
+    pub command: PathBuf,
+    pub args: Vec<OsString>,
+    pub env: Environment,
+    /// How long a call may take.
+    pub timeout: Duration,
 }
 
 /// Says where each conversation's tools are now.
@@ -88,6 +83,29 @@ pub struct RelayedTools {
     pub authorization: String,
     pub timeout: Duration,
 }
+
+/// Kuvo Code's tools as an agent is given them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentTools {
+    /// Over MCP's HTTP, with these headers.
+    Http {
+        key: String,
+        url: String,
+        headers: Vec<(String, String)>,
+        timeout: Duration,
+    },
+    /// A program the agent starts.
+    Stdio {
+        key: String,
+        command: PathBuf,
+        args: Vec<OsString>,
+        env: Environment,
+        timeout: Duration,
+    },
+}
+
+/// How long the forwarder waits for a relay that's restarting, on top of a call's time.
+const FORWARDER_WAITS: Duration = Duration::from_secs(80);
 
 /// How long a server has to start for an agent that gives up its whole
 /// session over one (ACP's), a command's longer as it may fetch its package
@@ -140,9 +158,9 @@ struct State {
     programs: HashMap<String, Arc<Program>>,
     servers: servers::Servers,
     timing: RelayTiming,
-    /// Where the desktop's box says its own tools' address is (its run
-    /// folder): their calls go to its routes.
-    compatibility: Option<PathBuf>,
+    /// The box's program, whose `mcp` forwards an agent's tools to the
+    /// relay and waits for it through an update.
+    forwarder: Option<PathBuf>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -208,10 +226,44 @@ impl ToolRelay {
         self.state().timing = timing;
     }
 
-    /// On a desktop whose box serves Kuvo Code's own tools itself: the run
-    /// folder where it says where (`tool-http.json`).
-    pub fn set_compatibility_run(&self, run: Option<PathBuf>) {
-        self.state().compatibility = run;
+    /// Where the box keeps agents through its updates (a computer's):
+    /// `program mcp` forwards to the relay.
+    pub fn set_forwarder(&self, program: Option<PathBuf>) {
+        self.state().forwarder = program;
+    }
+
+    /// Kuvo Code's tools as `session`'s agent is given them, held by
+    /// `holder`: through the relay for one in the sandbox (`fenced`), and by
+    /// the forwarder where the box keeps agents through its updates; as
+    /// they are otherwise. None until the box knows where they are.
+    pub async fn agent_tools(&self, session: &str, holder: Holder, fenced: bool) -> io::Result<Option<AgentTools>> {
+        let Some(Tools { key, command, args, env, timeout }) = self.0.source.tools(session) else {
+            return Ok(None);
+        };
+        if !fenced {
+            return Ok(Some(AgentTools::Stdio { key, command, args, env, timeout }));
+        }
+        let forwarder = self.state().forwarder.clone();
+        let Some(relayed) = self.relayed_tools(session, holder).await? else {
+            return Ok(None);
+        };
+        let RelayedTools { url, authorization, timeout } = relayed;
+        let Some(command) = forwarder else {
+            let headers = vec![("Authorization".into(), authorization)];
+            return Ok(Some(AgentTools::Http { key, url, headers, timeout }));
+        };
+        let env = [
+            ("KUVO_TOOL_RELAY", url),
+            ("KUVO_TOOL_RELAY_KEY", authorization),
+            ("KUVO_TOOL_TIMEOUT", timeout.as_millis().to_string()),
+        ];
+        Ok(Some(AgentTools::Stdio {
+            key: format!("forward:{key}"),
+            command,
+            args: vec!["mcp".into()],
+            env: env.into_iter().map(|(name, value)| (name.into(), value.into())).collect(),
+            timeout: timeout + FORWARDER_WAITS,
+        }))
     }
 
     /// The relay's port, listening from then on: the one it had before when
@@ -284,9 +336,7 @@ impl ToolRelay {
             return Ok(None);
         };
         let key = self.hold(session, holder).await?;
-        let timeout = match tools {
-            Tools::Http { timeout, .. } | Tools::Program { timeout, .. } => timeout,
-        };
+        let timeout = tools.timeout;
         Ok(Some(RelayedTools {
             url: format!("http://127.0.0.1:{}/mcp", self.port().await?),
             authorization: format!("Bearer {key}"),
@@ -488,125 +538,46 @@ impl ToolRelay {
         tools: Tools,
     ) -> Response<Body> {
         let body = match body.map(|bytes| serde_json::from_slice::<Value>(&bytes)) {
-            Some(Ok(body)) => Some(own_session(body, session, forwarded)),
+            Some(Ok(body)) => own_session(body, session, forwarded),
             Some(Err(_)) => return parse_error(),
-            None => None,
-        };
-        match tools {
-            Tools::Http { url, headers, timeout } => {
-                let run = self.state().compatibility.clone();
-                if let (Some(run), Some(call)) = (run, body.as_ref())
-                    && call["method"] == "tools/call"
-                    && let Some(answer) = self.compatibility_call(call, session, &run, timeout).await
-                {
-                    return answer;
-                }
-                let body = body.map(|body| Bytes::from(body.to_string()));
-                let answer = self.send_on(&parts, &url, &headers, body, Some(timeout), None).await;
-                answer.into_reply("Kuvo Code's tools didn't answer.")
+            None => {
+                let mut reply = text(StatusCode::METHOD_NOT_ALLOWED, "");
+                reply.headers_mut().insert(header::ALLOW, HeaderValue::from_static("POST"));
+                return reply;
             }
-            Tools::Program { key, command, args, env, timeout } => {
-                let Some(body) = body else {
-                    let mut reply = text(StatusCode::METHOD_NOT_ALLOWED, "");
-                    reply.headers_mut().insert(header::ALLOW, HeaderValue::from_static("POST"));
-                    return reply;
-                };
-                let program = {
-                    let mut state = self.state();
-                    match state.programs.get(session) {
-                        Some(program) if !program.stopped() && program.key == key => program.clone(),
-                        _ => {
-                            if let Some(old) = state.programs.remove(session) {
-                                old.stop();
-                            }
-                            let launch = Launch { command: Executable::Native(command), args, env };
-                            match Program::start(key, launch, None, TOOLS.into()) {
-                                Ok(program) => {
-                                    state.programs.insert(session.to_owned(), program.clone());
-                                    program
-                                }
-                                Err(error) => {
-                                    eprintln!("Kuvo Code's tools couldn't start: {error}");
-                                    return text(StatusCode::BAD_GATEWAY, "Kuvo Code's tools didn't start.");
-                                }
-                            }
+        };
+        let Tools { key, command, args, env, timeout } = tools;
+        let program = {
+            let mut state = self.state();
+            match state.programs.get(session) {
+                Some(program) if !program.stopped() && program.key == key => program.clone(),
+                _ => {
+                    if let Some(old) = state.programs.remove(session) {
+                        old.stop();
+                    }
+                    // (By its name on the PATH, as the engine starts it.)
+                    let command = which(command.as_os_str(), &env, &[]).unwrap_or(Executable::Native(command));
+                    match Program::start(key, Launch { command, args, env }, None, TOOLS.into()) {
+                        Ok(program) => {
+                            state.programs.insert(session.to_owned(), program.clone());
+                            program
+                        }
+                        Err(error) => {
+                            eprintln!("Kuvo Code's tools couldn't start: {error}");
+                            return text(StatusCode::BAD_GATEWAY, "Kuvo Code's tools didn't start.");
                         }
                     }
-                };
-                let messages = servers::messages(Some(&body));
-                // Each of its connections (Codex has one a thread) by a name
-                // of the relay's, given as it starts: their requests are told
-                // apart by it.
-                let starts = messages.iter().any(|message| message["method"] == "initialize");
-                let connection = if starts { fresh(12) } else { connection_of(&parts) };
-                let answers = join_all(
-                    messages.into_iter().map(|message| program.send(message, timeout, &connection)),
-                )
-                .await;
-                servers::replies(&body, answers, starts.then_some(connection.as_str()))
+                }
             }
-        }
-    }
-
-    /// A call to one of the box's own tools on a desktop whose box answers
-    /// them itself: to its routes, with the operation the call has, so one
-    /// sent again (the box's address replaced meanwhile) is done once. Not
-    /// there now: a 503, which the agent's forwarder sends again.
-    async fn compatibility_call(
-        &self,
-        call: &Value,
-        session: &str,
-        run: &Path,
-        timeout: Duration,
-    ) -> Option<Response<Body>> {
-        const BOX_TOOLS: [&str; 19] = [
-            "send_message", "read_conversation", "list_agents", "start_session", "list_sessions",
-            "stop_session", "compact_session", "answer_ask", "list_models", "make_project",
-            "list_projects", "notify_user", "plan_limits", "use_limit_reset", "schedule_wake_up",
-            "watch_for_change", "list_wake_ups", "cancel_wake_up", "set_job",
-        ];
-        let name = call["params"]["name"].as_str().filter(|_| !call["id"].is_null())?;
-        let route = match name {
-            _ if BOX_TOOLS.contains(&name) => "agent-tools",
-            _ if name.starts_with("queue_") => "work-queue/tools",
-            _ if name.starts_with("vault_") => "vault/tools",
-            "sandbox_ask" => "sandbox/tools",
-            _ => return None,
         };
-        #[derive(Deserialize)]
-        struct Recorded {
-            port: u16,
-            password: String,
-        }
-        let asked = async {
-            let recorded = files::read(&run.join("tool-http.json")).ok()??;
-            let Recorded { port, password } = serde_json::from_slice(&recorded).ok()?;
-            let mut sent = json!({"name": name, "session": session,
-                "operation": call["params"]["_meta"]["kuvo.operation"]});
-            if let Some(arguments) = call["params"].get("arguments") {
-                sent["arguments"] = arguments.clone();
-            }
-            let answer = (self.0.client)
-                .post(format!("http://127.0.0.1:{port}/kuvo/{route}"))
-                .basic_auth("opencode", Some(password))
-                .header("X-Kuvo-From", "app")
-                .json(&sent)
-                .timeout(timeout)
-                .send()
-                .await
-                .ok()?;
-            let status = answer.status();
-            if matches!(status.as_u16(), 401 | 502 | 503) || status.is_redirection() {
-                return None;
-            }
-            let said = answer.json::<Value>().await.ok().filter(Value::is_object)?;
-            let text = said["text"].as_str().or(said["message"].as_str());
-            let text = text.unwrap_or("Kuvo Code could not answer this tool call.");
-            let error = !status.is_success() || said["isError"] == true;
-            let result = json!({"isError": error, "content": [{"type": "text", "text": text}]});
-            Some(json_reply(StatusCode::OK, &json!({"jsonrpc":"2.0","id":call["id"],"result":result}), None))
-        };
-        Some(asked.await.unwrap_or_else(|| text(StatusCode::SERVICE_UNAVAILABLE, "")))
+        let messages = servers::messages(Some(&body));
+        // Each of its connections (Codex has one a thread) by a name of the
+        // relay's, given as it starts: their requests are told apart by it.
+        let starts = messages.iter().any(|message| message["method"] == "initialize");
+        let connection = if starts { fresh(12) } else { connection_of(&parts) };
+        let answers =
+            join_all(messages.into_iter().map(|message| program.send(message, timeout, &connection))).await;
+        servers::replies(&body, answers, starts.then_some(connection.as_str()))
     }
 
     /// A request on to a server over HTTP with `headers`: what it answers.

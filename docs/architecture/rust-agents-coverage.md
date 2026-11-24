@@ -340,12 +340,13 @@ On a computer the tools are a program run outside the sandbox, one per
 conversation, shared by its agent's connections. Their requests are
 numbered anew, so a cancel reaches only its own connection's call. What the
 program asks the agent is refused at once, and a call past its time is
-cancelled there. On the Mac, calls go on to the app's server with the
-app's password and the conversation's own header. That server is followed
-only where it moves the request on its own site.
+cancelled there.
 
-Six scenarios with stand-in tools port toolrelay cases 2–7; the stand-in
-program is the test binary itself.
+Five scenarios with stand-in tools port toolrelay cases 2–6; the stand-in
+program is the test binary itself. Cases 7 and 8 are not ported: no caller
+since the Swift app was dropped. They cover an app's own tools server (the
+bridge's `PUT kuvo/tools`, which only the Swift app sent) and the desktop
+compatibility path that only that server's tools took.
 
 The computer's own MCP servers are relayed too, each at `/mcp/<name>`, to
 every agent. The agent is given only the relay's address and its
@@ -381,16 +382,42 @@ cases for these (given afresh once it answers, not holding a message up,
 not started again at each message and checked less often) and the idle
 stop.
 
-On a desktop whose box serves Kuvo Code's own tools itself, a call to one
-of them goes to the box's routes (`run/tool-http.json`), keeping its
-operation. While the box's address is replaced, the agent's forwarder gets
-a 503 and sends the call again, so the tool runs once (toolrelay case 8,
-through the real forwarder).
+The resident starts the relay with its address and keys in
+`run/agents/relay.json`. On a computer it listens at once where it was,
+keeping only the keys of the conversations whose agents it took up; the
+update case checks that it keeps its port. The computer's servers come from
+the engine while it runs (never started for them): its settings for the
+conversation's folder, in the engine's order, without Kuvo Code's own,
+those turned off or a marketplace app the folder's scope leaves out, with
+your sign-ins added and renewed as they run out. They're read again at most
+every few seconds, and the last known stay while the engine can't say. A
+refused sign-in connects the server again for the folder and for the
+engine. Kuvo Code's own tools are the program the engine's settings name
+(`kuvo-browser`). An agent in the sandbox reaches them through
+`kuvo-box mcp`, which forwards to the relay and waits for it through an
+update. Every resident runs in a box home of its own, a Mac's too, as the
+bridge did (its keeper starts it as a machine's in every home), so this
+holds on a Mac as on any computer. Three scenarios cover the engine's
+servers, connecting again and what an agent is given. An agent-turn case
+on a Mac home shows it end to end: a held agent in the sandbox calls a
+tool through the forwarder before the resident is replaced and again
+after, and both calls reach Kuvo Code's tools as its conversation's.
 
-Still open in 4.1c: wiring the relay into the resident. The relay is wired
-in with the adapters that give agents their tools and the host that reads
-the engine's servers. The sandbox note (case 9) goes with 6.1, and
-`engine-own-tools` with 6.4.
+What later rows plug in:
+
+- **4.2–4.5 (each adapter):** the factory takes the resident's `ToolRelay`.
+  For each thread it calls `agent_tools(session, holder, fenced)` for Kuvo
+  Code's tools, `computer_servers(directory)` and
+  `relayed_servers(session, holder, directory, &found, brief)` for the
+  computer's (`brief` for ACP agents), and `servers_key` at each turn to
+  decide whether to start its agent again. It calls `drop_relayed` when the
+  thread ends.
+- **6.1 (sandbox):** a `Sandbox` launcher given to `EngineServers::new`
+  runs a command's server in the box's sandbox (toolrelay case 9). Until
+  then a command's server runs as it is.
+- **6.4 (browser keeper):** the engine's start settings name the
+  `kuvo-browser` program (`ToolPlaces::set_program_settings`), with
+  `engine-own-tools`.
 
 ## TypeScript scenario inventory
 
@@ -415,7 +442,7 @@ Case numbers use the order in the cited source file.
 | [accounts-check](../../box/test/agents/accounts-check.test.ts), 20, [account-refresh](../../box/test/agents/account-refresh.test.ts), 8, [added-account-route](../../box/test/agents/added-account-route.test.ts), 3, [own-homes](../../box/test/agents/own-homes.test.ts), 4, and [signin-mode](../../box/test/agents/signin-mode.test.ts), 3 | 4.1b owns account index, home selection, checks, catalog cache and sign-in state. Vendor sign-in commands and authentication messages → 4.2–4.5. Accounts-check 18 covers Work Queue GitHub authorization in 5.2. |
 | [sign-in.test.js](../../box/bridge-tests/sign-in.test.js), 11 | Agent route cases 2–4, 8 and 10–11 → 4.1b. OpenCode methods and status → 3.2. Setup and remote transport assertions use the resident dispatcher. |
 | [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. |
-| [toolrelay](../../box/test/agents/toolrelay.test.ts), 9 | 1 → `kuvo_agents/tests/tool_forwarder.rs`; 2–8 and `relay-live` 1 → `kuvo_agents/tests/tool_relay.rs`, with the relay's parts of four `acp` cases (re-checks and the idle stop). 9 with 6.1. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
+| [toolrelay](../../box/test/agents/toolrelay.test.ts), 9 | 1 → `kuvo_agents/tests/tool_forwarder.rs`; 2–6 and `relay-live` 1 → `kuvo_agents/tests/tool_relay.rs`, with the relay's parts of four `acp` cases (re-checks and the idle stop). 7 and 8 not ported: no caller since the Swift app was dropped. 9 with 6.1. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
 | [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 6.4: the browser keeper owns the `kuvo-browser` tools program the engine starts with. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
 | [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 and 12 (program drains, signed-out models) → 4.2; 59–60 and 127–139 (turns an agent starts itself, Stop and Send Now while a message is handed) → 4.2 and 4.4. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |

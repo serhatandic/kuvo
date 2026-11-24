@@ -4,7 +4,6 @@
 
 use futures_util::{FutureExt, future::BoxFuture};
 use kuvo_agents::{
-    tool_forwarder,
     tool_relay::{
         ComputerServer, ComputerServers, RelayTiming, RelayedServer, RelayedTools, ServerHost,
         ServerKind, ToolRelay, ToolSource, Tools,
@@ -84,9 +83,7 @@ struct Source(Mutex<Option<Tools>>);
 impl ToolSource for Source {
     fn tools(&self, session: &str) -> Option<Tools> {
         let mut tools = self.0.lock().unwrap().clone()?;
-        if let Tools::Program { env, .. } = &mut tools {
-            env.insert("KUVO_SESSION".into(), session.into());
-        }
+        tools.env.insert("KUVO_SESSION".into(), session.into());
         Some(tools)
     }
 }
@@ -97,7 +94,7 @@ fn program(mode: &str, holding: Option<&Path>) -> Arc<Source> {
     if let Some(holding) = holding {
         env.insert("RELAY_HOLDING".into(), holding.into());
     }
-    Arc::new(Source(Mutex::new(Some(Tools::Program {
+    Arc::new(Source(Mutex::new(Some(Tools {
         key: mode.into(),
         command: std::env::current_exe().unwrap(),
         args: ["--exact", "relay_program_probe", "--ignored", "--nocapture", "--test-threads=1"]
@@ -270,80 +267,7 @@ async fn a_conversations_other_agent_keeps_reaching_its_tools_when_one_is_done()
     relay.shutdown().await;
 }
 
-// "each call goes to the app's server with the app's password and its own
-// session, whatever it says"
-#[tokio::test]
-async fn each_call_goes_to_the_apps_server_with_its_password_and_own_conversation() {
-    let app = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let port = app.local_addr().unwrap().port();
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let noted = seen.clone();
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = app.accept().await else { return };
-            let mut request = Vec::new();
-            let mut buffer = [0; 4096];
-            let (head, body) = loop {
-                let read = socket.read(&mut buffer).await.unwrap();
-                request.extend_from_slice(&buffer[..read]);
-                let text = String::from_utf8_lossy(&request).into_owned();
-                if let Some((head, body)) = text.split_once("\r\n\r\n") {
-                    let length = head
-                        .lines()
-                        .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length: ").map(str::to_owned))
-                        .and_then(|length| length.trim().parse::<usize>().ok())
-                        .unwrap_or(0);
-                    if body.len() >= length {
-                        break (head.to_owned(), body.to_owned());
-                    }
-                }
-            };
-            let header = |name: &str| {
-                head.lines().find_map(|line| {
-                    let (key, value) = line.split_once(": ")?;
-                    key.eq_ignore_ascii_case(name).then(|| value.to_owned())
-                })
-            };
-            let body: Value = serde_json::from_str(&body).unwrap();
-            noted.lock().unwrap().push(json!({
-                "authorization": header("authorization"), "session": header("x-kuvo-session"),
-                "claims": body["params"]["_meta"]["ai.opencode/sessionID"],
-            }));
-            let answer = json!({"jsonrpc":"2.0","id":body["id"],"result":{"content":[]}}).to_string();
-            let reply = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
-                answer.len()
-            );
-            socket.write_all(reply.as_bytes()).await.unwrap();
-        }
-    });
-    struct App(u16);
-    impl ToolSource for App {
-        fn tools(&self, session: &str) -> Option<Tools> {
-            Some(Tools::Http {
-                url: format!("http://127.0.0.1:{}/mcp", self.0),
-                headers: vec![
-                    ("Authorization".into(), "Bearer app-password".into()),
-                    ("X-Kuvo-Session".into(), session.into()),
-                ],
-                timeout: Duration::from_secs(10),
-            })
-        }
-    }
-    let relay = ToolRelay::new(None, Arc::new(App(port))).unwrap();
-    let one = relay.relayed_tools("ses_one", 1).await.unwrap().unwrap();
-    assert!(!one.authorization.contains("app-password"));
-    let (status, answer) = call_with(&one, &one.authorization, 3, Some("ses_two"), &[("X-Kuvo-Session", "ses_two")]).await;
-    assert_eq!(status, 200);
-    assert_eq!(answer, json!({"jsonrpc":"2.0","id":3,"result":{"content":[]}}));
-    assert_eq!(
-        *seen.lock().unwrap(),
-        [json!({"authorization":"Bearer app-password","session":"ses_one","claims":"ses_one"})]
-    );
-    relay.shutdown().await;
-}
-
-/// A stand-in app or URL server: each request's headers and body, and what
+/// A stand-in URL server: each request's headers and body, and what
 /// `answer` says to it.
 async fn http_server(
     answer: impl Fn(&str, &Value) -> (u16, Value) + Send + Sync + 'static,
@@ -437,8 +361,9 @@ struct Host {
 }
 
 impl ServerHost for Host {
-    fn renewed<'a>(&'a self, _: &'a Path, _: &'a str) -> BoxFuture<'a, Option<ComputerServer>> {
-        async { self.now.lock().unwrap().clone() }.boxed()
+    fn servers<'a>(&'a self, _: &'a Path, _: bool) -> BoxFuture<'a, ComputerServers> {
+        let servers = self.now.lock().unwrap().clone().into_iter().collect();
+        async { ComputerServers { servers, key: String::new() } }.boxed()
     }
 
     fn reconnect<'a>(&'a self, _: &'a Path, _: &'a str) -> BoxFuture<'a, ()> {
@@ -711,66 +636,5 @@ async fn a_command_server_no_connection_uses_stops() {
     assert_eq!(post(&servers[0], tool_call(1), Some(&connection)).await.0, 200);
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(post(&servers[0], tool_call(2), Some(&connection)).await.0, 404);
-    relay.shutdown().await;
-}
-
-// toolrelay.test.ts: "desktop compatibility tools keep the same operation while
-// their box HTTP endpoint is replaced"
-#[tokio::test]
-async fn desktop_compatibility_tools_keep_their_operation_while_the_box_is_replaced() {
-    let run = tempfile::tempdir().unwrap();
-    let record = |port: u16| {
-        std::fs::write(run.path().join("tool-http.json"), json!({"port":port,"password":"fixture"}).to_string()).unwrap();
-    };
-    let closed = TcpListener::bind(("127.0.0.1", 0)).await.unwrap().local_addr().unwrap().port();
-    record(closed);
-    struct App;
-    impl ToolSource for App {
-        fn tools(&self, session: &str) -> Option<Tools> {
-            Some(Tools::Http {
-                url: "http://127.0.0.1:9/mcp".into(),
-                headers: vec![("X-Kuvo-Session".into(), session.into())],
-                timeout: Duration::from_secs(5),
-            })
-        }
-    }
-    let relay = ToolRelay::new(None, Arc::new(App)).unwrap();
-    relay.set_compatibility_run(Some(run.path().to_owned()));
-    let tools = relay.relayed_tools("ses_one", 1).await.unwrap().unwrap();
-    let forwarder = tool_forwarder::Relay { url: tools.url, key: tools.authorization, timeout: tools.timeout };
-    let (agent, input) = tokio::io::duplex(1 << 16);
-    let (output, said) = tokio::io::duplex(1 << 16);
-    tokio::spawn(tool_forwarder::forward(forwarder, tokio::io::BufReader::new(input), output));
-    let (mut agent, mut said) = (agent, tokio::io::BufReader::new(said));
-    let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-        "params":{"name":"send_message","arguments":{"to":"ses_two","text":"test"}}});
-    agent.write_all(format!("{call}\n").as_bytes()).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let noted = seen.clone();
-    let started = AtomicBool::new(false);
-    let port = http_server(move |head, body| {
-        noted.lock().unwrap().push((head.to_owned(), body.clone()));
-        if !started.swap(true, Ordering::SeqCst) {
-            return (503, json!({"retryToolCall":true}));
-        }
-        (200, json!({"text":{"unexpected":true},"message":"Sent.","isError":false}))
-    })
-    .await;
-    record(port);
-    let mut line = String::new();
-    tokio::io::AsyncBufReadExt::read_line(&mut said, &mut line).await.unwrap();
-    let answer: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(answer["result"]["content"][0]["text"], "Sent.");
-    let seen = seen.lock().unwrap().clone();
-    assert_eq!(seen.len(), 2);
-    let (head, first) = &seen[0];
-    assert!(head.starts_with("POST /kuvo/agent-tools "), "{head}");
-    assert!(head.to_ascii_lowercase().contains("authorization: basic b3blbmnvzgu6zml4dhvyzq=="), "{head}");
-    assert_eq!(first["session"], "ses_one");
-    assert_eq!(first["arguments"], json!({"to":"ses_two","text":"test"}));
-    let operation = first["operation"].as_str().unwrap();
-    assert!(operation.len() == 36 && operation.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'), "{operation}");
-    assert_eq!(seen[0].1, seen[1].1);
     relay.shutdown().await;
 }

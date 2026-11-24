@@ -44,6 +44,14 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The Mac installer explains why it leaves a machine installation and an earlier app’s sessions in place.
 - The Mac installer recognizes the selected home even when its name is written with different capitalization.
 - The Mac installer reports that it is waiting when another move is already running.
+- When the Mac installer resumes an interrupted setup, it says where it saved the earlier files.
+- When an earlier Mac app still has sessions, the installer explains why it offers a move.
+- The Mac installer explains when it keeps an existing machine setup in place.
+- The Mac installer explains when there is nothing to move or an earlier move needs to finish first.
+- The Mac installer reports an unreadable move journal before preparing a release.
+- The Mac installer offers to start Kuvo Helper when its launchd job is loaded but stopped.
+- A returning computer taking the TypeScript bridge stays out of Runs on until the Rust resident starts.
+- On Linux, a route socket from the earlier program no longer blocks the backup before switching to Rust.
 - The Linux installer can set up a computer from a signed Rust release and retry a failed first start while keeping earlier work.
 - After a successful Linux install, earlier unfinished installer staging no longer makes the computer look uninstalled.
 - A Linux installation stays complete if its old staging files cannot be deleted.

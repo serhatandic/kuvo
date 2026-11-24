@@ -477,7 +477,8 @@ pub fn stopped(home: &Home) -> bool {
         .any(|name| home.run().join(name).exists())
 }
 
-fn selected(home: &Home) -> io::Result<Option<Release>> {
+/// The durable selection, including a release still on trial.
+pub fn selected(home: &Home) -> io::Result<Option<Release>> {
     Ok(Release::read(&home.root().join(SELECTOR))?
         .or_else(|| fs::read_link(home.bin()).ok()?.to_str()?.parse().ok()))
 }

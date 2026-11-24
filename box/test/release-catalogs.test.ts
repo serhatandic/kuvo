@@ -129,7 +129,7 @@ test("the release builder packs Rust target executables with the common release 
       expect(readFileSync(join(extracted, "bin", program))).toEqual(programBytes)
       for (const file of common) {
         const bundled = join(extracted, file.path)
-        expect(readFileSync(bundled), file.path).toEqual(file.data)
+        expect<Buffer>(readFileSync(bundled), file.path).toEqual(file.data)
         expect(statSync(bundled).mode & 0o777, file.path).toBe(file.mode)
       }
       expect(existsSync(join(extracted, "bin/kuvo-link.js"))).toBe(false)

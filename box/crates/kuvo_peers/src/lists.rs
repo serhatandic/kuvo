@@ -517,7 +517,11 @@ impl View {
         }
     }
 
-    pub fn runs_on(&self, now: Millis) -> routes::get_kuvo_setup_runs_on_events::Status200 {
+    pub fn runs_on(
+        &self,
+        now: Millis,
+        bridge_version: Option<&str>,
+    ) -> routes::get_kuvo_setup_runs_on_events::Status200 {
         let here = GetKuvoSetupRunsOnEventsStatus200ComputersItem {
             computer: self.roster.local(),
             agents: self.local.catalog.agents.clone(),
@@ -530,15 +534,25 @@ impl View {
         };
         let computers = std::iter::once(here)
             .chain(self.list_origins(now).map(|(lists, origin)| {
+                let catching_up = bridge_version.is_some_and(|version| {
+                    self.announced
+                        .get(&origin.computer.id)
+                        .and_then(|peer| peer.computer.as_ref())
+                        .is_some_and(|computer| computer.in_bridge_handoff(version))
+                });
+                let standing = match origin.standing {
+                    Standing::Live if catching_up => Standing::Updating,
+                    current => current,
+                };
                 GetKuvoSetupRunsOnEventsStatus200ComputersItem {
                     computer: origin.computer.clone(),
                     agents: lists.catalog.agents.clone(),
                     offered: lists.catalog.offered.clone(),
                     here: None,
                     pending: None,
-                    away: (origin.standing != Standing::Live).then_some(true),
+                    away: (standing != Standing::Live).then_some(true),
                     last_seen: origin.last_seen(),
-                    updating: origin.standing.updating(),
+                    updating: standing.updating(),
                 }
             }))
             .collect();

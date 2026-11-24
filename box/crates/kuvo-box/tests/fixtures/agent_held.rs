@@ -7,6 +7,7 @@ use kuvo_agents::{
     hold::{Controller, HoldKind, Limits, Start, TurnNote},
     rpc::{Incoming, Options, Rpc},
     runtime::{AdapterCall, Runtime},
+    tool_relay::{AgentTools, ToolRelay},
     session::{
         ActiveTurn, Decision, Delivery, EventEnvelope, Outcome, PermissionAsk, TextKind, Thread,
         TurnEvent, TurnInput, TurnKind, TurnResult, TurnSink,
@@ -30,17 +31,44 @@ pub(super) type Parked = Arc<Mutex<HashMap<String, Controller>>>;
 pub(super) const KIND: &str = "rpc-held";
 
 /// The agent: says what it was asked, asks to edit a file, and says what you
-/// answered. It ends when its input does.
+/// answered. It ends when its input does. Given Kuvo Code's tools (a
+/// program it starts, `KUVO_FIXTURE_TOOLS`), it calls one before it asks and
+/// again after, and says what each said.
 const AGENT: &str = r#"
 const send = m => process.stdout.write(JSON.stringify(m) + "\n");
+const given = process.env.KUVO_FIXTURE_TOOLS && JSON.parse(process.env.KUVO_FIXTURE_TOOLS);
+let tools, waiting = new Map(), next = 1;
+const call = (method, params) => new Promise(done => {
+  const id = next++;
+  waiting.set(id, done);
+  tools.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+});
+const tool = async () => {
+  const answer = await call("tools/call", { name: "list_agents", arguments: {} });
+  return answer.result ? answer.result.content[0].text : "an error: " + JSON.stringify(answer.error);
+};
+if (given) {
+  tools = require("child_process").spawn(given.command, given.args, { env: given.env, stdio: ["pipe", "pipe", "ignore"] });
+  require("readline").createInterface({ input: tools.stdout }).on("line", line => {
+    const m = JSON.parse(line);
+    waiting.get(m.id)?.(m);
+    waiting.delete(m.id);
+  });
+}
+const ask = () => send({ id: 900, method: "approve", params: { action: "edit", resources: ["held.txt"] } });
 require("readline").createInterface({ input: process.stdin })
-  .on("line", line => {
+  .on("line", async line => {
     const m = JSON.parse(line);
     if (m.method === "prompt") {
       send({ method: "text", params: { text: "Asked to " + m.params.text } });
-      send({ id: 900, method: "approve", params: { action: "edit", resources: ["held.txt"] } });
+      if (given) {
+        await call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
+        send({ method: "text", params: { text: "; tools said " + await tool() } });
+      }
+      ask();
     } else if (m.id === 900) {
       send({ method: "text", params: { text: m.result.allow ? "; approved" : "; refused" } });
+      if (given) send({ method: "text", params: { text: "; then " + await tool() } });
       send({ method: "done" });
     } else if (m.method === "interrupt") {
       send({ method: "done", params: { interrupted: true } });
@@ -55,6 +83,7 @@ pub(super) struct HeldThread {
     pub session: String,
     pub provider: String,
     pub parked: Parked,
+    pub relay: ToolRelay,
 }
 
 struct Controls(Rpc);
@@ -102,6 +131,19 @@ impl Thread for HeldThread {
 
 impl HeldThread {
     async fn launch(&self, turn: &str) -> io::Result<Controller> {
+        let mut env: kuvo_os::platform::Environment = std::env::vars_os().collect();
+        // An agent in the sandbox, given Kuvo Code's tools as one is.
+        if self.session.starts_with("ses_held_tools")
+            && let Some(AgentTools::Stdio { command, args, env: theirs, .. }) =
+                self.relay.agent_tools(&self.session, 1, true).await?
+        {
+            let text = |value: &std::ffi::OsStr| value.to_string_lossy().into_owned();
+            let given = json!({
+                "command": command, "args": args.iter().map(|arg| text(arg)).collect::<Vec<_>>(),
+                "env": theirs.iter().map(|(name, value)| (text(name), json!(text(value)))).collect::<serde_json::Map<_, _>>(),
+            });
+            env.insert("KUVO_FIXTURE_TOOLS".into(), given.to_string().into());
+        }
         let runtime = Runtime::for_home(&self.home);
         runtime
             .holders()
@@ -110,7 +152,7 @@ impl HeldThread {
                 Start {
                     command: vec![self.program.clone(), "-e".into(), AGENT.into()],
                     cwd: Some(self.home.root().to_owned()),
-                    env: std::env::vars_os().collect(),
+                    env,
                     kind: HoldKind::JsonRpc,
                     meta: json!({
                         "provider": self.provider, "fixture": KIND,

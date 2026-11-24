@@ -89,6 +89,15 @@ fn copy_entry(from: &Path, to: &Path) -> Result<()> {
 #[cfg(not(target_os = "macos"))]
 fn copy_entry(from: &Path, to: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(from)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+
+        // Sockets name live IPC endpoints and carry no files to restore.
+        if meta.file_type().is_socket() {
+            return Ok(());
+        }
+    }
     if meta.is_symlink() {
         copy_link(from, to, &meta)?;
     } else if meta.is_dir() {

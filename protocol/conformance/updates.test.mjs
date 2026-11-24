@@ -12,15 +12,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 
-import { boxBinary, isolatedEnv, launch, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import "./update-helper.mjs";
 
 const { peerTransferMs, keeperTrialMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
-const failoverReturnMs = peerTransferMs + keeperTrialMs;
+const releaseReturnMs = peerTransferMs + keeperTrialMs;
 const firstPreparationMs = 90_000;
 const leaseElectionMs = 30_000;
-const failoverTestMs = firstPreparationMs + leaseElectionMs + keeperTrialMs + failoverReturnMs;
+const failoverTestMs = firstPreparationMs + leaseElectionMs + keeperTrialMs + releaseReturnMs;
+const bridgeTestMs = firstPreparationMs + 2 * keeperTrialMs + 2 * releaseReturnMs;
 
 const keypair = () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -1009,7 +1010,7 @@ test("peer transfer keeps its checked progress after the first holder times out"
 test("a slow member can catch up after the main's preparation deadline", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true, stageDeadline: true }));
 test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true }));
 test("the deployed beta refuses a direct Rust pack", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true, expectRefusal: true }));
-test("the deployed beta takes the bridge before joining a Rust fleet", { timeout: 360000 }, t => fleetRun(t, { returningTypescript: true, bridgeBeta: true }));
+test("the deployed beta takes the bridge before joining a Rust fleet", { timeout: bridgeTestMs }, t => fleetRun(t, { returningTypescript: true, bridgeBeta: true }));
 
 test("the shell keeper records a failed first Rust launch without selecting TypeScript again", async t => {
   if (boxBinary().typescript || process.platform === "win32") {
@@ -1431,7 +1432,7 @@ Buffer.from = function (value, encoding, ...args) {
     if (pullProgress) await checkPullProgress();
     else startOnline();
     if (aheadMember) {
-      await until(() => confirmed(main), diagnose, pullProgress ? failoverReturnMs : firstPreparationMs);
+      await until(() => confirmed(main), diagnose, pullProgress ? releaseReturnMs : firstPreparationMs);
       assert.equal(active(member), selected);
       assert.equal(active(away), initial(away));
       assert.ok(refusedPacks > 0, "the main must get the pack from its member after the download fails");
@@ -1563,7 +1564,66 @@ Buffer.from = function (value, encoding, ...args) {
     const returned = performance.now();
     retryDownload = Boolean(shellKeepers);
     peerOnly = Boolean(failover || returningTypescript);
-    start(away);
+    const bridgeBin = bridgeBeta ? `versions/${bridgeVersion}-${bridgeHash.slice(0, 12)}/bin` : undefined;
+    const placement = async () => {
+      const resident = readJSON(path.join(leader.home, "run/serve.json"));
+      const line = await openLine(resident, "", "kuvo/setup/runs-on/events");
+      try {
+        assert.equal(line.status, 200);
+        for await (const frame of line.frames()) return frame;
+      } finally {
+        line.close();
+      }
+    };
+    if (bridgeBin) {
+      const source = path.join(leader.home, "run/peer-agents.json");
+      const to = readJSON(path.join(away.home, "run/link.json"));
+      const targetAddress = relayAddress(Buffer.from(to.secret, "base64url"));
+      const resident = readJSON(path.join(leader.home, "run/serve.json"));
+      const roster = await request(resident, "GET", "kuvo/computers");
+      const awayKey = roster.json?.computers?.find(row => row.name === "Away")?.key;
+      assert.ok(awayKey, "the Rust main should know the returning computer");
+      const held = { bridge: [], rust: [] };
+      const holding = { bridge: true, rust: true };
+      const stopHolding = [main, member].map(peer => {
+        const link = readJSON(path.join(peer.home, "run/link.json"));
+        const from = relayAddress(Buffer.from(link.secret, "base64url"));
+        return relay.intercept(from, targetAddress, packet => {
+          if (packet.payload.length <= 30_000) return false;
+          const phase = active(away) === bridgeBin ? "rust" : "bridge";
+          if (!holding[phase]) return false;
+          held[phase].push(packet);
+          return true;
+        });
+      });
+      const release = phase => {
+        holding[phase] = false;
+        for (const packet of held[phase].splice(0)) relay.replay(packet);
+      };
+      try {
+        start(away);
+        for (const [phase, prior] of [["bridge", previousVersion], ["rust", bridgeVersion]]) {
+          await until(() => held[phase].length > 0 && readJSON(source)[awayKey]?.computer?.kuvo === prior,
+            () => `the returning beta must ask for its ${phase} release at ${prior}\n${diagnose()}`, peerTransferMs);
+          const { computers } = await placement();
+          assert.ok(computers.some(row => row.here), "the Rust main should be available for work");
+          assert.equal(computers.some(row => row.computer.name === "Away" && !row.away), false,
+            `the returning beta must stay out of work placement at ${prior}`);
+          release(phase);
+          if (phase === "bridge") {
+            await until(() => active(away) === bridgeBin && !fs.existsSync(path.join(away.home, "run/previous")), diagnose, releaseReturnMs);
+            assert.ok(refusedBridges > 0, "the old beta must have reached a peer for its bridge pack");
+            t.diagnostic(`returning ${previousVersion} confirmed the bridge in ${Math.round(performance.now() - returned)} ms`);
+          }
+        }
+      } finally {
+        for (const stop of stopHolding) stop();
+        release("bridge");
+        release("rust");
+      }
+    } else {
+      start(away);
+    }
     const refused = () => {
       const cannot = path.join(away.home, "run/fleet-cannot.json");
       return fs.existsSync(cannot) ? readJSON(cannot) : undefined;
@@ -1579,14 +1639,8 @@ Buffer.from = function (value, encoding, ...args) {
       t.diagnostic(`returning ${previousVersion} refused the release in ${Math.round(performance.now() - returned)} ms`);
       return;
     }
-    const bridgeBin = bridgeBeta ? `versions/${bridgeVersion}-${bridgeHash.slice(0, 12)}/bin` : undefined;
-    if (bridgeBin) {
-      await until(() => active(away) === bridgeBin && !fs.existsSync(path.join(away.home, "run/previous")), diagnose, 120000);
-      assert.ok(refusedBridges > 0, "the old beta must have reached a peer for its bridge pack");
-      t.diagnostic(`returning ${previousVersion} confirmed the bridge in ${Math.round(performance.now() - returned)} ms`);
-    }
     const rustBegan = performance.now();
-    const returnMs = failover ? failoverReturnMs : peerOnly ? 120000 : 65000;
+    const returnMs = failover || bridgeBeta ? releaseReturnMs : peerOnly ? 120000 : 65000;
     await until(() => {
       const failure = (failover || bridgeBeta) && refused();
       if (failure?.version === version) throw new Error(failure.reason);
@@ -1617,6 +1671,10 @@ Buffer.from = function (value, encoding, ...args) {
       assert.equal(readJSON(path.join(away.home, selected, "..", "box.json")).launch, "rust");
     }
     if (bridgeBin) t.diagnostic(`the bridge then confirmed Rust in ${Math.round(performance.now() - rustBegan)} ms`);
+    if (bridgeBin) {
+      await until(async () => (await placement()).computers.some(row => row.computer.name === "Away" && !row.away),
+        "the returning computer must be available for work after confirming Rust");
+    }
     t.diagnostic(`returning computer confirmed in ${Math.round(performance.now() - returned)} ms`);
   } finally {
     feed.close();
@@ -2340,24 +2398,198 @@ test("the Mac installer preserves a machine and the earlier app's home", t => {
   assert.deepEqual(fs.readdirSync(home).sort(), ["bin", "box", "engine", "workspace"]);
 });
 
+function macInstallerRequest({ binary, env, release }, bundle, verb) {
+  const home = path.join(env.HOME, ".kuvo-code");
+  const install = ["install", `--${verb}`, "--root", ".kuvo-code", "--app", bundle];
+  const args = binary.typescript
+    ? ["--config=/dev/null", "--no-env-file", binary.file, ...install, "--release", release, "--engine", path.join(env.HOME, "engine")]
+    : verb === "status" ? install : ["install-media", release, ".kuvo-code", bundle, ...(verb === "new" ? ["--start"] : [])];
+  const run = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
+    cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+  });
+  assert.ifError(run.error);
+  return [run.status, JSON.parse(run.stdout)];
+}
+
+test("the Mac installer offers a move when the earlier app still has work", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the earlier Mac app's home.");
+  const fixture = box(t);
+  const { env } = fixture;
+  const identifier = "run.kuvo.code.earlier-fixture";
+  const bundle = macInstallerBundle(env.HOME, identifier);
+  const earlier = path.join(env.HOME, "Library/Application Support", identifier);
+  const notes = path.join(earlier, "Chats/c1/notes.md");
+  write(notes, "an earlier conversation");
+  for (const verdict of ["app-07", "app-box"]) {
+    if (verdict === "app-box") write(path.join(earlier, "box/run/keeper.json"), "{}");
+    const [code, status] = macInstallerRequest(fixture, bundle, "status");
+    assert.equal(code, 0);
+    assert.equal(status.verdict, verdict);
+    assert.equal(status.verb, "move");
+    assert.deepEqual(macInstallerRequest(fixture, bundle, "new"), [1, {
+      result: "refused", verdict, status: status.status,
+      message: "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.",
+    }]);
+    assert.equal(fs.readFileSync(notes, "utf8"), "an earlier conversation");
+    assert.equal(fs.existsSync(path.join(env.HOME, ".kuvo-code")), false);
+  }
+});
+
+test("the Mac installer keeps an existing machine in place", t => {
+  if (process.platform !== "darwin") return t.skip("Uses a Mac machine installation.");
+  const fixture = box(t);
+  const { env } = fixture;
+  const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.machine-fixture");
+  const home = path.join(env.HOME, ".kuvo-code");
+  const keeper = "#!/bin/sh\nexit 64\n";
+  write(path.join(home, "box/kind"), "machine\n");
+  write(path.join(home, "bin/kuvo-start"), keeper, { mode: 0o700 });
+  write(path.join(home, "workspace/notes"), "machine work");
+  const [code, status] = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(code, 0);
+  assert.equal(status.verdict, "machine");
+  assert.equal(status.verb, null);
+  const messages = {
+    move: "This Mac is set up as one of your machines already: Kuvo uses what's here.",
+    new: "This computer is set up as one of your machines already: Kuvo uses what's here.",
+  };
+  for (const [verb, message] of Object.entries(messages)) {
+    assert.deepEqual(macInstallerRequest(fixture, bundle, verb), [1, {
+      result: "refused", verdict: "machine", status: status.status, message,
+    }]);
+  }
+  assert.equal(fs.readFileSync(path.join(home, "bin/kuvo-start"), "utf8"), keeper);
+  assert.equal(fs.readFileSync(path.join(home, "workspace/notes"), "utf8"), "machine work");
+  assert.deepEqual(fs.readdirSync(home).sort(), ["bin", "box", "workspace"]);
+});
+
+test("the Mac installer leaves a fresh home alone when asked to move", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac move action.");
+  const fixture = box(t);
+  const home = path.join(fixture.env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(fixture.env.HOME, "run.kuvo.code.fresh-fixture");
+  const [code, status] = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(code, 0);
+  assert.deepEqual([status.verdict, status.verb], ["fresh", "new"]);
+  assert.deepEqual(macInstallerRequest(fixture, bundle, "move"), [1, {
+    result: "refused", verdict: "fresh", status: status.status,
+    message: "There's nothing of an earlier Kuvo Code's on this Mac to move.",
+  }]);
+  assert.equal(fs.existsSync(home), false);
+});
+
+test("the Mac installer keeps a home whose sessions were moved back", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac move record.");
+  const fixture = box(t);
+  const home = path.join(fixture.env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(fixture.env.HOME, "run.kuvo.code.moved-back-fixture");
+  const record = path.join(home, "updates/rehome/state.json");
+  const saved = '{"state":"back","way":"back","movedBack":true}';
+  write(record, saved);
+  const [code, status] = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(code, 0);
+  assert.deepEqual([status.verdict, status.verb], ["back", null]);
+  for (const verb of ["move", "new"]) {
+    assert.deepEqual(macInstallerRequest(fixture, bundle, verb), [1, {
+      result: "refused", verdict: "back", status: status.status,
+      message: "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
+    }]);
+  }
+  assert.equal(fs.readFileSync(record, "utf8"), saved);
+  assert.deepEqual(fs.readdirSync(path.join(home, "updates")), ["rehome"]);
+});
+
+test("the Mac installer keeps a saved move when asked for new setup", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac move journal.");
+  const fixture = box(t);
+  const home = path.join(fixture.env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(fixture.env.HOME, "run.kuvo.code.saved-move-fixture");
+  const journal = path.join(home, "updates/rehome/journal.json");
+  const cases = [
+    ["clone", "moving", "Kuvo is moving your sessions to their new place on this Mac: that's finished first."],
+    ["clear", "stuck", "Kuvo was moving your sessions to their new place on this Mac and stopped part way: that's finished first."],
+  ];
+  for (const [step, verdict, message] of cases) {
+    const saved = JSON.stringify({ v: 1, way: "move", began: 1, step,
+      from: path.join(fixture.env.HOME, "earlier"), to: home, placements: [], clearing: [] });
+    write(journal, saved);
+    const [code, status] = macInstallerRequest(fixture, bundle, "status");
+    assert.equal(code, 0);
+    assert.deepEqual([status.verdict, status.verb, status.status.step], [verdict, "move", step]);
+    assert.deepEqual(macInstallerRequest(fixture, bundle, "new"), [1, {
+      result: "refused", verdict, status: status.status, message,
+    }]);
+    assert.equal(fs.readFileSync(journal, "utf8"), saved);
+    assert.deepEqual(fs.readdirSync(path.join(home, "updates")), ["rehome"]);
+  }
+});
+
+test("the Mac installer leaves an unreadable move journal untouched", t => {
+  if (process.platform !== "darwin") return t.skip("Uses a Mac move journal.");
+  const fixture = box(t);
+  const { env, body, key, release } = fixture;
+  const home = path.join(env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.bad-journal-fixture");
+  const journal = path.join(home, "updates/rehome/journal.json");
+  write(journal, "{");
+  write(path.join(release, "box.tar.gz"), "pack");
+  write(path.join(release, "boxes.json"), encode(envelope({
+    ...body, launch: "rust", packs: { [target]: body.pack },
+  }, key)));
+  env.KUVO_TEST_RELEASE_KEY = key.key;
+  const expected = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(expected[0], 1);
+  assert.equal(expected[1].result, "refused");
+  assert.match(expected[1].message, /can't tell how far it got/);
+  for (const verb of ["move", "new"]) assert.deepEqual(macInstallerRequest(fixture, bundle, verb), expected);
+  assert.equal(fs.readFileSync(journal, "utf8"), "{");
+  assert.deepEqual(fs.readdirSync(path.join(home, "updates")), ["rehome"]);
+});
+
+test("the Mac installer offers to start a loaded Helper that has stopped", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac Helper registration.");
+  const fixture = box(t);
+  const { env } = fixture;
+  env.HOME = fs.realpathSync(env.HOME);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.helper-status-fixture");
+  const tools = path.join(env.HOME, "launch-fixture");
+  env.KUVO_TEST_UNINSTALL_TOOLS = tools;
+  const helper = path.join(home, "bin/Kuvo Helper.app/Contents/MacOS/Kuvo Helper");
+  write(path.join(home, "box/kind"), "mac\n");
+  write(path.join(home, "bin/kuvo-box"), "");
+  write(helper, "");
+  const job = path.join(env.HOME, "Library/LaunchAgents/run.kuvo.code.machine.plist");
+  const contents = `<plist><array><string>${helper}</string></array></plist>`;
+  write(job, contents);
+  write(path.join(tools, "launchctl"), `#!/bin/sh
+[ "$1" = print ] || exit 64
+cat "$KUVO_TEST_UNINSTALL_TOOLS/print-state"
+`, { mode: 0o700 });
+  for (const [state, verb] of [["state = running", null], ["state = waiting", "new"], ["service = job", null]]) {
+    write(path.join(tools, "print-state"), state + "\n");
+    const [code, status] = macInstallerRequest(fixture, bundle, "status");
+    assert.equal(code, 0);
+    assert.deepEqual([status.verdict, status.verb], ["ours", verb]);
+  }
+  write(path.join(tools, "print-state"), "state = running\n");
+  write(path.join(home, "run/paused"), "");
+  const [code, status] = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(code, 0);
+  assert.deepEqual([status.verdict, status.verb], ["ours", "new"]);
+  assert.equal(fs.readFileSync(job, "utf8"), contents);
+  assert.equal(fs.existsSync(path.join(home, "updates/install")), false);
+});
+
 test("the Mac installer waits for a live move", async t => {
   if (process.platform !== "darwin") return t.skip("Uses the Mac move lock.");
-  const { binary, env, release } = box(t);
+  const fixture = box(t);
+  const { env } = fixture;
   const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.wait-fixture");
   const home = path.join(env.HOME, ".kuvo-code");
   const lock = path.join(home, "updates/rehome/lock/pid");
   const holder = launch(process.execPath, ["-e", "console.log('ready');process.stdin.resume()", "rehome"], env, env.HOME, "pipe");
-  const ask = verb => {
-    const install = ["install", `--${verb}`, "--root", ".kuvo-code", "--app", bundle];
-    const args = binary.typescript
-      ? ["--config=/dev/null", "--no-env-file", binary.file, ...install, "--release", release, "--engine", path.join(env.HOME, "engine")]
-      : verb === "status" ? install : ["install-media", release, ".kuvo-code", bundle, ...(verb === "new" ? ["--start"] : [])];
-    const run = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
-      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
-    });
-    assert.ifError(run.error);
-    return [run.status, JSON.parse(run.stdout)];
-  };
+  const ask = verb => macInstallerRequest(fixture, bundle, verb);
   try {
     await once(holder.child.stdout, "data");
     write(lock, String(holder.child.pid));
@@ -2494,6 +2726,33 @@ esac
       assert.equal(fs.readFileSync(path.join(freshTools, "calls"), "utf8"), "print\nbootstrap\n");
       assert.deepEqual(fs.readdirSync(path.join(fresh, "tmp")), []);
       t.diagnostic(`fresh signed Mac media installed and started in ${Math.round(performance.now() - starts)} ms`);
+
+      const interrupted = path.join(root, "interrupted");
+      const interruptedTools = path.join(interrupted, "launch-fixture");
+      const unfinished = path.join(interrupted, ".kuvo-code");
+      fs.mkdirSync(path.join(interrupted, "tmp"), { recursive: true });
+      fs.cpSync(tools, interruptedTools, { recursive: true });
+      write(path.join(unfinished, "updates/rehome/new"), "1\n");
+      write(path.join(unfinished, "bin/kuvo-link.js"), "// half of the earlier install");
+      write(path.join(unfinished, "bin.new/kuvo-start"), "half");
+      write(path.join(unfinished, "updates/install/release.new/bin/kuvo-link.js"), "half");
+      write(path.join(unfinished, "updates/install/engine/.fetch.1/engine.tgz"), "half");
+      const before = install("status", interrupted, interruptedTools);
+      assert.equal(before.status, 0, before.error?.message ?? before.stdout + before.stderr);
+      assert.equal(JSON.parse(before.stdout).verdict, "fresh");
+      const resumed = install("new", interrupted, interruptedTools);
+      assert.equal(resumed.status, 0, resumed.error?.message ?? resumed.stdout + resumed.stderr);
+      const resumedAnswer = JSON.parse(resumed.stdout);
+      assert.deepEqual([resumedAnswer.result, resumedAnswer.verdict, resumedAnswer.started], ["done", "ours", true]);
+      assert.equal(typeof resumedAnswer.setAside, "string", "the reply should name the saved earlier files");
+      assert.equal(path.dirname(resumedAnswer.setAside), path.join(unfinished, "trash"));
+      assert.match(path.basename(resumedAnswer.setAside), /^earlier-box-/);
+      assert.equal(fs.readFileSync(path.join(resumedAnswer.setAside, "bin/kuvo-link.js"), "utf8"), "// half of the earlier install");
+      for (const old of ["bin.new", "updates/install", "updates/rehome/new"]) {
+        assert.equal(fs.existsSync(path.join(unfinished, old)), false, old);
+      }
+      installedRelease(unfinished);
+      assert.equal(fs.readFileSync(path.join(interruptedTools, "calls"), "utf8"), "print\nbootstrap\n");
     }
     const verdict = install("status");
     assert.equal(verdict.status, 0, verdict.error?.message ?? verdict.stdout + verdict.stderr);
