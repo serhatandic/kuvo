@@ -1475,13 +1475,19 @@ test("a fresh Linux install leaves the earlier home alone while its keeper is st
   }
 });
 
-test("a Linux installer resumes after it was interrupted between publication and startup", { timeout: 120000 }, async t => {
+test("a Linux installer resumes after it was interrupted between publication and startup", { timeout: 120000 }, t => resumeLinuxInstall(t));
+test("a Linux installer resumes between publishing the engine and the release", { timeout: 120000 }, t => resumeLinuxInstall(t, "release"));
+test("a Linux installer resumes while setting earlier files aside", { timeout: 120000 }, t => resumeLinuxInstall(t, "archive"));
+
+async function resumeLinuxInstall(t, boundary = "startup") {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
   const { home, cron, cronBefore, install, begin, stop } = await freshLinuxInstaller(t, binary);
   const hold = path.join(path.dirname(cron), "hold-crontab");
   const oldWork = path.join("workspace", "old-work");
+  const oldChat = path.join("chats", "old-chat");
   write(path.join(home, oldWork), "keep earlier work");
+  write(path.join(home, oldChat), "keep earlier conversation");
   write(hold, "");
   const interrupted = begin("new");
   let cronPid;
@@ -1501,6 +1507,28 @@ test("a Linux installer resumes after it was interrupted between publication and
     process.kill(cronPid);
     cronPid = undefined;
     fs.rmSync(hold);
+    const engine = path.join(home, "engine");
+    const engineInode = fs.statSync(engine).ino;
+    if (boundary !== "startup") {
+      // Recreate the earlier journal boundary before publishing the release.
+      const staging = path.join(home, "updates/install/fresh-machine-media");
+      fs.renameSync(path.join(home, "versions"), path.join(staging, "versions"));
+      for (const file of ["bin", "folder-version.json", "machine-id", "run/launch.env"]) {
+        fs.unlinkSync(path.join(home, file));
+      }
+      assert.equal(fs.existsSync(path.join(staging, "engine")), false);
+      assert.equal(fs.existsSync(path.join(home, "versions")), false);
+      if (boundary === "archive") {
+        const marker = path.join(home, "updates/install/fresh-machine.json");
+        const attempt = readJSON(marker);
+        const aside = path.join(home, "trash", attempt.aside);
+        fs.renameSync(engine, path.join(staging, "engine"));
+        fs.renameSync(path.join(aside, "workspace"), path.join(home, "workspace"));
+        write(marker, encode({ ...attempt, preserved: false }));
+        assert.equal(fs.existsSync(path.join(home, "chats")), false);
+        assert.equal(fs.readFileSync(path.join(aside, oldChat), "utf8"), "keep earlier conversation");
+      }
+    }
     const pending = install("status");
     assert.equal(pending.status, 0, pending.error?.message ?? pending.stdout + pending.stderr);
     const { verdict, verb } = JSON.parse(pending.stdout);
@@ -1509,9 +1537,13 @@ test("a Linux installer resumes after it was interrupted between publication and
     assert.equal(resumed.status, 0, resumed.error?.message ?? resumed.stdout + resumed.stderr);
     const result = JSON.parse(resumed.stdout);
     assert.deepEqual([result.result, result.verdict, result.started], ["done", "machine", true]);
-    assert.equal(fs.readFileSync(machineId, "utf8"), publishedId);
+    const resumedId = fs.readFileSync(machineId, "utf8");
+    if (boundary === "startup") assert.equal(resumedId, publishedId);
+    else assert.match(resumedId.trim(), /^[0-9a-f]{32}$/);
+    assert.equal(fs.statSync(engine).ino, engineInode);
     assert.equal(fs.readlinkSync(path.join(home, "bin")), selected);
     assert.equal(fs.readFileSync(path.join(result.setAside, oldWork), "utf8"), "keep earlier work");
+    assert.equal(fs.readFileSync(path.join(result.setAside, oldChat), "utf8"), "keep earlier conversation");
     assert.equal(fs.readdirSync(path.join(home, "trash")).length, 1);
     assert.equal(fs.existsSync(path.join(home, "updates/install")), false);
   } finally {
@@ -1519,7 +1551,7 @@ test("a Linux installer resumes after it was interrupted between publication and
     if (cronPid !== undefined) process.kill(cronPid);
     stop();
   }
-});
+}
 
 test("a Linux installer clears an earlier incomplete installation after making the new home", { timeout: 120000 }, async t => {
   const binary = boxBinary();
