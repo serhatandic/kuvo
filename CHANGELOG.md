@@ -6,6 +6,25 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Stop still works while a conversation waits for its current turn to finish before moving.
+- Rust computers answer conversation reads from your other computers.
+- A move carries forwarding decisions saved while the conversation is on its way.
+- Messages can still reach another computer after the sending tool stops waiting for a reply.
+- A conversation with a background command or subagent running stays on its computer until the work finishes.
+- Kuvo retries deleting an expired backup when the first attempt fails.
+- Before moving a conversation, Kuvo says if its delegated sessions or unanswered questions will stay on the current computer.
+- Messages still reach a conversation after it moves back to its first computer, even while that computer is refreshing its session list.
+- A computer can retry a conversation move when its own unfinished copy is still on the destination.
+- A conversation’s follow-up notes reach its latest computer after the sender restarts or the move announcement expires.
+- An older conversation can still hear from the conversation that started it, even after it leaves the list of recent conversations.
+- After a restart, Kuvo still asks the destination to remove an unfinished copy of a failed move.
+- An older move that already started switching on a managed setup stays held until the destination confirms ownership.
+- A paused queue keeps its message order after a move and shows the original words alongside its attachment names.
+- A conversation stays on its current computer and resumes its wake-ups if preparing the move takes too long.
+- A moved conversation can send and receive replies by name while its old computer is still cleaning up the original.
+- Your other computer learns a newly created conversation’s name before its message arrives.
+- Notes for a moving conversation wait for its new computer to confirm the move, then reach it while the original is being cleaned up.
+- A conversation stays on its current computer while Kuvo indexes the receipts required for its move.
 - The Rust box can reopen Work Queue items and attachments, recover an interrupted status migration, and use the main computer’s signed labels and number grants.
 - Undo and worktree snapshots no longer run a project's own git filters or hooks while saving its files.
 - Deleting a conversation while its agent is stopping no longer causes a transcript write error.

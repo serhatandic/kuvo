@@ -79,7 +79,7 @@ pub use search::{
     PeerSearch, SearchAvailability, SearchComputer, SearchPeer, SearchPeers, SearchResult,
 };
 pub use session_list::{Activity, ActivityState, LocalSessions};
-pub use session_move::{MoveEngineError, SessionMove};
+pub use session_move::{LetterDelivery, LetterPrompt, LetterText, MoveEngineError, SessionMove};
 pub use start_session::Permission as SessionPermission;
 pub use transcript::{TranscriptError, TranscriptScope};
 pub use waiting::PeerWaiting;

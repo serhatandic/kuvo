@@ -13,6 +13,7 @@ pub mod memory_read;
 pub mod moves;
 pub mod notices;
 pub mod outbox;
+pub mod owner_read;
 pub mod ownership;
 mod parts;
 pub mod reach;

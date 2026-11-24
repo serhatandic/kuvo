@@ -643,7 +643,7 @@ export function sendOutbox(host: Pick<LinkHost, "send">, link: LinkState | null 
       if (!introduced) {
         const introduction = { at: now, done: false };
         introducing.set(id, introduction);
-        telling.push(announce(host, readEngineFile, link).catch(() => {}).finally(() => { introduction.done = true; }));
+        telling.push(announce(host, readEngineFile, link, now, false, undefined, "engine").catch(() => {}).finally(() => { introduction.done = true; }));
         continue;
       }
       if (!introduced.done && now - introduced.at < INTRODUCING_FOR) continue;

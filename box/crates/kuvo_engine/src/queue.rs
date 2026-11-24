@@ -27,7 +27,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, watch};
 
 use crate::{
-    Engine, api, disk,
+    Engine, MoveEngineError, api, disk,
     lifetime::{Demand, Lease},
     parts, send, sessions,
 };
@@ -395,8 +395,31 @@ impl QueueStore {
 }
 
 impl Queue {
-    pub(crate) fn is_paused(&self) -> bool {
-        self.paused
+    pub(crate) fn letter_wait_reason(&self, home: &Path) -> String {
+        let returns = "Its answer, if it writes one, comes to you as a message.";
+        if !self.paused {
+            let line = self.shown(home)["line"]
+                .as_str()
+                .map_or_else(String::new, |line| format!(" {line}"));
+            return format!("Your message is queued for that conversation.{line} {returns}");
+        }
+        if let Some(limit) = &self.limit_stop {
+            let until = if limit.resets_at.is_some() {
+                "for the reset or an explicit resume"
+            } else {
+                "for the conversation to resume"
+            };
+            return format!(
+                "That conversation stopped. {} Your message waits {until}. {returns}",
+                limit::line(home, limit)
+            );
+        }
+        if self.user_paused == Some(true) {
+            return "That conversation is stopped: the user paused it. Your message waits there and goes once they resume it; its answer, if it writes one, comes to you as a message.".into();
+        }
+        format!(
+            "That conversation has a paused queue. Your message waits for the conversation to resume. {returns}"
+        )
     }
 
     fn shown_in_overview(&self) -> bool {
@@ -823,6 +846,17 @@ pub(crate) async fn snapshot(
     }
 }
 
+impl Engine {
+    /// Read the queue as the owning computer would show it locally.
+    pub async fn owner_queue(&self, session: &str) -> Result<Value, Refusal> {
+        let lease = self.acquire(Demand::Passive).await.ok_or_else(|| {
+            Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running.")
+        })?;
+        sessions::read(self, &lease, &sessions::path(session)).await?;
+        snapshot(self, session, false).await
+    }
+}
+
 fn queue_failed(error: api::Error) -> Refusal {
     Refusal::new(StatusCode::BAD_GATEWAY, error.to_string())
 }
@@ -918,6 +952,7 @@ async fn holding(
     given: Vec<String>,
     stopping: bool,
 ) -> Result<Value, Refusal> {
+    let _admitted = crate::session_move::admit_queue_hold(engine, session).await?;
     let lease = command_target(engine, session).await?;
     if stopping {
         if !given.is_empty() {
@@ -940,10 +975,10 @@ async fn holding(
         let _turn = tokio::time::timeout(std::time::Duration::from_secs(10), engine.turn(session))
             .await
             .ok();
-        return hold_on(engine, &lease, session, given, Hold::UserStop).await;
+        return hold_admitted(engine, &lease, session, given, Hold::UserStop).await;
     }
     let _turn = engine.turn(session).await;
-    hold_on(engine, &lease, session, given, Hold::Queue).await
+    hold_admitted(engine, &lease, session, given, Hold::Queue).await
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -961,6 +996,16 @@ pub(crate) async fn hold_on(
     how: Hold,
 ) -> Result<Value, Refusal> {
     let _admitted = crate::session_move::admit(engine, session, None).await?;
+    hold_admitted(engine, lease, session, given, how).await
+}
+
+async fn hold_admitted(
+    engine: &Engine,
+    lease: &Lease,
+    session: &str,
+    given: Vec<String>,
+    how: Hold,
+) -> Result<Value, Refusal> {
     if how == Hold::UserStop || !given.is_empty() {
         engine
             .queues
@@ -1185,15 +1230,17 @@ pub(crate) async fn pack_move(
     engine: &Engine,
     lease: &Lease,
     sessions: &[String],
-) -> io::Result<BTreeMap<String, Value>> {
+) -> Result<BTreeMap<String, Value>, MoveEngineError> {
     let mut packed = BTreeMap::new();
     for session in sessions {
-        let state = engine.queues.get(session).await?;
-        let entries = inbox(engine, lease, session)
+        let state = engine
+            .queues
+            .get(session)
             .await
-            .map_err(io::Error::other)?;
+            .map_err(MoveEngineError::Storage)?;
+        let entries = inbox(engine, lease, session).await?;
         if !state.paused && !entries.is_empty() {
-            return Err(unreadable_move_queue());
+            return Err(MoveEngineError::WaitingQueue);
         }
         if !state.paused && state.waiting.is_empty() {
             continue;
@@ -1206,7 +1253,7 @@ pub(crate) async fn pack_move(
             .len()
             != state.waiting.len()
         {
-            return Err(unreadable_move_queue());
+            return Err(MoveEngineError::WaitingQueue);
         }
         let mut ids = BTreeMap::new();
         let mut waiting = Vec::new();
@@ -1215,9 +1262,12 @@ pub(crate) async fn pack_move(
                 let mut message = engine
                     .queues
                     .waiting_prompt(id)
-                    .await?
-                    .ok_or_else(unreadable_move_queue)?;
-                message.files = carry_prompt_files(std::mem::take(&mut message.files)).await?;
+                    .await
+                    .map_err(|error| MoveEngineError::UnreadableQueue(Some(error)))?
+                    .ok_or(MoveEngineError::UnreadableQueue(None))?;
+                message.files = carry_prompt_files(std::mem::take(&mut message.files))
+                    .await
+                    .map_err(|error| MoveEngineError::UnreadableQueue(Some(error)))?;
                 let mut shown = shown.clone();
                 shown.files = file_names(&message.files);
                 CarriedWaiting { shown, message }
@@ -1225,13 +1275,15 @@ pub(crate) async fn pack_move(
                 let entry = entries
                     .iter()
                     .find(|entry| entry.id == id && entry.kind.as_deref() == Some("user"))
-                    .ok_or_else(unreadable_move_queue)?;
+                    .ok_or(MoveEngineError::WaitingQueue)?;
                 let own_id = if send::valid_id(id) {
                     id.into()
                 } else {
                     format!("msg_{}", &hex::encode(Sha256::digest(id.as_bytes()))[..32])
                 };
-                let files = carry_prompt_files(entry.files().to_owned()).await?;
+                let files = carry_prompt_files(entry.files().to_owned())
+                    .await
+                    .map_err(|error| MoveEngineError::UnreadableQueue(Some(error)))?;
                 let (words, from) = entry.shown();
                 CarriedWaiting {
                     shown: Waiting {
@@ -1243,7 +1295,7 @@ pub(crate) async fn pack_move(
                     },
                     message: Prompt {
                         id: String::new(),
-                        text: entry.text().ok_or_else(unreadable_move_queue)?.into(),
+                        text: entry.text().ok_or(MoveEngineError::WaitingQueue)?.into(),
                         delivery: Delivery::Queue,
                         files,
                         metadata: entry.metadata().cloned(),
@@ -1256,7 +1308,7 @@ pub(crate) async fn pack_move(
             waiting.push(carried);
         }
         if ids.values().collect::<HashSet<_>>().len() != ids.len() {
-            return Err(unreadable_move_queue());
+            return Err(MoveEngineError::WaitingQueue);
         }
         let carried = CarriedQueue {
             paused: state.paused,
@@ -1274,7 +1326,11 @@ pub(crate) async fn pack_move(
             limit_stop: state.limit_stop,
             user_paused: state.user_paused == Some(true),
         };
-        packed.insert(session.clone(), serde_json::to_value(carried)?);
+        packed.insert(
+            session.clone(),
+            serde_json::to_value(carried)
+                .map_err(|error| MoveEngineError::Storage(error.into()))?,
+        );
     }
     Ok(packed)
 }

@@ -2,6 +2,7 @@
 
 pub mod archive;
 mod attachment_paths;
+mod background;
 mod driver;
 mod forward_evidence;
 mod handoff;
@@ -23,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    directory::{MoveLocation, Ownership},
+    directory::{ComputerKey, MoveHint, MoveLocation, Ownership},
     lists::matching_paths,
     reach::Millis,
 };
@@ -34,6 +35,7 @@ pub use forward_evidence::{pack_queue_evidence, place_queue_evidence};
 pub use handoff::note_queue_placement;
 pub(crate) use listing::{is_mac, plain_name, register, register_start};
 pub(crate) use notices::{Announcer, Notices};
+pub(crate) use session_files::owner_attachment_files;
 
 const JOURNAL: ObjectFormat = ObjectFormat::additive("Move journal");
 const DEPARTURE: ObjectFormat = ObjectFormat::additive("Moved conversation");
@@ -265,12 +267,59 @@ fn departures(run: &Path) -> Result<Vec<Departure>, kuvo_store::format::Error> {
     departure_rows(run).collect()
 }
 
+pub(crate) fn recent_home_hints(
+    run: &Path,
+    now: Millis,
+    memory: Millis,
+) -> impl Iterator<Item = MoveHint> {
+    departure_rows(run)
+        .filter_map(Result::ok)
+        .filter(move |row| row.queue.is_none() && now.saturating_sub(row.at) < memory)
+        .map(|row| MoveHint {
+            session: row.session,
+            key: row.key,
+            at: row.at,
+        })
+}
+
+pub(crate) fn recently_arrived(
+    run: &Path,
+    session: &str,
+    here: &str,
+    now: Millis,
+) -> Result<bool, kuvo_store::format::Error> {
+    Ok(departures(run)?.into_iter().any(|row| {
+        row.session == session
+            && row.key == here
+            && row.arrived == Some(true)
+            && now.saturating_sub(row.at) < ROUTING_FOR
+    }))
+}
+
 pub(crate) fn locate(run: &Path, ownership: &mut Ownership) {
     apply_owners(
         ownership,
         departure_rows(run).filter_map(Result::ok),
         journal_rows(run).filter_map(Result::ok).collect(),
     );
+}
+
+/// A new owner can speak for a switched root before it has published it.
+pub(crate) fn switched_sender(run: &Path, session: &str, key: &ComputerKey) -> Option<String> {
+    let peer = kuvo_wire::keys::encode(key);
+    journals(run)
+        .ok()?
+        .into_iter()
+        .filter(|row| {
+            row.live()
+                && row.role == Role::From
+                && row.stage.switched()
+                && row.peer == peer
+                && matches!(row.kind, Some(Kind::Chat | Kind::Bot))
+                && row.sessions.first().is_some_and(|root| root == session)
+        })
+        .min_by_key(|row| row.started)
+        .and_then(|row| row.name)
 }
 
 /// Admission refuses unreadable durable state. The display projection still
@@ -328,6 +377,7 @@ fn apply_owners(
                 .or_insert(MoveLocation {
                     key,
                     departed_at: Some(departure.at),
+                    retiring: false,
                 });
         }
     }
@@ -353,6 +403,7 @@ fn apply_owners(
                     MoveLocation {
                         key: destination,
                         departed_at: None,
+                        retiring: movement.stage == Stage::Finishing,
                     },
                 );
             }

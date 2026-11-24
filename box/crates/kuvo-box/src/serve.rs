@@ -206,19 +206,27 @@ pub async fn run(
         setup.handle(),
         peers.relay_handle(),
         memory.clone(),
-        owners,
+        owners.clone(),
     )
     .await?;
     let queue_reads = work_queue.peer_reads();
     let search_engine = engine.clone();
+    let read_owner = kuvo_peers::owner_read::Service::new(
+        peers.reader(),
+        owners,
+        memory.clone(),
+        engine.clone(),
+    );
+    read_owner.register(&mut routes);
     let memory_reads = memory.serve(move |_, read| {
+        let owner = read_owner.clone();
         let queues = queue_reads.clone();
         let engine = search_engine.clone();
         async move {
-            if read.area.as_deref() == Some("search") {
-                super::setup_search::answer(engine, read).await
-            } else {
-                queues.answer(read).await
+            match read.area.as_deref() {
+                Some("ownership") => owner.answer(read).await,
+                Some("search") => super::setup_search::answer(engine, read).await,
+                _ => queues.answer(read).await,
             }
         }
     });
@@ -443,6 +451,7 @@ fn info(
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
     features.push(kuvo_peers::memory_read::FEATURE);
+    features.push(kuvo_peers::owner_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
     if permits_pairing {
         features.push("devices.pair");

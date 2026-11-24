@@ -10,6 +10,7 @@ use std::{
 };
 
 use kuvo_protocol::routes::types::GetKuvoComputersStatus200ComputersItemAtWorkItem;
+use kuvo_store::files::{FileStamp, file_stamp};
 use kuvo_wire::{
     keys::{Host, encode},
     mail::{Envelope, MAX_PLAINTEXT},
@@ -202,6 +203,7 @@ impl View {
                 "moves",
                 "moves.check",
                 "moves.two-computers",
+                "letters-read",
                 "data.session-notes",
                 "data.forward-evidence",
             ]);
@@ -213,6 +215,7 @@ impl View {
             features.extend([
                 crate::memory_read::FEATURE,
                 crate::memory_read::SEARCH_FEATURE,
+                crate::owner_read::FEATURE,
             ]);
         }
         if self
@@ -264,6 +267,45 @@ impl View {
             .collect()
     }
 
+    pub(crate) fn announced_agents(&self) -> Vec<AnnouncedAgent> {
+        let mut agents = vec![];
+        if let Some(lists) = &self.local_lists {
+            let mut sessions: Vec<_> = lists
+                .sessions
+                .iter()
+                .filter(|row| {
+                    row.facts.parent.is_none()
+                        && row.facts.archived != Some(true)
+                        && !row.actions.is_empty()
+                })
+                .collect();
+            sessions.sort_by(|a, b| {
+                b.facts
+                    .updated
+                    .as_f64()
+                    .unwrap_or_default()
+                    .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
+            });
+            agents = sessions
+                .into_iter()
+                .filter_map(|row| {
+                    Some(AnnouncedAgent {
+                        session: row.id.clone(),
+                        name: row.facts.title.clone()?,
+                        kind: if row.facts.kind == lists::Kind::Bot {
+                            AgentKind::Bot
+                        } else {
+                            AgentKind::Session
+                        },
+                        id: row.facts.bot.clone(),
+                    })
+                })
+                .take(120)
+                .collect();
+        }
+        agents
+    }
+
     pub(crate) fn moved(&self, id: &str, now: Millis) -> Option<String> {
         self.moved_with(id, now, &self.local.ownership)
     }
@@ -274,11 +316,23 @@ impl View {
         now: Millis,
         ownership: &Ownership,
     ) -> Option<String> {
+        self.move_address(id, now, ownership).map(|(key, _)| key)
+    }
+
+    pub(crate) fn move_address(
+        &self,
+        id: &str,
+        now: Millis,
+        ownership: &Ownership,
+    ) -> Option<(String, Option<Millis>)> {
         let recorded = ownership.journal.get(&(RecordScope::Session, id.into()));
         let recorded_key = || {
             recorded.map(|location| {
                 let key = &location.key;
-                encode(ownership.replacements.get(key).unwrap_or(key))
+                (
+                    encode(ownership.replacements.get(key).unwrap_or(key)),
+                    location.departed_at,
+                )
             })
         };
         if self.local.holds(id) || recorded.is_some_and(|location| location.departed_at.is_none()) {
@@ -296,7 +350,7 @@ impl View {
                     && now.saturating_sub(hint.at) < crate::moves::ROUTING_FOR
             })
             .max_by_key(|hint| hint.at)
-            .map(|hint| hint.key.clone())
+            .map(|hint| (hint.key.clone(), Some(hint.at)))
             .or_else(recorded_key)
     }
 
@@ -357,6 +411,7 @@ pub fn system_clock() -> Millis {
 #[derive(Clone)]
 pub struct Reader {
     views: watch::Receiver<Arc<View>>,
+    agent_mail: watch::Receiver<AgentMail>,
     clock: Clock,
     pub(crate) run: Arc<PathBuf>,
 }
@@ -371,10 +426,29 @@ impl Reader {
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
         self.views.changed().await
     }
+
+    /// Whether this computer's agent publication named the sender to this peer.
+    pub(crate) fn agent_sent_to(&self, peer: &ComputerKey, session: &str) -> Option<bool> {
+        let sent = self.agent_mail.borrow();
+        let list = sent.get(peer)?;
+        if list.sessions.contains(session) {
+            Some(true)
+        } else {
+            list.complete.then_some(false)
+        }
+    }
+}
+
+type AgentMail = BTreeMap<ComputerKey, SentAgents>;
+
+#[derive(PartialEq, Eq)]
+struct SentAgents {
+    sessions: Arc<BTreeSet<String>>,
+    complete: bool,
 }
 
 enum Change {
-    Update(UpdateFacts, Option<BridgeUpdate>),
+    Update(Box<(UpdateFacts, Option<BridgeUpdate>)>),
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
@@ -384,6 +458,11 @@ enum Change {
     ConversationSearch,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
+}
+
+struct PublishedViews {
+    views: watch::Sender<Arc<View>>,
+    sent_agents: watch::Sender<AgentMail>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -435,13 +514,17 @@ impl ResidentPeers {
             tokio::task::spawn_blocking(move || Resident::load(run, roster, telling, endpoint))
                 .await?;
         let (publish, views) = watch::channel(Arc::new(resident.view.clone()));
+        let (sent_agents, agent_mail) = watch::channel(AgentMail::new());
         let (changes, change_rx) = mpsc::channel(16);
         let (move_waiting, waiting_updates) = watch::channel(resident.view.move_waiting.clone());
         let handle = relay.as_ref().map(Relay::handle);
         let task = tokio::spawn(resident.run(
             relay,
             devices,
-            publish,
+            PublishedViews {
+                views: publish,
+                sent_agents,
+            },
             change_rx,
             waiting_updates,
             clock.clone(),
@@ -449,6 +532,7 @@ impl ResidentPeers {
         Ok(Self {
             reader: Reader {
                 views,
+                agent_mail,
                 clock,
                 run: files,
             },
@@ -573,12 +657,16 @@ impl ResidentPeers {
     }
 
     pub async fn announce_update(&self, facts: UpdateFacts, bridge: Option<BridgeUpdate>) {
-        let _ = self.changes.send(Change::Update(facts, bridge)).await;
+        let _ = self
+            .changes
+            .send(Change::Update(Box::new((facts, bridge))))
+            .await;
     }
 }
 
 struct Resident {
     run: PathBuf,
+    move_files: Option<FileStamp>,
     view: View,
     list_parts: BTreeMap<ComputerKey, Parts>,
     notice_parts: BTreeMap<ComputerKey, Parts>,
@@ -626,6 +714,7 @@ impl Resident {
         };
         Self {
             run,
+            move_files: None,
             view,
             list_parts: BTreeMap::new(),
             notice_parts: BTreeMap::new(),
@@ -638,18 +727,22 @@ impl Resident {
         mut self,
         mut relay: Option<Relay>,
         mut devices: Option<Devices>,
-        publish: watch::Sender<Arc<View>>,
+        publication: PublishedViews,
         mut changes: mpsc::Receiver<Change>,
         mut waiting_updates: watch::Receiver<Arc<BTreeSet<String>>>,
         clock: Clock,
     ) {
+        let PublishedViews {
+            views: publish,
+            sent_agents,
+        } = publication;
         let mut paired = relay_routes::Routes::default();
         let mut dispatch = None;
         let mut round = tokio::time::interval(PEER_ROUND);
         round.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
-            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone()));
+            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
         let mut pending_trust = None;
         let mut setup_rosters = None;
@@ -662,14 +755,18 @@ impl Resident {
                     }
                 }
                 change = changes.recv() => match change {
-                    Some(Change::Update(update, bridge)) => {
+                    Some(Change::Update(update)) => {
+                        let (update, bridge) = *update;
                         self.view.update = update;
                         self.view.bridge_update = bridge;
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::None);
                         }
                     }
-                    Some(Change::Local(local)) => {
+                    Some(Change::Local(mut local)) => {
+                        let incoming = Arc::make_mut(&mut local);
+                        incoming.ownership.frozen.clone_from(&self.view.local.ownership.frozen);
+                        incoming.ownership.journal.clone_from(&self.view.local.ownership.journal);
                         self.view.local_lists = local.publication().map(Arc::new);
                         self.view.local = local;
                     }
@@ -787,6 +884,9 @@ impl Resident {
                 },
                 _ = round.tick() => {
                     let now = clock();
+                    if let Err(error) = self.refresh_move_ownership().await {
+                        eprintln!("Refreshing move ownership: {error}");
+                    }
                     if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, now) {
                         eprintln!("Keeping moves on other computers: {error}");
                     }
@@ -797,6 +897,31 @@ impl Resident {
             }
             publish.send_replace(Arc::new(self.view.clone()));
         }
+    }
+
+    /// A move can activate after OpenCode already published the imported row.
+    /// Use the durable ownership change to publish it even if that row stays the same.
+    async fn refresh_move_ownership(&mut self) -> io::Result<()> {
+        let run = self.run.clone();
+        let last = self.move_files.clone();
+        let refreshed = tokio::task::spawn_blocking(move || {
+            let stamp = file_stamp(&run.join("moves"))?;
+            if stamp == last {
+                return Ok(None);
+            }
+            let mut ownership = Ownership::default();
+            crate::moves::locate_checked(&run, &mut ownership)?;
+            Ok::<_, io::Error>(Some((stamp, ownership)))
+        })
+        .await??;
+        if let Some((stamp, ownership)) = refreshed {
+            self.move_files = stamp;
+            let local = Arc::make_mut(&mut self.view.local);
+            local.ownership.frozen = ownership.frozen;
+            local.ownership.journal = ownership.journal;
+            self.view.local_lists = local.publication().map(Arc::new);
+        }
+        Ok(())
     }
 
     fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Received> {
@@ -1048,7 +1173,7 @@ impl Drop for Publisher {
 }
 
 impl Publisher {
-    fn start(relay: relay::Sender, run: PathBuf) -> Self {
+    fn start(relay: relay::Sender, run: PathBuf, sent_agents: watch::Sender<AgentMail>) -> Self {
         let (tx, mut rx) = mpsc::channel::<(View, Millis, Refresh)>(16);
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
@@ -1071,6 +1196,7 @@ impl Publisher {
                     refresh,
                     &mut previous,
                     &mut announcements,
+                    &sent_agents,
                 )
                 .await;
             }
@@ -1090,6 +1216,7 @@ async fn publish_round(
     refresh: Refresh,
     previous: &mut BTreeMap<(ComputerKey, &'static str), ([u8; 32], Millis)>,
     announcements: &mut BTreeMap<ComputerKey, ([u8; 32], Millis)>,
+    sent_agents: &watch::Sender<AgentMail>,
 ) {
     let lists = &view.local_lists;
     let mut older_lists = None;
@@ -1097,15 +1224,21 @@ async fn publish_round(
     let activity_digest: [u8; 32] =
         Sha256::digest(serde_json::to_vec(&activity).expect("activity serializes")).into();
     let notice = serde_json::to_value(view.notices(now)).expect("notice history serializes");
+    let owns_here = |record: &(RecordScope, String)| {
+        !view.local.ownership.frozen.contains(&record.1)
+            && view
+                .local
+                .ownership
+                .journal
+                .get(record)
+                .is_none_or(|owner| view.roster.here == Some(owner.key))
+    };
     let mut owned: Vec<_> = view
         .local
         .ownership
         .held
         .iter()
-        .filter(|record| {
-            !view.local.ownership.frozen.contains(&record.1)
-                && !view.local.ownership.journal.contains_key(*record)
-        })
+        .filter(|record| owns_here(record))
         .map(|(_, id)| id.as_str())
         .collect();
     if let Some(lists) = lists {
@@ -1115,11 +1248,7 @@ async fn publish_round(
             .filter(|row| {
                 row.facts.parent.is_none()
                     && !row.actions.is_empty()
-                    && !view
-                        .local
-                        .ownership
-                        .journal
-                        .contains_key(&(RecordScope::Session, row.id.clone()))
+                    && owns_here(&(RecordScope::Session, row.id.clone()))
             })
             .collect();
         sessions.sort_by(|a, b| {
@@ -1133,41 +1262,13 @@ async fn publish_round(
     }
     let owns: String = owned.into_iter().take(5000).map(owned_digest).collect();
     let features = view.features();
-    let mut agents = vec![];
-    if let Some(lists) = lists {
-        let mut sessions: Vec<_> = lists
-            .sessions
+    let agents = view.announced_agents();
+    let sessions = Arc::new(
+        agents
             .iter()
-            .filter(|row| {
-                row.facts.parent.is_none()
-                    && row.facts.archived != Some(true)
-                    && !row.actions.is_empty()
-            })
-            .collect();
-        sessions.sort_by(|a, b| {
-            b.facts
-                .updated
-                .as_f64()
-                .unwrap_or_default()
-                .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
-        });
-        agents = sessions
-            .into_iter()
-            .filter_map(|row| {
-                Some(AnnouncedAgent {
-                    session: row.id.clone(),
-                    name: row.facts.title.clone()?,
-                    kind: if row.facts.kind == lists::Kind::Bot {
-                        AgentKind::Bot
-                    } else {
-                        AgentKind::Session
-                    },
-                    id: row.facts.bot.clone(),
-                })
-            })
-            .take(120)
-            .collect();
-    }
+            .map(|agent| agent.session.clone())
+            .collect::<BTreeSet<_>>(),
+    );
     let mut active = view.at_work();
     let working = active.len();
     active.truncate(20);
@@ -1228,6 +1329,22 @@ async fn publish_round(
             if relay.mail(host.clone(), envelope(fields)).await.is_ok() {
                 announcements.insert(peer.key, (*announcement_digest, at));
             }
+        }
+        if announcements
+            .get(&peer.key)
+            .is_some_and(|(digest, _)| digest == announcement_digest)
+        {
+            let sent = SentAgents {
+                sessions: sessions.clone(),
+                complete: lists.is_some(),
+            };
+            sent_agents.send_if_modified(|known| {
+                if known.get(&peer.key) == Some(&sent) {
+                    return false;
+                }
+                known.insert(peer.key, sent);
+                true
+            });
         }
         let activity_key = (peer.key, "activity");
         let before = previous.get(&activity_key);

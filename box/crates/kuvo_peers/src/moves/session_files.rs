@@ -13,7 +13,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::{
-    attachment_paths::{absolute, portable_source, visit},
+    attachment_paths::{absolute, note_paths, portable_source, visit},
     manifest::{FileProof, SessionFile},
 };
 
@@ -21,6 +21,104 @@ fn roots(home: &Path) -> Vec<PathBuf> {
     let mut roots = vec![home.join("attachments")];
     roots.extend(std::env::var_os("KUVO_MAC_ATTACHMENTS").map(PathBuf::from));
     roots
+}
+
+/// An inventory for owner reads. Relative, missing, or external paths can be
+/// named in a snapshot without granting access to their bytes.
+pub(crate) fn owner_attachment_files(
+    rows: &[Value],
+    local: Option<(&Path, &str)>,
+) -> Vec<(String, bool)> {
+    use std::collections::HashMap;
+
+    let roots = local.map_or_else(Vec::new, |(home, _)| roots(home));
+    let available = |path: &Path| {
+        local.is_some_and(|(_, session)| {
+            roots.iter().any(|root| {
+                path.strip_prefix(root).ok().is_some_and(|relative| {
+                    relative.starts_with(session)
+                        && checked_source_path(root, relative).is_ok_and(|path| {
+                            fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file())
+                        })
+                })
+            })
+        })
+    };
+    let mut files: Vec<(String, bool)> = Vec::new();
+    let mut index = HashMap::new();
+    let mut record = |name: &str, have: bool| {
+        if name.is_empty() {
+            return;
+        }
+        let name: String = name.chars().take(500).collect();
+        let position = *index.entry(name.clone()).or_insert(files.len());
+        if let Some((_, previous)) = files.get_mut(position) {
+            *previous &= have;
+        } else {
+            files.push((name, have));
+        }
+    };
+    let file = |entry: &Value, record: &mut dyn FnMut(&str, bool)| {
+        if let Some(name) = entry.as_str() {
+            return record(name, false);
+        }
+        let uri = entry["source"]["uri"]
+            .as_str()
+            .or(entry["uri"].as_str())
+            .or(entry["url"].as_str());
+        let path = match uri.filter(|uri| uri.starts_with("file:")) {
+            Some(uri) => url::Url::parse(uri)
+                .ok()
+                .and_then(|url| url.to_file_path().ok()),
+            None => entry["path"].as_str().map(PathBuf::from),
+        };
+        let name = entry["name"]
+            .as_str()
+            .or(entry["filename"].as_str())
+            .or_else(|| {
+                path.as_deref()
+                    .and_then(Path::file_name)
+                    .and_then(|leaf| leaf.to_str())
+            })
+            .or(entry["id"].as_str())
+            .or(uri.map(|_| "attachment"));
+        if let Some(name) = name {
+            let embedded = (entry["source"]["type"] == "inline" && entry["data"].is_string())
+                || uri.is_some_and(|uri| uri.starts_with("data:") && uri.contains(','));
+            record(name, embedded || path.as_deref().is_some_and(available));
+        }
+    };
+    let note = |text: &Value, record: &mut dyn FnMut(&str, bool)| {
+        if let Some(text) = text.as_str() {
+            note_paths(text, |path, stayed| {
+                record(leaf(path), !stayed && available(Path::new(path)))
+            });
+        }
+    };
+    for row in rows {
+        for entry in row["files"].as_array().into_iter().flatten() {
+            file(entry, &mut record);
+        }
+        note(&row["text"], &mut record);
+        for part in row["content"].as_array().into_iter().flatten() {
+            match part["type"].as_str() {
+                Some("file" | "image" | "attachment") => file(part, &mut record),
+                Some("text") => note(part.get("text").unwrap_or(&part["content"]), &mut record),
+                Some("tool") => {
+                    for entry in part["state"]["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|entry| entry["type"] == "file")
+                    {
+                        file(entry, &mut record);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    files
 }
 
 pub(super) fn stage(
@@ -222,6 +320,23 @@ pub(super) fn rewrite(
     exports: &mut [Value],
     queues: &mut BTreeMap<String, Value>,
 ) -> io::Result<()> {
+    // Some queue writers saved the composed prompt as the display text.
+    // Where both fields match, use the typed words and leave the prompt intact.
+    for entry in queues
+        .values_mut()
+        .filter_map(|queue| queue.get_mut("waiting").and_then(Value::as_array_mut))
+        .flatten()
+    {
+        if entry["shown"]["text"].is_string()
+            && entry["shown"]["text"] == entry["message"]["text"]
+            && let Some(words) = entry
+                .pointer("/message/metadata/kuvo/parts/words")
+                .filter(|value| value.is_string())
+                .cloned()
+        {
+            entry["shown"]["text"] = words;
+        }
+    }
     let targets: BTreeMap<_, _> = payloads
         .iter()
         .map(|file| (portable_source(&file.from), &file.relative))
@@ -267,13 +382,7 @@ pub(super) fn checked_path(root: &Path, relative: &Path) -> io::Result<PathBuf> 
     Ok(target)
 }
 
-fn measure(
-    root: &Path,
-    relative: &Path,
-    copy: Option<&Path>,
-    limit: u64,
-    expected: Option<&FileProof>,
-) -> io::Result<FileProof> {
+fn checked_source_path(root: &Path, relative: &Path) -> io::Result<PathBuf> {
     // The source path on Windows uses native separators. Archive paths have
     // already been validated as portable slash-separated components.
     let portable = relative
@@ -281,7 +390,17 @@ fn measure(
         .map(|part| part.to_str().ok_or_else(invalid))
         .collect::<io::Result<Vec<_>>>()?
         .join("/");
-    let path = checked_path(root, Path::new(&portable))?;
+    checked_path(root, Path::new(&portable))
+}
+
+fn measure(
+    root: &Path,
+    relative: &Path,
+    copy: Option<&Path>,
+    limit: u64,
+    expected: Option<&FileProof>,
+) -> io::Result<FileProof> {
+    let path = checked_source_path(root, relative)?;
     let mut file = files::open_payload(&path)?;
     let before = files::opened_file_stamp(&file)?;
     if before.size > limit
