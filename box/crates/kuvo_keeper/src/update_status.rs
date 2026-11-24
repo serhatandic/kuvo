@@ -39,9 +39,7 @@ pub fn read(home: &Home, profile: &Path) -> io::Result<Value> {
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .and_then(|entry| entry["version"].as_str().map(str::to_owned));
     let mut last = state.get("last").cloned().unwrap_or(Value::Null);
-    if let Some(failed) = files::text_of(&run.join("update-cannot"))
-        .as_deref()
-        .and_then(refusal)
+    if let Some(failed) = switch_failure(home)
         && last["at"]
             .as_u64()
             .is_none_or(|time| failed.at.saturating_add(1000) >= time)
@@ -50,7 +48,7 @@ pub fn read(home: &Home, profile: &Path) -> io::Result<Value> {
             "result":"failed",
             "at":failed.at,
             "to":failed.version,
-            "message":format!("{} didn't start here", failed.version),
+            "message":failed.message(),
         });
     }
     let mut answer = json!({
@@ -71,6 +69,24 @@ pub fn read(home: &Home, profile: &Path) -> io::Result<Value> {
 struct Failed {
     at: u64,
     version: String,
+    digest_prefix: String,
+}
+
+impl Failed {
+    fn message(&self) -> String {
+        format!("{} didn't start here", self.version)
+    }
+}
+
+fn switch_failure(home: &Home) -> Option<Failed> {
+    refusal(&files::text_of(&home.run().join("update-cannot"))?)
+}
+
+/// The keeper's refusal applies only to the trial it rejected.
+pub fn trial_failure(home: &Home, version: &str, sha256: &str) -> Option<String> {
+    let failed = switch_failure(home)?;
+    (failed.version == version && sha256.starts_with(&failed.digest_prefix))
+        .then(|| failed.message())
 }
 
 fn refusal(record: &str) -> Option<Failed> {
@@ -89,5 +105,6 @@ fn refusal(record: &str) -> Option<Failed> {
     Some(Failed {
         at,
         version: version.into(),
+        digest_prefix: digest.into(),
     })
 }

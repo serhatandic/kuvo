@@ -3,7 +3,10 @@
 use std::io;
 
 use http::StatusCode;
-use kuvo_keeper::fleet::{self, Candidate};
+use kuvo_keeper::{
+    fleet::{self, Candidate},
+    update_status,
+};
 use kuvo_peers::directory::{CannotUpdate, PreparedRelease, UpdateFacts};
 use kuvo_protocol::routes::post_kuvo_update_retry as route;
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
@@ -49,6 +52,14 @@ impl Failure {
         home: &Home,
         release: &PreparedRelease,
     ) -> io::Result<Option<CannotUpdate>> {
+        if let Some(reason) = update_status::trial_failure(home, &release.version, &release.sha256)
+        {
+            return Ok(Some(CannotUpdate {
+                release: release.clone(),
+                reason,
+                fixable: false,
+            }));
+        }
         Ok(files::read(&home.run().join(RECORD))?
             .and_then(|bytes| serde_json::from_slice::<CannotUpdate>(&bytes).ok())
             .filter(|failure| &failure.release == release))

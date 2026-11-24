@@ -15,7 +15,7 @@ use crate::{
     Command, Release, SELECTOR, execute,
     manifest::{ReleaseRef, SignedRelease, local_target, sha256},
     prepare_command::version_order,
-    read_record, staging,
+    read_record, staging, update_status,
 };
 
 const STAGE_WAIT: i64 = 300_000;
@@ -184,13 +184,7 @@ impl Candidate {
         {
             return Ok(false);
         }
-        if files::text_of(&home.run().join("update-cannot")).is_some_and(|text| {
-            let mut words = text.split_whitespace().skip(1);
-            words.next() == Some(&release.version)
-                && words
-                    .next()
-                    .is_some_and(|digest| release.sha256.starts_with(digest))
-        }) {
+        if update_status::trial_failure(home, &release.version, &release.sha256).is_some() {
             return Ok(false);
         }
         match target.validate(home.root()) {

@@ -59,6 +59,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A computer reports how much of a release it has received from its peers.
 - The computers list keeps showing a signed release switch during the computer’s restart.
 - A computer reports when it must wait for the next release after it receives an unusable update.
+- If a release fails to start and Kuvo switches back, the computer shows why it is waiting for the next release.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
 - A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
 
