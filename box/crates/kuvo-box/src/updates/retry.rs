@@ -112,6 +112,7 @@ pub(super) fn signed_failure<'a>(
 ) -> Option<&'a CannotUpdate> {
     facts.cannot.as_ref().filter(|failure| {
         failure.release.version == candidate.version()
+            && facts.switching.as_ref() != Some(&failure.release)
             && candidate.newer_than(facts.kuvo.as_deref())
             && facts
                 .release_target
@@ -182,13 +183,18 @@ impl Fleet {
         if digest.is_some_and(|hash| hash != target.sha256) {
             return Err(changed());
         }
+        let selected = target.target().map_err(file_error)?;
+        let on_trial = fleet::trial_release(&self.home)
+            .map_err(file_error)?
+            .as_ref()
+            == Some(&selected);
         let prepared = PreparedRelease {
             version: target.version,
             sha256: target.sha256,
         };
         let failure = Failure::for_release(&self.home, &prepared)
             .map_err(file_error)?
-            .filter(|failure| failure.fixable)
+            .filter(|failure| failure.fixable && !on_trial)
             .ok_or_else(|| {
                 Refusal::new(
                     StatusCode::CONFLICT,

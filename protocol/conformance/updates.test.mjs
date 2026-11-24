@@ -329,9 +329,7 @@ test("a failed fleet download can be retried for the same signed target", { time
   assert.equal((await request(resident, "GET", "kuvo/update")).json.version, installed);
 });
 
-test("the main can ask a reachable member to retry its failed fleet download", { timeout: 60000 }, async t => {
-  const binary = boxBinary();
-  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+async function pairedUpdateComputers(t) {
   const { computer, leases } = await bench(t);
   const make = name => computer(name, undefined, folder => {
     privateWindowsHome(path.join(folder, "box"));
@@ -347,6 +345,13 @@ test("the main can ask a reachable member to retry its failed fleet download", {
   const joined = await member.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   await old.stop();
+  return { main, member };
+}
+
+test("the main can ask a reachable member to retry its failed fleet download", { timeout: 60000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { main, member } = await pairedUpdateComputers(t);
 
   const { version, hash, signed, updateEnv, downloaded } = await failedFleetDownload(t);
   for (const peer of [main, member]) write(path.join(peer.home, "bin/box-version"), "0.8.0-beta.1\n");
@@ -386,6 +391,65 @@ test("the main can ask a reachable member to retry its failed fleet download", {
   await until(() => downloaded() === 3 && initial(memberFailure) && initial(memberFailure) !== oldMember,
     "the member must try its signed target again");
   assert.equal(initial(mainFailure), oldMain);
+});
+
+test("a member keeps its signed switching row during a quiet relay restart", { timeout: 60000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { main, member } = await pairedUpdateComputers(t);
+  const { version, hash, signed, updateEnv } = await failedFleetDownload(t);
+  const installed = "0.8.0-beta.1";
+  for (const computer of [main, member]) write(path.join(computer.home, "bin/box-version"), installed + "\n");
+  const sender = member.start(binary, updateEnv);
+  let observer = main.start(binary, updateEnv);
+  const [first, second] = await Promise.all([observer.ready(), sender.ready()]);
+  const key = (await request(second, "GET", "kuvo/setup")).json.you.key;
+  const row = async resident => {
+    const answer = await request(resident, "GET", "kuvo/computers");
+    return answer.json?.computers?.find(row => row.key === key)?.fleetUpdate;
+  };
+  await until(async () => (await row(first))?.state === "cannot",
+    "the main must receive the member's first preparation status");
+
+  const release = `versions/${version}-${hash.slice(0, 12)}`;
+  write(path.join(member.home, release, "boxes.json"), signed);
+  write(path.join(member.home, "run/previous"), `versions/${installed}-000000000000/bin`);
+  write(path.join(member.home, "active-release"), `${release}/bin`);
+  const switching = async resident => until(async () => {
+    const update = await row(resident);
+    return update?.state === "updating" && update;
+  }, "the member's row must report the signed switch on trial");
+  const active = await switching(first);
+  assert.deepEqual([active.current, active.target, active.targetSha256, active.stage, active.canRetry],
+    [installed, version, hash, "switching", false]);
+  assert.deepEqual(active.line, { words: `Switching to ${version}…`, tone: "working", phase: "switching" });
+  const retry = await request(first, "POST", "kuvo/update/retry", { key, target: version, targetSha256: hash });
+  assert.equal(retry.status, 409, retry.text);
+  const localRetry = await request(second, "POST", "kuvo/update/retry", { target: version, targetSha256: hash });
+  assert.equal(localRetry.status, 409, localRetry.text);
+
+  await sender.stop();
+  const heardAt = async age => {
+    await observer.stop();
+    const peers = path.join(main.home, "run/peer-agents.json");
+    const announced = readJSON(peers);
+    const heard = Date.now() - age;
+    announced[key].heard = heard;
+    write(peers, encode(announced));
+    const reach = path.join(main.home, "run/peer-reach.json");
+    write(reach, encode({ [key]: heard }));
+    observer = main.start(binary, updateEnv);
+    return { resident: await observer.ready(), heard };
+  };
+  const quiet = await heardAt(3 * 60_000);
+  assert.deepEqual(await switching(quiet.resident), active);
+  const expired = await heardAt(11 * 60_000 + 10_000);
+  const offline = await until(async () => {
+    const update = await row(expired.resident);
+    return update?.state === "off" && update;
+  }, "the member must read as offline once the switch grace has expired");
+  assert.equal(offline.seen, expired.heard);
+  assert.deepEqual(offline.line, { words: "beta.1 · seen 11 min ago", tone: "off", phase: "off" });
 });
 
 test("the computers list shows a retryable failure for the signed fleet target", { timeout: 30000 }, async t => {
