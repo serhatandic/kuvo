@@ -222,6 +222,23 @@ pub(super) fn rewrite(
     exports: &mut [Value],
     queues: &mut BTreeMap<String, Value>,
 ) -> io::Result<()> {
+    // Some queue writers saved the composed prompt as the display text.
+    // Where both fields match, use the typed words and leave the prompt intact.
+    for entry in queues
+        .values_mut()
+        .filter_map(|queue| queue.get_mut("waiting").and_then(Value::as_array_mut))
+        .flatten()
+    {
+        if entry["shown"]["text"].is_string()
+            && entry["shown"]["text"] == entry["message"]["text"]
+            && let Some(words) = entry
+                .pointer("/message/metadata/kuvo/parts/words")
+                .filter(|value| value.is_string())
+                .cloned()
+        {
+            entry["shown"]["text"] = words;
+        }
+    }
     let targets: BTreeMap<_, _> = payloads
         .iter()
         .map(|file| (portable_source(&file.from), &file.relative))

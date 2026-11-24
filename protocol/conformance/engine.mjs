@@ -151,6 +151,7 @@ export async function standInEngine(root, env) {
           } else {
             messages.push({ ...given, type: "user" });
             engine.messages.set(session, messages);
+            if (engine.runAfterPrompt === given.id) engine.running.add(session);
           }
           publish({ type: "session.inbox.updated", data: { sessionID: session, item: { id: given.id } } });
         }
@@ -164,7 +165,10 @@ export async function standInEngine(root, env) {
       if (waiting) {
         const session = decodeURIComponent(waiting[1]);
         const inbox = engine.inboxes.get(session) ?? [];
-        if (!waiting[2] && request.method === "GET") return send({ data: inbox });
+        if (!waiting[2] && request.method === "GET") {
+          if (engine.refuseInbox === session) return send({ message: "The inbox is unavailable." }, 503);
+          return send({ data: inbox });
+        }
         const index = inbox.findIndex(row => row.id === decodeURIComponent(waiting[2]));
         if (index < 0) return send({}, 404);
         if (request.method === "PATCH") Object.assign(inbox[index], given);

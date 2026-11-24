@@ -2887,8 +2887,56 @@ test("an answer left by a tool reaches the new owner once", {
   assert.ok(!fs.existsSync(reply + ".gaveup"));
 });
 
+test("a paused queue moves with its messages in order and resumes the first one", { timeout: 55000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("paused-queue-source"), there = await computer("paused-queue-destination");
+  const { member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_pausedQueueMove", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, title: "Paused queue", directory }));
+  const first = "msg_pausedQueueFirst", second = "msg_pausedQueueSecond";
+  const heading = "The build is green.", next = "Then read the notes.";
+  const queue = "kuvo/sessions/" + session + "/queue";
+  const source = here.start(), destination = there.start();
+  const [a, b] = await Promise.all([source.ready(), destination.ready()]);
+  await readyToMove(a, session, member);
+  const stopped = await request(a, "POST", "kuvo/sessions/" + session + "/stop");
+  assert.equal(stopped.json?.paused, true, stopped.text);
+  const added = [
+    { id: first, text: "[Letter] " + heading, from: "Ada", words: heading, kept: true },
+    { id: second, text: next, files: [{ name: "notes.txt", uri: "data:text/plain;base64,RG9jcyBmaXJzdC4=" }] },
+  ];
+  for (const item of added) {
+    const response = await request(a, "POST", queue + "/add", item);
+    assert.equal(response.json?.waits, true, response.text);
+  }
+  const move = await request(a, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(move.status, 202, move.text);
+  await moveRetired(here, move.json.move.id, () => source.log() + "\n" + destination.log());
+  const old = await request(a, "GET", queue);
+  assert.deepEqual(old.json, { paused: false, held: [] });
+  for (const id of [first, second]) assert.ok(!fs.existsSync(path.join(here.home, "run/waiting", id + ".json")));
+  const arrived = await request(b, "GET", queue);
+  assert.equal(arrived.json?.paused, true, arrived.text);
+  assert.deepEqual(arrived.json.waiting.map(item => [item.id, item.from ?? null, item.text, item.files ?? []]),
+    [[first, "Ada", heading, []], [second, null, next, ["notes.txt"]]]);
+  const saved = readJSON(path.join(there.home, "run/waiting", second + ".json"));
+  assert.ok(saved.text.includes(path.join(there.home, "attachments")));
+  assert.ok(!saved.text.includes(path.join(here.home, "attachments")));
+  assert.ok(!there.engine.messages.get(session)?.length);
+  there.engine.runAfterPrompt = first;
+  const resumed = await request(b, "POST", queue + "/resume", {});
+  assert.equal(resumed.status, 200, resumed.text);
+  await until(() => there.engine.messages.get(session)?.some(message => message.id === first),
+    "The first held message did not resume");
+  assert.deepEqual(there.engine.messages.get(session).map(message => message.text), ["[Letter] " + heading]);
+  const after = await request(b, "GET", queue);
+  assert.deepEqual(after.json?.waiting?.map(item => item.id), [second]);
+});
+
 test("a missing or unreadable queued payload leaves the conversation on its source", {
-  timeout: 55000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 125000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("queue-payload-source"), there = await computer("queue-payload-target");
@@ -2946,6 +2994,40 @@ test("a missing or unreadable queued payload leaves the conversation on its sour
     } finally {
       fs.writeFileSync(selected, original);
     }
+  }
+  const root = "ses_childInboxRoot", child = "ses_childInboxChild";
+  for (const row of [
+    sessionOf({ id: root, title: "A conversation with a child", directory, updated: Date.now() }),
+    sessionOf({ id: child, title: "Child with queued work", parent: root, directory, updated: Date.now() }),
+  ]) {
+    here.engine.sessions.push(row);
+    here.engine.emit({ type: "session.created", data: { sessionID: row.id, info: row } });
+  }
+  await readyToMove(resident, root, member);
+  const item = { id: "msg_childInbox", sessionID: child, type: "user", delivery: "queue", payload: { text: "Keep the child busy." } };
+  here.engine.inboxes.set(child, [item]);
+  for (const fault of ["unpaused", "unavailable"]) {
+    here.engine.refuseInbox = fault === "unavailable" ? child : null;
+    frames = [];
+    const before = here.engine.asked.length;
+    const move = await request(resident, "POST", "kuvo/moves", { kind: "chat", id: root, to: member.key, receipt: true });
+    assert.equal(move.status, 202, move.text);
+    const id = move.json.move.id;
+    const readChild = call => call.method === "GET" && call.path === "/api/session/" + child + "/inbox";
+    await until(() => here.engine.asked.slice(before).some(readChild),
+      () => "The source did not try the child's inbox during " + fault + "\n"
+        + JSON.stringify(here.engine.asked.slice(before).filter(call => call.path.includes("ses_"))) + "\n"
+        + source.log() + "\n" + destination.log(), 35000);
+    assert.equal(frames.includes("offer"), false, fault);
+    here.engine.refuseInbox = child;
+    await moveRetired(here, id, () => source.log() + "\n" + destination.log(), 80000);
+    const canceled = await request(resident, "GET", "kuvo/moves/receipt?id=" + id);
+    assert.equal(canceled.json?.state, "failed", canceled.text);
+    assert.equal(frames.includes("offer"), false, fault);
+    assert.ok(here.engine.sessions.some(row => row.id === root));
+    assert.ok(here.engine.sessions.some(row => row.id === child));
+    assert.ok(!there.engine.sessions.some(row => row.id === root || row.id === child));
+    assert.deepEqual(here.engine.inboxes.get(child), [item]);
   }
 });
 

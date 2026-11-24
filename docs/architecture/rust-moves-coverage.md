@@ -50,6 +50,8 @@ for addressed work and receipt lookup.
 | Managed files | Both residents refuse missing and export-only attachments before switching. The destination keeps the exact bytes, verifies the file receipt, rebases typed root and child references and a held prompt while preserving a quotation, and opens the file after its own restart and loss of the original file. |
 | Prompt fence | A journal survives a resident restart and refuses direct prompts, commands, sends and queue resumes. Both residents fence queue removal, undo and resume while sending a live move. After the destination proves it dropped the copy, the source still has the original paused queue in order and allows removal. The Rust composer keeps a saved draft pending during the hold, then delivers it once after release. |
 | Queued payload integrity | An absent waiting payload prevents the first offer. A payload corrupted after the offer prevents the switch. Both residents keep the paused source and its queue entry. Rust still needs the same user-facing error as TypeScript for those payloads. |
+| Queued work on a child | An unpaused child inbox keeps either source from offering the conversation. The source keeps the root, child and original queued work when the inbox cannot be read. |
+| Paused queue after a move | Both residents carry a queued letter followed by a message with a file. The old queue is emptied, the destination shows the original words and file name, and resuming sends only the first message while its turn is active. |
 | Owner requests | A relay test binds both directions of the exchange to the accepted setup, peer, request nonce and operation. A new durable journal takes effect without a new list snapshot. A replacement can answer for the original issuer. A restart test checks allowed, revoked and checking device states. |
 | Owner request limits | Two Rust residents exchange an addressed 5 MiB draft and a 128 KiB scoped submission, each with a multipart reply. Both reject one byte over the draft limit. The TypeScript Work Queue sender and reassembler match the decrypted part fields in all four exchanges. Accepted membership exposes cached peer features while a computer is offline. |
 | Golden receipt | Both residents open a current TypeScript golden home and keep its switch receipt byte for byte. |
@@ -129,16 +131,17 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Seventy-six have full scenario coverage, 20 have partial proof,
-and 116 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Seventy-eight have full scenario coverage, 19 have partial proof,
+and 115 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
 |---|---|---|
-| [moves](../../box/bridge-tests/moves.test.js) | 3, 11 | Partial, an ordinary letter follows a live move and a paused prompt queue still delivers after resume. The exact message tool path and multiple-item queue order are 2.4 and 3.2. |
+| [moves](../../box/bridge-tests/moves.test.js) | 3 | Partial, an ordinary letter follows a live move. The exact message tool path remains 2.4 and 3.2. |
 | | 1 | Covered by move choices for a running turn, an away destination and a missing chat. |
 | | 2 | Partial, both residents move a wake-up folder round trip under the journal's hold with separate chats and wake-up roots. The installed Mac and its Trash are 9.3. |
 | | 7–8 | Covered by the live transfer of a tree with more children than one engine page and by two simultaneous requests competing for the same chat. |
+| | 11 | Covered by the live move of a paused letter and an attached-file prompt, checking their order, shown words, and first delivery after resume. |
 | | 12, 14 | Partial, typed managed files travel with the root, its child and a held prompt. Engine-held order with multiple attachments, duplicate basenames, and the Mac app's separate attachment root are still 2.4 and 3.2. |
 | | 15–16 | Covered by a live source refusing an expired attachment and a file path outside its managed roots. |
 | | 4, 9 | Bot moves and wake-up state owned by 5.1. |
@@ -156,6 +159,7 @@ separately where they appear.
 | [moves-races](../../box/bridge-tests/moves-races.test.js) | 9, 24 | Partial, live activation and replay after a lost switch reply, unknown or mismatched proof, durable drop and a managed setup's legacy switch fence are exercised. Automatic retry across the complete set of peer and wall-clock interruptions remains 2.4. |
 | | 1 | Covered by a setup failure arriving as the source switches, followed by the authenticated drop receipt that releases the original. |
 | | 2 | Partial, a missing payload prevents the first offer and a corrupt payload prevents switching. A typed unreadable-queue failure from 3.2 is needed for the same refusal in 2.4. |
+| | 4 | Covered by an idle child's pending inbox blocking the offer and a failed inbox read preserving the source. |
 | | 5 | Covered by the source ignoring a drop for another generation and releasing its original after the destination’s matching drop receipt. |
 | | 6 | Covered by a duplicate bundle part before activation and a delayed repeat afterward. There is one import and the same durable switch receipt. |
 | | 8 | Covered by dropping the entire first window, retrying eight parts, and verifying the completed move contains its original transcript. |
@@ -190,7 +194,7 @@ separately where they appear.
 | | 48 | Covered by move choices that count a chat’s delegated work and unanswered questions, including a second level of work. |
 | | 53–54 | Native account fallback is owned by 4.6. Bot key handling is owned by 5.1 with native carry in 4.6. |
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
-| | 3–4, 7, 11, 35, 38 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. |
+| | 3, 7, 11, 35, 38 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |
