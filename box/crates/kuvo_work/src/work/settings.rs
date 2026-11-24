@@ -228,11 +228,10 @@ impl WorkSettings {
                     let _ = child.kill().await;
                 }
                 let now = json!({ "by": std::process::id(), "hold": held.as_ref().and_then(tokio::process::Child::id) }).to_string();
-                if now != noted || !settings.awake_file.exists() {
-                    if kuvo_store::files::write_secret(&settings.awake_file, now.as_bytes()).is_ok()
-                    {
-                        noted = now;
-                    }
+                if (now != noted || !settings.awake_file.exists())
+                    && kuvo_store::files::write_secret(&settings.awake_file, now.as_bytes()).is_ok()
+                {
+                    noted = now;
                 }
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }

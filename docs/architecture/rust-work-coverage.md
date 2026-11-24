@@ -232,3 +232,42 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   left as its rules say.
 - **Not ported here:** the sandbox's Full Access markers and Auto's places (6.1), and the coding
   agents' subagents' approval (their bridge, 4.x).
+
+## 5.1c-2 — work settings, oversight, work changes, the asks list
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_work::work::WorkSettings` | `work/settings.ts` (`projectsFolder`, `suggestedFolder`, `folderGiven`, `setProjectsFolder`, `keepsAwakeSetting`, `patchWorkSettings`, `workSettings`), `work/awake.ts` (`keepsMacAwakeItself`, `awakeForWork`, `holdForWork`, `lookAtWork`, `keepAwakeWhileWorking`) |
+| `kuvo_work::work::Records` | `work/changes.ts`, `work/oversight.ts` |
+| `kuvo_work::work::asks` | `workAsks`, `projectPlace`, `folderName`, `resetAskWords` |
+| `kuvo_work::work::Work` | `workRoute` (`kuvo/work/events`, `kuvo/work/oversight` and its events), `workAsksRoute` (`kuvo/work/settings`, `kuvo/work/asks` and its events) |
+
+### Proof
+
+- Route scenarios `box/test/fixtures/routes/work.json` (`KUVO_CONFORMANCE_AREA=work`): where new
+  projects go (none, refusals, a folder picked, a change on what was read), oversight and asks on a
+  new box. Both boxes on macOS; the Rust box on native Windows and Linux (WSL, static musl), with
+  `approval` and `bots` again on all three.
+- Side by side, 12 requests (every settings refusal, a folder picked, a stale `was`, a keep-awake
+  that isn't true or false, asks, oversight): every answer and `box/work.json` match.
+- `asks::tests` (a project's folder name).
+- Size: about 27,500 characters of Rust for about 24,000 of TypeScript (settings, keep-awake,
+  changes, oversight, the asks list and their routes): 1.15×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bots-projects](../../box/bridge-tests/bots-projects.test.js) | 222, 236 a projects folder picked, only a real one | `work` scenarios; `WorkSettings::change` |
+| | 100–208, 250–338 asking to make or clone a project, answering, Always, `kuvo/projects/new` | 5.1c, with the work tools: open |
+| `own-mac` (Keep This Mac Awake) | the setting and whether it holds now | `WorkSettings::keep_awake`: `caffeinate -i -w` while agents work, `run/work-awake.json`; only on a Mac box on macOS |
+
+### Deliberate differences from TypeScript
+
+- **Keep This Mac Awake** asks the session list whether agents work (any conversation at work or
+  asking) rather than the engine's and bridge's active lists each look; a session list that can't
+  say holds as nothing at work.
+- **Followed lists** (`kuvo/work/events`, oversight and asks events) look again as the session list
+  changes and every two seconds, rather than watching files.
