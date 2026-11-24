@@ -8,7 +8,6 @@ use kuvo_peers::directory::{CannotUpdate, PreparedRelease};
 use kuvo_protocol::routes::post_kuvo_update_retry as route;
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use kuvo_store::{files, home::Home};
-use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{Check, Fleet};
@@ -107,14 +106,6 @@ fn file_error(error: io::Error) -> Refusal {
     )
 }
 
-fn accepted(current: Option<String>, failure: &CannotUpdate) -> Result<Answer, Refusal> {
-    serde_json::from_value(json!({
-        "current":current, "target":failure.release.version, "targetSha256":failure.release.sha256,
-        "canRetry":false, "state":"cannot", "reason":failure.reason, "fixable":true
-    }))
-    .map_err(|error| file_error(error.into()))
-}
-
 impl Fleet {
     pub(super) async fn retry(&mut self, given: Request) -> Result<Answer, Refusal> {
         let reader = self.peers.reader();
@@ -166,7 +157,7 @@ impl Fleet {
             .as_ref()
             .zip(peer.host())
             .ok_or_else(unavailable)?;
-        let answer = accepted(facts.kuvo, &failure)?;
+        let answer = failure.row(facts.kuvo, facts.installed_sha256, false);
         mail.request_retry(&host, &failure.release)
             .await
             .map_err(|_| unavailable())?;
@@ -199,7 +190,7 @@ impl Fleet {
                     "This computer has no update to retry.",
                 )
             })?;
-        let answer = accepted(current, &failure)?;
+        let answer = failure.row(current, None, false);
         files::remove_file_synced(&self.home.run().join(RECORD)).map_err(file_error)?;
         self.attempted = None;
         Ok(answer)

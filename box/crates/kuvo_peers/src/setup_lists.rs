@@ -78,6 +78,10 @@ pub struct View {
 }
 
 impl View {
+    pub(crate) fn local_update(&self) -> &UpdateFacts {
+        &self.update
+    }
+
     /// Check for Updates uses the already persisted observation even while the
     /// receiver is still publishing its new in-memory view.
     pub fn kept_peer_is_away(&self, run: &Path, key: &ComputerKey, now: Millis) -> bool {

@@ -45,6 +45,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U29 | A slow member stays on its release while the main passes the five-minute preparation deadline. The main switches from its saved preparation clock while the member's download is held. The member confirms once its download resumes, and the offline computer catches up when it returns. Passed through the shell keeper on Mac. |
 | U30 | A failed fleet download records the signed version and full pack digest. Restarting the resident keeps the failure available for retry. The local retry route rejects a stale digest and requests the matching pack again while the previous release keeps serving. |
 | U31 | The main receives a member's fixable failure and rejects a retry for a stale digest. After the main has switched, it can still request a retry for the member's signed target over authenticated mail. The member retries and the main's own failure record stays untouched. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U32 | The computers list reports the local failure with its signed target version and digest, the current release, and whether retry is available. The list and retry replies use the same row shape and wording. Passed on Mac, native Linux, WSL2, and native Windows. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -291,7 +292,7 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, ahead member offers its version | U28 covers receiving the signed offer, pulling the member's retained pack and switching. The member's up-to-date row is part of the row-progress work below. | 7.2 |
 | Same, Update Now chooses the immediate candidate | Partial. An explicit check bypasses the automatic release age rule. U20 verifies that an authenticated member request starts the check. A newly published release still needs a full switch scenario. | 7.2 |
 | Same, progress summary remains while switching and after settlement | Open. | 7.2 |
-| Same, row progress and retry | Open. | 7.2 |
+| Same, row progress and retry | U30–U31 cover local and peer retry. U32 covers the local failure row. Peer rows and preparation, ready, switching and up-to-date states remain open. | 7.2 |
 | Same, pull progress never moves back | Open. | 7.2 |
 | Same, member asks main to check | Covered by U20. | — |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |

@@ -52,6 +52,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A computer keeps a manual update check until its main computer can receive it, even if the computer restarts first.
 - A failed fleet download can be retried for the same signed release after the computer restarts.
 - A reachable computer can retry a failed fleet download when another computer in its setup asks.
+- The computers list reports a failed local release download and whether it can be retried.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
 - A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
 

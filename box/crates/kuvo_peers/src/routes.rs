@@ -473,6 +473,11 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
         }
     }
     local.system = view.system.as_deref().map(str::to_owned);
+    let update = view.local_update();
+    local.fleet_update = update
+        .cannot
+        .as_ref()
+        .map(|failure| failure.row(update.kuvo.clone(), update.installed_sha256.clone(), true));
     let features = view.features();
     local.compatibility = computer_compatibility(&features);
     local.features = Some(features.into_iter().map(str::to_owned).collect());
