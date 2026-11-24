@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - A pending wipe stays visible after the main computer restarts. You can record a lost disk or cancel a wipe that can’t erase the computer’s data layout.
 - A removed computer can finish its wipe when it reconnects and retry its completion after a relay disconnect.
+- A computer with a configured disk backup waits for a verified copy before it erases its work.
 - Windows uninstall completes when there is no sign-in task to remove.
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.

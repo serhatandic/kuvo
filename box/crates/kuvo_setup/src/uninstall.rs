@@ -66,6 +66,25 @@ pub fn run(home: &Home, check: bool) -> Outcome {
     }
 }
 
+pub(crate) fn log_cleanup(files: &Files, detail: impl std::fmt::Display) {
+    use std::io::Write as _;
+    let path = files.path("run/uninstall.log");
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    if let Ok(mut log) = options.open(path)
+        && log.metadata().is_ok_and(|metadata| metadata.is_file())
+    {
+        let _ = writeln!(log, "{detail}");
+    }
+}
+
 fn stopped_machine(home: &Home, check: bool) -> Result<Outcome, Error> {
     let root = home.root();
     if !home.bin().join("kuvo-start").is_file() && !home.run().is_dir() {

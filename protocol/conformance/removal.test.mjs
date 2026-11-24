@@ -96,7 +96,13 @@ test("an offline wipe stays pending across a restart until a lost disk is record
 
 test("a removed Unix member wipes on reconnect and retries the sealed completion from a fresh reply identity", {
   skip: process.platform === "win32", timeout: 60000,
-}, async t => {
+}, t => unixMemberWipe(t, false));
+
+test("an offline member keeps its data until its configured pre-wipe backup can be verified", {
+  skip: process.platform === "win32", timeout: 110000,
+}, t => unixMemberWipe(t, true));
+
+async function unixMemberWipe(t, makesBackup) {
   const { computer, relay, leases } = await bench(t);
   const studio = await computer("Studio");
   const lab = await computer("Lab", undefined, undefined, { canonical: true });
@@ -107,10 +113,29 @@ test("a removed Unix member wipes on reconnect and retries the sealed completion
   assert.equal(offer.status, 201, offer.text);
   const joined = await lab.join(offer.json.code);
   assert.equal(joined.code, 0, joined.log);
+  let observer;
+  if (makesBackup) {
+    const workshop = await computer("Workshop");
+    const invite = await primary("POST", "kuvo/computers/add/code", {}, fromMac);
+    assert.equal(invite.status, 201, invite.text);
+    const admitted = await workshop.join(invite.json.code);
+    assert.equal(admitted.code, 0, admitted.log);
+    observer = workshop.connect(await workshop.start().ready());
+  }
   fs.rmSync(path.join(lab.home, "run", "engine.json"), { force: true });
-  write(path.join(lab.home, "data", "old-session"), "retire only this work");
+  const savedWork = path.join(lab.home, "bots", "bot_retained", "notes.md");
+  write(savedWork, "retire only this work");
   const outside = path.join(path.dirname(lab.home), "keep-outside.txt");
   write(outside, "keep this");
+  const disk = path.join(path.dirname(lab.home), "backup-disk");
+  const configuration = path.join(lab.home, "backup", "configuration.json");
+  const source = "b_" + Buffer.alloc(16, 67).toString("base64url");
+  if (makesBackup) {
+    write(configuration, JSON.stringify({ version: 1, enabled: true, source,
+      key: Buffer.alloc(32, 69).toString("base64url"), dest: { kind: "disk", path: disk },
+      disk: fs.statSync(path.dirname(disk)).dev, projects: [],
+    }), { mode: 0o600 });
+  }
   const state = () => readJSON(path.join(studio.home, "run", "link.json"));
   const roster = () => state().shared.membershipAndAccess.value;
   const studioAddress = Buffer.from(roster().boxes.find(peer => peer.key === accepted.you.key).address, "base64url");
@@ -122,6 +147,11 @@ test("a removed Unix member wipes on reconnect and retries the sealed completion
   const result = await primary("POST", route, { operation }, fromMac);
   assert.equal(result.status, 200, result.text);
   assert.equal(result.json.removal.state, "wipe-pending");
+  const pending = async from => (await from("GET", "kuvo/computers")).json.wipePending;
+  if (observer) {
+    await until(async () => (await pending(observer))?.some(each => each.operation === operation),
+      "The observing member did not receive the pending wipe.");
+  }
   assert.ok(fs.existsSync(lab.home));
   const receipts = path.join(path.dirname(lab.home), ".kuvo-code-removal-receipts");
   const file = path.join(receipts, `${operation}.json`);
@@ -136,7 +166,19 @@ test("a removed Unix member wipes on reconnect and retries the sealed completion
   t.after(stopIntercepting);
   // The source removed at the primary still starts from its prior, signed roster.
   lab.start();
-  await until(() => packets.length >= 2, "The erased source did not retry its completion from a fresh relay address.", 30000);
+  if (makesBackup) {
+    const diagnostic = path.join(lab.home, "run", "uninstall.log");
+    await until(() => fs.existsSync(diagnostic) && fs.readFileSync(diagnostic, "utf8").includes(disk),
+      "The source did not record the unavailable backup disk.", 18000);
+    const sourceLink = readJSON(path.join(lab.home, "run", "link.json"));
+    assert.equal(sourceLink.localWipe.operation, operation);
+    assert.equal(sourceLink.localWipe.prepared, undefined);
+    assert.equal(fs.readFileSync(savedWork, "utf8"), "retire only this work");
+    assert.equal(fs.existsSync(file), false);
+    assert.equal((await primary("GET", "kuvo/computers")).json.wipePending[0].key, target.key);
+    fs.mkdirSync(disk);
+  }
+  await until(() => packets.length >= 2, "The erased source did not retry its completion from a fresh relay address.", makesBackup ? 55000 : 30000);
   assert.equal(fs.existsSync(lab.home), false);
   assert.equal(fs.readFileSync(outside, "utf8"), "keep this");
   const kept = readJSON(file);
@@ -168,8 +210,18 @@ test("a removed Unix member wipes on reconnect and retries the sealed completion
   await until(() => !fs.existsSync(file) && !fs.existsSync(proof), "The fresh identity did not receive the matching acknowledgment.", 12000);
   const finished = await primary("POST", route, { operation }, fromMac);
   assert.equal(finished.json.removal.state, "wiped", finished.text);
-  assert.equal((await primary("GET", "kuvo/computers")).json.wipePending, undefined);
-});
+  assert.equal(await pending(primary), undefined);
+  if (observer) {
+    await until(async () => (await pending(observer)) === undefined, "The observing member did not receive the completion.");
+  }
+  if (makesBackup) {
+    const archived = path.join(disk, "kuvo-backups", source);
+    const points = fs.readdirSync(archived);
+    assert.equal(points.length, 1);
+    assert.match(points[0], /-wipe-.*\.kuvo$/);
+    assert.ok(fs.statSync(path.join(archived, points[0])).size > 0);
+  }
+}
 
 test("an unsupported wipe can be cancelled after the source holds its work for review", { timeout: 80000 }, async t => {
   const fromApp = { "x-kuvo-from": "app" };

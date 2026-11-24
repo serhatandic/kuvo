@@ -350,7 +350,15 @@ impl PreparedSetup {
         }
         let (activity, activity_rx) = mpsc::channel(16);
         let activity_task = tokio::spawn(activity::track(files.clone(), activity_rx));
+        let handle = SetupHandle {
+            inbox: tx,
+            views: view_rx,
+            rosters: roster_rx,
+            ssh_routes,
+            activity: activity.clone(),
+        };
         let actor = Owner {
+            handle: handle.clone(),
             files,
             link,
             identity,
@@ -380,13 +388,7 @@ impl PreparedSetup {
         actor.write_card()?;
         let task = tokio::spawn(actor.run());
         Ok(SetupRuntime {
-            handle: SetupHandle {
-                inbox: tx,
-                views: view_rx,
-                rosters: roster_rx,
-                ssh_routes,
-                activity,
-            },
+            handle,
             task,
             activity_task,
         })
@@ -881,6 +883,7 @@ fn make_view(
 }
 
 struct Owner {
+    handle: SetupHandle,
     files: Files,
     link: Link,
     identity: Option<Identity>,
@@ -946,14 +949,16 @@ impl Owner {
                         self.next = Instant::now() + Duration::from_secs(2);
                         #[cfg(target_os = "macos")]
                         if self.kind == ComputerKind::Mac
-                            && let Err(error) = crate::wipe::prepare_app_wipe(self.files.root(), &mut self.link).await
+                            && let Err(error) = crate::wipe::prepare_app_wipe(self.files.root(), &mut self.link, self.handle.clone()).await
                         {
+                            crate::uninstall::log_cleanup(&self.files, &error);
                             eprintln!("preparing app-owned wipe: {error}");
                         }
                         if self.kind == ComputerKind::Machine
-                            && let Err(error) = crate::wipe::prepare_headless_member(self.files.root(), &mut self.link)
+                            && let Err(error) = crate::wipe::prepare_headless(self.files.root(), &mut self.link, self.handle.clone()).await
                         {
-                            eprintln!("preparing member wipe: {error}");
+                            crate::uninstall::log_cleanup(&self.files, &error);
+                            eprintln!("preparing wipe: {error}");
                         }
                         if let Err(error) = self.resume_local_unlink().await {
                             eprintln!("setup unlink cleanup: {error}");

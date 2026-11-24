@@ -45,7 +45,6 @@ impl LocalWipe {
     fn accepted(link: &Link, key: &str, sign: &str) -> Option<Self> {
         let kept = link.extra.get("localWipe")?;
         if kept.get("primary").is_some()
-            || kept.get("backup").is_some()
             || kept.get("generation").is_some()
             || kept.get("requiresPreparation").is_some()
         {
@@ -110,7 +109,7 @@ pub(crate) fn supports_member(home: &Path) -> io::Result<bool> {
 pub(crate) fn check(home: &Path) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     if let Some(target) = app::Target::for_box(home)? {
-        return target.check(&app::Target::settings()?);
+        return target.check_layout(&app::Target::settings()?);
     }
     let Some(root) = boundary(home)? else {
         return Err(io::Error::other(UNSUPPORTED));
@@ -145,15 +144,6 @@ pub(crate) fn check(home: &Path) -> io::Result<()> {
         return Err(io::Error::other(UNSUPPORTED));
     }
     let records = Files::new(root);
-    if let Some(backup) = records
-        .read::<Value>("backup/configuration.json")
-        .map_err(io::Error::other)?
-        && backup["enabled"] != false
-    {
-        return Err(io::Error::other(
-            "The verified pre-wipe backup could not be confirmed.",
-        ));
-    }
     let running = uninstall::live_processes(&records).map_err(io::Error::other)?;
     if !running.is_empty() {
         return Err(io::Error::other(
@@ -248,19 +238,33 @@ pub async fn finish_prepared_app_wipe(
     keychain: &dyn AppWipeKeychain,
 ) -> io::Result<bool> {
     match app::Target::for_box(home)? {
-        Some(target) => target.finish(keychain).await,
+        Some(target) => target.finish(keychain, member::Report::Wipe).await,
         None => Ok(false),
     }
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) async fn prepare_app_wipe(home: &Path, link: &mut Link) -> Result<(), crate::Error> {
+pub(crate) async fn prepare_app_wipe(
+    home: &Path,
+    link: &mut Link,
+    authority: crate::SetupHandle,
+) -> Result<(), crate::Error> {
     if let Some((kind, decision, member)) = app_decision(link)
         && let Some(target) = app::Target::for_box(home).map_err(app_error)?
         && !target.retained(kind, &decision).map_err(app_error)?
     {
         let settings = app::Target::settings().map_err(app_error)?;
-        target.check(&settings).map_err(app_error)?;
+        target.check_layout(&settings).map_err(app_error)?;
+        let kept = target.box_files();
+        prepare_configured_backup(
+            &kept,
+            target.root(),
+            link,
+            authority,
+            model::ComputerKind::Mac,
+        )
+        .await
+        .map_err(app_error)?;
         let Some(wipe) = link
             .extra
             .get_mut("localWipe")
@@ -268,7 +272,6 @@ pub(crate) async fn prepare_app_wipe(home: &Path, link: &mut Link) -> Result<(),
         else {
             return Err(crate::Error::Invalid("app-owned wipe approval"));
         };
-        let kept = target.box_files();
         if app::helper_keeps_keys(&kept) && wipe.get("hostKeysCleared") != Some(&Value::Bool(true))
         {
             crate::mac_host::clear_integration_keys(&kept).await?;
@@ -300,7 +303,8 @@ pub(crate) fn ready_for_shutdown(home: &Path, link: &Link) -> bool {
                 target.retained(kind, &removal).unwrap_or(false)
             });
     }
-    (LocalWipe::from(link).is_some() || member_approval(link).is_some())
+    is_prepared(link)
+        && (LocalWipe::from(link).is_some() || member_approval(link).is_some())
         && boundary(home).ok().flatten().is_some()
 }
 
@@ -322,34 +326,84 @@ fn app_decision(link: &Link) -> Option<(AppWipeKind, LocalWipe, Option<member::M
 }
 
 fn member_approval(link: &Link) -> Option<member::MemberWipe> {
-    if link.extra.get("localWipe")?["prepared"] != true {
+    if !is_prepared(link) {
         return None;
     }
     member::MemberWipe::from(link, &Identity::read(link).ok()?.public)
 }
 
-pub(crate) fn prepare_headless_member(home: &Path, link: &mut Link) -> io::Result<()> {
-    let Some(local) = link.extra.get("localWipe") else {
-        return Ok(());
-    };
-    if !local["primary"].is_object() || local["prepared"] == true {
+fn is_prepared(link: &Link) -> bool {
+    link.extra
+        .get("localWipe")
+        .is_some_and(|wipe| wipe["prepared"] == true)
+}
+
+fn saved_backup(link: &Link) -> io::Result<Option<crate::backup::ConfiguredPoint>> {
+    link.extra
+        .get("localWipe")
+        .and_then(|wipe| wipe.get("backup"))
+        .map(|point| serde_json::from_value(point.clone()).map_err(io::Error::from))
+        .transpose()
+}
+
+async fn prepare_configured_backup(
+    kept: &Files,
+    erase_boundary: &Path,
+    link: &mut Link,
+    authority: crate::SetupHandle,
+    kind: model::ComputerKind,
+) -> io::Result<()> {
+    if saved_backup(link)?.is_none() {
+        let home = kept.root().to_owned();
+        let boundary = erase_boundary.to_owned();
+        let point = tokio::task::spawn_blocking(move || {
+            crate::backup::prepare_configured_disk(&home, &boundary, authority)
+        })
+        .await
+        .map_err(io::Error::other)?
+        .map_err(io::Error::other)?;
+        if let Some(point) = point {
+            let mut next = link.clone();
+            next.extra["localWipe"]["backup"] = serde_json::to_value(point)?;
+            crate::actor::write_link(kept, &next, kind).map_err(io::Error::other)?;
+            *link = next;
+        }
+    }
+    crate::backup::with_verified_configured_disk(
+        kept.root(),
+        erase_boundary,
+        saved_backup(link)?.as_ref(),
+        || Ok(()),
+    )
+}
+
+pub(crate) async fn prepare_headless(
+    home: &Path,
+    link: &mut Link,
+    authority: crate::SetupHandle,
+) -> io::Result<()> {
+    if !link.extra.contains_key("localWipe") || is_prepared(link) {
         return Ok(());
     }
     let Some(root) = boundary(home)? else {
         return Ok(());
     };
     let own = Identity::read(link).map_err(io::Error::other)?;
-    let Some(wipe) = member::MemberWipe::from(link, &own.public) else {
+    let member = member::MemberWipe::from(link, &own.public);
+    if member.is_none() && LocalWipe::from(link).is_none() {
         return Ok(());
-    };
+    }
     check(&root)?;
     let marker = journal_path(&root)?;
     let receipts = parent(&marker)?;
     let _guard = OwnedLock::acquire(&parent(&root)?.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
-    member::Completion::prepare(receipts, link, &wipe)?;
+    let kept = Files::new(root.clone());
+    prepare_configured_backup(&kept, &root, link, authority, model::ComputerKind::Machine).await?;
+    if let Some(member) = &member {
+        member::Completion::prepare(receipts, link, member)?;
+    }
     let mut next = link.clone();
     next.extra["localWipe"]["prepared"] = Value::Bool(true);
-    let kept = Files::new(root);
     crate::actor::write_link(&kept, &next, model::ComputerKind::Machine)
         .map_err(io::Error::other)?;
     *link = next;
@@ -383,21 +437,28 @@ pub async fn finish_headless_member(home: &Path) -> io::Result<bool> {
     let owner = OwnedLock::acquire(&kept.path("run/.client-owner"), Duration::ZERO)?;
     let link = OwnedLock::acquire(&kept.path("run/.link.lock"), Duration::ZERO)?;
     validate_disk(&kept).map_err(io::Error::other)?;
-    let Some(wipe) = kept
-        .read::<Link>(LINK)
-        .map_err(io::Error::other)?
-        .as_ref()
-        .and_then(member_approval)
-    else {
+    let Some(candidate) = kept.read::<Link>(LINK).map_err(io::Error::other)? else {
+        return Ok(false);
+    };
+    let Some(wipe) = member_approval(&candidate) else {
         return Ok(false);
     };
     let completion = member::Completion::read(receipts, &wipe.setup, &wipe.operation)?
         .ok_or_else(|| io::Error::other("The wipe’s completion receipt is unavailable."))?;
     check(&root)?;
-    kept.write_bytes("run/off", b"").map_err(io::Error::other)?;
-    files::remove_tree_synced(&root)?;
+    crate::backup::with_verified_configured_disk(
+        &root,
+        &root,
+        saved_backup(&candidate)?.as_ref(),
+        || {
+            kept.write_bytes("run/off", b"").map_err(io::Error::other)?;
+            files::remove_tree_synced(&root)
+        },
+    )?;
     drop((owner, link, guard));
-    completion.publish(&root, receipts).await?;
+    completion
+        .publish(&root, receipts, member::Report::Wipe)
+        .await?;
     Ok(true)
 }
 
@@ -639,13 +700,12 @@ pub fn finish(home: &Path) -> io::Result<bool> {
         return Ok(current.is_some() && !root.exists());
     }
     let _boundary = OwnedLock::acquire(&parent.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
-    let mut kept = read()?;
+    let kept = read()?;
     let save = |journal: &Journal| -> io::Result<()> {
         files::create_private_dirs(receipts)?;
         private(receipts, true)?;
         files::write_atomic_through(&marker, &serde_json::to_vec(journal)?, parent)
     };
-    let mut guard = None;
     if kept
         .as_ref()
         .is_none_or(|kept| matches!(kept.phase, None | Some(Phase::Stopping)))
@@ -654,9 +714,19 @@ pub fn finish(home: &Path) -> io::Result<bool> {
         let owner = OwnedLock::acquire(&records.path("run/.client-owner"), Duration::ZERO)?;
         let link = OwnedLock::acquire(&records.path("run/.link.lock"), Duration::ZERO)?;
         validate_disk(&records).map_err(io::Error::other)?;
-        let Some(wipe) = pending()? else {
+        let Some(candidate) = records.read::<Link>(LINK).map_err(io::Error::other)? else {
             return Ok(false);
         };
+        let Some(wipe) = LocalWipe::from(&candidate) else {
+            return Ok(false);
+        };
+        let backup = saved_backup(&candidate)?;
+        if backup.is_none()
+            && !is_prepared(&candidate)
+            && crate::backup::pre_wipe_backup_enabled(&root).map_err(io::Error::other)?
+        {
+            return Ok(false);
+        }
         check(&root)?;
         let source =
             identity(&root)?.ok_or_else(|| io::Error::other("The folder to erase is missing."))?;
@@ -677,21 +747,23 @@ pub fn finish(home: &Path) -> io::Result<bool> {
             phase: Some(Phase::Erasing),
             format_version: 1,
         };
-        records
-            .write_bytes("run/off", b"")
-            .map_err(io::Error::other)?;
-        save(&approval)?;
-        guard = Some((owner, link));
-        kept = Some(approval);
+        crate::backup::with_verified_configured_disk(&root, &root, backup.as_ref(), || {
+            records
+                .write_bytes("run/off", b"")
+                .map_err(io::Error::other)?;
+            save(&approval)?;
+            erase_approved(&root, receipts, approval, save, || {
+                // Drop guards by token after detach, leaving any replacement alone.
+                drop((owner, link));
+                Ok(())
+            })
+        })?;
+        return Ok(true);
     }
     let Some(journal) = kept else {
         return Ok(false);
     };
-    erase_approved(&root, receipts, journal, save, || {
-        // OwnedLock drops only its own token, leaving any replacement alone.
-        drop(guard);
-        Ok(())
-    })?;
+    erase_approved(&root, receipts, journal, save, || Ok(()))?;
     Ok(true)
 }
 

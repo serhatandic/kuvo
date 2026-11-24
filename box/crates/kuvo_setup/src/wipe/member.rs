@@ -38,7 +38,7 @@ pub(crate) struct MemberWipe {
 impl MemberWipe {
     pub(super) fn from(link: &Link, authenticated_key: &str) -> Option<Self> {
         let kept = link.extra.get("localWipe")?;
-        if ["backup", "generation", "requiresPreparation"]
+        if ["generation", "requiresPreparation"]
             .iter()
             .any(|field| kept.get(field).is_some())
         {
@@ -70,6 +70,13 @@ pub(super) struct Completion {
     proof: documents::Envelope,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     deleted: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Report {
+    Wipe,
+    #[cfg(target_os = "macos")]
+    Installer,
 }
 
 impl Completion {
@@ -146,7 +153,12 @@ impl Completion {
         receipts.join(format!("{}.json", self.operation))
     }
 
-    pub(super) async fn publish(mut self, root: &Path, receipts: &Path) -> io::Result<()> {
+    pub(super) async fn publish(
+        mut self,
+        root: &Path,
+        receipts: &Path,
+        report: Report,
+    ) -> io::Result<()> {
         if identity(root)?.is_some() {
             return Err(io::Error::other(
                 "The wipe’s completion receipt is unavailable.",
@@ -158,12 +170,25 @@ impl Completion {
         files::write_atomic_through(&ack, &serde_json::to_vec(&self.proof)?, parent)?;
         self.deleted = true;
         files::write_atomic_through(&file, &serde_json::to_vec(&self)?, parent)?;
-        if tokio::time::timeout(Duration::from_secs(16), self.report())
-            .await
-            .is_ok_and(|answer| answer == Some(true))
-        {
-            files::remove_file_synced(&file)?;
-            files::remove_file_synced(&ack)?;
+        let (attempts, within) = match report {
+            Report::Wipe => (15, Duration::from_secs(8)),
+            #[cfg(target_os = "macos")]
+            Report::Installer => (1, Duration::from_secs(2)),
+        };
+        for attempt in 1..=attempts {
+            if tokio::time::timeout(within, self.report())
+                .await
+                .is_ok_and(|answer| answer == Some(true))
+            {
+                files::remove_file_synced(&file)?;
+                files::remove_file_synced(&ack)?;
+                break;
+            }
+            if attempt < attempts && file.exists() {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            } else {
+                break;
+            }
         }
         Ok(())
     }

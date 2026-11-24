@@ -31,6 +31,10 @@ pub use destination::{Destination, DestinationStore, DiskStore, SshStore};
 pub use receipts::ReceiptOwner;
 pub use recovery::{Authority, RecoveryResult, Standalone};
 pub use wipe::WipeExport;
+pub(crate) use wipe::{
+    ConfiguredPoint, pre_wipe_backup_enabled, prepare_configured_disk,
+    with_verified_configured_disk,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{self, Instant};
 
-use super::member::{Completion, MemberWipe};
+use super::member::{Completion, MemberWipe, Report};
 use super::{
     AppWipeKeychain, AppWipeKind, Files, Home, Journal, LINK, Layout, LocalWipe, OwnedLock, Phase,
     UNSUPPORTED, app_boundary, erase_approved, identity, layout, parent, private, read_journal,
@@ -137,7 +137,7 @@ impl Target {
         }) {
             return Ok(Some(InstallState::MemberReview));
         }
-        if let Err(error) = self.finish(keychain).await {
+        if let Err(error) = self.finish(keychain, Report::Installer).await {
             eprintln!("finishing the earlier app wipe: {error}");
         }
         if self.pending()? || pending_hint(&kept) {
@@ -166,6 +166,10 @@ impl Target {
         Files::new(self.root.join("box"))
     }
 
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn save(&self, kind: AppWipeKind, journal: &Journal) -> io::Result<()> {
         let receipts = self.receipts()?;
         files::create_private_dirs(&receipts)?;
@@ -175,24 +179,6 @@ impl Target {
             &serde_json::to_vec(journal)?,
             parent(&self.root)?,
         )
-    }
-
-    pub(super) fn check(
-        &self,
-        settings: &std::collections::BTreeMap<String, PathBuf>,
-    ) -> io::Result<()> {
-        let kept = self.box_files();
-        self.check_layout(settings)?;
-        if let Some(backup) = kept
-            .read::<Value>("backup/configuration.json")
-            .map_err(io::Error::other)?
-            && backup["enabled"] != false
-        {
-            return Err(io::Error::other(
-                "The verified pre-wipe backup could not be confirmed.",
-            ));
-        }
-        Ok(())
     }
 
     pub(super) fn check_layout(
@@ -265,7 +251,7 @@ impl Target {
             ));
         }
         let _guard = self.lock()?;
-        self.check(settings)?;
+        self.check_layout(settings)?;
         let source = identity(&self.root)?
             .ok_or_else(|| io::Error::other("The folder to erase is missing."))?;
         let journal = Journal {
@@ -304,9 +290,13 @@ impl Target {
             && journal.source == identity(&self.root)?)
     }
 
-    pub(super) async fn finish(&self, keychain: &dyn AppWipeKeychain) -> io::Result<bool> {
+    pub(super) async fn finish(
+        &self,
+        keychain: &dyn AppWipeKeychain,
+        report: Report,
+    ) -> io::Result<bool> {
         for kind in [AppWipeKind::LastComputer, AppWipeKind::Member] {
-            if self.finish_kind(kind, keychain).await? {
+            if self.finish_kind(kind, keychain, report).await? {
                 return Ok(true);
             }
         }
@@ -317,6 +307,7 @@ impl Target {
         &self,
         kind: AppWipeKind,
         keychain: &dyn AppWipeKeychain,
+        report: Report,
     ) -> io::Result<bool> {
         let Some(journal) = read_journal(&self.marker(kind)?)? else {
             return Ok(false);
@@ -325,13 +316,13 @@ impl Target {
             if !super::resume_app_wipe(&self.root, &self.account, kind, keychain)? {
                 return Ok(false);
             }
-            self.report_completion(kind, &journal.setup, &journal.operation)
+            self.report_completion(kind, &journal.setup, &journal.operation, report)
                 .await?;
             return Ok(true);
         }
         if journal.phase != Some(Phase::Stopping) {
             if identity(&self.root)?.is_none() {
-                self.report_completion(kind, &journal.setup, &journal.operation)
+                self.report_completion(kind, &journal.setup, &journal.operation, report)
                     .await?;
                 return Ok(true);
             }
@@ -349,14 +340,14 @@ impl Target {
             .read(SETTINGS)
             .map_err(io::Error::other)?
             .ok_or_else(|| io::Error::other(UNSUPPORTED))?;
-        let verify = || {
+        let verify = |journal: &Journal| {
             if identity(&self.root)? != journal.source {
                 return Err(io::Error::other("The folder to erase has changed."));
             }
-            self.check(&settings)?;
-            verify_approval(&kept, kind, &journal)
+            self.check_layout(&settings)?;
+            verify_approval(&kept, kind, journal)
         };
-        verify()?;
+        verify(&journal)?;
         let receipts = self.receipts()?;
         if kind == AppWipeKind::Member
             && Completion::read(&receipts, &journal.setup, &journal.operation)?.is_none()
@@ -384,30 +375,43 @@ impl Target {
         }
         let owner = OwnedLock::acquire(&kept.path("run/.client-owner"), Duration::ZERO)?;
         let link = OwnedLock::acquire(&kept.path("run/.link.lock"), Duration::ZERO)?;
-        verify()?;
-        if kind == AppWipeKind::LastComputer {
-            keychain.clear_app_link_keys(&self.root)?;
-        }
-        verify()?;
-        journal.phase = Some(Phase::Erasing);
-        self.save(kind, &journal)?;
+        verify(&journal)?;
+        let candidate = kept
+            .read::<Link>(LINK)
+            .map_err(io::Error::other)?
+            .ok_or_else(|| io::Error::other("The wipe has no accepted removal."))?;
+        let backup = super::saved_backup(&candidate)?;
         let setup = journal.setup.clone();
         let operation = journal.operation.clone();
-        erase_approved(
+        crate::backup::with_verified_configured_disk(
+            kept.root(),
             &self.root,
-            &receipts,
-            journal,
-            |next| self.save(kind, next),
+            backup.as_ref(),
             || {
-                drop((owner, link));
-                if kind == AppWipeKind::Member {
-                    super::clear_detached_app_identity(&self.root, keychain)?;
+                if kind == AppWipeKind::LastComputer {
+                    keychain.clear_app_link_keys(&self.root)?;
                 }
-                Ok(())
+                verify(&journal)?;
+                journal.phase = Some(Phase::Erasing);
+                self.save(kind, &journal)?;
+                erase_approved(
+                    &self.root,
+                    &receipts,
+                    journal,
+                    |next| self.save(kind, next),
+                    || {
+                        drop((owner, link));
+                        if kind == AppWipeKind::Member {
+                            super::clear_detached_app_identity(&self.root, keychain)?;
+                        }
+                        Ok(())
+                    },
+                )
             },
         )?;
         drop(guard);
-        self.report_completion(kind, &setup, &operation).await?;
+        self.report_completion(kind, &setup, &operation, Report::Wipe)
+            .await?;
         Ok(true)
     }
 
@@ -416,11 +420,12 @@ impl Target {
         kind: AppWipeKind,
         setup: &str,
         operation: &str,
+        report: Report,
     ) -> io::Result<()> {
         if kind == AppWipeKind::Member {
             let receipts = self.receipts()?;
             if let Some(completion) = Completion::read(&receipts, setup, operation)? {
-                completion.publish(&self.root, &receipts).await?;
+                completion.publish(&self.root, &receipts, report).await?;
             }
         }
         Ok(())
@@ -779,7 +784,7 @@ mod tests {
                 .unwrap();
             drop(child);
         });
-        let finished = target.finish(&Keychain(&target)).await;
+        let finished = target.finish(&Keychain(&target), Report::Wipe).await;
         stop.join().unwrap();
         assert!(finished.unwrap());
         assert!(!target.root.exists());

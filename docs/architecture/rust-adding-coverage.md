@@ -47,6 +47,7 @@ the races that span removal, backup, moves, and an authority change.
 | U17 | [A detached app member wipe retries Keychain cleanup before deleting work](../../box/crates/kuvo_setup/tests/wipe_app.rs) | On macOS, the member hook runs after recording detach. A failed call preserves the old data, a replacement is left alone, and retry finishes the member receipt without writing a reinstall offer. |
 | U18 | [A removed Unix member wipes on reconnect and retries its sealed completion](../../protocol/conformance/removal.test.mjs) | Both boxes preserve the revocation while the source is offline. After erasing the source, the worker retries the same removal frame from a fresh reply identity after the relay disconnects. The durable completion holds neither old private key. The main verifies and records the completion and acknowledges it to the fresh identity. |
 | U19 | [An app-owned Mac completes last-computer and member wipes](../../protocol/conformance/removal.test.mjs) | An isolated Helper clears integration keys while the original folder exists. The accepted wipe records the original inode before stopping its keeper. Keychain cleanup precedes detach for a last computer and follows detach for a member. Both finish the right receipt, preserve sibling data, and offer local reinstall only after a last-computer wipe. |
+| U20 | [An offline member keeps its data until its configured pre-wipe backup can be verified](../../protocol/conformance/removal.test.mjs) | After the signed offline removal, the source logs the unavailable configured disk and keeps its unprepared wipe and local work. When the disk returns, both boxes publish and verify a pre-wipe archive, erase the source, and replicate the completion to the observing member. |
 
 ## Stored and inherited cases
 
@@ -68,21 +69,20 @@ the races that span removal, backup, moves, and an authority change.
   and uninstall cases here. The setup map also assigns the cross-phase cases
   below. C7 covers receiving a local seed. C10 covers selecting and delivering
   machine-held credentials by installer code. Mac Helper-held keys, SSH
-  credential delivery, the member’s incoming-device switch, member wipe,
-  configured backup and move integration at wipe, and release packaging stay open.
+  credential delivery, the member’s incoming-device switch, configured SSH and
+  Relay backup, one-time exports, move verification, and release packaging stay open.
 
 ## Verification
 
-In the five selected process areas, Rust passes 31 tests on macOS and
-TypeScript passes 28 with three Rust-specific cases skipped. The Rust
-workspace compile check passes. The static x86-64 musl binary passes all
-31 in WSL 2 and in one lokum container capped at one CPU and 1 GB.
-TypeScript also passes 28 in WSL 2. Before the Windows startup integration
-in `12a4054f9`, native Windows passed 23 and skipped eight Unix-specific
-tests. After that merge, seven native scratch checks pass for seed, discovery,
-installer status and SSH Add validation. The current uninstall test reports a
-sign-in task removal failure. Native enrollment now uses the sign-in starter
-and task, whose scratch conformance remains with 8.1. The original TypeScript fake SSH host,
+In the five selected process areas through U19, Rust passes 38 tests on macOS
+and TypeScript passes 35 with three Rust-specific skips. Both also pass the
+targeted configured disk scenario on macOS. The Rust workspace compile check
+passes. The static x86-64 musl build through the configured disk scenario passes
+37 in WSL 2 and 37 in one lokum container capped at one CPU and 1 GB. Both
+Linux runs skip two Mac cases. TypeScript passes 34 in WSL 2 with five skips.
+The native Windows run after 8.1b passes 26 with twelve platform skips. Its only
+failure is removing a missing Windows sign-in task in stopped uninstall. 8.1c
+owns that fix. The original TypeScript fake SSH host,
 alias, WSL 1 refusal and device-revocation scenarios pass as reference checks.
 The Windows PC’s WSL 2 account joined a Rust setup,
 acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
@@ -199,7 +199,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 30 have coverage and 164 still have open or partial work. Of those, 120 list 2.3 as an owner (91 open, 29 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 32 have coverage and 162 still have open or partial work. Of those, 118 list 2.3 as an owner (90 open, 28 partial).
 
 ### computers-add
 
@@ -461,7 +461,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 30 h
 | [live permission replies from paired clients expire across pc5 reconnect](../../box/bridge-tests/setup-handover-access.test.js#L207) | Open | 2.2, 2.3 |
 | [clients share machine changes and revocations across three boxes](../../box/bridge-tests/setup-handover-access.test.js#L303) | Open | 2.3 |
 | [online unlink from a member keeps the target’s sessions and bots standalone](../../box/bridge-tests/setup-handover-removal.test.js#L14) | U6 verifies the target’s standalone setup, unchanged session and bot files, the delivered acknowledgment on both other computers and replay of the original receipt. | — |
-| [an offline member is unlinked at commit and wipes after returning](../../box/bridge-tests/setup-handover-removal.test.js#L33) | U14 and U18 verify the offline revocation, pending row, later erase and signed completion. The configured pre-wipe backup and its verification are open. | 2.3, 2.5 |
+| [an offline member is unlinked at commit and wipes after returning](../../box/bridge-tests/setup-handover-removal.test.js#L33) | U14 and U20 verify the offline revocation and replicated pending row. The member returns, verifies its configured disk backup, erases its installation, and the observing member sees completion. | — |
 | [revoked Relay-only headless member accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a shutdown write accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
 | [revoked Relay-only app-owned Mac with a lost export accepts a verified removal export after reconnect](../../box/bridge-tests/setup-handover-removal.test.js#L63) | Open | 2.3, 2.5, 6.2 |
@@ -471,7 +471,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 30 h
 | [unlinking the only computer wipes its local setup](../../box/bridge-tests/setup-handover-removal.test.js#L327) | U7 verifies the signed receipt and directory retirement on a sole Unix resident without a keeper or configured backup. U10 verifies the reinstall gate. The full three-computer prelude, action list, keeper, and native Windows remain open. | 2.3, 7.1, 8.1 |
 | [a sole primary can supersede and cancel a prepared removal](../../box/bridge-tests/setup-handover-removal.test.js#L366) | Open | 2.3 |
 | [a pending wipe follows the setup through handover](../../box/bridge-tests/setup-handover-removal.test.js#L395) | Open | 2.3 |
-| [a failed pre-wipe backup leaves the removed computer’s data in place](../../box/bridge-tests/setup-handover-removal.test.js#L412) | Open | 2.3, 2.5 |
+| [a failed pre-wipe backup leaves the removed computer’s data in place](../../box/bridge-tests/setup-handover-removal.test.js#L412) | U20 verifies the missing disk diagnostic in the local log, the unprepared signed wipe, untouched local work, and the pending row until the backup can be verified. | — |
 | [move all verifies accepted ownership before wiping the source](../../box/bridge-tests/setup-handover-export.test.js#L14) | Open | 2.3, 2.4 |
 | [an offline Relay source completes its accepted moves and export on reconnect](../../box/bridge-tests/setup-handover-export.test.js#L56) | Open | 2.3, 2.4, 2.5 |
 | [an encrypted export survives wipe and imports through restore](../../box/bridge-tests/setup-handover-export.test.js#L110) | Open | 2.3, 2.5 |
