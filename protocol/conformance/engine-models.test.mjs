@@ -184,6 +184,36 @@ test("the picker distinguishes free access from zero pricing and supplies an unn
     startChoice: { label: "Choose a Model", refusal: "Choose a model to send it." } });
 });
 
+test("the picker falls back from a signed-out default and says none when nothing runs", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("engine-picker-fallback");
+  const chosen = reference("github-copilot", "chosen");
+  const ready = reference("local", "ready");
+  here.engine.integrations.push({ id: "github-copilot", name: "GitHub Copilot", connections: [], methods: [{ type: "oauth", id: "device" }] });
+  here.engine.providers.push({ id: "local" });
+  here.engine.models.push({ ...chosen, name: "Signed out" }, { ...ready, name: "Ready" });
+  here.engine.defaultModel = chosen;
+  const record = await here.start().ready();
+  await until(() => here.engine.subscribers() > 0, "the picker to follow provider changes");
+  const picker = async () => {
+    const answer = await request(record, "GET", "kuvo/models/offered");
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json;
+  };
+  assert.deepEqual((await picker()).starting, ready);
+  here.engine.defaultModel = null;
+  here.engine.emit({ type: "provider.updated", data: {} });
+  assert.deepEqual((await picker()).starting, ready);
+  here.engine.models.pop();
+  here.engine.emit({ type: "provider.updated", data: {} });
+  const empty = await until(async () => {
+    const answer = await picker();
+    return answer.models.length === 0 && answer;
+  }, "the unavailable provider to leave the picker");
+  assert.deepEqual(empty.models, []);
+  assert.equal(empty.starting, null);
+});
+
 test("catalog reads are reused until a credential change publishes the new picker", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-model-cache");
@@ -328,6 +358,38 @@ test("session readiness retries a default the engine could not answer", { timeou
   assert.deepEqual(await read(), { ses_default: ready, ses_explicit: ready });
 });
 
+test("an unloaded model catalog leaves session readiness and the picker start unknown", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("unloaded-model-catalog");
+  const model = reference("local", "one");
+  here.engine.sessions.push(session(here, "ses_loading", model), session(here, "ses_default"));
+  const record = await here.start().ready();
+  const readiness = () => request(record, "GET", "kuvo/sessions/models?sessions=ses_loading,ses_default,ses_missing");
+  const offered = () => request(record, "GET", "kuvo/models/offered");
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the engine catalog");
+  const first = await readiness();
+  assert.equal(first.status, 200, first.text);
+  assert.deepEqual(first.json.sessions, {});
+  const picker = await offered();
+  assert.deepEqual(picker.json.known, { engine: false, agents: false });
+  assert.equal(Object.hasOwn(picker.json, "starting"), false);
+  here.engine.providers.push({ id: "local" });
+  here.engine.emit({ type: "provider.updated", data: {} });
+  assert.deepEqual((await readiness()).json.sessions, {});
+  here.engine.models.push({ ...model, name: "Ready" });
+  here.engine.defaultModel = model;
+  here.engine.emit({ type: "provider.updated", data: {} });
+  const settled = await until(async () => {
+    const state = await readiness();
+    return state.json?.sessions?.ses_loading?.runs && state.json.sessions;
+  }, "the provider and model to be known");
+  assert.deepEqual(settled, {
+    ses_loading: { model, name: "Ready", runs: true },
+    ses_default: { model, name: "Ready", runs: true },
+  });
+  assert.deepEqual((await offered()).json.starting, model);
+});
+
 test("session readiness distinguishes sign-in, project credentials, and a model turned off", { timeout: 45000 }, async t => {
   const { computer } = await bench(t);
   const here = await computer("engine-model-credentials");
@@ -423,6 +485,40 @@ test("a model removed from a catalog keeps the name the box last knew", { timeou
     refusal: "Model One is no longer available: choose another model.",
     action: { do: "choose", label: "Choose a Model", help: "Choose another model" },
   });
+});
+
+test("a model missing from a signed-in provider is marked gone while later models remain available", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("signed-in-gone-model");
+  const gone = reference("anthropic", "ended");
+  const replacement = reference("anthropic", "replacement");
+  here.engine.providers.push({ id: "anthropic" });
+  here.engine.integrations.push({ id: "anthropic", name: "Anthropic", connections: [{}], methods: [{ type: "key" }] });
+  here.engine.models.push({ ...replacement, name: "Replacement" });
+  here.engine.defaultModel = replacement;
+  here.engine.sessions.push(session(here, "ses_gone", gone));
+  const record = await here.start().ready();
+  const result = await request(record, "GET", "kuvo/sessions/models?sessions=ses_gone");
+  assert.equal(result.status, 200, result.text);
+  assert.deepEqual(result.json.sessions.ses_gone, {
+    model: gone, runs: false, missing: "gone", account: { id: "anthropic", name: "Anthropic" },
+    refusal: "ended is no longer among Anthropic’s models: choose another model.", choose: true,
+    action: { do: "choose", label: "Choose a Model", help: "Choose another model" },
+  });
+  const fallback = await request(record, "GET", "kuvo/models/offered?provider=anthropic&model=ended");
+  assert.deepEqual(fallback.json.starting, replacement);
+  await until(() => here.engine.subscribers() > 0, "the resident to follow the catalog");
+  here.engine.models.push({ ...gone, name: "Previous model" });
+  here.engine.emit({ type: "provider.updated", data: {} });
+  const readiness = async () => (await request(record, "GET", "kuvo/sessions/models?sessions=ses_gone")).json?.sessions?.ses_gone;
+  await until(async () => (await readiness())?.runs, "the model name to be remembered");
+  here.engine.models.pop();
+  here.engine.emit({ type: "provider.updated", data: {} });
+  const changed = await until(async () => {
+    const state = await readiness();
+    return state?.missing === "gone" && state;
+  }, "the removed model to be marked again");
+  assert.equal(changed.refusal, "Previous model is no longer among Anthropic’s models: choose another model.");
 });
 
 test("provider refresh holds folders with active work and settles them after the work ends", { timeout: 45000 }, async t => {

@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 155 of
-411 declarations are covered, 89 are partial and 167 are gaps.
-Row 3.2 retains 124 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 159 of
+411 declarations are covered, 88 are partial and 164 are gaps.
+Row 3.2 retains 118 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -148,7 +148,7 @@ Each row uses the same one-based numbering and ownership rule.
 | `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
 | `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 3.2 · 1–4<br>4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
 | `box/bridge-tests/search.test.js` (11) | 1–11 | — | — | — |
-| `box/bridge-tests/session-models.test.js` (33) | 1–4, 10, 13–14, 17, 20, 22, 28–30, 33 | 5, 16, 18–19, 26, 32 | 6–9, 11–12, 15, 21, 23–25, 27, 31 | 3.2 · 5, 9, 12, 18–19, 23–25, 27, 32<br>4.1 · 6–9, 11, 15–16, 21, 23, 26–27, 31 |
+| `box/bridge-tests/session-models.test.js` (33) | 1–5, 10, 12–14, 17, 19–20, 22, 25, 28–30, 33 | 16, 18, 24, 26, 32 | 6–9, 11, 15, 21, 23, 27, 31 | 3.2 · 9, 18, 23, 27<br>4.1 · 6–9, 11, 15–16, 21, 23–24, 26–27, 31–32 |
 | `box/bridge-tests/models-refresh.test.js` (4) | 1–2, 4 | 3 | — | 6.1 · 3 |
 
 ### Implementation and remaining parity work
@@ -228,7 +228,10 @@ response is removed only after a complete inventory shows no conversation
 using it. Ambiguous transport failures leave the worktree kept.
 
 Model readiness reads the conversation folder's OpenCode catalog and
-remembers its names. Concurrent clients share reads by engine and folder.
+remembers its names, including removed models from signed-in providers.
+An unloaded catalog leaves readiness unset. A complete catalog without a
+runnable default falls back to its first runnable model, or says none when
+no models run. Concurrent clients share reads by engine and folder.
 Credential and model events invalidate saved reads, and reopening the picker
 within two seconds reuses its refresh. The picker applies model order, availability, defaults,
 and preferences. Speed and standalone stars share the existing preference
