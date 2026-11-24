@@ -27,6 +27,8 @@ Verified queue tools add and number ordinary items, list and read work, and
 import structured backlogs. An agent's attachments are staged from its allowed
 folders after checking saved paths and file identity. The tool read encloses a
 GitHub description in a fence that cannot be closed by the description itself.
+An agent can link an existing numbered item to a GitHub issue. Its old number
+continues to find it, and its previous description is kept as a note.
 On the keeper, agent updates and deletions record the calling conversation.
 An agent can undo an agent deletion, and user deletions remain the user's to
 restore. Working links record starts and stops and are cleared when work closes.
@@ -51,9 +53,9 @@ assigned to the indicated row for the rest of the port.
 | | 2 | Partial, 5.2. Both computers see deletion and restoration. Either computer can initiate the changes, and the keeper preserves their history. The other computer can read the full item and its file and change its priority. Partition and mixed-peer cases remain open. |
 | [work-queue-statuses](../../box/bridge-tests/work-queue-statuses.test.js) | 1, 3, 9–10, 13–15 | Partial, 5.2. Local migration, retry, creation, search, one filter, label saves and a local move between statuses. Remaining edit, filter and view variants need scenarios. |
 | | 2, 4–8, 11–12, 16 | Open, 5.2. Settling active work after migration, writer locks and recovery, reassignment to a bot queue, action limits and agent tools. |
-| [work-queue-github](../../box/bridge-tests/work-queue-github.test.js) | 1–2, 5–7 | Partial, 5.2. The stand-in verifies `gh` arguments, adding an issue without a number, replay, remote projection and a full remote item. Fresh reads preserve item bytes and a closed issue's stored status. A current lock holds off reads, abandoned locks are reclaimed, and a signed-out host backs off. Tool reads fence GitHub text. Reopening, update, missing-command and detailed peer freshness variants remain open. |
+| [work-queue-github](../../box/bridge-tests/work-queue-github.test.js) | 1–3, 5–7 | Partial, 5.2. The stand-in verifies `gh` arguments, adding an issue without a number, replay, remote projection and a full remote item. Fresh reads preserve item bytes and a closed issue's stored status. A current lock holds off reads, abandoned locks are reclaimed, and a signed-out host backs off. Tool reads fence GitHub text. Converting a numbered item preserves its reference and earlier description. Reopening, remaining conversion cases, missing-command and detailed peer freshness variants are open. |
 | | 9 | Covered. A glance uses cached issue state and makes no `gh` call. |
-| | 3–4, 8, 10–15 | Open, 5.2. Linking an existing item, pull request cases, one-shot reads, held and moved records, and competing live and deleted references. |
+| | 4, 8, 10–15 | Open, 5.2. Pull request cases, one-shot reads, held and moved records, and competing live and deleted references. |
 | [work-queue-github-envelope](../../box/bridge-tests/work-queue-github-envelope.test.js) | 1 | Partial, 5.2. The resident returns the located reply with the code and original attempt. It rejects reuse from another client and supports status and cancellation. The bridge-to-link path needs its own scenario. |
 | [work-queue-migrate](../../box/test/work-queue-migrate.test.ts) | 1–2, 4 | Partial, 5.2. The original bytes and unknown fields survive, an interrupted migration resumes and a future owner file stops startup. Future-file refusal during an edit and the complete snapshots need scenarios. |
 | | 3, 5–7 | Open, 5.2. Read when copying fails, legacy label writes, future model and labels during edits, and peer summaries. |
@@ -65,13 +67,13 @@ assigned to the indicated row for the rest of the port.
 | | 11 | Open, 5.2. Dispatch responsiveness with a held writer lock. |
 | [queue-live](../../box/bridge-tests/queue-live.test.js), [queue-stop](../../box/test/queue-stop.test.ts), [queue-items](../../box/test/queue-items.test.ts) | 1, 1–6, 1–25 respectively | Conversation message queues. See the case-by-case [engine map](rust-engine-coverage.md) for status and rows 3.2, 4.1 and 5.1. |
 
-Of the 182 directly named cases, 4 are covered, 52 are partial, 94 are open in
+Of the 182 directly named cases, 4 are covered, 53 are partial, 93 are open in
 Work Queue and 32 are tracked in the engine map. The Work Queue conformance area also
 checks the initial migration and future-format refusal through a real resident.
 
 | Cross-area cases | Work Queue status and owner |
 |---|---|
-| [setup-shared](../../box/test/setup-shared.test.ts) label restore | Partial, 5.2 and 2.5. The holder command previews without saving, keeps existing definitions, requires force for a retired ID, and restores on the main with both residents seeing the accepted result. Further recovery and protected backup cases are open. |
+| [setup-shared](../../box/test/setup-shared.test.ts) 3 | Partial, 5.2 and 2.5. The holder command previews without saving, keeps existing definitions, requires force for a retired ID, and restores on the main with both residents seeing the accepted result. A Rust member can use a TypeScript main. A TypeScript member requires the broader `data.ownership` feature on a Rust main. The provisional preview, further recovery and protected backup cases need scenarios. |
 | [setup-merge](../../box/test/setup-merge.test.ts) 2–6 | Open in 5.2 and 2.3 for the reservation, import and Markdown rewrite. Partial in case 6 for local alias lookup. |
 | [offline-merge](../../box/test/offline-merge.test.ts) 2, 7 | Partial, 5.2. A member saves a draft against an owner revision and the two residents merge independent passages when the keeper returns. Local conformance covers the deletion fence before and after restoration and recovery of refused text. Competing passages, retired revisions and legacy receipts still need scenarios. |
 | [offline-merge](../../box/test/offline-merge.test.ts) 3–6, 8–10 as applied to queue records | Partial for compact tombstones. Expired deletions retain their fence and a draft receives a refresh on attempted creation. Large and legacy passage layouts, transferred choices, former-owner replay and attachment records remain open in 5.2, 2.4 and 5.5. |
@@ -88,6 +90,7 @@ checks the initial migration and future-format refusal through a real resident.
 | [setup-mac](../../box/bridge-tests/setup-mac.test.js) legacy discovery and setup numbering | Open for 5.2. Keep the number floor when setup authority changes. |
 | [format-versions](../../box/bridge-tests/format-versions.test.js) future ledger | Partial, 5.2. Startup refuses the ledger and preserves its bytes. The version gate during allocation and the link-state portion still require the referenced scenarios. |
 | [resident-delivery](../../box/test/resident-delivery.test.ts) case 2 | Open, 5.2. Keep attachment disk work off the dispatch thread. |
+| [accounts-check](../../box/test/agents/accounts-check.test.ts) case 18 | Partial, 5.2. A stand-in `gh` verifies that the located device-code attempt stays pending for its original client and permits cancellation. Browser completion and account catalog refresh need scenarios. |
 | [message-words](../../box/test/message-words.test.ts) cases 3 and 7 | The published tool titles and the queue-add history words are covered by the Work Queue tools case and [engine conformance](../../protocol/conformance/engine-sessions.test.mjs). The remaining queue tool history variants stay with 5.2 and 3.2. |
 | [forward-evidence](../../box/test/forward-evidence.test.ts) cases 2 and 3 | Open, 5.2 and 2.4. Recover a moved queue decision at its new keeper and keep future or ambiguous forward records pending. |
 | [moves-safety](../../box/test/moves-safety.test.ts) queue handoff lock, attachment and index sync, and missing indexed payload | Open for the live queue, 5.2 and 2.4. A retry must leave a live owner's lock intact, and activation waits for a complete durable bundle. |

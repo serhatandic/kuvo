@@ -161,34 +161,9 @@ impl Writer {
         caller: ActiveTool,
         operation: Option<String>,
     ) -> Result<Value, Refusal> {
-        let (computer, _) = self.computer_words();
         let owner = self.tool_owner(&caller, true)?;
         self.admit(&owner)?;
-        let issue = args["issue"].as_str().and_then(|ref_item| self.refs.issue(ref_item))
-            .ok_or_else(|| bad("Give the issue or pull request (issue) as gh:owner/repo#12, or its address on github.com."))?;
-        let preflight = self.clone();
-        let original = issue.key();
-        let queue = owner.clone();
-        blocking(move || {
-            let all = preflight.store.items()?;
-            Ok(preflight.refuse_issue(&all, &original, None, &queue))
-        })
-        .await??;
-        let (seen, body) = self
-            .reads
-            .github
-            .read_issue(&issue, computer)
-            .await
-            .map_err(bad)?;
-        let canonical = seen["url"]
-            .as_str()
-            .and_then(|url| self.refs.issue(url))
-            .unwrap_or(issue);
-        let canonical_key = canonical.key();
-        let reference = format!(
-            "gh:{}/{}#{}",
-            canonical.owner, canonical.repo, canonical.number
-        );
+        let issue = self.issue_for(&args["issue"], &owner, None).await?;
         let writer = self.clone();
         let guard = self.lock().await?;
         tokio::task::spawn_blocking(move || {
@@ -200,8 +175,8 @@ impl Writer {
                 return Ok(answer);
             }
             writer.admit(&owner)?;
-            let id = seen["id"].as_str();
-            writer.refuse_issue(&all, &canonical_key, id, &owner)?;
+            writer.refuse_issue(&all, &issue.source_key, issue.source["id"].as_str(), &owner, None)?;
+            let reference = issue.display();
             if all.iter().filter(|item| item.owner == owner && item.removed.is_none() && !status::closed(&item.status)).count() >= 2000 {
                 return Err(bad("Your queue has 2000 open items already: mark some done or remove them first."));
             }
@@ -215,13 +190,13 @@ impl Writer {
             let id = format!("wqi_{}", kuvo_wire::keys::encode(&random));
             let who = actor(&caller);
             let stamp = json!({"at":now,"by":who});
-            let title = seen["title"].as_str().expect("GitHub issue title");
-            let source = json!({"kind":seen["kind"],"ref":reference,"url":seen["url"],"host":"github.com","id":seen["id"]});
+            let title = &issue.title;
+            let source = &issue.source;
             let labels = labels::shown(&writer.store, writer.setup.queue_setup().as_ref()).map_err(storage_refusal)?;
             let labels = args.get("labels").map(|given| labels_of(given, &labels)).transpose()?.unwrap_or_default();
             let order = place(&all, None, status, args["top"] == true);
             let mut row = json!({"id":id,"owner":owner,"source":source,
-                "title":title,"body":limit(&body,100_000),"status":status,"order":order,
+                "title":title,"body":limit(&issue.body,100_000),"status":status,"order":order,
                 "labels":labels,"notes":[],"files":[],"links":[],"sessions":[],"created":stamp,"updated":stamp,
             });
             if let Some(priority) = args.get("priority").map(priority_of).transpose()?.flatten() {
@@ -237,11 +212,11 @@ impl Writer {
                 row["sessions"] = json!([{"session":caller.root, "since":now}]);
                 append_event(&mut row, json!({"at":now,"by":who,"kind":"started"}));
             }
-            let seen_words = seen_words(seen["state"].as_str().unwrap_or_default());
+            let seen_words = seen_words(&issue.state);
             mutate::fields(&mut row, &args, now, &who)?;
             let where_ = status_name(status);
             let working_words = if working { ", linked to you" } else { "" };
-            let merged = if seen["kind"] == "github-pr" { " or merged" } else { "" };
+            let merged = if issue.source["kind"] == "github-pr" { " or merged" } else { "" };
             let ignored = match (args.get("title").is_some(), args.get("body").is_some()) {
                 (true, true) => " (The title and body you gave aren't used.)",
                 (true, false) => " (The title you gave isn't used.)",
@@ -268,6 +243,7 @@ impl Writer {
         lookup: &str,
         id: Option<&str>,
         owner: &str,
+        except: Option<&str>,
     ) -> Result<(), Refusal> {
         let matches = |source: &Value| {
             id.is_some_and(|id| source["id"] == id)
@@ -279,7 +255,7 @@ impl Writer {
         let named = |reference: &str, title: &str| format!("{reference} \"{title}\"");
         let existing = all
             .iter()
-            .filter(|item| item.source().is_some_and(matches))
+            .filter(|item| Some(item.id.as_str()) != except && item.source().is_some_and(matches))
             .collect::<Vec<_>>();
         if let Some(item) = existing.iter().find(|item| item.removed.is_none()) {
             let reference = item
@@ -307,7 +283,11 @@ impl Writer {
             self.peers.now(),
         )
         .map_err(storage_refusal)?;
-        if let Some(item) = others.items.iter().find(|item| matches(&item["source"])) {
+        if let Some(item) = others
+            .items
+            .iter()
+            .find(|item| item["id"].as_str() != except && matches(&item["source"]))
+        {
             let name = named(
                 item["source"]["ref"].as_str().unwrap_or_default(),
                 item["title"].as_str().unwrap_or_default(),
@@ -336,6 +316,117 @@ impl Writer {
             }));
         }
         Ok(())
+    }
+}
+
+struct LinkedIssue {
+    source: Value,
+    title: String,
+    body: String,
+    state: String,
+    source_key: String,
+}
+
+impl LinkedIssue {
+    fn display(&self) -> &str {
+        self.source["ref"]
+            .as_str()
+            .expect("canonical GitHub reference")
+    }
+}
+
+impl Writer {
+    async fn issue_for(
+        &self,
+        given: &Value,
+        owner: &str,
+        except: Option<&str>,
+    ) -> Result<LinkedIssue, Refusal> {
+        let issue = given.as_str().and_then(|reference| self.refs.issue(reference))
+            .ok_or_else(|| bad("Give the issue or pull request (issue) as gh:owner/repo#12, or its address on github.com."))?;
+        let preflight = self.clone();
+        let original = issue.key();
+        let queue = owner.to_owned();
+        let except_id = except.map(str::to_owned);
+        blocking(move || {
+            let all = preflight.store.items()?;
+            Ok(preflight.refuse_issue(&all, &original, None, &queue, except_id.as_deref()))
+        })
+        .await??;
+        let (seen, body) = self
+            .reads
+            .github
+            .read_issue(&issue, self.computer_words().0)
+            .await
+            .map_err(bad)?;
+        let canonical = seen["url"]
+            .as_str()
+            .and_then(|url| self.refs.issue(url))
+            .unwrap_or(issue);
+        let source_key = canonical.key();
+        let reference = format!(
+            "gh:{}/{}#{}",
+            canonical.owner, canonical.repo, canonical.number
+        );
+        let title = seen["title"]
+            .as_str()
+            .expect("GitHub issue title")
+            .to_owned();
+        let state = seen["state"].as_str().unwrap_or_default().to_owned();
+        let source = json!({"kind":seen["kind"],"ref":reference,"url":seen["url"],"host":"github.com","id":seen["id"]});
+        Ok(LinkedIssue {
+            source,
+            title,
+            body,
+            state,
+            source_key,
+        })
+    }
+
+    fn attach_issue(
+        &self,
+        item: &Item,
+        issue: &LinkedIssue,
+        who: &Value,
+        now: i64,
+    ) -> Result<Value, Refusal> {
+        let mut row = Value::Object(item.saved.clone());
+        let display = read::item_name(&row);
+        if let Some(source) = item.source() {
+            return Err(bad(format!(
+                "{display} is {} already: one item is one issue or pull request.",
+                source["ref"].as_str().unwrap_or_default()
+            )));
+        }
+        if status::closed(&item.status) {
+            return Err(bad(format!(
+                "{display} is {}: give it an open status first (status), or add the issue as an item of its own (queue_add with issue).",
+                status_name(&item.status)
+            )));
+        }
+        let before = item.body.trim();
+        row["source"] = issue.source.clone();
+        let title = limit(&plain_name(&issue.title), 200);
+        if !title.is_empty() {
+            row["title"] = title.into();
+        }
+        if !issue.body.trim().is_empty() {
+            row["body"] = limit(&issue.body, 100_000).into();
+            if !before.is_empty() {
+                let text = limit(
+                    &format!(
+                        "What it said before it was {}:\n\n{before}",
+                        issue.display()
+                    ),
+                    20_000,
+                );
+                let mut notes = item.notes.clone();
+                notes.push(json!({"at":now,"by":who,"text":text}));
+                notes.drain(..notes.len().saturating_sub(200));
+                row["notes"] = notes.into();
+            }
+        }
+        Ok(row)
     }
 }
 

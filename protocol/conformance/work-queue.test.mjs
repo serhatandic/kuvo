@@ -1364,3 +1364,56 @@ test("the label restore command previews on the main computer without saving", {
     }, "The restored labels did not arrive.");
   }
 });
+
+test("linking a numbered item to GitHub retains its number and previous description", { timeout: 60000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const fixture = folder => {
+    const bin = path.join(folder, "box", "stand-in");
+    const source = path.join(bin, "entry.cjs");
+    const gh = path.join(bin, process.platform === "win32" ? "gh.cmd" : "gh");
+    write(source, `
+      const args = process.argv.slice(2);
+      if (args[0] !== "api" || args[1] !== "graphql" || args[3] !== "github.com") process.exit(4);
+      process.stdout.write(JSON.stringify({data:{p0:{issueOrPullRequest:{
+        __typename:"Issue",id:"I_91",number:91,state:"OPEN",title:"GitHub fixes it",
+        url:"https://github.com/kuvo-test/existing/issues/91",body:"Issue text with #9."
+      }}}}));
+    `);
+    write(gh, process.platform === "win32"
+      ? '@echo off\r\n"%KQ_GH_NODE%" "%KQ_GH_SOURCE%" %*\r\n'
+      : '#!/bin/sh\nexec "$KQ_GH_NODE" "$KQ_GH_SOURCE" "$@"\n');
+    if (process.platform !== "win32") chmodSync(gh, 0o700);
+    return { PATH: bin + path.delimiter + (process.env.PATH ?? ""), KQ_GH_NODE: process.execPath,
+      KQ_GH_SOURCE: source, GH_CONFIG_DIR: path.join(bin, "account"), GH_TOKEN: "", GITHUB_TOKEN: "" };
+  };
+  const lab = await computer("Lab", undefined, fixture);
+  const session = { id: "ses_GitHubLink", title: "Editor", time: { created: 1, updated: 2 } };
+  lab.engine.sessions.push(session);
+  const ask = lab.connect(await lab.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "No accepted number lease.");
+  const app = { "x-kuvo-from": "app" };
+  const add = await ask("POST", "kuvo/work-queue/items", { operation: "local-before-gh", title: "Original title", body: "Decided here." }, app);
+  assert.equal(add.status, 200, add.text);
+  const original = add.json.item.id;
+  const number = await until(async () => (await ask("GET", "kuvo/work-queue/items/" + original)).json?.item?.number, "The original item never got a number.", 25000);
+  const args = { item: number, issue: "gh:kuvo-test/existing#91" };
+  lab.engine.messages.set(session.id, [{ id: "msg_gh_link", type: "assistant", content: [{ type: "tool",
+    name: "kuvo-browser_queue_update", state: { status: "running", input: args } }] }]);
+  const answer = await ask("POST", "kuvo/work-queue/tools", { name: "queue_update", session: session.id, arguments: args, operation: "change-to-issue" });
+  assert.equal(answer.status, 200, answer.text);
+  assert.equal(answer.json.isError, false, answer.text);
+  assert.equal(answer.json.text, `#${number} is gh:kuvo-test/existing#91 "GitHub fixes it" now (open on GitHub), Todo: refer to it as gh:kuvo-test/existing#91 (#${number} still finds it). Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there.`);
+  const item = await ask("GET", "kuvo/work-queue/items/" + number);
+  assert.equal(item.status, 200, item.text);
+  assert.equal(item.json.item.id, original);
+  assert.equal(item.json.item.number, number);
+  assert.equal(item.json.item.body, "Issue text with #9.");
+  assert.equal(item.json.item.source.ref, args.issue);
+  assert.equal(item.json.item.notes.at(-1).text, "What it said before it was gh:kuvo-test/existing#91:\n\nDecided here.");
+  assert.deepEqual(item.json.item.events.at(-1).fields, ["title", "body", "source"]);
+  const same = await ask("POST", "kuvo/work-queue/tools", { name: "queue_update", session: session.id, arguments: args });
+  assert.equal(same.json.isError, true, same.text);
+  assert.match(same.json.text, / is that one already\.$/);
+});

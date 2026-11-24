@@ -41,6 +41,29 @@ impl Writer {
             ));
         }
         let id = target["id"].as_str().expect("queue item id").to_owned();
+        let linked = if let Some(given) = args.get("issue") {
+            if let Some(source) = target.get("source") {
+                let display = read::item_name(target);
+                let reference = source["ref"].as_str().unwrap_or_default();
+                let named = given.as_str().and_then(|issue| self.refs.issue(issue));
+                let current = self.refs.issue(reference);
+                if named
+                    .zip(current)
+                    .is_some_and(|(named, current)| named.key() == current.key())
+                {
+                    return Err(bad(format!("{display} is that one already.")));
+                }
+                return Err(bad(format!(
+                    "{display} is {reference} already: one item is one issue or pull request."
+                )));
+            }
+            Some(
+                self.issue_for(given, &self.tool_owner(&caller, false)?, Some(&id))
+                    .await?,
+            )
+        } else {
+            None
+        };
         let writer = self.clone();
         let folder = caller.directory.clone();
         let file_args = args.get("files").cloned();
@@ -69,8 +92,12 @@ impl Writer {
             edit::refuse_handing(item)?;
             let people = Assignees::read(&writer.store);
             let actor = actor(&caller);
+            let initial = if let Some(issue) = &linked {
+                writer.refuse_issue(&all, &issue.source_key, issue.source["id"].as_str(), &item.owner, Some(&id))?;
+                writer.attach_issue(item, issue, &actor, now)?
+            } else { Value::Object(item.saved.clone()) };
             let mut result = None;
-            writer.edit_fields(&all, item, &args, &staged, now, &people, &actor, |row| {
+            writer.edit_row(&all, item, &args, &staged, now, &people, &actor, initial, |row| {
                 fields(row, &args, now, &actor)?;
                 let status = row["status"].as_str().unwrap_or_default();
                 if !status::closed(status) {
@@ -123,16 +150,24 @@ impl Writer {
                 let display = read::item_name(row);
                 let where_ = row["status"].as_str().unwrap_or_default();
                 let sessions = store::array(row.get("sessions")).len();
-                let linked = match sessions {
+                let linked_sessions = match sessions {
                     0 => String::new(),
                     1 => ", 1 session linked".into(),
                     n => format!(", {n} sessions linked"),
                 };
-                let answer = said(match where_ {
-                    "done" => format!("Marked {display} done."),
-                    "canceled" => format!("Marked {display} canceled."),
-                    _ => format!("Changed {display} ({}{linked}).", status_name(where_)),
-                });
+                let answer = if let Some(issue) = &linked {
+                    let reference = issue.display();
+                    let state = seen_words(&issue.state);
+                    let status = status_name(where_);
+                    let (named, still) = item.number.map_or(("It".into(), String::new()), |n| (format!("#{n}"), format!(" (#{n} still finds it)")));
+                    said(format!("{named} is {display} now ({state} on GitHub), {status}: refer to it as {reference}{still}. Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there."))
+                } else {
+                    said(match where_ {
+                        "done" => format!("Marked {display} done."),
+                        "canceled" => format!("Marked {display} canceled."),
+                        _ => format!("Changed {display} ({}{linked_sessions}).", status_name(where_)),
+                    })
+                };
                 keep_reply(row, operation, &answer);
                 result = Some(answer);
                 Ok(())

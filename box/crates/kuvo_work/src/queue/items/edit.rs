@@ -188,7 +188,31 @@ impl Writer {
         who: &Value,
         revise: impl FnOnce(&mut Value) -> Result<(), Refusal>,
     ) -> Result<Value, Refusal> {
-        let mut row = Value::Object(item.saved.clone());
+        self.edit_row(
+            all,
+            item,
+            fields,
+            staged,
+            now,
+            people,
+            who,
+            Value::Object(item.saved.clone()),
+            revise,
+        )
+    }
+
+    pub(super) fn edit_row(
+        &self,
+        all: &[Item],
+        item: &Item,
+        fields: &Value,
+        staged: &Staged,
+        now: i64,
+        people: &Assignees,
+        who: &Value,
+        mut row: Value,
+        revise: impl FnOnce(&mut Value) -> Result<(), Refusal>,
+    ) -> Result<Value, Refusal> {
         let mut documents = std::collections::BTreeMap::<String, Document>::new();
         let previous = item.status.as_str();
         let new_status = fields
@@ -199,9 +223,10 @@ impl Writer {
         let status_changed = previous != new_status;
         let to_top = fields["top"].as_bool() == Some(true);
         let stamp = json!({"at":now,"by":who});
-        if let Some(source) = item.source() {
+        if let Some(source) = row.get("source") {
             let display = source["ref"].as_str().unwrap_or_default();
-            let name = format!("{display} \"{}\"", item.title);
+            let title = row["title"].as_str().unwrap_or(&item.title);
+            let name = format!("{display} \"{title}\"");
             if fields.get("title").is_some()
                 || fields.get("body").is_some()
                 || fields.get("removeInlineImages").is_some()
