@@ -98,10 +98,26 @@ fn receipt_path(engine: &Engine, session: &str, id: &str) -> PathBuf {
 }
 
 fn disk_failure(error: io::Error) -> Refusal {
+    if let Some(refusal) = queue::format_refusal(&error) {
+        return refusal;
+    }
     Refusal::new(
         StatusCode::SERVICE_UNAVAILABLE,
         format!("This computer couldn’t save the message receipt: {error}"),
     )
+}
+
+fn waiting_failure(form: Form, error: io::Error) -> Refusal {
+    match form {
+        Form::Send => disk_failure(error),
+        Form::Add => queue::format_refusal(&error).unwrap_or_else(|| {
+            eprintln!("Saving a waiting message: {error}");
+            Refusal::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "This computer couldn’t save the message. Try sending it again.",
+            )
+        }),
+    }
 }
 
 fn engine_busy() -> Refusal {
@@ -363,6 +379,20 @@ async fn deliver(
         return Ok(answer.value.clone());
     }
     let interrupted = saved.is_some();
+    // Resolve a new send before inspecting its attachment capabilities. Those
+    // extra reads are optional and have their own shorter deadline.
+    let lease = if saved.is_none()
+        && !engine
+            .queues
+            .get(session)
+            .await
+            .map_err(disk_failure)?
+            .contains(&arrival.id)
+    {
+        Some(delivery_target(engine, session, arrival.form).await?)
+    } else {
+        None
+    };
     let mut receipt = match saved {
         Some(receipt) => receipt,
         None => Receipt {
@@ -384,21 +414,10 @@ async fn deliver(
     let mut delivered = false;
     let mut answer = json!({});
     if !admitted {
-        let lease = api::start(engine).await?;
-        let route = sessions::path(session);
-        match engine
-            .call::<Value>(&lease, Method::GET, &route, None)
-            .await
-        {
-            Ok(_) => {}
-            Err(error) if error.missing() => {
-                return Err(Refusal::new(
-                    StatusCode::NOT_FOUND,
-                    "There's no such conversation here.",
-                ));
-            }
-            Err(_) => return Err(engine_busy()),
-        }
+        let lease = match lease {
+            Some(lease) => lease,
+            None => delivery_target(engine, session, request.form).await?,
+        };
         if interrupted {
             delivered = queue::reached(engine, &lease, session, id)
                 .await
@@ -409,6 +428,13 @@ async fn deliver(
                 .map_err(disk_failure)?;
         }
         if !delivered {
+            let inbox = if request.before.is_some() {
+                queue::inbox(engine, &lease, session)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             admitted = engine
                 .queues
                 .keep(
@@ -417,9 +443,10 @@ async fn deliver(
                     request.words.as_deref(),
                     request.from.clone(),
                     request.before.as_deref(),
+                    &inbox,
                 )
                 .await
-                .map_err(disk_failure)?;
+                .map_err(|error| waiting_failure(request.form, error))?;
             if !admitted {
                 let mut prompt = request.prompt.clone();
                 if arriving {
@@ -428,12 +455,27 @@ async fn deliver(
                 answer = post(engine, &lease, session, &prompt).await?;
                 delivered = true;
                 engine.queues.notify();
-                if request.immediate && !arriving {
-                    let _ = queue::advance(engine, &lease, session, id, true).await;
+                if request.immediate
+                    && !engine
+                        .queues
+                        .get(session)
+                        .await
+                        .map_err(disk_failure)?
+                        .arriving(id)
+                {
+                    let _ = queue::advance(engine, &lease, session, id, queue::Advance::Now).await;
                 }
             }
         }
-        if delivered && arriving {
+        if delivered
+            && (arriving
+                || engine
+                    .queues
+                    .get(session)
+                    .await
+                    .map_err(disk_failure)?
+                    .arriving(id))
+        {
             queue::hold_arrival(engine, &lease, session, id)
                 .await
                 .map_err(|_| engine_busy())?;
@@ -446,7 +488,7 @@ async fn deliver(
             .get(session)
             .await
             .map_err(disk_failure)?
-            .shown();
+            .shown(&engine.home);
         answer["waits"] = json!(admitted);
     } else if admitted {
         answer = json!({ "waits": true });
@@ -464,6 +506,28 @@ async fn deliver(
             .map_err(disk_failure)?;
     }
     Ok(answer)
+}
+
+async fn delivery_target(engine: &Engine, session: &str, form: Form) -> Result<Lease, Refusal> {
+    let lease = api::start(engine).await?;
+    if form == Form::Add {
+        queue::check_add_target(engine, &lease, session).await?;
+    } else {
+        match engine
+            .call::<Value>(&lease, Method::GET, &sessions::path(session), None)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if error.missing() => {
+                return Err(Refusal::new(
+                    StatusCode::NOT_FOUND,
+                    "There's no such conversation here.",
+                ));
+            }
+            Err(_) => return Err(engine_busy()),
+        }
+    }
+    Ok(lease)
 }
 
 async fn apply(

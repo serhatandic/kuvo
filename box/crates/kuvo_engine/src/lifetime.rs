@@ -47,11 +47,25 @@ pub enum State {
 pub struct Engine {
     pub(crate) upstream: Upstream,
     pub(crate) context_windows: crate::context::Windows,
+    pub(crate) catalogs: crate::models::CatalogCache,
     pub(crate) home: PathBuf,
     pub(crate) account_home: PathBuf,
     pub(crate) queues: crate::queue::QueueStore,
+    pub(crate) attachment_expiry: crate::attachments::Expiry,
+    pub(crate) tool_words: std::sync::Arc<crate::conversation::tool_words::ToolWords>,
+    pub(crate) attachment_source: Option<std::sync::Arc<dyn crate::AttachmentSource>>,
+    pub(crate) legacy_attachments: Option<PathBuf>,
+    pub(crate) agent_models: Option<std::sync::Arc<dyn crate::AgentModelSource>>,
+    pub(crate) model_stars: Option<std::sync::Arc<dyn crate::ModelStarSource>>,
+    pub(crate) external_asks: Option<std::sync::Arc<dyn crate::ExternalAsks>>,
+    pub(crate) ownership: Option<std::sync::Arc<dyn crate::SessionOwnership>>,
+    pub(crate) peer_waiting:
+        Option<tokio::sync::watch::Receiver<std::sync::Arc<Vec<crate::PeerWaiting>>>>,
+    pub(crate) raw_prompts: crate::raw_prompts::RawPrompts,
+    pub(crate) receipt_index: crate::receipt_index::ReceiptIndex,
     pub(crate) message_clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
     turns: Turns,
+    pub(crate) submission_turns: Turns,
     pub(crate) draft_turns: Turns,
     pub(crate) decision_writer: std::sync::Arc<tokio::sync::Semaphore>,
 
@@ -60,27 +74,7 @@ pub struct Engine {
     state: watch::Receiver<State>,
 }
 
-#[derive(Clone)]
-pub(crate) struct Turns(std::sync::Arc<[tokio::sync::Semaphore; 64]>);
-
-impl Turns {
-    pub(crate) fn new() -> Self {
-        Self(std::sync::Arc::new(std::array::from_fn(|_| {
-            tokio::sync::Semaphore::new(1)
-        })))
-    }
-
-    pub(crate) async fn acquire(&self, session: &str) -> tokio::sync::SemaphorePermit<'_> {
-        // A stable stripe within this engine ensures writers of one session run in order.
-        let hash = session.bytes().fold(0usize, |hash, byte| {
-            hash.wrapping_mul(31).wrapping_add(usize::from(byte))
-        });
-        self.0[hash % self.0.len()]
-            .acquire()
-            .await
-            .expect("the engine's turns stay open")
-    }
-}
+pub(crate) use crate::turns::Turns;
 
 pub(crate) struct Lease {
     pub record: Record,
@@ -116,10 +110,14 @@ enum Command {
 
 impl Engine {
     pub fn new(home: PathBuf, env: Environment, timing: Timing) -> io::Result<Self> {
+        crate::notes::clear_stale(&home);
         let account_home = kuvo_os::platform::Account::current()
             .and_then(|account| account.home_folder(kuvo_os::platform::Platform::current(), &env))
             .unwrap_or_default();
         let upstream = Upstream::new().map_err(io::Error::other)?;
+        let tool_words = std::sync::Arc::new(
+            crate::conversation::tool_words::ToolWords::new().map_err(io::Error::other)?,
+        );
         let version = launch::pinned_version();
         let (commands, inbox) = mpsc::unbounded_channel();
         let initial = if home.join("run/stopped").exists() {
@@ -149,10 +147,23 @@ impl Engine {
         Ok(Self {
             upstream,
             turns: Turns::new(),
+            submission_turns: Turns::new(),
             draft_turns: Turns::new(),
             decision_writer: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
             context_windows: crate::context::Windows::open(&home),
+            catalogs: crate::models::CatalogCache::new(),
             queues: crate::queue::QueueStore::open(&home),
+            attachment_expiry: Default::default(),
+            tool_words,
+            attachment_source: None,
+            legacy_attachments: None,
+            agent_models: None,
+            model_stars: None,
+            external_asks: None,
+            ownership: None,
+            peer_waiting: None,
+            raw_prompts: crate::raw_prompts::RawPrompts::start(),
+            receipt_index: crate::receipt_index::ReceiptIndex::start(&home),
             message_clock: Default::default(),
             home,
             account_home,
@@ -162,7 +173,7 @@ impl Engine {
         })
     }
 
-    pub(crate) async fn turn(&self, session: &str) -> tokio::sync::SemaphorePermit<'_> {
+    pub(crate) async fn turn(&self, session: &str) -> crate::turns::Turn {
         self.turns.acquire(session).await
     }
 

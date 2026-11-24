@@ -81,15 +81,34 @@ pub async fn run(
     )
     .await?;
     let authority = setup.handle();
-    let ownership = kuvo_peers::ownership::Handle::new(
+    let owners = kuvo_peers::ownership::Handle::new(
         peers.reader(),
         peers.relay_handle(),
         devices.clone(),
         move || authority.ownership_state(),
     );
-    peers.attach_moves(engine.clone(), ownership).await?;
+    peers.attach_moves(engine.clone(), owners.clone()).await?;
     let peers = Arc::new(peers);
     peers.follow_setup_roster(setup.handle().rosters()).await;
+    let identity = kuvo_os::platform::Account::current()?;
+    let account = identity.home_folder(
+        kuvo_os::platform::Platform::current(),
+        &std::env::vars_os().collect(),
+    )?;
+    let vault = kuvo_services::vault::Resident::new(
+        home,
+        kind == ComputerKind::Mac,
+        vault_launch,
+        account.clone(),
+        &identity.home,
+        vault_machine,
+    );
+    let engine = engine
+        .with_session_ownership(Arc::new(super::session_ownership::OwnerPort(
+            owners.clone(),
+        )))
+        .with_model_stars(Arc::new(super::model_stars::SetupStars(setup.handle())))
+        .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let mut routes = Registry::new();
     if kind == ComputerKind::Machine {
         let setup = setup.handle();
@@ -113,12 +132,32 @@ pub async fn run(
     let sessions = engine.register_with_merged_pages(&mut routes, move |project, shown, step| {
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
+    let owner_requests = tokio::spawn(super::session_ownership::serve(
+        owners,
+        engine.clone(),
+        sessions.clone(),
+    ));
+    peers.advertise_engine_submissions().await?;
+    let accepted = setup.handle();
+    let memory =
+        kuvo_peers::memory_read::Handle::new(peers.reader(), peers.relay_handle(), move || {
+            accepted.ownership_state().id
+        });
+    let search_engine = engine.clone();
+    let memory_reads =
+        memory.serve(move |_, read| super::setup_search::answer(search_engine.clone(), read));
+    engine.register_setup_search(
+        Arc::new(super::setup_search::SetupSearch {
+            peers: peers.reader(),
+            reads: memory,
+        }),
+        &mut routes,
+    );
+    if memory_reads.is_some() {
+        peers.advertise_conversation_search().await?;
+    }
     setup.handle().register(&mut routes);
     setup.handle().register_ssh(&mut routes, home);
-    let account = kuvo_os::platform::Account::current()?.home_folder(
-        kuvo_os::platform::Platform::current(),
-        &std::env::vars_os().collect(),
-    )?;
     kuvo_services::files::register(
         &mut routes,
         kuvo_services::files::Places {
@@ -151,14 +190,6 @@ pub async fn run(
             })
         }
     });
-    let vault = kuvo_services::vault::Resident::new(
-        home,
-        kind == ComputerKind::Mac,
-        vault_launch,
-        account.clone(),
-        &kuvo_os::platform::Account::current()?.home,
-        vault_machine,
-    );
     vault.register(&mut routes);
     #[cfg(target_os = "macos")]
     if kind == ComputerKind::Mac {
@@ -235,10 +266,16 @@ pub async fn run(
         })
         .await;
     session_source.abort();
+    owner_requests.abort();
+    if let Some(memory_reads) = memory_reads {
+        memory_reads.abort();
+        let _ = memory_reads.await;
+    }
     if let Some(holder) = vault_holder {
         holder.shutdown().await;
     }
     let _ = session_source.await;
+    let _ = owner_requests.await;
     drop(daily_backups);
     drop(backup_receiver);
     drop(setup);
@@ -283,6 +320,7 @@ fn info(
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
+    features.push(kuvo_peers::memory_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
     if permits_pairing {
         features.push("devices.pair");
