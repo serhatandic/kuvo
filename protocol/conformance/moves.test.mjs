@@ -57,8 +57,10 @@ test("a third computer sees a move until the other computer announces it is over
   const observer = await computer("observer");
   const sender = await computer("sender");
   const other = await computer("other-party");
-  const { main, spare } = seedPeerSetup(sender.home, relay.url, 1, 3);
-  seedPeerSetup(observer.home, relay.url, 2, 3);
+  const { main, member, spare } = seedPeerSetup(sender.home, relay.url, 1, 3);
+  const { save } = seedPeerSetup(observer.home, relay.url, 2, 3);
+  save("run/peer-reach.json", { [spare.key]: Date.now() - 3600_000 });
+  save("run/peer-reach-checked.json", { [spare.key]: Date.now() });
   seedPeerSetup(other.home, relay.url, 3, 3);
   const journal = path.join(sender.home, "run/moves/mov_shown.json");
   const movement = {
@@ -68,12 +70,22 @@ test("a third computer sees a move until the other computer announces it is over
   write(journal, JSON.stringify({ ...movement,
     formatVersion: 1, peer: spare.key, started: Date.now(), complete: true, setUpAt: Date.now(),
   }));
-  const [resident, sending] = await Promise.all([observer.start().ready(), sender.start().ready()]);
+  const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
+  const held = [];
+  const release = relay.intercept(from, to, packet => { held.push(packet); return true; });
+  t.after(release);
+  const sending = await sender.start().ready();
+  await until(() => relay.has(from), "The computer with the first snapshot did not connect");
+  const resident = await observer.start().ready();
   const listing = async record => {
     const answer = await request(record, "GET", "kuvo/moves");
     assert.equal(answer.status, 200, answer.text);
     return answer.json;
   };
+  const pending = await listing(resident);
+  assert.deepEqual(pending.pendingComputers.map(each => each.id), [main.key]);
+  release();
+  for (const packet of held) relay.replay(packet);
   const seen = await until(async () => (await listing(resident)).elsewhere, "The other computer did not announce the move", 18000);
   assert.deepEqual(seen, [{ box: main.key, moves: [{
     ...movement, place: spare.name, progress: "Moving to Studio…",
@@ -607,6 +619,8 @@ test("a destination reports the same held copy and refuses an unknown arrival", 
   const ask = await moveMail(t, relay, main);
   const id = "mov_recordedArrival", unknown = "mov_unknownArrival";
   const session = "ses_recordedArrival", hash = "A".repeat(43);
+  const older = "mov_olderSwitch";
+  save("run/moves/ended.json", { [older]: { as: "switched", at: Date.now() - 8 * 86400_000, peer: member.key } });
   save("run/moves/" + id + ".json", {
     formatVersion: 1, id, thing: session, name: "Notes", kind: "chat", from: member.key,
     to: main.key, peer: member.key, role: "to", stage: "copying", sessions: [session],
@@ -621,6 +635,8 @@ test("a destination reports the same held copy and refuses an unknown arrival", 
   assert.equal(refused.op, "failed");
   assert.equal(refused.generation, 1);
   assert.equal(refused.hash, hash);
+  assert.deepEqual(await ask({ op: "switch", id: older, safeSwitch: true }),
+    { op: "switched", id: older });
 });
 
 test("a dropped copy stays held through an engine failure and a late switch", {

@@ -13,19 +13,20 @@ for addressed work and receipt lookup.
 |---|---|
 | Stored outcomes | A resident reads a held incoming copy, v0 journal and departure records, a successful v1 outcome, a legacy refusal, and a missing result through the move routes. Both residents run the same case. |
 | Old departure | The location route still leads to the owner after the v0 departure stops being advertised. Both residents run the same case. |
-| Other computers | A third computer sees both parties' authenticated projections and receives their successive removals on the move event stream. Both residents run the same case. |
+| Other computers | A third computer distinguishes a connected computer whose first move snapshot is pending from a known away computer. It sees both parties' authenticated projections and receives their successive removals on the move event stream. Both residents run the same case. |
 | Newer departure | The location route and a letter addressed to the previous computer follow a newer peer announcement after a move. The location falls back to the durable departure after expiry and keeps a local conversation at home. |
 | Live transfer | Two Rust residents move a chat, its child, a paused queue, an ordinary note and a replay fence in each direction between the main computer and a member. The former computer's outbox still names its old owner. The letter reaches the new owner once. The TypeScript reference runs the same transfer and checks the records it leaves. |
 | Lost part, arrival and switch replies | The relay holds the live Rust transfer's first packets for `check`, `checked`, `offer`, `ready`, `part`, `got`, `working`, `arrive`, `arrived`, `switch` and `switched`. The source resends the part whose acknowledgement was lost, and retries arrival after a minute. The destination restarts after committing the switch. The source reconnects and recovers the acknowledgement through its next scheduled switch retry. |
 | Interrupted import | The engine accepts the import but its reply is cut short by a destination restart. The destination deletes just that copy using the import receipt. The source keeps its original and reports failure. |
 | Partial copy | A restarted destination finishes the live transfer using the part it saved earlier. After a week an incomplete copy can be removed with a durable drop decision. A complete two-computer copy still waits for its switch decision. |
+| Replacement offer | Both residents let the same authenticated sender replace its incomplete copy under a new move ID, retain a durable drop decision for the old ID, and require an explicit drop of a complete copy before accepting its replacement. |
 | Import contention | Both residents preserve an unrelated local child after a failed lookup, a second conversation claiming the child's ID after preflight, or a lost import reply. Only their own staged imports are rolled back. |
 | Cleanup | A switched source that cannot export its backup retains the original while its receipt reports cleanup pending and location points at the destination. The next round respects the retry interval and the same resident cleans up once the interval elapses. Restart recovery was also exercised. A destination that cannot delete a dropped copy keeps it held, replays the same drop proof on a late switch, and cleans up once its engine accepts deletion. |
 | Waiting and recent requests | On the same live switch the source shows it is waiting for the destination after its reply is lost. A resident also drives a recent request recorded before its first check when it starts, while a second simultaneous request is refused. The live transfer imports children from both engine pages. |
 | Changing conversations | A live move rebuilds a bundle if a replay fence is saved after its first offer. Another move sees a new message on each offer, gives up after three offers, and leaves all four messages on the source. |
 | Retired backup | Only the destination starts the retention clock. The backup stays while a move back is in progress. Once that move is dropped, an expired backup stays recorded through a failed deletion and the next round retries it. A destination distinguishes the first local reply from a carried reply with a future timestamp. |
 | Unproven import | An authenticated drop sends proof that the source can stay active. Both residents keep an older incoming journal held when it has no evidence that its local session came from the move. |
-| Arrival query and size limit | Both residents answer an authenticated repeat with the held copy's generation and hash and report failure for an unknown copy. An offer one byte over 1 GB receives the size-limit refusal without opening a copy. |
+| Arrival query and size limit | Both residents answer an authenticated repeat with the held copy's generation and hash, report failure for an unknown copy and replay an eight-day-old switch receipt. An offer one byte over 1 GB receives the size-limit refusal without opening a copy. |
 | Archive links | Both residents refuse a linked manifest, a linked wake-up directory, a link outside that directory and a chain of links that would escape it. The destination keeps its own file private and unchanged and creates no conversation or wake-up directory. |
 | Destination checks | Both residents show the destination by name and mention a running turn in the move confirmation. They leave the original active after an unanswered check, an unavailable engine or a missing sign-in. A retry after sign-in moves the original. |
 | Background work | Both residents refuse a move while the source has a running background command. The source also checks children as it discovers them, and ignores background work past the six-hour reporting limit. |
@@ -33,6 +34,7 @@ for addressed work and receipt lookup.
 | Legacy wake-up hold | Both residents restore the saved pause in a failed v0 journal, remove an orphaned bare `moving` marker and retain a pause that names another move. |
 | Waited letter | Both residents identify the sender by its own announcement. The destination sends an answer after the engine reply. The original tool gets it through its saved letter ID and authenticated destination after the sender restarts with only the awaited record. |
 | Letter ordering and delivery recovery | Both residents send pending letters oldest first. A temporary lookup failure leaves the letter pending. Replaying the same letter after the destination restarts without receiving its engine's acceptance returns the receipt with one prompt ID and one saved message. |
+| Note addresses | Both residents learn session addresses from accepted notes, keep the newer address across a restart and send a pending note there. A redirect from the authenticated recipient is durable. A different computer's redirect is ignored. |
 | Tool that stopped waiting | Both residents deliver an ordinary letter without the wait, cancel an unsent transcript request, and deliver a reply that was left behind to the local conversation. Replaying a delivered letter starts no second turn, and an unlisted sender hears that it cannot receive a reply. |
 | Transcript read | Both residents retry a temporarily unavailable page, return excerpts to the waiting tool and skip an undone passage. Only the lead can read its archived work. The read submits no prompt. |
 | Late answer | A saved answer and a new answer from a local conversation wait while the caller is held. Both reach its new owner once. A transcript left by an abandoned read is discarded during the hold. |
@@ -118,8 +120,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Sixty have full scenario coverage, 21 have partial proof,
-and 131 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Sixty-one have full scenario coverage, 22 have partial proof,
+and 129 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -142,7 +144,7 @@ separately where they appear.
 | [moves-lanes](../../box/bridge-tests/moves-lanes.test.js) | 1–9 | Native transfer and attachment carry owned by 4.6, with bot placement in 5.1. |
 | [moves-lanes-races](../../box/bridge-tests/moves-lanes-races.test.js) | 1–5 | Native runtime proof belongs to 4.6 and 5.1. The shared comparisons and retry behavior remain open in 2.4 under moves-races. |
 | | 6–16 | Native carry and retained copies owned by 4.6, with bot placement in 5.1. |
-| [moves-races](../../box/bridge-tests/moves-races.test.js) | 9, 24, 26 | Partial, live activation and replay after a lost switch reply, unknown or mismatched proof, and durable drop are exercised. Automatic retry across the complete set of peer and wall-clock interruptions remains 2.4. |
+| [moves-races](../../box/bridge-tests/moves-races.test.js) | 9, 24 | Partial, live activation and replay after a lost switch reply, unknown or mismatched proof, and durable drop are exercised. Automatic retry across the complete set of peer and wall-clock interruptions remains 2.4. |
 | | 5 | Covered by the source ignoring a drop for another generation and releasing its original after the destination’s matching drop receipt. |
 | | 6 | Covered by a duplicate bundle part before activation and a delayed repeat afterward. There is one import and the same durable switch receipt. |
 | | 12 | Covered by a live destination refusing an offer over an existing chat and leaving its original unchanged. |
@@ -154,8 +156,10 @@ separately where they appear.
 | | 19 | Covered by a conversation location and a queued letter following its newer move announcement, with separate checks for expiry and a conversation still owned here. |
 | | 20 | Partial, switch recovery is exercised. Removal fencing remains 2.3 and 2.4. |
 | | 22 | Covered by a transient lookup error, a live conflict after preflight, and a lost import reply. Each rolls back only the move's own imports. |
+| | 26 | Covered by replay of a legacy switch receipt eight days old, after the announcement would have expired. |
 | | 27 | Covered by refusing a bundle that includes a local conversation, claims a different root, has an unrelated child, or contains a cycle. |
 | | 29 | Partial, an older computer that announces its features is refused by the move choices and start route. The unannounced legacy peer comparison remains 2.4 and 7.3. |
+| | 30 | Partial, the original sender can replace an incomplete copy. A complete copy on a managed setup requires an explicit drop. Replacing an older non-checkpointed copy while its engine import is still running remains 2.4. |
 | | 34 | Covered by a failed export keeping the original retired and reporting cleanup pending, followed by a successful retry on the same resident after its interval. |
 | | 31 | Covered by the live lost switch acknowledgement and by a restarted destination replying only with its durable decision. |
 | | 36 | Covered by the authenticated oversized offer, exact refusal and empty destination. |
@@ -168,7 +172,7 @@ separately where they appear.
 | | 48 | Covered by move choices that count a chat’s delegated work and unanswered questions, including a second level of work. |
 | | 53–54 | Native account fallback is owned by 4.6. Bot key handling is owned by 5.1 with native carry in 4.6. |
 | | 55 | Covered by refusing a running command before admission and when discovering an active child. |
-| | 1–4, 7–8, 10–11, 21, 23, 25, 30, 32, 35, 38, 40, 51 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
+| | 1–4, 7–8, 10–11, 21, 23, 25, 32, 35, 38, 40, 51 | Open, 2.4 transfer, retry, contention and cleanup. OpenCode import and queue effects depend on 3.2. Carry and agent retention depend on 4.6. |
 | [moves-recover](../../box/bridge-tests/moves-recover.test.js) | 5–7, 21 | Covered by the fresh arrival reply after a lost reply, the known and unknown arrival queries, an interrupted engine import and its rollback, and an older held copy without import ownership. |
 | | 10 | Partial, the resident drives a request saved just before its first check. Timing out the same class of request still stuck when no hold time was recorded remains 2.4. |
 | | 1–2, 4, 12 | Group hold, release and rollback owned by 5.3. |
@@ -184,7 +188,10 @@ separately where they appear.
 | | 13–14 | Open, 2.4 ordinary letters, notes and delayed delivery, including forwarding after a move. |
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) | 1–3 | Work Queue creation, forwarded claims and edits owned by 5.2. |
 | | 15–16 | Partial, the final move snapshot is rebuilt when a replay fence is saved after an offer. The destination preserves a settled decision and rolls back a conflicting handoff. Submission receipt lookup, page recovery and effects remain 2.4 and 3.2. |
-| | 9–14, 17–18 | Open, 2.4 owner observations, replay and handoff evidence. Session effects depend on 3.2. |
+| | 9–10, 17–18 | Open, 2.4 owner observations, indexed move preparation and receipt-page recovery. Session effects depend on 3.2. |
+| | 11 | Setup edit capacity and recovery belong to 2.1. |
+| | 12–13 | Attachment-only Work Queue edits and replay of scoped Work Queue mutations belong to 5.2. Pairing verification uses 2.2. |
+| | 14 | Interrupted native draft recovery belongs to 3.2 and 4.6. |
 | | 4–6 | Setup-owned, 2.1. See [setup coverage](rust-setup-coverage.md). |
 | | 7–8 | Covered by 2.2's Updating scenario for an announcement-only owner and a local session also claimed by a peer. |
 | [peers](../../box/bridge-tests/peers.test.js) | 34 | Covered by ignoring another computer’s refusal and delivering the authenticated owner’s refusal once after restarting with a pending note. |
@@ -196,7 +203,8 @@ separately where they appear.
 | | 6, 8, 10–14, 27, 29, 32 | Open, 2.4 letter handling through the resident. [2.2](rust-peers-coverage.md) proves parts of mail and outbox storage. |
 | [mac-peers](../../box/bridge-tests/mac-peers.test.js) | 11 | Partial, transcript mail has a live two-computer scenario. The calling tool’s route and name lookup remain 2.4. |
 | | 2–3, 6, 8, 10, 12 | Open, 2.4 letter handling and Mac peer policy. The linked peer map also covers wire pieces. |
-| [setup-lists](../../box/test/setup-lists.test.ts) | 16, 28 | Open, 2.4 real move projections alongside the relevant merged views in 2.2, 5.1 and 5.2. |
+| [setup-lists](../../box/test/setup-lists.test.ts) | 16 | Typed drafts, remote queue ordering and lost-effect receipts belong to 3.2, with authenticated transport from 2.2. |
+| | 28 | The 2.4 move projection is covered by the first snapshot pending and away states on the third computer. The other merged views belong to 2.2, 5.1 and 5.2. |
 | [reach-elsewhere](../../box/bridge-tests/reach-elsewhere.test.js) | 1, 3 | Open, 2.4 real move fixtures, with engine effects in 3.2. [2.2](rust-peers-coverage.md) proves the authenticated call transport. |
 | [reach-elsewhere-rules](../../box/bridge-tests/reach-elsewhere-rules.test.js) | 3–4, 11, 14 | Open, 2.4 switched sessions, letters, ancestry and returning results to a moved lead. The last two were numbered 10 and 13 before the stale snapshot scenario was added. |
 | [offline-merge](../../box/test/offline-merge.test.ts) | 4 | Open, refinement of an older note passage on the new owner in 2.4 and 3.2. |
