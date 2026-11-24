@@ -259,6 +259,17 @@ impl CannotUpdate {
 }
 
 impl ComputerFacts {
+    pub(crate) fn in_bridge_handoff(&self, bridge_version: &str) -> bool {
+        self.extra
+            .get("releaseTarget")
+            .and_then(Value::as_str)
+            .is_none()
+            && self
+                .kuvo
+                .as_deref()
+                .is_some_and(|version| version == "0.8.0-beta.48" || version == bridge_version)
+    }
+
     pub(crate) fn updates(&self) -> UpdateFacts {
         let text = |field| {
             self.extra
