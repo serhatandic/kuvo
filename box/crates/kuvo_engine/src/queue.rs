@@ -37,6 +37,8 @@ const ARRIVING_FOR: u64 = 120_000;
 mod handoff;
 mod limit;
 mod views;
+#[cfg(windows)]
+mod windows_socket;
 
 #[derive(Clone)]
 pub(crate) struct QueueStore {
@@ -700,7 +702,7 @@ pub(crate) async fn check_add_target(
             StatusCode::NOT_FOUND,
             "There's no such conversation here.",
         )),
-        Err(error) if error.connection_refused() => Err(Refusal::new(
+        Err(error) if inactive_socket(&error, lease.record.port).await => Err(Refusal::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "The engine isn't running.",
         )),
@@ -712,6 +714,22 @@ pub(crate) async fn check_add_target(
             }),
         )),
     }
+}
+
+async fn inactive_socket(error: &api::Error, port: u16) -> bool {
+    if error.connection_refused() {
+        return true;
+    }
+    #[cfg(windows)]
+    if matches!(error, api::Error::Transport(error) if error.is_timeout()) {
+        // Consult the listener table when WinSock did not report refusal
+        // before the request deadline. An existing listener can still be busy.
+        return tokio::task::spawn_blocking(move || windows_socket::closed(port))
+            .await
+            .unwrap_or(false);
+    }
+    let _ = port;
+    false
 }
 
 pub(crate) async fn snapshot(
