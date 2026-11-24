@@ -799,3 +799,127 @@ describe("Claude Code's permissions", { skip }, () => {
     await box.claude.idles(id);
   });
 });
+
+describe("Claude Code, instructions that changed as its conversation goes on", { skip }, () => {
+  const box = resident();
+  /** A message's words, without the block the reference's link adds for a phone. */
+  const words = text => text.replace(/\n\n<from-phone>[\s\S]*<\/from-phone>$/, "");
+  /** The session's last message as Claude Code was sent it. */
+  const lastSent = id => {
+    const pids = new Set(box.claude.heard().filter(line => line.type === "user" && words(line.message.content.findLast(part => part.type === "text")?.text ?? "").includes(id)).map(line => line.pid));
+    const sent = box.claude.heard().filter(line => line.type === "user" && pids.has(line.pid) && !line.isSynthetic);
+    return words(sent.at(-1).message.content.findLast(part => part.type === "text").text);
+  };
+  /** What started the Claude Code that took the session's last message. */
+  const started = id => {
+    const pid = box.claude.heard().filter(line => line.type === "user" && line.message.content.some(part => part.type === "text" && part.text.includes(id))).at(-1)?.pid;
+    return box.claude.heard().filter(line => line.pid === pid);
+  };
+  /** Kuvo Code's instructions for the session, as the box has them from its next start. */
+  async function instruct(id, entries) {
+    await box.claude.stop();
+    const file = path.join(box.claude.home, "agents/sessions", id, "agent.json");
+    const agent = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+    agent.kuvoInstructions = { ...agent.kuvoInstructions, ...entries };
+    for (const [key, value] of Object.entries(entries)) if (value === undefined) delete agent.kuvoInstructions[key];
+    write(file, JSON.stringify(agent));
+    await box.claude.start();
+  }
+  /** A message (naming its session, so its Claude Code is found), answered. */
+  async function answered(id, text, turns, steps) {
+    box.claude.script(`${text} ${id}`, steps ?? [result(["$UUID"])]);
+    await box.claude.prompt(id, `${text} ${id}`);
+    return box.claude.idles(id, turns);
+  }
+
+  test("moved to another folder, the conversation it goes on with is told what changed, once; unchanged, nothing extra", async () => {
+    const { id } = box.next();
+    await instruct(id, { "kuvo.worktree": "You work in the worktree at /old/place/tree." });
+    await answered(id, "first", 1);
+    // A new conversation has them as its instructions: no note.
+    assert.ok(JSON.stringify(started(id)).includes("/old/place/tree"));
+    assert.equal(lastSent(id), `first ${id}`);
+    // It moved (another computer, another folder), and the box started again there.
+    await instruct(id, { "kuvo.worktree": "You work in the worktree at /new/place/tree.", "kuvo.moved": "You moved to this computer from the Old Mac." });
+    await answered(id, "second", 2);
+    // The same conversation, which keeps the instructions it started with: what changed goes with the message.
+    assert.ok(started(id).find(line => line.argv)?.argv.some(arg => arg.startsWith("--resume")));
+    const told = lastSent(id);
+    assert.ok(told.includes("/new/place/tree"), told);
+    assert.ok(told.includes("You moved to this computer from the Old Mac."), told);
+    assert.match(told, /Replaced or taken out:\s+You work in the worktree at \/old\/place\/tree\./);
+    assert.ok(told.endsWith(`\n\nsecond ${id}`), told);
+    // Unchanged since: nothing more.
+    await answered(id, "third", 3);
+    assert.equal(lastSent(id), `third ${id}`);
+  });
+
+  test("a conversation from before Kuvo Code kept what it was told hears its instructions as they are now, once", async () => {
+    const { id } = box.next();
+    await instruct(id, { "kuvo.moved": "You moved to this computer from the Old Mac." });
+    await answered(id, "first", 1);
+    // As a conversation kept by an older bridge: it has no word of what it was told.
+    await box.claude.stop();
+    const file = path.join(box.claude.home, "agents/sessions", id, "agent.json");
+    const agent = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const slot of Object.values(agent.threads ?? {})) delete slot.state?.claudeTold;
+    delete agent.claudeTold;
+    write(file, JSON.stringify(agent));
+    assert.ok(!fs.readFileSync(file, "utf8").includes("claudeTold"));
+    await box.claude.start();
+    await answered(id, "second", 2);
+    assert.ok(lastSent(id).includes("You moved to this computer from the Old Mac."));
+    assert.ok(lastSent(id).endsWith(`\n\nsecond ${id}`));
+    await answered(id, "third", 3);
+    assert.equal(lastSent(id), `third ${id}`);
+  });
+
+  test("changed while Claude Code runs: a command you type goes as typed, and the next message says what changed", async () => {
+    const { id } = box.next();
+    await answered(id, "first", 1);
+    // Its worktree changed: it starts again, going on with the same conversation.
+    await instruct(id, { "kuvo.worktree": "You work in the worktree at /a/tree." });
+    box.claude.script("/review", [result(["$UUID"])]);
+    await box.claude.prompt(id, "/review");
+    await box.claude.idles(id, 2);
+    const typed = box.claude.heard().filter(line => line.type === "user").at(-1);
+    assert.equal(words(typed.message.content.findLast(part => part.type === "text").text), "/review");
+    assert.ok(box.claude.heard().find(line => line.argv && line.pid === typed.pid).argv.some(arg => arg.startsWith("--resume")));
+    await answered(id, "go on", 3);
+    assert.ok(lastSent(id).includes("You work in the worktree at /a/tree."));
+    assert.ok(lastSent(id).endsWith(`\n\ngo on ${id}`));
+  });
+
+  // (Its first half, a message Claude Code never took because it quit, depends on the line
+  // handing that message over again after the exit: 4.1b's retry of missed messages.)
+  test("a message Claude Code took and failed on: what changed isn't said again", async () => {
+    const { id } = box.next();
+    await answered(id, "first", 1);
+    await instruct(id, { "kuvo.project-folders": "The project's other folder is /elsewhere." });
+    // It takes it, and fails on it (Claude's API overloaded).
+    const rows = await answered(id, "second", 2, [result(["$UUID"], "error_during_execution", { result: "Overloaded" })]);
+    assert.ok(lastSent(id).includes("/elsewhere"));
+    // The reference's SDK closes Claude Code on an error result, so there the turn ends as that
+    // exit and the line hands the message over again (4.1b): the rest is the Rust resident's, whose
+    // Claude Code goes on and fails the turn in Claude's words, as the reference adapter's test has it.
+    if (boxBinary().typescript) return assertMatch(idles(rows)[1], { outcome: "interrupted", reason: "agent-exit" });
+    assertMatch(idles(rows)[1], { outcome: "failed", error: { message: "Overloaded" } });
+    await answered(id, "third", 3);
+    assert.equal(lastSent(id), `third ${id}`);
+  });
+
+  test("once Claude Code summarized its conversation, what it has is what it was started with: nothing more to say", async () => {
+    const { id } = box.next();
+    await answered(id, "first", 1);
+    await instruct(id, { "kuvo.worktree": "You work in the worktree at /b/tree." });
+    // Your command, as typed, and Claude Code summarizes.
+    box.claude.script("/compact", [
+      { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 100 }, parent_tool_use_id: null },
+      result(["$UUID"]),
+    ]);
+    await box.claude.prompt(id, "/compact");
+    await box.claude.idles(id, 2);
+    await answered(id, "after", 3);
+    assert.equal(lastSent(id), `after ${id}`);
+  });
+});

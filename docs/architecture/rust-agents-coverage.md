@@ -570,7 +570,7 @@ The two rows expanded from the bot and session steering loop count separately.
 | 104–109 | Ported to [agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs) on both boxes. After Stop, the reference bridge under its holder starts Claude Code again, while its own test expects the same process to take the next message. Rust does that, and only Rust checks it. |
 | 110–114 | Ported to agents-claude-turns on both boxes, with a refusal for a conversation Claude Code hasn't started. |
 | 115–122 | Ported to agents-claude-turns on both boxes, except the `session.compaction.*` events, which the conformance cases don't read. |
-| 123–127 | 4.4b notices and one-time instruction updates. 4.6 owns carry and handover. |
+| 123–127 | Ported to agents-claude-turns on both boxes: what changed in its instructions is said once, ahead of the next message Claude Code takes, never ahead of a command you type, and not after it summarized. In 126 the reference's SDK closes Claude Code on an error result, so its turn ends as that exit and the line hands the message over again (4.1b). The Rust resident's Claude Code goes on and fails the turn, as the reference adapter's own test expects, and only Rust checks what follows. Its half for a message Claude Code never took, because it quit, waits on 4.1b's retry of missed messages. 4.6 owns carry and handover. |
 | 128–131 | 4.4b credential attribution and generation fences. 5.4 owns the account's gathered usage and limits. |
 | 132–136 | 4.6 subagent definition and policy projection, with 6.1 for Agents settings. |
 
