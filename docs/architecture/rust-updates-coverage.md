@@ -52,6 +52,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U36 | A signed Linux install starts an answering keeper with earlier staging that cannot be deleted. The installer moves the staging out of the active path, reports success, and a later status check identifies the installed machine. The Rust cases passed on native Linux and WSL2, and the matching TypeScript case passed on WSL2. |
 | U37 | The Linux installer reopens its saved journal at each publication boundary. Recovery keeps earlier work and conversations in one archive, keeps the already staged engine, publishes the selected signed release, and starts the keeper. Native Linux and WSL2 passed after archival began, after the engine moved, and after publication before startup. |
 | U38 | With the feed unavailable, the main pulls a known signed release from an ahead member. The relay holds parts while both computers report the same accepted fraction and wording. Replaying already accepted parts leaves the count unchanged. The main confirms the release after the remaining parts arrive. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U39 | A member reports the signed release it is trying while its previous release remains current. Neither computer accepts a retry for that trial. A three-minute relay gap keeps the switching row, and the saved last-heard time appears when the ten-minute restart window expires. Passed on Mac, native Linux, WSL2, and native Windows. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -309,10 +310,10 @@ or desktop updater, and 19 are open. The inherited and live-proof table has
 | Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover retryable failure rows. U34 covers getting ready, ready, switching, off and up to date. Reporting an unfixable preparation refusal remains open. | 7.2 |
 | Same, pull progress never moves back | Partial. U38 checks local and peer progress and duplicate delivery. A second peer after a timed-out transfer still needs a binary scenario. | 7.2 |
 | Same, member asks main to check | Covered by U20. | — |
-| [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | Partial. U34 checks the signed trial boundary and the ready, switching, and confirmed wordings. Exact restart grace and expiry through relay remain open. | 7.2 |
+| [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | Partial. U34 checks preparation through confirmation, and U39 checks a signed trial reported over relay, a quiet restart, and expiry past the restart window. A ready computer that goes quiet before reporting a trial and a brief gap during preparation still need binary proof. | 7.2 |
 | Same, local box says it is switching and ready reads separately from done | Covered by U34. | — |
 | Same, preparation fraction is visible in local and peer rows | Covered by U38. | — |
-| Same, off row reports when it was last heard from | Partial. U34 checks one never heard from. Exact seen-time wordings remain open. | 7.2 |
+| Same, off row reports when it was last heard from | Partial. U34 checks one never heard from, and U39 checks the timestamp and minutes-ago wording after the quiet restart window. The remaining time ranges still need binary proof. | 7.2 |
 | Same, notifier stays while restarting, phases and words, ten-minute settled display | U35 covers the live summary and saved settlement across restart. The exact peer restart grace remains part of the reach cases above. | 7.2 |
 | Same, verified kept pack is announced | Partial. U8–U9 cover signed manifest selection, prepared facts, and authenticated delivery from a new main. The kept-pack announcement boundary remains open. | 7.2 |
 | [own-home-mac-serve-update](../../box/bridge-tests/own-home-mac-serve-update.test.js), separate judge and trial cleanup | Open. | 7.2 |

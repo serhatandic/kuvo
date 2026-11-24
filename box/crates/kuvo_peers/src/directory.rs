@@ -353,6 +353,7 @@ impl<'de> Deserialize<'de> for ComputerFacts {
                         | "layout"
                         | "installedSha256"
                         | "staged"
+                        | "switching"
                         | "receiving"
                         | "cannot"
                         | "candidate"
