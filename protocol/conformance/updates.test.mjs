@@ -362,6 +362,15 @@ test("the main can ask a reachable member to retry its failed fleet download", {
   const release = `versions/${version}-${hash.slice(0, 12)}`;
   write(path.join(main.home, release, "boxes.json"), signed);
   write(path.join(main.home, "active-release"), `${release}/bin`);
+  const row = await until(async () => {
+    const answer = await request(first, "GET", "kuvo/computers");
+    return answer.status === 200 && answer.json.computers.find(row => row.key === key)?.fleetUpdate;
+  }, "the member row must show the signed failure");
+  assert.deepEqual(row, {
+    current: "0.8.0-beta.1", target: version, targetSha256: hash, state: "cannot",
+    reason: peerFailure.reason, fixable: true, canRetry: true,
+    line: { words: `beta.1 · ${peerFailure.reason}`, tone: "warning", short: "Can’t update" },
+  });
   const stale = await request(first, "POST", "kuvo/update/retry", { target: version, targetSha256: digest("older offer"), key });
   assert.equal(stale.status, 409, stale.text);
   const retry = await request(first, "POST", "kuvo/update/retry", { target: version, targetSha256: hash, key });

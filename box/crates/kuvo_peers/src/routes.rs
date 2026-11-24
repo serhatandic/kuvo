@@ -506,6 +506,9 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
             Reach::Connected
         };
         let mut row = computer_row(id, peer.name.clone(), reach, Via::Relay, false, &here.name);
+        if reach != Reach::Away {
+            row.fleet_update = view.peer_update_row(&peer.key).cloned();
+        }
         row.address = peer.address.as_ref().map(|address| encode(address));
         row.relay = view.endpoint.as_ref().map(|endpoint| endpoint.url.clone());
         if peer.kind == crate::session::ComputerKind::Mac {

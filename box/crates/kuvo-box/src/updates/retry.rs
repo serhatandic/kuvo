@@ -4,7 +4,7 @@ use std::io;
 
 use http::StatusCode;
 use kuvo_keeper::fleet::{self, Candidate};
-use kuvo_peers::directory::{CannotUpdate, PreparedRelease};
+use kuvo_peers::directory::{CannotUpdate, PreparedRelease, UpdateFacts};
 use kuvo_protocol::routes::post_kuvo_update_retry as route;
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use kuvo_store::{files, home::Home};
@@ -106,6 +106,20 @@ fn file_error(error: io::Error) -> Refusal {
     )
 }
 
+pub(super) fn signed_failure<'a>(
+    facts: &'a UpdateFacts,
+    candidate: &Candidate,
+) -> Option<&'a CannotUpdate> {
+    facts.cannot.as_ref().filter(|failure| {
+        failure.release.version == candidate.version()
+            && candidate.newer_than(facts.kuvo.as_deref())
+            && facts
+                .release_target
+                .as_deref()
+                .is_some_and(|target| candidate.matches_pack(target, &failure.release.sha256))
+    })
+}
+
 impl Fleet {
     pub(super) async fn retry(&mut self, given: Request) -> Result<Answer, Refusal> {
         let reader = self.peers.reader();
@@ -124,16 +138,8 @@ impl Fleet {
         })?;
         let (_, candidate) = self.retry_target(&given.target)?;
         let (away, facts) = view.peer_updates(&key, reader.now());
-        let failure = facts
-            .cannot
-            .filter(|failure| {
-                !away
-                    && failure.fixable
-                    && failure.release.version == candidate.version()
-                    && facts.release_target.as_deref().is_some_and(|target| {
-                        candidate.matches_pack(target, &failure.release.sha256)
-                    })
-            })
+        let failure = signed_failure(&facts, &candidate)
+            .filter(|failure| !away && failure.fixable)
             .ok_or_else(|| {
                 Refusal::new(
                     StatusCode::CONFLICT,
@@ -157,11 +163,10 @@ impl Fleet {
             .as_ref()
             .zip(peer.host())
             .ok_or_else(unavailable)?;
-        let answer = failure.row(facts.kuvo, facts.installed_sha256, false);
         mail.request_retry(&host, &failure.release)
             .await
             .map_err(|_| unavailable())?;
-        Ok(answer)
+        Ok(failure.row(facts.kuvo.clone(), facts.installed_sha256.clone(), false))
     }
 
     pub(super) fn retry_local(
