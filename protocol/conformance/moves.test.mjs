@@ -1174,6 +1174,49 @@ test("the source keeps a conversation whose wake-up folder is too large to move"
   assert.equal(fs.existsSync(path.join(there.home, "run/moves", id + ".json")), false);
 });
 
+test("a move recovers when every part in its first window is lost", {
+  timeout: 75000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("lost-window-source"), there = await computer("lost-window-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const session = "ses_lostInitialWindow", directory = path.join(here.home, "chats");
+  fs.mkdirSync(directory, { recursive: true });
+  here.engine.sessions.push(sessionOf({ id: session, title: "Long conversation", directory }));
+  const bytes = Buffer.concat(Array.from({ length: 18_000 }, (_, index) => createHash("sha256").update(String(index)).digest()));
+  here.engine.messages.set(session, [{ id: "msg_lostWindow", type: "user", text: bytes.toString("base64"),
+    content: [{ type: "text", text: bytes.toString("base64") }] }]);
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const first = new Set(), retries = [];
+  const a = Buffer.from(main.address, "base64url"), b = Buffer.from(member.address, "base64url");
+  const receiver = Buffer.alloc(32, 2), sender = Buffer.from(main.key, "base64url");
+  t.after(relay.intercept(a, b, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const move = JSON.parse(openOneWay(packet.payload.subarray(5), receiver, sender).payload).move;
+    if (move?.op !== "part") return false;
+    if (first.size < 16 && !first.has(move.i)) {
+      first.add(move.i);
+      return true;
+    }
+    if (first.has(move.i)) retries.push(move.i);
+    return false;
+  }));
+  const source = here.start(), destination = there.start();
+  const [resident] = await Promise.all([source.ready(), destination.ready()]);
+  await readyToMove(resident, session, member);
+  const begun = await request(resident, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begun.status, 202, begun.text);
+  await until(() => first.size === 16, "The source did not fill the first window");
+  assert.equal(there.engine.sessions.length, 0);
+  await until(() => retries.length >= 8, "The source did not retry its lost parts", 30000);
+  assert.deepEqual(retries.slice(0, 8), [0, 1, 2, 3, 4, 5, 6, 7]);
+  await moveRetired(here, begun.json.move.id, () => source.log() + "\n" + destination.log());
+  const outcome = await request(resident, "GET", "kuvo/moves/receipt?id=" + begun.json.move.id);
+  assert.equal(outcome.json?.state, "done", outcome.text);
+  assert.equal(there.engine.messages.get(session)[0].text, bytes.toString("base64"));
+});
+
 test("a one-part move waits for the acknowledgement of part zero", {
   timeout: 45000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
@@ -2562,6 +2605,68 @@ test("an answer left by a tool reaches the new owner once", {
   assert.equal(replies[0].text, `[Message from Ada · ${responder}] (To answer, use send_message to ${responder}.)\n\n${localAnswer}`);
   assert.equal(here.engine.messages.has(session), false);
   assert.ok(!fs.existsSync(reply + ".gaveup"));
+});
+
+test("a missing or unreadable queued payload leaves the conversation on its source", {
+  timeout: 55000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("queue-payload-source"), there = await computer("queue-payload-target");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  seedPeerSetup(there.home, relay.url, 2);
+  const directory = path.join(here.home, "chats");
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
+  const a = Buffer.from(main.address, "base64url"), b = Buffer.from(member.address, "base64url");
+  const key = peer => Buffer.from(peer.key, "base64url");
+  const moveFrom = (packet, peer, seed) => packet.payload[0] === Frame.mail &&
+    JSON.parse(openOneWay(packet.payload.subarray(5), Buffer.alloc(32, seed), key(peer)).payload).move;
+  let frames, alter, selected;
+  t.after(relay.intercept(a, b, packet => {
+    const move = moveFrom(packet, main, 2);
+    if (move) frames.push(move.op);
+    return false;
+  }));
+  t.after(relay.intercept(b, a, packet => {
+    if (alter && moveFrom(packet, member, 1)?.op === "arrived") {
+      fs.writeFileSync(selected, "This is not a queued payload.");
+      alter = false;
+    }
+    return false;
+  }));
+  frames = [];
+  const source = here.start(), destination = there.start();
+  const [resident] = await Promise.all([source.ready(), destination.ready()]);
+  for (const early of [true, false]) {
+    const id = early ? "ses_queuePayloadGone" : "ses_queuePayloadCorrupt";
+    const session = sessionOf({ id, title: "Queued move", directory, updated: Date.now() });
+    here.engine.sessions.push(session);
+    here.engine.emit({ type: "session.created", data: { sessionID: id, info: session } });
+    await readyToMove(resident, id, member);
+    const base = "kuvo/sessions/" + id, item = early ? "msg_deletedPayload" : "msg_corruptPayload";
+    const stopped = await request(resident, "POST", base + "/stop");
+    assert.equal(stopped.json?.paused, true, stopped.text);
+    const queued = await request(resident, "POST", base + "/queue/add", { id: item, text: "Keep this queued prompt." });
+    assert.equal(queued.json?.waits, true, queued.text);
+    selected = path.join(here.home, "run/waiting", item + ".json");
+    const original = fs.readFileSync(selected);
+    frames = [];
+    if (early) fs.unlinkSync(selected);
+    else alter = true;
+    try {
+      const begun = await request(resident, "POST", "kuvo/moves", { kind: "chat", id, to: member.key, receipt: true });
+      assert.equal(begun.status, 202, begun.text);
+      const outcome = await until(async () => {
+        const reply = await request(resident, "GET", "kuvo/moves/receipt?id=" + begun.json.move.id);
+        return reply.json?.state === "failed" && reply.json;
+      }, "The conversation was allowed to move with an unreadable queued payload", 15000);
+      assert.ok(outcome.message);
+      assert.deepEqual([frames.includes("offer"), frames.includes("switch")], [!early, false]);
+      assert.ok(here.engine.sessions.some(session => session.id === id));
+      assert.deepEqual((await request(resident, "GET", base + "/queue")).json.waiting.map(item => item.id), [item]);
+    } finally {
+      fs.writeFileSync(selected, original);
+    }
+  }
 });
 
 test("a managed attachment moves with both its typed references and its receipt", { timeout: 90000 }, async t => {
