@@ -249,11 +249,11 @@ impl LaunchAgent {
 
     pub fn ready(&self, home: &Home) -> io::Result<bool> {
         let program = home.bin().join(HELPER).join("Contents/MacOS/Kuvo Helper");
-        if !program.is_file() || !self.owns(&program) {
+        if home.run().join("paused").exists() || !program.is_file() || !self.owns(&program) {
             return Ok(false);
         }
         let service = format!("{}/{LABEL}", domain()?);
-        Ok(self.run(["print", &service])?.status.success())
+        Ok(job_running(&self.run(["print", &service])?) != Some(false))
     }
 
     fn owns(&self, program: &Path) -> bool {
@@ -453,18 +453,7 @@ pub fn command(home: &Home, args: &[std::ffi::OsString]) -> io::Result<u8> {
             tools.run(["print", &service]).ok()
         });
         let loaded = status.as_ref().map(|answer| answer.status.success());
-        let running = status.and_then(|answer| {
-            if !answer.status.success() {
-                return Some(false);
-            }
-            String::from_utf8_lossy(&answer.stdout)
-                .lines()
-                .find_map(|line| {
-                    line.trim()
-                        .strip_prefix("state = ")
-                        .map(|state| state == "running")
-                })
-        });
+        let running = status.as_ref().and_then(job_running);
         println!(
             "{}",
             json!({"helper":program.is_file(),"agent":owns,"loaded":loaded,"running":running,
@@ -548,6 +537,19 @@ fn domain() -> io::Result<String> {
     let uid = String::from_utf8_lossy(&uid.stdout);
     let uid: u32 = uid.trim().parse().map_err(io::Error::other)?;
     Ok(format!("gui/{uid}"))
+}
+
+fn job_running(answer: &Output) -> Option<bool> {
+    if !answer.status.success() {
+        return Some(false);
+    }
+    String::from_utf8_lossy(&answer.stdout)
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("state = ")
+                .map(|state| state == "running")
+        })
 }
 
 fn output(command: &mut Command) -> io::Result<Output> {
