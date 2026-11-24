@@ -41,9 +41,15 @@ pub struct Launch {
     host_vault_secret: Option<Secret>,
     #[serde(default)]
     vault_file_key: Option<Secret>,
+    #[serde(default)]
+    renews: bool,
 }
 
 impl Launch {
+    pub fn helper_renews(&self) -> bool {
+        self.renews
+    }
+
     pub fn read(reader: impl BufRead) -> std::io::Result<Self> {
         let mut bytes = Zeroizing::new(Vec::new());
         reader.take(16 * 1024).read_until(b'\n', &mut bytes)?;

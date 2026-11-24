@@ -75,6 +75,33 @@ struct ModelRef {
     id: String,
 }
 
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Wake {
+    Finished,
+    Asks,
+}
+
+fn wakes(given: &Value, by_bot: bool, waits: bool) -> Vec<Wake> {
+    [Wake::Finished, Wake::Asks]
+        .into_iter()
+        .filter(|wake| {
+            if given.is_null() {
+                return by_bot && (!waits || *wake != Wake::Finished);
+            }
+            if given == "both" {
+                return true;
+            }
+            if let Some(named) = given.as_array() {
+                return named
+                    .iter()
+                    .any(|name| Wake::deserialize(name).ok().as_ref() == Some(wake));
+            }
+            Wake::deserialize(given).ok().as_ref() == Some(wake)
+        })
+        .collect()
+}
+
 pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Registry) {
     let engine = engine.clone();
     routes.register::<start::Spec, _, _>(Access::Any, move |call| {
@@ -92,14 +119,12 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             .map_err(|error| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))??;
             // The reference includes the complete worktree record. The route
             // shape names only the fields desktop clients read.
-            let worktree = started
-                .as_object_mut()
-                .and_then(|started| started.remove("worktree"));
-            RouteReply::json_with::<200>(
-                sessions::typed(started)?,
-                worktree.map(|worktree| ("worktree", worktree)),
-            )
-            .map_err(|error| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+            let extras = ["worktree", "wakes"]
+                .into_iter()
+                .filter_map(|field| Some((field, started.as_object_mut()?.remove(field)?)))
+                .collect::<Vec<_>>();
+            RouteReply::json_with::<200>(sessions::typed(started)?, extras)
+                .map_err(|error| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
         }
     });
 }
@@ -510,6 +535,29 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         answer["computer"] = computer;
     }
     if let Some(task) = task {
+        let requested = parent.as_ref().map_or_else(Vec::new, |parent| {
+            wakes(
+                given.get("wake").unwrap_or(&Value::Null),
+                Path::new(parent.directory()).starts_with(engine.home.join("bots")),
+                wait,
+            )
+        });
+        let marked = if requested.is_empty() {
+            false
+        } else if let Ok(mut writer) = engine.note_writer(id).await {
+            writer
+                .edit(crate::NoteEdits {
+                    kuvo: [("wake".to_owned(), Some(json!(requested)))].into(),
+                    ..Default::default()
+                })
+                .await
+                .is_ok()
+        } else {
+            false
+        };
+        if marked {
+            answer["wakes"] = json!(requested);
+        }
         let text = parent.as_ref().map_or_else(
             || task.to_owned(),
             |parent| {
@@ -520,6 +568,8 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                 };
                 let note = if wait {
                     "They're waiting for your reply: just answer, in your words.".to_owned()
+                } else if marked && requested.contains(&Wake::Finished) {
+                    format!("They get your last reply when you finish: end with your report there, not in a message. Use send_message to {} only to ask something or say how it's going.", parent.id)
                 } else {
                     format!("To answer, use send_message to {}.", parent.id)
                 };
@@ -723,7 +773,7 @@ pub(crate) async fn git(folder: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-async fn linked_location(folder: &Path) -> Option<PathBuf> {
+pub(crate) async fn linked_location(folder: &Path) -> Option<PathBuf> {
     let folder = fs::canonicalize(folder).await.ok()?;
     let top = fs::canonicalize(git(&folder, &["rev-parse", "--show-toplevel"]).await?)
         .await
@@ -754,7 +804,12 @@ async fn linked_location(folder: &Path) -> Option<PathBuf> {
     if fs::canonicalize(private.join(backlink.trim())).await.ok()? != top.join(".git") {
         return None;
     }
-    Some(main.join(folder.strip_prefix(top).ok()?))
+    let nested = folder.strip_prefix(top).ok()?;
+    if nested.as_os_str().is_empty() {
+        Some(main.to_owned())
+    } else {
+        Some(main.join(nested))
+    }
 }
 
 struct Tree {

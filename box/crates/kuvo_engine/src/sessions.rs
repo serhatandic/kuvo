@@ -69,7 +69,7 @@ impl Session {
             .unwrap_or_default()
     }
 
-    fn check_independent(&self) -> Result<(), Refusal> {
+    pub(crate) fn check_independent(&self) -> Result<(), Refusal> {
         let marked = |key| {
             self.notes()
                 .and_then(|notes| notes.get(key))

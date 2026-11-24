@@ -15,6 +15,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.
 - A computer verifies the signed pack for its platform before preparing a Rust update.
+- The main computer waits for reachable computers to prepare a Rust update before switching. A computer that was offline can catch up when it returns.
+- A returning computer can get a signed update from another computer when the release feed no longer serves it. On a Mac, Kuvo restarts an older Helper when the update is ready.
+- A computer keeps a manual update check until its main computer can receive it, even if the computer restarts first.
 
 - An acknowledgement for the wrong part no longer advances a move before that part arrives.
 - A moved conversation opens on its new computer while the original is still being cleaned up.
@@ -57,6 +60,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Retrying a desktop message after a server restart confirms a message already received, without sending another copy.
 - On the Rust box, a draft can wait for its conversation’s computer, starred models appear across the setup, and conversation search includes other computers.
 - Windows project keys open their session lists, and branches keep attachments they refer to by Windows paths.
+- Summarizing a conversation you’ve already read keeps it marked as read.
 - The Rust box shows the coding-agent status reported by each computer and leaves conversations waiting for you out of its working count.
 
 - The Rust box pairs your desktop app across your computers and learns about removed devices when it reconnects, even while your main computer is away.

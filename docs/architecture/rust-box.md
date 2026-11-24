@@ -311,7 +311,8 @@ resident's own version.
   `box/1` manifest gains, additively, one pack per target (`aarch64` and
   `x86_64` macOS, `x86_64` and `aarch64` Linux built with musl, `x86_64` Windows) and a `launch`
   field; `kuvo-start` launches `bin/kuvo-box serve` and no separate bridge when `launch` says so.
-  Engine pins don't change. The feed holds no TypeScript build after 0.8.0-beta.1.
+  Engine pins don't change. Once 0.8 ships, the feed points to Rust. Returning TypeScript beta
+  computers can still take the signed bridge beta described below.
 - **Keeper.** On Mac and Linux the shell keeper stays for the first Rust releases: its tested
   switch-and-judge path (rename `bin`, wait for `kuvo/info`, rename back) keeps Rust-to-Rust
   rollback safe. `kuvo-box keep` is native Windows' keeper from the start, with a plain selector
@@ -337,6 +338,14 @@ resident's own version.
     inside the move: 11 and 17 rewrite setup records no public release wrote, and the user's
     computers are past them.
 - **The user's four computers** are the only ones on a TypeScript 0.8 beta, and switch once:
+  - **Bridge beta.** The four computers first take one final TypeScript beta through their
+    normal updater. That beta still runs TypeScript and knows how to prepare and start the
+    signed Rust pack for its target. A computer still on beta.48 or earlier which reaches a Rust
+    fleet takes the signed bridge beta first, from its main computer if necessary, then takes
+    Rust. The handoff runs automatically before the returning computer takes on fleet work.
+    Include the bridge's signed `boxes.json` with `sign-box.mjs --bridge` in each Rust manifest
+    while these betas can still return. Keep its pack at its signed URL so the main computer can
+    fetch it for the returning computers.
   - Before the first start, the Rust box copies the whole `~/.kuvo-code` into
     `~/.kuvo-code/backups/before-rust`, kept until the user says to delete it.
   - It reads the TypeScript beta's home in place, rewriting only what differs from its own layout.
@@ -413,7 +422,7 @@ parallel.
 | 2.5 | **Done.** Version-one encrypted archives, disk, SSH and Relay recovery, journal fences, held-work review, vault routing, and pre-switch and wipe hooks. [Coverage and owner phases](rust-backups-coverage.md) | setup | 2.1 | 6 | A |
 | 2.6 | **Done.** Released Mac and machine homes reach layout 23 through a resumable move. Both tagged Mac destinations match, and the credential move is verified through the Helper interface stand-in. [Coverage](rust-move-coverage.md) | move | 1.2, 2.1 | 6 ×2 | C |
 | 3.1 | **Done.** On-demand OpenCode, idle parking, process adoption, and authenticated HTTP and PTY passthrough. See [coverage and remaining cases](rust-engine-coverage.md). | engine | 1.4 | 6 | B |
-| 3.2 | **Open.** Scoped submissions and mixed-version receipt reads, paired and addressed delivery, outbox edits, setup stars, provider refresh, timed queue limits, setup search, and engine ask, waiting and attachment adapters join the local OpenCode paths. See the [coverage map](rust-engine-coverage.md#implementation-and-remaining-parity-work) for the remaining cases. Session cases in `offline-merge.test.ts`, `owner-mutations.test.js`, `documents.test.js`, and `setup-handover.test.js`.<br>Inherits `setup-lists.test.ts`, `peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`, `start-elsewhere.test.js`, `start-elsewhere-rules.test.js`, `reach-elsewhere.test.js`, `reach-elsewhere-rules.test.js`. | engine | 3.1 | 6 ×2 | B |
+| 3.2 | **Done.** Sessions, queues, send-once receipts, asks, waiting, models and search. [Coverage and remaining owners](rust-engine-coverage.md#implementation-and-remaining-parity-work). | engine | 3.1 | 6 ×2 | B |
 | 4.1 | Holders (adopted across Rust-to-Rust updates; not TypeScript ones), roster, accounts and sign-in, tools relay, `mcp` mode, sidecar | agents | 3.2, 1.3 | 11 | B |
 | 4.2 | Codex app-server | agents | 4.1 | 5 | B |
 | 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |

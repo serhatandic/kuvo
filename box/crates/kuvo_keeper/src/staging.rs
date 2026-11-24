@@ -3,13 +3,16 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     time::{Duration, Instant},
 };
 
 use flate2::read::GzDecoder;
-use kuvo_os::{platform::Environment, process::Spawn};
+use kuvo_os::{
+    platform::Environment,
+    process::{Spawn, Stdio},
+};
 use kuvo_store::{files, format::ObjectFormat, home::Home, locks};
 use serde::Deserialize;
 use serde_json::json;
@@ -65,6 +68,7 @@ pub fn prepare(
     signed: &SignedRelease,
     target: &str,
     bytes: &[u8],
+    envelope: &[u8],
 ) -> io::Result<ReleaseRef> {
     let pack = signed.pack_for(target)?;
     if bytes.len() as u64 > MAX_PACK || sha256(bytes) != pack.sha256 {
@@ -92,31 +96,9 @@ pub fn prepare(
     let draft = tempfile::Builder::new()
         .prefix(".staging-")
         .tempdir_in(&versions)?;
-    let actual = unpack(draft.path(), bytes)?;
-    let manifest_path = draft.path().join("box.json");
-    let manifest = read_release(&manifest_path, 10_000_000)?;
-    let contents = contents(&manifest)?;
-    if contents.kuvo != "box/1"
-        || contents.launch != "rust"
-        || contents.version != reference.version
-        || contents.engine != signed.engine()
-    {
-        return Err(damaged());
-    }
-    let expected = names(&contents)?;
-    if expected != actual {
-        return Err(damaged());
-    }
+    let (contents, actual) = unpack_checked(draft.path(), signed, &reference, bytes)?;
     check_downgrade(home, &contents)?;
     let binary = format!("bin/kuvo-box{}", std::env::consts::EXE_SUFFIX);
-    if !actual.contains_key(&binary)
-        || fs::read_to_string(draft.path().join("bin/box-version"))
-            .map_err(|_| damaged())?
-            .trim()
-            != reference.version
-    {
-        return Err(damaged());
-    }
     let probe = tempfile::Builder::new()
         .prefix(".probe-")
         .tempdir_in(&versions)?;
@@ -157,11 +139,97 @@ pub fn prepare(
     files::write_secret(&bin.join(".installed.json"), &receipt)?;
     engine.publish(home)?;
     publish(home, draft.path(), &release, &receipt, &actual)?;
+    let folder = release.folder(home.root());
+    files::write_secret(&folder.join("pack"), bytes)?;
+    files::write_secret(&folder.join("boxes.json"), envelope)?;
     files::write_secret(
         &home.run().join("fleet-ready.json"),
         &serde_json::to_vec(&reference)?,
     )?;
     Ok(reference)
+}
+
+fn unpack_checked(
+    folder: &Path,
+    signed: &SignedRelease,
+    reference: &ReleaseRef,
+    bytes: &[u8],
+) -> io::Result<(Contents, BTreeMap<String, String>)> {
+    let actual = unpack(folder, bytes)?;
+    let manifest_path = folder.join("box.json");
+    let manifest = read_release(&manifest_path, 10_000_000)?;
+    let contents = contents(&manifest)?;
+    if contents.kuvo != "box/1"
+        || contents.launch != "rust"
+        || contents.version != reference.version
+        || contents.engine != signed.engine()
+    {
+        return Err(damaged());
+    }
+    let expected = names(&contents)?;
+    if expected != actual {
+        return Err(damaged());
+    }
+    let binary = format!("bin/kuvo-box{}", std::env::consts::EXE_SUFFIX);
+    if !actual.contains_key(&binary)
+        || fs::read_to_string(folder.join("bin/box-version"))
+            .map_err(|_| damaged())?
+            .trim()
+            != reference.version
+    {
+        return Err(damaged());
+    }
+    Ok((contents, actual))
+}
+
+/// The released-app move consumes a sealed release tree and its pinned engine
+/// beneath the installer's folder. The separate install lock outlives the move.
+#[cfg(target_os = "macos")]
+pub fn prepare_install(home: &Home, signed: &SignedRelease, source: &Path) -> io::Result<Home> {
+    let target = crate::manifest::local_target()?;
+    let pack = signed.pack_for(target)?;
+    let bytes = read_release(&source.join(pack.filename()?), MAX_PACK)?;
+    if sha256(&bytes) != pack.sha256 {
+        return Err(damaged());
+    }
+    let reference = signed.reference(pack);
+    let install = home.updates().join("install");
+    files::create_private_dirs(&install)?;
+    let published = Home::new(install.join(&pack.sha256))?;
+    // The move checks its recorded inputs again before resuming. Never displace
+    // a tree that a cut-short move may still be using.
+    if published.root().join("release/box.json").is_file() {
+        return Ok(published);
+    }
+    let draft = tempfile::Builder::new()
+        .prefix(".media-")
+        .tempdir_in(&install)?;
+    let media = Home::new(draft.path().to_owned())?;
+    let release = media.root().join("release");
+    files::create_private_dirs(&release)?;
+    unpack_checked(&release, signed, &reference, &bytes)?;
+    let probe = tempfile::Builder::new()
+        .prefix(".probe-")
+        .tempdir_in(&install)?;
+    let engine = EnginePack::find_or_fetch(&media, signed, target, probe.path())?;
+    check_program(
+        engine.executable(),
+        &["--version"],
+        probe.path(),
+        "The new engine doesn't run here.",
+    )?;
+    check_program(
+        &release.join("bin/kuvo-box"),
+        &["selftest", "--engine", signed.engine()],
+        probe.path(),
+        "The new box doesn't run with its engine here.",
+    )?;
+    // The engine downloader's temporary file belongs to the install folder.
+    // Seal it before publishing the pair that the move will open.
+    engine.publish(&Home::new(install.clone())?)?;
+    files::sync_tree(draft.path(), home.root())?;
+    files::replace_synced(draft.path(), published.root())?;
+    Ok(published)
 }
 
 fn check_downgrade(home: &Home, next: &Contents) -> io::Result<()> {
@@ -194,6 +262,26 @@ fn check_downgrade(home: &Home, next: &Contents) -> io::Result<()> {
 }
 
 fn check_program(program: &Path, args: &[&str], folder: &Path, failure: &str) -> io::Result<()> {
+    probe_program(program, args, folder, failure, None)
+}
+
+pub(crate) fn check_engine_version(program: &Path, folder: &Path, version: &str) -> io::Result<()> {
+    probe_program(
+        program,
+        &["--version"],
+        folder,
+        "The engine doesn't report the pinned version.",
+        Some(version),
+    )
+}
+
+fn probe_program(
+    program: &Path,
+    args: &[&str],
+    folder: &Path,
+    failure: &str,
+    version: Option<&str>,
+) -> io::Result<()> {
     let mut env: Environment = std::env::vars_os()
         .filter(|(key, _)| {
             ["PATH", "SystemRoot", "WINDIR"]
@@ -220,17 +308,31 @@ fn check_program(program: &Path, args: &[&str], folder: &Path, failure: &str) ->
     let mut command = Spawn::new(program, env);
     command.cwd = Some(folder.into());
     command.args = args.iter().map(|arg| (*arg).into()).collect();
+    let capture = if let Some(version) = version {
+        let output = tempfile::tempfile_in(folder)?;
+        command.stdout = Stdio::File(output.try_clone()?);
+        Some((output, version))
+    } else {
+        None
+    };
     let mut child = command
         .spawn()
         .map_err(|error| io::Error::other(format!("{failure} {error}")))?;
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         if child.has_exited()? {
-            return child
-                .wait()?
-                .success()
-                .then_some(())
-                .ok_or_else(|| io::Error::other(failure));
+            if !child.wait()?.success() {
+                return Err(io::Error::other(failure));
+            }
+            if let Some((mut output, version)) = capture {
+                output.seek(SeekFrom::Start(0))?;
+                let mut bytes = Vec::new();
+                output.take(129).read_to_end(&mut bytes)?;
+                if bytes.len() > 128 || std::str::from_utf8(&bytes).map(str::trim) != Ok(version) {
+                    return Err(io::Error::other(failure));
+                }
+            }
+            return Ok(());
         }
         if Instant::now() >= until {
             child.stop(Duration::from_millis(100), |_| {})?;

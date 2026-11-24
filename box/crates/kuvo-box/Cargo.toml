@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 hostname = "0.4"
 http = "1"
 kuvo_engine = { path = "../kuvo_engine" }
@@ -22,16 +23,15 @@ kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
 kuvo_setup = { path = "../kuvo_setup" }
 kuvo_store = { path = "../kuvo_store" }
+kuvo_wire = { path = "../kuvo_wire" }
 kuvo_work = { path = "../kuvo_work" }
 serde_json = "1"
 tokio = { version = "1", features = ["io-std", "net", "rt-multi-thread", "signal", "time"] }
 
 [dev-dependencies]
-base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 futures-util = { version = "0.3", features = ["sink"] }
-kuvo_wire = { path = "../kuvo_wire" }
 tokio = { version = "1", features = ["macros", "process"] }
 tokio-tungstenite = "0.29"
 sha2 = "0.10"
