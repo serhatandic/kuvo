@@ -65,9 +65,11 @@ impl Candidate {
     }
 
     pub fn matches_pack(&self, target: &str, digest: &str) -> bool {
-        self.signed
-            .pack_for(target)
-            .is_ok_and(|pack| pack.sha256 == digest)
+        self.pack_digest(target) == Some(digest)
+    }
+
+    pub fn pack_digest(&self, target: &str) -> Option<&str> {
+        Some(self.signed.pack_for(target).ok()?.sha256.as_str())
     }
 
     pub fn local(&self) -> io::Result<ReleaseRef> {
@@ -445,9 +447,20 @@ pub fn stopped(home: &Home) -> bool {
         .any(|name| home.run().join(name).exists())
 }
 
+fn selected(home: &Home) -> io::Result<Option<Release>> {
+    Ok(Release::read(&home.root().join(SELECTOR))?
+        .or_else(|| fs::read_link(home.bin()).ok()?.to_str()?.parse().ok()))
+}
+
+pub fn trial_release(home: &Home) -> io::Result<Option<Release>> {
+    let Some(previous) = Release::read(&home.run().join("previous"))? else {
+        return Ok(None);
+    };
+    Ok(selected(home)?.filter(|next| next != &previous))
+}
+
 pub fn installed(home: &Home) -> io::Result<(Option<String>, Option<Release>)> {
-    let selected = Release::read(&home.root().join(SELECTOR))?
-        .or_else(|| fs::read_link(home.bin()).ok()?.to_str()?.parse().ok());
+    let selected = selected(home)?;
     let working = Release::read(&home.run().join("previous"))?.or(selected);
     let version = working
         .as_ref()

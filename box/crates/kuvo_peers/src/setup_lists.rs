@@ -36,7 +36,7 @@ use crate::{
     lists::{self, Computer, Lists, Local},
     notices::{self, History},
     parts::{self, Part, Parts},
-    reach::{Millis, Reach, Standing},
+    reach::{Millis, Reach, Standing, UpdatePresence},
     relay::{self, Relay},
     relay_routes, remote_work,
 };
@@ -79,8 +79,8 @@ pub struct View {
 }
 
 impl View {
-    pub(crate) fn local_update(&self) -> &UpdateFacts {
-        &self.update.facts
+    pub(crate) fn local_update_row(&self) -> Option<&FleetRow> {
+        self.update.local_row.as_ref()
     }
 
     pub(crate) fn peer_update_row(&self, key: &ComputerKey) -> Option<&FleetRow> {
@@ -96,15 +96,20 @@ impl View {
     }
 
     pub fn peer_updates(&self, key: &ComputerKey, now: Millis) -> (bool, UpdateFacts) {
+        let (presence, facts) = self.peer_update(key, now);
+        (presence.away_for.is_some(), facts)
+    }
+
+    pub fn peer_update(&self, key: &ComputerKey, now: Millis) -> (UpdatePresence, UpdateFacts) {
         let key = encode(key);
         let announcement = self.announced.get(&key);
-        let away = self
-            .reach
-            .peer_is_away(&key, announcement.and_then(|entry| entry.heard), now);
+        let presence =
+            self.reach
+                .update_presence(&key, announcement.and_then(|entry| entry.heard), now);
         let facts = announcement
             .and_then(|entry| entry.computer.as_ref())
             .map_or_else(UpdateFacts::default, |computer| computer.updates());
-        (away, facts)
+        (presence, facts)
     }
 
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
@@ -484,6 +489,7 @@ pub struct BridgeUpdate {
 pub struct UpdatePublication {
     pub facts: UpdateFacts,
     pub bridge: Option<BridgeUpdate>,
+    pub local_row: Option<FleetRow>,
     pub peer_rows: BTreeMap<ComputerKey, FleetRow>,
 }
 

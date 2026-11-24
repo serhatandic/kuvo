@@ -173,6 +173,8 @@ pub struct UpdateFacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub staged: Option<PreparedRelease>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub switching: Option<PreparedRelease>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cannot: Option<CannotUpdate>,
 }
 
@@ -254,6 +256,10 @@ impl ComputerFacts {
             staged: self
                 .extra
                 .get("staged")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            switching: self
+                .extra
+                .get("switching")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
             cannot: self
                 .extra

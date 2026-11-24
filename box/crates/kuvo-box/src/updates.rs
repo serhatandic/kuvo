@@ -1,6 +1,7 @@
 //! Connect the keeper's update preparation to live setup and peer facts.
 
 mod mail;
+mod progress;
 mod released_machines;
 mod retry;
 
@@ -19,6 +20,7 @@ use kuvo_keeper::{
 };
 use kuvo_peers::{
     directory::{PreparedRelease, UpdateFacts},
+    reach::UpdatePresence,
     setup_lists::{BridgeUpdate, ResidentPeers, UpdatePublication, View},
 };
 use kuvo_setup::SetupHandle;
@@ -467,11 +469,24 @@ impl Fleet {
             .as_ref()
             .and_then(|running| running.local().ok())
             .map(|pack| pack.sha256);
+        let trial = fleet::trial_release(&self.home)?.and_then(|selected| {
+            let envelope = fleet::installed_envelope(&self.home, &selected)?;
+            let release = Candidate::verify(envelope, &self.key).ok()?;
+            let local = release.local().ok()?;
+            (local.target().ok()? == selected).then_some((
+                release,
+                PreparedRelease {
+                    version: local.version,
+                    sha256: local.sha256,
+                },
+            ))
+        });
         let mut facts = UpdateFacts {
             kuvo: Some(version),
             release_target: Some(target.into()),
             installed_sha256,
             running_manifest,
+            switching: trial.as_ref().map(|(_, local)| local.clone()),
             ..UpdateFacts::default()
         };
         if let Some(candidate) = &candidate {
@@ -532,30 +547,32 @@ impl Fleet {
         } else {
             None
         };
-        let signed_release = candidate.as_ref().or(running.as_ref());
-        let peer_rows = view
-            .roster
-            .members
-            .iter()
-            .filter_map(|peer| {
-                let (away, facts) = view.peer_updates(&peer.key, now);
-                let failure = retry::signed_failure(&facts, signed_release?)?;
-                let can_retry = self.mail.is_some() && peer.host().is_some();
-                (!away).then(|| {
-                    (
-                        peer.key,
-                        failure.row(
-                            facts.kuvo.clone(),
-                            facts.installed_sha256.clone(),
-                            can_retry,
-                        ),
-                    )
-                })
+        let signed_release = trial
+            .as_ref()
+            .map(|(release, _)| release)
+            .or(candidate.as_ref())
+            .or(running.as_ref());
+        let (local_row, peer_rows) = signed_release
+            .map(|release| {
+                let local = progress::row(release, &facts, UpdatePresence::default(), true, now);
+                let peers = view
+                    .roster
+                    .members
+                    .iter()
+                    .map(|peer| {
+                        let (presence, facts) = view.peer_update(&peer.key, now);
+                        let can_retry = self.mail.is_some() && peer.host().is_some();
+                        let row = progress::row(release, &facts, presence, can_retry, now);
+                        (peer.key, row)
+                    })
+                    .collect();
+                (Some(local), peers)
             })
-            .collect();
+            .unwrap_or_default();
         let publication = UpdatePublication {
             facts,
             bridge,
+            local_row,
             peer_rows,
         };
         if self.last_sent.as_deref() != Some(&publication) {
