@@ -10,7 +10,10 @@ use std::{
     time::Duration,
 };
 
+mod metadata;
 mod projection;
+
+pub use metadata::{NewSession, SessionPatch};
 
 const FORMAT: ObjectFormat = ObjectFormat::additive("Coding-agent session");
 const TRANSCRIPT: &str = "messages-v1.sqlite";
@@ -38,6 +41,11 @@ impl SessionHeader {
 
     pub fn directory(&self) -> Option<&str> {
         self.fields.get("location")?.get("directory")?.as_str()
+    }
+
+    /// The conversation that started this one, for a subagent's.
+    pub fn parent(&self) -> Option<&str> {
+        self.fields.get("parentID")?.as_str()
     }
 
     pub fn into_fields(self) -> Map<String, Value> {

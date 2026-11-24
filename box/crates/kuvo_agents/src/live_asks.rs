@@ -18,6 +18,19 @@ pub struct AskKey {
     pub id: String,
 }
 
+impl AskKey {
+    /// The ID shown to clients includes the Kuvo turn. A delayed answer for
+    /// one turn cannot approve an identically named native request in another.
+    pub fn client_id(&self, question: bool) -> String {
+        let prefix = if question { "frm" } else { "per" };
+        format!(
+            "{prefix}_{}_{}",
+            hex::encode(&self.turn),
+            hex::encode(&self.id)
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Ask {
     Permission(PermissionAsk),
@@ -99,6 +112,7 @@ impl LiveAsks {
 
 /// One adapter's ask handle for an active turn. The resident explicitly
 /// retires this handle before releasing session ownership.
+#[derive(Clone)]
 pub struct TurnAsks {
     book: LiveAsks,
     session: String,

@@ -180,12 +180,14 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         None
     };
 
-    let lease = api::start(engine).await?;
+    // The engine starts only for what needs it: its own conversations, a
+    // worktree, or a parent it keeps.
+    let mut lease = Engaged::new(engine);
     let parent = match starter {
         Some(value) => Some(
             root(
                 engine,
-                &lease,
+                &mut lease,
                 value.as_str().filter(|id| sessions::valid_id(id)),
             )
             .await
@@ -409,16 +411,28 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         if model.id.is_empty() || model.provider.is_empty() {
             return Err(bad("Choose a model by its provider and id."));
         }
-        if matches!(
-            model.provider.split('@').next(),
-            Some("auto" | "claude-code" | "codex-cli" | "cursor" | "grok-cli" | "antigravity")
-        ) {
+        if model.provider.split('@').next() == Some("auto") {
             return Err(Refusal::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "The coding agents aren't running on this computer.",
             ));
         }
     }
+    let agents = match model
+        .as_ref()
+        .and_then(|model| model["providerID"].as_str())
+        .and_then(|provider| provider.split('@').next())
+    {
+        Some("claude-code" | "codex-cli" | "cursor" | "grok-cli" | "antigravity") => {
+            Some(engine.agent_sessions.clone().ok_or_else(|| {
+                Refusal::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The coding agents aren't running on this computer.",
+                )
+            })?)
+        }
+        _ => None,
+    };
 
     let created_tree = if flag("worktree") {
         let under = under
@@ -429,7 +443,7 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                 "Give a folder or worktree: true, not both: a new worktree is made from the project.",
             ));
         }
-        let tree = make_tree(engine, &lease, &settings, under).await?;
+        let tree = make_tree(engine, lease.get().await?, &settings, under).await?;
         folder = tree.folder.clone();
         Some(tree)
     } else {
@@ -467,8 +481,10 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         flag("autopilot")
     };
     if autopilot {
-        if let Some(tree) = &created_tree {
-            undo_tree(engine, &lease, tree).await;
+        if let Some(tree) = &created_tree
+            && let Some(lease) = lease.held()
+        {
+            undo_tree(engine, lease, tree).await;
         }
         return Err(Refusal::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -493,17 +509,22 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
     if let Some(model) = model {
         body["model"] = model;
     }
-    let result = engine
-        .call::<Value>(&lease, Method::POST, "api/session", Some(&body))
-        .await;
+    let result = match &agents {
+        Some(source) => create_on_agents(engine, source.as_ref(), body).await,
+        None => engine
+            .call::<Value>(lease.get().await?, Method::POST, "api/session", Some(&body))
+            .await
+            .map_err(Made::Engine),
+    };
     let made = match result {
         Ok(info) if info["id"].as_str().is_some_and(sessions::valid_id) => info,
         result => {
             if let Some(tree) = &created_tree
-                && !matches!(&result, Err(api::Error::Transport(_)))
-                && tree_unused(engine, &lease, tree).await
+                && !matches!(&result, Err(Made::Engine(api::Error::Transport(_))))
+                && let Some(lease) = lease.held()
+                && tree_unused(engine, lease, tree).await
             {
-                undo_tree(engine, &lease, tree).await;
+                undo_tree(engine, lease, tree).await;
             }
             let reason = result
                 .err()
@@ -584,7 +605,27 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
             files: Vec::new(),
             delivery: Delivery::Steer,
         };
-        if send::post(engine, &lease, id, &prompt).await.is_err() {
+        let sent = match &agents {
+            Some(source) => {
+                let Prompt { id: message, text, metadata, .. } = prompt;
+                source
+                    .prompt(
+                        id,
+                        crate::AgentPrompt {
+                            id: message,
+                            text,
+                            metadata: metadata.and_then(|notes| match notes {
+                                Value::Object(notes) => Some(notes),
+                                _ => None,
+                            }),
+                        },
+                    )
+                    .await
+                    .is_ok()
+            }
+            None => send::post(engine, lease.get().await?, id, &prompt).await.is_ok(),
+        };
+        if !sent {
             return Err(Refusal::json(
                 StatusCode::BAD_GATEWAY,
                 json!({ "session": id,
@@ -595,7 +636,16 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
             answer["answer"] = Value::Null;
         }
     } else {
-        answer["info"] = made;
+        // A coding agent's conversation is told as clients read it.
+        answer["info"] = match &agents {
+            Some(source) => source
+                .session(id)
+                .await
+                .ok()
+                .flatten()
+                .map_or(made, Value::Object),
+            None => made,
+        };
         if let Some(tree) = created_tree {
             answer["worktree"] = tree.record;
         }
@@ -607,17 +657,93 @@ fn from_approval(value: &Value) -> Option<Approval> {
     Approval::deserialize(value).ok()
 }
 
-async fn root(engine: &Engine, lease: &Lease, id: Option<&str>) -> Option<Session> {
+/// The engine, started the first time something needs it.
+struct Engaged<'a> {
+    engine: &'a Engine,
+    lease: Option<Lease>,
+}
+
+impl<'a> Engaged<'a> {
+    fn new(engine: &'a Engine) -> Self {
+        Self {
+            engine,
+            lease: None,
+        }
+    }
+
+    async fn get(&mut self) -> Result<&Lease, Refusal> {
+        if self.lease.is_none() {
+            self.lease = Some(api::start(self.engine).await?);
+        }
+        Ok(self.lease.as_ref().expect("the lease was just taken"))
+    }
+
+    fn held(&self) -> Option<&Lease> {
+        self.lease.as_ref()
+    }
+}
+
+/// Why no conversation was made.
+enum Made {
+    Engine(api::Error),
+    Agents(std::io::Error),
+}
+
+impl std::fmt::Display for Made {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Engine(error) => error.fmt(out),
+            Self::Agents(error) => error.fmt(out),
+        }
+    }
+}
+
+async fn create_on_agents(
+    engine: &Engine,
+    source: &dyn crate::AgentSessionSource,
+    body: Value,
+) -> Result<Value, Made> {
+    let Value::Object(mut body) = body else {
+        return Err(Made::Agents(std::io::ErrorKind::InvalidInput.into()));
+    };
+    let mut take = |key: &str| body.remove(key);
+    let new = crate::NewAgentSession {
+        id: send::new_id_with(engine, "ses")
+            .map_err(|_| Made::Agents(std::io::Error::other("No session ID could be made.")))?,
+        directory: take("location")
+            .and_then(|location| location["directory"].as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        agent: take("agent").and_then(|agent| agent.as_str().map(str::to_owned)),
+        model: take("model").unwrap_or(Value::Null),
+        title: take("title").and_then(|title| title.as_str().map(str::to_owned)),
+        permissions: take("permissions"),
+        metadata: match take("metadata") {
+            Some(Value::Object(notes)) => notes,
+            _ => Map::new(),
+        },
+    };
+    source
+        .create(new)
+        .await
+        .map(Value::Object)
+        .map_err(Made::Agents)
+}
+
+async fn root(engine: &Engine, lease: &mut Engaged<'_>, id: Option<&str>) -> Option<Session> {
     let mut found: Option<Session> = None;
     let mut next = id.map(str::to_owned);
     for _ in 0..6 {
         let Some(id) = next else {
             break;
         };
-        let Ok(session) = engine
-            .call::<Session>(lease, Method::GET, &sessions::path(&id), None)
-            .await
-        else {
+        let session = match engine.agent_session(&id).await.ok()? {
+            Some((_, header)) => serde_json::from_value::<Session>(Value::Object(header)).ok(),
+            None => engine
+                .call::<Session>(lease.get().await.ok()?, Method::GET, &sessions::path(&id), None)
+                .await
+                .ok(),
+        };
+        let Some(session) = session else {
             break;
         };
         next = session.parent.clone().or_else(|| {
