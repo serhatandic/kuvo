@@ -474,26 +474,47 @@ impl TurnWriter for Projection {
 
     fn abandon<'a>(&'a mut self, error: &'a io::Error) -> AdapterCall<'a, ()> {
         Box::pin(async move {
-            if self.next == 0 && !self.prior.is_empty() {
-                // A recovered turn never taken up: what was shown of it
-                // stays, closed as a crash leaves it, and its end follows.
-                let mut rows = self.prior.values().cloned().collect::<Vec<_>>();
-                let closed = close_rows(&mut rows);
-                self.write(closed).await?;
-                self.next = self
-                    .prior
-                    .keys()
-                    .filter_map(|id| self.index(id))
-                    .max()
-                    .unwrap_or(0);
-                self.prior.clear();
-            }
+            self.close_prior().await?;
             self.apply(&failed(error)).await
+        })
+    }
+
+    fn stopped(&mut self) -> AdapterCall<'_, ()> {
+        Box::pin(async move {
+            self.close_prior().await?;
+            self.apply(&EventEnvelope {
+                position: None,
+                delivery: crate::session::Delivery::Live,
+                event: TurnEvent::Finished(TurnResult {
+                    outcome: Outcome::Interrupted,
+                    took_prompt: false,
+                    missed: Vec::new(),
+                }),
+            })
+            .await
         })
     }
 }
 
 impl Projection {
+    /// A recovered turn never taken up: what was shown of it stays, closed as
+    /// a crash leaves it, and its end follows.
+    async fn close_prior(&mut self) -> io::Result<()> {
+        if self.next == 0 && !self.prior.is_empty() {
+            let mut rows = self.prior.values().cloned().collect::<Vec<_>>();
+            let closed = close_rows(&mut rows);
+            self.write(closed).await?;
+            self.next = self
+                .prior
+                .keys()
+                .filter_map(|id| self.index(id))
+                .max()
+                .unwrap_or(0);
+            self.prior.clear();
+        }
+        Ok(())
+    }
+
     fn index(&self, id: &str) -> Option<u64> {
         id.strip_prefix(&row_prefix(&self.turn))?.parse().ok()
     }
@@ -772,7 +793,8 @@ fn idle(id: String, at: u64, result: &TurnResult) -> Value {
         Outcome::Succeeded => ("succeeded", None),
         Outcome::Failed(error) => ("failed", Some(error)),
         Outcome::Interrupted => ("interrupted", None),
-        Outcome::AgentExited(error) => ("interrupted", error.as_ref()),
+        // Stopped, by you or by its agent quitting: nothing failed to say.
+        Outcome::AgentExited(_) => ("interrupted", None),
     };
     let mut row = json!({"type":"idle","id":id,"outcome":outcome,"time":{"created":at}});
     if let Some(error) = error {

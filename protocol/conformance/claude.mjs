@@ -197,6 +197,11 @@ export async function scriptedClaude(fixture = {}) {
       scripts[text] = steps;
       write(path.join(env.HOME, "claude-script.json"), JSON.stringify(scripts));
     },
+    /** The next Claude Code started for a conversation says `stderr` and stops with `exit`, before it
+     * reads anything (once `until` is there, leaving `linger` running: see the stand-in). */
+    stopsAsItStarts(stderr, more = {}) {
+      write(path.join(env.HOME, "claude-start.json"), JSON.stringify({ stderr, exit: 1, ...more }));
+    },
     /** What the stand-in read: its arguments and every line, from each Claude Code it ran. */
     heard: () => fs.existsSync(heardFile)
       ? fs.readFileSync(heardFile, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)) : [],

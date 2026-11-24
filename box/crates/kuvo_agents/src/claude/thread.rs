@@ -25,7 +25,8 @@ use tokio::{
 
 use crate::{
     hold::{
-        Controller, ControllerInput, Directory, HoldKind, Limits, Metadata, Output, Start, TurnNote,
+        Controller, ControllerInput, Directory, Exit, HoldKind, Limits, Metadata, Output, Start,
+        TurnNote,
     },
     runtime::AdapterCall,
     session::{
@@ -133,7 +134,11 @@ impl Pipe {
                             _ => {}
                         }
                     }
-                    Output::Stderr { .. } => {}
+                    Output::Stderr { text } => self.said.add(&text),
+                    Output::Exited { exit } => {
+                        self.exited = true;
+                        return Err(io::Error::other(self.stopped(&exit)));
+                    }
                     _ => return Err(io::Error::other("Claude Code stopped before answering.")),
                 }
             }
@@ -141,10 +146,23 @@ impl Pipe {
         .await?
     }
 
+    /// How it stopped before answering, as Claude's SDK says it, with the last thing it said.
+    fn stopped(&mut self, exit: &Exit) -> String {
+        let how = match (exit.code, &exit.signal) {
+            (Some(code), _) => format!("Claude Code process exited with code {code}"),
+            (None, Some(signal)) => format!("Claude Code process terminated by signal {signal}"),
+            (None, None) => "Claude Code stopped before answering.".to_owned(),
+        };
+        match self.said.last() {
+            Some(said) => format!("{how}: {said}"),
+            None => how,
+        }
+    }
+
     async fn stop(mut self) -> io::Result<()> {
         self.input.end().await?;
         let result = timeout(Duration::from_secs(3), async {
-            while !matches!(self.next().await?, Output::Exited { .. }) {}
+            while !self.exited && !matches!(self.next().await?, Output::Exited { .. }) {}
             Ok::<_, io::Error>(())
         })
         .await;
@@ -435,7 +453,7 @@ impl Actor {
                 () = timer => self.expired().await,
             };
             if output.is_err() {
-                let _ = self.ended(false).await;
+                let _ = self.ended().await;
             }
         }
     }
@@ -500,7 +518,7 @@ impl Actor {
                     Some(pipe) => pipe.stop().await,
                     None => Ok(()),
                 };
-                let _ = self.ended(false).await;
+                let _ = self.ended().await;
                 self.closing = shutdown;
                 let _ = reply.send(result);
             }
@@ -891,7 +909,7 @@ impl Actor {
                 if let Some(pipe) = &mut self.pipe {
                     let _ = pipe.input.bye().await;
                 }
-                self.ended(true).await
+                self.ended().await
             }
             Output::Prepared { prepared } => {
                 if let Some(reply) = self.prepare.take() {
@@ -913,7 +931,7 @@ impl Actor {
                 }
                 Ok(())
             }
-            _ => self.ended(false).await,
+            _ => self.ended().await,
         }
     }
 
@@ -1192,9 +1210,9 @@ impl Actor {
         Ok(())
     }
 
-    async fn ended(&mut self, exited: bool) -> io::Result<()> {
+    async fn ended(&mut self) -> io::Result<()> {
         self.replay_caught_up().await?;
-        let last = self.pipe.take().and_then(|mut pipe| pipe.said.last(exited));
+        let last = self.pipe.take().and_then(|pipe| pipe.said.last());
         let outcome = if self.running.as_ref().is_some_and(|turn| turn.stopping) {
             Outcome::Interrupted
         } else {
