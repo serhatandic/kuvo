@@ -1539,25 +1539,26 @@ test("a restart restores legacy wake-up holds without releasing another move", {
 });
 
 test("a chat's wake-up folder stays held until its new computer owns it", {
-  timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+  timeout: 90000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("wake-source"), there = await computer("wake-target");
   const { main, member } = seedPeerSetup(here.home, relay.url);
   seedPeerSetup(there.home, relay.url, 2);
-  const session = "ses_wakeMove";
+  const session = "ses_wakeMove", caller = "ses_returningLetterSender";
   const sourceWakes = path.join(path.dirname(here.home), "My wake-ups");
   const folder = path.join(sourceWakes, session);
   const target = path.join(there.home, "wakes", session);
   const sourceChats = path.join(path.dirname(here.home), "My chats");
   fs.mkdirSync(sourceChats, { recursive: true });
-  here.engine.sessions.push(sessionOf({ id: session, directory: sourceChats }));
+  here.engine.sessions.push(sessionOf({ id: session, title: "Wake-up chat", directory: sourceChats }),
+    sessionOf({ id: caller, title: "Reader", directory: sourceChats }));
   const savedPause = "user-paused\n", wake = "Keep the existing wake-up.\n";
   write(path.join(folder, "paused"), savedPause);
   write(path.join(folder, "directory"), sourceChats);
   write(path.join(folder, "wake.txt"), wake);
   if (process.platform !== "win32") fs.symlinkSync("wake.txt", path.join(folder, "current"));
-  const { openOneWay } = await testMail(t, boxBinary(wireFixture));
+  const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
   const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
   const remote = Buffer.from(main.key, "base64url");
   let switchPacket;
@@ -1614,6 +1615,31 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.ok(!fs.existsSync(path.join(folder, "paused")));
   assert.equal(fs.readFileSync(path.join(folder, "wake.txt"), "utf8"), wake);
   assert.equal(fs.readFileSync(path.join(folder, "directory"), "utf8"), sourceChats);
+
+  const letter = "ltr_returnedOwner", tool = path.join(here.home, "run/replies", letter);
+  let mailed = 0;
+  t.after(relay.intercept(from, to, packet => {
+    if (packet.payload[0] !== Frame.mail) return false;
+    const { payload } = openOneWay(packet.payload.subarray(5), Buffer.alloc(32, 2), remote);
+    if (JSON.parse(payload).letter?.id === letter) mailed++;
+    return false;
+  }));
+  write(tool + ".alive", "");
+  write(path.join(here.home, "run/outbox/sending", letter + ".json"), JSON.stringify({
+    from: caller, to: session, text: "Are the wake-ups here?", peer: member.key, wait: true, at: Date.now(),
+  }));
+  const conversation = await until(() => here.engine.messages.get(session)?.length && here.engine.messages.get(session),
+    "The old outbox address did not resolve to the local conversation", 15000);
+  assert.equal(conversation.length, 1);
+  assert.equal(conversation[0].text, `[Message from Reader · ${caller}] (They're waiting for your reply: just answer, in your words.)\n\nAre the wake-ups here?`);
+  conversation.push({ id: conversation[0].id.slice(0, -1) + "z0", type: "assistant",
+    content: [{ type: "text", text: "They’re here." }] });
+  const reply = await until(() => {
+    fs.utimesSync(tool + ".alive", new Date(), new Date());
+    return fs.existsSync(tool + ".json") && readJSON(tool + ".json");
+  }, "The local answer did not reach the waiting tool", 18000, 500);
+  assert.deepEqual(reply, { from: session, to: caller, name: "Wake-up chat", text: "They’re here." });
+  assert.equal(mailed, 0);
 });
 
 test("a transcript read returns to its tool without prompting the conversation", { timeout: 90000 }, async t => {
