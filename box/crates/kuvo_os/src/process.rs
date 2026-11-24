@@ -329,4 +329,10 @@ impl AdoptedProcess {
     pub fn stop(&mut self, grace: Duration) -> io::Result<()> {
         self.0.stop(grace)
     }
+
+    /// Ask it to stop (SIGTERM), without waiting for it to.
+    #[cfg(unix)]
+    pub fn terminate(&self) -> io::Result<()> {
+        self.0.terminate()
+    }
 }

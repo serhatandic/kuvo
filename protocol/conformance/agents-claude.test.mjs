@@ -421,6 +421,87 @@ test("the Rust keeper keeps an actual Claude adapter turn across a release switc
     assert.ok(kept);
   });
 
+test("a box stopping for good stops the Claude Code it holds, at work or not", { timeout: 90000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript && process.platform === "win32") {
+    t.skip("The reference bridge runs on Unix.");
+    return;
+  }
+  const root = scratch();
+  const home = path.join(root, "box");
+  const relay = await localRelay();
+  const session = "ses_claude_stopped";
+  const route = `kuvo/agents/api/session/${session}`;
+  let keeper, resident, bridge, held;
+  const residents = [];
+  const alive = pid => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return error.code === "EPERM"; }
+  };
+  try {
+    privateHome(home);
+    const env = { ...claudeEnvironment(binary, home, isolatedEnv(root), { turns: true }), KUVO_SANDBOX: "off" };
+    write(path.join(home, "folder-version.json"), '{"version":23}\n');
+    seedSession(home, session);
+    // The Rust box as a computer runs it, under its keeper (stopped for good: turned off); the
+    // reference as its bridge stops on SIGTERM.
+    const releases = binary.typescript ? undefined : twoReleases(binary, home, env, relay);
+    let listener;
+    if (releases) {
+      await releases.control(["select", releases.old]);
+      keeper = boxCommand(binary, home, env, relay, ["keep"]);
+      listener = await keptListener(home, keeper);
+      residents.push(listener.pid);
+    } else {
+      bridge = await startClaudeBridge(binary, home, env);
+      resident = startBox({ binary, home, env, relay });
+      listener = await resident.ready();
+    }
+    // A turn at work as the box stops: it says something, then waits (for a file that never comes).
+    write(path.join(env.HOME, "claude-script.json"), JSON.stringify({
+      [`go ${session}`]: [...streams("$UUID", [{ type: "text", text: "Working." }]), { until: "never" }],
+    }));
+    const started = await request(listener, "POST", route + "/prompt", { id: "msg_fixture_stopped", text: `go ${session}` }, headers);
+    assert.equal(started.status, 200, started.text);
+    await until(async () => (await transcript(listener, route)).some(row => row.content?.[0]?.text === "Working."),
+      "The fixture never began its turn.");
+    held = await until(() => heldClaude(home, session), "Claude's holder was never recorded.");
+    assert.ok(alive(held.child));
+    if (releases) await releases.control(["off"]);
+    else {
+      await resident.stop();
+      await bridge.stop();
+      resident = bridge = undefined;
+    }
+    await until(() => !alive(held.child) && !alive(held.pid) && !heldClaude(home, session),
+      () => `Claude Code (${held.child}) or its holder (${held.pid}) went on after the box stopped.`, 25000);
+    // Started again, the turn the stop cut off has ended.
+    if (releases) {
+      fs.rmSync(path.join(home, "run", "off"), { force: true });
+      await keeper.stop();
+      keeper = boxCommand(binary, home, env, relay, ["keep"]);
+      listener = await keptListener(home, keeper, listener.pid);
+      residents.push(listener.pid);
+    } else {
+      bridge = await startClaudeBridge(binary, home, env);
+      resident = startBox({ binary, home, env, relay });
+      listener = await resident.ready();
+    }
+    let rows;
+    await until(async () => (rows = await transcript(listener, route)).at(-1)?.type === "idle",
+      () => "The cut-off turn never ended: " + JSON.stringify(rows?.slice(-2)), 25000);
+    assert.equal(rows.at(-1).outcome, "interrupted", JSON.stringify(rows.at(-1)));
+  } finally {
+    await resident?.stop();
+    await bridge?.stop();
+    await keeper?.stop();
+    await stopPids(residents);
+    await stopFixtureHolders(home);
+    await relay.close();
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
 async function withClaude(t, fixture, check, prepare = () => {}) {
   const binary = boxBinary();
   if (binary.typescript && process.platform === "win32") {
