@@ -859,6 +859,8 @@ test("the shell keepers wait for a preparing member, then an offline computer ca
 test("a new main finishes a prepared release after the old main goes away", { timeout: failoverTestMs }, t => fleetRun(t, { failover: true }));
 test("the main takes a signed release from a member already running it", { timeout: 150000 }, t => fleetRun(t, { aheadMember: true }));
 test("a release pulled over relay reports its checked progress on both computers", { timeout: failoverTestMs }, t => fleetRun(t, { aheadMember: true, pullProgress: true }));
+test("peer transfer keeps its checked progress after the first holder times out", { timeout: failoverTestMs + peerTransferMs },
+  t => fleetRun(t, { aheadMember: true, pullProgress: true, secondSource: true }));
 test("a slow member can catch up after the main's preparation deadline", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true, stageDeadline: true }));
 test("a TypeScript beta computer that missed the switch catches up to Rust", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true }));
 test("the deployed beta refuses a direct Rust pack", { timeout: 240000 }, t => fleetRun(t, { returningTypescript: true, expectRefusal: true }));
@@ -908,7 +910,7 @@ if [ -e "$KUVO_FIXTURE_CLOCK" ]; then echo 1121; else touch "$KUVO_FIXTURE_CLOCK
   }
 });
 
-async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal, aheadMember, stageDeadline, pullProgress }) {
+async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridgeBeta, expectRefusal, aheadMember, stageDeadline, pullProgress, secondSource }) {
   const binary = boxBinary();
   const windows = process.platform === "win32";
   if (binary.typescript || (windows && !failover && !aheadMember)) {
@@ -1015,6 +1017,7 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridge
       res.end(encode(signedBridgeRelease ?? signedTarget()));
     } else if (req.url === "/fleet.tar.gz") {
       if (peerOnly) {
+        if (secondSource && hold) return waiting.push(res);
         refusedPacks += 1;
         res.writeHead(404).end();
       }
@@ -1060,7 +1063,8 @@ async function fleetRun(t, { failover, returningTypescript, shellKeepers, bridge
   });
   const legacy = peer => returningTypescript && peer === away;
   const versionBefore = peer => legacy(peer) && previousVersion ? previousVersion : "0.8.0-beta.1";
-  const initial = peer => aheadMember && peer === member ? selected : `versions/${versionBefore(peer)}-000000000000/bin`;
+  const holders = aheadMember ? (secondSource ? [member, away] : [member]) : [];
+  const initial = peer => holders.includes(peer) ? selected : `versions/${versionBefore(peer)}-000000000000/bin`;
   const shell = peer => shellKeepers || legacy(peer);
   function control(computer, ...args) {
     const result = shell(computer)
@@ -1129,7 +1133,7 @@ Buffer.from = function (value, encoding, ...args) {
       write(engine, `#!/bin/sh\n[ "$1" != --version ] || exit 0\n${fixtureEngine}${fixtureTrust}exec ${quote(typescriptRuntime())} "$@"\n`, { mode: 0o700 });
       continue;
     }
-    if (aheadMember && peer === member) {
+    if (holders.includes(peer)) {
       const folder = path.join(peer.home, bin, "..");
       fs.cpSync(packRoot, folder, { recursive: true });
       write(path.join(folder, "boxes.json"), encode(signedTarget()));
@@ -1171,12 +1175,14 @@ Buffer.from = function (value, encoding, ...args) {
   const checkPullProgress = async () => {
     const addressOf = peer => relayAddress(Buffer.from(readJSON(path.join(peer.home, "run/link.json")).secret, "base64url"));
     const partSize = 30_000;
-    const held = [];
-    const stopHolding = relay.intercept(addressOf(member), addressOf(main), packet => {
+    const packets = new Map(holders.map(peer => [peer, []]));
+    const stopHolding = holders.map(peer => relay.intercept(addressOf(peer), addressOf(main), packet => {
       if (packet.payload.length <= partSize) return false;
-      held.push(packet);
+      packets.get(peer).push(packet);
       return true;
-    });
+    }));
+    const replied = peer => packets.get(peer).length >= 8;
+    let transfer;
     const expectFill = async count => {
       const fill = count / Math.ceil(pack.length / partSize);
       let last;
@@ -1192,8 +1198,21 @@ Buffer.from = function (value, encoding, ...args) {
       }
     };
     try {
+      if (secondSource) start(away);
       startOnline();
-      await until(() => held.length >= 8, "the relay must hold signed release parts", firstPreparationMs);
+      if (secondSource) {
+        const seen = path.join(main.home, "run/peer-agents.json");
+        await until(() => waiting.length && fs.existsSync(seen) &&
+          Object.values(readJSON(seen)).filter(entry => entry.computer?.installedSha256 === hash).length === holders.length,
+        "the main must hear that both members hold the signed pack before the feed fails", firstPreparationMs);
+        hold = false;
+        for (const response of waiting) {
+          refusedPacks += 1;
+          response.writeHead(404).end();
+        }
+      }
+      transfer = await until(() => holders.find(replied), "the relay must hold signed release parts", firstPreparationMs);
+      const held = packets.get(transfer);
       await expectFill(0);
       const received = held.splice(0, 4);
       for (const packet of received) relay.replay(packet);
@@ -1201,9 +1220,28 @@ Buffer.from = function (value, encoding, ...args) {
       for (const packet of received) relay.replay(packet);
       relay.replay(held.shift());
       await expectFill(5);
+
+      if (secondSource) {
+        const alternate = holders.find(peer => peer !== transfer);
+        const waitingSince = performance.now();
+        await until(() => replied(alternate), "the second member must take over the incomplete transfer", peerTransferMs);
+        t.diagnostic(`second holder answered after ${Math.round(performance.now() - waitingSince)} ms`);
+        transfer = alternate;
+        const second = packets.get(transfer);
+        const recipient = readJSON(path.join(main.home, "run/serve.json"));
+        // Two route requests guarantee the fleet worker completed a row update
+        // after the alternate holder's manifest was accepted.
+        for (let check = 0; check < 2; check += 1) {
+          const reply = await request(recipient, "POST", "kuvo/update/retry", { target: version, targetSha256: digest("other pack") });
+          assert.equal(reply.status, 409, reply.text);
+        }
+        await expectFill(5);
+        for (const packet of second.splice(0, 6)) relay.replay(packet);
+        await expectFill(6);
+      }
     } finally {
-      stopHolding();
-      for (const packet of held) relay.replay(packet);
+      for (const stop of stopHolding) stop();
+      if (transfer) for (const packet of packets.get(transfer)) relay.replay(packet);
     }
   };
   const staged = peer => fs.existsSync(path.join(peer.home, "run/fleet-ready.json"));

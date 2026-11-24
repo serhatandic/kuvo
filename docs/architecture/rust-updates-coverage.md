@@ -55,6 +55,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U39 | A member reports the signed release it is trying while its previous release remains current. Neither computer accepts a retry for that trial. A three-minute relay gap keeps the switching row, and the saved last-heard time appears when the ten-minute restart window expires. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U40 | A verified pack that cannot unpack leaves a blocked row tied to its signed digest. The current release keeps serving, the row survives restart, and manual retry is refused. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U41 | A brief relay gap preserves a member's preparing row. If the member last reported the signed pack ready, its row shows switching during the restart grace before a trial is reported. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U42 | The first holder of a verified pack stops sending after five accepted parts. Its incomplete transfer times out. A second holder starts, the fraction stays at five parts until the second transfer exceeds that count, and the recipient confirms the release. Passed on Mac, native Linux, WSL2, and native Windows. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -309,7 +310,7 @@ dependencies.
 | Same, Update Now chooses the immediate candidate | Partial. An explicit check bypasses the automatic release age rule. U20 verifies that an authenticated member request starts the check. A newly published release still needs a full switch scenario. | 7.2 |
 | Same, progress summary remains while switching and after settlement | Covered by U35. | — |
 | Same, row progress and retry | U30–U31 cover local and peer retry. U32–U33 cover retryable failure rows. U34 covers getting ready, ready, switching, off and up to date. U40 covers a preparation failure that must wait for the next release. | — |
-| Same, pull progress never moves back | Partial. U38 checks local and peer progress and duplicate delivery. A second peer after a timed-out transfer still needs a binary scenario. | 7.2 |
+| Same, pull progress never moves back | U38 checks local and peer progress and duplicate delivery. U42 checks replacing a stalled holder with a second one while retaining progress on both computers. | — |
 | Same, member asks main to check | Covered by U20. | — |
 | [fleet-progress](../../box/test/fleet-progress.test.ts), ready computer goes quiet, rows progress through trial, and a brief gap keeps the last row | U34 checks preparation through confirmation. U39 checks a signed trial reported over relay and expiry past the restart window. U41 checks a brief gap during preparation and a ready computer that goes quiet before reporting a trial. | — |
 | Same, local box says it is switching and ready reads separately from done | Covered by U34. | — |
