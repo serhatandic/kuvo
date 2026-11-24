@@ -3,15 +3,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { claudeEnvironment, startClaudeBridge } from "./claude.mjs";
+import {
+  claudeEnvironment, headers, heldClaude, keptListener, provider, seedSession, startClaudeBridge,
+  stopFixtureHolders, stopPids, transcript, twoReleases,
+} from "./claude.mjs";
 import {
   boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, readJSON, request, scratch,
   startBox, until, write,
 } from "./adapter.mjs";
 
 const picker = "kuvo/models/offered?refresh=1";
-const headers = { "x-kuvo-from": "app" };
-const provider = "claude-code";
 
 const opus = { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5" };
 const haiku = { value: "haiku", resolvedModel: "claude-haiku-5-5", displayName: "Haiku 5.5" };
@@ -176,8 +177,6 @@ test("the Rust keeper keeps an actual Claude adapter turn across a release switc
     const relay = await localRelay();
     const session = "ses_claude_kept";
     const route = `kuvo/agents/api/session/${session}`;
-    const old = "versions/0.8.0-beta.1-123456789abc/bin";
-    const next = "versions/0.8.0-beta.2-123456789abc/bin";
     let keeper, kept;
     const residents = [];
     try {
@@ -185,17 +184,7 @@ test("the Rust keeper keeps an actual Claude adapter turn across a release switc
       const env = { ...claudeEnvironment(binary, home, isolatedEnv(root), { turns: true }), KUVO_SANDBOX: "off" };
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       seedSession(home, session);
-      for (const [folder, version] of [[old, "0.8.0-beta.1"], [next, "0.8.0-beta.2"]]) {
-        const installed = path.join(home, folder, path.basename(binary.file));
-        write(path.join(home, folder, "..", "box.json"), JSON.stringify({ kuvo: "box/1", launch: "rust", version }));
-        fs.mkdirSync(path.dirname(installed), { recursive: true });
-        try { fs.linkSync(binary.file, installed); }
-        catch { fs.copyFileSync(binary.file, installed); }
-      }
-      const control = async args => {
-        const command = boxCommand(binary, home, env, relay, ["keep", ...args]);
-        assert.equal((await command.exited).code, 0, command.log());
-      };
+      const { old, next, control } = twoReleases(binary, home, env, relay);
       try {
         await control(["select", old]);
         keeper = boxCommand(binary, home, env, relay, ["keep"]);
@@ -235,69 +224,6 @@ test("the Rust keeper keeps an actual Claude adapter turn across a release switc
     }
     assert.ok(kept);
   });
-
-async function keptListener(home, keeper, previous) {
-  return until(async () => {
-    const file = path.join(home, "run", "serve.json");
-    if (!fs.existsSync(file)) return;
-    const listener = readJSON(file);
-    if (listener.pid === previous) return;
-    try {
-      const info = await request(listener, "GET", "kuvo/info", undefined, headers, 1000);
-      return info.status === 200 && listener;
-    } catch {
-      return;
-    }
-  }, () => "The keeper did not publish a ready resident. " + keeper.log(), 25000);
-}
-
-async function transcript(listener, route) {
-  const answer = await request(listener, "GET", route + "/message?order=asc", undefined, headers);
-  assert.equal(answer.status, 200, answer.text);
-  return answer.json.data;
-}
-
-function holderRecords(home) {
-  const folder = path.join(home, "run", "agents", "hold");
-  if (!fs.existsSync(folder)) return [];
-  // A holder removes its own record as it exits, so one listed may be gone when read.
-  return fs.readdirSync(folder).filter(name => /^[a-f\d]{12}\.json$/.test(name)).flatMap(name => {
-    try { return [readJSON(path.join(folder, name))]; }
-    catch (error) { if (error.code === "ENOENT") return []; throw error; }
-  });
-}
-
-function heldClaude(home, session) {
-  return holderRecords(home).find(record => record.meta?.provider === provider && record.meta?.session === session);
-}
-
-// Stops the holders this case started and waits for them to exit, so the scratch home can go.
-async function stopFixtureHolders(home) {
-  await stopPids(holderRecords(home).map(record => record.pid));
-}
-
-async function stopPids(pids) {
-  pids = pids.filter(pid => Number.isInteger(pid) && pid > 1);
-  const alive = pid => {
-    try { process.kill(pid, 0); return true; }
-    catch (error) { if (error.code === "ESRCH") return false; throw error; }
-  };
-  for (const pid of pids) {
-    try { process.kill(pid, "SIGTERM"); }
-    catch (error) { if (error.code !== "ESRCH") throw error; }
-  }
-  const deadline = Date.now() + 10000;
-  while (pids.some(alive) && Date.now() < deadline) await new Promise(done => setTimeout(done, 50));
-}
-
-function seedSession(home, id) {
-  write(path.join(home, "agents/sessions", id, "session.json"), JSON.stringify({
-    id, title: "Claude fixture", projectID: "fixture", agent: "build",
-    location: { directory: home }, model: { providerID: "claude-code", id: "opus" },
-    time: { created: 1, updated: 1 }, cost: 0,
-    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-  }));
-}
 
 async function withClaude(t, fixture, check, prepare = () => {}) {
   const binary = boxBinary();
