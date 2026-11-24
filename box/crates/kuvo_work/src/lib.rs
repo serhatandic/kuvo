@@ -5,3 +5,4 @@ pub mod bots;
 pub mod label_restore;
 pub mod queue;
 pub mod wakes;
+pub mod work;
