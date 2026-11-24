@@ -44,11 +44,12 @@ all 16 scenarios in its Windows primitives file.
 
 ## Packaging
 
-The local package runs `kuvo-box install --startup` with `kuvo-starter.exe` and any runtime DLLs
-beside it. The command creates the private home, installs both programs into its `bin` folder,
-and registers the starter under the placeholder name `Kuvo.exe`. SSH enrollment uses the same
-task. The account can
-run `kuvo-box uninstall --startup` to stop the keeper and remove its startup task.
+The local package can enroll a computer with `kuvo-box install --join`. Enrollment works with
+just the box and its runtime DLLs. Once enrollment succeeds, the package runs
+`kuvo-box install --startup` with `kuvo-starter.exe` beside the box. That command installs the
+programs in the private home's `bin` folder and registers the starter as `Kuvo.exe`. Native SSH
+Add calls the same startup command after enrollment succeeds and before returning the Add
+receipt. The account can run `kuvo-box uninstall --startup` to stop the keeper and remove its task.
 
 D4 needs the user's approved name and icon and an Authenticode certificate with a release
 signing key. Add the approved Windows resources before signing. Sign the final PE binaries with
