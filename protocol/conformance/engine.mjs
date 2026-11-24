@@ -35,6 +35,9 @@ export async function standInEngine(root, env) {
       }
       if (route === "GET /api/session") {
         const parent = url.searchParams.get("parentID");
+        if (engine.refuseWholeList && (parent === null || parent === "null")) {
+          return send({ message: "The full session list is temporarily unavailable." }, 503);
+        }
         const data = engine.sessions.filter(each => parent === null || (parent === "null" ? !each.parentID : each.parentID === parent));
         const limit = Number(url.searchParams.get("limit"));
         if (parent && parent !== "null" && limit > 0) {

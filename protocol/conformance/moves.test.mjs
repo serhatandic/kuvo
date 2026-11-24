@@ -1702,6 +1702,20 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.equal(fs.readFileSync(path.join(target, "paused"), "utf8"), savedPause);
   if (process.platform !== "win32") assert.equal(fs.readlinkSync(path.join(target, "current")), "wake.txt");
 
+  const asked = "[The user answered] Yes.";
+  write(path.join(here.home, "run/outbox/sending/ltr_noteAtNewOwner.json"), JSON.stringify({
+    to: session, text: asked, at: Date.now(), peer: main.key, wait: false,
+    note: { from: "Your answer", words: "Yes.", line: "You answered: Yes.", delivery: "queue" },
+  }));
+  const savedNote = await until(() => there.engine.messages.get(session)?.find(row => row.text === asked),
+    "The former computer's note did not reach the new owner", 15000);
+  assert.equal(savedNote.delivery, "queue");
+  assert.deepEqual(savedNote.metadata.kuvo.note, { from: "Your answer", line: "You answered: Yes." });
+  assert.equal(here.engine.messages.has(session), false);
+
+  // The original computer must learn the imported session from its event
+  // even while it cannot refresh the full engine list.
+  here.engine.refuseWholeList = true;
   fs.unlinkSync(path.join(target, "paused"));
   await readyToMove(destination, session, main);
   const back = await request(destination, "POST", "kuvo/moves", { kind: "chat", id: session, to: main.key, receipt: true })
@@ -1716,6 +1730,17 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   assert.equal(fs.readFileSync(path.join(folder, "wake.txt"), "utf8"), wake);
   assert.equal(fs.readFileSync(path.join(folder, "directory"), "utf8"), sourceChats);
 
+  if (binary.typescript) {
+    // The TS outbox uses the local agent publication when a stale peer is
+    // recorded on the letter. Wait for the returned conversation to be listed.
+    const published = path.join(here.home, "run/agents.json");
+    await until(() => {
+      try {
+        return readJSON(published).local?.includes(session);
+      } catch { return false; }
+    }, () => "The source did not publish its returned conversation\n"
+      + (fs.existsSync(published) ? fs.readFileSync(published, "utf8") : "(no local publication)") + "\n" + logs(), 35000);
+  }
   const letter = "ltr_returnedOwner", tool = path.join(here.home, "run/replies", letter);
   let mailed = 0;
   t.after(relay.intercept(from, to, packet => {
@@ -1725,14 +1750,16 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
     return false;
   }));
   write(tool + ".alive", "");
-  write(path.join(here.home, "run/outbox/sending", letter + ".json"), JSON.stringify({
+  const sending = path.join(here.home, "run/outbox/sending");
+  write(path.join(sending, letter + ".json"), JSON.stringify({
     from: caller, to: session, text: "Are the wake-ups here?", peer: member.key, wait: true, at: Date.now(),
   }));
-  const conversation = await until(() => here.engine.messages.get(session)?.length && here.engine.messages.get(session),
+  const conversation = await until(() => here.engine.messages.get(session)?.some(row => row.text?.includes("Are the wake-ups here?")) && here.engine.messages.get(session),
     "The old outbox address did not resolve to the local conversation", 15000);
-  assert.equal(conversation.length, 1);
-  assert.equal(conversation[0].text, `[Message from Reader · ${caller}] (They're waiting for your reply: just answer, in your words.)\n\nAre the wake-ups here?`);
-  conversation.push({ id: conversation[0].id.slice(0, -1) + "z0", type: "assistant",
+  assert.equal(conversation.length, 2);
+  const question = conversation.at(-1);
+  assert.equal(question.text, `[Message from Reader · ${caller}] (They're waiting for your reply: just answer, in your words.)\n\nAre the wake-ups here?`);
+  conversation.push({ id: question.id.slice(0, -1) + "z0", type: "assistant",
     content: [{ type: "text", text: "They’re here." }] });
   const reply = await until(() => {
     fs.utimesSync(tool + ".alive", new Date(), new Date());
@@ -1740,6 +1767,16 @@ test("a chat's wake-up folder stays held until its new computer owns it", {
   }, "The local answer did not reach the waiting tool", 18000, 500);
   assert.deepEqual(reply, { from: session, to: caller, name: "Wake-up chat", text: "They’re here." });
   assert.equal(mailed, 0);
+  const news = "[Session finished] \"Sign-in\" is done.";
+  write(path.join(sending, "ltr_noteAtOldOwner.json"), JSON.stringify({
+    to: session, text: news, at: Date.now(), peer: member.key, wait: false,
+    note: { from: "Its sessions", words: "“Sign-in” finished", line: "“Sign-in” finished", delivery: "queue" },
+  }));
+  const localNote = await until(() => conversation.find(row => row.text === news), "The returned conversation did not receive its local note");
+  assert.equal(localNote.delivery, "queue");
+  assert.deepEqual(localNote.metadata.kuvo.note, { from: "Its sessions", line: "“Sign-in” finished" });
+  assert.ok(!there.engine.sessions.some(row => row.id === session));
+  assert.ok(!there.engine.messages.get(session)?.some(row => row.text === news));
 });
 
 test("a transcript read returns to its tool without prompting the conversation", { timeout: 90000 }, async t => {

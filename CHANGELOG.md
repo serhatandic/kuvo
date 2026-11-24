@@ -12,6 +12,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A conversation with a background command or subagent running stays on its computer until the work finishes.
 - Kuvo retries deleting an expired backup when the first attempt fails.
 - Before moving a conversation, Kuvo says if its delegated sessions or unanswered questions will stay on the current computer.
+- Messages still reach a conversation after it moves back to its first computer, even while that computer is refreshing its session list.
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
 - Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.
