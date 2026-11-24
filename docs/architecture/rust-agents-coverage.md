@@ -400,8 +400,35 @@ The two rows expanded from the bot and session steering loop count separately.
 | [claude-code.test.js](../../box/bridge-tests/claude-code.test.js), 7 | 4.6 owns the import of local Claude subagent definitions. The scanner must preserve the existing name, type, link and size limits. |
 | [sessions.test.ts](../../box/test/agents/sessions.test.ts), late completion after delete and first Undo after a quit | 4.1b owns session guards and transcript loading. 4.4b provides held results and awaits durable sink events. |
 
-The live Haiku and keeper replacement proof, complete home comparison, and
-platform verification remain part of 4.4.
+A Claude sign-in that a run turns away (`authentication_failed`) closes that
+Claude Code. The account then reads as ended, even though `claude auth
+status` still says signed in, until its credentials are written again. The
+holder scenario covers this. The resident still needs to check the account
+again when such a turn ends, and to refuse a message at once while the
+account is signed out (`signedOut` in the TypeScript sessions). Both belong
+to 4.1b's shared session runs. The catalog probe gives Claude its settings as
+a file, so a Claude Code installed as a `.cmd` script can list its models.
+
+### Verification
+
+| Platform | Holder scenario | `agents-claude`, Rust | `agents-claude`, TypeScript | Live Haiku keeper switch |
+|---|---:|---:|---:|---|
+| macOS | 1/1 | 9/9 | 8/8, 1 skipped | Passed. Claude Code 2.1.330 ran under a Seatbelt profile that denies the Keychain. |
+| Linux x86-64, lokum | 1/1 | 9/9 | — | — |
+| WSL2, Ubuntu 24.04 | 1/1 | 9/9 | — | Passed. Claude Code 2.1.330 linux-x64, checked against its manifest. |
+| Native Windows x64 | 1/1 | 9/9 | — | — |
+
+Linux and WSL used one static musl build compiled on the Mac. Windows used
+an LLVM MinGW cross build. Lokum ran in a container limited to one CPU. The
+live case ran with a dedicated test account's setup token and nothing else.
+The token reached only the Claude process, as `CLAUDE_CODE_OAUTH_TOKEN`. The
+case used a scratch home, Claude configuration and XDG folders, and dropped
+every inherited variable. On WSL the token sat in the scratch folder with
+mode 600 and was deleted with it. The live run also showed that Claude
+Code 2.1.330 records a sent message's UUID as its transcript's user entry.
+Steer receipts rely on that.
+
+The complete home comparison remains part of 4.4.
 
 ### Claude account and catalog differential
 
