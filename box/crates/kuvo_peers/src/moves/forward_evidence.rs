@@ -15,12 +15,13 @@ use kuvo_store::{
     locks::OwnedLock,
 };
 use kuvo_wire::keys::encode;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 const OWNED: ObjectFormat = ObjectFormat::additive("Owned data");
 const INDEX_BATCH: usize = 128;
+const INDEX_FILE: &str = "receipt-index-v1/move-addresses.json";
 
 #[derive(Deserialize)]
 struct DraftFence {
@@ -72,45 +73,79 @@ impl Scope {
 
 #[derive(Default)]
 pub(super) struct Index {
-    mutations: CandidateIndex,
-    submissions: CandidateIndex,
+    checkpoint: Checkpoint,
+    loaded: bool,
     warming: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Deserialize, Serialize)]
+struct Checkpoint {
+    mutations: CandidateIndex,
+    submissions: CandidateIndex,
+}
+
+#[derive(Default, Deserialize, Serialize)]
 struct CandidateIndex {
-    revision: Option<FileStamp>,
-    unread: VecDeque<(String, PathBuf)>,
-    sessions: BTreeMap<String, Vec<(String, PathBuf)>>,
+    revision: Option<Revision>,
+    unread: VecDeque<String>,
+    sessions: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
+struct Revision {
+    device: u64,
+    file: u128,
+    modified: i128,
+    changed: i128,
+}
+
+impl Revision {
+    fn read(folder: &Path) -> io::Result<Option<Self>> {
+        Ok(files::file_stamp(folder)?.map(
+            |FileStamp {
+                 device,
+                 file,
+                 modified_ns,
+                 changed_ns,
+                 ..
+             }| Self {
+                device,
+                file,
+                modified: modified_ns,
+                changed: changed_ns,
+            },
+        ))
+    }
 }
 
 impl CandidateIndex {
-    fn refresh(&mut self, folder: &Path) -> io::Result<()> {
-        let revision = files::file_stamp(folder)?;
-        if self.revision != revision {
-            self.unread = records(folder)?.into();
-            self.sessions.clear();
-            self.revision = revision;
+    fn refresh(&mut self, folder: &Path) -> io::Result<bool> {
+        let revision = Revision::read(folder)?;
+        if self.revision == revision {
+            return Ok(false);
         }
-        Ok(())
+        self.unread = records(folder)?.into();
+        self.sessions.clear();
+        self.revision = revision;
+        Ok(true)
     }
 
     fn scan(
         &mut self,
+        folder: &Path,
         left: &mut usize,
         session_of: impl Fn(&str, &Map<String, Value>) -> io::Result<Option<String>>,
     ) -> io::Result<()> {
         while *left > 0 {
-            let Some((key, path)) = self.unread.front() else {
+            let Some(key) = self.unread.front() else {
                 break;
             };
-            if let Some(object) = OWNED.read(path).map_err(io::Error::other)?
+            if let Some(object) = OWNED
+                .read(&record_path(folder, key))
+                .map_err(io::Error::other)?
                 && let Some(session) = session_of(key, &object.fields)?
             {
-                self.sessions
-                    .entry(session)
-                    .or_default()
-                    .push((key.clone(), path.clone()));
+                self.sessions.entry(session).or_default().push(key.clone());
             }
             self.unread.pop_front();
             *left -= 1;
@@ -118,16 +153,23 @@ impl CandidateIndex {
         Ok(())
     }
 
-    fn paths<'a>(&'a self, sessions: &'a [String]) -> impl Iterator<Item = (&'a str, &'a Path)> {
+    fn keys<'a>(&'a self, sessions: &'a [String]) -> impl Iterator<Item = &'a str> {
         sessions
             .iter()
             .filter_map(|session| self.sessions.get(session))
             .flatten()
-            .map(|(key, path)| (key.as_str(), path.as_path()))
+            .map(String::as_str)
     }
 
     fn current(&self, folder: &Path) -> io::Result<bool> {
-        Ok(self.unread.is_empty() && files::file_stamp(folder)? == self.revision)
+        Ok(self.unread.is_empty() && Revision::read(folder)? == self.revision)
+    }
+
+    fn valid(&self) -> bool {
+        self.unread
+            .iter()
+            .chain(self.sessions.values().flatten())
+            .all(|key| valid_key(key))
     }
 }
 
@@ -152,9 +194,9 @@ impl Index {
         if !self.current(&root)? {
             return Err(indexing());
         }
-        let packed = pack(&root, setup, sessions, &self.mutations, &self.submissions)?;
-        // Each result still comes from the current, validated receipt. A new
-        // record invalidates the index even if it appeared during this read.
+        let packed = pack(&root, setup, sessions, &self.checkpoint)?;
+        // Each result comes from the current receipt. A new record can
+        // invalidate the checkpoint between reading its keys and records.
         if !self.current(&root)? {
             self.warming = true;
             return Err(indexing());
@@ -173,31 +215,54 @@ impl Index {
 
     fn advance(&mut self, root: &Path) -> io::Result<()> {
         self.warming = false;
+        let cache = root.join(INDEX_FILE);
+        if !self.loaded {
+            self.loaded = true;
+            if let Ok(Some(bytes)) = files::read(&cache)
+                && let Ok(saved) = serde_json::from_slice::<Checkpoint>(&bytes)
+                && saved.mutations.valid()
+                && saved.submissions.valid()
+            {
+                self.checkpoint = saved;
+            }
+        }
         let mutations = root.join("mutations");
         let submissions = root.join("submissions");
-        self.mutations.refresh(&mutations)?;
-        self.submissions.refresh(&submissions)?;
+        let new_mutations = self.checkpoint.mutations.refresh(&mutations)?;
+        let new_submissions = self.checkpoint.submissions.refresh(&submissions)?;
         let mut left = INDEX_BATCH;
-        self.mutations.scan(&mut left, |key, fields| {
-            Ok(match address(key, fields)? {
-                Scope::Session { id, .. } => Some(id),
-                Scope::Other => None,
-            })
-        })?;
-        self.submissions.scan(&mut left, |_, fields| {
-            Ok(fields
-                .get("submission")
-                .and_then(|saved| saved["session"].as_str())
-                .map(str::to_owned))
-        })?;
-
+        self.checkpoint
+            .mutations
+            .scan(&mutations, &mut left, |key, fields| {
+                Ok(match address(key, fields)? {
+                    Scope::Session { id, .. } => Some(id),
+                    Scope::Other => None,
+                })
+            })?;
+        self.checkpoint
+            .submissions
+            .scan(&submissions, &mut left, |_, fields| {
+                Ok(fields
+                    .get("submission")
+                    .and_then(|saved| saved["session"].as_str())
+                    .map(str::to_owned))
+            })?;
+        if new_mutations || new_submissions || left < INDEX_BATCH {
+            let bytes = serde_json::to_vec(&self.checkpoint)?;
+            if let Err(error) = files::write_atomic(&cache, &bytes) {
+                eprintln!("Saving a move receipt index checkpoint: {error}");
+            }
+        }
         self.warming = !self.current(root)?;
         Ok(())
     }
 
     fn current(&self, root: &Path) -> io::Result<bool> {
-        Ok(self.mutations.current(&root.join("mutations"))?
-            && self.submissions.current(&root.join("submissions"))?)
+        Ok(self.checkpoint.mutations.current(&root.join("mutations"))?
+            && self
+                .checkpoint
+                .submissions
+                .current(&root.join("submissions"))?)
     }
 }
 
@@ -205,12 +270,16 @@ fn pack(
     root: &Path,
     setup: &str,
     sessions: &[String],
-    mutations: &CandidateIndex,
-    submissions: &CandidateIndex,
+    checkpoint: &Checkpoint,
 ) -> io::Result<Option<BTreeMap<String, Value>>> {
     let mut entries = BTreeMap::new();
-    for (key, path) in mutations.paths(sessions) {
-        let Some(object) = OWNED.read(path).map_err(io::Error::other)? else {
+    let mutations = root.join("mutations");
+    let submissions = root.join("submissions");
+    for key in checkpoint.mutations.keys(sessions) {
+        let Some(object) = OWNED
+            .read(&record_path(&mutations, key))
+            .map_err(io::Error::other)?
+        else {
             continue;
         };
         if address(key, &object.fields)?.follows(setup, sessions) {
@@ -219,8 +288,11 @@ fn pack(
     }
     // Before the replay fence acquired a typed address, the stable submission
     // identified the same mutation record by its original digest.
-    for (key, path) in submissions.paths(sessions) {
-        let Some(object) = OWNED.read(path).map_err(io::Error::other)? else {
+    for key in checkpoint.submissions.keys(sessions) {
+        let Some(object) = OWNED
+            .read(&record_path(&submissions, key))
+            .map_err(io::Error::other)?
+        else {
             continue;
         };
         let Some(saved) = object.fields.get("submission") else {
@@ -445,7 +517,11 @@ fn address(key: &str, fields: &Map<String, Value>) -> io::Result<Scope> {
     Ok(Scope::Other)
 }
 
-fn records(folder: &Path) -> io::Result<Vec<(String, PathBuf)>> {
+fn record_path(folder: &Path, key: &str) -> PathBuf {
+    folder.join(format!("{key}.json"))
+}
+
+fn records(folder: &Path) -> io::Result<Vec<String>> {
     let entries = match std::fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
@@ -460,7 +536,7 @@ fn records(folder: &Path) -> io::Result<Vec<(String, PathBuf)>> {
                 .and_then(|key| key.to_str())
                 .filter(|key| valid_key(key))
         {
-            found.push((key.to_owned(), path));
+            found.push(key.to_owned());
         }
     }
     Ok(found)

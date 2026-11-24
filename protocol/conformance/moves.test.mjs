@@ -1744,12 +1744,12 @@ test("a moved conversation's submitted-message receipt stays with its original i
   assert.ok(!there.engine.asked.some(row => row.method === "POST" && row.path === `/api/session/${session}/prompt`));
 });
 
-test("a cold move receipt index pauses after a bounded scan", {
+test("a cold move receipt index resumes its bounded scan after a restart", {
   timeout: 90000, skip: binary.typescript && "The TypeScript reference checks its cold index in owner-mutations.test.js",
 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("move-receipt-index"), there = await computer("move-index-destination");
-  const { member } = seedPeerSetup(here.home, relay.url);
+  const { main, member } = seedPeerSetup(here.home, relay.url);
   seedPeerSetup(there.home, relay.url, 2);
   const setup = readJSON(path.join(here.home, "run/link.json")).setup.id;
   const session = "ses_indexedMove", directory = path.join(here.home, "chats");
@@ -1764,8 +1764,9 @@ test("a cold move receipt index pauses after a bounded scan", {
   const shadow = key(["typed-draft", setup, session, message]);
   const fence = { formatVersion: 1, digest: "scoped:" + "C".repeat(43), draftReplayFence: { setup, session, id: message } };
   write(path.join(store, shadow + ".json"), JSON.stringify(fence));
-  const source = here.start(), destination = there.start();
-  const [original] = await Promise.all([source.ready(), destination.ready()]);
+  let source = here.start();
+  const destination = there.start();
+  let [original] = await Promise.all([source.ready(), destination.ready()]);
   await readyToMove(original, session, member);
   const start = () => request(original, "POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
   const settled = async id => {
@@ -1782,6 +1783,11 @@ test("a cold move receipt index pauses after a bounded scan", {
   assert.ok(here.engine.sessions.some(each => each.id === session));
   assert.ok(!there.engine.sessions.some(each => each.id === session));
 
+  await source.stop();
+  await until(() => !relay.has(Buffer.from(main.address, "base64url")), "The old source did not disconnect");
+  source = here.start();
+  original = await source.ready();
+  await readyToMove(original, session, member);
   const retry = await start();
   assert.equal(retry.status, 202, retry.text);
   assert.equal((await settled(retry.json.move.id)).state, "done");
