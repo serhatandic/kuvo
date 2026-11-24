@@ -70,6 +70,19 @@ impl Mail {
                         let _ = checks.try_send(Check::Peer);
                         continue;
                     }
+                    if let Some(retry) = value.get("retry")
+                        && let Ok(release) = serde_json::from_value(retry.clone())
+                    {
+                        if view
+                            .peer_updates(key, mail.reader.now())
+                            .1
+                            .release_target
+                            .is_some()
+                        {
+                            let _ = checks.try_send(Check::PeerRetry(release));
+                        }
+                        continue;
+                    }
                     match answer(value, &home, &mail.key, &mut held) {
                         Ok(Some(value)) => {
                             let _ = mail.send(&peer, value).await;
@@ -84,6 +97,14 @@ impl Mail {
 
     pub(super) async fn request_check(&self, peer: &Host) -> io::Result<()> {
         self.send(peer, json!({"check":true})).await
+    }
+
+    pub(super) async fn request_retry(
+        &self,
+        peer: &Host,
+        release: &kuvo_peers::directory::PreparedRelease,
+    ) -> io::Result<()> {
+        self.send(peer, json!({"retry":release})).await
     }
 
     pub(super) async fn pull(&self, release: &ReleaseRef) -> io::Result<Vec<u8>> {

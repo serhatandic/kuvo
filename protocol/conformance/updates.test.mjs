@@ -267,6 +267,32 @@ test("a discarded release signature does not stop the next signed feed check", a
   assert.equal(fs.existsSync(path.join(here.home, "run/fleet-ready.json")), false);
 });
 
+async function failedFleetDownload(t) {
+  const key = keypair();
+  const version = "0.8.0";
+  const hash = digest("signed target");
+  let downloads = 0;
+  let signed;
+  const feed = createServer((req, res) => {
+    if (req.url !== "/boxes.json") {
+      downloads += 1;
+      return res.writeHead(404).end();
+    }
+    res.end(signed);
+  });
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const pack = { url: `http://127.0.0.1:${feed.address().port}/target.tar.gz`, sha256: hash };
+  signed = encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true,
+    launch: "rust", pack, packs: { [target]: pack } }, key));
+  const updateEnv = {
+    KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`,
+    KUVO_TEST_RELEASE_KEY: key.key,
+  };
+  return { version, hash, signed, updateEnv, downloaded: () => downloads };
+}
+
 test("a failed fleet download can be retried for the same signed target", { timeout: 30000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
@@ -275,31 +301,12 @@ test("a failed fleet download can be retried for the same signed target", { time
     privateWindowsHome(path.join(folder, "box"));
     return {};
   });
-  const key = keypair();
-  const version = "0.8.0";
+  const { version, hash, updateEnv, downloaded } = await failedFleetDownload(t);
   const installed = "0.8.0-beta.1";
-  const hash = digest("signed target");
-  let downloads = 0;
   write(path.join(here.home, "bin/box-version"), installed + "\n");
-  const feed = createServer((req, res) => {
-    if (req.url !== "/boxes.json") {
-      downloads += 1;
-      return res.writeHead(404).end();
-    }
-    const pack = { url: `http://127.0.0.1:${feed.address().port}/target.tar.gz`, sha256: hash };
-    res.end(encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true,
-      launch: "rust", pack, packs: { [target]: pack } }, key)));
-  });
-  feed.listen(0, "127.0.0.1");
-  await once(feed, "listening");
-  t.after(() => { feed.close(); feed.closeAllConnections(); });
-  const updateEnv = {
-    KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`,
-    KUVO_TEST_RELEASE_KEY: key.key,
-  };
   const child = here.start(binary, updateEnv);
   await child.ready();
-  await until(() => downloads === 1, "the updater must try its signed target");
+  await until(() => downloaded() === 1, "the updater must try its signed target");
   const failed = path.join(here.home, "run/fleet-cannot.json");
   await until(() => fs.existsSync(failed), () => `the fleet failure must be available for retry\n${child.log()}`);
   assert.deepEqual([readJSON(failed).version, readJSON(failed).sha256, readJSON(failed).fixable], [version, hash, true]);
@@ -308,12 +315,61 @@ test("a failed fleet download can be retried for the same signed target", { time
   const resident = await restarted.ready();
   const stale = await request(resident, "POST", "kuvo/update/retry", { target: version, targetSha256: digest("older offer") });
   assert.equal(stale.status, 409, stale.text);
-  assert.equal(downloads, 1);
+  assert.equal(downloaded(), 1);
   const retry = await request(resident, "POST", "kuvo/update/retry", { target: version, targetSha256: hash });
   assert.equal(retry.status, 202, retry.text);
   assert.deepEqual([retry.json.target, retry.json.targetSha256, retry.json.state, retry.json.canRetry], [version, hash, "cannot", false]);
-  await until(() => downloads === 2 && fs.existsSync(failed), "the updater must try the same signed target once more");
+  await until(() => downloaded() === 2 && fs.existsSync(failed), "the updater must try the same signed target once more");
   assert.equal((await request(resident, "GET", "kuvo/update")).json.version, installed);
+});
+
+test("the main can ask a reachable member to retry its failed fleet download", { timeout: 60000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust fleet worker.");
+  const { computer, leases } = await bench(t);
+  const make = name => computer(name, undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const [main, member] = await Promise.all([make("Main"), make("Member")]);
+  const old = main.start();
+  const previous = await old.ready();
+  const setup = await request(previous, "GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "the main must hold a lease");
+  const invite = await request(previous, "POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  const joined = await member.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  await old.stop();
+
+  const { version, hash, signed, updateEnv, downloaded } = await failedFleetDownload(t);
+  for (const peer of [main, member]) write(path.join(peer.home, "bin/box-version"), "0.8.0-beta.1\n");
+  const [first, second] = await Promise.all([main.start(binary, updateEnv).ready(), member.start(binary, updateEnv).ready()]);
+  const memberSetup = await request(second, "GET", "kuvo/setup");
+  const key = memberSetup.json.you.key;
+  const mainFailure = path.join(main.home, "run/fleet-cannot.json");
+  const memberFailure = path.join(member.home, "run/fleet-cannot.json");
+  await until(() => downloaded() === 2 && fs.existsSync(mainFailure) && fs.existsSync(memberFailure),
+    "both computers must see the failed download");
+  const announced = path.join(main.home, "run/peer-agents.json");
+  const peerFailure = await until(() => fs.existsSync(announced) && readJSON(announced)[key]?.computer?.cannot,
+    "the main must receive the member's failed target");
+  assert.deepEqual([peerFailure.version, peerFailure.sha256, peerFailure.fixable], [version, hash, true]);
+  const initial = file => fs.existsSync(file) && fs.statSync(file, { bigint: true }).ino;
+  const oldMain = initial(mainFailure);
+  const oldMember = initial(memberFailure);
+  // The main already switched while the member's download was unavailable.
+  const release = `versions/${version}-${hash.slice(0, 12)}`;
+  write(path.join(main.home, release, "boxes.json"), signed);
+  write(path.join(main.home, "active-release"), `${release}/bin`);
+  const stale = await request(first, "POST", "kuvo/update/retry", { target: version, targetSha256: digest("older offer"), key });
+  assert.equal(stale.status, 409, stale.text);
+  const retry = await request(first, "POST", "kuvo/update/retry", { target: version, targetSha256: hash, key });
+  assert.equal(retry.status, 202, retry.text);
+  assert.deepEqual([retry.json.target, retry.json.targetSha256, retry.json.canRetry], [version, hash, false]);
+  await until(() => downloaded() === 3 && initial(memberFailure) && initial(memberFailure) !== oldMember,
+    "the member must try its signed target again");
+  assert.equal(initial(mainFailure), oldMain);
 });
 
 test("a machine refuses the Mac Helper's Stop request", async t => {

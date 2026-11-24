@@ -167,12 +167,22 @@ pub struct UpdateFacts {
     pub running_manifest: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub staged: Option<PreparedRelease>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cannot: Option<CannotUpdate>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PreparedRelease {
     pub version: String,
     pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CannotUpdate {
+    #[serde(flatten)]
+    pub release: PreparedRelease,
+    pub reason: String,
+    pub fixable: bool,
 }
 
 impl ComputerFacts {
@@ -193,6 +203,10 @@ impl ComputerFacts {
             staged: self
                 .extra
                 .get("staged")
+                .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            cannot: self
+                .extra
+                .get("cannot")
                 .and_then(|value| serde_json::from_value(value.clone()).ok()),
         }
     }
