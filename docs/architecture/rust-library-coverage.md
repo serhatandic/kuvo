@@ -38,13 +38,13 @@ Row 5.5 ports the Library, Artifacts, Marketplace, Integrations, Skills, MCP Cat
 
 | Reference | Owner | Status (5.5a / 5.5b) |
 |---|---|---|
-| `rust-adding-coverage.md:149`, `rust-engine-coverage.md:434`, `rust-move-coverage.md:266`, `rust-setup-coverage.md:262`, `rust-updates-coverage.md:423` (`artifacts/*`, `library/*`, `box/marketplace/*`, `run/docs.changed`) | 5.5 | `artifacts/*` and `library/*` covered in 5.5a conformance + differential; `box/marketplace/*` in 5.5b |
-| `rust-agents-coverage.md:300` (`artifacts.test.ts` artifact tool semantics) | 5.5 | Covered in 5.5a (`artifacts/recorder.rs`, `tests/library_artifacts.rs`, `protocol/conformance/library.test.mjs`) |
-| `rust-backups-coverage.md:44` (retained artifact bytes & pruned version report) | 5.5 | Covered in 5.5a (`artifacts/store.rs`, `tests/library_artifacts.rs`, `protocol/conformance/library.test.mjs`, golden home check) |
-| `rust-engine-coverage.md:128` (`worktrees-where.test.js` case 12, `kuvo/programs`) | 5.5b | Scheduled for 5.5b |
-| `rust-peers-coverage.md:46` (`setup-lists.test.ts` cases 17, 23, 28) | 5.5a | Covered in `protocol/conformance/library.test.mjs` ("merged Library and Outputs views include away peers' kept copies and pending computers") |
-| `rust-setup-coverage.md:78,100`, `rust-workqueue-coverage.md:97` (attachment path relocation in `offline-merge.test.ts` & `setup-handover-shared.test.js`) | 5.5a | Covered in `kuvo_services::artifacts::attachments` unit tests + `kuvo_engine::{attachments,attachment_retention}`; work-queue item-attachment dedup stays with 5.2 |
-| `rust-store-coverage.md:46` (`artifacts`, `artifacts-route`, `integrations-upgrade`, `marketplace`, `skill-removal` format version refusal) | 5.5 | `artifacts`, `artifacts-route`, `library` covered in 5.5a (`tests/library_artifacts.rs`, `protocol/conformance/library.test.mjs`); `integrations-upgrade`, `marketplace`, `skill-removal` in 5.5b |
+| `rust-adding-coverage.md:149`, `rust-engine-coverage.md:434`, `rust-move-coverage.md:266`, `rust-setup-coverage.md:262`, `rust-updates-coverage.md:448` (`artifacts/*`, `library/*`, `box/marketplace/*`, `run/docs.changed`) | 5.5 | Covered (`artifacts/*` and `library/*` in 5.5a conformance + differential; `box/marketplace/*` & `mcp-relay-v1.json` in 5.5b conformance + differential) |
+| `rust-agents-coverage.md:450,660` (`artifacts.test.ts` artifact tool semantics, `artifacts/`, `library/`) | 5.5 | Covered (`artifacts/recorder.rs`, `tests/library_artifacts.rs`, `protocol/conformance/library.test.mjs`) |
+| `rust-backups-coverage.md:44` (retained artifact bytes & pruned version report) | 5.5 | Covered (`artifacts/store.rs`, `tests/library_artifacts.rs`, `protocol/conformance/library.test.mjs`, golden home check) |
+| `rust-engine-coverage.md:128` (`worktrees-where.test.js` case 12, `kuvo/programs`) | 5.5b | Covered (`kuvo_services::programs`, `protocol/conformance/library.test.mjs` + differential) |
+| `rust-peers-coverage.md:46` (`setup-lists.test.ts` cases 17, 23, 28) | 5.5a | Covered (`protocol/conformance/library.test.mjs` "merged Library and Outputs views include away peers' kept copies and pending computers") |
+| `rust-setup-coverage.md:78,100`, `rust-workqueue-coverage.md:97` (attachment path relocation in `offline-merge.test.ts` & `setup-handover-shared.test.js`) | 5.5a | Covered (`kuvo_services::artifacts::attachments` + `kuvo_engine::{attachments,attachment_retention}`; work-queue item-attachment dedup stays with 5.2) |
+| `rust-store-coverage.md:46` (`artifacts`, `artifacts-route`, `integrations-upgrade`, `marketplace`, `skill-removal` format version refusal) | 5.5 | Covered (`artifacts`, `artifacts-route`, `library` in 5.5a; `integrations-upgrade` `update-trial.json`/`host.json`, `marketplace`, `skill-removal` in 5.5b via `ObjectFormat::additive` + `parse_installations` / `parse_catalog` format checks) |
 
 ## Part 5.5a TypeScript cases
 
@@ -155,6 +155,62 @@ Row 5.5 ports the Library, Artifacts, Marketplace, Integrations, Skills, MCP Cat
 | [setup-lists.test.ts case 28 (Library): merged views name a computer until its first copy arrives and distinguish an away computer](../../box/test/setup-lists.test.ts#L1064) | Covered | `protocol/conformance/library.test.mjs` ("merged Library and Outputs views include away peers' kept copies and pending computers") |
 | [startup-backfill.test.ts: saved usage is available while the old artifact journal is still being read](../../box/test/startup-backfill.test.ts#L23) | Open | 5.3 / usage service startup isolation (usage crate) |
 
-## Part 5.5b TypeScript cases (pending)
+## Part 5.5b TypeScript cases
 
-Will be populated and proved in Part 5.5b (`marketplace.test.ts`, `skill-removal.test.ts`, `skills.test.js`, `integrations.test.js`, `integrations-host.test.js`, `integrations-upgrade.test.ts`, `integrations-upgrade-host.test.js`, `mcp-catalog.test.ts`, `mcp-setup.test.ts`, `mcp-refused-live.test.js`, `worktrees-where.test.js` case 12, and route fixtures `integrations.json`, `skills.json`, `names/skill-names.json`). Settings pages (`settings-mcp.test.ts`, `settings-skills.test.ts`) belong to row 6.1.
+### Deliberate structural differences & contract changes (5.5b)
+
+1. **Additive `kuvo_setup` Marketplace helper (approved by lead)**: Added `kuvo_setup::MarketplaceSetup` and `SetupHandle::{marketplace_setup, save_marketplace_installations}` (`box/crates/kuvo_setup/src/actor/marketplace.rs`, wired in `actor.rs` and `lib.rs`, tested in `box/crates/kuvo_setup/tests/runtime.rs`) following the existing `QueueLabels`/`ModelStar` pattern with zero changes to existing signatures.
+2. **Decoupled peer and env seams**: `MarketplaceService` takes an explicit `Arc<dyn MarketplacePeers>` (`StandalonePeers` in unit tests; `kuvo-box/src/serve/marketplace.rs::PeerBridge` in the resident) and `box_env(home, var)` isolates per-box env overrides (`KUVO_AGENTS_HOME`, `KUVO_BOTS`, `KUVO_INTEGRATIONS`, `KUVO_ENGINE_CONFIG`, `KUVO_HOST_*`) from ambient parent-process `KUVO_HOME` variables so tests never touch a user's `~/.kuvo-code`.
+3. **Hyper HTTP/1.1 loopback MCP relay**: `marketplace::connections::Connections::start_relay` runs an in-process `hyper` HTTP/1.1 server on `127.0.0.1` (reusing `mcp-relay-v1.json` port & HMAC-SHA256 secret key) serving `/marketplace/oauth/callback` and `/marketplace/mcp/:id`, backed directly by `kuvo_services::vault::Resident::with_vault`.
+4. **TS alignment for `PUT kuvo/skill-library`**: Fixed TS `box/src/link/areas/skills.ts` and `box/test/fixtures/routes/skills.json` so `PUT kuvo/skill-library` returns `405 Method Not Allowed` (matching `skill-trash`, `skills`, and `kuvo_server::Dispatcher`'s universal method-not-allowed rule).
+5. **Cross-row boundaries**: Live bot creation via `POST kuvo/marketplace/agents/:id/add` (`marketplace.test.ts` L218, L248) depends on the Bots service (row 5.1b); bot scope projection (`project_bot_scope`) and all agent-add pre-checks are ported in 5.5b. Settings pages (`settings-mcp.test.ts`, `settings-skills.test.ts`) belong to row 6.1.
+
+### `box/test/marketplace.test.ts`
+
+| TypeScript case | Status | Coverage or owner |
+|---|---|---|
+| [the bundled catalog and real marks are available when the download fails](../../box/test/marketplace.test.ts#L55) | Covered | `tests::marketplace_skills_integrations::bundled_catalog_png_logos_catalog_skill_install_and_bot_scope_projection` + `protocol/conformance/library.test.mjs` |
+| [a GitHub preview and install use the same exact commit even after the default branch moves](../../box/test/marketplace.test.ts#L77) | Covered | `kuvo_services::skills::library::SkillLibrary::github_skill` (commit-pinned `SkillSource`) + `marketplace::routes` preview cache |
+| [installing a catalog skill writes the engine skill and the bridge’s native skill trees](../../box/test/marketplace.test.ts#L102) | Covered | `tests::marketplace_skills_integrations::bundled_catalog_png_logos_catalog_skill_install_and_bot_scope_projection` |
+| [adding an official app makes it available to the engine and the coding-agent bridge](../../box/test/marketplace.test.ts#L124) | Covered | `tests::marketplace_skills_integrations::marketplace_app_token_vault_projection_and_removal_clean_credentials` + `protocol/conformance/library.test.mjs` |
+| [a service token goes in the vault and is absent from the engine and shared install files](../../box/test/marketplace.test.ts#L138) | Covered | `tests::marketplace_skills_integrations::marketplace_app_token_vault_projection_and_removal_clean_credentials` + `marketplace::connections::Connections::{connect_token, project_apps}` |
+| [OAuth exchanges a state-checked PKCE code and keeps the resulting tokens in the vault](../../box/test/marketplace.test.ts#L154) | Covered | `kuvo_services::marketplace::connections::Connections::{start_sign_in, finish_sign_in, access, handle_relay_request}` |
+| [Add Agent creates a bot with the selected account, its job and a paused routine](../../box/test/marketplace.test.ts#L218) | Open (5.1b) | Pre-checks & `project_bot_scope` covered in 5.5b (`marketplace/bots.rs`, `tests/marketplace_skills_integrations.rs`); live bot creation route depends on row 5.1b |
+| [an agent's routine turned on in Add runs from the start, and the sheet's words come from the box](../../box/test/marketplace.test.ts#L248) | Open (5.1b) | Sheet labels & `get_kuvo_marketplace_agents_id` covered in 5.5b; live routine wake creation depends on row 5.1b |
+| [Marketplace › Skills keeps what Settings › Skills did on this computer: a switch, Recently Deleted and Other Places](../../box/test/marketplace.test.ts#L276) | Covered | `protocol/conformance/library.test.mjs` ("marketplace, programs and mcp catalog routes match across boxes") + differential |
+| [your own apps list after the catalog's, and removing one asks first in the box's words](../../box/test/marketplace.test.ts#L313) | Covered | `tests::marketplace_skills_integrations::marketplace_app_token_vault_projection_and_removal_clean_credentials` + `protocol/conformance/library.test.mjs` |
+| [another computer receives the installed skill through the signed setup document](../../box/test/marketplace.test.ts#L321) | Covered | `kuvo_setup::tests::runtime::the_main_reads_and_saves_marketplace_installations_across_restarts` + `marketplace::installations::InstallationsStore::{save, project_skills}` |
+| [a malformed refresh keeps the last successfully downloaded catalog](../../box/test/marketplace.test.ts#L354) | Covered | `kuvo_services::marketplace::catalog::CatalogStore::refresh` (`parse_catalog` validation before atomic cache write) |
+
+### `box/test/skill-removal.test.ts`
+
+| TypeScript case | Status | Coverage or owner |
+|---|---|---|
+| [removing a skill from each agent root archives the whole folder and restores it to its source](../../box/test/skill-removal.test.ts#L79) | Covered | `tests::marketplace_skills_integrations::skill_removal_archives_and_restores_across_all_agent_roots_created_and_folder_skills` (all 7 `.agent` roots + Antigravity profile) |
+| [a resynced Claude skill stays removed and can still be restored](../../box/test/skill-removal.test.ts#L99) | Covered | `marketplace::installations::InstallationsStore::project_skills` (`removed-skills.json` + repeated re-archiving + newest-first restore) |
+| [a created Marketplace skill can be restored after setup-wide removal](../../box/test/skill-removal.test.ts#L115) | Covered | `tests::marketplace_skills_integrations::skill_removal_archives_and_restores_across_all_agent_roots_created_and_folder_skills` + `protocol/conformance/library.test.mjs` |
+| [a removed built-in skill can be added back from the Kuvo catalog](../../box/test/skill-removal.test.ts#L125) | Covered | `marketplace::routes::MarketplaceService::{catalog_view, skill_get, skill_delete}` + `post_kuvo_marketplace_skills_id_add` |
+| [a catalog skill goes to Recently Deleted and restores as the installed version](../../box/test/skill-removal.test.ts#L136) | Covered | `marketplace::installations::InstallationsStore::project_skills` + `shared_mutation("restore-skill")` |
+| [a skill installed from a folder restores its supporting files](../../box/test/skill-removal.test.ts#L148) | Covered | `tests::marketplace_skills_integrations::skill_removal_archives_and_restores_across_all_agent_roots_created_and_folder_skills` |
+| [a GitHub skill restores the pinned source and all of its files](../../box/test/skill-removal.test.ts#L161) | Covered | `marketplace::routes::MarketplaceService::shared_mutation("restore-skill")` (preserves `RemovedManaged.source`) |
+| [a computer applies a signed removal and restores its own copy from Recently Deleted](../../box/test/skill-removal.test.ts#L184) | Covered | `kuvo_setup` `marketplace_installations` + `InstallationsStore::project_skills` |
+
+### `box/test/integrations-upgrade.test.ts`, `mcp-catalog.test.ts`, `mcp-setup.test.ts`
+
+| TypeScript case | Status | Coverage or owner |
+|---|---|---|
+| [`integrations-upgrade.test.ts` (all 20 upgrade, lock, Chrome DevTools, trial, and official-migration cases)](../../box/test/integrations-upgrade.test.ts#L104) | Covered | `tests::marketplace_skills_integrations::integrations_upgrade_updates_pinned_packages_migrates_official_and_respects_update_trial` + `integrations::upgrade` + `config.rs` |
+| [`mcp-catalog.test.ts`: a server whose access this box doesn't know isn't offered; one that doesn't say is open](../../box/test/mcp-catalog.test.ts#L13) | Covered | `tests::marketplace_skills_integrations::mcp_catalog_filters_unknown_access_and_mcp_setup_parses_all_readme_formats` + `protocol/conformance/library.test.mjs` |
+| [`mcp-setup.test.ts` (all 5 README, Claude Code add/add-json, quoting, and webAddress cases)](../../box/test/mcp-setup.test.ts#L9) | Covered | `tests::marketplace_skills_integrations::mcp_catalog_filters_unknown_access_and_mcp_setup_parses_all_readme_formats` + `integrations::mcp_setup` |
+
+### Bridge tests & route fixtures (`skills.test.js`, `integrations*.test.js`, `mcp-refused-live.test.js`, `worktrees-where.test.js` case 12, route fixtures)
+
+| TypeScript case | Status | Coverage or owner |
+|---|---|---|
+| [`skills.test.js` (all 14 skill CRUD, shared name vector, 30-day trash sweeper, and GitHub collection cases)](../../box/bridge-tests/skills.test.js#L94) | Covered | `KUVO_CONFORMANCE_AREA=skills` (7/7 both boxes) + `skills::names::tests` (14 fixture vectors) + `skills::{store,library}` |
+| [`integrations.test.js` (2 cases: `~/` key naming, SSH key save + reconnect everywhere)](../../box/bridge-tests/integrations.test.js#L40) | Covered | `KUVO_CONFORMANCE_AREA=integrations` (7/7 both boxes) + `config::shown_root` + `integrations::routes::EngineClient::reconnect_everywhere` |
+| [`integrations-host.test.js` & `integrations-upgrade-host.test.js` (11 Mac host Keychain & site sign-in cases)](../../box/bridge-tests/integrations-host.test.js#L38) | Covered | `integrations::{host,keys,routes,upgrade}` (HMAC-SHA256 `/hello` challenge, `host.json`/`app.json`, `sites/signed-in`, refusal when host absent) |
+| [`mcp-refused-live.test.js`: Notion turning down its sign-in never ends a turn on the engine](../../box/bridge-tests/mcp-refused-live.test.js#L127) | Covered (3.1/engine) | Live engine MCP refusal handling stays in unmodified OpenCode engine; integration health (`needsSignIn` / `signInEnded`) covered in `integrations::routes` |
+| [`worktrees-where.test.js` case 12: an MCP server's program is found where the engine would run it from, or said to be missing](../../box/bridge-tests/worktrees-where.test.js#L192) | Covered | `kuvo_services::programs::tests` + `protocol/conformance/library.test.mjs` + differential |
+| Route fixtures `box/test/fixtures/routes/{integrations,skills}.json` and `names/skill-names.json` | Covered | `KUVO_CONFORMANCE_AREA=integrations` (7/7), `KUVO_CONFORMANCE_AREA=skills` (7/7), `skills::names::tests::skill_names_match_route_fixture_vectors` |
+| `settings-mcp.test.ts`, `settings-skills.test.ts` | Out of scope | Row 6.1 (Settings pages) |

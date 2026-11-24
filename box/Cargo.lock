@@ -1495,6 +1495,8 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "icu_collator",
  "jiff",
  "kuvo_os",

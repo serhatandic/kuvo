@@ -21,6 +21,8 @@ hex = "0.4"
 hmac = "0.12"
 http = "1"
 http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 icu_collator = "2"
 jiff = "0.2"
 kuvo_os = { path = "../kuvo_os" }
@@ -30,7 +32,7 @@ kuvo_setup = { path = "../kuvo_setup" }
 kuvo_store = { path = "../kuvo_store" }
 libc = "0.2"
 percent-encoding = "2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
 rusqlite = "0.37"
 ryu-js = "1"
 serde = { version = "1", features = ["derive"] }

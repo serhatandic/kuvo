@@ -192,3 +192,46 @@ async fn the_main_saves_exact_device_generations_and_returns_the_original_signed
         pairing.as_str()
     );
 }
+
+#[tokio::test]
+async fn the_main_reads_and_saves_marketplace_installations_across_restarts() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("box");
+    let runtime = SetupRuntime::prepare(&home, "Studio".into(), false, None)
+        .await
+        .unwrap()
+        .start(None)
+        .unwrap();
+    let handle = runtime.handle();
+    let initial = handle.marketplace_setup().unwrap();
+    assert!(initial.main_here);
+    assert_eq!(initial.sequence, 0);
+    assert!(initial.value.is_none());
+
+    let payload = json!({
+        "format": 1,
+        "apps": [],
+        "skills": [],
+    });
+    let receipt = handle
+        .save_marketplace_installations(Some(0), payload.clone())
+        .await
+        .unwrap();
+    let proof = documents::verify(receipt.proof).unwrap();
+    assert_eq!(proof.kind, Kind::SetupShared);
+    assert_eq!(proof.body["kind"], "marketplaceInstallations");
+
+    let updated = handle.marketplace_setup().unwrap();
+    assert_eq!(updated.sequence, 1);
+    assert_eq!(updated.value, Some(payload.clone()));
+    drop(runtime);
+
+    let reopened = SetupRuntime::prepare(&home, "Studio".into(), false, None)
+        .await
+        .unwrap()
+        .start(None)
+        .unwrap();
+    let after = reopened.handle().marketplace_setup().unwrap();
+    assert_eq!(after.sequence, 1);
+    assert_eq!(after.value, Some(payload));
+}
