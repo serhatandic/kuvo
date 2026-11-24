@@ -67,6 +67,7 @@ the races that span removal, backup, moves, and an authority change.
 | U22 | [Uninstall from a saved SSH address commits and waits for a signed wipe](../../protocol/conformance/ssh-adding.test.mjs) | Both current setups require an address bound to the member’s key. They revoke the offline member, clear its saved address, report the signed commit, and finish when the member erases and acknowledges. Stop after the commit leaves the attempt active. Recording a lost disk ends the attempt with an unconfirmed erase and preserves its receipt. |
 | U23 | [Unlink keeps its signed revocation when forgetting the SSH address fails](../../protocol/conformance/ssh-adding.test.mjs) | Both boxes commit access revocation before editing the address list. An unwritable list produces an error with the saved proof. After restart, repeating the operation clears the address and its pending cleanup record without advancing membership again. |
 | U24 | [A removed Unix member completes a pending wipe after the main computer hands over](../../protocol/conformance/removal.test.mjs) | Both boxes carry the same pending operation to the successor. The original source comes online in the old epoch, gets the successor’s signed checkpoint over removal mail, and wipes. The successor records the signed completion, and the former main sees the pending row disappear. |
+| U25 | [The installer finishes an authorized stopped Mac wipe without its helper](../../protocol/conformance/removal.test.mjs) | A failed keeper stop leaves the authorized stopping receipt and app data. After the owned resident and Helper are stopped, the installer status command resumes the same operation, clears the test Keychain entries and erases only the old app folder. Both implementations leave the same reinstall offer and receipt. |
 
 ## Stored and inherited cases
 
@@ -281,7 +282,7 @@ covers the same startup consumers with older fixtures.
 
 ## TypeScript scenarios
 
-This map lists 194 reference cases, including expanded parameterized cases. 52 have coverage and 142 still have open or partial work. Of those, 94 list 2.3 as an owner (71 open, 23 partial).
+This map lists 194 reference cases, including expanded parameterized cases. 52 have coverage and 142 still have open or partial work. Of those, 93 list 2.3 as an owner (70 open, 23 partial).
 
 ### computers-add
 
@@ -345,7 +346,7 @@ This map lists 194 reference cases, including expanded parameterized cases. 52 h
 | --- | --- | --- |
 | [status on a new computer: the pack checked and unpacked, the release's engine fetched once and checked, and the verdict `fresh`](../../box/bridge-tests/install.test.js#L124) | Open | 7.1 |
 | [the installer offers reinstall only after the last setup wipe](../../box/bridge-tests/install.test.js#L148) | U7 and U10 verify the installer status gate, recovering a detached wipe, and consuming the offer after enrollment. The standalone release installer’s start after reinstall belongs to 7.2. | 7.2 |
-| [a stopped Mac's authorized last wipe finishes without its helper](../../box/bridge-tests/install.test.js#L204) | Open | 2.3, 6.2 |
+| [a stopped Mac's authorized last wipe finishes without its helper](../../box/bridge-tests/install.test.js#L204) | U25 verifies the same failure and stopped retry with both boxes, including the reinstall receipt. The older Helper's headless layout 21 key access remains in 6.2. | 6.2 |
 | [the last app-owned wipe verifies preparation and leaves a completion receipt outside App Support data](../../box/bridge-tests/install.test.js#L267) | U19 verifies app approval, keeper stop, Keychain order and the external completion receipt. The verified-export gate, export readback after stop, and the associated recovery are open. | 2.3, 2.5 |
 | [two installers at once on a new computer each get their answer: neither takes the other's unpacking or download away](../../box/bridge-tests/install.test.js#L361) | Open | 7.1 |
 | [an engine named as a file is only ever a test's: without a test's say-so the release is refused as damaged, and no engine is taken](../../box/bridge-tests/install.test.js#L379) | Open | 7.1 |

@@ -553,12 +553,16 @@ test("an app-owned Mac member clears its identity after detach and acknowledges 
   skip: process.platform !== "darwin", timeout: 55000,
 }, t => appOwnedWipe(t, true));
 
-async function appOwnedWipe(t, member) {
+test("the installer finishes an authorized stopped Mac wipe without its helper", {
+  skip: process.platform !== "darwin", timeout: 55_000,
+}, t => appOwnedWipe(t, false, { resumeWithoutHelper: true }));
+
+async function appOwnedWipe(t, member, { resumeWithoutHelper = false } = {}) {
   const root = fs.realpathSync(scratch());
   const env = isolatedEnv(root);
   const binary = boxBinary();
   const { computer, relay, leases } = await bench(t);
-  const id = "run.kuvo.code.wipe-fixture";
+  const id = "run.kuvo.code.t";
   const support = path.join(env.HOME, "Library", "Application Support");
   const app = path.join(support, id);
   const home = path.join(app, "box");
@@ -620,6 +624,10 @@ const keeper = http.createServer((req, res) => {
   if (JSON.parse(fs.readFileSync(marker)).phase !== "stopping" || !fs.existsSync(work)) {
     return res.writeHead(409).end();
   }
+  if (${resumeWithoutHelper}) {
+    if (!fs.readFileSync(steps, "utf8").includes("keeper-blocked")) fs.appendFileSync(steps, "keeper-blocked\\n");
+    return res.writeHead(409).end();
+  }
   fs.appendFileSync(steps, "keeper\\n");
   if (fs.existsSync(ownedResident)) {
     const pid = Number(fs.readFileSync(ownedResident, "utf8"));
@@ -665,9 +673,12 @@ printf 'keychain %s\\n' "$5" >> '${steps}'
   const record = binary.typescript
     ? await until(() => fs.existsSync(toolHttp) && readJSON(toolHttp), resident.log, 10000)
     : await resident.ready();
-  const before = await request(record, "GET", "kuvo/setup");
+  const role = member ? "member" : "primary";
+  const before = await until(async () => {
+    const reply = await request(record, "GET", "kuvo/setup");
+    return reply.json?.you?.role === role && reply;
+  }, () => `The app did not load its setup. ${resident.log()}`, 15000);
   const { setup, you } = before.json;
-  assert.equal(you.role, member ? "member" : "primary", before.text);
   let ask = (...args) => request(record, ...args);
   if (member) {
     ask = studio.connect(await studio.start().ready());
@@ -678,29 +689,45 @@ printf 'keychain %s\\n' "$5" >> '${steps}'
   assert.equal(requested.status, 200, requested.text);
   assert.equal(requested.json.removal?.state, "wipe-pending", requested.text);
   assert.equal(requested.json.offer, undefined, requested.text);
+  const bundle = path.join(root, "Fixture.app");
+  write(path.join(bundle, "Contents", "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${id}</string></dict></plist>`);
+  const install = async () => {
+    const process = boxCommand(binary, root, env, relay, ["install", "--status", "--root", ".kuvo-code", "--app", bundle],
+      { KUVO_HOME: path.join(env.HOME, ".kuvo-code"), KUVO_TEST_UNINSTALL_TOOLS: tools }, "pipe");
+    let stdout = "";
+    process.child.stdout.setEncoding("utf8").on("data", text => { stdout += text; });
+    process.child.stdin.end();
+    assert.equal((await process.exited).code, 0, stdout + process.log());
+    return JSON.parse(stdout);
+  };
+  let status;
+  if (resumeWithoutHelper) {
+    await until(() => fs.existsSync(steps) && fs.readFileSync(steps, "utf8").includes("keeper-blocked"),
+      () => `The app did not save its stopping receipt. ${resident.log()}`);
+    assert.equal(readJSON(marker).phase, "stopping");
+    assert.equal(keys.size, 0);
+    assert.equal(fs.readFileSync(work, "utf8"), "old app data");
+    await Promise.all([resident.stop(), keeper.stop()]);
+    fs.rmSync(keeperFile, { force: true });
+    helper.closeAllConnections();
+    await new Promise(resolve => helper.close(resolve));
+    status = await install();
+  }
   await until(() => fs.existsSync(marker) && !readJSON(marker).phase,
     () => `The app-owned wipe did not finish. ${resident.log()}`, 20000);
-  assert.equal((await keeper.exited).code, 0, keeper.log());
+  if (!resumeWithoutHelper) assert.equal((await keeper.exited).code, 0, keeper.log());
   assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
   assert.equal(fs.existsSync(app), false);
   assert.equal(fs.readFileSync(outside, "utf8"), "keep this");
-  assert.equal(fs.readFileSync(steps, "utf8"), "helper\nkeeper\nkeychain key\nkeychain secret\nkeychain sign\n");
+  assert.equal(fs.readFileSync(steps, "utf8"), `helper\n${resumeWithoutHelper ? "keeper-blocked" : "keeper"}\nkeychain key\nkeychain secret\nkeychain sign\n`);
   if (member) {
     const primaryLink = path.join(studio.home, "run", "link.json");
     await until(() => readJSON(primaryLink).shared.membershipAndAccess.value.removals[you.key]?.delivered,
       "The main did not accept the app member's completion.");
-    await until(() => !fs.existsSync(path.join(receipts, `${operation}.json`)), "The app member did not retire its acknowledgment.");
+    await until(() => !fs.existsSync(path.join(receipts, `${operation}.json`)), "The app member did not retire its acknowledgment.", 25000);
   }
-  const bundle = path.join(root, "Fixture.app");
-  write(path.join(bundle, "Contents", "Info.plist"),
-    `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${id}</string></dict></plist>`);
-  const installer = boxCommand(binary, root, env, relay, ["install", "--status", "--root", ".kuvo-code", "--app", bundle],
-    { KUVO_HOME: path.join(env.HOME, ".kuvo-code") }, "pipe");
-  let stdout = "";
-  installer.child.stdout.setEncoding("utf8").on("data", text => { stdout += text; });
-  installer.child.stdin.end();
-  assert.equal((await installer.exited).code, 0, stdout + installer.log());
-  const status = JSON.parse(stdout);
+  status ??= await install();
   assert.deepEqual([status.verdict, status.verb, status.offer, status.wipeReceipt], member
     ? ["fresh", "new", undefined, undefined]
     : ["fresh", null, "reinstall-local", { setup, operation }]);
