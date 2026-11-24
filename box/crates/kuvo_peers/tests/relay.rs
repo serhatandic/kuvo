@@ -139,15 +139,22 @@ impl TestRelay {
 
     async fn move_step(&mut self, op: &str) -> serde_json::Value {
         loop {
+            let movement = self.next_move().await;
+            if movement["op"] == op {
+                return movement;
+            }
+        }
+    }
+
+    async fn next_move(&mut self) -> serde_json::Value {
+        loop {
             let sent = self.binary().await;
             if sent.get(1..17) != Some(PEER_ADDRESS.as_slice()) {
                 continue;
             }
             if let Some((Kind::Mail, _, bytes)) = frames::read_frame(&sent[17..]) {
                 let mail = Envelope::open(bytes, &PEER_KEY, &public(RUST_KEY)).unwrap();
-                if let Some(movement) = mail.0.get("move")
-                    && movement["op"] == op
-                {
+                if let Some(movement) = mail.0.get("move") {
                     return movement.clone();
                 }
             }
@@ -1526,13 +1533,13 @@ async fn move_snapshots_refresh_on_a_minute_and_on_request() {
         atomic::{AtomicI64, Ordering},
     };
 
-    tokio::time::timeout(Duration::from_secs(32), async {
+    tokio::time::timeout(Duration::from_secs(55), async {
         let home = tempfile::tempdir().unwrap();
-        let (relay, mut wire) = TestRelay::connect().await;
+        let (relay, mut wire, _, listener) = TestRelay::reconnecting(|_| {}).await;
         let here = public(RUST_KEY);
         let peer = public(PEER_KEY);
         let clock = Arc::new(AtomicI64::new(1_000_000));
-        let _resident = ResidentPeers::start(
+        let resident = ResidentPeers::start(
             home.path(),
             Roster {
                 here: Some(here),
@@ -1598,6 +1605,28 @@ async fn move_snapshots_refresh_on_a_minute_and_on_request() {
             tokio::time::timeout(check, wire.moving()).await.is_err(),
             "The clear is published once"
         );
+
+        // A disconnected relay rejects the publication. Keeping the wall
+        // clock steady distinguishes retrying it from a minute's refresh.
+        let mut reader = resident.reader();
+        drop(wire);
+        while reader.view().relay_connected {
+            reader.changed().await.unwrap();
+        }
+        record["stage"] = "copying".into();
+        save(&record);
+        tokio::time::sleep(check).await;
+        let mut wire = TestRelay::accept(&listener, RUST_SECRET).await;
+        assert_eq!(wire.moving().await[0]["stage"], "copying");
+
+        drop(wire);
+        while reader.view().relay_connected {
+            reader.changed().await.unwrap();
+        }
+        files::remove_file_synced(&path).unwrap();
+        tokio::time::sleep(check).await;
+        let mut wire = TestRelay::accept(&listener, RUST_SECRET).await;
+        assert_eq!(wire.moving().await, json!([]));
     })
     .await
     .unwrap();
@@ -1747,20 +1776,24 @@ async fn switch_retry_survives_wall_clock_changes() {
         atomic::{AtomicI64, Ordering},
     };
 
-    tokio::time::timeout(Duration::from_secs(180), async {
+    tokio::time::timeout(Duration::from_secs(20 * 60), async {
         let home = tempfile::tempdir().unwrap();
         let (relay, mut wire) = TestRelay::connect().await;
         let here = public(RUST_KEY);
         let peer = public(PEER_KEY);
         let clock = Arc::new(AtomicI64::new(1_000_000));
         let id = "mov_clockSwitch";
+        let session = "ses_clockSwitch";
         let hash = encode(&[13; 32]);
         let journal = home.path().join(format!("run/moves/{id}.json"));
+        let wake = home.path().join("wakes").join(session);
+        files::write_atomic(&wake.join("paused"), format!("moving:{id}").as_bytes()).unwrap();
         let saved = json!({
-            "formatVersion": 1, "id": id, "kind": "chat", "thing": "ses_clockSwitch",
+            "formatVersion": 1, "id": id, "kind": "chat", "thing": session,
             "name": "Clock switch", "from": encode(&here), "to": encode(&peer), "peer": encode(&peer),
-            "role": "from", "stage": "switching", "step": "switch", "sessions": ["ses_clockSwitch"],
+            "role": "from", "stage": "switching", "step": "switch", "sessions": [session],
             "started": 920_000, "switchSince": 950_000, "sentAt": 1_050_000, "generation": 1, "hash": hash,
+            "folder":wake,
         });
         files::write_atomic(&journal, &serde_json::to_vec(&saved).unwrap()).unwrap();
         let mut resident = ResidentPeers::start(
@@ -1815,6 +1848,37 @@ async fn switch_retry_survives_wall_clock_changes() {
         wire.send(vec![0]).await;
         assert_eq!(tokio::time::timeout(Duration::from_secs(6), wire.move_step("switch")).await.unwrap(), first);
         assert_eq!(sent_at(), 990_000);
+
+        let proof = |generation, never_switched| {
+            let envelope = json!({"at": clock.load(Ordering::Relaxed), "move": {
+                "id":id, "op":"dropped", "generation":generation, "hash":hash, "neverSwitched":never_switched,
+            }});
+            let bytes = Envelope(envelope.as_object().unwrap().clone()).seal(&PEER_KEY, &here).unwrap();
+            frames::relay_send(&PEER_ADDRESS, &bytes)
+        };
+        for minute in 1..=11 {
+            clock.store(990_000 + minute * 61_000, Ordering::Relaxed);
+            wire.send(vec![0]).await;
+            tokio::time::advance(Duration::from_secs(61)).await;
+            assert_eq!(tokio::time::timeout(Duration::from_secs(6), wire.next_move()).await.unwrap(), first);
+            assert!(journal.exists());
+            assert!(wake.join("paused").exists());
+        }
+        wire.send(proof(2, true)).await;
+        wire.send(proof(1, false)).await;
+        wire.send(vec![0]).await;
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert_eq!(tokio::time::timeout(Duration::from_secs(6), wire.next_move()).await.unwrap(), first);
+        assert!(wake.join("paused").exists());
+        wire.send(proof(1, true)).await;
+        tokio::time::timeout(Duration::from_secs(6), async {
+            while journal.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert!(!wake.join("paused").exists());
+        let failed: Value = serde_json::from_slice(&std::fs::read(home.path().join(format!("run/moves/{id}.outcome.json"))).unwrap()).unwrap();
+        assert_eq!(failed["status"], 409);
     })
     .await
     .unwrap();

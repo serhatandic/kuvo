@@ -138,7 +138,7 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Ninety-one have full scenario coverage, 16 have partial proof,
+below counts 212 declarations. Ninety-three have full scenario coverage, 14 have partial proof,
 and 105 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
@@ -159,11 +159,11 @@ separately where they appear.
 | | 2 | Covered by receiver-clock expiry, sender clock rewind, and filtering malformed, local and unauthenticated notices. |
 | | 3 | Covered by a following client that loses a quiet peer’s notice when the receiver clock reaches expiry. |
 | | 4 | Covered by the first snapshot, changes of stage, minute refresh with current bytes, and a single clear. |
-| | 5 | Partial, an authenticated peer request refreshes the next snapshot and waiting is included in the relay announcement. Prove rejected sends in 2.4. |
+| | 5 | Covered by retrying an active snapshot and its clear after the relay rejects the sends, and by an authenticated peer refreshing the next snapshot. |
 | [moves-lanes](../../box/bridge-tests/moves-lanes.test.js) | 1–9 | Native transfer and attachment carry owned by 4.6, with bot placement in 5.1. |
 | [moves-lanes-races](../../box/bridge-tests/moves-lanes-races.test.js) | 1–5 | Native runtime proof belongs to 4.6 and 5.1. The shared comparisons and retry behavior remain open in 2.4 under moves-races. |
 | | 6–16 | Native carry and retained copies owned by 4.6, with bot placement in 5.1. |
-| [moves-races](../../box/bridge-tests/moves-races.test.js) | 24 | Partial, live activation and replay after a lost switch reply, mismatched proof, durable drop and a managed setup's legacy switch fence are exercised. Automatic retry across the complete set of peer interruptions remains 2.4. |
+| [moves-races](../../box/bridge-tests/moves-races.test.js) | 24 | Covered by a resident retrying an unanswered switch for eleven minutes without dropping, ignoring mismatched proof and releasing the original only on the bound drop receipt. |
 | | 1 | Covered by a setup failure arriving as the source switches, followed by the authenticated drop receipt that releases the original. |
 | | 2 | Partial, a missing payload prevents the first offer and a corrupt payload prevents switching. A typed unreadable-queue failure from 3.2 is needed for the same refusal in 2.4. |
 | | 3 | Covered by delaying an admitted queue write, refusing the next write once the source holds the conversation, and checking the new owner's queue before and after resuming it. |
