@@ -11,6 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 use unicode_normalization::UnicodeNormalization;
+use zeroize::Zeroize as _;
 
 /// The generic-password operations supplied by Helper. A missing item is
 /// `Ok(None)`. Implementations must preserve the bytes and the named account.
@@ -24,6 +25,12 @@ pub trait KeychainItems {
 pub struct GenericPassword {
     pub account: String,
     pub value: Vec<u8>,
+}
+
+impl Drop for GenericPassword {
+    fn drop(&mut self) {
+        self.value.zeroize();
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -148,15 +155,15 @@ impl Credentials {
                     .is_some_and(|target| target.value == original.value)
                 {
                     State::Shared {
-                        account: original.account,
+                        account: original.account.clone(),
                     }
                 } else {
                     if items.read(&names.aside)?.is_some() {
                         return Err(changed());
                     }
                     State::Copy {
-                        account: original.account,
-                        previous: there.map(|item| item.account),
+                        account: original.account.clone(),
+                        previous: there.map(|item| item.account.clone()),
                     }
                 }
             }

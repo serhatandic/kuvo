@@ -508,8 +508,16 @@ pub enum RecordScope {
 pub struct Ownership {
     pub held: BTreeSet<(RecordScope, String)>,
     pub frozen: BTreeSet<String>,
-    pub journal: BTreeMap<(RecordScope, String), ComputerKey>,
+    pub journal: BTreeMap<(RecordScope, String), MoveLocation>,
     pub replacements: BTreeMap<ComputerKey, ComputerKey>,
+}
+
+#[derive(Clone, Debug)]
+pub struct MoveLocation {
+    pub key: ComputerKey,
+    /// A committed departure has a time. A switch still in the journal
+    /// takes precedence over announcements until it settles.
+    pub departed_at: Option<Millis>,
 }
 
 #[derive(Clone, Debug)]
@@ -539,12 +547,12 @@ impl Ownership {
             return None;
         }
         let record = (scope, id.to_owned());
-        if let Some(&key) = self.journal.get(&record) {
+        if let Some(MoveLocation { key, .. }) = self.journal.get(&record) {
             return Some(named(
                 roster,
                 told,
                 reach,
-                *self.replacements.get(&key).unwrap_or(&key),
+                *self.replacements.get(key).unwrap_or(key),
                 now,
             ));
         }

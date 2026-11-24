@@ -52,6 +52,7 @@ pub struct Scope {
     pub setup: Option<String>,
     pub here: Option<ComputerKey>,
     pub owner: Option<PeerOwner>,
+    pub(crate) letter_home: Option<ComputerKey>,
     pub receipt_issuer: Option<ComputerKey>,
     pub held: bool,
 }
@@ -221,13 +222,14 @@ impl Handle {
                 .held
                 .insert((RecordScope::Session, session.into()));
         }
+        let now = self.reader.now();
         let owner = inventory.owner_of(
             RecordScope::Session,
             session,
             &view.roster,
             &view.announced,
             &view.reach,
-            self.reader.now(),
+            now,
         );
         let owner = owner.map(|owner| {
             let features = if owner.local {
@@ -251,6 +253,12 @@ impl Handle {
             setup: setup.id,
             here: view.roster.here,
             owner,
+            // A newer move announcement can locate a delivery without
+            // granting authority to perform a forwarded mutation.
+            letter_home: view
+                .moved_with(session, now, &inventory)
+                .as_deref()
+                .and_then(decode_exact),
             receipt_issuer: original_issuer
                 .map(|key| *inventory.replacements.get(&key).unwrap_or(&key)),
             held: inventory.frozen.contains(session),

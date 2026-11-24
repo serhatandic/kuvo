@@ -430,7 +430,8 @@ fn peer_state(view: &View, key: ComputerKey) -> PeerState {
 fn home(view: &View, reader: &Reader, session: &str, now: Millis) -> Home {
     let ownership = &view.local.ownership;
     let entry = (RecordScope::Session, session.to_owned());
-    if let Some(key) = ownership.journal.get(&entry) {
+    if let Some(location) = ownership.journal.get(&entry) {
+        let key = &location.key;
         let key = *ownership.replacements.get(key).unwrap_or(key);
         if view.roster.here != Some(key) {
             return Home::Peer(key);
