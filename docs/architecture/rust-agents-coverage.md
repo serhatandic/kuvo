@@ -38,9 +38,9 @@ outstanding request methods can survive a transfer.
 | Platform | TypeScript holder conformance | Rust holder conformance | Rust controller process tests |
 |---|---:|---:|---:|
 | macOS | 12/12 | 12/12 | 2/2 |
-| Linux x86-64, lokum | — | 11/11 | 2/2 |
-| WSL2, Ubuntu 24.04 | — | 11/11 | 2/2 |
-| Native Windows x64 | — | 11/11 | 2/2 |
+| Linux x86-64, lokum | — | 12/12 | 2/2 |
+| WSL2, Ubuntu 24.04 | — | 12/12 | 2/2 |
+| Native Windows x64 | — | 12/12 | 2/2 |
 
 Linux and WSL used the same static musl build compiled on the Mac. The native
 Windows run used static libunwind and the pinned Node 24 runner. The workspace
@@ -160,7 +160,12 @@ worktree, or a parent it keeps. The new conversation's ID uses the
 engine's ascending format, its header is the bridge's, and a task's
 message keeps its client notes (`kuvo.parts`) on its row. The binary
 case passes on both boxes and the normalized answers, header and user
-row match. Open: the engine's refusal for a model without an ID uses
+row match. Session actions, the agent start and the holder's exit allowance passed
+on macOS, Linux (lokum), WSL2 and native Windows: the holder cases,
+`agent-accounts` and the three `agent-sessions` cases through the binary,
+and the Rust account, saved-session and ask tests.
+
+Open: the engine's refusal for a model without an ID uses
 different words from the TypeScript model rule (engine start, 3.2), and
 wake-up notes on a coding agent's conversation wait for the shared note
 writer.
