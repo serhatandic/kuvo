@@ -5,11 +5,11 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::Path,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
 use flate2::read::GzDecoder;
-use kuvo_os::process::Spawn;
 use kuvo_store::{files, format::ObjectFormat, home::Home, locks};
 use serde::Deserialize;
 use serde_json::json;
@@ -389,25 +389,36 @@ fn probe_program(
     failure: &str,
     timeout: Duration,
 ) -> io::Result<()> {
-    let mut command = Spawn::new(program, std::env::vars_os().collect());
-    command.cwd = cwd.map(Path::to_owned);
-    command.args = args.iter().map(|arg| (*arg).into()).collect();
+    // These commands report an exit status and can finish before the keeper can
+    // read a process start identity. The installer itself owns and reaps them.
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
     let mut child = command
         .spawn()
         .map_err(|error| io::Error::other(format!("{failure} {error}")))?;
     let until = Instant::now() + timeout;
     loop {
-        if child.has_exited()? {
-            if !child.wait()?.success() {
-                return Err(io::Error::other(failure));
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => return Err(io::Error::other(failure)),
+            Ok(None) if Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
             }
-            return Ok(());
+            result => {
+                if child.kill().is_ok() {
+                    let _ = child.wait();
+                }
+                return result.and(Err(io::Error::new(io::ErrorKind::TimedOut, failure)));
+            }
         }
-        if Instant::now() >= until {
-            child.stop(Duration::from_millis(100), |_| {})?;
-            return Err(io::Error::new(io::ErrorKind::TimedOut, failure));
-        }
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

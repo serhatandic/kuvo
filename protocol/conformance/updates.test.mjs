@@ -859,9 +859,14 @@ Buffer.from = function (value, encoding, ...args) {
       if (failure?.version === version) throw new Error(failure.reason);
       return confirmed(away);
     }, diagnose, peerOnly ? 120000 : 65000);
-    const resident = readJSON(path.join(away.home, "run/serve.json"));
-    const info = await request(resident, "GET", "kuvo/info");
-    assert.equal(info.status, 200, info.text);
+    await until(async () => {
+      try {
+        const resident = readJSON(path.join(away.home, "run/serve.json"));
+        return (await request(resident, "GET", "kuvo/info")).status === 200;
+      } catch {
+        return false;
+      }
+    }, diagnose);
     assert.equal(retryDownload, false);
     if (peerOnly) assert.ok(refusedPacks > 0);
     if (returningTypescript) {

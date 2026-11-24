@@ -212,7 +212,7 @@ in the returning computer's account. U8 confirmed the main and member in
 9.4 and 12.5 seconds after the download resumed and caught up the offline
 computer in 14.4 seconds. In U9 a replacement main took over in 8.2 seconds
 from startup, confirmed 7.9 seconds after resuming the download, and brought
-the old main back in 20.0 seconds.
+the offline member back in 20.0 seconds.
 After merging the standalone SSH guard from main, the same static WSL2
 test returned the computer in 11.9 seconds, including a failed first keeper
 start and the automatic retry. Reservation and staging cleanup took another
@@ -224,6 +224,19 @@ same signed test release sent a distinct Linux target pack over the scratch
 SSH transport to Ubuntu 24.04 under WSL2. After the forced first launch
 failure, the computer answered in 33.2 seconds. The reservation and staging
 cleared 304 milliseconds later, and its identity and saved work stayed.
+
+The optimized macOS run passed 28 checks with three platform skips. It
+prepared the first computer in 4.9 seconds. The main and member confirmed
+7.2 and 13.6 seconds after the download resumed. The offline computer
+confirmed in 13.3 seconds. The failover run took the lease in 4.5 seconds,
+confirmed 3.6 seconds after resuming the download, and brought back the
+offline computer in 8.1 seconds. The deployed beta.48 took the bridge in
+11.2 seconds and confirmed Rust 8.8 seconds later. The fresh Mac install
+took 3.9 seconds and the released Mac moves took 6.7 and 5.0 seconds. The
+stopped released machine fixtures answered in 1.5 and 1.7 seconds. The
+previous optimized run failed when a short engine probe exited before the
+keeper could record its process identity. The installer now uses the exit
+status from the child it owns.
 
 ## TypeScript reference cases
 
