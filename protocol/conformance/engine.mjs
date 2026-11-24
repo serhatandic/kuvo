@@ -63,14 +63,20 @@ export async function standInEngine(root, env) {
         return send({ data });
       }
       if (route === "POST /api/session") {
-        if (engine.failStart === "before") return send({ message: "Cut short." }, 500);
+        if (engine.failStart === "before") {
+          engine.startCutShort?.();
+          return send({ message: "Cut short." }, 500);
+        }
         const made = sessionOf({ id: `ses_made${++engine.made}`, title: given.title ?? "", directory: given.location?.directory ?? "" });
         for (const field of ["metadata", "permissions", "agent", "model", "parentID"]) {
           if (Object.hasOwn(given, field)) made[field] = given[field];
         }
         engine.sessions.push(made);
         publish({ type: "session.created", data: { sessionID: made.id, info: made } });
-        if (engine.failStart === "after") return send({ message: "Cut short." }, 500);
+        if (engine.failStart === "after") {
+          engine.startCutShort?.();
+          return send({ message: "Cut short." }, 500);
+        }
         return send({ data: made });
       }
       const one = url.pathname.match(/^\/api\/session\/([^/]+)$/);

@@ -124,7 +124,7 @@ export async function request(record, method, route, body, headers = {}, timeout
   const reply = await new Promise((resolve, reject) => {
     const req = http.request({
       host: "127.0.0.1", port: record.port, method, path: "/" + route, agent: false,
-      signal: AbortSignal.timeout(timeout),
+      signal: typeof timeout === "number" ? AbortSignal.timeout(timeout) : timeout,
       headers: { authorization: authorization(record.password), "x-kuvo-route-version": "1",
         ...(data ? { "content-type": "application/json", "content-length": data.length } : {}),
         ...headers },

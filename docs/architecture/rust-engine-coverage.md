@@ -74,9 +74,9 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 159 of
-411 declarations are covered, 88 are partial and 164 are gaps.
-Row 3.2 retains 118 partial or gap declarations.
+The first inventory recorded 294 cases. Across both inventories, 161 of
+411 declarations are covered, 87 are partial and 163 are gaps.
+Row 3.2 retains 113 partial or gap declarations.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
 also uses a bridge, peer, settings route, or failure injection. Multiple
@@ -116,7 +116,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/session-notes-writers.test.ts` (7) | 3 | 1 | 2, 4–7 | 3.2 · 1–2, 4–7<br>7.3 · 6 |
 | `box/bridge-tests/queue.test.js` (56) | 6–7, 15–21, 33, 39, 52–53 | 2, 9–10, 13–14, 22, 27, 29–32, 43, 51, 54 | 1, 3–5, 8, 11–12, 23–26, 28, 34–38, 40–42, 44–50, 55–56 | 3.2 · 1–5, 8–14, 22–32, 34–38, 43, 51, 54–56<br>4.1 · 44–50<br>4.6 · 40–42<br>5.1 · 5, 25 |
 | `box/bridge-tests/queue-live.test.js` (1) | — | 1 | — | 3.2 · 1 |
-| `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–4 | 2, 5 | 3.2 · 1–5<br>5.1 · 2<br>6.3 · 3–5 |
+| `box/bridge-tests/start-session.test.js` (5) | — | 1, 3–5 | 2 | 3.2 · 1–2<br>5.1 · 2<br>6.3 · 3–5 |
 | `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
 | `box/test/draft-orphan.test.ts` (5) | 1–4 | 5 | — | 3.2 · 5 |
 | `box/test/conversation.test.ts` (3) | 1–3 | — | — | — |
@@ -124,7 +124,7 @@ owners on the same case each own the part described by their phase.
 | `box/test/message-words.test.ts` (11) | — | 8–9 | 1–7, 10–11 | 3.2 · 1–2, 4–7<br>5.1 · 8–10<br>5.2 · 3<br>5.3 · 11<br>6.1 · 3<br>6.2 · 3 |
 | `box/test/session-news-kinds.test.ts` (5) | — | — | 1–5 | 5.1 · 1–5 |
 | `box/test/projects-worktrees.test.ts` (6) | — | 1–4 | 5–6 | 3.2 · 1–4<br>6.3 · 1–6 |
-| `box/test/start-cancelled-worktree.test.ts` (2) | — | 1–2 | — | 3.2 · 1–2<br>6.3 · 1–2 |
+| `box/test/start-cancelled-worktree.test.ts` (2) | 1–2 | — | — | — |
 | `box/bridge-tests/worktrees.test.js` (32) | — | 1, 8–9, 14 | 2–7, 10–13, 15–32 | 3.2 · 1, 8–9, 13–14, 17–18, 24–30<br>4.1 · 12, 30<br>6.3 · 1–32<br>7.3 · 15–16 |
 | `box/bridge-tests/worktrees-where.test.js` (12) | — | — | 1–12 | 6.3 · 1–11<br>5.5 · 12 |
 
@@ -225,7 +225,10 @@ and the Work Queue counts newer copies once; `PeerWaiting` takes the live
 peer-activity snapshot from 5.1. The wake pause route and project removal
 remain in 5.1 and 6.3. A worktree whose session creation gets a failure
 response is removed only after a complete inventory shows no conversation
-using it. Ambiguous transport failures leave the worktree kept.
+using it. The client can disconnect during creation and the resident still
+settles the worktree from OpenCode's result. Ambiguous transport failures
+leave the worktree kept. Explicit and delegated starts retain their
+project when they run in a sibling folder or an external Git worktree.
 
 Model readiness reads the conversation folder's OpenCode catalog and
 remembers its names, including removed models from signed-in providers.
