@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 
 const DAY: u64 = 86_400_000;
 const LETTER_MEMORY: u64 = 2 * DAY;
-const NOTE_MEMORY: u64 = 30 * DAY;
+pub(crate) const NOTE_MEMORY: u64 = 30 * DAY;
 const RETRY_EVERY: u64 = 60_000;
 const EXPIRED: &str = "It couldn't get there in two days of trying.";
 

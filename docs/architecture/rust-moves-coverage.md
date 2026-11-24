@@ -42,7 +42,7 @@ for addressed work and receipt lookup.
 | Waited letter | Both residents identify the sender by its own announcement. The destination sends an answer after the engine reply. The original tool gets it through its saved letter ID and authenticated destination after the sender restarts with only the awaited record. |
 | Letter ordering and delivery recovery | Both residents send pending letters oldest first. A temporary lookup failure leaves the letter pending. Replaying the same letter after the destination restarts without receiving its engine's acceptance returns the receipt with one prompt ID and one saved message. |
 | Letter allowance | Both residents retry letters to a held conversation and an unavailable engine without charging the peer. Its next twenty messages can be delivered. The following message waits for the rate limit. |
-| Note addresses | Both residents learn session addresses from accepted notes, keep the newer address across a restart and send a pending note there. A redirect from the authenticated recipient is durable. A different computer's redirect is ignored. |
+| Note addresses | Both residents learn session addresses from accepted notes and move announcements, keep the newer address across a restart, and send a pending note there when the original announcement expires. A redirect from the authenticated recipient is durable. A different computer's redirect is ignored. |
 | Older letter destinations | Both residents allow a lead to write to an unlisted conversation it started and refuse another conversation's letter. Listed conversations and recent arrivals still receive letters. |
 | Tool that stopped waiting | Both residents deliver an ordinary letter without the wait, cancel an unsent transcript request, and deliver a reply that was left behind to the local conversation. Replaying a delivered letter starts no second turn, and an unlisted sender hears that it cannot receive a reply. |
 | Transcript read | Both residents retry a temporarily unavailable page, return excerpts to the waiting tool and skip an undone passage. Only the lead can read its archived work. The read submits no prompt. |
@@ -181,7 +181,7 @@ separately where they appear.
 | | 16 | Covered by a live restart of the destination after it acknowledges the first part of a two-part bundle. |
 | | 17 | Covered by three live offers while the transcript changes on each try. The original stays active with every message. |
 | | 18 | Covered by fencing queue removal, undo and resume during transfer and preserving the paused queue after the destination drops its copy. |
-| | 19 | Covered by a conversation location and a queued letter following its newer move announcement, with separate checks for expiry and a conversation still owned here. |
+| | 19 | Covered by a conversation location and queued letter following a newer move announcement, then a delayed note following its retained address after restart. Expired announcements and a conversation still owned here are checked separately. |
 | | 20 | Partial, switch recovery is exercised. Removal fencing remains 2.3 and 2.4. |
 | | 21 | Covered by a live drop waiting for an outstanding engine import, then removing it and replaying the durable drop decision. |
 | | 22 | Covered by a transient lookup error, a live conflict after preflight, and a lost import reply. Each rolls back only the move's own imports. |

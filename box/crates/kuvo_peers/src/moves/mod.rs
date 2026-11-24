@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    directory::{ComputerKey, MoveLocation, Ownership},
+    directory::{ComputerKey, MoveHint, MoveLocation, Ownership},
     lists::matching_paths,
     reach::Millis,
 };
@@ -262,6 +262,21 @@ fn departure_rows(
 
 fn departures(run: &Path) -> Result<Vec<Departure>, kuvo_store::format::Error> {
     departure_rows(run).collect()
+}
+
+pub(crate) fn recent_home_hints(
+    run: &Path,
+    now: Millis,
+    memory: Millis,
+) -> impl Iterator<Item = MoveHint> {
+    departure_rows(run)
+        .filter_map(Result::ok)
+        .filter(move |row| row.queue.is_none() && now.saturating_sub(row.at) < memory)
+        .map(|row| MoveHint {
+            session: row.session,
+            key: row.key,
+            at: row.at,
+        })
 }
 
 pub(crate) fn recently_arrived(

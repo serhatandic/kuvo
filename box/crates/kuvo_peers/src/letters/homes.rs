@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, io, path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    path::Path,
+    time::Duration,
+};
 
 use kuvo_store::{
     files,
@@ -8,7 +13,7 @@ use kuvo_wire::keys::{decode_exact, encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
-use crate::directory::ComputerKey;
+use crate::{directory::ComputerKey, outbox::NOTE_MEMORY, reach::Millis, setup_lists::View};
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct Home {
@@ -17,6 +22,10 @@ pub(super) struct Home {
 }
 
 impl Home {
+    fn timestamp(&self) -> f64 {
+        self.at.as_f64().unwrap_or(f64::NEG_INFINITY)
+    }
+
     pub(super) fn newer_than(&self, at: i64) -> bool {
         self.at.as_f64().is_some_and(|stamp| stamp >= at as f64)
     }
@@ -24,6 +33,72 @@ impl Home {
     pub(super) fn key(&self) -> Option<ComputerKey> {
         decode_exact(&self.key)
     }
+}
+
+/// Retain moves for delayed notes, after the live announcements expire.
+pub(super) fn learn_moves(run: &Path, view: &View, now: Millis) -> io::Result<()> {
+    let work = run.join("work");
+    let file = work.join("homes.json");
+    let peer_hints = view
+        .roster
+        .members
+        .iter()
+        .filter_map(|peer| view.announced.get(&encode(&peer.key)))
+        .flat_map(|said| &said.moved)
+        .filter(|hint| now.saturating_sub(hint.at) < crate::moves::ROUTING_FOR)
+        .cloned();
+    let mut newest = BTreeMap::<String, Home>::new();
+    for hint in crate::moves::recent_home_hints(run, now, NOTE_MEMORY as Millis).chain(peer_hints) {
+        if newest
+            .get(&hint.session)
+            .is_none_or(|old| !old.newer_than(hint.at))
+        {
+            newest.insert(
+                hint.session,
+                Home {
+                    key: hint.key,
+                    at: hint.at.into(),
+                },
+            );
+        }
+    }
+    if newest.is_empty() && !file.try_exists()? {
+        return Ok(());
+    }
+    let local: BTreeSet<_> = view
+        .announced_agents()
+        .into_iter()
+        .map(|agent| agent.session)
+        .collect();
+    let here = view.roster.here.as_ref().map(|key| encode(key));
+    let _guard = StaleLock::acquire(
+        &work.join(".homes.lock"),
+        Duration::from_secs(10),
+        Duration::from_secs(3),
+        OnBusy::Refuse,
+    )?;
+    let mut homes = read(run)?;
+    let mut changed = false;
+    for (session, home) in newest {
+        if homes
+            .get(&session)
+            .is_none_or(|old| old.timestamp() < home.timestamp())
+            && !local.contains(&session)
+        {
+            if Some(&home.key) != here.as_ref() {
+                homes.insert(session, home);
+                changed = true;
+            } else {
+                changed |= homes.remove(&session).is_some();
+            }
+        }
+    }
+    let before = homes.len();
+    homes.retain(|session, home| !local.contains(session) && Some(&home.key) != here.as_ref());
+    if changed || before != homes.len() {
+        files::write_secret(&file, &serde_json::to_vec(&homes)?)?;
+    }
+    Ok(())
 }
 
 pub(super) fn read(run: &Path) -> io::Result<BTreeMap<String, Home>> {

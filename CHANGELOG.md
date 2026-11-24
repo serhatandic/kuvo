@@ -14,7 +14,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Before moving a conversation, Kuvo says if its delegated sessions or unanswered questions will stay on the current computer.
 - Messages still reach a conversation after it moves back to its first computer, even while that computer is refreshing its session list.
 - A computer can retry a conversation move when its own unfinished copy is still on the destination.
-- A conversation’s follow-up notes reach its latest computer even after the sender restarts with an older address.
+- A conversation’s follow-up notes reach its latest computer after the sender restarts or the move announcement expires.
 - An older conversation can still hear from the conversation that started it, even after it leaves the list of recent conversations.
 - After a restart, Kuvo still asks the destination to remove an unfinished copy of a failed move.
 - An older move that already started switching on a managed setup stays held until the destination confirms ownership.

@@ -169,8 +169,12 @@ impl Letters {
 
     async fn send_due(&mut self) -> io::Result<()> {
         let view = self.reader.view();
-        let now = self.reader.now().max(0) as u64;
+        let wall = self.reader.now();
+        let now = wall.max(0) as u64;
         let run = self.reader.run.clone();
+        if let Err(error) = homes::learn_moves(&run, &view, wall) {
+            eprintln!("Remembering moved conversations: {error}");
+        }
         self.recover_replies(&view, now)?;
         let Some(outbox) = self.open_outbox()? else {
             return Ok(());

@@ -141,7 +141,7 @@ test("an old departure still routes the conversation to its owner", { timeout: 4
   assert.equal(listing.json.moved, undefined, "The old departure is no longer advertised");
 });
 
-test("a newer move announcement leads to the next computer until it expires", { timeout: 45000 }, async t => {
+test("a newer move announcement leads to the next computer until it expires", { timeout: 65000 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("previous-owner"), there = await computer("newest-owner");
   const { main, member, spare, save } = seedPeerSetup(here.home, relay.url, 1, 3);
@@ -158,7 +158,8 @@ test("a newer move announcement leads to the next computer until it expires", { 
   ] } });
   here.engine.sessions.push(sessionOf({ id: local, title: "Trip plans", directory: path.join(here.home, "chats") }));
   there.engine.sessions.push(sessionOf({ id: recent, directory: path.join(there.home, "chats") }));
-  const [resident, target] = await Promise.all([here.start().ready(), there.start().ready()]);
+  const source = here.start();
+  const [resident, target] = await Promise.all([source.ready(), there.start().ready()]);
   const locate = id => request(resident, "GET", "kuvo/sessions/" + id + "/location");
   const own = await until(async () => {
     const result = await locate(local);
@@ -179,6 +180,23 @@ test("a newer move announcement leads to the next computer until it expires", { 
   const received = await until(() => there.engine.messages.get(recent), "The letter did not follow the newer announcement", 15000);
   assert.equal(received.length, 1);
   assert.match(received[0].text, /^\[Message from Trip plans · ses_localHop\][^\n]*\n\nWhat changed\?$/);
+
+  const homes = path.join(here.home, "run/work/homes.json");
+  await until(() => fs.existsSync(homes) && readJSON(homes)[recent]?.key === spare.key,
+    "The source did not keep the later owner for future notes", 15000);
+  await source.stop();
+  await until(() => !relay.has(Buffer.from(main.address, "base64url")), "The source did not disconnect");
+  // The transient announcement has aged out. A note can still follow the
+  // address learned from it, even with an earlier departure on disk.
+  save("run/peer-agents.json", {});
+  const words = "The work is complete.";
+  write(path.join(here.home, "run/outbox/sending/ltr_savedAnnouncedOwner.json"), JSON.stringify({
+    to: recent, text: words, peer: member.key, wait: false, at: Date.now(),
+    note: { from: "Its sessions", words, delivery: "queue" },
+  }));
+  await here.start().ready();
+  await until(() => received.some(prompt => prompt.text === words),
+    "The saved note did not arrive on the learned computer after restart", 18000);
 });
 
 const mixed = process.env.KUVO_CONFORMANCE_MOVE_PEER;
