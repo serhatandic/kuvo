@@ -120,6 +120,26 @@
      }
     }
    ]
+  },
+  {
+   "name": "what bots just did to their sessions: none on a new box",
+   "steps": [
+    {
+     "send": "GET kuvo/work/oversight",
+     "expect": {
+      "status": 200,
+      "json": {
+       "marks": []
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/oversight",
+     "expect": {
+      "status": 405
+     }
+    }
+   ]
   }
  ]
 }
