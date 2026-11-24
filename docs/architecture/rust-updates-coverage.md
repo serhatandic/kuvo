@@ -80,6 +80,7 @@ Intel Mac: checked without running; a real run waits for an Intel Mac.
 | U61 | With a live Mac move holding its lock, both installers report waiting for status, move, and new. The actions return the waiting result and exit code, keep the lock and files, and status offers a fresh install once the holder exits. |
 | U62 | The Mac installer resumes an interrupted setup from signed media. It reports the archive with the earlier launcher, selects the verified new release, clears incomplete staging, and starts the Helper through the launchctl fixture. The TypeScript interrupted-install reference also passed. |
 | U63 | With work in an earlier app home or app-owned box, both Mac installers offer a move and give the same refusal for new setup. They keep the earlier files and leave the destination home absent. |
+| U64 | With an existing machine installation on a Mac, both installers return the machine verdict and the same explanations for move and new. The original launcher and work stay in place and no installer staging is created. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -366,7 +367,7 @@ dependencies.
 | Same, earlier app's sessions prevent a new home beside them | U63 checks both earlier layouts through the native and TypeScript Mac installers. | — |
 | Same 564, 594, 645, existing app's data moves, progress order, and legacy app kept | Partial. U11 covers the move, ordered progress, and both the retained source and published home. The live Helper readiness check remains open. | 6.2, 7.2 |
 | Same 700, 725, launch retry after move and deferred key settlement | Partial. U11 checks installer restart after a missing Helper registration. 2.6 covers resumable settlement with stand-ins. Actual launchd and authenticated Keychain settlement remain open. | 6.2, 7.2 |
-| Same 750, two installations preserved | U59 checks status, move, and new through the native Mac installer. | — |
+| Same 750, machine with and without an earlier app home | U59 checks status, move, and new with both homes present. U64 checks the existing machine by itself. | — |
 | Same 766, Linux move refusal | Covered by U26. | — |
 | Same 774 and 793, Mac app copy and case spelling | U60 checks the installer entry for an alternate spelling and keeps production and scratch homes separate. 2.6 checks the Mac command's matching home. | — |
 | Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. U27 covers interruption after publication and retiring earlier incomplete staging. U36 covers a cleanup failure after startup. U37 replays interruption during archival and between the engine and release moves. | — |
