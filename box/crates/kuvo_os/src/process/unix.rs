@@ -14,6 +14,20 @@ pub(super) struct Owner {
 }
 
 impl Owner {
+    pub(super) fn send_signal(&self, signal: GroupSignal) -> io::Result<()> {
+        if self.status.is_some() {
+            return Ok(());
+        }
+        self.signal(match signal {
+            GroupSignal::Hangup => Signal::HUP,
+            GroupSignal::Interrupt => Signal::INT,
+            GroupSignal::Quit => Signal::QUIT,
+            GroupSignal::Kill => Signal::KILL,
+            GroupSignal::Terminate => Signal::TERM,
+            GroupSignal::User1 => Signal::USR1,
+            GroupSignal::User2 => Signal::USR2,
+        })
+    }
     pub(super) fn leave_running_on_drop(&mut self) {
         self.leave_running = true;
     }
@@ -97,6 +111,32 @@ impl Owner {
         self.status = Some(status);
         Ok(status)
     }
+}
+
+pub(super) fn signal_from_exit(status: ExitStatus) -> Option<String> {
+    use std::os::unix::process::ExitStatusExt;
+    let signal = status.signal()?;
+    Some(
+        match signal {
+            libc::SIGHUP => "SIGHUP",
+            libc::SIGINT => "SIGINT",
+            libc::SIGQUIT => "SIGQUIT",
+            libc::SIGILL => "SIGILL",
+            libc::SIGTRAP => "SIGTRAP",
+            libc::SIGABRT => "SIGABRT",
+            libc::SIGBUS => "SIGBUS",
+            libc::SIGFPE => "SIGFPE",
+            libc::SIGKILL => "SIGKILL",
+            libc::SIGUSR1 => "SIGUSR1",
+            libc::SIGSEGV => "SIGSEGV",
+            libc::SIGUSR2 => "SIGUSR2",
+            libc::SIGPIPE => "SIGPIPE",
+            libc::SIGALRM => "SIGALRM",
+            libc::SIGTERM => "SIGTERM",
+            _ => return None,
+        }
+        .into(),
+    )
 }
 
 impl Drop for Owner {

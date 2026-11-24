@@ -42,8 +42,9 @@ alone.
 
 The holder transcript records both directions through the real holder process. It includes
 a fenced controller, replay of a pending request, a reply to the same running agent, stderr,
-a signal and orderly shutdown. A Rust resident adopting a TypeScript holder end to end is
-part of phase 4.1.
+a signal and orderly shutdown. It compares the same wire on each implementation. Rust
+adopts Rust recovery records across a resident replacement. The TypeScript-to-Rust update
+ends running turns.
 
 Generate the ignored `protocol/vectors/wire.json` with
 `scripts/build-built.sh`. The Rust wire test
