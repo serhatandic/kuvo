@@ -1,0 +1,125 @@
+{
+ "about": "Where new projects go on a box (PROTOCOL.md, \"Work\"): none until you pick a folder, a folder checked before it's kept, and a change made only while it's still as you read it.",
+ "scenarios": [
+  {
+   "name": "where new projects go: none at first, a folder that isn't one refused, one picked kept, and a change on what was read",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": null,
+       "keepsAwake": "<absent>"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {},
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Send {projectsFolder}: a full path, or null."
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "   "
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Say which folder (projectsFolder), as a full path."
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "projects"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Give a full path to the folder."
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/README.md",
+       "text": "Projects\n"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": "<string>",
+       "suggested": "<absent>"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": null,
+      "was": {
+       "projectsFolder": null
+      }
+     },
+     "why": "Changed since it was read: refused.",
+     "expect": {
+      "status": 409,
+      "json": {
+       "message": "It changed since you read it."
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": null,
+      "was": "x"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Send was as the fields you read."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": "<string>"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": null
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": null
+      }
+     }
+    }
+   ]
+  }
+ ]
+}
