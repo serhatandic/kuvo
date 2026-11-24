@@ -201,7 +201,12 @@ impl Found {
     pub(crate) fn at(top: &std::path::Path, at: &str) -> Self {
         let (folder, name) = at.rsplit_once('/').unwrap_or(("", at));
         Self {
-            path: top.join(at).to_string_lossy().into_owned(),
+            // (Part by part, as Node's `path.join` writes it: `\` between them on Windows.)
+            path: at
+                .split('/')
+                .fold(top.to_path_buf(), |path, part| path.join(part))
+                .to_string_lossy()
+                .into_owned(),
             name: name.to_owned(),
             folder: folder.to_owned(),
         }

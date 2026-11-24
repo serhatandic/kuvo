@@ -170,7 +170,7 @@ fn name_of(file: &Path) -> String {
         return name.to_string_lossy().into_owned();
     }
     #[cfg(windows)]
-    if let Some(std::path::Component::Prefix(prefix)) = file.components().next_back()
+    if let Some(std::path::Component::Prefix(prefix)) = file.components().next()
         && let std::path::Prefix::UNC(_, share) | std::path::Prefix::VerbatimUNC(_, share) =
             prefix.kind()
     {
