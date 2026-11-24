@@ -108,3 +108,53 @@ pub(super) fn listed_work(session: &Session) -> Option<Value> {
     }
     Some(Value::Object(row))
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::listed_work;
+    use crate::sessions::Session;
+
+    fn session(value: Value) -> Session {
+        serde_json::from_value(value).expect("a session")
+    }
+
+    #[test]
+    fn a_bots_work_keeps_what_it_ran_on_and_how_it_went() {
+        let work = listed_work(&session(json!({
+            "id": "ses_w", "agent": "build", "outcome": "succeeded", "cost": 0.25,
+            "time": {"created": 1, "idle": 9},
+            "model": {"id": "big", "providerID": "opencode", "variant": "high"},
+            "tokens": {"input": 10, "output": 5, "reasoning": 2},
+            "metadata": {"kuvo": {
+                "startedBy": "ses_ada", "by": {"bot": "bot_ada", "name": "Ada"}, "depth": 2,
+                "answers": [{"ask": "a1", "decision": "allow"}, {"ask": 3}],
+            }},
+        })))
+        .expect("work");
+        assert_eq!(
+            work,
+            json!({
+                "idle": 9, "outcome": "succeeded",
+                "model": {"id": "big", "providerID": "opencode", "variant": "high"},
+                "bot": "bot_ada", "starter": "ses_ada", "depth": 2, "mode": "build",
+                "tokens": 17, "cost": 0.25, "answered": [{"ask": "a1", "decision": "allow"}],
+            })
+        );
+    }
+
+    #[test]
+    fn a_subagent_keeps_where_it_ran_and_your_own_conversation_none() {
+        let work = listed_work(&session(json!({
+            "id": "ses_s", "parentID": "ses_p",
+            "metadata": {"kuvo": {"ranOn": " codex ", "requestedModel": ""}},
+        })));
+        assert_eq!(work, Some(json!({"ranOn": "codex"})));
+        assert_eq!(listed_work(&session(json!({"id": "ses_y"}))), None);
+        let hidden = session(
+            json!({"id": "ses_h", "parentID": "ses_p", "metadata": {"kuvo": {"seat": "x"}}}),
+        );
+        assert_eq!(listed_work(&hidden), None);
+    }
+}

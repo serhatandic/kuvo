@@ -338,7 +338,14 @@ pub async fn run(
     let work_settings = kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
     let working = sessions.clone();
     let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
-    kuvo_work::work::Work::new(work_settings, home, sessions.clone(), peers.reader()).register(&mut routes);
+    kuvo_work::work::Work::new(
+        work_settings,
+        home,
+        sessions.clone(),
+        peers.reader(),
+        Arc::new(super::bot_setup::BotSetup(setup.handle())),
+    )
+    .register(&mut routes);
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),

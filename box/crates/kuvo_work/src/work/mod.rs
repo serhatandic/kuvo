@@ -3,6 +3,7 @@
 //! sessions (`kuvo/work/oversight`) and when each bot's work last changed (`kuvo/work/events`).
 
 pub mod asks;
+pub mod bot;
 pub mod records;
 pub mod settings;
 
@@ -12,10 +13,10 @@ use http::StatusCode;
 use kuvo_engine::LocalSessions;
 use kuvo_peers::setup_lists::Reader;
 use kuvo_protocol::routes::{
-    get_kuvo_work_asks as asks_get, get_kuvo_work_asks_events as asks_events,
-    get_kuvo_work_events as changed_events, get_kuvo_work_oversight as oversight_get,
-    get_kuvo_work_oversight_events as oversight_events, get_kuvo_work_settings as settings_get,
-    patch_kuvo_work_settings as settings_patch,
+    get_kuvo_work as work_get, get_kuvo_work_asks as asks_get,
+    get_kuvo_work_asks_events as asks_events, get_kuvo_work_events as changed_events,
+    get_kuvo_work_oversight as oversight_get, get_kuvo_work_oversight_events as oversight_events,
+    get_kuvo_work_settings as settings_get, patch_kuvo_work_settings as settings_patch,
 };
 use kuvo_server::{Access, JsonLine, Refusal, Registry, RouteReply};
 use serde_json::{Value, json};
@@ -45,9 +46,11 @@ fn refused((status, message): (u16, String)) -> Refusal {
 pub struct Work {
     pub settings: WorkSettings,
     pub records: Records,
+    home: PathBuf,
     bots: PathBuf,
     sessions: LocalSessions,
     peers: Reader,
+    setup: std::sync::Arc<dyn crate::bots::setup::Setup>,
 }
 
 impl Work {
@@ -56,13 +59,16 @@ impl Work {
         home: &std::path::Path,
         sessions: LocalSessions,
         peers: Reader,
+        setup: std::sync::Arc<dyn crate::bots::setup::Setup>,
     ) -> Self {
         Self {
             settings,
             records: Records::new(&home.join("run")),
+            home: home.to_owned(),
             bots: home.join("bots"),
             sessions,
             peers,
+            setup,
         }
     }
 
@@ -134,6 +140,33 @@ impl Work {
                 let given = serde_json::from_slice(&call.request.body).unwrap_or(Value::Null);
                 let changed = settings.change(&given).map_err(refused)?;
                 Ok(RouteReply::json::<200>(typed(changed)?))
+            }
+        });
+        let work = self.clone();
+        routes.register::<work_get::Spec, _, _>(Access::Any, move |call| {
+            let work = work.clone();
+            async move {
+                let bot = call
+                    .request
+                    .path
+                    .split_once('?')
+                    .map(|(_, query)| query)
+                    .unwrap_or_default()
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("bot="))
+                    .map(|bot| {
+                        percent_encoding::percent_decode_str(&bot.replace('+', " "))
+                            .decode_utf8_lossy()
+                            .into_owned()
+                    })
+                    .unwrap_or_default();
+                let answer = tokio::task::spawn_blocking(move || work.bot_work(&bot))
+                    .await
+                    .map_err(|error| {
+                        Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                    })?
+                    .map_err(refused)?;
+                Ok(RouteReply::json::<200>(typed(answer)?))
             }
         });
         let work = self.clone();
