@@ -2488,6 +2488,41 @@ test("the Mac installer leaves an unreadable move journal untouched", t => {
   assert.deepEqual(fs.readdirSync(path.join(home, "updates")), ["rehome"]);
 });
 
+test("the Mac installer offers to start a loaded Helper that has stopped", t => {
+  if (process.platform !== "darwin") return t.skip("Uses the Mac Helper registration.");
+  const fixture = box(t);
+  const { env } = fixture;
+  env.HOME = fs.realpathSync(env.HOME);
+  const home = path.join(env.HOME, ".kuvo-code");
+  const bundle = macInstallerBundle(env.HOME, "run.kuvo.code.helper-status-fixture");
+  const tools = path.join(env.HOME, "launch-fixture");
+  env.KUVO_TEST_UNINSTALL_TOOLS = tools;
+  const helper = path.join(home, "bin/Kuvo Helper.app/Contents/MacOS/Kuvo Helper");
+  write(path.join(home, "box/kind"), "mac\n");
+  write(path.join(home, "bin/kuvo-box"), "");
+  write(helper, "");
+  const job = path.join(env.HOME, "Library/LaunchAgents/run.kuvo.code.machine.plist");
+  const contents = `<plist><array><string>${helper}</string></array></plist>`;
+  write(job, contents);
+  write(path.join(tools, "launchctl"), `#!/bin/sh
+[ "$1" = print ] || exit 64
+cat "$KUVO_TEST_UNINSTALL_TOOLS/print-state"
+`, { mode: 0o700 });
+  for (const [state, verb] of [["state = running", null], ["state = waiting", "new"], ["service = job", null]]) {
+    write(path.join(tools, "print-state"), state + "\n");
+    const [code, status] = macInstallerRequest(fixture, bundle, "status");
+    assert.equal(code, 0);
+    assert.deepEqual([status.verdict, status.verb], ["ours", verb]);
+  }
+  write(path.join(tools, "print-state"), "state = running\n");
+  write(path.join(home, "run/paused"), "");
+  const [code, status] = macInstallerRequest(fixture, bundle, "status");
+  assert.equal(code, 0);
+  assert.deepEqual([status.verdict, status.verb], ["ours", "new"]);
+  assert.equal(fs.readFileSync(job, "utf8"), contents);
+  assert.equal(fs.existsSync(path.join(home, "updates/install")), false);
+});
+
 test("the Mac installer waits for a live move", async t => {
   if (process.platform !== "darwin") return t.skip("Uses the Mac move lock.");
   const fixture = box(t);
