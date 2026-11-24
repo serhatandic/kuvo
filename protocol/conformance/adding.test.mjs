@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, boxCommand, isolatedEnv, readJSON, scratch, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, launch, readJSON, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 test("an installer code binds one computer, survives a retry, and keeps its identity", { timeout: 90000 }, async t => {
@@ -113,6 +113,15 @@ test("an unsupported installer code leaves the new computer’s home untouched",
     assert.equal((await process.exited).code, 1);
     assert.match(process.log(), new RegExp(`kuvo-add format version ${version} is unsupported`));
     assert.deepEqual(fs.readdirSync(home), []);
+    if (!implementation.typescript) {
+      const fresh = path.join(root, `fresh-${version}`);
+      const going = launch(implementation.file, args, { ...isolatedEnv(root), KUVO_HOME: fresh }, root);
+      t.after(() => going.stop());
+      going.child.stdin.end(`kuvo-add-${version}.e30\n`);
+      assert.equal((await going.exited).code, 1);
+      assert.match(going.log(), new RegExp(`kuvo-add format version ${version} is unsupported`));
+      assert.equal(fs.existsSync(fresh), false, "a rejected code does not make an installation directory");
+    }
   }
 });
 
@@ -270,7 +279,7 @@ test("a seed keeps existing sign-ins and keys and takes portable credentials jus
 });
 
 test("installer enrollment copies only the sign-ins and keys selected for that code", { timeout: 90000 }, async t => {
-  const { computer, leases } = await bench(t);
+  const { computer, leases, relay } = await bench(t);
   const main = await computer("Studio");
   const remote = await computer("Desk");
   const keyName = "KUVO_KEY_NOTION_TOKEN";
@@ -311,7 +320,34 @@ test("installer enrollment copies only the sign-ins and keys selected for that c
   assert.match(interrupted.log, /same code/);
   assert.equal(readJSON(path.join(remote.home, "run", "link.json")).installerClaim.credentialsPending, true);
   assert.equal(typeof invite().credentialSeed, "string");
+  main.engine.credentials[0].value.key = "source-key-rotated-after-consent";
+  write(path.join(main.home, "box", "keys", keyName), "source-integration-key-rotated-after-consent");
   remote.engine.blockCredentialImport = false;
+  if (process.platform !== "win32") {
+    const issuer = mainLink().shared.membershipAndAccess.value.boxes.find(peer => peer.name === "Studio");
+    const prefix = Buffer.from("kuvo installer v1\0");
+    const address = Buffer.from(issuer.address, "base64url");
+    const replies = new Map();
+    const watch = relay.intercept(null, address, ({ from, payload }) => {
+      const sender = from.toString("base64url");
+      if (payload.includes(prefix) && !replies.has(sender)) {
+        replies.set(sender, relay.intercept(address, from,
+          ({ payload: reply }) => invite().credentialsCompleted && reply.includes(prefix)));
+      }
+      return false;
+    });
+    try {
+      const cut = await remote.join(issued.json.code, { afterStart: async installer => {
+        await until(() => invite().credentialsCompleted, "The issuer did not retire the consumed credential copy.", 20000);
+        installer.child.kill("SIGTERM");
+      }});
+      assert.equal(cut.signal, "SIGTERM", cut.log);
+      assert.equal(readJSON(path.join(remote.home, "run", "link.json")).installerClaim.credentialsAckPending, true);
+    } finally {
+      watch();
+      for (const resume of replies.values()) resume();
+    }
+  }
   const joined = await remote.join(issued.json.code);
   assert.equal(joined.code, 0, joined.log);
   const keys = path.join(remote.home, "box", "keys");
@@ -324,6 +360,7 @@ test("installer enrollment copies only the sign-ins and keys selected for that c
   ]);
   await until(() => invite().credentialsCompleted && invite().credentialSeed === undefined,
     "The main computer did not acknowledge credential completion.");
+  assert.equal(readJSON(path.join(remote.home, "run", "link.json")).installerClaim.credentialsAckPending, undefined);
   assert.equal((await remote.join(issued.json.code)).code, 0);
   assert.equal(remote.engine.credentials.length, 2);
 });

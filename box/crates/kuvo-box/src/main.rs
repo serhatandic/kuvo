@@ -129,11 +129,6 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         environment.retain(|key, _| !key.eq_ignore_ascii_case("USERPROFILE"));
         Home::resolve(&account, Platform::Windows, &environment)?
     };
-    #[cfg(windows)]
-    kuvo_os::windows::private_home(
-        home.root(),
-        !wipe && uninstall.is_none() && startup != Some(false),
-    )?;
     #[cfg(not(windows))]
     let home = env::var_os("KUVO_HOME")
         .map(PathBuf::from)
@@ -141,6 +136,21 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         .ok_or_else(|| io::Error::other("KUVO_HOME must name an absolute scratch path"))?;
     #[cfg(not(windows))]
     let home = Home::new(home)?;
+    let enrollment_code = if join || ssh_enroll.is_some() {
+        Some(read_installer_input(4098)?)
+    } else {
+        None
+    };
+    #[cfg(windows)]
+    {
+        if let Some(code) = &enrollment_code {
+            kuvo_setup::installer::validate_join_code(code)?;
+        }
+        kuvo_os::windows::private_home(
+            home.root(),
+            !wipe && uninstall.is_none() && startup != Some(false),
+        )?;
+    }
     #[cfg(target_os = "macos")]
     if (serve && kuvo_setup::wipe::launch_app_wipe(home.root())?)
         || (wipe && mac_wipe::finish(home.root())?)
@@ -243,8 +253,7 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
             }
             Ok(())
-        } else if join || ssh_enroll.is_some() {
-            let code = read_installer_input(4098)?;
+        } else if let Some(code) = enrollment_code {
             let name = match ssh_enroll {
                 Some(name) => name.to_owned(),
                 None => hostname::get()?.to_string_lossy().into_owned(),

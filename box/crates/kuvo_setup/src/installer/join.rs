@@ -216,7 +216,11 @@ async fn join_and_reinstall(
     Ok(joined)
 }
 
-async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result<Joined, Error> {
+pub fn validate_join_code(input: &str) -> Result<(), Error> {
+    read_join_code(input).map(|_| ())
+}
+
+fn read_join_code(input: &str) -> Result<(Code, Host), Error> {
     let text = input.trim();
     if text.len() <= 4096
         && let Some((version, _)) = text
@@ -244,6 +248,11 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             "Use Merge Setups on the setup this code was made for.",
         ));
     }
+    Ok((code, primary))
+}
+
+async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result<Joined, Error> {
+    let (code, primary) = read_join_code(input)?;
     let prior = wipe::install_state(home.root()).map_err(|source| Error::File {
         action: "checking the earlier wipe at",
         path: home.root().to_owned(),

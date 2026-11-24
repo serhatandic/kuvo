@@ -60,6 +60,8 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.equal(found.question.title, "Is this lab?");
   assert.match(found.question.facts[1].value, /^SHA256:/);
   assert.deepEqual(fs.readdirSync(remote), []);
+  const oldCache = path.join(remote, "Library", "Application Support", "run.kuvo.code", "Caches", "old-cache");
+  write(oldCache, "cache from an earlier install");
   const answer = at => ask("POST", `kuvo/computers/add/${id}/answer`, { answer: "trust", at }, headers);
   assert.equal((await answer(found.question.at + 1)).status, 409);
   assert.equal(fs.existsSync(path.join(main.home, "ssh", "known_hosts")), false);
@@ -91,6 +93,7 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
     return attempt?.state === "done" && attempt;
   }, "SSH Add did not complete.", 35000);
   assert.equal(done.computer.name, "lab");
+  assert.equal(fs.readFileSync(oldCache, "utf8"), "cache from an earlier install");
   assert.equal(fs.readFileSync(path.join(main.home, "ssh", "known_hosts"), "utf8"), `lab ssh-ed25519 ${key}\n`);
   assert.deepEqual((await page()).json.hosts, ["second"]);
   const identity = fs.readFileSync(path.join(remote, "box", "machine-id"), "utf8");
@@ -644,6 +647,37 @@ test("SSH Add reports that it cannot prepare an invalid account lock", {
   assert.equal(fs.readFileSync(sentinel, "utf8"), "do not change this file");
   assert.equal(fs.existsSync(marker), false);
   assert.equal(fs.existsSync(path.join(remote, ".kuvo-code")), false);
+});
+
+test("SSH Add keeps older Mac data in place and asks that Mac to update", {
+  skip: process.platform === "win32", timeout: 35000,
+}, async t => {
+  const { main, ask, remote, fake, headers, page } = await addBench(t);
+  const destinationOf = [
+    ["old07", ["opencode", "opencode.db"]],
+    ["oldkeeper", ["box", "run", "keeper.json"]],
+  ];
+  write(path.join(main.home, "ssh", "known_hosts"), destinationOf.map(([destination]) => `${destination} ssh-ed25519 ${key(8)}\n`).join(""));
+  for (const [destination, file] of destinationOf) {
+    const account = path.join(remote, destination);
+    write(path.join(fake, `home-${destination}`), account);
+    const oldFile = path.join(account, "Library", "Application Support", "run.kuvo.code", ...file);
+    write(oldFile, "kept exactly");
+    const before = fs.readdirSync(account, { recursive: true }).sort();
+    const started = await ask("POST", "kuvo/computers/add", { destination }, headers);
+    assert.equal(started.status, 202, started.text);
+    const refused = await until(async () => {
+      const attempt = (await page()).tries.find(attempt => attempt.id === started.json.try.id);
+      return attempt?.state === "failed" && attempt;
+    }, "Add did not stop before changing the older Mac's work.");
+    assert.equal(refused.failure.message, `${destination} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.`);
+    assert.equal(refused.failure.again, false);
+    const lock = path.join(account, ".kuvo-code-adding.lock");
+    assert.equal(fs.statSync(lock).mode & 0o777, 0o600);
+    assert.deepEqual(fs.readdirSync(account, { recursive: true }).sort(), [".kuvo-code-adding.lock", ...before]);
+    assert.equal(fs.readFileSync(oldFile, "utf8"), "kept exactly");
+    assert.equal(fs.existsSync(path.join(account, ".kuvo-code")), false);
+  }
 });
 
 test("SSH Add preserves an independent installation that appeared after the probe", {

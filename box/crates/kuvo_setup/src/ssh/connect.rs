@@ -228,7 +228,7 @@ fi
     pub(super) async fn inspect_existing(
         &self,
         account: Option<&mut Reservation<'_>>,
-    ) -> Result<Option<Existing>, String> {
+    ) -> Result<Option<Existing>, AddError> {
         let Some(account) = account else {
             return Ok(self.existing.clone());
         };
@@ -240,22 +240,35 @@ if [ -e "$K/run/setup-card.json" ] || [ -e "$K/run/link.json" ] || [ -e "$K/bin/
   if [ -f "$K/machine-id" ] && [ ! -L "$K/machine-id" ]; then printf 'kuvo id %s\n' "$(head -c 34 "$K/machine-id")"; fi
   if [ -f "$K/run/setup-card.json" ] && [ ! -L "$K/run/setup-card.json" ]; then printf 'card %s\n' "$(head -c 200000 "$K/run/setup-card.json")"; fi
 fi
-if [ "$(uname -s)" = Darwin ] && [ -d "$HOME/Library/Application Support/run.kuvo.code" ]; then echo older; fi
+if [ "$(cat "$K/box/kind" 2>/dev/null)" != mac ]; then
+  A="$HOME/Library/Application Support/run.kuvo.code"
+  for marker in {app_markers}; do
+    if [ -e "$A/box/run/$marker" ] || [ -L "$A/box/run/$marker" ]; then echo older; exit 0; fi
+  done
+  for entry in "$A"/* "$A/opencode"/* "$A/box"/*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case "${{entry#"$A"/}}" in
+      engine|box|desktop|Caches|cache|tmp|logs|Logs|opencode|opencode/cache|box/run|box/bin) continue ;;
+    esac
+    echo older; break
+  done
+fi
 "#,
-            root = self.root
+            root = self.root,
+            app_markers = crate::discovery::OWN_BOX_RAN.join(" ")
         );
         let ran = account.run(&probe, Vec::new(), 30).await?;
         if !ran.status.success() {
-            return Err(unreachable(&self.name));
+            return Err(unreachable(&self.name).into());
         }
         let data = String::from_utf8_lossy(&ran.stdout);
         let lines: Vec<_> = data.lines().collect();
         let existing = Existing::read(&lines);
         if existing.is_none() && lines.contains(&"older") {
-            return Err(format!(
+            return Err(AddError::permanent(format!(
                 "{} still has Kuvo Code 0.7’s sessions. Update it to Kuvo first — its sessions move over then — and add it again.",
                 self.name
-            ));
+            )));
         }
         Ok(existing)
     }

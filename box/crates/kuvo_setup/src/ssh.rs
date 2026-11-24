@@ -92,11 +92,15 @@ impl AddError {
     }
 
     fn occupied(name: &str) -> Self {
+        Self::permanent(format!(
+            "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
+        ))
+    }
+
+    fn permanent(message: String) -> Self {
         Self {
             again: false,
-            ..Self::from(format!(
-                "Kuvo Code on {name} already belongs to another setup. To add this computer, connect over SSH to your own OS account."
-            ))
+            ..Self::from(message)
         }
     }
 }
