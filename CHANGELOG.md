@@ -20,6 +20,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - An older move that already started switching on a managed setup stays held until the destination confirms ownership.
 - A paused queue keeps its message order after a move and shows the original words alongside its attachment names.
 - A conversation stays on its current computer and resumes its wake-ups if preparing the move takes too long.
+- A moved conversation can send and receive replies by name while its old computer is still cleaning up the original.
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
 - Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.

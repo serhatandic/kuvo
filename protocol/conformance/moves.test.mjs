@@ -563,10 +563,11 @@ test("a switched move keeps the original until its backup can be written", {
   const here = await computer("cleanup-source"), there = await computer("cleanup-target");
   const { main, member } = seedPeerSetup(here.home, relay.url);
   seedPeerSetup(there.home, relay.url, 2);
-  const session = "ses_cleanupBackup", directory = path.join(here.home, "chats");
+  const session = "ses_cleanupBackup", local = "ses_waitingAtSource", directory = path.join(here.home, "chats");
   const probe = "mov_cleanupRound";
   fs.mkdirSync(directory, { recursive: true });
-  here.engine.sessions.push(sessionOf({ id: session, directory }));
+  here.engine.sessions.push(sessionOf({ id: session, title: "Lead on the move", directory }),
+    sessionOf({ id: local, title: "Work at the source", directory }));
   const { openOneWay, Frame } = await testMail(t, boxBinary(wireFixture));
   const from = Buffer.from(main.address, "base64url"), to = Buffer.from(member.address, "base64url");
   const key = Buffer.from(member.key, "base64url"), secret = Buffer.alloc(32, 1);
@@ -576,11 +577,12 @@ test("a switched move keeps the original until its backup can be written", {
   const stop = relay.intercept(to, from, packet => {
     if (packet.payload[0] !== Frame.mail) return false;
     const { payload } = openOneWay(packet.payload.subarray(5), secret, key);
-    if (JSON.parse(payload).move?.op === "switched") {
+    const mail = JSON.parse(payload);
+    if (mail.move?.op === "switched") {
       beforeCleanup ??= exports();
       here.engine.refuseExport = session;
     }
-    return false;
+    return Boolean(mail.agents?.list?.some(agent => agent.session === session));
   });
   t.after(stop);
   t.after(relay.intercept(from, to, packet => {
@@ -609,6 +611,25 @@ test("a switched move keeps the original until its backup can be written", {
   const location = await request(source, "GET", `kuvo/sessions/${session}/location`);
   assert.equal(location.status, 200, location.text);
   assert.equal(location.json.on?.id, member.key, location.text);
+
+  const idOfLetter = "ltr_movedLead", reply = path.join(there.home, "run/replies", idOfLetter);
+  const words = "How's it going at the source?";
+  write(reply + ".alive", "");
+  write(path.join(there.home, "run/outbox/sending", idOfLetter + ".json"), JSON.stringify({
+    from: session, to: local, text: words, peer: main.key, wait: true, at: Date.now(),
+  }));
+  const sent = await until(() => here.engine.messages.get(local)?.[0],
+    "The moved lead's message did not reach its work at the source", 20000);
+  assert.equal(sent.text, `[Message from “Lead on the move” · ${session}] (They're waiting for your reply: just answer, in your words.)\n\n` + words);
+  const journal = path.join(here.home, "run/moves", id + ".json");
+  assert.equal(readJSON(journal).stage, "finishing");
+  here.engine.messages.get(local).push({ id: sent.id.slice(0, -1) + "z0", type: "assistant",
+    content: [{ type: "text", text: "The checks passed." }] });
+  const answer = await until(() => {
+    fs.utimesSync(reply + ".alive", new Date(), new Date());
+    return fs.existsSync(reply + ".json") && readJSON(reply + ".json");
+  }, "The lead on the new computer did not receive its reply", 22000, 500);
+  assert.deepEqual(answer, { from: local, to: session, name: "Work at the source", text: "The checks passed." });
 
   // A later saved request proves the same driver took another look at the
   // move journals. The failed backup should wait for its retry interval.
@@ -2491,7 +2512,7 @@ test("a letter that waits hears the authenticated answer after the sender restar
 test("pending letters reach a peer in creation order", { timeout: 40000 }, async t => {
   const { computer, relay } = await bench(t);
   const here = await computer("ordered-letter-source"), there = await computer("ordered-letter-target");
-  const { member } = seedPeerSetup(here.home, relay.url);
+  const { main, member } = seedPeerSetup(here.home, relay.url);
   seedPeerSetup(there.home, relay.url, 2);
   const recipient = "ses_orderedRecipient";
   there.engine.sessions.push(sessionOf({ id: recipient, title: "Reservations", directory: path.join(there.home, "chats") }));
@@ -2504,12 +2525,35 @@ test("pending letters reach a peer in creation order", { timeout: 40000 }, async
       to: recipient, text: name, peer: member.key, wait: false, at: now - (index + 1) * 1000,
     }));
   }
+  const aged = now - 3 * 86400_000;
+  const stale = path.join(folder, "ltr_expiredOrder.json");
+  const waiting = path.join(here.home, "run/replies/ltr_expiredOrder");
+  write(waiting + ".alive", "");
+  write(stale, JSON.stringify({
+    to: recipient, text: "An ordinary letter that expired", peer: member.key, wait: true, at: aged,
+  }));
+  const note = "A saved note after three days.";
+  const noteFile = path.join(folder, "ltr_keptOrder.json");
+  write(noteFile, JSON.stringify({
+    to: recipient, text: note, peer: member.key, wait: false, at: aged,
+    note: { from: "Your other computers", words: note, delivery: "queue" },
+  }));
+  const reconnect = relay.disconnect(Buffer.from(main.address, "base64url"));
+  t.after(reconnect);
   await here.start().ready();
+  const expired = await until(() => {
+    fs.utimesSync(waiting + ".alive", new Date(), new Date());
+    return !fs.existsSync(stale) && fs.existsSync(waiting + ".json") && readJSON(waiting + ".json");
+  }, "The expired letter did not finish while the relay was down", 15000);
+  assert.deepEqual(expired, { failed: "It couldn't get there in two days of trying." });
+  assert.ok(fs.existsSync(noteFile));
+  assert.equal(there.engine.messages.has(recipient), false);
+  reconnect();
   const messages = await until(() => {
     const prompts = there.engine.messages.get(recipient);
-    return prompts?.length === 3 && prompts;
+    return prompts?.length === 4 && prompts;
   }, "The ordered letters did not all arrive", 18000);
-  assert.deepEqual(messages.map(prompt => prompt.text.split("\n\n").at(-1)), ["first", "second", "third"]);
+  assert.deepEqual(messages.map(prompt => prompt.text.split("\n\n").at(-1)), [note, "first", "second", "third"]);
 });
 
 test("only its lead can address an old conversation that is no longer listed", {

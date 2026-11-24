@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    directory::{MoveLocation, Ownership},
+    directory::{ComputerKey, MoveLocation, Ownership},
     lists::matching_paths,
     reach::Millis,
 };
@@ -284,6 +284,24 @@ pub(crate) fn locate(run: &Path, ownership: &mut Ownership) {
         departure_rows(run).filter_map(Result::ok),
         journal_rows(run).filter_map(Result::ok).collect(),
     );
+}
+
+/// A new owner can speak for a switched root before it has published it.
+pub(crate) fn switched_sender(run: &Path, session: &str, key: &ComputerKey) -> Option<String> {
+    let peer = kuvo_wire::keys::encode(key);
+    journals(run)
+        .ok()?
+        .into_iter()
+        .filter(|row| {
+            row.live()
+                && row.role == Role::From
+                && row.stage.switched()
+                && row.peer == peer
+                && matches!(row.kind, Some(Kind::Chat | Kind::Bot))
+                && row.sessions.first().is_some_and(|root| root == session)
+        })
+        .min_by_key(|row| row.started)
+        .and_then(|row| row.name)
 }
 
 /// Admission refuses unreadable durable state. The display projection still

@@ -138,8 +138,8 @@ and compares the two saved maps before dispatching each request.
 ## TypeScript scenario map
 
 Numbers are one-based, in declaration order in each reference file. The scoped inventory
-below counts 212 declarations. Ninety have full scenario coverage, 15 have partial proof,
-and 107 remain open or assigned to their other owners. Mixed-only portions are recorded
+below counts 212 declarations. Ninety have full scenario coverage, 17 have partial proof,
+and 105 remain open or assigned to their other owners. Mixed-only portions are recorded
 separately where they appear.
 
 | Reference | Cases | Status and remaining owner |
@@ -238,14 +238,16 @@ separately where they appear.
 | | 28 | Covered by a letter with a stale remote address reaching the conversation after it moves home and its awaited reply returning without relay mail. |
 | | 29 | Covered by a live move followed by a letter whose engine acceptance went unheard. Replaying it after restart acknowledges the original prompt without a second submission. |
 | | 31, 33 | Covered by late replies recovered through the resident and by abandoned transcript replies being discarded during the same hold. |
-| | 6, 8, 10–11, 13–14, 32 | Open, 2.4 letter handling through the resident. [2.2](rust-peers-coverage.md) proves parts of mail and outbox storage. |
+| | 13 | Partial, live expiry while disconnected, ordered delivery after reconnect, the longer lifetime of notes, authenticated acceptance and awaited or abandoned replies are proved. Sender introduction and the full retry sequence remain 2.4. |
+| | 6, 8, 10–11, 14, 32 | Open, 2.4 letter handling through the resident. [2.2](rust-peers-coverage.md) proves parts of mail and outbox storage. |
 | [mac-peers](../../box/bridge-tests/mac-peers.test.js) | 11 | Partial, transcript mail has a live two-computer scenario. The calling tool’s route and name lookup remain 2.4. |
 | | 2–3, 6, 8, 10, 12 | Open, 2.4 letter handling and Mac peer policy. The linked peer map also covers wire pieces. |
 | [setup-lists](../../box/test/setup-lists.test.ts) | 16 | Typed drafts, remote queue ordering and lost-effect receipts belong to 3.2, with authenticated transport from 2.2. |
 | | 28 | The 2.4 move projection is covered by the first snapshot pending and away states on the third computer. The other merged views belong to 2.2, 5.1 and 5.2. |
 | [reach-elsewhere](../../box/bridge-tests/reach-elsewhere.test.js) | 1, 3 | Open, 2.4 real move fixtures, with engine effects in 3.2. [2.2](rust-peers-coverage.md) proves the authenticated call transport. |
 | [reach-elsewhere-rules](../../box/bridge-tests/reach-elsewhere-rules.test.js) | 11 | Covered by lead-only letters to an unlisted older conversation and the exception for a conversation that arrived recently. |
-| | 3–4, 14 | Open, 2.4 switched sessions and returning results to a moved lead. Case 14 was numbered 13 before the stale snapshot scenario was added. |
+| | 4 | Partial, a switched chat kept on the source still names the speaker before the new owner lists it. The reply reaches the new owner. The in-flight switch and unrelated speaker checks remain 2.4. |
+| | 3, 14 | Open, 2.4 switched sessions and returning results to a moved lead. Case 14 was numbered 13 before the stale snapshot scenario was added. |
 | [offline-merge](../../box/test/offline-merge.test.ts) | 4 | Open, refinement of an older note passage on the new owner in 2.4 and 3.2. |
 | | 8–9 | Work Queue deletion and former-owner replay owned by 5.2. |
 | [setup-handover, move and owner reads](../../box/bridge-tests/setup-handover.test.js#L15) | v3 compatibility | Partial, v0–v3 storage and the compatibility writer are covered. Old-reader rejection through the archive and queue handoffs remain 2.4 and 5.2. |

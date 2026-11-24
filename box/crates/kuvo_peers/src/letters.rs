@@ -4,6 +4,7 @@ pub(crate) mod homes;
 mod transcript;
 
 use std::{
+    borrow::Cow,
     io,
     path::Path,
     sync::Arc,
@@ -548,9 +549,10 @@ impl Letters {
         } else {
             sender = self.sender(view, key, letter.from.as_deref());
             let name = sender
-                .map(|(_, name)| name.to_owned())
+                .as_ref()
+                .map(|(_, name)| name.to_string())
                 .unwrap_or_else(|| unknown_sender(view, &key));
-            let address = sender.map_or("unknown", |(from, _)| from);
+            let address = sender.as_ref().map_or("unknown", |(from, _)| *from);
             let hint = letter_hint(address, letter.wait);
             let prompt = format!("[Message from {name} · {address}] ({hint})\n\n{text}");
             let metadata = json!({"kuvo":{"parts":{"words":text,"mail":{"name":name,"session":address,"hint":hint}}}});
@@ -603,12 +605,12 @@ impl Letters {
                 }
                 let mut receipt = delivered(id.clone());
                 if note.is_none() && letter.wait {
-                    if let Some((from, _)) = sender.filter(|_| !kept) {
+                    if let Some((from, _)) = sender.as_ref().filter(|_| !kept) {
                         self.answers.spawn(wait_for_answer(
                             engine,
                             letter.to.clone(),
                             prompt_id,
-                            from.to_owned(),
+                            (*from).to_owned(),
                             key,
                             id,
                         ));
@@ -779,29 +781,31 @@ impl Letters {
         view: &'a View,
         key: ComputerKey,
         from: Option<&'a str>,
-    ) -> Option<(&'a str, &'a str)> {
+    ) -> Option<(&'a str, Cow<'a, str>)> {
         let from = from?;
-        let owner = self.ownership.scope(from, None).ok()?.owner?;
-        if owner.key != Some(key) {
+        let scope = self.ownership.scope(from, None).ok()?;
+        if scope.owner?.key != Some(key) {
             return None;
         }
         let name = if view.roster.here == Some(key) {
-            view.local
-                .list
-                .as_ref()?
-                .sessions
-                .get(from)?
-                .facts
-                .title
-                .as_deref()?
+            Cow::Borrowed(
+                view.local
+                    .list
+                    .as_ref()?
+                    .sessions
+                    .get(from)?
+                    .facts
+                    .title
+                    .as_deref()?,
+            )
+        } else if let Some(agent) = view
+            .announced
+            .get(&encode(&key))
+            .and_then(|said| said.list.iter().find(|agent| agent.session == from))
+        {
+            Cow::Borrowed(agent.name.as_str())
         } else {
-            &view
-                .announced
-                .get(&encode(&key))?
-                .list
-                .iter()
-                .find(|agent| agent.session == from)?
-                .name
+            Cow::Owned(crate::moves::switched_sender(&self.reader.run, from, &key)?)
         };
         Some((from, name))
     }
@@ -836,11 +840,7 @@ impl Letters {
         } else {
             None
         };
-        let sender = sender.or_else(|| {
-            local_name
-                .as_ref()
-                .map(|(from, name)| (*from, name.as_str()))
-        });
+        let sender = sender.or_else(|| local_name.map(|(from, name)| (from, Cow::Owned(name))));
         // The awaited letter may be the only record left after a restart.
         self.outbox()?
             .answer(&key, answered, now, |sent| {
@@ -861,7 +861,11 @@ impl Letters {
                     return Some(reply);
                 }
                 let fallback = unknown_sender(view, &key);
-                let (from, name) = sender.unwrap_or(("unknown", fallback.as_str()));
+                let (from, name) = sender
+                    .as_ref()
+                    .map_or(("unknown", fallback.as_str()), |(from, name)| {
+                        (*from, name.as_ref())
+                    });
                 Some(
                     json!({"text":cut(&letter.text, ANSWER_TEXT), "to":sent.from,
                 "from":from, "name":name}),
