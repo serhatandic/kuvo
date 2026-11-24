@@ -65,6 +65,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         kuvo_setup::backup::Backups::new(home).preserve_before_rust()?;
         return Ok(ExitCode::SUCCESS);
     }
+    if (word(0), word(1)) == (Some("box"), Some("labels")) {
+        return kuvo_work::label_restore::run(&args[2..]);
+    }
     if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
         if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
             return Err("The release names a different engine.".into());

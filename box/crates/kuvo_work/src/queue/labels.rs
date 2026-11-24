@@ -1,3 +1,7 @@
+mod restore;
+
+pub(super) use restore::{ROUTE as RESTORE_ROUTE, Restores};
+
 use super::{
     migration,
     store::{

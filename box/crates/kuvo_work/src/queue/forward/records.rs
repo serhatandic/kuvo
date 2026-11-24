@@ -52,6 +52,7 @@ pub(in crate::queue) enum Method {
 pub(in crate::queue) enum RequestKind<'a> {
     Read,
     OfflineRead,
+    LabelRestore,
     File(&'a str),
     Edit,
     Delete,
@@ -69,11 +70,16 @@ impl Act {
 
     pub fn kind(&self) -> Option<RequestKind<'_>> {
         if let Some(area) = self.area.as_deref() {
-            return (area == "ownership"
-                && self.item == "offline-edit"
-                && matches!(self.method, Method::Get)
-                && self.action.is_none())
-            .then_some(RequestKind::OfflineRead);
+            if area != "ownership" || self.action.is_some() {
+                return None;
+            }
+            return match (self.method, self.item.as_str()) {
+                (Method::Get, "offline-edit") => Some(RequestKind::OfflineRead),
+                (Method::Post, crate::queue::labels::RESTORE_ROUTE) => {
+                    Some(RequestKind::LabelRestore)
+                }
+                _ => None,
+            };
         }
         Some(match (self.method, self.action.as_deref()) {
             (Method::Get, None) => RequestKind::Read,

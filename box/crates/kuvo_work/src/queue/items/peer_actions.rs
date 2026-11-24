@@ -205,6 +205,14 @@ impl Writer {
                 self.edit(act.item, act.body.unwrap_or_default(), false)
                     .await
             }
+            RequestKind::LabelRestore => {
+                let value = act.body.unwrap_or_default()["value"].clone();
+                if value.get("dryRun").is_some_and(|given| given != false) {
+                    Err(bad("Update the box and retry the preview."))
+                } else {
+                    self.reads.restore_labels.here(value, false).await
+                }
+            }
             RequestKind::Delete => self.change(act.item, Removal::Delete).await,
             RequestKind::Restore => self.change(act.item, Removal::Restore).await,
             _ => unreachable!("mutation already selected"),

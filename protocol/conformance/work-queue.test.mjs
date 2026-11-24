@@ -1064,42 +1064,57 @@ test("GitHub device sign-in keeps the same located attempt for its client", { ti
 });
 
 
-test("an expired deletion retains its fence and prunes the old item links", { timeout: 45000 }, () =>
-  withQueue(async (queue, start) => {
-    const dead = "wqi_dddddddddddddddddddd";
-    const live = "wqi_llllllllllllllllllll";
-    const old = { at: Date.now() - 31 * 86_400_000, by: { user: true } };
-    const fresh = { at: Date.now() - 1000, by: { user: true } };
-    const file = path.join(queue, "queues", "usr_you.json");
-    const expiredFiles = path.join(queue, "files", dead);
-    write(path.join(expiredFiles, "old.txt"), "Expired.");
-    write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
-    write(file, JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [
-      { id: dead, owner: "usr_you", title: "Old item", status: "todo", created: old, updated: old, removed: old, number: 11,
-        files: [{ name: "old.txt", size: 8, type: "text/plain", at: old.at }] },
-      { id: live, owner: "usr_you", title: "New item", status: "todo", created: fresh, updated: fresh, number: 12,
-        relations: [{ item: dead, kind: "blocks" }] },
-    ] }));
-    const app = { "x-kuvo-from": "app" };
-    const ask = await start();
-    const changed = await ask("kuvo/work-queue/items/" + live, "PATCH", { title: "Still here" }, app);
-    assert.equal(changed.status, 200, changed.text);
-    const saved = JSON.parse(readFileSync(file, "utf8"));
-    assert.deepEqual(saved.items.map(item => item.id), [live]);
-    assert.equal(saved.items[0].relations, undefined);
-    for (const field of ["files", "labels", "links", "notes", "sessions"]) assert.deepEqual(saved.items[0][field], []);
-    assert.equal(saved.items[0].body, "");
-    assert.equal(existsSync(expiredFiles), false);
-    const key = createHash("sha256").update(JSON.stringify([dead])).digest("base64url");
-    const fence = path.join(queue, "..", "owned-data", "edit-deletions", key + ".json");
-    assert.deepEqual(JSON.parse(readFileSync(fence, "utf8")), { formatVersion: 1, id: dead, queue: "usr_you", at: old.at });
-    const recover = await ask("kuvo/data/edits", "POST", {
-      ref: { kind: "queueItems", id: dead, queue: "usr_you" },
-      operation: "expired-delete-fence", baseRevision: null, create: true, fields: { title: "Do not recreate" },
-    }, app);
+test("an expired deletion retains its fence and prunes the old item links", { timeout: 60000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const computerHere = await computer("Lab");
+  const queue = path.join(computerHere.home, "run", "work-queue");
+  const dead = "wqi_dddddddddddddddddddd";
+  const live = "wqi_llllllllllllllllllll";
+  const old = { at: Date.now() - 31 * 86_400_000, by: { user: true } };
+  const fresh = { at: Date.now() - 1000, by: { user: true } };
+  const file = path.join(queue, "queues", "usr_you.json");
+  const expiredFiles = path.join(queue, "files", dead);
+  write(path.join(expiredFiles, "old.txt"), "Expired.");
+  write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+  write(file, JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [
+    { id: dead, owner: "usr_you", title: "Old item", status: "todo", created: old, updated: old, removed: old, number: 11,
+      files: [{ name: "old.txt", size: 8, type: "text/plain", at: old.at }] },
+    { id: live, owner: "usr_you", title: "New item", status: "todo", created: fresh, updated: fresh, number: 12,
+      relations: [{ item: dead, kind: "blocks" }] },
+  ] }));
+  const app = { "x-kuvo-from": "app" };
+  const ask = computerHere.connect(await computerHere.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The resident did not acquire the setup lease.");
+  const changed = await ask("PATCH", "kuvo/work-queue/items/" + live, { title: "Still here" }, app);
+  assert.equal(changed.status, 200, changed.text);
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  assert.deepEqual(saved.items.map(item => item.id), [live]);
+  assert.equal(saved.items[0].relations, undefined);
+  for (const field of ["files", "labels", "links", "notes", "sessions"]) assert.deepEqual(saved.items[0][field], []);
+  assert.equal(saved.items[0].body, "");
+  assert.equal(existsSync(expiredFiles), false);
+  const key = createHash("sha256").update(JSON.stringify([dead])).digest("base64url");
+  const fence = path.join(queue, "..", "owned-data", "edit-deletions", key + ".json");
+  assert.deepEqual(JSON.parse(readFileSync(fence, "utf8")), { formatVersion: 1, id: dead, queue: "usr_you", at: old.at });
+  const recover = await ask("POST", "kuvo/data/edits", {
+    ref: { kind: "queueItems", id: dead, queue: "usr_you", computer: setup.json.you.key },
+    operation: "expired-delete-fence", baseRevision: null, create: true, fields: { title: "Do not recreate" },
+  }, app);
+  if (recover.status === 202) {
+    const decision = await until(async () => {
+      const reply = await ask("GET", "kuvo/data/edits/" + recover.json.operation, undefined, app);
+      const receipt = reply.json?.receipt;
+      return receipt && receipt.status !== "pending" && receipt;
+    }, "The keeper did not resolve the expired deletion draft.");
+    assert.equal(decision.status, "refresh");
+  } else {
     assert.equal(recover.status, 409, recover.text);
     assert.equal(recover.json.status, "refresh");
-  }));
+  }
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).items.some(item => item.id === dead), false);
+});
 
 test("a running agent adds, lists and reads its numbered work with an attachment", { timeout: 45000 }, async t => {
   const { computer, leases } = await bench(t);
@@ -1295,4 +1310,57 @@ test("an agent hands an item to another conversation on the same computer", { ti
   const lister = await ask("GET", "kuvo/work-queue?owner=" + author.id + "&glance=1");
   assert.equal(lister.status, 200, lister.text);
   assert.equal(lister.json.items.filter(row => row.id === item).length, 1);
+});
+
+test("the label restore command previews on the main computer without saving", { timeout: 90000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const main = studio.connect(await studio.start().ready());
+  const setup = await main("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
+  assert.equal(invite.status, 201, invite.text);
+  const joined = await lab.join(invite.json.code);
+  assert.equal(joined.code, 0, joined.log);
+  const member = lab.connect(await lab.start().ready());
+  const labels = "kuvo/work-queue/labels";
+  const app = { "x-kuvo-from": "app" };
+  const first = await main("POST", labels, { add: "Needs docs", color: "sky" }, app);
+  assert.equal(first.status, 200, first.text);
+  const old = await main("POST", labels, { add: "Legacy label", color: "coral" }, app);
+  assert.equal(old.status, 200, old.text);
+  const removed = await main("POST", labels, { remove: old.json.label.id }, app);
+  assert.equal(removed.status, 200, removed.text);
+  await until(async () => {
+    const response = await member("GET", labels);
+    return response.json?.labels.some(label => label.id === first.json.label.id)
+      && !response.json?.labels.some(label => label.id === old.json.label.id);
+  }, "The member never received the accepted label library.");
+
+  const restored = { id: "lbl_from-backup", name: "From backup", color: "mint" };
+  const fixture = path.join(lab.home, "labels-restore-fixture.json");
+  write(fixture, JSON.stringify({ labels: [first.json.label, old.json.label, restored], removed: ["lbl_irrelevant"] }));
+  const route = labels + "/restore";
+  const canNotRestore = await member("POST", route, { library: [restored] }, app);
+  assert.equal(canNotRestore.status, 403, canNotRestore.text);
+  const invalid = await member("POST", route, { library: [restored], dryRun: true }, app);
+  assert.equal(invalid.status, 403, invalid.text);
+  const cmd = (...args) => lab.command(["box", "labels", "restore", fixture, ...args]);
+  const preview = await cmd("--dry-run");
+  assert.equal(preview.code, 0, preview.log);
+  assert.match(preview.text, /Dry run: would restore 1, already present 1, conflicts 1\./);
+  assert.match(preview.text, new RegExp(old.json.label.id + ": This label was removed\\. Use --force to restore it\\."));
+  assert.deepEqual((await main("GET", labels)).json.labels.map(label => label.id), [first.json.label.id]);
+  const applied = await cmd("--force");
+  assert.equal(applied.code, 0, applied.log);
+  assert.match(applied.text, /Restored 2, already present 1, conflicts 0\./);
+  for (const ask of [main, member]) {
+    await until(async () => {
+      const response = await ask("GET", labels);
+      return response.json?.labels.some(label => label.id === restored.id)
+        && response.json?.labels.some(label => label.id === old.json.label.id);
+    }, "The restored labels did not arrive.");
+  }
 });

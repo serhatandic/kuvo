@@ -125,6 +125,30 @@ impl SetupHandle {
         library: QueueLabelLibrary,
     ) -> Result<Receipt, Refusal> {
         let by = routes::submitter(caller)?;
+        self.save_queue_labels_as(by, setup, library).await
+    }
+
+    /// Called by the resident after its local holder or active tool has admitted the request.
+    pub async fn save_queue_labels_on_this_computer(
+        &self,
+        setup: &QueueSetup,
+        library: QueueLabelLibrary,
+    ) -> Result<Receipt, Refusal> {
+        self.save_queue_labels_as(Submitter::Computer, setup, library)
+            .await
+    }
+
+    pub async fn may_save_queue_labels(&self) -> bool {
+        // The setup command checks the same write lease for both authority operations.
+        self.may_switch_fleet().await
+    }
+
+    async fn save_queue_labels_as(
+        &self,
+        by: Submitter,
+        setup: &QueueSetup,
+        library: QueueLabelLibrary,
+    ) -> Result<Receipt, Refusal> {
         let change = Save {
             setup: setup.id.clone(),
             epoch: setup.epoch,

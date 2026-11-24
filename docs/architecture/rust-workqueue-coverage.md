@@ -33,6 +33,9 @@ restore. Working links record starts and stops and are cleared when work closes.
 An agent can hand an item to a conversation on the same computer. The new
 queue is written before the old copy is retired, and the item stays in both
 conversations' views.
+The private label restore command previews the main computer's accepted
+library over the quiet read transport. A member sends a restore to the main,
+which signs the save and publishes it to the setup.
 
 Case numbers follow declaration order in each TypeScript file. Partial means a
 conformance scenario exercises part of the TypeScript case. Open cases are
@@ -68,7 +71,7 @@ checks the initial migration and future-format refusal through a real resident.
 
 | Cross-area cases | Work Queue status and owner |
 |---|---|
-| [setup-shared](../../box/test/setup-shared.test.ts) label restore | Open, 5.2 and 2.5. Preview, acceptance and recovery. |
+| [setup-shared](../../box/test/setup-shared.test.ts) label restore | Partial, 5.2 and 2.5. The holder command previews without saving, keeps existing definitions, requires force for a retired ID, and restores on the main with both residents seeing the accepted result. Further recovery and protected backup cases are open. |
 | [setup-merge](../../box/test/setup-merge.test.ts) 2–6 | Open in 5.2 and 2.3 for the reservation, import and Markdown rewrite. Partial in case 6 for local alias lookup. |
 | [offline-merge](../../box/test/offline-merge.test.ts) 2, 7 | Partial, 5.2. A member saves a draft against an owner revision and the two residents merge independent passages when the keeper returns. Local conformance covers the deletion fence before and after restoration and recovery of refused text. Competing passages, retired revisions and legacy receipts still need scenarios. |
 | [offline-merge](../../box/test/offline-merge.test.ts) 3–6, 8–10 as applied to queue records | Partial for compact tombstones. Expired deletions retain their fence and a draft receives a refresh on attempted creation. Large and legacy passage layouts, transferred choices, former-owner replay and attachment records remain open in 5.2, 2.4 and 5.5. |
@@ -77,7 +80,7 @@ checks the initial migration and future-format refusal through a real resident.
 | [owner-mutations](../../box/bridge-tests/owner-mutations.test.js) queue slices for creation, claim, revision edits, scopes, handoff and receipts | Partial, 5.2 and 2.4. Ordinary revision-aware creation and PATCH replay the same decision through the shared edit outbox. Claim failure, handoff and the authenticated forwarding boundaries still need coverage. |
 | [setup-handover](../../box/bridge-tests/setup-handover.test.js) 1–5 | Open for 5.2 queue handoff, owner reads and independent queue work while the main computer is offline. Move evidence and transfers belong to 2.4. |
 | [setup-lists](../../box/test/setup-lists.test.ts) 16, 20 and 28 | Open, 5.2 and 2.4. Move placement, away deletions and the first copy in the combined view. |
-| [setup-handover-shared](../../box/bridge-tests/setup-handover-shared.test.js) 2–4, 6–7, 9–10 | Open, 5.2. Large label restore, old and unreachable main, number blocks across takeover, paired grants, offline edits and deletion recoveries. |
+| [setup-handover-shared](../../box/bridge-tests/setup-handover-shared.test.js) 2–4, 6–7, 9–10 | Partial for member preview and restore. Large label restores, old and unreachable main, number blocks across takeover, paired grants, offline edits and deletion recoveries remain open in 5.2. |
 | [setup-handover-lease](../../box/bridge-tests/setup-handover-lease.test.js) number allocation following unlink and takeover | Open, 5.2. |
 | [setup-handover-access](../../box/bridge-tests/setup-handover-access.test.js) forwarded receipts across changes and revocation | Open for the queue scope, 5.2 and 2.3. |
 | [setup-handover-wipe](../../box/bridge-tests/setup-handover-wipe.test.js) queue slices of revised plan, retained payloads, revised export, generation changes, attachment revisions and completion | Open, 5.2 with 2.3, 2.4 and 2.5. The backup map records existing snapshot checks. |
@@ -85,7 +88,7 @@ checks the initial migration and future-format refusal through a real resident.
 | [setup-mac](../../box/bridge-tests/setup-mac.test.js) legacy discovery and setup numbering | Open for 5.2. Keep the number floor when setup authority changes. |
 | [format-versions](../../box/bridge-tests/format-versions.test.js) future ledger | Partial, 5.2. Startup refuses the ledger and preserves its bytes. The version gate during allocation and the link-state portion still require the referenced scenarios. |
 | [resident-delivery](../../box/test/resident-delivery.test.ts) case 2 | Open, 5.2. Keep attachment disk work off the dispatch thread. |
-| [message-words](../../box/test/message-words.test.ts) cases 3 and 7 | Open, 5.2 and 3.2. Queue tools supply the titles and running and completed step words consumed by conversation history. |
+| [message-words](../../box/test/message-words.test.ts) cases 3 and 7 | The published tool titles and the queue-add history words are covered by the Work Queue tools case and [engine conformance](../../protocol/conformance/engine-sessions.test.mjs). The remaining queue tool history variants stay with 5.2 and 3.2. |
 | [forward-evidence](../../box/test/forward-evidence.test.ts) cases 2 and 3 | Open, 5.2 and 2.4. Recover a moved queue decision at its new keeper and keep future or ambiguous forward records pending. |
 | [moves-safety](../../box/test/moves-safety.test.ts) queue handoff lock, attachment and index sync, and missing indexed payload | Open for the live queue, 5.2 and 2.4. A retry must leave a live owner's lock intact, and activation waits for a complete durable bundle. |
 | [Backup coverage](rust-backups-coverage.md) held queue records, replay fences and capture during handoff | Open for 5.2 live item claims, review writes, review receipts and handoff serialization. Backup bytes and capture are tracked in 2.5. |
@@ -96,6 +99,6 @@ forwarded writes and receipts, offline merge edge cases and handoff, import coll
 recovery cases and merge reservations, agent and forwarded attachments, mention binding after number grants and owner
 changes, bot reassignment and remaining status and order cases, GitHub read and
 sign-in variants, and the remaining agents' tools.
-Label restore and setup seeding remain open. Signed label changes use the Rust
+Label restore recovery and setup seeding remain open. Signed ordinary label changes use the Rust
 setup authority request and reply. The TypeScript work-queue forwarding envelope
 still needs to be connected for mixed-version label saves.

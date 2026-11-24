@@ -173,10 +173,10 @@ pub async fn run(
         let queues = queue_reads.clone();
         let engine = search_engine.clone();
         async move {
-            if read.area.is_none() {
-                queues.answer(read).await
-            } else {
+            if read.area.as_deref() == Some("search") {
                 super::setup_search::answer(engine, read).await
+            } else {
+                queues.answer(read).await
             }
         }
     });

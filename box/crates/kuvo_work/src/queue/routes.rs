@@ -88,7 +88,16 @@ pub async fn register(
     });
     follow(registry, lists.clone());
 
+    let restore_labels = labels::Restores::new(
+        store.clone(),
+        setup.clone(),
+        memory.clone(),
+        peers.clone(),
+        super::forward::Forward::new(store.clone(), owners.clone(), relay.clone()),
+    );
+    restore_labels.register(registry);
     let reads = PeerReads {
+        restore_labels,
         github,
         store: store.clone(),
         refs: references.clone(),

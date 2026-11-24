@@ -73,6 +73,27 @@ impl Forward {
         .await
     }
 
+    pub async fn owner_write(
+        &self,
+        peer: ComputerKey,
+        computer: Value,
+        path: &str,
+        value: Value,
+    ) -> Result<Value, Refusal> {
+        self.request(
+            peer,
+            computer,
+            (
+                path.into(),
+                Method::Post,
+                None,
+                Some("ownership".into()),
+                Some(json!({"value":value})),
+            ),
+        )
+        .await
+    }
+
     pub fn pairing_state(&self, key: &ComputerKey, pairing: &str) -> ownership::PairingState {
         self.owners.current_pairing(key, pairing)
     }

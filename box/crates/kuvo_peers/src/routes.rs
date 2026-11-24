@@ -36,6 +36,8 @@ pub const FEATURES: &[&str] = &[
     "sessions.location",
     crate::WORK_QUEUE_SNAPSHOTS,
     "work-queue.forward",
+    "work-queue.labels.restore",
+    "work-queue.labels.restore.preview",
     "data.offline-edits",
 ];
 

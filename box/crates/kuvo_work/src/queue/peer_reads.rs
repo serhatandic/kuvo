@@ -29,6 +29,7 @@ const ATTACHMENTS: &str = "work-queue.attachments";
 #[derive(Clone)]
 pub struct PeerReads {
     pub(super) github: super::github::Reader,
+    pub(super) restore_labels: super::labels::Restores,
     pub(super) store: Store,
     pub(super) refs: Arc<References>,
     pub(super) sessions: LocalSessions,
@@ -101,6 +102,15 @@ impl PeerReads {
 
     /// The shared memory transport only calls this for a GET from an accepted computer.
     pub async fn answer(&self, read: Read) -> Answer {
+        if let Some(area) = read.area.as_deref() {
+            if area == "ownership" && read.item == super::labels::RESTORE_ROUTE {
+                return self.restore_labels.from_peer(read).await;
+            }
+            return Answer {
+                status: 404,
+                value: json!({"message":"There is no such read."}),
+            };
+        }
         if matches!(read.kind, Kind::Record) {
             self.refresh_local(&read.item).await;
         }
