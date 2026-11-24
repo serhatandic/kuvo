@@ -1029,6 +1029,16 @@ impl Driver {
         key: ComputerKey,
         row: &mut Journal,
     ) -> io::Result<()> {
+        let now = self.reader.now();
+        if row.extra.get("offered") == Some(&Value::Bool(true))
+            && !matches!(row.step.as_deref(), Some("drop" | "done"))
+        {
+            row.step = Some("drop".into());
+            row.extra.insert("dropSince".into(), now.into());
+            row.extra.shift_remove("sentAt");
+            row.extra.shift_remove("againAt");
+            row.save(self.run_dir())?;
+        }
         wake_folder::release(self.run_dir(), row)?;
         let status = row
             .extra
@@ -1047,7 +1057,8 @@ impl Driver {
             .and_then(Value::as_i64)
             .unwrap_or(row.started);
         if row.step.as_deref() == Some("drop")
-            && self.reader.now().saturating_sub(since) < DROP_AT_MOST
+            && (row.extra.get("dropUntilAck") == Some(&Value::Bool(true))
+                || now.saturating_sub(since) <= DROP_AT_MOST)
         {
             if self.retry_due(row, STEP_AGAIN) {
                 row.extra.insert("sentAt".into(), self.reader.now().into());

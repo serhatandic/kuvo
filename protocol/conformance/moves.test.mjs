@@ -506,6 +506,55 @@ test("a restarted source drives a request saved before its first check", { timeo
   await until(() => !here.engine.sessions.some(record => record.id === session), "The retired source was not removed");
 });
 
+test("a failed old offer sends only its drop and waits for the destination's receipt", {
+  timeout: 95000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("failed-offer");
+  const { main, member, save } = seedPeerSetup(here.home, relay.url);
+  const session = "ses_recoverFailed", legacy = "mov_failedOffer", held = "mov_failedDrop", done = "mov_failedDone";
+  for (const [id, extra] of [
+    [legacy, { step: "offer", offered: true }],
+    [held, { step: "drop", dropUntilAck: true, dropSince: Date.now() - 2 * 86400_000 }],
+    [done, { step: "done", offered: true }],
+  ]) save("run/moves/" + id + ".json", {
+    id, thing: session, name: "Saved conversation", kind: "chat", from: main.key, to: member.key, peer: member.key,
+    role: "from", stage: "copying", sessions: [session], failed: "It didn’t get there. Try again.",
+    failedStatus: 409, started: Date.now() - 100000, ...extra,
+  });
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const secret = Buffer.alloc(32, 2), key = Buffer.from(main.key, "base64url"), address = Buffer.from(main.address, "base64url");
+  const wire = relay.device(Buffer.alloc(32, 52));
+  t.after(() => wire.leave());
+  const sends = new Map();
+  t.after(relay.intercept(address, Buffer.from(member.address, "base64url"), packet => {
+    const datagram = readFrame(packet.payload);
+    if (datagram?.kind !== Frame.mail) return false;
+    const move = JSON.parse(openOneWay(datagram.body, secret, key).payload).move;
+    if (move) sends.set(move.id, [...(sends.get(move.id) ?? []), move.op]);
+    return false;
+  }));
+  const process = here.start();
+  const resident = await process.ready();
+  const journal = id => path.join(here.home, "run/moves", id + ".json");
+  await until(() => fs.existsSync(path.join(here.home, "run/moves", legacy + ".outcome.json"))
+    && !fs.existsSync(journal(done)), "The failed moves did not record their outcomes");
+  for (const id of [legacy, held]) assert.equal(readJSON(journal(id)).step, "drop");
+  await until(() => sends.has(legacy) && sends.has(held) && !fs.existsSync(journal(done)),
+    () => "The restarted source did not request both failed copies' removal "
+      + JSON.stringify([...sends]) + "\n" + process.log(), 78000);
+  for (const id of [legacy, held]) {
+    assert.deepEqual(sends.get(id), ["drop"]);
+    assert.equal(readJSON(journal(id)).step, "drop");
+    const outcome = await request(resident, "GET", "kuvo/moves/receipt?id=" + id);
+    assert.deepEqual(outcome.json, { state: "failed", message: "It didn’t get there. Try again." });
+    const message = Buffer.from(JSON.stringify({ at: Date.now(), move: { id, op: "dropped", neverSwitched: true } }));
+    wire.send(address, frame(Frame.mail, 0, sealOneWay(message, secret, key).message));
+    await until(() => !fs.existsSync(journal(id)), "The failed journal did not retire after the authenticated drop");
+  }
+  assert.equal(sends.has(done), false);
+});
+
 test("a switched move keeps the original until its backup can be written", {
   timeout: 115000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
