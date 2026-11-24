@@ -3,6 +3,7 @@
 // can't come from different releases.
 //   KUVO_BOX_SIGNING_KEY=<PEM> node scripts/sign-box.mjs <version> <pack> <pack's URL> <box.json>
 // For a Rust release, add one --target <triple> <pack> <URL> for each target.
+// During the switch add --bridge <signed TypeScript boxes.json> for returning betas.
 // The first pack remains the compatibility pack read by TypeScript computers.
 //   KUVO_BOX_SPREADS=1   a release for everyone (the release workflow) or the user's private feed:
 //                        marked `spreads`, so a computer holding it hands it to the user's other
@@ -44,13 +45,31 @@ const required = new Set([
   "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl", "x86_64-pc-windows-gnullvm",
 ]);
 const packs = {};
+let bridge;
 if (targets.length) {
-  for (let i = 0; i < targets.length; i += 4) {
+  for (let i = 0; i < targets.length;) {
     const [flag, target, file, address] = targets.slice(i, i + 4);
+    if (flag === "--bridge" && target && bridge === undefined) {
+      bridge = fs.readFileSync(target, "utf8").trim();
+      const signed = JSON.parse(bridge);
+      const bytes = Buffer.from(signed.manifest, "base64");
+      const publicKey = crypto.createPublicKey(key);
+      const raw = publicKey.export({ type: "spki", format: "der" }).subarray(-32);
+      const valid = raw.equals(Buffer.from(signed.key, "base64")) && crypto.verify(null,
+        Buffer.concat([Buffer.from("kuvo-box v1\n"), bytes]), publicKey, Buffer.from(signed.signature, "base64"));
+      const legacy = JSON.parse(bytes);
+      if (!valid || bridge.length > 8192 || legacy.kuvo !== "box/1" || legacy.launch === "rust" ||
+          legacy.bridge !== undefined || legacy.spreads !== true || legacy.engine !== box.engine) {
+        throw new Error("Give the signed, shareable TypeScript bridge release with the same engine pin.");
+      }
+      i += 2;
+      continue;
+    }
     if (flag !== "--target" || !required.delete(target) || !file || !address) {
       throw new Error("Give one --target <triple> <pack> <URL> for each supported Rust target.");
     }
     packs[target] = packed(file, address);
+    i += 4;
   }
   if (required.size || box.launch !== "rust") {
     throw new Error("A Rust release needs launch: rust and a pack for every supported target.");
@@ -68,6 +87,7 @@ const manifest = Buffer.from(JSON.stringify({
   linux: box.linux,
   darwin: box.darwin,
   ...(targets.length ? { launch: "rust", packs, windows: box.windows } : {}),
+  ...(bridge ? { bridge } : {}),
   pack: packed(pack, url),
   ...(process.env.KUVO_BOX_SPREADS === "1" ? { spreads: true } : {}),
 }));

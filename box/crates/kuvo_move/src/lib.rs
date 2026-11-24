@@ -4,7 +4,7 @@ pub mod install;
 mod machine;
 mod status;
 
-pub use status::rehome_status;
+pub use status::{progress as rehome_progress, rehome_status};
 
 #[cfg(target_os = "macos")]
 pub mod mac;

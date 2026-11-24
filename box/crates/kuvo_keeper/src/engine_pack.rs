@@ -10,9 +10,13 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use flate2::read::GzDecoder;
 use kuvo_store::{files, home::Home};
+use serde::Deserialize;
 use sha2::{Digest, Sha512};
 
-use crate::manifest::{EngineBuild, SignedRelease};
+use crate::{
+    manifest::{EngineBuild, EngineCatalogue, SignedRelease, local_target},
+    staging::check_engine_version,
+};
 
 const EXECUTABLE: &str = if cfg!(windows) {
     "opencode.exe"
@@ -21,6 +25,65 @@ const EXECUTABLE: &str = if cfg!(windows) {
 };
 const MAX_DOWNLOAD: u64 = 400_000_000;
 const MAX_UNPACKED: u64 = 500_000_000;
+
+#[derive(Deserialize)]
+struct Pin {
+    version: String,
+    #[serde(flatten)]
+    engines: EngineCatalogue,
+}
+
+/// Provision the engine pinned in this executable in an already placed Kuvo home.
+/// The caller owns the installation reservation and starts the engine separately.
+pub async fn provision_pinned_engine(home: &Home) -> io::Result<()> {
+    let pin: Pin = serde_json::from_str(include_str!("../../../src/shared/engine-pin.json"))?;
+    let build = pin.engines.build_for(local_target()?);
+    let home = home.clone();
+    tokio::task::spawn_blocking(move || provision(&home, &pin.version, build))
+        .await
+        .map_err(io::Error::other)?
+}
+
+fn provision(home: &Home, version: &str, build: Option<EngineBuild>) -> io::Result<()> {
+    let home = Home::new(home.root().canonicalize()?)?;
+    let engine = home.root().join("engine");
+    let installed = engine.join(version).join(EXECUTABLE);
+    let version_folder = installed.parent().expect("engine version folder");
+    for folder in [&engine, version_folder] {
+        match fs::symlink_metadata(folder) {
+            Ok(meta) if meta.is_dir() && folder.canonicalize()? == folder => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(io::Error::other(
+                    "The engine folder is outside its installation.",
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    match fs::symlink_metadata(&installed) {
+        Ok(meta) if !meta.is_file() || installed.canonicalize()? != installed => {
+            return Err(io::Error::other(
+                "The installed engine isn't a regular file here.",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    files::create_private_dirs(&engine)?;
+    let scratch = tempfile::Builder::new()
+        .prefix(".provision-")
+        .tempdir_in(&engine)?;
+    let pack = EnginePack::in_home(installed.clone(), || build, scratch.path())?;
+    check_engine_version(pack.executable(), scratch.path(), version)?;
+    match pack.publish(&home) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            check_engine_version(&installed, scratch.path(), version)
+        }
+        outcome => outcome,
+    }
+}
 
 pub(crate) struct EnginePack {
     installed: PathBuf,
@@ -39,11 +102,18 @@ impl EnginePack {
             .join("engine")
             .join(release.engine())
             .join(EXECUTABLE);
+        Self::in_home(installed, || release.engine_build(target), scratch)
+    }
+
+    fn in_home(
+        installed: PathBuf,
+        build: impl FnOnce() -> Option<EngineBuild>,
+        scratch: &Path,
+    ) -> io::Result<Self> {
         let draft = if installed.is_file() {
             None
         } else {
-            let build = release
-                .engine_build(target)
+            let build = build()
                 .ok_or_else(|| io::Error::other("The release has no engine for this machine."))?;
             let archive = download(build, scratch)?;
             let executable = scratch.join(EXECUTABLE);
@@ -125,4 +195,55 @@ fn unpack(archive: &Path, executable: &Path) -> io::Result<()> {
         return Ok(());
     }
     Err(invalid())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::{io::Write, net::TcpListener, os::unix::fs::PermissionsExt};
+
+    #[test]
+    fn provisioning_verifies_download_and_reuses_the_pinned_engine() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let home = Home::new(root.path().canonicalize()?)?;
+        let mut archive = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
+        let program = b"#!/bin/sh\nprintf '2.2.6\\n'\n";
+        let mut entry = tar::Header::new_gnu();
+        entry.set_mode(0o700);
+        entry.set_size(program.len() as u64);
+        archive.append_data(&mut entry, "package/bin/opencode", &program[..])?;
+        let bytes = archive.into_inner()?.finish()?;
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        let url = format!("http://{}/engine.tgz", listener.local_addr()?);
+        let integrity = format!("sha512-{}", STANDARD.encode(Sha512::digest(&bytes)));
+        let server = std::thread::spawn(move || -> io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request)?;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            )?;
+            stream.write_all(&bytes)
+        });
+
+        provision(&home, "2.2.6", Some(EngineBuild { url, integrity }))?;
+        server.join().expect("fixture feed panicked")?;
+        let installed = home.root().join("engine/2.2.6/opencode");
+        assert_eq!(fs::read(&installed)?, program);
+        provision(&home, "2.2.6", None)?;
+
+        let wrong = b"#!/bin/sh\nprintf '2.2.5\\n'\n";
+        fs::write(&installed, wrong)?;
+        fs::set_permissions(&installed, fs::Permissions::from_mode(0o700))?;
+        assert_eq!(
+            provision(&home, "2.2.6", None).unwrap_err().to_string(),
+            "The engine doesn't report the pinned version."
+        );
+        assert_eq!(fs::read(&installed)?, wrong);
+        assert_eq!(files::list_of(&home.root().join("engine")).len(), 1);
+        Ok(())
+    }
 }

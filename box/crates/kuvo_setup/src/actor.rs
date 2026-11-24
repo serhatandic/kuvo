@@ -69,6 +69,24 @@ pub struct SetupHandle {
 }
 
 impl SetupHandle {
+    /// Ask the setup owner at the point of a coordinated update decision.
+    /// A roster saying that this computer is main can outlive its lease.
+    pub async fn may_switch_fleet(&self) -> bool {
+        let (reply, decision) = oneshot::channel();
+        if self
+            .inbox
+            .send(Request {
+                command: Command::MaySwitchFleet,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        decision.await.is_ok_and(|result| result.is_ok())
+    }
+
     pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
         self.rosters.clone()
     }
@@ -217,6 +235,7 @@ pub(crate) struct Request {
 }
 
 pub(crate) enum Command {
+    MaySwitchFleet,
     Welcome(bool),
     ComputerViaMain(computer_requests::ComputerRequest, edits::Submitter),
     InstallerCode(Option<crate::seed::source::Prepared>, edits::Submitter),
@@ -1339,6 +1358,10 @@ impl Owner {
 
     async fn execute(&mut self, command: Command) -> Result<Response, Error> {
         match command {
+            Command::MaySwitchFleet => {
+                self.can_write()?;
+                Ok(Response::ok(Value::Null))
+            }
             Command::BackupMatch {
                 source,
                 previous,
