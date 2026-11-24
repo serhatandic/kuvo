@@ -957,3 +957,31 @@ fn a_descendant_has_time_to_finish_after_the_group_leader_exits() {
     stop.join().unwrap();
     assert_eq!(fs::read_to_string(root.join("descendant")).unwrap(), "done");
 }
+
+/// The resident ignores SIGPIPE (Rust does at startup); an agent it starts
+/// must get the default, so a pipeline it runs ends quietly on a closed pipe.
+#[cfg(unix)]
+#[test]
+fn a_child_starts_with_the_default_broken_pipe_signal() {
+    let Some(perl) = ["/usr/bin/perl", "/bin/perl"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+    else {
+        eprintln!("skipped: no perl to report the inherited disposition");
+        return;
+    };
+    // SAFETY: this test process is single purpose; ignoring SIGPIPE here is
+    // what the resident's own runtime does before it starts children.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+    let mut spec = Spawn::new(perl, Environment::new());
+    spec.args = ["-e", "print 'PIPE=', ($SIG{PIPE} // 'DEFAULT'), \"\\n\""]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    spec.stdout = Stdio::Pipe;
+    let mut child = spec.spawn().unwrap();
+    assert_eq!(read_field(&mut child, "PIPE="), "DEFAULT");
+    child.wait().unwrap();
+}

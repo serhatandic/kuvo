@@ -20,6 +20,7 @@ and the model and session projections share the resident routes.
 | H9 | Backpressure from an old controller cannot block a successor from replaying the journal and reading new output. |
 | H10 | A raw worker keeps blank lines and carriage returns when streaming and when replaying. |
 | H11 | A disconnected holder with a full, pinned journal still stops its agent when it times out. |
+| H12 | An agent exits while a descendant in its own session keeps its output open. The controller hears the exit within the TypeScript holder's two-second allowance. |
 | R1 | [Rust controller process test](../../box/crates/kuvo-box/tests/agent_holders.rs). Kill the original controller while the stand-in agent waits for a reply. A replacement controller launched from another release directory reads the record, replays the turn, answers the ask, and checks that both PIDs are unchanged. This tests the process and wire boundary used by a resident replacement. The test uses the same Rust build in both directories. |
 | R2 | The Rust controller scans a scratch recovery directory with a stale Rust record and a TypeScript record. It returns neither as adoptable and leaves the TypeScript record untouched. Unix removes the stale Rust files. Native Windows preserves files when it cannot match the recorded start identity. |
 
@@ -36,10 +37,10 @@ outstanding request methods can survive a transfer.
 
 | Platform | TypeScript holder conformance | Rust holder conformance | Rust controller process tests |
 |---|---:|---:|---:|
-| macOS | 11/11 | 11/11 | 2/2 |
-| Linux x86-64, lokum | — | 11/11 | 2/2 |
-| WSL2, Ubuntu 24.04 | — | 11/11 | 2/2 |
-| Native Windows x64 | — | 11/11 | 2/2 |
+| macOS | 12/12 | 12/12 | 2/2 |
+| Linux x86-64, lokum | — | 12/12 | 2/2 |
+| WSL2, Ubuntu 24.04 | — | 12/12 | 2/2 |
+| Native Windows x64 | — | 12/12 | 2/2 |
 
 Linux and WSL used the same static musl build compiled on the Mac. The native
 Windows run used static libunwind and the pinned Node 24 runner. The workspace
@@ -109,6 +110,65 @@ Permission and form requests are scoped to their session and turn.
 Tests cover withdrawing an ask, duplicate request IDs in separate
 sessions, denying a late ask, and withholding acknowledgement until a
 checkpoint has been written.
+
+The transcript and sink checkpoint passed on macOS, Linux (lokum), WSL2
+and native Windows. The two-box transcript fixture compared five HTTP
+responses and the saved SQLite bytes, and the account fixture compared
+the normalized replies and account index.
+
+4.1b owns the read-only Blocks loader, command analysis and preflight
+evaluation. The Rust tests cover the four command parsing cases in
+`bridge.test.ts` and the `Sessions.checkPermission` cases for Blocks,
+unavailable settings, native Plan mode, Auto outside the sandbox and
+paths outside the project. Row 6.1 owns editing Blocks, the Settings
+pages and sandbox setup and can reuse this evaluator.
+
+The resident starts and interrupts a saved coding-agent session through
+the compatibility routes. The macOS binary case follows a stand-in
+through two turns and checks the saved conversation and vendor state.
+The keeper case also checks that its replacement resident connects the
+recovered adapter to the shared sink and saves the replayed text and
+final outcome. The holder and child PIDs are unchanged. The controller
+contract and roster factory signature are unchanged.
+
+The compatibility permission and form routes now use the resident's
+ask book. The macOS fixture sees a running coding-agent session in the
+shared session list, changes Blocks while that turn is asking, and
+verifies that an attempted approval cannot release the action. It then
+rejects the ask and checks that a delayed reply cannot answer it again.
+Unified ask cards and delivery routes remain open.
+
+The shared session actions work on coding-agent conversations too.
+`kuvo/sessions/<id>` with its `actions`, `rename`, `pin` and `archive`
+finds the conversation with the agents before asking the engine. The
+saved header keeps the bridge's own notes (`kuvoAgent` and a subagent's
+`kuvo.messages`) when a client replaces the metadata, and reads carry the
+computer's Summarize setting for Claude Code, Codex and Grok. Delete stops
+a running turn first, refuses new turns meanwhile, and removes the
+subagents' conversations unless a fork's steps still show them. Archive
+stops a turn that waits on an approval or a question. The binary case
+(`agent-sessions`) passes on both boxes and their normalized replies
+match. Delete's confirmation now counts the coding agents' rows in a
+worktree, as the TypeScript list does. Holding the box queue on Archive
+and Stop belongs with the delivery work below. The engine's `Auto` run
+that a session forgets on delete stays with Auto.
+
+`POST kuvo/sessions` starts a coding agent's conversation on the shared
+start rules (project, folder, approval, parent and wake checks). The
+engine starts only when the start needs it: its own conversations, a
+worktree, or a parent it keeps. The new conversation's ID uses the
+engine's ascending format, its header is the bridge's, and a task's
+message keeps its client notes (`kuvo.parts`) on its row. The binary
+case passes on both boxes and the normalized answers, header and user
+row match. Session actions, the agent start and the holder's exit allowance passed
+on macOS, Linux (lokum), WSL2 and native Windows: the holder cases,
+`agent-accounts` and the three `agent-sessions` cases through the binary,
+and the Rust account, saved-session and ask tests.
+
+Open: the engine's refusal for a model without an ID uses
+different words from the TypeScript model rule (engine start, 3.2), and
+wake-up notes on a coding agent's conversation wait for the shared note
+writer.
 
 The following integration work remains open:
 

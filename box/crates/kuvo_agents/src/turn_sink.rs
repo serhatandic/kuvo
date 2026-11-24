@@ -61,6 +61,10 @@ impl ResidentSink {
     pub async fn retire(&self) -> io::Result<()> {
         self.asks.end().await
     }
+
+    pub(crate) fn retirement(&self) -> TurnAsks {
+        self.asks.clone()
+    }
 }
 
 impl TurnSink for ResidentSink {
