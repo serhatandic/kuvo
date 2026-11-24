@@ -186,6 +186,7 @@ pub struct Pending {
 }
 
 pub struct Outbox {
+    run: PathBuf,
     sending: PathBuf,
     replies: PathBuf,
     tries: HashMap<String, u64>,
@@ -202,6 +203,7 @@ impl Outbox {
         }
         let writer = lock(&run.join("outbox/writer.lock"))?;
         Ok(Self {
+            run: run.into(),
             sending,
             replies,
             tries: HashMap::new(),
@@ -351,6 +353,11 @@ impl Outbox {
             {
                 letter.peer = Some(keys::encode(&next));
                 write(&path, &letter)?;
+                if let Err(error) =
+                    crate::letters::homes::remember(&self.run, [letter.to.as_str()], &next, now)
+                {
+                    eprintln!("Remembering where a note was redirected: {error}");
+                }
             }
             return Ok(Settlement::Retry);
         }

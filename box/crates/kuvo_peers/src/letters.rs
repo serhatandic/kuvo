@@ -1,5 +1,6 @@
 //! Durable ordinary letters and notes. Resolve ownership again for each send
 //! and immediately before placing an incoming prompt on a local session.
+pub(crate) mod homes;
 mod transcript;
 
 use std::{
@@ -82,6 +83,7 @@ struct Note {
     words: String,
     delivery: NoteDelivery,
     line: Option<String>,
+    about: Option<Value>,
 }
 
 #[derive(Deserialize, PartialEq)]
@@ -180,6 +182,11 @@ impl Letters {
                 .map_err(io::Error::other)?;
         }
         let pending = outbox.due(now, true).map_err(io::Error::other)?;
+        let homes = if pending.iter().any(|each| each.letter.note.is_some()) {
+            homes::read(&run)?
+        } else {
+            Default::default()
+        };
         for each in pending {
             let Ok(scope) = self.ownership.scope(&each.letter.to, None) else {
                 continue;
@@ -188,8 +195,18 @@ impl Letters {
             if scope.held && owner.as_ref().is_none_or(|owner| owner.local) {
                 continue;
             }
-            let known = scope
-                .letter_home
+            let learned = homes.get(&each.letter.to).filter(|home| {
+                each.letter.note.is_some()
+                    && !owner.as_ref().is_some_and(|owner| owner.local)
+                    && scope
+                        .letter_home
+                        .is_none_or(|(_, at)| at.is_some_and(|at| home.newer_than(at)))
+            });
+            let retained = learned
+                .and_then(homes::Home::key)
+                .filter(|key| Some(*key) == view.roster.here || view.roster.member(key).is_some());
+            let known = retained
+                .or_else(|| scope.letter_home.map(|(key, _)| key))
                 .or_else(|| owner.and_then(|owner| owner.key));
             let key = known.or_else(|| each.letter.peer.as_deref().and_then(decode_exact));
             let Some(key) = key else {
@@ -412,6 +429,19 @@ impl Letters {
         let session = match engine.lookup(&letter.to).await {
             Ok(Some(session)) => session,
             Ok(None) => {
+                if note.is_some()
+                    && let Some(home) = homes::read(&self.reader.run)?
+                        .get(&letter.to)
+                        .and_then(homes::Home::key)
+                        .filter(|key| view.roster.member(key).is_some())
+                {
+                    return Ok(Some(refused(
+                        id,
+                        "It lives on another computer now: it comes again there.",
+                        true,
+                        Some(encode(&home)),
+                    )));
+                }
                 return Ok(Some(refused(
                     id,
                     "Its coding agents aren't running yet.",
@@ -511,6 +541,28 @@ impl Letters {
                 self.receipts()?
                     .accepted(&id, note.is_some(), now)
                     .map_err(io::Error::other)?;
+                if view.roster.here != Some(key)
+                    && let Some(about) = note
+                        .as_ref()
+                        .and_then(|note| note.about.as_ref())
+                        .and_then(Value::as_array)
+                {
+                    let sessions = about
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|session| crate::ownership::session_id(session))
+                        .take(100);
+                    let made = letter
+                        .other
+                        .get("made")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(now);
+                    if let Err(error) =
+                        homes::remember(&self.reader.run, sessions, &key, made.min(now))
+                    {
+                        eprintln!("Remembering the computer named in a note: {error}");
+                    }
+                }
                 let mut receipt = delivered(id.clone());
                 if note.is_none() && letter.wait {
                     if let Some((from, _)) = sender.filter(|_| !kept) {
@@ -569,7 +621,7 @@ impl Letters {
                         || scope.owner.is_some_and(|owner| !owner.local)
                         || scope
                             .letter_home
-                            .is_some_and(|home| Some(home) != scope.here)
+                            .is_some_and(|(home, _)| Some(home) != scope.here)
                 })
                 .map_err(io::Error::other)
         };

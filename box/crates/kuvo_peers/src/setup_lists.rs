@@ -212,11 +212,23 @@ impl View {
         now: Millis,
         ownership: &Ownership,
     ) -> Option<String> {
+        self.move_address(id, now, ownership).map(|(key, _)| key)
+    }
+
+    pub(crate) fn move_address(
+        &self,
+        id: &str,
+        now: Millis,
+        ownership: &Ownership,
+    ) -> Option<(String, Option<Millis>)> {
         let recorded = ownership.journal.get(&(RecordScope::Session, id.into()));
         let recorded_key = || {
             recorded.map(|location| {
                 let key = &location.key;
-                encode(ownership.replacements.get(key).unwrap_or(key))
+                (
+                    encode(ownership.replacements.get(key).unwrap_or(key)),
+                    location.departed_at,
+                )
             })
         };
         if self.local.holds(id) || recorded.is_some_and(|location| location.departed_at.is_none()) {
@@ -234,7 +246,7 @@ impl View {
                     && now.saturating_sub(hint.at) < crate::moves::ROUTING_FOR
             })
             .max_by_key(|hint| hint.at)
-            .map(|hint| hint.key.clone())
+            .map(|hint| (hint.key.clone(), Some(hint.at)))
             .or_else(recorded_key)
     }
 

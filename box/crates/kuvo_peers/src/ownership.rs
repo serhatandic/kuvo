@@ -52,7 +52,7 @@ pub struct Scope {
     pub setup: Option<String>,
     pub here: Option<ComputerKey>,
     pub owner: Option<PeerOwner>,
-    pub(crate) letter_home: Option<ComputerKey>,
+    pub(crate) letter_home: Option<(ComputerKey, Option<crate::reach::Millis>)>,
     pub receipt_issuer: Option<ComputerKey>,
     pub held: bool,
 }
@@ -256,9 +256,8 @@ impl Handle {
             // A newer move announcement can locate a delivery without
             // granting authority to perform a forwarded mutation.
             letter_home: view
-                .moved_with(session, now, &inventory)
-                .as_deref()
-                .and_then(decode_exact),
+                .move_address(session, now, &inventory)
+                .and_then(|(key, at)| Some((decode_exact(&key)?, at))),
             receipt_issuer: original_issuer
                 .map(|key| *inventory.replacements.get(&key).unwrap_or(&key)),
             held: inventory.frozen.contains(session),
@@ -524,7 +523,7 @@ impl Request {
     }
 }
 
-fn session_id(id: &str) -> bool {
+pub(crate) fn session_id(id: &str) -> bool {
     id.strip_prefix("ses_").is_some_and(|id| token(id, 95))
 }
 

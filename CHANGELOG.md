@@ -14,6 +14,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Before moving a conversation, Kuvo says if its delegated sessions or unanswered questions will stay on the current computer.
 - Messages still reach a conversation after it moves back to its first computer, even while that computer is refreshing its session list.
 - A computer can retry a conversation move when its own unfinished copy is still on the destination.
+- A conversation’s follow-up notes reach its latest computer even after the sender restarts with an older address.
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
 - Kuvo on native Windows keeps running after the SSH connection closes and starts again when you sign in. Only your Windows account can access its installation folder.

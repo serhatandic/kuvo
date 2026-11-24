@@ -2197,6 +2197,75 @@ test("pending letters reach a peer in creation order", { timeout: 40000 }, async
   assert.deepEqual(messages.map(prompt => prompt.text.split("\n\n").at(-1)), ["first", "second", "third"]);
 });
 
+test("an authenticated note's address survives restart and routes later notes", {
+  timeout: 50000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
+}, async t => {
+  const { computer, relay } = await bench(t);
+  const here = await computer("noted-owner");
+  const { main, member, spare } = seedPeerSetup(here.home, relay.url, 1, 3);
+  const local = "ses_noteReceiver", remote = "ses_unannouncedHome";
+  here.engine.sessions.push(sessionOf({ id: local, title: "Reservations", directory: path.join(here.home, "chats") }));
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = await testMail(t, boxBinary(wireFixture));
+  const address = Buffer.from(main.address, "base64url"), localKey = Buffer.from(main.key, "base64url");
+  const memberDevice = relay.device(Buffer.alloc(32, 52)), spareDevice = relay.device(Buffer.alloc(32, 53));
+  t.after(() => { memberDevice.leave(); spareDevice.leave(); });
+  const reply = async (device, secret, field, id) => until(async () => {
+    const packet = readFrame((await device.next(12000)).subarray(17));
+    if (packet?.kind !== Frame.mail) return false;
+    const message = JSON.parse(openOneWay(packet.body, Buffer.alloc(32, secret), localKey).payload);
+    return message[field]?.id === id && message[field];
+  }, "The computer did not send " + field + " for " + id, 15000);
+  const incoming = (device, secret, envelope) => {
+    const text = Buffer.from(JSON.stringify({ ...envelope, at: Date.now() }));
+    device.send(address, frame(Frame.mail, 0, sealOneWay(text, Buffer.alloc(32, secret), localKey).message));
+  };
+  const first = here.start();
+  const resident = await first.ready();
+  await until(() => relay.has(address), "The note receiver did not connect");
+  await until(async () => (await request(resident, "GET", "api/session/" + local)).status === 200,
+    "The local conversation did not become ready");
+  const now = Date.now(), note = { from: "The computer", words: "Work is on this computer.", delivery: "queue", about: [remote] };
+  const sendNote = async (device, secret, id, made) => {
+    incoming(device, secret, { letter: { id, to: local, text: note.words, wait: false, at: Date.now(), made, note } });
+    assert.deepEqual(await reply(device, secret, "delivered", id), { id, ok: true });
+  };
+  await sendNote(memberDevice, 2, "ltr_newAddress", now);
+  await sendNote(spareDevice, 3, "ltr_olderAddress", now - 60000);
+  const homes = path.join(here.home, "run/work/homes.json");
+  assert.deepEqual(readJSON(homes)[remote], { key: member.key, at: now });
+  const lookup = "ltr_findKnownHome";
+  incoming(spareDevice, 3, { letter: { id: lookup, to: remote, text: note.words, wait: false,
+    at: Date.now(), made: now, note: { ...note, about: [] } } });
+  assert.deepEqual(await reply(spareDevice, 3, "delivered", lookup), {
+    id: lookup, ok: false, retry: true, lives: member.key,
+    why: "It lives on another computer now: it comes again there.",
+  });
+
+  await first.stop();
+  await until(() => !relay.has(address), "The note receiver did not disconnect");
+  const id = "ltr_followKnownHome";
+  const pending = path.join(here.home, "run/outbox/sending", id + ".json");
+  write(pending, JSON.stringify({ to: remote, text: "Here is the result.", peer: spare.key, wait: false, at: Date.now(),
+    note: { from: "The computer", words: "Here is the result.", delivery: "queue" } }));
+  const second = here.start();
+  await second.ready();
+  const forwarded = await reply(memberDevice, 2, "letter", id);
+  assert.equal(forwarded.to, remote);
+  assert.equal(forwarded.text, "Here is the result.");
+  incoming(spareDevice, 3, { delivered: { id, ok: false, retry: true, lives: main.key } });
+  await sendNote(spareDevice, 3, "ltr_forgedReceiptObserved", now - 50000);
+  assert.equal(readJSON(homes)[remote].key, member.key);
+  incoming(memberDevice, 2, { delivered: { id, ok: false, retry: true, lives: spare.key } });
+  await until(() => readJSON(homes)[remote]?.key === spare.key, "The verified redirect was not recorded");
+  await until(() => readJSON(pending).peer === spare.key, "The pending note did not follow the redirect");
+  await second.stop();
+  await until(() => !relay.has(address), "The computer receiving the redirect did not disconnect");
+  await here.start().ready();
+  assert.equal((await reply(spareDevice, 3, "letter", id)).to, remote);
+  incoming(spareDevice, 3, { delivered: { id, ok: true } });
+  await until(() => !fs.existsSync(pending), "The forwarded note's receipt was not accepted");
+});
+
 test("a letter survives a failed lookup and a restart after engine acceptance", {
   timeout: 60000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {
