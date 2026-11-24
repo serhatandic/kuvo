@@ -67,6 +67,40 @@ impl BotHere {
     pub fn field(&self, name: &str) -> Option<&str> {
         self.described.get(name).and_then(Value::as_str)
     }
+
+    /// On its way to another computer: nothing reaches it or changes here until it's there.
+    pub fn moving(&self) -> bool {
+        crate::wakes::folder::moving(&self.folder)
+    }
+}
+
+/// What's said of a bot on its way to another computer.
+pub const MOVING: &str = "It’s moving to another computer. Try again once it’s there.";
+
+/// A value as text, as JavaScript's `String` writes it.
+pub fn js_string(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::String(text) => text.clone(),
+        Value::Array(list) => list
+            .iter()
+            .map(|each| match each {
+                Value::Null => String::new(),
+                other => js_string(other),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::Object(_) => "[object Object]".into(),
+        other => other.to_string(),
+    }
+}
+
+/// A given name as one line of plain text (none given is empty).
+pub fn plain_name_of(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        Some(value) => plain_name(&js_string(value)),
+    }
 }
 
 /// A bot's description written as `change` makes it from what's there now, one process at a
