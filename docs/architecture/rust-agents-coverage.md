@@ -370,11 +370,27 @@ relay's nine scenarios passed on macOS, Linux (lokum), WSL2 and native
 Windows, with the agent conformance areas. The update case now also checks
 that both turns' holders end with their turns.
 
-Still open in 4.1c: re-checking, on a timer, a server the relay stood in
-for; the desktop compatibility path (case 8); the sandbox note (case 9,
-with 6.1); `engine-own-tools`; and wiring the relay into the resident. The
-relay is wired in with the adapters that give agents their tools and the
-host that reads the engine's servers.
+A server the relay stood in for because it couldn't be reached or start
+is checked again at an agent's next message: connected to and let go. The
+message waits a second at most for the answer, and the check goes on
+without it. One still not there is checked a few minutes on, then twice as
+long each time, up to half an hour; a change to how it's set up checks it
+at once. Once it answers, its agent is given it afresh. A command's server
+no connection has used for an hour stops. Four scenarios port the `acp`
+cases for these (given afresh once it answers, not holding a message up,
+not started again at each message and checked less often) and the idle
+stop.
+
+On a desktop whose box serves Kuvo Code's own tools itself, a call to one
+of them goes to the box's routes (`run/tool-http.json`), keeping its
+operation. While the box's address is replaced, the agent's forwarder gets
+a 503 and sends the call again, so the tool runs once (toolrelay case 8,
+through the real forwarder).
+
+Still open in 4.1c: wiring the relay into the resident. The relay is wired
+in with the adapters that give agents their tools and the host that reads
+the engine's servers. The sandbox note (case 9) goes with 6.1, and
+`engine-own-tools` with 6.4.
 
 ## TypeScript scenario inventory
 
@@ -399,7 +415,8 @@ Case numbers use the order in the cited source file.
 | [accounts-check](../../box/test/agents/accounts-check.test.ts), 20, [account-refresh](../../box/test/agents/account-refresh.test.ts), 8, [added-account-route](../../box/test/agents/added-account-route.test.ts), 3, [own-homes](../../box/test/agents/own-homes.test.ts), 4, and [signin-mode](../../box/test/agents/signin-mode.test.ts), 3 | 4.1b owns account index, home selection, checks, catalog cache and sign-in state. Vendor sign-in commands and authentication messages → 4.2–4.5. Accounts-check 18 covers Work Queue GitHub authorization in 5.2. |
 | [sign-in.test.js](../../box/bridge-tests/sign-in.test.js), 11 | Agent route cases 2–4, 8 and 10–11 → 4.1b. OpenCode methods and status → 3.2. Setup and remote transport assertions use the resident dispatcher. |
 | [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. |
-| [toolrelay](../../box/test/agents/toolrelay.test.ts), 9, and [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 1 → `kuvo_agents/tests/tool_forwarder.rs`; 2–7 and `relay-live` 1 → `kuvo_agents/tests/tool_relay.rs`. 4.1c still owns 8 (desktop compatibility path), the computer's MCP servers and engine tool registration; 9 with 6.1. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
+| [toolrelay](../../box/test/agents/toolrelay.test.ts), 9 | 1 → `kuvo_agents/tests/tool_forwarder.rs`; 2–8 and `relay-live` 1 → `kuvo_agents/tests/tool_relay.rs`, with the relay's parts of four `acp` cases (re-checks and the idle stop). 9 with 6.1. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
+| [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 6.4: the browser keeper owns the `kuvo-browser` tools program the engine starts with. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
 | [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 and 12 (program drains, signed-out models) → 4.2; 59–60 and 127–139 (turns an agent starts itself, Stop and Send Now while a message is handed) → 4.2 and 4.4. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
 | [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 136, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |

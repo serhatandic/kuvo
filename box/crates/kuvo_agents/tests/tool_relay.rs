@@ -3,13 +3,17 @@
 //! `toolrelay.test.ts` case it ports.
 
 use futures_util::{FutureExt, future::BoxFuture};
-use kuvo_agents::tool_relay::{
-    ComputerServer, ComputerServers, RelayedServer, RelayedTools, ServerHost, ServerKind,
-    ToolRelay, ToolSource, Tools,
+use kuvo_agents::{
+    tool_forwarder,
+    tool_relay::{
+        ComputerServer, ComputerServers, RelayTiming, RelayedServer, RelayedTools, ServerHost,
+        ServerKind, ToolRelay, ToolSource, Tools,
+    },
 };
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     io::{BufRead, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -47,7 +51,13 @@ fn relay_program_probe() {
                 std::env::var("SERVER_KEY").unwrap_or_default(),
                 std::process::id()
             )))),
-            ("refuses", Some("initialize")) => Some(json!({"jsonrpc":"2.0","id":message["id"],"error":{"code":-32000,"message":"no token"}})),
+            ("refuses", Some("initialize")) => {
+                if let Some(starts) = std::env::var_os("RELAY_STARTS") {
+                    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(starts).unwrap();
+                    writeln!(file, "start").unwrap();
+                }
+                Some(json!({"jsonrpc":"2.0","id":message["id"],"error":{"code":-32000,"message":"no token"}}))
+            }
             ("holds", Some("tools/call")) => {
                 held.insert(message["id"].clone());
                 if let Some(path) = &holding {
@@ -497,10 +507,10 @@ async fn a_server_that_turns_down_its_sign_in_is_asked_again_once_and_reached_on
     post(&servers[0], initialize(), None).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(*host.reconnects.lock().unwrap(), 1);
-    assert_eq!(relay.servers_key("ses_one", &before), "notes");
+    assert_eq!(relay.servers_key("ses_one", &before).await, "notes");
     // Signed in again: its agent is given it afresh, and reaches it.
     let after = ComputerServers { servers: vec![remote("notes", port, "good")], key: "notes".into() };
-    assert_ne!(relay.servers_key("ses_one", &after), "notes");
+    assert_ne!(relay.servers_key("ses_one", &after).await, "notes");
     let again = relay.relayed_servers("ses_one", 1, scratch.path(), &after, false).await.unwrap();
     assert!(again[0].url.ends_with("/mcp/notes?again=1"), "{}", again[0].url);
     let (status, connection, started) = post(&again[0], initialize(), None).await;
@@ -517,13 +527,7 @@ async fn a_command_server_starts_for_each_connection_with_its_keys_and_stops_whe
     let mut env = kuvo_os::platform::Environment::new();
     env.insert("RELAY_PROBE".into(), "server".into());
     env.insert("SERVER_KEY".into(), "k1".into());
-    let mut command: Vec<std::ffi::OsString> = vec![std::env::current_exe().unwrap().into()];
-    command.extend(["--exact", "relay_program_probe", "--ignored", "--nocapture", "--test-threads=1"].map(Into::into));
-    let local = |name: &str, env: kuvo_os::platform::Environment| ComputerServer {
-        name: name.into(),
-        timeout: Duration::from_secs(10),
-        kind: ServerKind::Local { command: command.clone(), env, cwd: None },
-    };
+    let local = command_server;
     let mut refusing = env.clone();
     refusing.insert("RELAY_PROBE".into(), "refuses".into());
     let found = ComputerServers {
@@ -559,5 +563,214 @@ async fn a_command_server_starts_for_each_connection_with_its_keys_and_stops_whe
     let (_, connection, refused) = post(&servers[1], initialize(), None).await;
     assert!(connection.unwrap().starts_with("unavailable-"));
     assert_eq!(refused["result"]["instructions"], "The broken server couldn't start: no token.");
+    relay.shutdown().await;
+}
+
+/// One of the computer's command servers: the probe, as `env` has it.
+fn command_server(name: &str, env: kuvo_os::platform::Environment) -> ComputerServer {
+    let mut command: Vec<std::ffi::OsString> = vec![std::env::current_exe().unwrap().into()];
+    command.extend(["--exact", "relay_program_probe", "--ignored", "--nocapture", "--test-threads=1"].map(Into::into));
+    ComputerServer {
+        name: name.into(),
+        timeout: Duration::from_secs(10),
+        kind: ServerKind::Local { command, env, cwd: None },
+    }
+}
+
+fn starts(log: &Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |said| said.lines().count())
+}
+
+// acp.test.ts: "one that couldn't be reached as the agent started is given to
+// it afresh at the next message once it answers again"
+#[tokio::test]
+async fn a_server_that_couldnt_be_reached_is_given_afresh_once_it_answers_again() {
+    let down = Arc::new(AtomicBool::new(true));
+    let checks = Arc::new(AtomicU32::new(0));
+    let (is_down, checked) = (down.clone(), checks.clone());
+    let port = http_server(move |_, body| {
+        if body["params"]["clientInfo"]["name"] == "kuvo-code" {
+            checked.fetch_add(1, Ordering::SeqCst);
+        }
+        if is_down.load(Ordering::SeqCst) {
+            (500, json!({}))
+        } else {
+            (200, json!({"jsonrpc":"2.0","id":body["id"],"result":{"protocolVersion":"2025-06-18","capabilities":{}}}))
+        }
+    })
+    .await;
+    let relay = ToolRelay::new(None, program("said", None)).unwrap();
+    // (Checked at each message, not a few minutes on.)
+    relay.set_timing(RelayTiming { check_every: Duration::ZERO, ..RelayTiming::default() });
+    let scratch = tempfile::tempdir().unwrap();
+    let found = ComputerServers { servers: vec![remote("notes", port, "t")], key: "notes".into() };
+    let servers = relay.relayed_servers("ses_one", 1, scratch.path(), &found, false).await.unwrap();
+    let (_, connection, started) = post(&servers[0], initialize(), None).await;
+    assert!(connection.unwrap().starts_with("unavailable-"));
+    assert!(started["result"]["instructions"].as_str().unwrap().contains("(HTTP 500)"));
+    // Still down: the agent goes on as it is.
+    assert_eq!(relay.servers_key("ses_one", &found).await, "notes");
+    assert_eq!(checks.load(Ordering::SeqCst), 1);
+    down.store(false, Ordering::SeqCst);
+    let key = relay.servers_key("ses_one", &found).await;
+    assert_eq!(key, r#"notes [["notes",1]]"#);
+    let again = relay.relayed_servers("ses_one", 1, scratch.path(), &found, false).await.unwrap();
+    assert!(again[0].url.ends_with("/mcp/notes?again=1"), "{}", again[0].url);
+    let (status, connection, started) = post(&again[0], initialize(), None).await;
+    assert_eq!((status, connection), (200, None));
+    assert_eq!(started["result"]["protocolVersion"], "2025-06-18");
+    relay.shutdown().await;
+}
+
+// acp.test.ts: "one still not answering at the next message doesn't hold the
+// message up: it's checked on meanwhile"
+#[tokio::test]
+async fn a_server_still_not_answering_doesnt_hold_the_next_message_up() {
+    // Takes each request and never answers.
+    let silent = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = silent.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = silent.accept().await {
+            held.push(socket);
+        }
+    });
+    let relay = ToolRelay::new(None, program("said", None)).unwrap();
+    relay.set_timing(RelayTiming {
+        starts: Duration::from_secs(60),
+        check: Duration::from_millis(100),
+        check_every: Duration::ZERO,
+        ..RelayTiming::default()
+    });
+    let scratch = tempfile::tempdir().unwrap();
+    let mut server = remote("notes", port, "t");
+    server.timeout = Duration::from_millis(1500);
+    let found = ComputerServers { servers: vec![server], key: "notes".into() };
+    let servers = relay.relayed_servers("ses_one", 1, scratch.path(), &found, false).await.unwrap();
+    let (_, connection, _) = post(&servers[0], initialize(), None).await;
+    assert!(connection.unwrap().starts_with("unavailable-"));
+    let asked = std::time::Instant::now();
+    assert_eq!(relay.servers_key("ses_one", &found).await, "notes");
+    assert!(asked.elapsed() < Duration::from_millis(1000), "{:?}", asked.elapsed());
+    relay.shutdown().await;
+}
+
+// acp.test.ts: "a command's server that won't start isn't started again at the
+// next messages (it's checked a few minutes on)", and then less often.
+#[tokio::test]
+async fn a_command_server_that_wont_start_is_checked_later_and_less_often() {
+    let scratch = tempfile::tempdir().unwrap();
+    let log = scratch.path().join("starts.log");
+    let relay = ToolRelay::new(None, program("said", None)).unwrap();
+    // (A second where it's a few minutes.)
+    let second = Duration::from_secs(1);
+    relay.set_timing(RelayTiming { check_every: second, ..RelayTiming::default() });
+    let mut env = kuvo_os::platform::Environment::new();
+    env.insert("RELAY_PROBE".into(), "refuses".into());
+    env.insert("RELAY_STARTS".into(), log.clone().into());
+    let found = ComputerServers { servers: vec![command_server("files", env)], key: "files".into() };
+    let servers = relay.relayed_servers("ses_one", 1, scratch.path(), &found, false).await.unwrap();
+    let (_, connection, _) = post(&servers[0], initialize(), None).await;
+    assert!(connection.unwrap().starts_with("unavailable-"));
+    let checked = |count: usize| {
+        let relay = relay.clone();
+        let (found, log) = (found.clone(), log.clone());
+        async move {
+            assert_eq!(relay.servers_key("ses_one", &found).await, "files");
+            for _ in 0..200 {
+                if starts(&log) >= count {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            starts(&log)
+        }
+    };
+    assert_eq!(checked(1).await, 1, "not started again at the next messages");
+    assert_eq!(checked(1).await, 1);
+    tokio::time::sleep(second * 6 / 5).await;
+    assert_eq!(checked(2).await, 2, "checked once it's due");
+    tokio::time::sleep(second).await;
+    assert_eq!(checked(2).await, 2, "then twice as long");
+    tokio::time::sleep(second * 2).await;
+    assert_eq!(checked(3).await, 3);
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_command_server_no_connection_uses_stops() {
+    let relay = ToolRelay::new(None, program("said", None)).unwrap();
+    relay.set_timing(RelayTiming { idle: Duration::from_millis(600), ..RelayTiming::default() });
+    let scratch = tempfile::tempdir().unwrap();
+    let mut env = kuvo_os::platform::Environment::new();
+    env.insert("RELAY_PROBE".into(), "server".into());
+    let found = ComputerServers { servers: vec![command_server("files", env)], key: "files".into() };
+    let servers = relay.relayed_servers("ses_one", 1, scratch.path(), &found, false).await.unwrap();
+    let (_, connection, _) = post(&servers[0], initialize(), None).await;
+    let connection = connection.unwrap();
+    assert_eq!(post(&servers[0], tool_call(1), Some(&connection)).await.0, 200);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(post(&servers[0], tool_call(2), Some(&connection)).await.0, 404);
+    relay.shutdown().await;
+}
+
+// toolrelay.test.ts: "desktop compatibility tools keep the same operation while
+// their box HTTP endpoint is replaced"
+#[tokio::test]
+async fn desktop_compatibility_tools_keep_their_operation_while_the_box_is_replaced() {
+    let run = tempfile::tempdir().unwrap();
+    let record = |port: u16| {
+        std::fs::write(run.path().join("tool-http.json"), json!({"port":port,"password":"fixture"}).to_string()).unwrap();
+    };
+    let closed = TcpListener::bind(("127.0.0.1", 0)).await.unwrap().local_addr().unwrap().port();
+    record(closed);
+    struct App;
+    impl ToolSource for App {
+        fn tools(&self, session: &str) -> Option<Tools> {
+            Some(Tools::Http {
+                url: "http://127.0.0.1:9/mcp".into(),
+                headers: vec![("X-Kuvo-Session".into(), session.into())],
+                timeout: Duration::from_secs(5),
+            })
+        }
+    }
+    let relay = ToolRelay::new(None, Arc::new(App)).unwrap();
+    relay.set_compatibility_run(Some(run.path().to_owned()));
+    let tools = relay.relayed_tools("ses_one", 1).await.unwrap().unwrap();
+    let forwarder = tool_forwarder::Relay { url: tools.url, key: tools.authorization, timeout: tools.timeout };
+    let (agent, input) = tokio::io::duplex(1 << 16);
+    let (output, said) = tokio::io::duplex(1 << 16);
+    tokio::spawn(tool_forwarder::forward(forwarder, tokio::io::BufReader::new(input), output));
+    let (mut agent, mut said) = (agent, tokio::io::BufReader::new(said));
+    let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"send_message","arguments":{"to":"ses_two","text":"test"}}});
+    agent.write_all(format!("{call}\n").as_bytes()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let noted = seen.clone();
+    let started = AtomicBool::new(false);
+    let port = http_server(move |head, body| {
+        noted.lock().unwrap().push((head.to_owned(), body.clone()));
+        if !started.swap(true, Ordering::SeqCst) {
+            return (503, json!({"retryToolCall":true}));
+        }
+        (200, json!({"text":{"unexpected":true},"message":"Sent.","isError":false}))
+    })
+    .await;
+    record(port);
+    let mut line = String::new();
+    tokio::io::AsyncBufReadExt::read_line(&mut said, &mut line).await.unwrap();
+    let answer: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(answer["result"]["content"][0]["text"], "Sent.");
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    let (head, first) = &seen[0];
+    assert!(head.starts_with("POST /kuvo/agent-tools "), "{head}");
+    assert!(head.to_ascii_lowercase().contains("authorization: basic b3blbmnvzgu6zml4dhvyzq=="), "{head}");
+    assert_eq!(first["session"], "ses_one");
+    assert_eq!(first["arguments"], json!({"to":"ses_two","text":"test"}));
+    let operation = first["operation"].as_str().unwrap();
+    assert!(operation.len() == 36 && operation.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'), "{operation}");
+    assert_eq!(seen[0].1, seen[1].1);
     relay.shutdown().await;
 }

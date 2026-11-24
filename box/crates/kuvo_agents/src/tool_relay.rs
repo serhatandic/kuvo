@@ -16,9 +16,8 @@ pub use servers::{
     ComputerServer, ComputerServers, Launch, RelayedServer, ServerHost, ServerKind,
 };
 
-use crate::rpc::RpcError;
 use futures_util::{StreamExt, future::join_all};
-use http::{HeaderValue, Method, Request, Response, StatusCode, header};
+use http::{HeaderValue, Method, Request, Response, StatusCode, header, request::Parts};
 use http_body_util::{BodyExt, Full, Limited, StreamBody, combinators::BoxBody};
 use hyper::{
     body::{Bytes, Frame, Incoming},
@@ -27,25 +26,26 @@ use hyper::{
 };
 use hyper_util::rt::TokioIo;
 use kuvo_os::{
-    platform::Environment,
+    platform::{Environment, Executable},
     process::{ChildGroup, Spawn, Stdio},
 };
 use kuvo_store::files;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::Infallible,
     ffi::OsString,
     io::{self, BufRead, Write},
-    path::PathBuf,
-    sync::{Arc, Mutex},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard, Weak},
     time::Duration,
 };
 use tokio::{
     net::TcpListener,
     sync::{OnceCell, mpsc, oneshot},
     task::JoinHandle,
+    time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -89,6 +89,36 @@ pub struct RelayedTools {
     pub timeout: Duration,
 }
 
+/// How long a server has to start for an agent that gives up its whole
+/// session over one (ACP's), a command's longer as it may fetch its package
+/// the first time; how long an agent's next message waits to hear whether
+/// one that wasn't there answers now (the check goes on without it); how
+/// often one that isn't there is checked, first a few minutes on, then
+/// twice as long each time, up to the most; and how long a command's server
+/// no connection uses runs.
+#[derive(Clone, Copy, Debug)]
+pub struct RelayTiming {
+    pub starts: Duration,
+    pub command_starts: Duration,
+    pub check: Duration,
+    pub check_every: Duration,
+    pub check_at_most: Duration,
+    pub idle: Duration,
+}
+
+impl Default for RelayTiming {
+    fn default() -> Self {
+        Self {
+            starts: Duration::from_secs(15),
+            command_starts: Duration::from_secs(25),
+            check: Duration::from_secs(1),
+            check_every: Duration::from_secs(3 * 60),
+            check_at_most: Duration::from_secs(30 * 60),
+            idle: Duration::from_secs(60 * 60),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ToolRelay(Arc<Inner>);
 
@@ -109,6 +139,10 @@ struct State {
     holders: HashMap<String, HashSet<Holder>>,
     programs: HashMap<String, Arc<Program>>,
     servers: servers::Servers,
+    timing: RelayTiming,
+    /// Where the desktop's box says its own tools' address is (its run
+    /// folder): their calls go to its routes.
+    compatibility: Option<PathBuf>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -116,7 +150,7 @@ struct Record {
     #[serde(default)]
     port: Option<u16>,
     #[serde(default)]
-    keys: std::collections::BTreeMap<String, String>,
+    keys: BTreeMap<String, String>,
 }
 
 const TOOLS: &str = "Kuvo Code's tools";
@@ -170,6 +204,16 @@ impl ToolRelay {
         })))
     }
 
+    pub fn set_timing(&self, timing: RelayTiming) {
+        self.state().timing = timing;
+    }
+
+    /// On a desktop whose box serves Kuvo Code's own tools itself: the run
+    /// folder where it says where (`tool-http.json`).
+    pub fn set_compatibility_run(&self, run: Option<PathBuf>) {
+        self.state().compatibility = run;
+    }
+
     /// The relay's port, listening from then on: the one it had before when
     /// that's free, with the keys it gave then.
     pub async fn port(&self) -> io::Result<u16> {
@@ -181,13 +225,13 @@ impl ToolRelay {
                 {
                     let mut state = self.state();
                     for (session, key) in kept.keys {
-                        if state.keys.contains_key(&session) {
-                            continue;
+                        if !state.keys.contains_key(&session) {
+                            state.sessions.insert(key.clone(), session.clone());
+                            state.keys.insert(session, key);
                         }
-                        state.sessions.insert(key.clone(), session.clone());
-                        state.keys.insert(session, key);
                     }
                 }
+                let any = ("127.0.0.1", 0);
                 let listener = match kept.port {
                     Some(port) => match TcpListener::bind(("127.0.0.1", port)).await {
                         Ok(listener) => listener,
@@ -195,13 +239,15 @@ impl ToolRelay {
                             // (Taken meanwhile: agents the resident before
                             // started reach their tools once they start again.)
                             eprintln!("The tools relay's port {port} is taken: it listens on another.");
-                            TcpListener::bind(("127.0.0.1", 0)).await?
+                            TcpListener::bind(any).await?
                         }
                     },
-                    None => TcpListener::bind(("127.0.0.1", 0)).await?,
+                    None => TcpListener::bind(any).await?,
                 };
                 let port = listener.local_addr()?.port();
-                let accepting = tokio::spawn(accept(Arc::downgrade(&self.0), listener, self.0.stop.clone()));
+                let relay = Arc::downgrade(&self.0);
+                tokio::spawn(sweep(relay.clone(), self.0.stop.clone()));
+                let accepting = tokio::spawn(accept(relay, listener, self.0.stop.clone()));
                 Ok::<_, io::Error>((port, accepting))
             })
             .await?;
@@ -214,17 +260,11 @@ impl ToolRelay {
     pub async fn hold(&self, session: &str, holder: Holder) -> io::Result<String> {
         self.port().await?;
         let mut state = self.state();
-        state
-            .holders
-            .entry(session.to_owned())
-            .or_default()
-            .insert(holder);
+        state.holders.entry(session.to_owned()).or_default().insert(holder);
         if let Some(key) = state.keys.get(session) {
             return Ok(key.clone());
         }
-        let mut secret = [0; 24];
-        getrandom::fill(&mut secret).map_err(io::Error::other)?;
-        let key = hex::encode(secret);
+        let key = fresh(24);
         state.keys.insert(session.to_owned(), key.clone());
         state.sessions.insert(key.clone(), session.to_owned());
         drop(state);
@@ -264,17 +304,14 @@ impl ToolRelay {
     pub fn keep_keys(&self, sessions: &BTreeSet<String>) {
         {
             let mut state = self.state();
-            let gone = state
-                .keys
-                .keys()
-                .filter(|session| !sessions.contains(*session) && !state.holders.contains_key(*session))
-                .cloned()
-                .collect::<Vec<_>>();
-            for session in gone {
-                if let Some(key) = state.keys.remove(&session) {
-                    state.sessions.remove(&key);
+            let State { keys, sessions: by_key, holders, .. } = &mut *state;
+            keys.retain(|session, key| {
+                let kept = sessions.contains(session) || holders.contains_key(session);
+                if !kept {
+                    by_key.remove(key);
                 }
-            }
+                kept
+            });
         }
         self.keep();
     }
@@ -282,7 +319,7 @@ impl ToolRelay {
     /// `holder` is done with `session`'s tools: once nothing else holds
     /// them, its key goes and its program stops.
     pub fn drop_relayed(&self, session: &str, holder: Holder) {
-        let program = {
+        let stopping = {
             let mut state = self.state();
             let Some(held) = state.holders.get_mut(session) else {
                 return;
@@ -299,9 +336,7 @@ impl ToolRelay {
             stopping.extend(state.programs.remove(session));
             stopping
         };
-        for program in program {
-            program.stop();
-        }
+        stopping.iter().for_each(|program| program.stop());
         self.keep();
     }
 
@@ -314,9 +349,7 @@ impl ToolRelay {
             all.extend(state.servers.stop_all());
             all
         };
-        for program in programs {
-            program.stop();
-        }
+        programs.iter().for_each(|program| program.stop());
         if let Some((_, accepting)) = self.0.listening.get() {
             accepting.abort();
         }
@@ -329,32 +362,26 @@ impl ToolRelay {
         }
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+    fn state(&self) -> MutexGuard<'_, State> {
         self.0.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn timing(&self) -> RelayTiming {
+        self.state().timing
+    }
+
     fn read_record(&self) -> Record {
-        self.0
-            .record
-            .as_ref()
-            .and_then(|path| files::read(path).ok().flatten())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        let path = self.0.record.as_ref();
+        let bytes = path.and_then(|path| files::read(path).ok().flatten());
+        bytes.and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
     }
 
     fn keep(&self) {
         let (Some(path), Some((port, _))) = (&self.0.record, self.0.listening.get()) else {
             return;
         };
-        let record = Record {
-            port: Some(*port),
-            keys: self
-                .state()
-                .keys
-                .iter()
-                .map(|(session, key)| (session.clone(), key.clone()))
-                .collect(),
-        };
+        let keys = self.state().keys.clone().into_iter().collect();
+        let record = Record { port: Some(*port), keys };
         let written = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
@@ -365,7 +392,7 @@ impl ToolRelay {
     }
 }
 
-async fn accept(relay: std::sync::Weak<Inner>, listener: TcpListener, stop: CancellationToken) {
+async fn accept(relay: Weak<Inner>, listener: TcpListener, stop: CancellationToken) {
     loop {
         let socket = tokio::select! {
             () = stop.cancelled() => return,
@@ -394,6 +421,24 @@ async fn accept(relay: std::sync::Weak<Inner>, listener: TcpListener, stop: Canc
     }
 }
 
+/// A command's server no connection has used for a while stops (an agent
+/// that started again has a new one), as the engine stops its own.
+async fn sweep(relay: Weak<Inner>, stop: CancellationToken) {
+    loop {
+        let Some(every) = relay.upgrade().map(|inner| ToolRelay(inner).timing().idle / 12) else {
+            return;
+        };
+        tokio::select! {
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(every) => {}
+        }
+        let Some(inner) = relay.upgrade() else { return };
+        let relay = ToolRelay(inner);
+        let idle = relay.timing().idle;
+        relay.state().servers.idle(idle).iter().for_each(|program| program.stop());
+    }
+}
+
 impl ToolRelay {
     async fn answer(&self, request: Request<Incoming>) -> Response<Body> {
         let key = request
@@ -405,24 +450,15 @@ impl ToolRelay {
         let Some(session) = key.and_then(|key| self.state().sessions.get(key).cloned()) else {
             return text(StatusCode::UNAUTHORIZED, "Not allowed.");
         };
-        if let Some(named) = request.uri().path().strip_prefix("/mcp/") {
-            let Ok(name) = percent_encoding::percent_decode_str(named).decode_utf8() else {
-                return text(StatusCode::NOT_FOUND, "No such server here.");
-            };
-            let name = name.into_owned();
-            let (parts, incoming) = request.into_parts();
-            let body = if parts.method == Method::POST {
-                match Limited::new(incoming, BODY_LIMIT).collect().await {
-                    Ok(bytes) => Some(bytes.to_bytes()),
-                    Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "Too much at once."),
-                }
-            } else {
-                None
-            };
-            return self.answer_server(parts, body, &session, &name).await;
-        }
-        let Some(tools) = self.0.source.tools(&session) else {
-            return text(StatusCode::SERVICE_UNAVAILABLE, "Kuvo Code's tools aren't here now.");
+        let target = match request.uri().path().strip_prefix("/mcp/") {
+            Some(named) => match percent_encoding::percent_decode_str(named).decode_utf8() {
+                Ok(name) => Target::Server(name.into_owned()),
+                Err(_) => return text(StatusCode::NOT_FOUND, "No such server here."),
+            },
+            None => match self.0.source.tools(&session) {
+                Some(tools) => Target::Tools(tools),
+                None => return text(StatusCode::SERVICE_UNAVAILABLE, "Kuvo Code's tools aren't here now."),
+            },
         };
         let forwarded = request
             .headers()
@@ -430,51 +466,63 @@ impl ToolRelay {
             .is_some_and(|value| value == "1");
         let (parts, incoming) = request.into_parts();
         let body = if parts.method == Method::POST {
-            let read = Limited::new(incoming, BODY_LIMIT).collect().await;
-            match read.ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes.to_bytes()).ok()) {
-                Some(body) => Some(own_session(body, &session, forwarded)),
-                None => {
-                    return json_reply(
-                        StatusCode::BAD_REQUEST,
-                        &json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}),
-                        None,
-                    );
-                }
+            match Limited::new(incoming, BODY_LIMIT).collect().await {
+                Ok(bytes) => Some(bytes.to_bytes()),
+                Err(_) => return text(StatusCode::PAYLOAD_TOO_LARGE, "Too much at once."),
             }
         } else {
             None
         };
+        match target {
+            Target::Server(name) => self.answer_server(parts, body, &session, &name).await,
+            Target::Tools(tools) => self.answer_tools(parts, body, &session, forwarded, tools).await,
+        }
+    }
+
+    async fn answer_tools(
+        &self,
+        parts: Parts,
+        body: Option<Bytes>,
+        session: &str,
+        forwarded: bool,
+        tools: Tools,
+    ) -> Response<Body> {
+        let body = match body.map(|bytes| serde_json::from_slice::<Value>(&bytes)) {
+            Some(Ok(body)) => Some(own_session(body, session, forwarded)),
+            Some(Err(_)) => return parse_error(),
+            None => None,
+        };
         match tools {
-            Tools::Http {
-                url,
-                headers,
-                timeout,
-            } => self.forward(&parts, &url, &headers, timeout, body).await,
-            Tools::Program {
-                key,
-                command,
-                args,
-                env,
-                timeout,
-            } => {
-                let Some(body) = body.filter(|_| parts.method == Method::POST) else {
+            Tools::Http { url, headers, timeout } => {
+                let run = self.state().compatibility.clone();
+                if let (Some(run), Some(call)) = (run, body.as_ref())
+                    && call["method"] == "tools/call"
+                    && let Some(answer) = self.compatibility_call(call, session, &run, timeout).await
+                {
+                    return answer;
+                }
+                let body = body.map(|body| Bytes::from(body.to_string()));
+                let answer = self.send_on(&parts, &url, &headers, body, Some(timeout), None).await;
+                answer.into_reply("Kuvo Code's tools didn't answer.")
+            }
+            Tools::Program { key, command, args, env, timeout } => {
+                let Some(body) = body else {
                     let mut reply = text(StatusCode::METHOD_NOT_ALLOWED, "");
-                    reply
-                        .headers_mut()
-                        .insert(header::ALLOW, HeaderValue::from_static("POST"));
+                    reply.headers_mut().insert(header::ALLOW, HeaderValue::from_static("POST"));
                     return reply;
                 };
                 let program = {
                     let mut state = self.state();
-                    match state.programs.get(&session) {
+                    match state.programs.get(session) {
                         Some(program) if !program.stopped() && program.key == key => program.clone(),
                         _ => {
-                            if let Some(old) = state.programs.remove(&session) {
+                            if let Some(old) = state.programs.remove(session) {
                                 old.stop();
                             }
-                            match Program::start(key, command, args, env, None, TOOLS.into()) {
+                            let launch = Launch { command: Executable::Native(command), args, env };
+                            match Program::start(key, launch, None, TOOLS.into()) {
                                 Ok(program) => {
-                                    state.programs.insert(session.clone(), program.clone());
+                                    state.programs.insert(session.to_owned(), program.clone());
                                     program
                                 }
                                 Err(error) => {
@@ -485,30 +533,14 @@ impl ToolRelay {
                         }
                     }
                 };
-                let messages = match &body {
-                    Value::Array(all) => all.clone(),
-                    one => vec![one.clone()],
-                };
+                let messages = servers::messages(Some(&body));
                 // Each of its connections (Codex has one a thread) by a name
                 // of the relay's, given as it starts: their requests are told
                 // apart by it.
                 let starts = messages.iter().any(|message| message["method"] == "initialize");
-                let connection = if starts {
-                    let mut name = [0; 12];
-                    let _ = getrandom::fill(&mut name);
-                    hex::encode(name)
-                } else {
-                    parts
-                        .headers
-                        .get("mcp-session-id")
-                        .and_then(|value| value.to_str().ok())
-                        .unwrap_or_default()
-                        .to_owned()
-                };
+                let connection = if starts { fresh(12) } else { connection_of(&parts) };
                 let answers = join_all(
-                    messages
-                        .into_iter()
-                        .map(|message| program.send(message, timeout, &connection)),
+                    messages.into_iter().map(|message| program.send(message, timeout, &connection)),
                 )
                 .await;
                 servers::replies(&body, answers, starts.then_some(connection.as_str()))
@@ -516,78 +548,172 @@ impl ToolRelay {
         }
     }
 
-    /// A request on to the app's server with its headers; what it answers, back.
-    async fn forward(
+    /// A call to one of the box's own tools on a desktop whose box answers
+    /// them itself: to its routes, with the operation the call has, so one
+    /// sent again (the box's address replaced meanwhile) is done once. Not
+    /// there now: a 503, which the agent's forwarder sends again.
+    async fn compatibility_call(
         &self,
-        parts: &http::request::Parts,
+        call: &Value,
+        session: &str,
+        run: &Path,
+        timeout: Duration,
+    ) -> Option<Response<Body>> {
+        const BOX_TOOLS: [&str; 19] = [
+            "send_message", "read_conversation", "list_agents", "start_session", "list_sessions",
+            "stop_session", "compact_session", "answer_ask", "list_models", "make_project",
+            "list_projects", "notify_user", "plan_limits", "use_limit_reset", "schedule_wake_up",
+            "watch_for_change", "list_wake_ups", "cancel_wake_up", "set_job",
+        ];
+        let name = call["params"]["name"].as_str().filter(|_| !call["id"].is_null())?;
+        let route = match name {
+            _ if BOX_TOOLS.contains(&name) => "agent-tools",
+            _ if name.starts_with("queue_") => "work-queue/tools",
+            _ if name.starts_with("vault_") => "vault/tools",
+            "sandbox_ask" => "sandbox/tools",
+            _ => return None,
+        };
+        #[derive(Deserialize)]
+        struct Recorded {
+            port: u16,
+            password: String,
+        }
+        let asked = async {
+            let recorded = files::read(&run.join("tool-http.json")).ok()??;
+            let Recorded { port, password } = serde_json::from_slice(&recorded).ok()?;
+            let mut sent = json!({"name": name, "session": session,
+                "operation": call["params"]["_meta"]["kuvo.operation"]});
+            if let Some(arguments) = call["params"].get("arguments") {
+                sent["arguments"] = arguments.clone();
+            }
+            let answer = (self.0.client)
+                .post(format!("http://127.0.0.1:{port}/kuvo/{route}"))
+                .basic_auth("opencode", Some(password))
+                .header("X-Kuvo-From", "app")
+                .json(&sent)
+                .timeout(timeout)
+                .send()
+                .await
+                .ok()?;
+            let status = answer.status();
+            if matches!(status.as_u16(), 401 | 502 | 503) || status.is_redirection() {
+                return None;
+            }
+            let said = answer.json::<Value>().await.ok().filter(Value::is_object)?;
+            let text = said["text"].as_str().or(said["message"].as_str());
+            let text = text.unwrap_or("Kuvo Code could not answer this tool call.");
+            let error = !status.is_success() || said["isError"] == true;
+            let result = json!({"isError": error, "content": [{"type": "text", "text": text}]});
+            Some(json_reply(StatusCode::OK, &json!({"jsonrpc":"2.0","id":call["id"],"result":result}), None))
+        };
+        Some(asked.await.unwrap_or_else(|| text(StatusCode::SERVICE_UNAVAILABLE, "")))
+    }
+
+    /// A request on to a server over HTTP with `headers`: what it answers.
+    /// A call has `timeout`, a stream of what comes as long as it's read; a
+    /// start is given up at `deadline` (and untied once it has started).
+    async fn send_on(
+        &self,
+        parts: &Parts,
         url: &str,
         headers: &[(String, String)],
-        timeout: Duration,
-        body: Option<Value>,
-    ) -> Response<Body> {
-        let mut sent = self.0.client.request(parts.method.clone(), url);
-        for (name, value) in headers {
-            sent = sent.header(name, value);
+        body: Option<Bytes>,
+        timeout: Option<Duration>,
+        deadline: Option<Instant>,
+    ) -> Answer {
+        let mut request = self.0.client.request(parts.method.clone(), url);
+        for (key, value) in headers {
+            request = request.header(key, value);
         }
-        let accept = parts
-            .headers
-            .get(header::ACCEPT)
-            .cloned()
-            .unwrap_or(HeaderValue::from_static("application/json, text/event-stream"));
-        sent = sent.header(header::ACCEPT, accept);
-        for name in ["content-type", "mcp-session-id", "mcp-protocol-version", "last-event-id"] {
-            if let Some(value) = parts.headers.get(name) {
-                sent = sent.header(name, value);
+        let accept = parts.headers.get(header::ACCEPT).cloned();
+        let accept = accept.unwrap_or(HeaderValue::from_static("application/json, text/event-stream"));
+        request = request.header(header::ACCEPT, accept);
+        for key in ["content-type", "mcp-session-id", "mcp-protocol-version", "last-event-id"] {
+            if let Some(value) = parts.headers.get(key) {
+                request = request.header(key, value);
             }
         }
-        if let Some(body) = &body {
-            sent = sent.body(body.to_string());
+        if let Some(body) = body {
+            request = request.body(body);
         }
-        // A call has the tool's time; a stream of what comes, as long as it's read.
-        if parts.method == Method::POST {
-            sent = sent.timeout(timeout);
+        if let Some(timeout) = timeout.filter(|_| parts.method == Method::POST) {
+            request = request.timeout(timeout);
         }
-        let Ok(answer) = sent.send().await else {
-            return text(StatusCode::BAD_GATEWAY, "Kuvo Code's tools didn't answer.");
+        let sent = match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, request.send()).await.ok(),
+            None => Some(request.send().await),
         };
-        let mut reply = Response::builder().status(answer.status().as_u16());
-        for name in ["content-type", "mcp-session-id"] {
-            if let Some(value) = answer.headers().get(name) {
-                reply = reply.header(name, value.as_bytes());
-            }
+        let Some(Ok(response)) = sent else { return Answer::failed() };
+        Answer {
+            status: response.status().as_u16(),
+            headers: ["content-type", "mcp-session-id"]
+                .into_iter()
+                .filter_map(|key| Some((key, response.headers().get(key)?.as_bytes().to_vec())))
+                .collect(),
+            response: Some(response),
         }
-        let stream = answer
-            .bytes_stream()
-            .map(|chunk| chunk.map(Frame::data).map_err(io::Error::other));
-        reply
-            .body(BoxBody::new(StreamBody::new(stream)))
-            .unwrap_or_else(|_| text(StatusCode::BAD_GATEWAY, "Kuvo Code's tools didn't answer."))
     }
+}
+
+/// What a request is for: one of the computer's servers, or Kuvo Code's tools.
+enum Target {
+    Server(String),
+    Tools(Tools),
+}
+
+/// A server's answer as it came.
+struct Answer {
+    status: u16,
+    headers: Vec<(&'static str, Vec<u8>)>,
+    response: Option<reqwest::Response>,
+}
+
+impl Answer {
+    fn failed() -> Self {
+        Self { status: 502, headers: Vec::new(), response: None }
+    }
+
+    fn reply(&self, body: Body) -> Response<Body> {
+        let mut reply = Response::builder().status(self.status);
+        for (key, value) in &self.headers {
+            reply = reply.header(*key, value.as_slice());
+        }
+        reply.body(body).unwrap_or_else(|_| text(StatusCode::BAD_GATEWAY, ""))
+    }
+
+    fn into_reply(mut self, failed: &'static str) -> Response<Body> {
+        match self.response.take() {
+            Some(response) => self.reply(stream_of(response)),
+            None => text(StatusCode::BAD_GATEWAY, failed),
+        }
+    }
+}
+
+fn stream_of(response: reqwest::Response) -> Body {
+    let chunks = response.bytes_stream().map(|chunk| chunk.map(Frame::data).map_err(io::Error::other));
+    BoxBody::new(StreamBody::new(chunks))
 }
 
 /// Each call is the relay's conversation's, whatever it names, with an
 /// operation of its own (the forwarder's, sent again after a restart, kept).
 fn own_session(body: Value, session: &str, forwarded: bool) -> Value {
     let each = |mut message: Value| {
-        if message["method"] != "tools/call" || !message["params"].is_object() {
+        let call = message["method"] == "tools/call";
+        let Some(params) = message["params"].as_object_mut().filter(|_| call) else {
             return message;
-        }
-        let params = message["params"].as_object_mut().expect("an object");
-        let meta = params
-            .entry("_meta")
-            .or_insert_with(|| Value::Object(Map::new()));
+        };
+        let meta = params.entry("_meta").or_insert_with(|| Value::Object(Map::new()));
         if !meta.is_object() {
             *meta = Value::Object(Map::new());
         }
-        let meta = meta.as_object_mut().expect("an object");
-        let operation = meta
-            .get("kuvo.operation")
-            .and_then(Value::as_str)
-            .filter(|operation| forwarded && is_uuid(operation))
-            .map(str::to_owned)
-            .unwrap_or_else(new_uuid);
-        meta.insert("ai.opencode/sessionID".into(), json!(session));
-        meta.insert("kuvo.operation".into(), json!(operation));
+        let operation = meta["kuvo.operation"].as_str().filter(|operation| {
+            forwarded
+                && operation.len() == 36
+                && operation.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+        });
+        let operation = operation.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
+        meta["ai.opencode/sessionID"] = json!(session);
+        meta["kuvo.operation"] = json!(operation);
         message
     };
     match body {
@@ -596,17 +722,16 @@ fn own_session(body: Value, session: &str, forwarded: bool) -> Value {
     }
 }
 
-fn is_uuid(text: &str) -> bool {
-    text.len() == 36 && text.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-')
+/// A name of the relay's own, hard to guess.
+fn fresh(bytes: usize) -> String {
+    let mut name = vec![0; bytes];
+    let _ = getrandom::fill(&mut name);
+    hex::encode(name)
 }
 
-fn new_uuid() -> String {
-    let mut bytes = [0u8; 16];
-    let _ = getrandom::fill(&mut bytes);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex = hex::encode(bytes);
-    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
+fn connection_of(parts: &Parts) -> String {
+    let connection = parts.headers.get("mcp-session-id").and_then(|value| value.to_str().ok());
+    connection.unwrap_or_default().to_owned()
 }
 
 fn text(status: StatusCode, words: &'static str) -> Response<Body> {
@@ -618,13 +743,17 @@ fn text(status: StatusCode, words: &'static str) -> Response<Body> {
 fn json_reply(status: StatusCode, body: &Value, connection: Option<&str>) -> Response<Body> {
     let mut reply = Response::new(full(Bytes::from(body.to_string())));
     *reply.status_mut() = status;
-    reply
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    let headers = reply.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
     if let Some(connection) = connection.and_then(|name| HeaderValue::from_str(name).ok()) {
-        reply.headers_mut().insert("mcp-session-id", connection);
+        headers.insert("mcp-session-id", connection);
     }
     reply
+}
+
+fn parse_error() -> Response<Body> {
+    let error = json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}});
+    json_reply(StatusCode::BAD_REQUEST, &error, None)
 }
 
 fn full(bytes: Bytes) -> Body {
@@ -649,60 +778,52 @@ struct Calls {
     /// Each connection's request, as the program knows it (for a cancel).
     ours: HashMap<String, i64>,
     stopped: bool,
+    /// When a connection last used it.
+    used: Option<Instant>,
 }
 
 impl Program {
-    fn start(
-        key: String,
-        command: PathBuf,
-        args: Vec<OsString>,
-        env: Environment,
-        cwd: Option<PathBuf>,
-        name: String,
-    ) -> io::Result<Arc<Self>> {
-        let mut env = env;
+    fn start(key: String, launch: Launch, cwd: Option<PathBuf>, name: String) -> io::Result<Arc<Self>> {
+        let Launch { command, args, mut env } = launch;
         // (Windows keeps each drive's folder in variables named `=C:`: not
         // a program's to be given.)
         env.retain(|name, _| !name.is_empty() && !name.as_encoded_bytes().contains(&b'='));
-        let mut spawn = Spawn::new(command, env);
-        spawn.args = args;
-        spawn.cwd = cwd;
-        spawn.stdin = Stdio::Pipe;
-        spawn.stdout = Stdio::Pipe;
-        // (What it says on stderr isn't kept: a server's own can have its keys in it.)
-        spawn.stderr = Stdio::Null;
+        let spawn = Spawn {
+            executable: command,
+            args,
+            cwd,
+            env,
+            stdin: Stdio::Pipe,
+            stdout: Stdio::Pipe,
+            // (What it says on stderr isn't kept: a server's own can have its keys in it.)
+            stderr: Stdio::Null,
+        };
         let mut group = spawn.spawn()?;
         let mut stdin = group.stdin.take().ok_or_else(|| io::Error::other("no input"))?;
         let stdout = group.stdout.take().ok_or_else(|| io::Error::other("no output"))?;
         let (input, mut writes) = mpsc::unbounded_channel::<String>();
-        std::thread::Builder::new()
-            .name("relay-program-input".into())
-            .spawn(move || {
-                while let Some(line) = writes.blocking_recv() {
-                    if writeln!(stdin, "{line}").and_then(|()| stdin.flush()).is_err() {
-                        break;
-                    }
+        std::thread::Builder::new().name("relay-program-input".into()).spawn(move || {
+            while let Some(line) = writes.blocking_recv() {
+                if writeln!(stdin, "{line}").and_then(|()| stdin.flush()).is_err() {
+                    break;
                 }
-            })?;
+            }
+        })?;
         let (lines, mut read) = mpsc::unbounded_channel::<String>();
-        std::thread::Builder::new()
-            .name("relay-program-output".into())
-            .spawn(move || {
-                for line in io::BufReader::new(stdout).lines() {
-                    let Ok(line) = line else { break };
-                    if lines.send(line).is_err() {
-                        break;
-                    }
+        std::thread::Builder::new().name("relay-program-output".into()).spawn(move || {
+            let mut said = io::BufReader::new(stdout).lines();
+            while let Some(Ok(line)) = said.next() {
+                if lines.send(line).is_err() {
+                    break;
                 }
-            })?;
+            }
+        })?;
+        let calls = Calls { next: 1, used: Some(Instant::now()), ..Calls::default() };
         let program = Arc::new(Self {
             key,
             name,
             input,
-            calls: Mutex::new(Calls {
-                next: 1,
-                ..Calls::default()
-            }),
+            calls: Mutex::new(calls),
             group: Mutex::new(Some(group)),
         });
         let reading = Arc::downgrade(&program);
@@ -718,12 +839,16 @@ impl Program {
         Ok(program)
     }
 
-    fn calls(&self) -> std::sync::MutexGuard<'_, Calls> {
+    fn calls(&self) -> MutexGuard<'_, Calls> {
         self.calls.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn stopped(&self) -> bool {
         self.calls().stopped
+    }
+
+    fn unused_for(&self, idle: Duration) -> bool {
+        self.calls().used.is_some_and(|used| used.elapsed() > idle)
     }
 
     fn write(&self, message: &Value) {
@@ -753,21 +878,15 @@ impl Program {
 
     /// A connection's message; a request's answer (none for a notification).
     async fn send(&self, mut message: Value, timeout: Duration, connection: &str) -> Option<Value> {
-        let original = message.get("id").cloned().filter(|id| !id.is_null());
-        let Some(original) = original else {
+        self.calls().used = Some(Instant::now());
+        let Some(original) = message.get("id").cloned().filter(|id| !id.is_null()) else {
             // A cancel names the request as the program knows it.
-            let request = message["params"].get("requestId").cloned();
-            let ours = request.and_then(|request| {
-                self.calls()
-                    .ours
-                    .get(&format!("{connection} {request}"))
-                    .copied()
-            });
-            if message["method"] == "notifications/cancelled" && ours.is_none() {
-                return None;
-            }
-            if let Some(ours) = ours {
-                message["params"]["requestId"] = json!(ours);
+            let request = message["params"].get("requestId");
+            let ours = request.and_then(|request| self.calls().ours.get(&format!("{connection} {request}")).copied());
+            match ours {
+                Some(ours) => message["params"]["requestId"] = json!(ours),
+                None if message["method"] == "notifications/cancelled" => return None,
+                None => {}
             }
             if !self.stopped() {
                 self.write(&message);
@@ -815,11 +934,7 @@ impl Program {
         for (_, (original, done)) in waiting {
             let _ = done.send(stopped(&original, &self.name));
         }
-        let group = self
-            .group
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
+        let group = self.group.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
         if let Some(mut group) = group {
             // (The group it made, what it started too.)
             std::thread::spawn(move || {
@@ -836,8 +951,7 @@ impl Drop for Program {
 }
 
 fn failure(id: &Value, message: &str) -> Value {
-    let error = RpcError::new(-32603, message);
-    json!({"jsonrpc":"2.0","id":id,"error":{"code":error.code,"message":error.message}})
+    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":message}})
 }
 
 /// Stopped (the relay restarting, say): the forwarder sends it again.
