@@ -69,6 +69,51 @@ test("Claude accepts a pasted sign-in code, then offers that account's models", 
   });
 });
 
+test("a new Claude account starts a new probe, and an old probe can't change its models", { timeout: 90000 }, async t => {
+  await withClaude(t, { signedIn: false }, async (listener, _home, env) => {
+    const offered = async (query = "?refresh=1") => {
+      const answer = await request(listener, "GET", `kuvo/models/offered${query}`, undefined, headers, 45000);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json.models.filter(model => model.providerID === provider).map(model => model.id).sort();
+    };
+    const signIn = async () => {
+      const started = await request(listener, "POST", oauth, { methodID: "claudeai", remote: true }, headers, 20000);
+      assert.equal(started.status, 200, started.text);
+      const { attemptID } = started.json.data;
+      const done = await request(listener, "POST", `${oauth}/${attemptID}/complete`, { code: "fixture-code" }, headers);
+      assert.equal(done.status, 200, done.text);
+      await until(async () => (await request(listener, "GET", `${oauth}/${attemptID}`, undefined, headers)).json?.data?.status === "complete",
+        "The Claude sign-in did not finish.");
+    };
+    const catalog = value => write(path.join(env.HOME, "claude-catalog.json"), JSON.stringify(value));
+    const marked = name => fs.existsSync(path.join(env.HOME, name));
+    const model = (value, displayName) => ({ value, resolvedModel: `claude-${value}`, displayName });
+    try {
+      await signIn();
+      // The first account's models are asked for, and Claude Code takes its time to say.
+      catalog({ models: [model("old-model", "Old model")], until: "old-goes" });
+      const old = offered().catch(() => undefined);
+      await until(() => marked("claude-catalog-waiting"), "The first account's probe never started.");
+      // Meanwhile it signs out, and in as another account, with models of its own.
+      const out = await request(listener, "POST", "kuvo/agents/api/integration/claude-code/disconnect", {}, headers, 20000);
+      assert.equal(out.status, 200, out.text);
+      catalog({ models: [model("new-model", "New model")] });
+      await signIn();
+      assert.deepEqual(await offered(), ["new-model"]);
+      // The old probe answers at last, or was stopped: what it says isn't this account's.
+      const probe = Number(fs.readFileSync(path.join(env.HOME, "claude-catalog-waiting"), "utf8"));
+      const alive = () => { try { process.kill(probe, 0); return true; } catch { return false; } };
+      write(path.join(env.HOME, "old-goes"), "");
+      await until(() => marked("claude-catalog-answered") || !alive(), "The first account's probe neither answered nor stopped.");
+      await old;
+      await new Promise(resolve => setTimeout(resolve, 300));
+      assert.deepEqual(await offered(""), ["new-model"]);
+    } finally {
+      write(path.join(env.HOME, "old-goes"), "");
+    }
+  });
+});
+
 test("the saved Claude Console account keeps its own directory and model access", { timeout: 60000 }, async t => {
   await withClaude(t, { signedIn: false }, async (listener, home) => {
     const offered = await request(listener, "GET", picker, undefined, headers, 45000);

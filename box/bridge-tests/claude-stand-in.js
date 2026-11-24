@@ -182,6 +182,22 @@ require("node:readline").createInterface({ input: process.stdin }).on("line", li
   if (subtype === "initialize") {
     // Its PreToolUse hook, as the box registered it ($HOOK in a script).
     hookID = message.request?.hooks?.PreToolUse?.[0]?.hookCallbackIds?.[0] ?? hookID;
+    // A probe for its models (no conversation), as the test says (\`<root>/claude-catalog.json\`):
+    // those \`models\`, once \`until\` is there (it says it's waiting, then that it answered).
+    const catalogFile = ${JSON.stringify(path.join(root, "claude-catalog.json"))};
+    const catalog = !native && fs.existsSync(catalogFile) ? JSON.parse(fs.readFileSync(catalogFile, "utf8")) : undefined;
+    if (catalog) {
+      const mark = name => fs.writeFileSync(${JSON.stringify(root)} + require("node:path").sep + name, String(process.pid));
+      const reply = () => {
+        answer(message.request_id, { subtype: "success", pending_permission_requests: [], response: { models: catalog.models, commands: [], agents: [], output_style: "default", available_output_styles: ["default"], account: {} } });
+        if (catalog.until) mark("claude-catalog-answered");
+      };
+      if (!catalog.until) return reply();
+      mark("claude-catalog-waiting");
+      const go = ${JSON.stringify(root)} + require("node:path").sep + catalog.until;
+      const wait = () => fs.existsSync(go) ? reply() : setTimeout(wait, 20);
+      return wait();
+    }
     answer(message.request_id, { subtype: "success", pending_permission_requests: [], response: { models, commands: [], agents: [], output_style: "default", available_output_styles: ["default"], account: {} } });
     if (scriptedTurns && held) {
       say("After the switch.");
