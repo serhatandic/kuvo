@@ -60,12 +60,17 @@ struct Reference {
 
 enum Scope {
     Session { setup: String, id: String },
+    QueueItem { setup: String, id: String },
     Other,
 }
 
 impl Scope {
-    fn follows(&self, setup: &str, sessions: &[String]) -> bool {
-        matches!(self, Self::Session { setup: family, id } if family == setup && sessions.contains(id))
+    fn follows(&self, setup: &str, sessions: &[String], item: Option<&str>) -> bool {
+        match self {
+            Self::Session { setup: family, id } => family == setup && sessions.contains(id),
+            Self::QueueItem { setup: family, id } => family == setup && item == Some(id.as_str()),
+            Self::Other => false,
+        }
     }
 }
 
@@ -73,6 +78,23 @@ pub(super) fn pack(
     run: &Path,
     setup: Option<&str>,
     sessions: &[String],
+) -> io::Result<Option<BTreeMap<String, Value>>> {
+    pack_for(run, setup, sessions, None)
+}
+
+pub fn pack_queue_evidence(
+    run: &Path,
+    setup: Option<&str>,
+    item: &str,
+) -> io::Result<Option<BTreeMap<String, Value>>> {
+    pack_for(run, setup, &[], Some(item))
+}
+
+fn pack_for(
+    run: &Path,
+    setup: Option<&str>,
+    sessions: &[String],
+    item: Option<&str>,
 ) -> io::Result<Option<BTreeMap<String, Value>>> {
     let Some(setup) = setup else {
         return Ok(None);
@@ -84,7 +106,7 @@ pub(super) fn pack(
         let Some(object) = OWNED.read(&path).map_err(io::Error::other)? else {
             continue;
         };
-        if address(&key, &object.fields)?.follows(setup, sessions) {
+        if address(&key, &object.fields)?.follows(setup, sessions, item) {
             entries.insert(key, OWNED.encode(object.fields));
         }
     }
@@ -153,6 +175,25 @@ pub(super) fn place(
     sessions: &[String],
     records: BTreeMap<String, Value>,
 ) -> io::Result<()> {
+    place_for(run, setup, sessions, None, records)
+}
+
+pub fn place_queue_evidence(
+    run: &Path,
+    setup: Option<&str>,
+    item: &str,
+    records: BTreeMap<String, Value>,
+) -> io::Result<()> {
+    place_for(run, setup, &[], Some(item), records)
+}
+
+fn place_for(
+    run: &Path,
+    setup: Option<&str>,
+    sessions: &[String],
+    item: Option<&str>,
+    records: BTreeMap<String, Value>,
+) -> io::Result<()> {
     let setup = setup.ok_or_else(invalid)?;
     let root = run.join("owned-data");
     let _guard = OwnedLock::acquire(&root.join(".mutations.lock"), Duration::from_secs(3))?;
@@ -162,7 +203,7 @@ pub(super) fn place(
             return Err(invalid());
         }
         let incoming = OWNED.decode(raw).map_err(io::Error::other)?.fields;
-        if !address(&key, &incoming)?.follows(setup, sessions) {
+        if !address(&key, &incoming)?.follows(setup, sessions, item) {
             return Err(io::Error::other(
                 "The move includes a forwarded decision for another record.",
             ));
@@ -301,6 +342,17 @@ fn address(key: &str, fields: &Map<String, Value>) -> io::Result<Scope> {
     };
     if forward.kind != policy || !valid_key(stored) {
         return Err(invalid());
+    }
+    if policy == "forwardedQueueDecisions"
+        && let Some(id) = forward
+            .reference
+            .as_ref()
+            .and_then(|reference| reference.id.clone())
+    {
+        return Ok(Scope::QueueItem {
+            setup: forward.setup,
+            id,
+        });
     }
     if policy == "forwardedSessionDecisions"
         && let Some(id) = forward.reference.and_then(|reference| reference.id)

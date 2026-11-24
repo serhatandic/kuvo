@@ -184,7 +184,7 @@ pub async fn run(
     let owner_requests = if let Ok(requests) = owners.incoming() {
         peers.advertise_engine_submissions().await?;
         Some(tokio::spawn(super::session_ownership::serve(
-            owners,
+            owners.clone(),
             requests,
             engine.clone(),
             sessions.clone(),
@@ -197,9 +197,31 @@ pub async fn run(
         kuvo_peers::memory_read::Handle::new(peers.reader(), peers.relay_handle(), move || {
             accepted.ownership_state().id
         });
+    let work_queue = kuvo_work::queue::register(
+        &mut routes,
+        home,
+        peers.reader(),
+        sessions.clone(),
+        engine.clone(),
+        setup.handle(),
+        peers.relay_handle(),
+        memory.clone(),
+        owners,
+    )
+    .await?;
+    let queue_reads = work_queue.peer_reads();
     let search_engine = engine.clone();
-    let memory_reads =
-        memory.serve(move |_, read| super::setup_search::answer(search_engine.clone(), read));
+    let memory_reads = memory.serve(move |_, read| {
+        let queues = queue_reads.clone();
+        let engine = search_engine.clone();
+        async move {
+            if read.area.as_deref() == Some("search") {
+                super::setup_search::answer(engine, read).await
+            } else {
+                queues.answer(read).await
+            }
+        }
+    });
     engine.register_setup_search(
         Arc::new(super::setup_search::SetupSearch {
             peers: peers.reader(),
@@ -210,7 +232,9 @@ pub async fn run(
     if memory_reads.is_some() {
         peers.advertise_conversation_search().await?;
     }
-    setup.handle().register(&mut routes);
+    setup
+        .handle()
+        .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
     kuvo_services::files::register(
         &mut routes,
