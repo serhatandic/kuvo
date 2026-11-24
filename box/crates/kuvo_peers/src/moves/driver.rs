@@ -271,7 +271,9 @@ impl Driver {
             && !listing::supports_moves(&view, &request.to, listing::checkpointed(self.run_dir()))
         {
             let name = listing::plain_name(&peer.name);
-            let place = if name.is_empty() {
+            let place = if !view.local_work_admitted() {
+                "This computer"
+            } else if name.is_empty() {
                 "That computer"
             } else {
                 &name
@@ -634,6 +636,9 @@ impl Driver {
             _ => {}
         }
         let stored = Journal::read(self.run_dir(), id)?;
+        if stored.is_none() && matches!(op, "check" | "offer") && !view.work_admitted(&peer) {
+            return Ok(());
+        }
         if op != "offer" && stored.as_ref().is_some_and(|row| row.peer != peer) {
             return Ok(());
         }

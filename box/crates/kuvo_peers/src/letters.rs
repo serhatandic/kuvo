@@ -243,7 +243,9 @@ impl Letters {
             let host = (!here)
                 .then(|| view.roster.member(&key).and_then(|peer| peer.host()))
                 .flatten();
-            if !here && (!view.relay_connected || host.is_none()) {
+            if !here
+                && (!view.relay_connected || host.is_none() || !view.work_admitted(&encode(&key)))
+            {
                 continue;
             }
             if !here && !self.introduced(&key, &each).await {
@@ -483,7 +485,8 @@ impl Letters {
             }
             _ => view,
         };
-        if let Some(host) = view.roster.member(&key).and_then(|peer| peer.host())
+        if view.work_admitted(&key_text)
+            && let Some(host) = view.roster.member(&key).and_then(|peer| peer.host())
             && let Some(reply) = self.take(&view, key, letter).await?
         {
             let _ = self.relay.sender.mail(host, reply.envelope(now)).await;

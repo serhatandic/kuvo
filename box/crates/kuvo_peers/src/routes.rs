@@ -17,7 +17,7 @@ use serde_json::Number;
 use crate::{
     attention, conversation,
     devices::{self, Devices},
-    directory::{PreparedRelease, RecordScope},
+    directory::RecordScope,
     lists::{self, Origin, Place, SessionAction},
     reach::{Millis, Standing},
     setup_lists::{Reader, View},
@@ -48,12 +48,7 @@ const ENGINE_NOT_READY: &str = "The engine isn’t running.";
 const CONVERSATION_NOT_READY: &str = "The conversation’s engine isn’t answering.";
 const CONVERSATION_GONE: &str = "That conversation isn’t there any more.";
 
-pub fn register(
-    registry: &mut Registry,
-    peers: Reader,
-    devices: Devices,
-    bridge: Option<PreparedRelease>,
-) {
+pub fn register(registry: &mut Registry, peers: Reader, devices: Devices) {
     crate::moves::register(registry, &peers);
     follow::<get_kuvo_setup_sessions_events::Spec>(
         registry,
@@ -82,7 +77,7 @@ pub fn register(
     follow::<get_kuvo_setup_runs_on_events::Spec>(
         registry,
         &peers,
-        move |view, now| Some(view.runs_on(now, bridge.as_ref())),
+        |view, now| Some(view.runs_on(now)),
         None,
     );
     follow::<get_kuvo_setup_waiting_counts_events::Spec>(

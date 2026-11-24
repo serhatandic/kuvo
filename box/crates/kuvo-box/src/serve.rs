@@ -115,13 +115,21 @@ pub async fn run(
     )?;
     let vault_machine = (kind != ComputerKind::Mac).then(|| roster.name.clone());
     let bot_name = roster.name.clone();
-    let mut peers = ResidentPeers::start(
+    let identity = kuvo_os::platform::Account::current()?;
+    let account = identity.home_folder(
+        kuvo_os::platform::Platform::current(),
+        &std::env::vars_os().collect(),
+    )?;
+    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let bridge = crate::updates::installed_bridge(&update_home, &account);
+    let mut peers = ResidentPeers::start_with_bridge(
         home,
         roster,
         relay,
         Some(devices.clone()),
         kind == ComputerKind::Mac,
         Arc::new(system_clock),
+        bridge,
     )
     .await?;
     let authority = setup.handle();
@@ -134,11 +142,6 @@ pub async fn run(
     peers.attach_moves(engine.clone(), owners.clone()).await?;
     let peers = Arc::new(peers);
     peers.follow_setup_roster(setup.handle().rosters()).await;
-    let identity = kuvo_os::platform::Account::current()?;
-    let account = identity.home_folder(
-        kuvo_os::platform::Platform::current(),
-        &std::env::vars_os().collect(),
-    )?;
     let vault = kuvo_services::vault::Resident::new(
         home,
         kind == ComputerKind::Mac,
@@ -330,7 +333,8 @@ pub async fn run(
     );
     kuvo_services::git::register(&mut routes, home.to_owned());
     kuvo_services::programs::register(&mut routes, account.clone());
-    let _integration_keys = kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
+    let _integration_keys =
+        kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
     let skills = kuvo_services::skills::ResidentSkills::start(&mut routes, home, &account);
     let resident_marketplace = kuvo_services::marketplace::ResidentMarketplace::start(
         &mut routes,
@@ -414,7 +418,6 @@ pub async fn run(
         kind == ComputerKind::Mac,
     );
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
-    let bridge = crate::updates::installed_bridge(&update_home, &account);
     let updates = crate::updates::start(update_home, &account, peers.clone(), setup.handle());
     crate::updates::register_check(
         &mut routes,
@@ -435,7 +438,7 @@ pub async fn run(
         backup_mail,
         Some(vault.clone()),
     );
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), bridge);
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
         let engine = engine.clone();
