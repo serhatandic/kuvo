@@ -84,8 +84,8 @@ fn own_is_every_and_more() {
 }
 
 /// What the TS box answered for each input in the same repositories (`ownArgs`/`askedArgs`, a
-/// Mac; on Linux `W`, git's own watcher, is nothing, as it is there). `OWN`, `EVERY`, `NAMED` and
-/// `W` stand for the runs they name.
+/// Mac; on Linux `W`, git's own watcher, is nothing, as it is there). `OWN`, `EVERY`, `NAMED`,
+/// `LOCAL` and `W` stand for the runs they name.
 #[rustfmt::skip]
 const TABLE: &[(&str, bool, &str, Option<&str>)] = &[
     ("clean", true, "rev-parse HEAD", Some("OWN rev-parse HEAD")),
@@ -108,11 +108,22 @@ const TABLE: &[(&str, bool, &str, Option<&str>)] = &[
     ("clean", true, "-c a.b=c --git-dir .git show", Some("-c a.b=c --git-dir .git OWN show --no-ext-diff")),
     ("clean", true, "--no-pager -C . whatchanged", Some("--no-pager -C . OWN whatchanged --no-ext-diff")),
     ("clean", true, "", Some("OWN")),
+    ("clean", true, "fetch origin", None),
+    ("clean", true, "fetch", None),
+    ("clean", true, "fetch -q /nowhere/store HEAD", Some("OWN LOCAL fetch -q /nowhere/store HEAD")),
+    ("clean", true, "clone --bare --local /nowhere/a /nowhere/b", Some("OWN LOCAL clone --bare --local /nowhere/a /nowhere/b")),
+    ("clean", true, "ls-remote https://example.invalid/x", None),
+    ("clean", true, "remote update", None),
+    ("clean", true, "remote get-url origin", Some("OWN remote get-url origin")),
+    ("clean", true, "submodule update", None),
+    ("clean", true, "archive --remote=origin HEAD", None),
+    ("clean", true, "push /nowhere/store HEAD", Some("OWN LOCAL push /nowhere/store HEAD")),
     ("clean", false, "commit -m x", Some("EVERY commit -m x")),
     ("clean", false, "diff", Some("EVERY diff --no-ext-diff")),
     ("clean", false, "stash show", Some("EVERY stash show --no-ext-diff")),
     ("clean", false, "clone --quiet -- a b", Some("EVERY clone --quiet -- a b")),
     ("clean", false, "-C . log", Some("-C . EVERY log --no-ext-diff")),
+    ("clean", false, "fetch origin", Some("EVERY fetch origin")),
     ("named", true, "rev-parse HEAD", Some("OWN rev-parse HEAD")),
     ("named", true, "status --porcelain", Some("OWN NAMED W status --porcelain")),
     ("named", true, "diff HEAD", Some("OWN NAMED W diff --no-ext-diff --no-textconv HEAD")),
@@ -133,11 +144,22 @@ const TABLE: &[(&str, bool, &str, Option<&str>)] = &[
     ("named", true, "-c a.b=c --git-dir .git show", Some("-c a.b=c --git-dir .git OWN NAMED W show --no-ext-diff --no-textconv")),
     ("named", true, "--no-pager -C . whatchanged", Some("--no-pager -C . OWN NAMED W whatchanged --no-ext-diff --no-textconv")),
     ("named", true, "", Some("OWN NAMED W")),
+    ("named", true, "fetch origin", None),
+    ("named", true, "fetch", None),
+    ("named", true, "fetch -q /nowhere/store HEAD", Some("OWN LOCAL NAMED W fetch -q /nowhere/store HEAD")),
+    ("named", true, "clone --bare --local /nowhere/a /nowhere/b", Some("OWN LOCAL NAMED W clone --bare --local /nowhere/a /nowhere/b")),
+    ("named", true, "ls-remote https://example.invalid/x", None),
+    ("named", true, "remote update", None),
+    ("named", true, "remote get-url origin", Some("OWN NAMED W remote get-url origin")),
+    ("named", true, "submodule update", None),
+    ("named", true, "archive --remote=origin HEAD", None),
+    ("named", true, "push /nowhere/store HEAD", Some("OWN LOCAL NAMED W push /nowhere/store HEAD")),
     ("named", false, "commit -m x", Some("EVERY W commit -m x")),
     ("named", false, "diff", Some("EVERY W diff --no-ext-diff")),
     ("named", false, "stash show", Some("EVERY W stash show --no-ext-diff")),
     ("named", false, "clone --quiet -- a b", Some("EVERY clone --quiet -- a b")),
     ("named", false, "-C . log", Some("-C . EVERY W log --no-ext-diff")),
+    ("named", false, "fetch origin", Some("EVERY W fetch origin")),
     ("unswitchable", true, "rev-parse HEAD", Some("OWN rev-parse HEAD")),
     ("unswitchable", true, "status --porcelain", None),
     ("unswitchable", true, "diff HEAD", None),
@@ -158,11 +180,22 @@ const TABLE: &[(&str, bool, &str, Option<&str>)] = &[
     ("unswitchable", true, "-c a.b=c --git-dir .git show", None),
     ("unswitchable", true, "--no-pager -C . whatchanged", None),
     ("unswitchable", true, "", None),
+    ("unswitchable", true, "fetch origin", None),
+    ("unswitchable", true, "fetch", None),
+    ("unswitchable", true, "fetch -q /nowhere/store HEAD", None),
+    ("unswitchable", true, "clone --bare --local /nowhere/a /nowhere/b", None),
+    ("unswitchable", true, "ls-remote https://example.invalid/x", None),
+    ("unswitchable", true, "remote update", None),
+    ("unswitchable", true, "remote get-url origin", None),
+    ("unswitchable", true, "submodule update", None),
+    ("unswitchable", true, "archive --remote=origin HEAD", None),
+    ("unswitchable", true, "push /nowhere/store HEAD", None),
     ("unswitchable", false, "commit -m x", Some("EVERY commit -m x")),
     ("unswitchable", false, "diff", Some("EVERY diff --no-ext-diff")),
     ("unswitchable", false, "stash show", Some("EVERY stash show --no-ext-diff")),
     ("unswitchable", false, "clone --quiet -- a b", Some("EVERY clone --quiet -- a b")),
     ("unswitchable", false, "-C . log", Some("-C . EVERY log --no-ext-diff")),
+    ("unswitchable", false, "fetch origin", Some("EVERY fetch origin")),
     ("hookeq", true, "rev-parse HEAD", Some("OWN rev-parse HEAD")),
     ("hookeq", true, "status --porcelain", None),
     ("hookeq", true, "diff HEAD", None),
@@ -183,11 +216,22 @@ const TABLE: &[(&str, bool, &str, Option<&str>)] = &[
     ("hookeq", true, "-c a.b=c --git-dir .git show", None),
     ("hookeq", true, "--no-pager -C . whatchanged", None),
     ("hookeq", true, "", None),
+    ("hookeq", true, "fetch origin", None),
+    ("hookeq", true, "fetch", None),
+    ("hookeq", true, "fetch -q /nowhere/store HEAD", None),
+    ("hookeq", true, "clone --bare --local /nowhere/a /nowhere/b", None),
+    ("hookeq", true, "ls-remote https://example.invalid/x", None),
+    ("hookeq", true, "remote update", None),
+    ("hookeq", true, "remote get-url origin", None),
+    ("hookeq", true, "submodule update", None),
+    ("hookeq", true, "archive --remote=origin HEAD", None),
+    ("hookeq", true, "push /nowhere/store HEAD", None),
     ("hookeq", false, "commit -m x", Some("EVERY commit -m x")),
     ("hookeq", false, "diff", Some("EVERY diff --no-ext-diff")),
     ("hookeq", false, "stash show", Some("EVERY stash show --no-ext-diff")),
     ("hookeq", false, "clone --quiet -- a b", Some("EVERY clone --quiet -- a b")),
     ("hookeq", false, "-C . log", Some("-C . EVERY log --no-ext-diff")),
+    ("hookeq", false, "fetch origin", Some("EVERY fetch origin")),
 ];
 
 #[test]
@@ -224,7 +268,8 @@ fn the_arguments_are_the_ts_boxs_for_the_same_inputs() {
         words(text)
             .into_iter()
             .flat_map(|word| match word.as_str() {
-                "OWN" => words("-c core.fsmonitor=false -c core.pager=cat -c log.showSignature=false -c safe.bareRepository=explicit -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c credential.helper="),
+                "OWN" => words("-c core.fsmonitor=false -c core.pager=cat -c log.showSignature=false -c safe.bareRepository=explicit -c core.hooksPath=/dev/null -c commit.gpgSign=false -c tag.gpgSign=false -c credential.helper= -c core.askPass="),
+                "LOCAL" => strings(&LOCAL_ONLY),
                 "EVERY" => words("-c core.fsmonitor=false -c core.pager=cat -c log.showSignature=false"),
                 "NAMED" => words("-c filter.evil.clean= -c filter.evil.required=false -c filter.evil.smudge= -c filter.evil.required=false -c hook.planted.enabled=false"),
                 "W" => strings(WATCHER),
@@ -566,6 +611,7 @@ mod hostile {
             &program("merge", "exit 1"),
         );
         config("credential.helper", &program("credential", "exit 0"));
+        config("core.askPass", &program("askpass", "exit 0"));
         config("protocol.ext.allow", "always");
         config(
             "remote.origin.url",
@@ -574,6 +620,22 @@ mod hostile {
         config("core.sshCommand", &program("ssh", "exit 1"));
         config("remote.far.url", "ssh://example.invalid/x");
         config("alias.st", &format!("!{}", program("alias", "exit 0")));
+        // A local path its settings rewrite to an `ext::` remote, and one to an ssh one.
+        config(
+            &format!("url.ext::{}.insteadOf", program("rewritten", "exit 1")),
+            &root.join("rewritten").display().to_string(),
+        );
+        config(
+            "url.ssh://example.invalid/.insteadOf",
+            &root.join("rewritten-ssh").display().to_string(),
+        );
+        // And a repository at a local path, for a fetch the box does make.
+        git_in(&root, &root, &["init", "-q", "source"]);
+        git_in(
+            &root,
+            &root.join("source"),
+            &["commit", "-q", "--allow-empty", "-m", "from elsewhere"],
+        );
         // Its diff programs in a file its settings include.
         let more = programs.join("more.config");
         fs::write(
@@ -635,28 +697,35 @@ mod hostile {
             &["ls-remote", "origin"],
             &["ls-remote", "far"],
             &["credential", "fill"],
+            &["-c", "credential.helper=", "credential", "fill"],
         ] {
-            Command::new("git")
+            let mut child = Command::new("git")
                 .args(args)
                 .current_dir(&planted.top)
                 .env("GIT_CONFIG_GLOBAL", planted.root.join("no-settings"))
                 .env("GIT_TERMINAL_PROMPT", "0")
-                .stdin(Stdio::null())
+                .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status()
+                .spawn()
                 .unwrap();
+            let _ = child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(b"protocol=https\nhost=example.com\n\n");
+            child.wait().unwrap();
         }
         let ran = planted.ran();
         for mark in [
             "alias",
+            "askpass",
             "clean",
             "command",
             "fsmonitor",
             "gpg",
             "ext",
             "ssh",
-            "external",
         ] {
             assert!(ran.contains(&mark.to_owned()), "{mark} in {ran:?}");
         }
@@ -707,6 +776,88 @@ mod hostile {
         assert!(
             !ran.contains(&"fsmonitor".to_owned()) && !ran.contains(&"pager".to_owned()),
             "{ran:?}"
+        );
+    }
+
+    #[test]
+    fn what_reaches_another_repository_by_itself_only_a_local_path_never_a_transport_settings_name()
+    {
+        let planted = planted("evil");
+        let here = Here::from_env();
+        let at = |name: &str| planted.root.join(name).display().to_string();
+        // A remote its settings name, ext:: and ssh among them, or none: refused.
+        let copy = at("c");
+        for command in [
+            &["fetch", "origin"][..],
+            &["fetch", "far"],
+            &["fetch"],
+            &["ls-remote", "origin"],
+            &["pull", "origin"],
+            &["push", "far", "HEAD"],
+            &["fetch", "-q", "ssh://example.invalid/x"],
+            &["clone", "--quiet", "ext::sh -c true", &copy],
+            &["remote", "update"],
+            &["remote", "show", "origin"],
+            &["submodule", "update", "--init"],
+            &["request-pull", "HEAD", "origin"],
+            &["archive", "--remote=origin", "HEAD"],
+            &["maintenance", "run", "--task=prefetch"],
+        ] {
+            assert_eq!(
+                own_args_in(&here, &strings(command), Some(&planted.top), None),
+                Err(Refused::Remote),
+                "{command:?}"
+            );
+        }
+        // A local path is fetched, but where its settings rewrite one to ext:: or ssh, nothing runs.
+        for path in ["rewritten", "rewritten-ssh"] {
+            let args = own_args_in(
+                &here,
+                &strings(&["fetch", "-q", &at(path)]),
+                Some(&planted.top),
+                None,
+            )
+            .unwrap();
+            planted.run(&args, "");
+        }
+        let source = at("source");
+        let fetch = strings(&[
+            "fetch",
+            "-q",
+            "--no-tags",
+            &source,
+            "HEAD:refs/kuvo/fetched",
+        ]);
+        planted.run(
+            &own_args_in(&here, &fetch, Some(&planted.top), None).unwrap(),
+            "",
+        );
+        assert_eq!(
+            planted.git(&["log", "-1", "--format=%s", "refs/kuvo/fetched"]),
+            "from elsewhere"
+        );
+        let clone = strings(&["clone", "-q", "--bare", "--local", &source, &at("copy")]);
+        planted.run(
+            &own_args_in(&here, &clone, Some(&planted.top), None).unwrap(),
+            "",
+        );
+        assert_eq!(
+            git_in(
+                &planted.root,
+                &planted.root.join("copy"),
+                &["log", "-1", "--format=%s"]
+            ),
+            "from elsewhere"
+        );
+        assert_eq!(planted.ran(), Vec::<String>::new());
+        // (What you ask for goes where you said, as your terminal would.)
+        assert!(
+            asked_args_in(
+                &here,
+                &strings(&["push", "far", "HEAD"]),
+                Some(&planted.top)
+            )
+            .is_ok()
         );
     }
 

@@ -39,7 +39,7 @@ the same budget (whole milliseconds left, none left refused before git runs) and
 environment (yours, with `GIT_TERMINAL_PROMPT=0`). No route uses it yet, so there's no conformance
 or differential case; the proof is unit and scenario tests in `safe_tests.rs`:
 
-- The arguments against the TS box's for the same inputs: 100 rows (`ownArgs`/`askedArgs` for 25
+- The arguments against the TS box's for the same inputs: 144 rows (`ownArgs`/`askedArgs` for 36
   commands in four repositories: none named, filters/converter/hook/watcher named, a filter and a
   hook whose names have `=`), the expected arrays as TS printed them.
 - A hostile repository (`hostile`; the same case in TS, `box/test/git-hostile.test.ts`): its
@@ -59,10 +59,20 @@ or differential case; the proof is unit and scenario tests in `safe_tests.rs`:
   but it writes the index: a hook named in settings (`post-index-change`) ran, and a file that looked
   changed since went through the repository's clean filter. Snapshots (Undo) and worktree saves run
   it. The hostile case fails on the old TS.
-- Not covered by the layer, as in TS (no caller runs one): commands that reach a remote. `OWN`
-  doesn't switch off `protocol.ext.allow`, `core.sshCommand`, `remote.*.uploadpack` or `url.*.insteadOf`,
-  so `fetch origin` or `ls-remote` through `own_args` would run them. The box fetches only from local
-  paths by itself; Push and Pull are asked for (`asked_args`), which runs them as your terminal would.
+- A transport gap closed in both: `OWN` switched off no program a repository's settings name for
+  reaching another repository (`protocol.ext.allow` with an `ext::` remote, `core.sshCommand` with an
+  ssh one, `remote.*.uploadpack`, `url.*.insteadOf` rewriting even a local path), nor its
+  `core.askPass`. Now what the box runs by itself reaches only a repository at a local path
+  (`fetch`, `ls-remote`, `clone`, `pull`, `push`, `fetch-pack`, `send-pack` with any other remote,
+  and `remote update/show/prune/set-head`, `submodule update`, `request-pull`, `archive --remote`
+  and `maintenance`, are refused: `Refused::Remote`), and only through git's local transport
+  (`protocol.allow=never`, `protocol.file.allow=always` and each of ext, ssh, git, http and https
+  `never`: settings on the command line outweigh a repository's own `protocol.<name>.allow`, which
+  `protocol.allow` alone doesn't). `OWN` also gets `core.askPass=`. What you ask for is unchanged.
+  The hostile case covers each (fails on the old TS); the backups' local fetch and clone still pass.
+  Left as they are: `--no-optional-locks` and `gc.auto=0` would change what the box's own commands
+  do, `diff.external` is covered by `--no-ext-diff`, and the environment (`GIT_ASKPASS`,
+  `SSH_ASKPASS`) is the caller's.
 
 | TS case | Status |
 | --- | --- |

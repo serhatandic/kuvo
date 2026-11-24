@@ -31,7 +31,7 @@ pub const EVERY: [&str; 6] = [
 ];
 
 /// And what the box runs by itself: [`EVERY`] first, then these.
-pub const OWN: [&str; 16] = [
+pub const OWN: [&str; 18] = [
     "-c",
     "core.fsmonitor=false",
     "-c",
@@ -48,6 +48,8 @@ pub const OWN: [&str; 16] = [
     "tag.gpgSign=false",
     "-c",
     "credential.helper=",
+    "-c",
+    "core.askPass=",
 ];
 
 /// Never asking anything: set on every git the box runs, these included.
@@ -108,6 +110,38 @@ const CONVERTING: [&str; 3] = ["cat-file", "format-patch", "range-diff"];
 /// Commands that make a repository rather than work in one.
 const MAKING: [&str; 2] = ["clone", "init"];
 
+/// Commands that reach another repository, each taking it as its first word that isn't an option.
+/// What the box runs by itself reaches only a repository at a local path (a backup's store), never
+/// a remote its settings name (whose address, upload program or ssh command they choose), and only
+/// through git's local transport: a repository's settings can rewrite a path
+/// (`url.<x>.insteadOf`) and allow any transport (`protocol.<name>.allow`), which settings on the
+/// command line outweigh.
+const REACHING: [&str; 7] = [
+    "fetch",
+    "ls-remote",
+    "clone",
+    "pull",
+    "push",
+    "fetch-pack",
+    "send-pack",
+];
+const LOCAL_ONLY: [&str; 14] = [
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "protocol.file.allow=always",
+    "-c",
+    "protocol.ext.allow=never",
+    "-c",
+    "protocol.ssh.allow=never",
+    "-c",
+    "protocol.git.allow=never",
+    "-c",
+    "protocol.http.allow=never",
+    "-c",
+    "protocol.https.allow=never",
+];
+
 /// How long one git the layer runs may take, with no budget given.
 const LOOK_FOR: Duration = Duration::from_secs(30);
 /// The most of a `commondir` that's read.
@@ -127,6 +161,8 @@ pub enum Refused {
     OutOfTime,
     /// The command converts files for showing and can't be told not to.
     AlwaysConverts,
+    /// The command reaches a repository that isn't at a local path, or a remote settings name.
+    Remote,
 }
 
 impl std::fmt::Display for Refused {
@@ -137,6 +173,7 @@ impl std::fmt::Display for Refused {
             Self::Unread => "the repository's settings couldn't be read",
             Self::OutOfTime => "no time left to read the repository's settings",
             Self::AlwaysConverts => "the command would run the repository's file converters",
+            Self::Remote => "the command would reach a repository that isn't at a local path",
         })
     }
 }
@@ -183,6 +220,7 @@ pub(crate) fn own_args_in(
     budget: Option<Duration>,
 ) -> Result<Vec<String>, Refused> {
     let (lead, rest) = split(args);
+    let local = reaching(rest).ok_or(Refused::Remote)?;
     let found = if plain(rest) {
         Found::default()
     } else {
@@ -207,6 +245,7 @@ pub(crate) fn own_args_in(
     let shown = with_options(rest, found.converters).ok_or(Refused::AlwaysConverts)?;
     Ok(owned(lead)
         .chain(OWN.iter().map(|each| (*each).to_owned()))
+        .chain(local.iter().map(|each| (*each).to_owned()))
         .chain(found.settings)
         .chain(shown)
         .collect())
@@ -233,6 +272,29 @@ pub(crate) fn asked_args_in(
         .chain(watcher.iter().map(|each| (*each).to_owned()))
         .chain(shown)
         .collect())
+}
+
+/// The settings a command that reaches another repository gets (none for one that doesn't), or
+/// none at all: it reaches one that isn't at a local path, or a remote its settings name.
+fn reaching(rest: &[String]) -> Option<&'static [&'static str]> {
+    let command = word(rest, 0);
+    let words = rest.get(1..).unwrap_or_default();
+    let has = |names: &[&str]| words.iter().any(|each| names.contains(&each.as_str()));
+    let refused = match command {
+        "remote" => has(&["update", "show", "prune", "set-head"]),
+        "submodule" => has(&["update"]),
+        "request-pull" | "maintenance" => true,
+        "archive" => words.iter().any(|each| each.starts_with("--remote")),
+        _ => false,
+    };
+    if refused {
+        return None;
+    }
+    if !REACHING.contains(&command) {
+        return Some(&[]);
+    }
+    let remote = words.iter().find(|each| !each.starts_with('-'))?;
+    platform::absolute(remote).then_some(&LOCAL_ONLY[..])
 }
 
 fn owned(args: &[String]) -> impl Iterator<Item = String> + '_ {
@@ -707,6 +769,11 @@ fn stray_common(
 mod platform {
     use std::os::unix::ffi::OsStrExt;
 
+    /// A full path, as Node's `path.isAbsolute` reads it.
+    pub(super) fn absolute(path: &str) -> bool {
+        path.starts_with('/')
+    }
+
     /// Whether this user may run `file`, as `access(X_OK)` says.
     pub(super) fn executable(file: &std::path::Path) -> bool {
         let Ok(name) = std::ffi::CString::new(file.as_os_str().as_bytes()) else {
@@ -719,6 +786,12 @@ mod platform {
 
 #[cfg(not(unix))]
 mod platform {
+    /// A full path as Node's `path.isAbsolute` reads it on Windows: a drive's, a share's, or one
+    /// from the top of the current drive.
+    pub(super) fn absolute(path: &str) -> bool {
+        std::path::Path::new(path).is_absolute() || path.starts_with(['/', '\\'])
+    }
+
     /// Windows has no execute bit: there is as runnable (as Node's `access(X_OK)` says there).
     pub(super) fn executable(file: &std::path::Path) -> bool {
         file.exists()

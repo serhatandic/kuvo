@@ -14,13 +14,34 @@
 
 import { execFile, spawnSync } from "node:child_process"
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, promises as fsp, readSync, realpathSync } from "node:fs"
-import { basename, dirname, join, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 
 /** What every git the box runs gets. */
 export const EVERY = ["-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "log.showSignature=false"]
 
 /** And what the box runs by itself. */
-export const OWN = [...EVERY, "-c", "safe.bareRepository=explicit", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-c", "credential.helper="]
+export const OWN = [...EVERY, "-c", "safe.bareRepository=explicit", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-c", "credential.helper=", "-c", "core.askPass="]
+
+// Commands that reach another repository, each taking it as its first word that isn't an option.
+// What the box runs by itself reaches only a repository at a local path (a backup's store), never
+// a remote its settings name (whose address, upload program or ssh command they choose), and only
+// through git's local transport: a repository's settings can rewrite a path (`url.<x>.insteadOf`)
+// and allow any transport (`protocol.<name>.allow`), which settings on the command line outweigh.
+const REACHING = new Set(["fetch", "ls-remote", "clone", "pull", "push", "fetch-pack", "send-pack"])
+const LOCAL_ONLY = ["protocol.allow=never", "protocol.file.allow=always", ...["ext", "ssh", "git", "http", "https"].map(name => `protocol.${name}.allow=never`)].flatMap(each => ["-c", each])
+
+/** The settings a command that reaches another repository gets ([] for one that doesn't), or
+ * undefined: it reaches one that isn't at a local path, or a remote its settings name. */
+function reaching(rest: string[]): string[] | undefined {
+  const [command] = rest
+  const words = rest.slice(1)
+  if (command === "remote" && words.some(each => ["update", "show", "prune", "set-head"].includes(each))) return undefined
+  if (command === "submodule" && words.includes("update")) return undefined
+  if (command === "request-pull" || command === "maintenance" || (command === "archive" && words.some(each => each.startsWith("--remote")))) return undefined
+  if (!REACHING.has(command ?? "")) return []
+  const remote = words.find(each => !each.startsWith("-"))
+  return remote !== undefined && isAbsolute(remote) ? LOCAL_ONLY : undefined
+}
 
 /** Never asking anything. */
 export const GIT_QUIET = { GIT_TERMINAL_PROMPT: "0" }
@@ -181,7 +202,8 @@ function answer(code: number | string | null, out: string, scoped: boolean): Fou
 function built(lead: string[], rest: string[], found: Found | undefined | "retry"): string[] | undefined {
   if (!found || found === "retry") return undefined
   const shown = withOptions(rest, found.converters)
-  return shown && [...lead, ...OWN, ...found.settings, ...shown]
+  const local = reaching(rest)
+  return shown && local && [...lead, ...OWN, ...local, ...found.settings, ...shown]
 }
 
 const NOTHING: Found = { settings: [], converters: false }
@@ -300,6 +322,7 @@ async function strayCommonLater(lead: string[], rest: string[], cwd?: string): P
  */
 export function ownArgs(args: string[], cwd?: string, budget?: number): string[] | undefined {
   const { lead, rest } = split(args)
+  if (!reaching(rest)) return undefined
   let found: Found | undefined | "retry" = NOTHING
   if (!plain(rest)) {
     const started = performance.now()
@@ -320,6 +343,7 @@ export function ownArgs(args: string[], cwd?: string, budget?: number): string[]
 /** [ownArgs], without holding up the bridge. */
 export async function ownArgsLater(args: string[], cwd?: string): Promise<string[] | undefined> {
   const { lead, rest } = split(args)
+  if (!reaching(rest)) return undefined
   let found: Found | undefined | "retry" = NOTHING
   if (!plain(rest)) {
     if (await strayCommonLater(lead, rest, cwd)) return undefined
