@@ -62,6 +62,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - If a release fails to start and Kuvo switches back, the computer shows why it is waiting for the next release.
 - Kuvo clears superseded release files after preparing an update and keeps the files still used by running work.
 - The computers list shows when it last heard from an unreachable computer even if that computer sent no update status.
+- The installer reports damaged release media during its status check, before it writes to the computer’s home.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
 - A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address.
 

@@ -59,6 +59,7 @@ under `packs`, with the existing signed `pack` field available to older readers.
 | U43 | A saved keeper trial refusal blocks only its matching signed pack and reports the same reason in both update reads. It refuses retry and skips the download. A refusal for a different digest leaves the current pack eligible. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U44 | A successful prepare retires unused older releases and finishes an interrupted retirement. A running holder keeps its own older release until it exits. The selected and newly staged releases and unrelated folders remain available. Passed on Mac, native Linux, WSL2, and native Windows. |
 | U45 | The computers list keeps the recorded last-heard time and shows minutes, hours, yesterday, or days as the gap grows. A recently heard but unreachable computer with no recorded update facts reads off immediately. Passed on Mac, native Linux, WSL2, and native Windows. |
+| U46 | The native shell installer refuses a damaged signed envelope or selected pack during status without creating the home. The restored media reports the expected verdict and installs. Passed on Mac, native Linux and WSL2. Native Windows passed the keeper status control. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -339,7 +340,7 @@ dependencies.
 | [install](../../box/bridge-tests/install.test.js) 124, signed pack, engine, and fresh verdict | Covered by U11 on Mac and U26 on Linux. | — |
 | Same 148, 204, 267, installer after last wipe, stop without Helper, and completion outside App Support | Open as installer scenarios. See 2.3 U7–U8 for wipe and receipt checks. | 2.3, 6.2, 7.2 |
 | Same 361, two installers prepare together | Open. | 7.2 |
-| Same 379 and 387, refuse local-file engine and damaged pack or engine | Partial. U2 and U4 cover update pack and engine integrity. The installer entry remains open. | 7.2 |
+| Same 379 and 387, refuse local-file engine and damaged pack or engine | Partial. U2 and U4 cover update pack and engine integrity. U46 checks damaged release media in the native installer. The engine-source and engine-download failure cases in the installer remain open. | 7.2 |
 | Same 418, 442, 451, existing home, fleet update instead of reinstall, and offline status | Open. | 7.2 |
 | Same 468, 505, Mac new and interrupted install, Helper launch | Partial. 2.6 covers staged making. U11 makes a fresh Mac home and starts the Helper through the installer with a launchctl stand-in. A fresh installer interruption and a real Helper job remain open. | 6.2, 7.2 |
 | Same 564, 594, 645, existing app's data moves, progress order, and legacy app kept | Partial. U11 covers the move, ordered progress, and both the retained source and published home. The live Helper readiness check remains open. | 6.2, 7.2 |

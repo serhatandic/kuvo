@@ -667,15 +667,18 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
     use std::{ffi::OsStr, path::Path};
 
     let usage = || {
-        eprintln!("usage: kuvo-box install --status --root <name> [--app <bundle>]");
+        eprintln!(
+            "usage: kuvo-box install --status --root <name> [--app <bundle>] [--media <folder>]"
+        );
         Ok(ExitCode::from(2))
     };
     let mut words = args.iter().filter(|word| *word != "--status");
-    let (mut root, mut bundle) = (None, None);
+    let (mut root, mut bundle, mut media) = (None, None, None);
     while let Some(word) = words.next() {
         let slot = match word.to_str() {
             Some("--root") if root.is_none() => &mut root,
             Some("--app") if bundle.is_none() => &mut bundle,
+            Some("--media") if media.is_none() => &mut media,
             _ => return usage(),
         };
         *slot = words.next().map(Path::new);
@@ -731,6 +734,23 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
+    if let Some(media) = media {
+        if !media.is_absolute() {
+            return usage();
+        }
+        let scratch = located(home.root()) != located(&account.home.join(".kuvo-code"));
+        let key = scratch
+            .then(|| env::var("KUVO_TEST_RELEASE_KEY").ok())
+            .flatten();
+        let key = key.as_deref().unwrap_or(kuvo_keeper::manifest::UPDATE_KEY);
+        if let Err(error) = kuvo_keeper::staging::check_install_media(media, key) {
+            println!(
+                "{}",
+                serde_json::json!({"result":"failed","message":error.to_string()})
+            );
+            return Ok(ExitCode::FAILURE);
+        }
+    }
     let helper_ready = {
         #[cfg(target_os = "macos")]
         {

@@ -1683,13 +1683,32 @@ esac
     assert.equal(stopped.status, 0, stopped.stderr);
   };
   const begin = verb => launch("/bin/sh", [entry, verb], fixtureEnv, env.HOME);
-  return { env, home, cron, cronBefore, version, pack, install, begin, stop };
+  return { env, home, cron, cronBefore, version, pack, media, install, begin, stop };
+}
+
+function damagedInstallerStatus(install, media, home) {
+  for (const name of ["move.tar.gz", "boxes.json"]) {
+    const file = path.join(media, name);
+    const original = fs.statSync(file).size;
+    try {
+      fs.appendFileSync(file, "damaged");
+      const status = install("status");
+      assert.equal(status.status, 1, status.error?.message ?? status.stdout + status.stderr);
+      assert.deepEqual(JSON.parse(status.stdout), {
+        result: "failed", message: "This copy of Kuvo is damaged. Download it again, then try again.",
+      });
+      assert.equal(fs.existsSync(home), false);
+    } finally {
+      fs.truncateSync(file, original);
+    }
+  }
 }
 
 test("signed Linux installer makes a fresh machine and keeps unrelated reboot jobs", { timeout: 120000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript || process.platform !== "linux") return t.skip("Uses the native Linux installer.");
-  const { env, home, cron, cronBefore, version, pack, install, stop } = await freshLinuxInstaller(t, binary);
+  const { env, home, cron, cronBefore, version, pack, media, install, stop } = await freshLinuxInstaller(t, binary);
+  damagedInstallerStatus(install, media, home);
   const status = install("status");
   assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
   const { verdict, verb } = JSON.parse(status.stdout);
@@ -2127,6 +2146,7 @@ esac
       fs.mkdirSync(path.join(fresh, "tmp"), { recursive: true });
       fs.cpSync(tools, freshTools, { recursive: true });
       const starts = performance.now();
+      damagedInstallerStatus(verb => install(verb, fresh, freshTools), media, path.join(fresh, ".kuvo-code"));
       const status = install("status", fresh, freshTools);
       assert.equal(status.status, 0, status.stderr);
       assert.equal(JSON.parse(status.stdout).verb, "new");
