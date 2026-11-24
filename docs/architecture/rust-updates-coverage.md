@@ -81,6 +81,7 @@ Intel Mac: checked without running; a real run waits for an Intel Mac.
 | U62 | The Mac installer resumes an interrupted setup from signed media. It reports the archive with the earlier launcher, selects the verified new release, clears incomplete staging, and starts the Helper through the launchctl fixture. The TypeScript interrupted-install reference also passed. |
 | U63 | With work in an earlier app home or app-owned box, both Mac installers offer a move and give the same refusal for new setup. They keep the earlier files and leave the destination home absent. |
 | U64 | With an existing machine installation on a Mac, both installers return the machine verdict and the same explanations for move and new. The original launcher and work stay in place and no installer staging is created. |
+| U65 | The Mac installer agrees with TypeScript when asked to move a fresh home, move or install after sessions moved back, or install while an unfinished move is recorded. It reports the reason and status without changing the home, receipt, or journal. |
 
 U26 passed on Linux and Ubuntu 24.04 under WSL2. The four corresponding
 TypeScript installer scenarios passed under the same WSL2 distribution.
@@ -371,7 +372,7 @@ dependencies.
 | Same 766, Linux move refusal | Covered by U26. | — |
 | Same 774 and 793, Mac app copy and case spelling | U60 checks the installer entry for an alternate spelling and keeps production and scratch homes separate. 2.6 checks the Mac command's matching home. | — |
 | Same 810, 875, 901, Linux installation, live-process fence, and restart after failure | U24 covers signed installation on stopped released homes. U26 covers fresh Linux making, refusing a live writer, and retrying a failed first launch. U27 covers interruption after publication and retiring earlier incomplete staging. U36 covers a cleanup failure after startup. U37 replays interruption during archival and between the engine and release moves. | — |
-| [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 checks missing Helper registration and restart with a stand-in. U61 checks a live move lock through both installer commands. U62 checks restarted fresh making (74). Live readiness (45, 57, 128) and Linux starter admission (169) remain open. | 6.2, 7.2 |
+| [install-verdict](../../box/test/install-verdict.test.ts) 32, 45, 57, 74, 81, 89, 96, 111, 128, 147, 154, 169 | Partial. All 12 verdict cases are mapped in 2.6 C1, M2, M3, M5, and A10. U11 checks missing Helper registration and restart with a stand-in. U61 checks a live move lock through both installer commands. U62 checks restarted fresh making (74). U65 checks the fresh refusal, moved-back receipt, and unfinished journal. Live readiness (45, 57, 128) and Linux starter admission (169) remain open. | 6.2, 7.2 |
 
 ## Inherited cases and system proof
 

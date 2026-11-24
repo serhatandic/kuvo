@@ -92,7 +92,31 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
             "refused",
             "Kuvo Code has your sessions and settings on this Mac already: they move into their new place instead.",
         )),
-        _ => None,
+        (false, Verdict::Fresh) => Some((
+            1,
+            "refused",
+            "There's nothing of an earlier Kuvo Code's on this Mac to move.",
+        )),
+        (_, Verdict::Back) => Some((
+            1,
+            "refused",
+            "Kuvo Code's sessions on this Mac were moved back: they move again when you ask.",
+        )),
+        (true, Verdict::Moving) => Some((
+            1,
+            "refused",
+            "Kuvo is moving your sessions to their new place on this Mac: that's finished first.",
+        )),
+        (true, Verdict::Stuck) => Some((
+            1,
+            "refused",
+            "Kuvo was moving your sessions to their new place on this Mac and stopped part way: that's finished first.",
+        )),
+        (true, Verdict::Fresh | Verdict::Ours)
+        | (
+            false,
+            Verdict::Ours | Verdict::App07 | Verdict::AppBox | Verdict::Moving | Verdict::Stuck,
+        ) => None,
     };
     if let Some((code, result, message)) = declined {
         println!(
@@ -129,10 +153,6 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
                 "message":launched.map_or("It's made, and starts by itself only in ~/.kuvo-code.", |started| started.message())})
         );
         return Ok(0);
-    }
-    if restart && before.verdict != Verdict::Fresh {
-        println!("{}", json!({"result":"refused","verdict":before.verdict}));
-        return Ok(1);
     }
     if !restart && before.verb != Some(Verb::Move) {
         let ours = before.verdict == Verdict::Ours;
