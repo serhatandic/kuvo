@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { openLine, readJSON, request, until, write } from "./adapter.mjs";
+import { boxBinary, openLine, readJSON, request, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { sessionOf } from "./engine.mjs";
 
@@ -1856,6 +1856,25 @@ test("session list cursors carry changes and tombstones, then read whole after a
   assert.equal(newest.full, true);
   assert.deepEqual(Object.keys(newest.sessions).sort(), [gone, kept]);
   assert.equal(newest.pending, undefined);
+  const savedList = path.join(here.home, "run", "lists", "sessions.json");
+  await until(() => fs.existsSync(savedList), "the resident to retain its inventory");
+  const keptBytes = fs.readFileSync(savedList, "utf8");
+  const routeArgs = boxBinary().typescript ? ["box", "route"] : ["route"];
+  for (let reads = 0; reads < 2; reads++) {
+    const requestPath = `kuvo/sessions/list?since=${encodeURIComponent(newest.at)}`;
+    const routed = await here.command(routeArgs, JSON.stringify({ method: "GET", path: requestPath }));
+    assert.equal(routed.code, 0, routed.log);
+    const reply = JSON.parse(routed.text);
+    assert.equal(reply.status, 200, routed.text);
+    const local = JSON.parse(reply.body);
+    assert.equal(local.at, newest.at);
+    assert.deepEqual(local.sessions, {});
+  }
+  assert.equal(fs.readFileSync(savedList, "utf8"), keptBytes);
+  const followedChanges = await openLine(record, `?since=${encodeURIComponent(newest.at)}`, "kuvo/sessions/list/events");
+  t.after(() => followedChanges.close());
+  const changes = followedChanges.frames();
+  assert.deepEqual((await changes.next()).value.sessions, {});
   assert.equal((await request(record, "POST", `kuvo/sessions/${kept}/rename`, { title: "After" })).status, 200);
   const changed = await until(async () => {
     const answer = await list(newest.at);
@@ -1863,12 +1882,17 @@ test("session list cursors carry changes and tombstones, then read whole after a
   }, "The recorded cursor did not receive the session change.");
   assert.equal(changed.full, undefined);
   assert.deepEqual(Object.keys(changed.sessions), [kept]);
+  const streamed = (await changes.next()).value;
+  assert.equal(streamed.full, undefined);
+  assert.deepEqual(streamed.sessions, changed.sessions);
   assert.equal((await request(record, "DELETE", `kuvo/sessions/${gone}`)).status, 200);
   const removed = await until(async () => {
     const answer = await list(changed.at);
     return answer.json?.gone?.includes(gone) && answer.json;
   }, "The recorded cursor did not receive its tombstone.");
   assert.deepEqual(removed.sessions, {});
+  assert.deepEqual((await changes.next()).value.gone, [gone]);
+  followedChanges.close();
   assert.deepEqual((await list(removed.at)).json.sessions, {});
   for (const since of ["another.1", removed.at.split(".")[0] + ".999999999", "unreadable"]) {
     const whole = (await list(since)).json;
