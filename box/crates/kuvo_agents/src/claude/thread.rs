@@ -37,7 +37,7 @@ use crate::{
 
 use super::{
     diagnostic::Said, owned_paths, permissions::Request, program::Program, projection::Projection,
-    wire,
+    told::instructions_note, wire,
 };
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -189,6 +189,13 @@ impl Recovery {
         self.pipe.input.unpin().await?;
         self.pipe.stop().await
     }
+
+    /// Whether it was left under way in `note`'s turn.
+    pub fn holds(&self, note: &TurnNote) -> bool {
+        self.note
+            .as_ref()
+            .is_some_and(|held| held.session == note.session && held.turn == note.turn)
+    }
 }
 
 #[derive(Clone)]
@@ -197,7 +204,12 @@ pub(super) struct Conversation {
     session: String,
     directory: PathBuf,
     config: Option<PathBuf>,
+    /// Where a turn handed to the next resident reports, kept open while this one is here: it
+    /// isn't this resident's to end.
+    _handed: Handed,
 }
+
+type Handed = Arc<std::sync::Mutex<Option<Arc<dyn TurnSink>>>>;
 
 type Reply<T> = oneshot::Sender<io::Result<T>>;
 
@@ -208,6 +220,7 @@ enum Command {
     Resolve(SteerReceipt, Reply<Option<bool>>),
     Prepare(Reply<()>),
     Stop(bool, Reply<()>),
+    LetGo(TurnNote, Reply<()>),
 }
 
 impl Conversation {
@@ -218,11 +231,13 @@ impl Conversation {
         recovered: Option<Recovery>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(16);
+        let handed = Handed::default();
         let conversation = Self {
             commands,
             session: context.session_id.clone(),
             directory: context.directory.clone(),
             config: program.config_home(&context.directory),
+            _handed: handed.clone(),
         };
         let (pipe, recovery, instructions) = recovered.map_or((None, None, None), |old| {
             (Some(old.pipe), old.note, old.instructions)
@@ -247,6 +262,7 @@ impl Conversation {
                 configured: None,
                 closing: false,
                 noticed: HashSet::new(),
+                handed,
             }
             .run(receiver),
         );
@@ -268,6 +284,12 @@ impl Conversation {
 
     pub async fn stop(&self, shutdown: bool) -> io::Result<()> {
         self.send(|reply| Command::Stop(shutdown, reply)).await
+    }
+
+    /// The turn it was left under way in won't go on here: that Claude Code goes, and the next
+    /// message starts one that resumes the conversation.
+    pub async fn let_go(&self, note: TurnNote) -> io::Result<()> {
+        self.send(|reply| Command::LetGo(note, reply)).await
     }
 }
 
@@ -351,6 +373,7 @@ struct Actor {
     closing: bool,
     /// What this Claude Code has said once already (a retry, a limit's warning).
     noticed: HashSet<String>,
+    handed: Handed,
 }
 
 struct Ask {
@@ -371,6 +394,8 @@ struct Running {
     explicit_compaction: bool,
     took_prompt: bool,
     stopping: bool,
+    /// The instructions said ahead of its message, kept as told once it took it.
+    told: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -431,6 +456,21 @@ impl Actor {
             }
             Command::Resolve(receipt, reply) => {
                 let _ = reply.send(self.resolve(receipt).await);
+            }
+            Command::LetGo(note, reply) => {
+                let held = self
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|saved| saved.session == note.session && saved.turn == note.turn);
+                if held {
+                    self.recovery = None;
+                    self.replay_sink = None;
+                    if let Some(mut pipe) = self.pipe.take() {
+                        let _ = pipe.input.unpin().await;
+                        let _ = pipe.stop().await;
+                    }
+                }
+                let _ = reply.send(Ok(()));
             }
             Command::Prepare(reply) => {
                 if let Some(pipe) = &mut self.pipe
@@ -535,17 +575,14 @@ impl Actor {
                 explicit_compaction,
                 took_prompt: false,
                 stopping: false,
+                told: None,
             });
             return Ok(());
         }
 
-        let message = match input.kind {
-            TurnKind::Prompt(prompt) => message(&self.session, prompt, false).await?,
-            TurnKind::Compact => user_frame(
-                unique_id()?,
-                vec![json!({ "type":"text", "text":"/compact" })],
-                false,
-            ),
+        let prompt = match input.kind {
+            TurnKind::Prompt(prompt) => Some(prompt),
+            TurnKind::Compact => None,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
@@ -559,6 +596,7 @@ impl Actor {
                 "Claude Code has a recovered turn.",
             ));
         }
+        let state_before = self.state.clone();
         let compact_at = self.compact_at(&model.id).await?;
         let instructions_changed = self
             .instructions
@@ -598,6 +636,33 @@ impl Actor {
             }
             self.configured = Some((model.clone(), plan));
         }
+        // A conversation it goes on with keeps the instructions it started with (until it's
+        // summarized): what changed since is said ahead of the message, once. Not ahead of a
+        // command (its /compact, a skill's), which goes as typed: the next message says it.
+        let mut told = None;
+        let message = match prompt {
+            Some(mut prompt) => {
+                if !prompt.text.trim_start().starts_with('/')
+                    && let Some(said) = instructions_note(
+                        self.state.get("claudeTold").and_then(Value::as_str),
+                        &input.instructions,
+                    )
+                {
+                    prompt.text = format!("{said}\n\n{}", prompt.text);
+                    told = Some(input.instructions.clone());
+                }
+                message(&self.session, prompt, false).await?
+            }
+            None => user_frame(
+                unique_id()?,
+                vec![json!({ "type":"text", "text":"/compact" })],
+                false,
+            ),
+        };
+        if self.state != state_before {
+            sink.save_state(self.state.clone()).await?;
+        }
+        let pipe = self.pipe.as_mut().expect("Claude process created above");
         let note = TurnNote {
             session: self.session.clone(),
             from: pipe.sequence,
@@ -619,6 +684,7 @@ impl Actor {
             explicit_compaction,
             took_prompt: false,
             stopping: false,
+            told,
         });
         if let Err(error) = pipe.input.write(message.to_string()).await {
             self.running.take();
@@ -673,6 +739,12 @@ impl Actor {
             .map(str::to_owned);
         let resume =
             native.is_some() && self.state.get("claudeStarted") == Some(&Value::Bool(true));
+        // A new conversation counts its cost from nothing, and has the instructions it's given now.
+        if !resume {
+            self.state.remove("claudeCost");
+            self.state
+                .insert("claudeTold".into(), Value::String(instructions.to_owned()));
+        }
         let native = native.map_or_else(unique_id, Ok)?;
         let start = tokio::task::spawn_blocking(move || {
             turn_launch(
@@ -825,6 +897,12 @@ impl Actor {
                 if let Some(reply) = self.prepare.take() {
                     if prepared {
                         self.pipe.take();
+                        if let Some(turn) = self.running.take() {
+                            *self
+                                .handed
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = Some(turn.sink);
+                        }
                         self.closing = true;
                         let _ = reply.send(Ok(()));
                     } else {
@@ -929,6 +1007,22 @@ impl Actor {
         let events =
             turn.projection
                 .frame(message, &turn.model, &mut self.state, &mut self.noticed);
+        // A new conversation (its first, its /clear) or one just summarized has the
+        // instructions it was started with.
+        let main = !message["parent_tool_use_id"].is_string();
+        let renewed = match (message["type"].as_str(), message["subtype"].as_str()) {
+            (Some("system"), Some("init")) => {
+                prior_state.get("claudeStarted") != Some(&Value::Bool(true))
+                    || prior_state.get("claudeSession") != message.get("session_id")
+            }
+            (Some("conversation_reset"), _) => true,
+            (Some("system"), Some("compact_boundary")) => main,
+            _ => false,
+        };
+        if renewed && let Some(opened) = &self.instructions {
+            self.state
+                .insert("claudeTold".into(), Value::String(opened.clone()));
+        }
         if self.state != prior_state {
             turn.sink.save_state(self.state.clone()).await?;
         }
@@ -1069,6 +1163,15 @@ impl Actor {
             tokio::task::spawn_blocking(move || program.turn_away()).await?;
         }
         let keep = missed.is_empty() && !turned_away;
+        // What changed in its instructions was said with its message: told, once it took it.
+        if let Some(told) = &turn.told
+            && (turn.took_prompt
+                || !matches!(outcome, Outcome::Failed(_) | Outcome::AgentExited(_)))
+        {
+            self.state
+                .insert("claudeTold".into(), Value::String(told.clone()));
+            turn.sink.save_state(self.state.clone()).await?;
+        }
         turn.sink
             .event(envelope(
                 position,

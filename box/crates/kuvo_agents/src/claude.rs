@@ -7,8 +7,9 @@ mod permissions;
 mod program;
 mod projection;
 mod results;
-mod tools;
 mod thread;
+mod told;
+mod tools;
 mod wire;
 
 use std::{
@@ -271,6 +272,30 @@ impl Adoption for Claude {
             threads
                 .held
                 .insert(session.into(), thread::Recovery::new(controller, note));
+            Ok(())
+        })
+    }
+
+    /// A turn the resident won't take up (its end was written as the last resident went): the
+    /// Claude Code left in it goes, so the conversation's next message starts one that resumes it.
+    fn let_go<'a>(&'a self, turn: &'a TurnNote) -> AdapterCall<'a, ()> {
+        Box::pin(async move {
+            let (held, open) = {
+                let mut threads = self.threads.lock().await;
+                let held = threads
+                    .held
+                    .get(&turn.session)
+                    .is_some_and(|held| held.holds(turn))
+                    .then(|| threads.held.remove(&turn.session))
+                    .flatten();
+                (held, threads.open.get(&turn.session).cloned())
+            };
+            if let Some(held) = held {
+                return held.stop().await;
+            }
+            if let Some(thread) = open {
+                thread.let_go(turn.clone()).await?;
+            }
             Ok(())
         })
     }

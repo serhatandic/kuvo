@@ -562,8 +562,24 @@ Seen once: on lokum, in a one-CPU container, at d50d27912, "the Rust keeper
 keeps an actual Claude adapter turn across a release switch" failed with
 `The replacement resident never finished the held turn.` (adapter.mjs
 `until`, agents-claude.test.mjs:205), after 32.5 s. Two reruns of the same
-build passed, as did WSL and native Windows. If it fails again, it gets a
-root cause before any rerun.
+build passed, as did WSL and native Windows. It failed again at 058ce659d
+and at 6aa76a156, the second time with the case's new report: the first resident had ended the
+turn as failed ("The adapter stopped reporting its turn.") and the next one
+never took it up. Cause: once the holder confirmed the handover, the first
+resident's Claude thread dropped the turn's sink. Its turn runtime then read
+the closed channel as an agent gone quiet, and wrote a failed end before that
+resident exited. The failure needed the resident to live on briefly after the
+handover, which one CPU allowed. A handed-over turn's sink now stays open for
+as long as that resident is there. The holder scenario checks this, and the
+keeper case reports the last rows, what Claude Code heard and the keeper's
+log if it ever fails.
+
+A turn's end is written before its Claude Code's holder hears that it ended.
+If the resident goes between the two, the next resident finds a holder still
+in a turn that has ended, and lets it go: that Claude Code stops, and the
+conversation's next message starts one that resumes it. Before this, the
+next message failed with "Claude Code has a recovered turn." Native Windows
+showed this, and the holder scenario covers it.
 
 A message handed to a running turn has a receipt before it is sent: the
 UUID Claude acknowledges it by. The receipt stays unresolved while a live or
@@ -597,7 +613,7 @@ The two rows expanded from the bot and session steering loop count separately.
 | 104–109 | Ported to [agents-claude-turns](../../protocol/conformance/agents-claude-turns.test.mjs) on both boxes. After Stop, the reference bridge under its holder starts Claude Code again, while its own test expects the same process to take the next message. Rust does that, and only Rust checks it. |
 | 110–114 | Ported to agents-claude-turns on both boxes, with a refusal for a conversation Claude Code hasn't started. |
 | 115–122 | Ported to agents-claude-turns on both boxes, except the `session.compaction.*` events, which the conformance cases don't read. |
-| 123–127 | 4.4b notices and one-time instruction updates. 4.6 owns carry and handover. |
+| 123–127 | Ported to agents-claude-turns on both boxes: what changed in its instructions is said once, ahead of the next message Claude Code takes, never ahead of a command you type, and not after it summarized. In 126 the reference's SDK closes Claude Code on an error result, so its turn ends as that exit and the line hands the message over again (4.1b). The Rust resident's Claude Code goes on and fails the turn, as the reference adapter's own test expects, and only Rust checks what follows. Its half for a message Claude Code never took, because it quit, waits on 4.1b's retry of missed messages. 4.6 owns carry and handover. |
 | 128–131 | 4.4b credential attribution and generation fences. 5.4 owns the account's gathered usage and limits. |
 | 132–136 | 4.6 subagent definition and policy projection, with 6.1 for Agents settings. |
 

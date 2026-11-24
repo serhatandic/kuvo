@@ -97,7 +97,10 @@ async function play(steps, vars) {
 }
 function script(text) {
   if (!fs.existsSync(scriptFile)) return;
-  return JSON.parse(fs.readFileSync(scriptFile, "utf8"))[text.split("\\n", 1)[0]];
+  // By its first line, or another (a note the box put ahead of your words).
+  const scripts = JSON.parse(fs.readFileSync(scriptFile, "utf8"));
+  const line = text.split("\\n").find(each => Object.hasOwn(scripts, each));
+  return line === undefined ? undefined : scripts[line];
 }
 async function begin(message) {
   playing = true;

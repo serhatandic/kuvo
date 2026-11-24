@@ -937,13 +937,14 @@ impl Service {
             &input.id,
             TurnKind::Prompt(input.prompt()),
         );
-        let (turn, policy) = match setup {
+        let (mut turn, policy) = match setup {
             Ok(setup) => setup,
             Err(error) => {
                 eprintln!("Kuvo could not start coding-agent session {session}: {error}");
                 return;
             }
         };
+        turn.instructions = self.store.instructions(session).await.unwrap_or_default();
         let _ = self.events.send(InboxEvent::Delivered {
             session: session.to_owned(),
             id: input.id.clone(),
@@ -983,13 +984,14 @@ impl Service {
             &input.id,
             TurnKind::Compact,
         );
-        let (turn, policy) = match setup {
+        let (mut turn, policy) = match setup {
             Ok(setup) => setup,
             Err(error) => {
                 eprintln!("Kuvo could not summarize coding-agent session {session}: {error}");
                 return;
             }
         };
+        turn.instructions = self.store.instructions(session).await.unwrap_or_default();
         let _ = self.events.send(InboxEvent::Delivered {
             session: session.to_owned(),
             id: input.id.clone(),
