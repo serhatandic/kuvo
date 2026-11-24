@@ -763,7 +763,11 @@ for (const [failure, name] of [
       const attempt = await current();
       return attempt?.state === "failed" && attempt;
     }, "The failed enrollment did not report its rollback.");
-    assert.match(failed.failure.message, /keys and sign-ins copied there were deleted/);
+    if (failure === "enrollment") {
+      assert.equal(failed.failure.message, "Kuvo Code on lab couldn’t join your computers. it broke Kuvo Code was stopped on lab again, and the keys and sign-ins copied there were deleted.");
+    } else {
+      assert.match(failed.failure.message, /keys and sign-ins copied there were deleted/);
+    }
   }
   for (const relative of ["box/keys", "run/link.json", "run/.ssh-fresh-add", "run/ssh-engine.json"]) {
     assert.equal(fs.existsSync(path.join(target, relative)), false, relative);

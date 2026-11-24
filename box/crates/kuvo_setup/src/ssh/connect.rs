@@ -776,18 +776,32 @@ fn check_connection(ran: &Ran, name: &str, here: &str) -> Result<(), AddError> {
 }
 
 fn enrollment(ran: Ran, name: &str) -> Result<(Computer, String), String> {
+    let refused = || {
+        let message = format!("Kuvo Code on {name} couldn’t join your computers.");
+        match enrollment_diagnostic(&ran.stderr) {
+            Some(detail) => format!("{message} {detail}"),
+            None => message,
+        }
+    };
     if !ran.status.success() {
-        return Err(format!("Kuvo Code on {name} couldn’t join your computers."));
+        return Err(refused());
     }
     #[derive(Deserialize)]
     struct Enrolled {
         key: String,
         identity: String,
     }
-    let answer: Enrolled = serde_json::from_slice(&ran.stdout)
-        .map_err(|_| format!("Kuvo Code on {name} couldn’t join your computers."))?;
-    if answer.identity.len() != 32 || !answer.identity.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(format!("Kuvo Code on {name} couldn’t join your computers."));
+    let output = String::from_utf8_lossy(&ran.stdout);
+    let answer: Enrolled = serde_json::from_str(output.trim().lines().last().unwrap_or_default())
+        .map_err(|_| refused())?;
+    if answer.identity.len() != 32
+        || !answer
+            .identity
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        || kuvo_wire::keys::decode_exact::<32>(&answer.key).is_none()
+    {
+        return Err(refused());
     }
     Ok((
         Computer {
@@ -796,6 +810,32 @@ fn enrollment(ran: Ran, name: &str) -> Result<(Computer, String), String> {
         },
         answer.identity,
     ))
+}
+
+fn enrollment_diagnostic(stderr: &str) -> Option<String> {
+    for line in stderr.lines().rev() {
+        let plain: String = line
+            .chars()
+            .map(|ch| match ch {
+                '\u{0}'..='\u{1f}'
+                | '\u{7f}'
+                | '\u{200e}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}' => ' ',
+                _ => ch,
+            })
+            .collect();
+        let plain = plain.trim();
+        if !plain.is_empty() && !plain.starts_with("Warning: Permanently added") {
+            let mut bounded: Vec<_> = plain.encode_utf16().take(301).collect();
+            if bounded.len() > 300 {
+                bounded.truncate(299);
+                return Some(format!("{}…", String::from_utf16_lossy(&bounded)));
+            }
+            return Some(plain.to_owned());
+        }
+    }
+    None
 }
 
 fn read_binary(path: &Path) -> Option<Vec<u8>> {
