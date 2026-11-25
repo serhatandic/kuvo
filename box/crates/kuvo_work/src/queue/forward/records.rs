@@ -57,8 +57,6 @@ pub(in crate::queue) enum RequestKind<'a> {
     LabelRestore,
     LabelEdit,
     Archive { session: &'a str, action: &'a str },
-    /// A member's rename or removal of one of the computers this main keeps.
-    Computers,
     Agent,
     File(&'a str),
     Edit,
@@ -81,13 +79,6 @@ impl Act {
                 .then_some(RequestKind::Agent);
         }
         if let Some(area) = self.area.as_deref() {
-            if area == "computers" {
-                let computer = kuvo_wire::keys::decode_exact::<32>(&self.item).is_some();
-                return (computer
-                    && self.action.is_none()
-                    && matches!(self.method, Method::Patch | Method::Delete))
-                .then_some(RequestKind::Computers);
-            }
             if area != "ownership" || self.action.is_some() {
                 return None;
             }

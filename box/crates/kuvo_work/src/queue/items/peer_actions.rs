@@ -161,54 +161,6 @@ impl Writer {
         Ok(result)
     }
 
-    /// A member's rename or removal, done here as this computer's own client would ask it.
-    async fn peer_computers(&self, act: &forward_core::Act) -> Result<Value, Refusal> {
-        use http_body_util::BodyExt;
-        let Some(dispatcher) = self
-            .archives
-            .get()
-            .and_then(|(_, dispatch)| dispatch.upgrade())
-        else {
-            return Err(Refusal::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "This computer isn't ready yet. Try again in a moment.",
-            ));
-        };
-        let method = match act.method {
-            forward_core::Method::Patch => http::Method::PATCH,
-            _ => http::Method::DELETE,
-        };
-        let body = act
-            .body
-            .as_ref()
-            .map(serde_json::to_vec)
-            .transpose()
-            .map_err(internal)?
-            .unwrap_or_default();
-        let reply = dispatcher
-            .dispatch(
-                kuvo_server::DispatchRequest {
-                    method,
-                    path: format!("kuvo/computers/{}", act.item),
-                    headers: Default::default(),
-                    body: body.into(),
-                    caller: kuvo_server::Caller::Local(kuvo_server::Transport::Http {
-                        origin: kuvo_server::LocalOrigin::App,
-                        internal: true,
-                    }),
-                },
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .await;
-        let bytes = reply.body.collect().await.map_err(internal)?.to_bytes();
-        let value: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-        if reply.status.is_success() {
-            Ok(value)
-        } else {
-            Err(Refusal::json(reply.status, value))
-        }
-    }
-
     pub(super) async fn respond_to_act(
         &self,
         peer: &str,
@@ -337,7 +289,6 @@ impl Writer {
                     ))
                 }
             }
-            RequestKind::Computers => self.peer_computers(&act).await,
             RequestKind::Delete => self.change(act.item, Removal::Delete).await,
             RequestKind::Restore => self.change(act.item, Removal::Restore).await,
             _ => unreachable!("mutation already selected"),
