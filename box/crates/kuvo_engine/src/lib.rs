@@ -75,6 +75,7 @@ pub use external_asks::{
 };
 pub use launch::pinned_version;
 pub use lifetime::{Engine, EngineEvent, State, Timing};
+pub use queue::{WorkStopped, WorkStops};
 pub use queue::limit::{limit_reached, reset_time, resets_in};
 pub use model_preferences::{ModelStar, ModelStarSource, StarSave};
 pub use models::ModelSpeed;

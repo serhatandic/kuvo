@@ -70,6 +70,8 @@ pub struct Engine {
     pub(crate) draft_turns: Turns,
     pub(crate) decision_writer: std::sync::Arc<tokio::sync::Semaphore>,
     pub(crate) heard: tokio::sync::broadcast::Sender<std::sync::Arc<EngineEvent>>,
+    pub(crate) work_stops:
+        std::sync::Arc<std::sync::OnceLock<std::sync::Arc<dyn crate::WorkStops>>>,
 
     version: String,
     commands: mpsc::UnboundedSender<Command>,
@@ -166,6 +168,7 @@ impl Engine {
             draft_turns: Turns::new(),
             decision_writer: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
             heard: tokio::sync::broadcast::channel(256).0,
+            work_stops: std::sync::Arc::default(),
             context_windows: crate::context::Windows::open(&home),
             catalogs: crate::models::CatalogCache::new(),
             queues: crate::queue::QueueStore::open(&home),

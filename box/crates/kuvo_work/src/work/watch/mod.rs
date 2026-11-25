@@ -9,8 +9,11 @@ mod catchup;
 mod held;
 pub mod lines;
 pub mod services;
+mod stopping;
 pub mod told;
 pub mod turns;
+
+pub use stopping::Stops;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -93,8 +96,20 @@ fn truthy(value: &Value) -> bool {
     !matches!(value, Value::Null | Value::Bool(false)) && value != 0 && value != ""
 }
 
+// (As `encodeURIComponent` leaves it.)
+const COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'!')
+    .remove(b'~')
+    .remove(b'*')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')');
+
 fn encoded(id: &str) -> String {
-    percent_encoding::utf8_percent_encode(id, percent_encoding::NON_ALPHANUMERIC).to_string()
+    percent_encoding::utf8_percent_encode(id, COMPONENT).to_string()
 }
 
 /// Marks the watcher over as its task ends: what it was still to look at later isn't.
