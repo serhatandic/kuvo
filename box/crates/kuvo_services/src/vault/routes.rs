@@ -27,6 +27,7 @@ pub(crate) struct VerifiedVaultClient(String);
 
 pub struct Resident {
     local: Mutex<Local>,
+    changes: tokio::sync::watch::Sender<u64>,
     pub(super) broker: super::broker::Broker,
 }
 
@@ -52,6 +53,7 @@ impl Resident {
             .unwrap_or_else(|| home.join("bots"));
         let broker = super::broker::Broker::new(home, &bots, account, os_account, machine);
         Arc::new(Self {
+            changes: tokio::sync::watch::channel(0).0,
             local: Mutex::new(Local {
                 vault: Vault::open(home, mac, launch),
                 activity: Activity::new(home),
@@ -62,6 +64,8 @@ impl Resident {
             broker,
         })
     }
+
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> { self.changes.subscribe() }
 
     pub(crate) fn with_vault<T>(&self, work: impl FnOnce(&mut Vault) -> Result<T>) -> Result<T> {
         self.with(|local| work(&mut local.vault))
@@ -309,6 +313,9 @@ impl Resident {
                             call.extension::<VerifiedVaultClient>(),
                         )
                     })?;
+                    if call.request.method != http::Method::GET {
+                        resident.changes.send_modify(|revision| *revision += 1);
+                    }
                     typed::<R, 200>(value)
                 })
                 .await

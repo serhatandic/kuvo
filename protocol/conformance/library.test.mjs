@@ -526,6 +526,26 @@ test("an output change doesn't republish an unchanged Library to another compute
   await until(()=>copy("library-v1.json")?.items?.find(item=>item.id===libId(loose))?.there===false,"The disappeared file was never reflected in the peer Library.");
 });
 
+test("an installed Marketplace app follows an external settings change without waiting for a round", {timeout:30000,skip:boxBinary().typescript}, async t => {
+  const {computer}=await bench(t);
+  const box=await computer("MarketplaceWatch");
+  const config=path.join(box.home,"box","opencode.json");
+  mkdirSync(path.dirname(config),{recursive:true});
+  writeFileSync(config,"{}\n");
+  const ready=await box.start().ready();
+  const added=await request(ready,"POST","kuvo/marketplace/apps/custom",{title:"Docs MCP",url:"https://docs.example.com/mcp",auth:"open"},{"x-kuvo-from":"app"});
+  assert.equal(added.status,200,added.text);
+  const projection=()=>JSON.parse(readFileSync(config,"utf8"));
+  const expected=projection().mcp.servers["marketplace-docs-mcp"];
+  const changed=projection();
+  delete changed.mcp.servers["marketplace-docs-mcp"];
+  writeFileSync(config,JSON.stringify(changed));
+  // The installed app's projection should be repaired after the actual file change, not on the
+  // five-second maintenance round. Observe the file itself without another Marketplace request.
+  await until(()=>projection().mcp?.servers?.["marketplace-docs-mcp"],"The MCP projection did not follow the changed settings.",2000);
+  assert.deepEqual(projection().mcp.servers["marketplace-docs-mcp"],expected);
+});
+
 test("marketplace, programs and mcp catalog routes match across boxes", async t => {
   const { computer } = await bench(t);
   const box = await computer("MarketBox");

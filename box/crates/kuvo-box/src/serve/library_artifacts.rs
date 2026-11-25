@@ -2,7 +2,7 @@
 //! memory-read answering, bot folder watches, and passive engine event recording.
 
 use std::{
-    collections::{HashMap, HashSet, BTreeMap, BTreeSet},
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,7 +10,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use kuvo_os::watch::{WatchHub, Options, Notice};
+use kuvo_os::watch::{WatchHub, FileSet};
 use sha2::{Digest, Sha256};
 use kuvo_peers::{
     memory_read::{Answer, Handle as MemoryReads, Kind as ReadKind, Read},
@@ -42,7 +42,7 @@ use serde_json::{Map, Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    sync::{watch, mpsc},
+    sync::watch,
     task::JoinHandle,
 };
 
@@ -405,7 +405,7 @@ async fn sync_peer_snapshots(
     let mut lib_rx = match &library { LibraryHandle::Ready(s) => Some(s.store().subscribe()), _ => None };
     let mut sent = HashMap::<([u8; 32], &'static str), SentCopy>::new();
     let mut cached = None;
-    let mut source_watches = SourceWatches::new();
+    let mut source_watches = FileSet::new(WatchHub::default());
     loop {
         let next_legacy = push_snapshot(&peers, &relay, &artifacts, &library, &mut cached, &mut sent, &mut source_watches).await;
 
@@ -484,7 +484,7 @@ async fn legacy_due(at: Option<tokio::time::Instant>) {
 async fn push_snapshot(
     peers: &Reader, relay: &RelayHandle, artifacts: &ArtifactHandle, library: &LibraryHandle,
     cached: &mut Option<Content>, sent: &mut HashMap<([u8; 32], &'static str), SentCopy>,
-    sources: &mut SourceWatches,
+    sources: &mut FileSet,
 ) -> Option<tokio::time::Instant> {
     let view = peers.view();
     let recipients = view.roster.members.iter().filter(|member| member.address.is_some() && !view.away(&member.key)).collect::<Vec<_>>();
@@ -504,7 +504,12 @@ async fn push_snapshot(
         };
         if let LibraryHandle::Ready(service) = library {
             let copy = service.peer_copy_json();
-            sources.keep(&copy, service.bots_folder());
+            let paths = copy["items"].as_array().into_iter().flatten().flat_map(|item| {
+                let file = item["path"].as_str().map(PathBuf::from);
+                let bot = item["bot"].as_str().map(|bot| service.bots_folder().join(bot).join("bot.json"));
+                file.into_iter().chain(bot)
+            }).collect();
+            sources.set_files(paths);
             add("libraryCopy", copy);
         }
         if let ArtifactHandle::Ready(store) = artifacts {
@@ -539,67 +544,6 @@ async fn push_snapshot(
     }
     next
 }
-
-/// A Library item can disappear outside a coding agent's turn. Watch its parent, and its bot's
-/// description, without walking project trees or polling. If a directory is missing, watch the
-/// first existing ancestor for the missing component and rebind after it appears.
-struct SourceWatches {
-    hub: WatchHub,
-    watches: BTreeMap<PathBuf, (BTreeSet<PathBuf>, JoinHandle<()>)>,
-    tx: mpsc::UnboundedSender<()>,
-    rx: mpsc::UnboundedReceiver<()>,
-}
-impl SourceWatches {
-    fn new() -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-        Self { hub: WatchHub::default(), watches: BTreeMap::new(), tx, rx }
-    }
-    fn clear(&mut self) {
-        for (_, (_, task)) in std::mem::take(&mut self.watches) { task.abort(); }
-    }
-    async fn changed(&mut self) {
-        let _ = self.rx.recv().await;
-        while self.rx.try_recv().is_ok() {}
-    }
-    fn keep(&mut self, copy: &Value, bots: &Path) {
-        let mut wanted = BTreeMap::<PathBuf, BTreeSet<PathBuf>>::new();
-        let mut watch = |mut path: PathBuf| {
-            while let Some(parent) = path.parent() {
-                if parent.is_dir() {
-                    if let Some(name) = path.file_name() {
-                        wanted.entry(parent.to_owned()).or_default().insert(name.into());
-                    }
-                    break;
-                }
-                path = parent.to_owned();
-            }
-        };
-        for item in copy["items"].as_array().into_iter().flatten() {
-            if let Some(path) = item["path"].as_str() { watch(PathBuf::from(path)); }
-            if let Some(bot) = item["bot"].as_str() { watch(bots.join(bot).join("bot.json")); }
-        }
-        self.watches.retain(|folder, (names, task)| {
-            let same = wanted.get(folder) == Some(names) && !task.is_finished();
-            if !same { task.abort(); }
-            same
-        });
-        for (folder, names) in wanted {
-            if self.watches.contains_key(&folder) { continue }
-            let (hub, tx, target, names_for_task) = (self.hub.clone(), self.tx.clone(), folder.clone(), names.clone());
-            let task = tokio::spawn(async move {
-                let Ok(mut sub) = hub.subscribe(target, Options::default()).await else { return };
-                while let Some(notice) = sub.recv().await {
-                    match notice {
-                        Notice::Changed { paths } if !paths.iter().any(|path| path.as_os_str().is_empty() || names_for_task.contains(path)) => continue,
-                        _ => { let _ = tx.send(()); }
-                    }
-                }
-            });
-            self.watches.insert(folder, (names, task));
-        }
-    }
-}
-impl Drop for SourceWatches { fn drop(&mut self) { self.clear(); } }
 
 #[derive(Clone, serde::Deserialize)]
 struct EngineRecord { port: u16, password: String }

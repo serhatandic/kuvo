@@ -3,13 +3,14 @@
 use crate::platform::{Platform, is_wsl_windows_drive};
 use notify::{Config, Event, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     path::{Path, PathBuf},
     time::Duration,
 };
 use tokio::{
     sync::{broadcast, mpsc, oneshot, watch as state_watch},
+    task::JoinHandle,
     time::Instant,
 };
 
@@ -449,4 +450,106 @@ fn network_filesystem(path: &Path) -> bool {
         .collect();
     // SAFETY: root is a NUL-terminated drive root. DRIVE_REMOTE is 4.
     unsafe { GetDriveTypeW(root.as_ptr()) == 4 }
+}
+
+/// Watch the parents of specific files, not the files' inodes (an atomic replacement is a change).
+/// For a missing directory watch the first existing ancestor, then rebind when it appears. This
+/// has no timer apart from the watcher backend's platform fallback. Dropping the set releases
+/// every subscription.
+pub struct FileSet {
+    hub: WatchHub,
+    paths: Vec<PathBuf>,
+    watches: BTreeMap<PathBuf, (BTreeSet<PathBuf>, JoinHandle<()>)>,
+    tx: mpsc::UnboundedSender<()>,
+    rx: mpsc::UnboundedReceiver<()>,
+}
+impl FileSet {
+    pub fn new(hub: WatchHub) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            hub,
+            paths: Vec::new(),
+            watches: BTreeMap::new(),
+            tx,
+            rx,
+        }
+    }
+    pub fn clear(&mut self) {
+        self.paths.clear();
+        for (_, (_, task)) in std::mem::take(&mut self.watches) {
+            task.abort();
+        }
+    }
+    pub async fn changed(&mut self) {
+        let _ = self.rx.recv().await;
+        while self.rx.try_recv().is_ok() {}
+        self.bind();
+    }
+    pub fn set_files(&mut self, paths: Vec<PathBuf>) {
+        self.paths = paths;
+        self.bind();
+    }
+    fn bind(&mut self) {
+        let mut wanted = BTreeMap::<PathBuf, BTreeSet<PathBuf>>::new();
+        let mut watch = |mut path: PathBuf| {
+            while let Some(parent) = path.parent() {
+                if parent.is_dir() {
+                    if let Some(name) = path.file_name() {
+                        wanted
+                            .entry(parent.to_owned())
+                            .or_default()
+                            .insert(name.into());
+                    }
+                    break;
+                }
+                path = parent.to_owned();
+            }
+        };
+        for path in &self.paths {
+            watch(path.clone());
+        }
+        self.watches.retain(|folder, (names, task)| {
+            let same = wanted.get(folder) == Some(names) && !task.is_finished();
+            if !same {
+                task.abort();
+            }
+            same
+        });
+        for (folder, names) in wanted {
+            if self.watches.contains_key(&folder) {
+                continue;
+            }
+            let (hub, tx, target, names_for_task) = (
+                self.hub.clone(),
+                self.tx.clone(),
+                folder.clone(),
+                names.clone(),
+            );
+            let task = tokio::spawn(async move {
+                let Ok(mut sub) = hub.subscribe(target, Options::default()).await else {
+                    return;
+                };
+                while let Some(notice) = sub.recv().await {
+                    match notice {
+                        Notice::Changed { paths }
+                            if !paths.iter().any(|path| {
+                                path.as_os_str().is_empty() || names_for_task.contains(path)
+                            }) =>
+                        {
+                            continue;
+                        }
+                        _ => {
+                            let _ = tx.send(());
+                        }
+                    }
+                }
+            });
+            self.watches.insert(folder, (names, task));
+        }
+    }
+}
+impl Drop for FileSet {
+    fn drop(&mut self) {
+        self.clear();
+    }
 }

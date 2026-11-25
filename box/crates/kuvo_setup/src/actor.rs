@@ -94,6 +94,11 @@ impl SetupHandle {
         decision.await.is_ok_and(|result| result.is_ok())
     }
 
+    /// Settings and setup-wide installations changed. Followers compare the part they use.
+    pub async fn changed(&mut self) -> bool {
+        self.views.changed().await.is_ok()
+    }
+
     pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
         self.rosters.clone()
     }
