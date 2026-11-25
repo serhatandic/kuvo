@@ -168,6 +168,9 @@ impl Work {
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
         let ran = tokio::time::timeout(Duration::from_secs(30), command.output()).await;
+        if name != "list_wake_ups" {
+            self.list.wakes().changed();
+        }
         match ran {
             Ok(Ok(output)) => {
                 let text = format!(
