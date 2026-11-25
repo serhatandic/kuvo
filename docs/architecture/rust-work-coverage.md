@@ -1041,7 +1041,8 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   conversation gone. All failed on the old Rust (422, then 503 for each change and Wake Up Now).
 - Regressions: `bots` 40/40, `wakes` 10/10, `work` 15/15, `agent-tools`, `marketplace-agents`,
   `agents-codex`, `agents-claude`, kuvo_work's wake tests, on macOS (one Codex case, "Stop during a
-  summary", failed once and passed on rerun).
+  summary", failed once and passed on rerun). WSL2 (static musl): `agents-bots`,
+  `marketplace-agents`, `wakes` 10/10, `bots` 40/40. Native Windows: in 5.1's Windows slot.
 
 ### Gaps and owners
 
