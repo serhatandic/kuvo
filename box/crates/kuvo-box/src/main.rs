@@ -6,6 +6,7 @@ mod install_media;
 mod install_released;
 mod bot_setup;
 mod model_stars;
+mod released_settings;
 mod serve;
 mod box_app;
 mod box_at_work;
@@ -169,6 +170,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let supervised =
         cfg!(windows) && (word(0), word(1), args.len()) == (Some("serve"), Some("--supervised"), 2);
+    let released_settings = match (word(0), word(1), args.len()) {
+        (Some("box"), Some("read" | "adopt" | "change"), 2) => word(1),
+        (Some("box"), Some("key"), 3) => word(1),
+        _ => None,
+    };
     let command = match (word(0), word(1), args.len()) {
         _ if serve || wipe => None,
         _ if join
@@ -180,11 +186,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             || startup.is_some()
             || keeper.is_some()
             || probe.is_some()
-            || supervised =>
+            || supervised
+            || released_settings.is_some() =>
         {
             None
         }
-        (Some("route"), _, 1) => Some(ssh::Command::Route {
+        (Some("route"), _, 1) | (Some("box"), Some("route"), 2) => Some(ssh::Command::Route {
             internal: false,
             internal_path: None,
         }),
@@ -259,6 +266,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             eprintln!("{note}");
         }
         return Ok(ExitCode::from(outcome.status));
+    }
+    if let Some(verb) = released_settings {
+        return released_settings::run(&home, verb, word(2));
     }
     if identity {
         println!("{}", kuvo_setup::backup::ssh_identity(home.root())?);

@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 
+mod legacy;
+
 use crate::{
     directory::{ComputerKey, Member, Roster},
     kept,
@@ -98,7 +100,7 @@ struct Shared {
     computer_names: Option<Accepted<HashMap<String, String>>>,
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 struct Link {
     #[serde(rename = "formatVersion", skip_serializing_if = "Option::is_none")]
     version: Option<u32>,
@@ -257,6 +259,12 @@ pub enum Error {
 enum Command {
     Pair(Request, Millis, oneshot::Sender<Result<String, Error>>),
     Remove(Remove, Option<Actor>, oneshot::Sender<Result<(), Error>>),
+    LegacyMail(
+        ComputerKey,
+        serde_json::Map<String, Value>,
+        Millis,
+        oneshot::Sender<io::Result<Option<Vec<Member>>>>,
+    ),
 }
 
 struct Store {
@@ -298,6 +306,23 @@ impl Devices {
     pub fn with_managed(mut self, managed: Arc<dyn ManagedDevices>) -> Self {
         self.managed = Some(managed);
         self
+    }
+
+    pub(crate) async fn legacy_mail(
+        &self,
+        mac: ComputerKey,
+        payload: &serde_json::Map<String, Value>,
+        now: Millis,
+    ) -> io::Result<Option<Vec<Member>>> {
+        if self.managed.is_some() || !payload.contains_key("peers") {
+            return Ok(None);
+        }
+        let (reply, result) = oneshot::channel();
+        self.commands
+            .send(Command::LegacyMail(mac, payload.clone(), now, reply))
+            .await
+            .map_err(io::Error::other)?;
+        result.await.map_err(io::Error::other)?
     }
 
     pub fn permits_local_pairing(&self) -> bool {
@@ -573,7 +598,12 @@ fn load(home: &Path, fallback_name: String, kind: ComputerKind) -> io::Result<Lo
             });
         }
     }
+    if setup.is_none() {
+        members = legacy::members(&link.extra, here);
+    }
+    let enrollers = legacy::enrollers(&link.extra);
     let mut box_keys: BTreeSet<_> = members.iter().map(|member| encode(&member.key)).collect();
+    box_keys.extend(enrollers.iter().map(|key| encode(key)));
     box_keys.extend(here.map(|key| encode(&key)));
     box_keys.extend(main.map(|key| encode(&key)));
     let roster = Roster {
@@ -588,7 +618,7 @@ fn load(home: &Path, fallback_name: String, kind: ComputerKind) -> io::Result<Lo
     let authority = match setup {
         Some(setup) if setup.aside => Authority::Aside,
         Some(setup) if setup.managed || main != here => Authority::Managed,
-        _ if link.extra.contains_key("setup") => Authority::Managed,
+        _ if link.extra.contains_key("setup") || !enrollers.is_empty() => Authority::Managed,
         _ if configured => Authority::Standalone,
         _ => Authority::Unconfigured,
     };
@@ -637,6 +667,7 @@ fn load(home: &Path, fallback_name: String, kind: ComputerKind) -> io::Result<Lo
                     engine: None,
                 },
                 grants,
+                legacy_enrollers: enrollers,
                 peers: roster
                     .members
                     .iter()
@@ -676,6 +707,9 @@ impl Store {
             let published = publish.clone();
             let work = tokio::task::spawn_blocking(move || {
                 match command {
+                    Command::LegacyMail(mac, payload, now, answer) => {
+                        let _ = answer.send(self.take_legacy(mac, payload, now));
+                    }
                     Command::Pair(device, now, answer) => {
                         let result = self.pair(device, now);
                         if result.is_ok() {
@@ -701,6 +735,34 @@ impl Store {
                 }
             }
         }
+    }
+
+    fn take_legacy(
+        &mut self,
+        mac: ComputerKey,
+        payload: serde_json::Map<String, Value>,
+        now: Millis,
+    ) -> io::Result<Option<Vec<Member>>> {
+        let mut next = self.link.clone();
+        if !legacy::take(&mut next.extra, mac, &payload, now) {
+            return Ok(None);
+        }
+        next.version = Some(1);
+        kept::write_durable(&self.path, &next)?;
+        let here = next
+            .key
+            .as_deref()
+            .and_then(decode_exact)
+            .map(|private| Identity::from_bytes(private, [0; 32]).public());
+        let members = legacy::members(&next.extra, here);
+        self.box_keys = members
+            .iter()
+            .map(|member| encode(&member.key))
+            .chain(legacy::enrollers(&next.extra).iter().map(|key| encode(key)))
+            .chain(here.map(|key| encode(&key)))
+            .collect();
+        self.link = next;
+        Ok(Some(members))
     }
 
     fn pair(&mut self, request: Request, now: Millis) -> Result<String, Error> {

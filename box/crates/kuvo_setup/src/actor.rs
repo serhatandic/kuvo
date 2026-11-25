@@ -727,6 +727,7 @@ fn relay_config(
         secret: identity.secret,
         key: identity.key,
         peers: roster.hosts(&identity.public).collect(),
+        legacy_enrollers: vec![],
         grants: grants
             .into_iter()
             .map(|(key, grant)| (key, grant.id))
