@@ -112,6 +112,8 @@ for (const [name, providerID, id, scripted] of agents) {
       // Deleted: its conversation goes with it.
       const deleted = await ask("DELETE", `kuvo/bots/${bot.id}`);
       assert.equal(deleted.status, 200, deleted.text);
+      // A beta.1 Mac lets it go too, as it next connects.
+      assert.equal(readJSON(path.join(harness.home, "bots", "deleted.json")).deleted[0], bot.id);
       await until(() => !fs.existsSync(path.join(harness.home, "agents", "sessions", session)), "Its conversation stayed.", 15000, 100);
       const left = fs.existsSync(path.join(harness.home, "run", "bots-left.json")) ? readJSON(path.join(harness.home, "run", "bots-left.json")).left : [];
       assert.notEqual(left.find(each => each.id === bot.id)?.conversation, true, "its conversation isn't left to go later");

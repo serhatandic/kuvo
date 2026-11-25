@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { write } from "./adapter.mjs";
+import { until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 // box/test/found.test.ts's scenarios at the route.
@@ -53,4 +53,30 @@ test("0.7's first launch finds an opencode's keys and sign-ins and brings a key 
   assert.equal(JSON.stringify((await ask("GET", "kuvo/accounts/found")).json).includes("sk-fixture"), false);
   fs.rmSync(here.env.KUVO_DEMO_OPENCODE_AUTH);
   assert.deepEqual((await ask("GET", "kuvo/accounts/found")).json.opencode, []);
+});
+
+// bridge.test.js's Start for an engine an older Mac stopped: kuvo/info says it's stopped, the
+// engine's routes say so, Start (no Stop) takes it up again.
+test("an engine a 0.7 Mac's Stop left down is said to be stopped until Start", { timeout: 60000, skip: process.platform === "win32" && "The 0.7 Mac's Stop is its shell keeper's." }, async t => {
+  const { computer } = await bench(t);
+  const here = await computer("Lab");
+  const run = path.join(here.home, "run"), said = path.join(run, "box-said");
+  fs.rmSync(path.join(run, "engine.json"));
+  write(path.join(run, "stopped"), "");
+  write(path.join(run, "launch.env"), "PATH=/usr/bin:/bin\n");
+  // Something to start: the launcher a Mac's start put there, and the installed engine.
+  const pin = JSON.parse(fs.readFileSync(new URL("../../box/src/shared/engine-pin.json", import.meta.url), "utf8")).version;
+  write(path.join(here.home, "engine", pin, "opencode"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+  write(path.join(here.home, "bin/kuvo-launch"), "#!/bin/sh\n", { mode: 0o700 });
+  write(path.join(here.home, "bin/kuvo-start"), `#!/bin/sh\necho "\${1:-box}" >>"${said}"\n[ "$1" = start ] && rm -f "${path.join(run, "stopped")}"\nexit 0\n`, { mode: 0o700 });
+  const ask = here.connect(await here.start().ready());
+  const info = (await ask("GET", "kuvo/info")).json;
+  assert.deepEqual([info.running, info.stopped], [false, true], JSON.stringify(info));
+  const down = await ask("POST", "kuvo/sessions/ses_stoppedEngine/queue/add", { id: "msg_stopped", words: "Hello." });
+  assert.deepEqual([down.status, down.json?.message], [503, "The engine isn't running."]);
+  assert.equal((await ask("POST", "kuvo/engine/stop")).status !== 200, true);
+  assert.equal((await ask("GET", "kuvo/engine/start")).status, 405);
+  assert.equal((await ask("POST", "kuvo/engine/start")).status, 202);
+  await until(() => !fs.existsSync(path.join(run, "stopped")), "Start didn't take the older Mac's Stop away");
+  assert.equal((await ask("GET", "kuvo/info")).json.stopped, false);
 });
