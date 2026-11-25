@@ -285,6 +285,8 @@ impl QueueStore {
             .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 
+    pub(crate) fn changes(&self) -> watch::Receiver<u64> { self.changes.subscribe() }
+
     fn waiting_file(&self, id: &str) -> io::Result<PathBuf> {
         if !send::valid_id(id) {
             return Err(io::Error::other("Invalid waiting message ID."));

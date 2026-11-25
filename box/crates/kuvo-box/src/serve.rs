@@ -140,12 +140,18 @@ pub async fn run(
     )
     .await?;
     let authority = setup.handle();
+    let ownership_events = authority.clone();
     let owners = kuvo_peers::ownership::Handle::new(
         peers.reader(),
         peers.relay_handle(),
         devices.clone(),
         move || authority.ownership_state(),
-    );
+    ).with_setup_changes(move || {
+        let mut setup = ownership_events.clone();
+        Box::pin(async_stream::stream! {
+            while setup.changed().await { yield (); }
+        })
+    });
     peers
         .attach_moves_with_queue(
             engine.clone(),

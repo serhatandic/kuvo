@@ -718,6 +718,8 @@ also fails: while its setup lease is fresh, the setup actor panics in historical
 origin projection (`model.rs`, indexing an absent `removals` field). The 5.4 owner is fixing
 the optional field lookup; this case is not a move-driver regression. The fixture now includes
 its process log and lease expiry in the failure diagnostic.
+The setup-owner fix `01bf21c8e` has since been merged: the same receipt-page boundary case
+passes on the delivery checkpoint, as does the held-copy durable receipt case.
 
 The peer move notice publication also has its own monotonic one-minute deadline only while
 there are active moves. Progress bytes alone still do not announce a new stage. An explicit
@@ -729,6 +731,19 @@ reconnect behavior (it previously waited for a removed periodic round). The undr
 fixture also advances elapsed time, and the incomplete-copy fixture now delivers the relay's
 connection event to the resident rather than consuming it itself. All fourteen selected move
 relay cases pass.
+
+**Durable delivery (follow-up).** One recovery reads the saved outbox on startup. A write or
+watch notification wakes the worker; session/engine state, accepted setup grants, current
+owner and peer reach are changes rather than a new inventory every five seconds. An entirely
+held or known-away owner waits for a routing event; an actual unsuccessful contact or durable
+write has a retry deadline, preserving the same per-conversation order and handoff fence.
+Receipt follows react to receipt and authority changes; the local delivery queue follows its
+store, engine state and queue records rather than a one-second fallback. The old binary's
+debug idle case fired a recovery callback in 6.5 seconds; the replacement fired none. Mac
+delivery conformance is five of five on Rust, four of four on the TypeScript reference (the
+debug-only assertion is skipped there). Addressed receipts, take-back recovery, restart, Steer
+and Send Now retain their answers.
+The whole Mac engine-session conformance area remains green (81/81 Rust).
 
 ## 7. Release decisions
 

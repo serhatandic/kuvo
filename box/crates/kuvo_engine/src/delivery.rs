@@ -9,6 +9,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use futures_util::StreamExt;
 use http::StatusCode;
 use http_body_util::BodyExt;
 use kuvo_protocol::routes::{
@@ -31,7 +32,7 @@ use sha2::{Digest, Sha256};
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
-    time,
+    time::Instant,
 };
 
 use crate::{
@@ -344,12 +345,17 @@ async fn lookup(root: &Path, key: &str) -> io::Result<Option<Saved>> {
 }
 
 async fn pending(root: &Path) -> io::Result<Vec<(Saved, Operation)>> {
+    pending_with_retry(root).await.map(|(rows, _)| rows)
+}
+
+async fn pending_with_retry(root: &Path) -> io::Result<(Vec<(Saved, Operation)>, bool)> {
     let mut list = match tokio::fs::read_dir(root.join("outbox")).await {
         Ok(list) => list,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), false)),
         Err(error) => return Err(error),
     };
     let mut saved = Vec::new();
+    let mut retry = false;
     while let Some(entry) = list.next_entry().await? {
         let name = entry.file_name();
         let Some(key) = name
@@ -359,8 +365,15 @@ async fn pending(root: &Path) -> io::Result<Vec<(Saved, Operation)>> {
         else {
             continue;
         };
-        let Some(found) = lookup(root, key).await.ok().flatten() else {
-            continue;
+        let found = match lookup(root, key).await {
+            Ok(Some(found)) => found,
+            Ok(None) => continue,
+            Err(error) => {
+                // Malformed/unsupported records need a file change, not a recurring retry.
+                retry |= error.kind() != io::ErrorKind::InvalidData
+                    && error.kind() != io::ErrorKind::Other;
+                continue;
+            }
         };
         if let Some(op) = found.queued().cloned()
             && matches!(found.receipt.outcome, Outcome::Pending { .. })
@@ -382,7 +395,7 @@ async fn pending(root: &Path) -> io::Result<Vec<(Saved, Operation)>> {
         a.at.cmp(&b.at)
             .then(a.receipt.operation.cmp(&b.receipt.operation))
     });
-    Ok(saved)
+    Ok((saved, retry))
 }
 
 async fn finish(
@@ -455,6 +468,34 @@ async fn finish(
     disk::durable(file(root, "message-receipts", key), saved.clone()).await?;
     let _ = tokio::fs::remove_file(file(root, "outbox", key)).await;
     Ok(true)
+}
+
+/// The current authority can say an attempt cannot yet do anything. A changed
+/// owner is not a wait condition: finish it with the existing terminal refusal.
+fn waiting_for_owner(engine: &Engine, op: &Operation) -> bool {
+    let Some(authority) = &engine.ownership else { return false; };
+    let Ok(scope) = authority.scope(&op.record, None) else { return false; };
+    if scope.held { return true; }
+    if op.owner == "here" || scope.setup.as_deref() != Some(&op.setup) { return false; }
+    let Some(key) = decode_exact(&op.owner) else { return false; };
+    if let Some(owner) = scope.owner {
+        return owner.key == Some(key) && !owner.reachable;
+    }
+    authority.members().iter().any(|owner| owner.key == Some(key) && !owner.reachable)
+}
+
+async fn next_owner_change(owner: &mut Option<crate::ownership::OwnershipChanges>) {
+    match owner {
+        Some(events) => if events.next().await.is_none() { *owner = None; },
+        None => std::future::pending().await,
+    }
+}
+
+async fn retry_delivery(at: Option<Instant>) {
+    match at {
+        Some(at) => timer_fires::sleep_until(Timer::DeliveryRecovery, at).await,
+        None => std::future::pending().await,
+    }
 }
 
 async fn contact_owner(engine: &Engine, op: Operation) -> Result<Value, Refusal> {
@@ -653,52 +694,81 @@ impl Delivery {
         let worker_updates = updates.clone();
         let (active, handing_off) = watch::channel(None);
         let task = tokio::spawn(async move {
-            let mut tick = timer_fires::interval(Timer::DeliveryRecovery, Duration::from_secs(5));
-            tick.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+            let hub = kuvo_os::watch::WatchHub::default();
+            let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+            files.set_targets(Vec::new(), vec![(root.join("outbox"), false), (root.join("message-receipts"), false)]);
+            let run = engine.home.join("run");
+            let mut routing = kuvo_os::watch::FileSet::new(hub);
+            routing.set_targets(vec![run.join("link.json")], vec![(run.join("moves"), false), (run.join("moves/decisions"), false)]);
+            let mut owner = engine.ownership.as_ref().and_then(|authority| authority.changes());
+            let mut sessions = list.clone();
+            let mut states = engine.states();
+            let mut queued = true;
+            let mut retry = None;
+            let mut changed = true;
             loop {
-                tokio::select! {
-                    _ = tick.tick() => {},
-                    received = nudge.recv() => {
-                        if received.is_none() { break; }
-                    },
+                if changed {
+                    retry = None;
+                    match pending_with_retry(&root).await {
+                        Ok((waiting, unreadable)) => {
+                            queued = unreadable || !waiting.is_empty();
+                            if unreadable { retry = Some(Instant::now() + Duration::from_secs(5)); }
+                            let mut deferred = std::collections::BTreeSet::new();
+                            for (_, candidate) in waiting {
+                                if deferred.contains(&candidate.record) { continue; }
+                                if owner.is_some() && waiting_for_owner(&engine, &candidate) {
+                                    deferred.insert(candidate.record);
+                                    continue;
+                                }
+                                let current = {
+                                    let _writer = engine.decision_writer.acquire().await.expect("the decision writer stays open");
+                                    match lookup(&root, &candidate.operation).await {
+                                        Ok(Some(saved)) => saved.queued().cloned().map(|op| {
+                                            active.send_replace(Some(op.operation.clone()));
+                                            (saved, op)
+                                        }),
+                                        Ok(None) => None,
+                                        Err(_) => {
+                                            deferred.insert(candidate.record.clone());
+                                            retry = Some(Instant::now() + Duration::from_secs(5));
+                                            None
+                                        }
+                                    }
+                                };
+                                let Some((saved, op)) = current else { continue; };
+                                let result = finish(&engine, &list, &root, saved, op).await;
+                                active.send_replace(None);
+                                match result {
+                                    Ok(true) => worker_updates.send_modify(|change| *change = change.wrapping_add(1)),
+                                    _ => {
+                                        deferred.insert(candidate.record);
+                                        retry = Some(Instant::now() + Duration::from_secs(5));
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // A real unreadable durable outbox may recover later.
+                            queued = true;
+                            retry = Some(Instant::now() + Duration::from_secs(5));
+                        }
+                    }
                 }
-                let Ok(waiting) = pending(&root).await else {
-                    continue;
+                changed = tokio::select! {
+                    _ = retry_delivery(retry) => true,
+                    _ = files.changed() => {
+                        worker_updates.send_modify(|change| *change = change.wrapping_add(1)); true
+                    }
+                    _ = routing.changed() => {
+                        worker_updates.send_modify(|change| *change = change.wrapping_add(1)); queued
+                    }
+                    _ = next_owner_change(&mut owner) => {
+                        worker_updates.send_modify(|change| *change = change.wrapping_add(1)); queued
+                    }
+                    received = nudge.recv() => if received.is_none() { break; } else { true },
+                    result = sessions.changed() => if !result { break; } else { queued },
+                    result = states.changed() => if result.is_err() { break; } else { queued },
                 };
-                let mut deferred = std::collections::BTreeSet::new();
-                for (_, candidate) in waiting {
-                    if deferred.contains(&candidate.record) {
-                        continue;
-                    }
-                    let current = {
-                        let _writer = engine
-                            .decision_writer
-                            .acquire()
-                            .await
-                            .expect("the decision writer stays open");
-                        match lookup(&root, &candidate.operation).await {
-                            Ok(Some(saved)) => saved.queued().cloned().map(|op| {
-                                active.send_replace(Some(op.operation.clone()));
-                                (saved, op)
-                            }),
-                            _ => None,
-                        }
-                    };
-                    let Some((saved, op)) = current else {
-                        continue;
-                    };
-                    // A failure at the head can recover on the next tick without reordering.
-                    let result = finish(&engine, &list, &root, saved, op).await;
-                    active.send_replace(None);
-                    match result {
-                        Ok(true) => {
-                            worker_updates.send_modify(|change| *change = change.wrapping_add(1))
-                        }
-                        _ => {
-                            deferred.insert(candidate.record);
-                        }
-                    }
-                }
             }
         });
         Self {
@@ -1373,7 +1443,6 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut current = initial;
                 let mut last = Value::Null;
-                let mut tick = timer_fires::interval(Timer::DeliveryFollow, Duration::from_secs(1));
                 loop {
                     let value = serde_json::to_value(&current).map_err(io::Error::other)?;
                     if value != last {
@@ -1383,7 +1452,6 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
                     tokio::select! {
                         changed = store.changes.changed() => if changed.is_err() { break; },
                         () = call.cancel.cancelled() => break,
-                        _ = tick.tick() => {},
                     }
                     let Ok(next) = store.receipt(&here, &key, &viewer).await else { break; };
                     current = next;
@@ -1411,19 +1479,30 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
         async move {
             let session = sessions::id(&call)?;
             let target = Target::for_session(&here, &call, &session)?;
+            let mut queue_changes = here.queues.changes();
+            let mut states = here.states();
+            let mut queue_files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            let run = here.home.join("run");
+            queue_files.set_targets(vec![run.join("queues.json"), run.join("fleet-engine-hold.json"),
+                here.home.join("wakes/timezone"), here.home.join("box/time-zone.json")], vec![(run.join("waiting"), false)]);
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
                 let mut fresh = store.queue(None, &session, &target).await.map_err(|error| io::Error::other(error.reply().status.to_string()))?;
                 let mut last = Value::Null;
-                let mut tick = timer_fires::interval(Timer::DeliveryFollow, Duration::from_secs(1));
+                // The first line remains the durable queue, then the current local engine queue.
+                let mut initial = true;
                 loop {
                     if fresh != last {
                         yield JsonLine::new(serde_json::from_value(fresh.clone()).map_err(io::Error::other)?)?;
                         last = fresh.clone();
                     }
-                    tokio::select! {
-                        changed = store.changes.changed() => if changed.is_err() { break; },
-                        () = call.cancel.cancelled() => break,
-                        _ = tick.tick() => {},
+                    if initial { initial = false; } else {
+                        tokio::select! {
+                            changed = store.changes.changed() => if changed.is_err() { break; },
+                            changed = queue_changes.changed(), if target.owner == "here" => if changed.is_err() { break; },
+                            changed = states.changed(), if target.owner == "here" => if changed.is_err() { break; },
+                            _ = queue_files.changed(), if target.owner == "here" => {},
+                            () = call.cancel.cancelled() => break,
+                        }
                     }
                     if let Ok(queue) = store.queue(Some(&here), &session, &target).await { fresh = queue; }
                 }

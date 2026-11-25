@@ -4,10 +4,12 @@
 use std::{
     collections::{BTreeMap, HashSet},
     io,
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
 
+use futures_util::{Stream, StreamExt};
 use kuvo_wire::{
     json::ordinary,
     keys::{decode_exact, encode},
@@ -30,7 +32,7 @@ const MAX_ADDRESSED_BODY: usize = 5 * 1024 * 1024;
 
 /// The accepted setup actor supplies its view separately from peer reach.
 /// A cached grant at a member may need a fresh verification after restart.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct SetupState {
     pub id: Option<String>,
     pub replacements: BTreeMap<ComputerKey, ComputerKey>,
@@ -38,7 +40,7 @@ pub struct SetupState {
     pub grants_disabled: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerOwner {
     pub key: Option<ComputerKey>,
     pub name: String,
@@ -80,6 +82,16 @@ pub struct Handle {
     devices: Devices,
     relay: Option<RelayHandle>,
     accepted: Arc<dyn Fn() -> SetupState + Send + Sync>,
+    setup_changes: Option<Arc<dyn Fn() -> SetupChanges + Send + Sync>>,
+}
+
+type SetupChanges = Pin<Box<dyn Stream<Item = ()> + Send>>;
+
+async fn next_setup_change(changes: &mut Option<SetupChanges>) {
+    match changes {
+        Some(events) => if events.next().await.is_none() { *changes = None; },
+        None => std::future::pending().await,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -188,6 +200,32 @@ struct ReplyPacket {
 }
 
 impl Handle {
+    pub fn changes(&self) -> impl futures_util::Stream<Item = ()> + Send + 'static {
+        let handle = self.clone();
+        let changes = handle.setup_changes.as_ref().map(|subscribe| subscribe());
+        let view = handle.reader.view();
+        let members = handle.members();
+        let setup = (handle.accepted)();
+        futures_util::stream::unfold((handle, view, members, setup, changes),
+            |(mut handle, mut view, mut members, mut setup, mut changes)| async move {
+                loop {
+                    let devices = tokio::select! {
+                        changed = handle.reader.changed() => { if changed.is_err() { return None; } false }
+                        changed = handle.devices.changed() => { if changed.is_err() { return None; } true }
+                        _ = next_setup_change(&mut changes) => false,
+                    };
+                    let current = handle.reader.view();
+                    let current_members = handle.members();
+                    let current_setup = (handle.accepted)();
+                    let relevant = devices || current_members != members || current_setup != setup
+                        || crate::remote_work::routing_changed(&view, &current);
+                    view = current;
+                    members = current_members;
+                    setup = current_setup;
+                    if relevant { return Some(((), (handle, view, members, setup, changes))); }
+                }
+            })
+    }
     pub fn new(
         reader: Reader,
         relay: Option<RelayHandle>,
@@ -199,7 +237,14 @@ impl Handle {
             relay,
             devices,
             accepted: Arc::new(accepted),
+            setup_changes: None,
         }
+    }
+
+    /// Subscribe to grant and accepted-setup changes independently of relay announcements.
+    pub fn with_setup_changes(mut self, subscribe: impl Fn() -> SetupChanges + Send + Sync + 'static) -> Self {
+        self.setup_changes = Some(Arc::new(subscribe));
+        self
     }
 
     /// Read the durable move journal again before deciding where an effect can
