@@ -83,6 +83,7 @@ impl RemoteWork for Elsewhere {
                     | Tool::AnswerAsk
                     | Tool::ListProjects
                     | Tool::ListModels
+                    | Tool::StartSession
                     | Tool::StopWork
             ) {
                 return Ok(Admission::Reject(
@@ -123,13 +124,19 @@ impl RemoteWork for Elsewhere {
             if tool == Tool::AnswerAsk {
                 return Ok(work.admit_answer(&engine, call).await);
             }
+            if tool == Tool::StartSession && !super::starts::start_call(call) {
+                return Ok(Admission::Reject("That isn't a call.".into()));
+            }
             Ok(Admission::Ready)
         })
     }
 
-    fn apply<'a>(&'a self, _: ComputerKey, call: &'a MailedCall) -> WorkFuture<'a, Answer> {
+    fn apply<'a>(&'a self, sender: ComputerKey, call: &'a MailedCall) -> WorkFuture<'a, Answer> {
         Box::pin(async move {
             let work = self.work()?;
+            if call.request.tool == Tool::StartSession {
+                return work.take_start(sender, call).await;
+            }
             let engine = work.list.engine().running_bot_engine().await;
             let engine = engine.ok_or_else(|| not_now("The engine isn't running."))?;
             let (lead, args) = (call.from.as_str(), &call.request.args);

@@ -134,6 +134,15 @@ fn bad(message: impl Into<String>) -> Refusal {
 }
 
 async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Refusal> {
+    create_as(engine, given, None, None).await
+}
+
+async fn create_as(
+    engine: &Engine,
+    given: &Map<String, Value>,
+    remote: Option<&RemoteLead>,
+    steps: Option<&dyn StartSteps>,
+) -> Result<Value, Refusal> {
     let string = |field| {
         given
             .get(field)
@@ -146,7 +155,7 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
     let title = string("title");
     let wait = flag("wait");
     let starter = given.get("startedBy").filter(|value| !value.is_null());
-    if task.is_none() && (wait || starter.is_some()) {
+    if task.is_none() && (wait || starter.is_some() || remote.is_some()) {
         return Err(bad("Say what it's to do (task)."));
     }
     let link = disk::read::<Value>(&engine.home.join("run/link.json"))
@@ -158,6 +167,12 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         .as_str()
         .filter(|name| !name.is_empty())
         .unwrap_or("a machine");
+    // (This computer, as a start here says it: a lead elsewhere reads it as that computer.)
+    let here = if engine.is_mac_box().await {
+        "this Mac"
+    } else {
+        "this machine"
+    };
     let addressed = if let Some(computer) =
         string("computer").filter(|computer| *computer != "here")
     {
@@ -210,10 +225,13 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
             "Not from a group chat: talk it through here; the work is handed out after the wrap-up.",
         ));
     }
-    let parent_agent = parent
-        .as_ref()
-        .and_then(|parent| parent.extra.get("agent"))
-        .and_then(Value::as_str);
+    let parent_agent = match remote {
+        Some(lead) => lead.agent.as_deref(),
+        None => parent
+            .as_ref()
+            .and_then(|parent| parent.extra.get("agent"))
+            .and_then(Value::as_str),
+    };
     let mode = given.get("mode").filter(|value| !value.is_null());
     if mode.is_some_and(|mode| !matches!(mode.as_str(), Some("build" | "plan"))) {
         return Err(bad("mode is build or plan."));
@@ -260,14 +278,22 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         ),
         None => None,
     };
-    if parent.is_none() && requested == Some(Approval::FullAccess) && !allows_full {
+    if parent.is_none()
+        && remote.is_none()
+        && requested == Some(Approval::FullAccess)
+        && !allows_full
+    {
         return Err(Refusal::json(
             StatusCode::CONFLICT,
             json!({ "message": "Full Access isn't confirmed on this computer yet: confirm it first.", "reason": "fullAccessOff" }),
         ));
     }
-    let parent_mode = from_approval(parent_notes("approval"));
-    let wanted = if parent.is_some() {
+    // (A lead on another computer: its approval as it comes to there now, never more.)
+    let parent_mode = match remote {
+        Some(lead) => from_approval(&lead.approval),
+        None => from_approval(parent_notes("approval")),
+    };
+    let wanted = if parent.is_some() || remote.is_some() {
         let upper = parent_mode.unwrap_or(Approval::AskFirst);
         requested.unwrap_or(upper).min(upper)
     } else {
@@ -320,7 +346,10 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                     .as_ref()
                     .map(|parent| PathBuf::from(parent.directory()))
             })
-            .ok_or_else(|| bad("Give the folder it works in (folder), as a full path."))?;
+            .ok_or_else(|| match remote {
+                Some(_) => bad(format!("Say where it works on {here}: one of its projects (project, from list_projects with this computer), a folder there (folder, a full path), or chat.")),
+                None => bad("Give the folder it works in (folder), as a full path."),
+            })?;
         if !path.is_absolute() || !fs::metadata(&path).await.is_ok_and(|meta| meta.is_dir()) {
             return Err(bad(format!(
                 "{} isn't a folder on {name}. Give a full path to one.",
@@ -337,7 +366,7 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                 path.display()
             )));
         }
-        if parent.is_some() {
+        if parent.is_some() || remote.is_some() {
             path = fs::canonicalize(&path)
                 .await
                 .map_err(|_| bad("Give the folder it works in (folder), as a full path."))?;
@@ -357,7 +386,14 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                     .await
                     .is_some()
                 || path.starts_with(&chats);
-            if !allowed && applied != Approval::FullAccess {
+            // (A lead on another computer, by its approval as it comes to here now.)
+            let full = match remote {
+                Some(lead) => {
+                    from_approval(&lead.approval) == Some(Approval::FullAccess) && allows_full
+                }
+                None => applied == Approval::FullAccess,
+            };
+            if !allowed && !full {
                 return Err(Refusal::new(
                     StatusCode::FORBIDDEN,
                     format!(
@@ -400,11 +436,44 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
             .map(str::to_owned)
     });
 
-    let model = given
-        .get("model")
-        .filter(|model| !model.is_null())
-        .cloned()
-        .or_else(|| parent.as_ref()?.extra.get("model").cloned());
+    let mut model_note = None;
+    let mut picked: Vec<String> = Vec::new();
+    let model = match remote {
+        // A lead on another computer: the model it names, by the one rule every client's picker
+        // offers by; else its own where it runs here, else this computer's default.
+        Some(lead) => {
+            let named = given
+                .get("model")
+                .filter(|model| !model.is_null() && *model != "");
+            let effort = given
+                .get("effort")
+                .filter(|effort| !effort.is_null() && *effort != "");
+            // (The engine starts for it, as a start here does: its models are read once it runs.)
+            let _running = engine.acquire(crate::lifetime::Demand::Start).await;
+            let offered = engine.offered_models().await;
+            if named.is_some() || effort.is_some() {
+                let own = named.or(lead.model.as_ref());
+                let (chosen, variant, shown) =
+                    pick_model(own, effort, &offered.models, here).map_err(bad)?;
+                picked.push(shown);
+                picked.extend(variant.clone());
+                let mut chosen = chosen;
+                if let Some(variant) = variant {
+                    chosen["variant"] = json!(variant);
+                }
+                Some(chosen)
+            } else {
+                let (kept, note) = lead_model(lead.model.as_ref(), &offered.models, here)?;
+                model_note = note;
+                kept
+            }
+        }
+        None => given
+            .get("model")
+            .filter(|model| !model.is_null())
+            .cloned()
+            .or_else(|| parent.as_ref()?.extra.get("model").cloned()),
+    };
     if let Some(model) = &model {
         let model: ModelRef = serde_json::from_value(model.clone())
             .map_err(|_| bad("Choose a model by its provider and id."))?;
@@ -450,7 +519,13 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         None
     };
 
-    let mut notes = json!({ "approval": wanted, "applied": applied });
+    // (Kept, for a lead on another computer, as no more than this computer gives it now: Full
+    // Access only where it's confirmed here.)
+    let kept = match remote {
+        Some(_) if wanted == Approval::FullAccess && !allows_full => Approval::Auto,
+        _ => wanted,
+    };
+    let mut notes = json!({ "approval": kept, "applied": applied });
     if chat {
         notes["chat"] = json!(folder);
     }
@@ -475,7 +550,29 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
             notes["line"] = json!(&line[line.len().saturating_sub(20)..]);
         }
     }
-    let autopilot = if parent.is_some() {
+    // A lead on another computer: who it is and where, its line, and the Don't Allows it brings.
+    let brought: Vec<Value> = remote.map_or_else(Vec::new, |lead| {
+        let holds =
+            |rule: &&Value| !matches!(rule["effect"].as_str(), Some("allow" | "ask") | None);
+        lead.held.iter().filter(holds).cloned().collect()
+    });
+    if let Some(lead) = remote {
+        notes["startedBy"] = json!(lead.session);
+        notes["call"] = json!(lead.call);
+        notes["lead"] = json!({ "box": lead.computer, "key": lead.key, "name": lead.name });
+        if lead.line.len() > 1 {
+            notes["line"] = json!(&lead.line[lead.line.len().saturating_sub(20)..]);
+        }
+        if !brought.is_empty() {
+            notes["held"] = json!(brought);
+        }
+        if let (Some(_), Some(limits)) = (&lead.works, &lead.limits) {
+            notes["limits"] = limits.clone();
+        }
+    }
+    let autopilot = if let Some(lead) = remote {
+        lead.autopilot
+    } else if parent.is_some() {
         parent_notes("autopilot") == true
     } else {
         flag("autopilot")
@@ -492,7 +589,7 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         ));
     }
     let mut body = json!({ "location": { "directory": folder }, "metadata": { "kuvo": notes },
-        "permissions": permissions(applied, &settings, parent.as_ref(), project) });
+        "permissions": permissions(applied, &settings, parent.as_ref(), &brought, project) });
     let agent = mode.and_then(Value::as_str).or_else(|| {
         if parent.is_none() {
             string("agent")
@@ -536,6 +633,9 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         }
     };
     let id = made["id"].as_str().expect("checked session id");
+    if let Some(steps) = steps {
+        steps.made(id);
+    }
     if parent.is_none() && requested.is_some() {
         let _turn = engine.turn("approval-settings").await;
         if let Ok(latest) = disk::read::<Value>(&approval_file).await {
@@ -551,24 +651,62 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         json!({ "session": id, "title": title, "folder": folder, "project": project_title });
     if applied < requested.unwrap_or(wanted) {
         answer["got"] = json!(applied);
+        // (Less than its lead's because of this computer: why, for a lead on another.)
+        if remote.is_some() {
+            answer["held"] = json!(held_there(wanted, applied, allows_full));
+        }
     }
     if let Some(computer) = addressed {
         answer["computer"] = computer;
     }
+    if mode.is_some_and(|mode| mode == "plan") && remote.is_some() {
+        picked.push("Plan".into());
+    }
+    if !picked.is_empty() {
+        answer["picked"] = json!(picked.join(" · "));
+    }
+    if let Some(note) = model_note {
+        answer["model"] = json!(note);
+    }
     if let Some(task) = task {
-        let requested = parent.as_ref().map_or_else(Vec::new, |parent| {
-            wakes(
-                given.get("wake").unwrap_or(&Value::Null),
+        let given_wake = given.get("wake").unwrap_or(&Value::Null);
+        let requested = match (remote, parent.as_ref()) {
+            // (A lead elsewhere that waits hears both, unless it says.)
+            (Some(lead), _) => {
+                let both = json!("both");
+                let named = if wait && given_wake.is_null() {
+                    &both
+                } else {
+                    given_wake
+                };
+                wakes(named, lead.own, false)
+            }
+            (None, Some(parent)) => wakes(
+                given_wake,
                 Path::new(parent.directory()).starts_with(engine.home.join("bots")),
                 wait,
-            )
-        });
+            ),
+            (None, None) => Vec::new(),
+        };
         let marked = if requested.is_empty() {
             false
         } else if let Ok(mut writer) = engine.note_writer(id).await {
             writer
                 .edit(crate::NoteEdits {
-                    kuvo: [("wake".to_owned(), Some(json!(requested)))].into(),
+                    kuvo: std::iter::once(("wake".to_owned(), Some(json!(requested))))
+                        .chain(
+                            remote
+                                .and_then(|lead| lead.works.clone())
+                                .into_iter()
+                                .flat_map(|works| {
+                                    let depth = remote.map_or(1, |lead| lead.depth.max(1));
+                                    [
+                                        ("by".to_owned(), Some(works)),
+                                        ("depth".to_owned(), Some(json!(depth))),
+                                    ]
+                                }),
+                        )
+                        .collect(),
                     ..Default::default()
                 })
                 .await
@@ -579,7 +717,23 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         if marked {
             answer["wakes"] = json!(requested);
         }
-        let text = parent.as_ref().map_or_else(
+        let heard = marked && requested.contains(&Wake::Finished);
+        let text = match remote {
+            Some(lead) => {
+                // (Its lead is on another computer: it never waits on the answer here.)
+                let note = if heard {
+                    format!("They get your last reply when you finish: end with your report there, not in a message. Use send_message to {} only to ask something or say how it's going.", lead.session)
+                } else {
+                    format!("To answer, use send_message to {}.", lead.session)
+                };
+                let mut text = format!("[Message from {} on {} · {}] ({note})\n\n{task}", lead.name, lead.computer, lead.session);
+                if let Some(bot) = lead.works.as_ref().and_then(|works| works["name"].as_str()) {
+                    let review = given.get("review") != Some(&Value::Bool(false));
+                    text = format!("{text}\n\n{}", session_note(bot, heard, review));
+                }
+                text
+            }
+            None => parent.as_ref().map_or_else(
             || task.to_owned(),
             |parent| {
                 let title = if parent.title.is_empty() {
@@ -596,10 +750,15 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                 };
                 format!("[Message from {title} · {}] ({note})\n\n{task}", parent.id)
             },
-        );
+        ),
+        };
         let metadata = json!({ "kuvo": { "parts": parts::read_parts(&text) } });
+        let message = send::new_id(engine)?;
+        if let Some(steps) = steps {
+            steps.making(&json!({ "session": id, "prompt": { "id": message, "text": text }, "started": answer }));
+        }
         let prompt = Prompt {
-            id: send::new_id(engine)?,
+            id: message,
             text,
             metadata: Some(metadata),
             files: Vec::new(),
@@ -607,7 +766,12 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
         };
         let sent = match &agents {
             Some(source) => {
-                let Prompt { id: message, text, metadata, .. } = prompt;
+                let Prompt {
+                    id: message,
+                    text,
+                    metadata,
+                    ..
+                } = prompt;
                 source
                     .prompt(
                         id,
@@ -623,9 +787,14 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                     .await
                     .is_ok()
             }
-            None => send::post(engine, crate::queue::Target::Engine(lease.get().await?), id, &prompt)
-                .await
-                .is_ok(),
+            None => send::post(
+                engine,
+                crate::queue::Target::Engine(lease.get().await?),
+                id,
+                &prompt,
+            )
+            .await
+            .is_ok(),
         };
         if !sent {
             return Err(Refusal::json(
@@ -634,7 +803,10 @@ async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Re
                 "message": format!("Started a session (address {id}), but the task didn't reach it.") }),
             ));
         }
-        if wait {
+        if let Some(steps) = steps {
+            steps.prompted();
+        }
+        if wait && remote.is_none() {
             answer["answer"] = Value::Null;
         }
     } else {
@@ -660,6 +832,72 @@ fn from_approval(value: &Value) -> Option<Approval> {
 }
 
 /// The engine, started the first time something needs it.
+/// A lead on another of your computers starting a session here (PROTOCOL.md, "Peers", `call`,
+/// `as.start`), as its own computer knows it, never from the agent's words: its approval as it
+/// comes to there now and the Don't Allows it goes by there (`held`, kept with the session so they
+/// hold here too), its mode and model, whether it's on Autopilot, the bot its work is for (`works`;
+/// `own`, the lead is that bot), the new session's depth and line, and the limits you set for that
+/// bot. `call`: the call's id, marked on the session so it's made once; `computer` and `key`: the
+/// lead's computer, as this one names it.
+#[derive(Clone, Debug, Default)]
+pub struct RemoteLead {
+    pub session: String,
+    pub name: String,
+    pub call: String,
+    pub computer: String,
+    pub key: String,
+    pub approval: Value,
+    pub held: Vec<Value>,
+    pub agent: Option<String>,
+    pub model: Option<Value>,
+    pub autopilot: bool,
+    pub works: Option<Value>,
+    pub own: bool,
+    pub depth: u64,
+    pub line: Vec<String>,
+    pub limits: Option<Value>,
+}
+
+/// What a start keeps of itself as it goes, so it can be finished from the step it got to: the
+/// session made, and its task given.
+pub trait StartSteps: Send + Sync {
+    /// About to be made: its marks (`kuvo`) and its task's message (`prompt`: `id`, `text`).
+    fn making(&self, _making: &Value) {}
+    fn made(&self, _session: &str) {}
+    fn prompted(&self) {}
+}
+
+/// What a session a bot started is told with its task: its half of the playbook. `heard`: its
+/// finish is told its bot with its last reply. `review`: false for a task its bot says needs no
+/// review.
+pub fn session_note(bot: &str, heard: bool, review: bool) -> String {
+    let done = if review {
+        "review your work with reviewer subagents, fix what they find, and end with a short report as your last reply: what you did, what the reviewers found and how you fixed it, and anything left"
+    } else {
+        "end with a short report as your last reply: what you did, and anything left"
+    };
+    let told = if heard {
+        format!("{bot} gets that reply when you finish: don't also send it with send_message.")
+    } else {
+        format!("{bot} reads that report.")
+    };
+    format!(
+        "You were started by {bot}, a bot coordinating this work. When you're done, {done}. {told}"
+    )
+}
+
+impl Engine {
+    /// A session started here for a lead on another computer, as `steps` keep it going.
+    pub async fn start_for_lead(
+        &self,
+        given: &Map<String, Value>,
+        lead: &RemoteLead,
+        steps: &dyn StartSteps,
+    ) -> Result<Value, Refusal> {
+        create_as(self, given, Some(lead), Some(steps)).await
+    }
+}
+
 struct Engaged<'a> {
     engine: &'a Engine,
     lease: Option<Lease>,
@@ -741,7 +979,12 @@ async fn root(engine: &Engine, lease: &mut Engaged<'_>, id: Option<&str>) -> Opt
         let session = match engine.agent_session(&id).await.ok()? {
             Some((_, header)) => serde_json::from_value::<Session>(Value::Object(header)).ok(),
             None => engine
-                .call::<Session>(lease.get().await.ok()?, Method::GET, &sessions::path(&id), None)
+                .call::<Session>(
+                    lease.get().await.ok()?,
+                    Method::GET,
+                    &sessions::path(&id),
+                    None,
+                )
                 .await
                 .ok(),
         };
@@ -764,13 +1007,20 @@ fn permissions(
     approval: Approval,
     settings: &Value,
     parent: Option<&Session>,
+    brought: &[Value],
     project: Option<&Project>,
 ) -> Vec<Permission> {
     let local = Vec::<Permission>::deserialize(&settings["permissions"]).unwrap_or_default();
-    let inherited = parent
+    let mut inherited = parent
         .and_then(|parent| parent.extra.get("permissions"))
         .and_then(|permissions| Vec::<Permission>::deserialize(permissions).ok())
         .unwrap_or_default();
+    // (A lead elsewhere's Don't Allows hold here too.)
+    inherited.extend(
+        brought
+            .iter()
+            .filter_map(|rule| Permission::deserialize(rule).ok()),
+    );
     let mut rules = Vec::new();
     if approval <= Approval::AcceptEdits {
         let outside = local
@@ -840,6 +1090,132 @@ fn permissions(
             .filter(Permission::denied),
     );
     rules
+}
+
+/// The model `given` names (`"provider/model"`, or `{providerID, id}`) among `models` (the rows
+/// every client's picker offers), with the effort it runs at: the model as a session takes it, the
+/// effort, and its name; or why there's none to take. `place`: this computer.
+fn pick_model(
+    given: Option<&Value>,
+    effort: Option<&Value>,
+    models: &[Value],
+    place: &str,
+) -> Result<(Value, Option<String>, String), String> {
+    let (provider, id) = match given {
+        Some(Value::String(named)) => match named.trim().split_once('/') {
+            Some((provider, id)) if !provider.is_empty() => (provider.to_owned(), id.to_owned()),
+            _ => (String::new(), named.trim().to_owned()),
+        },
+        Some(given) if given["id"].is_string() => (
+            given["providerID"].as_str().unwrap_or_default().to_owned(),
+            given["id"].as_str().unwrap_or_default().to_owned(),
+        ),
+        _ => (String::new(), String::new()),
+    };
+    if id.is_empty() {
+        return Err("Name the model as provider/model, from list_models.".into());
+    }
+    let named_as = |model: &&Value| {
+        let aliases = model["aliases"].as_array();
+        (model["id"] == id.as_str()
+            || aliases.is_some_and(|aliases| aliases.iter().any(|alias| alias == id.as_str())))
+            && (provider.is_empty() || model["providerID"] == provider.as_str())
+    };
+    let matches: Vec<&Value> = models.iter().filter(named_as).collect();
+    let Some(model) = matches
+        .iter()
+        .find(|model| model["id"] == id.as_str())
+        .or(matches.first())
+    else {
+        let known = !provider.is_empty()
+            && models
+                .iter()
+                .any(|model| model["providerID"] == provider.as_str());
+        return Err(if known {
+            format!(
+                "There's no {id} among {provider}'s models here. Use list_models to see what there is."
+            )
+        } else {
+            format!(
+                "There's no account for {} on {place}. Use list_models to see the models you can use.",
+                if provider.is_empty() { &id } else { &provider }
+            )
+        });
+    };
+    let shown = model["name"].as_str().unwrap_or(&id).to_owned();
+    let chosen = json!({ "providerID": model["providerID"], "id": model["id"] });
+    let efforts: Vec<&str> = model["efforts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let Some(effort) = effort else {
+        return Ok((chosen, None, shown));
+    };
+    if efforts.is_empty() {
+        return Err(format!(
+            "{shown} has no efforts to choose from: leave effort out."
+        ));
+    }
+    match effort.as_str().filter(|effort| efforts.contains(effort)) {
+        Some(effort) => Ok((chosen, Some(effort.to_owned()), shown)),
+        None => Err(format!("{shown}'s efforts are {}.", efforts.join(", "))),
+    }
+}
+
+/// The model a lead on another computer's session runs on here: its own where it runs here, else
+/// this computer's default (none, with why); none at all where nothing here runs.
+fn lead_model(
+    own: Option<&Value>,
+    models: &[Value],
+    place: &str,
+) -> Result<(Option<Value>, Option<String>), Refusal> {
+    if models.is_empty() {
+        return Err(bad(format!(
+            "There's no model with an account on {place}. Ask the user to sign in to one in Settings › Accounts."
+        )));
+    }
+    let Some(own) = own else {
+        return Ok((None, None));
+    };
+    let (provider, id) = (
+        own["providerID"].as_str().unwrap_or_default(),
+        own["id"].as_str().unwrap_or_default(),
+    );
+    let theirs = |model: &&Value| {
+        let aliases = model["aliases"].as_array();
+        model["providerID"] == provider
+            && (model["id"] == id
+                || aliases.is_some_and(|aliases| aliases.iter().any(|alias| alias == id)))
+    };
+    let found = models.iter().find(theirs);
+    if found.is_some_and(|model| model["retiring"] != true) {
+        return Ok((Some(own.clone()), None));
+    }
+    let why = if found.is_some() {
+        "is being retired on that computer"
+    } else {
+        "has no account on that computer"
+    };
+    Ok((
+        None,
+        Some(format!(
+            "It runs on the default model there: yours ({provider}/{id}) {why}."
+        )),
+    ))
+}
+
+/// Why a lead on another computer got less than `wanted` here (`applied`), in words for it.
+fn held_there(wanted: Approval, applied: Approval, allows_full: bool) -> String {
+    let mut why = Vec::new();
+    if wanted == Approval::FullAccess && !allows_full {
+        why.push("Full Access hasn't been allowed on that computer yet: only the user can allow it, by picking Full Access once in a session there.");
+    }
+    if matches!(wanted, Approval::FullAccess | Approval::Auto) && applied == Approval::AskFirst {
+        why.push("Auto needs the sandbox, which isn't running on that computer.");
+    }
+    why.join(" ")
 }
 
 fn project_name(project: &Project) -> String {

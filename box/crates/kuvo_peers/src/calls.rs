@@ -1186,12 +1186,12 @@ struct KeptHome {
     at: Millis,
 }
 
-pub(crate) fn known_home(run: &Path, session: &str) -> Option<ComputerKey> {
+pub fn known_home(run: &Path, session: &str) -> Option<ComputerKey> {
     let homes = kept::read::<BTreeMap<String, KeptHome>>(&run.join("work/homes.json"))?;
     decode_exact(&homes.get(session)?.key)
 }
 
-pub(crate) fn note_homes<'a>(
+pub fn note_homes<'a>(
     run: &Path,
     key: ComputerKey,
     at: Millis,
