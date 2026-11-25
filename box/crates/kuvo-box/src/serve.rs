@@ -353,7 +353,7 @@ pub async fn run(
     );
     kuvo_services::git::register(&mut routes, home.to_owned());
     kuvo_services::programs::register(&mut routes, account.clone());
-    let _integration_keys =
+    let integration_keys =
         kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
     let skills = kuvo_services::skills::ResidentSkills::start(&mut routes, home, &account);
     let resident_marketplace = kuvo_services::marketplace::ResidentMarketplace::start(
@@ -386,6 +386,14 @@ pub async fn run(
     );
     bots.register(&mut routes);
     let bots_follow_engine = bots.follow_engine();
+    // Bots' old keys of their own taken away, with no client there.
+    let _own_keys = kuvo_work::bots::own_keys::keep_bots_own_keys_gone(
+        home.to_owned(),
+        kind == ComputerKind::Mac,
+        home.join("bots"),
+        integration_keys.clone(),
+        kuvo_work::bots::own_keys::reconnecting(engine.clone()),
+    );
     let approvals = kuvo_work::approval::ApprovalService::new(
         kuvo_work::approval::Approvals::new(home, kind == ComputerKind::Mac),
         engine.clone(),
