@@ -142,6 +142,8 @@ process.stdin.on("data", (chunk) => {
       send({ method: "item/started", params: { threadId: thread, turnId: "c1", item: { type: "contextCompaction", id: "cc1" } } });
       send({ method: "item/completed", params: { threadId: thread, turnId: "c1", item: { type: "contextCompaction", id: "cc1" } } });
       send({ method: "turn/completed", params: { threadId: thread, turn: { id: "c1", status: "completed" } } });
+    } else if (method === "thread/backgroundTerminals/list") {
+      answer({ data: read("codex-terminals.json", []), nextCursor: null });
     } else if (method === "thread/read") {
       const kept = threads.get(params.threadId);
       if (!kept) refuse(-32603, "history unavailable");
@@ -264,6 +266,10 @@ export async function scriptedCodex(fixture = {}) {
       assert.equal(answer.status, 200, answer.text);
       return answer.json.data ?? answer.json;
     },
+    async dismissForm(id, form) {
+      return request(listener, "DELETE", `${codex.route(id)}/form/${form}`, undefined, headers);
+    },
+    saved: (id) => readJSON(path.join(home, "agents/sessions", id, "session.json")),
     async replyForm(id, form, answers) {
       return request(listener, "POST", `${codex.route(id)}/form/${form}/reply`, { answer: answers }, headers);
     },
