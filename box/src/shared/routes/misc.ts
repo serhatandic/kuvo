@@ -203,9 +203,6 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "POST kuvo/agents/api/kuvo/updates", feature: "agents.updates", answers: { 200: object({ data: object({ updating: list(string) }) }), 503: object({ message: string }) } },
   { route: "POST kuvo/agents/api/kuvo/updates/:provider", feature: "agents.updates", answers: { 200: object({ data: object({ updating: list(string) }) }), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/agents/api/kuvo/updates/:provider", feature: "agents.updates", answers: { 200: object({}), 404: object({ message: string }), 503: object({ message: string }) } },
-  // The update notices served now, newest first, and one seen, for every client.
-  { route: "GET kuvo/agents/api/kuvo/updates/notices", feature: "agents.updates.notices", answers: { 200: object({ data: object({ notices: list(any) }) }), 503: object({ message: string }) } },
-  { route: "DELETE kuvo/agents/api/kuvo/updates/notices/:id", feature: "agents.updates.notices", answers: { 200: object({}), 503: object({ message: string }) } },
   // Searches reachable computers when asked and names computers whose search could not run.
   { route: "GET kuvo/setup/search", feature: "search.setup", answers: { 200: SEARCH_FOUND } },
   // Sessions whose conversation has the words searched for, the latest first.

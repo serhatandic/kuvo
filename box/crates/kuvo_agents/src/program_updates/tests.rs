@@ -121,7 +121,7 @@ fn updates(home: &tempfile::TempDir, account: Arc<Stand>) -> (ProgramUpdates, Ar
     let changes = Arc::new(AtomicUsize::new(0));
     let counted = changes.clone();
     let accounts: Accounts = Arc::new(move || vec![account.clone() as Arc<dyn Program>]);
-    let changed = Arc::new(move |_: &str| {
+    let changed = Arc::new(move |_: &str, _: Option<&UpdateResult>| {
         counted.fetch_add(1, Ordering::SeqCst);
     });
     (ProgramUpdates::at(home.path(), accounts, changed), changes)

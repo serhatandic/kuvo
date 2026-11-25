@@ -18,7 +18,8 @@ use crate::{
     accounts::{AgentKind, Provider},
     feed::Feed,
     program_updates::{
-        Accounts, Hold, InstallResult, Maintenance, Program, ProgramUpdates, install, maintenance,
+        Accounts, Changed, Hold, InstallResult, Maintenance, Program, ProgramUpdates,
+        UpdateResult, install, maintenance,
         notices::{ProgramNow, Served, UpdateNotices, agents_update_themselves},
     },
     resident::ResidentAgents,
@@ -193,6 +194,14 @@ pub struct Refused {
     pub message: String,
 }
 
+/// An object without its fields that say nothing.
+fn without_nones(mut value: Value) -> Value {
+    if let Value::Object(fields) = &mut value {
+        fields.retain(|_, field| !field.is_null());
+    }
+    value
+}
+
 fn lock<T>(plain: &Plain<T>) -> std::sync::MutexGuard<'_, T> {
     plain.lock().unwrap_or_else(|error| error.into_inner())
 }
@@ -238,8 +247,18 @@ impl AccountRows {
     pub fn new(home: PathBuf, agents: ResidentAgents, hold: Option<Arc<dyn Hold>>) -> Self {
         let listed = agents.clone();
         let accounts: Accounts = Arc::new(move || accounts_of(&listed));
-        let (feed, told) = (agents.feed().clone(), agents.clone());
-        let changed = Arc::new(move |program: &str| tell(&feed, &told, program));
+        // (Ended, what the program is now is noted before anyone's told; then that its models
+        // changed.)
+        let cell: Arc<std::sync::OnceLock<std::sync::Weak<Inner>>> = Arc::default();
+        let (feed, told, noting) = (agents.feed().clone(), agents.clone(), cell.clone());
+        let changed: Changed = Arc::new(move |program: &str, ended: Option<&UpdateResult>| {
+            if let Some(result) = ended
+                && let Some(inner) = noting.get().and_then(std::sync::Weak::upgrade)
+            {
+                AccountRows(inner).ended(program, result.updated);
+            }
+            tell(&feed, &told, program);
+        });
         let mut updates = ProgramUpdates::at(&home, accounts, changed);
         if let Some(hold) = hold {
             updates = updates.with_hold(hold);
@@ -254,11 +273,13 @@ impl AccountRows {
             maintained: Plain::default(),
             seen: Plain::default(),
         }));
+        let _ = cell.set(Arc::downgrade(&rows.0));
         rows.check_programs();
         rows
     }
 
-    fn feed(&self) -> &Feed {
+    /// What the agents tell their clients.
+    pub fn feed(&self) -> &Feed {
         self.0.agents.feed()
     }
 
@@ -337,6 +358,26 @@ impl AccountRows {
         before.as_ref() != Some(&value)
     }
 
+    /// An update of `program` ended: what it is now is noted (its accounts run it anew if its
+    /// version moved), and, updated, that its models changed.
+    fn ended(&self, program: &str, updated: bool) {
+        let roster = self.0.agents.roster();
+        let Some(entry) = roster.all().iter().find(|each| each.account.kind.name() == program).cloned() else {
+            return;
+        };
+        let (rows, program) = (self.clone(), program.to_owned());
+        tokio::spawn(async move {
+            // (Read afresh by the update: what its accounts list from here.)
+            if let Some(definition) = entry.agent.program() {
+                let value = maintenance(&definition, false).await;
+                rows.noted(&entry, value);
+            }
+            if updated {
+                rows.feed().emit("model.updated", json!({ "program": program }));
+            }
+        });
+    }
+
     /// Its version and the newest, if they come soon (checking may ask Homebrew or npm): what was
     /// known before otherwise, and its row is said again once they come.
     async fn maintained_soon(&self, entry: &Entry, fresh: bool) -> Option<Maintenance> {
@@ -408,11 +449,11 @@ impl AccountRows {
             if account.what && label.is_some() {
                 connection["what"] = json!(true);
             }
-            vec![connection]
+            vec![without_nones(connection)]
         } else {
             Vec::new()
         };
-        json!({
+        let mut row = json!({
             "id": provider,
             "name": kind.display_name(),
             "metadata": {
@@ -442,7 +483,10 @@ impl AccountRows {
             },
             "methods": facts.methods,
             "connections": connections,
-        })
+        });
+        // (What it doesn't know it leaves out, as the reference does.)
+        row["metadata"] = without_nones(row["metadata"].take());
+        row
     }
 
     /// Update All: the programs it started.

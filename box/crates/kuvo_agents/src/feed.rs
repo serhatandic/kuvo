@@ -25,10 +25,15 @@ impl Default for Feed {
 
 impl Feed {
     pub fn emit(&self, kind: &str, data: Value) {
+        self.emit_from(kind, data, None);
+    }
+
+    /// One about a conversation, in `directory`.
+    pub fn emit_from(&self, kind: &str, data: Value, directory: Option<String>) {
         let _ = self.0.send(FeedEvent {
             kind: kind.to_owned(),
             data,
-            directory: None,
+            directory,
         });
     }
 

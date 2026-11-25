@@ -29,6 +29,25 @@ if (args[0] === "logout") {
   heard({ logout: true, home });
   process.exit(0);
 }
+// Its version (\`codex-version\` in its root), and its own updater: \`update\` waits while
+// \`codex-update-waits\` is there until \`codex-update-go\` is, then fails (\`codex-update-fails\`) or
+// moves its version to \`codex-update-to\`.
+const own = (name) => path.join(root, name);
+if (args[0] === "--version") {
+  process.stdout.write("codex-cli " + (fs.existsSync(own("codex-version")) ? fs.readFileSync(own("codex-version"), "utf8").trim() : "0.1.0") + "\n");
+  process.exit(0);
+}
+if (args[0] === "update") {
+  heard({ update: true });
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  while (fs.existsSync(own("codex-update-waits")) && !fs.existsSync(own("codex-update-go"))) Atomics.wait(pause, 0, 0, 50);
+  if (fs.existsSync(own("codex-update-fails"))) {
+    process.stderr.write("no network\n");
+    process.exit(1);
+  }
+  if (fs.existsSync(own("codex-update-to"))) fs.writeFileSync(own("codex-version"), fs.readFileSync(own("codex-update-to"), "utf8").trim());
+  process.exit(0);
+}
 if (args[0] !== "app-server") process.exit(2);
 heard({ argv: args, env: { CODEX_HOME: process.env.CODEX_HOME ?? null, originator: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? null } });
 const read = (file, fallback) => { try { return JSON.parse(fs.readFileSync(path.join(root, file), "utf8")); } catch { return fallback; } };

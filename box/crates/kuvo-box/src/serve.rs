@@ -216,6 +216,12 @@ pub async fn run(
             home: home.to_owned(),
             agents: Some(accounts.clone()),
         };
+        let rows = kuvo_agents::account_rows::AccountRows::new(
+            home.to_owned(),
+            accounts.clone(),
+            Some(Arc::new(runs.clone())),
+        );
+        agents::rows::register(rows, Some(runs.clone()), sessions.clone(), &mut routes);
         agents::turns::register(runs, &mut routes);
         engine
             .with_agent_model_source(Arc::new(agents::Models {

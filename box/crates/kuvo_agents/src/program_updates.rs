@@ -736,6 +736,8 @@ pub trait Hold: Send + Sync {
 }
 
 type Running = Shared<BoxFuture<'static, UpdateResult>>;
+/// Told a program's update started (`None`) or how it ended.
+pub type Changed = Arc<dyn Fn(&str, Option<&UpdateResult>) + Send + Sync>;
 /// Every account here, as each update asks.
 pub type Accounts = Arc<dyn Fn() -> Vec<Arc<dyn Program>> + Send + Sync>;
 
@@ -748,13 +750,13 @@ pub struct ProgramUpdates {
     running: Arc<Plain<HashMap<String, Running>>>,
     hold: Option<Arc<dyn Hold>>,
     accounts: Accounts,
-    /// Told that a program's update changed: its accounts' rows say so.
-    changed: Arc<dyn Fn(&str) + Send + Sync>,
+    /// Told that a program's update changed (started, or ended so): its accounts' rows say so.
+    changed: Changed,
 }
 
 impl ProgramUpdates {
     /// The updates for a box at `root`.
-    pub fn at(root: &Path, accounts: Accounts, changed: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+    pub fn at(root: &Path, accounts: Accounts, changed: Changed) -> Self {
         Self {
             agents: root.join("agents"),
             temporary: root.join("tmp"),
@@ -879,7 +881,7 @@ impl ProgramUpdates {
         .boxed()
         .shared();
         lock(&self.running).insert(program.clone(), done.clone());
-        (self.changed)(&program);
+        (self.changed)(&program, None);
         tokio::spawn(done.clone());
         done
     }
@@ -898,7 +900,7 @@ impl ProgramUpdates {
         if let Some(release) = release {
             release();
         }
-        (self.changed)(program);
+        (self.changed)(program, Some(result));
     }
 
     /// The updates an earlier resident left under way: taken up, before turns are let in; one
