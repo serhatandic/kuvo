@@ -897,8 +897,8 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 - **A time in words** ("tomorrow 9am"): GNU `date` on Linux reads them, the BSD one on a Mac
   doesn't; the verbs read what both do, as Windows has neither.
-- **A coding agent's conversation's wake-ups through its bridge** (`via`): with its conversations
-  as callers, 4.6.
+- **A coding agent's conversation's wake-ups** (`via`): sent since, in "bots on a coding agent's
+  model" below.
 
 
 ## 5.1d-1 — bots' old keys of their own
@@ -1015,7 +1015,82 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **The browser's process** is checked by its pid alone (TypeScript also reads its command line);
   native Windows has no browser yet, so nothing is asked there.
 - **Asks told to your phones** (`watchAsks`) went with phone push (retired with 5.1c's holds).
-- **A bot on a coding agent's model** from Add Agent is refused as `POST kuvo/bots` refuses one
-  (the agents' bridge in `Bots::make`, 4.x).
+- **A bot on a coding agent's model**: made since, below.
 - `engine-models.test.mjs` has three cases failing on the tip without this work (the agents'
   catalog now answers): for the engine row.
+
+## 5.1 — bots on a coding agent's model
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `Bots::make`: a coding agent's model makes its conversation with the coding agents in this box (`BotEngine::agent_create`), kept as a bot's (`BotEngine::rewrite`, either side), told what it is (`kuvo.bot` in its `kuvoInstructions`), `via` noted, its greeting a synthetic message; the conversation taken away where making it didn't finish | `bots/make.ts` `makeBot` through the bridge |
+| `Bots::change`: renamed (`BotEngine::rename`), on another of its agents' models (`select_model`), its effort one of its model's own as its agents list them (`reach::usable_agent_models`), told again | `bots/edit.ts` `changeBot`, `effortOf` with the bridge |
+| `Bots::settle` (`arrived`), `freshen_those` (as the box starts, as the engine does, `retell`), the approval kept (`settle_session` reads either side) | `bots/tell.ts` `settleBot`, `freshenBots(bridge)` |
+| Delete: its conversation gone with its agents (`delete_agent_session`), as the box starts for one left | `bots/edit.ts` `deleteBot`, `leaveBehind`, `finishDeletes` |
+| Wake-ups and watches of a coding agent's conversation (its folder's `via`): a round for the engine reaches theirs too, and one only they have anything due in reaches them alone (`fire::agents_wanted`, `Engine::agents_wake_engine`), their tools not waited for; Wake Up Now the same; sent into their line (`WakeEngine` by the conversation's side) | `areas/wakes.ts` `wakeDemand`, Wake Up Now; `keeper/kuvo-wake` `fire` (`reach`, `tools`) |
+
+### Proof
+
+- `agents-bots.test.mjs` (new, both boxes), for Claude Code and Codex with their stand-ins: made
+  with its agent (201, `agents`, `via`, its notes and own rule, what it's told), greets you;
+  renamed and given a job (its conversation renamed, told so); an effort of Codex's model set, one
+  it hasn't refused; arrived; told again as its words change; a wake-up sent now and one due sent
+  by the box's round, both reaching its agent; Add Agent on the same model; deleted, its
+  conversation gone. All failed on the old Rust (422, then 503 for each change and Wake Up Now).
+- Regressions: `bots` 40/40, `wakes` 10/10, `work` 15/15, `agent-tools`, `marketplace-agents`,
+  `agents-codex`, `agents-claude`, kuvo_work's wake tests, on macOS (one Codex case, "Stop during a
+  summary", failed once and passed on rerun). WSL2 (static musl): `agents-bots`,
+  `marketplace-agents`, `wakes` 10/10, `bots` 40/40. Native Windows: in 5.1's Windows slot.
+
+### Gaps and owners
+
+- **An engine bot switched to a coding agent's model** still answers 503: carrying its conversation
+  on to the agents is 4.6's (carry and handover).
+- **Its group chats** as it's deleted: noted as left for group chats (5.3), as an engine bot's are.
+
+## 5.1d-3a — edits held for another computer
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `bots::held`: `PATCH`/`DELETE kuvo/bots/<id>` for a bot that isn't here, or whose settings another computer keeps, held (202 `{held}`) in `run/bots-held/<bot>.json`, sealed with the link's secret as TypeScript seals it (each box reads the other's); only the app, a Mac or a paired client may hold one, scoped to the setup and its submitter where the setup is managed or the client paired; `held` and `refused` in `kuvo/bots`, its `elsewhere` marked `waiting`, `refused` and `unlisted` | `bots/held.ts` `holdEdit`, `heldLists`, `checkedChange`, `keeperOf`; `areas/bots.ts` `botRoute`; `bots/elsewhere.ts` `elsewhereSaid` |
+| Sent by the relay (`Bots::follow_held`, given the ownership handle and relay in serve): as held, each round, at once as its computer tells its agents again; `botEdit`, or `scopedBotEdit` with the submitter checked; only to a computer that says `bots.held` (and `bots.effort`, `bots.job-fields`, `data.queued-device-authority` for what needs them); moved on to the computer that lists the bot now | `sendHeld`, `heldBack`, `missingFeature`; `main.ts` |
+| The keeper: `botEdit` / `scopedBotEdit` done as Edit Bot (`change_as_of`, as of when each field was given, stale fields left out) or Delete Bot… would, field by field where the whole is refused, answered `botEdited` once per id (`run/bots-held-taken.json`); the holder lets it go, or says the refusal (`refused.json`, sealed), or sends it on | `takeBotEdit`, `changeWhatItCan`, `takeBotEdited`; `peers/mail.ts` |
+| This box announces `bots.held`, `bots.effort` and `bots.job-fields` to your other computers | `peers/agents.ts` `ownFeatures` |
+
+### Proof
+
+- `bots-held.test.mjs` (new): Studio away, Lab holds a change (202), refuses work settings (409)
+  and an empty name (400), lists it held and the bot waiting under its new name; Studio back takes
+  it and Lab lets it go; one Studio refuses is said; then Studio holds a delete for Lab's bot and
+  Lab, back, deletes it. Passes with Lab and Studio each TypeScript or Rust (all four pairings).
+  Failed on the old Rust (404 for a bot not here). WSL2 (static musl, Rust Lab and TypeScript
+  Studio): `bots-held`, `bots-elsewhere`, `agents-bots`. Native Windows: in 5.1's Windows slot.
+- Regressions: `bots` 40/40, `bots-elsewhere`, `agents-bots`, kuvo_work's bot tests, kuvo_peers
+  (but for the three relay cases that are the peers row's).
+
+### Gaps and owners
+
+- **On a Mac** the box's secret is in your Keychain, not `run/link.json`: a Mac's Rust box holds
+  nothing and lists neither until its identity comes from the Mac (the Mac row).
+- **A Mac over SSH proving its key** (TypeScript's `ssh` submitter) is held as this computer's.
+- **A machine named by its id on its Mac** in `on` (TypeScript's `peer.id`): by its key only.
+
+### Lighter
+
+- A wake-up round tells whether the engine or the coding agents have anything due in one look at
+  the folders (`fire::wanted_by`), not one each.
+- What's held is looked at on a 15-second round and as the relay connects, and only read when the
+  `bots-held` folder has files; nothing is held in memory but when each went.
+
+## 5.1d-3b — offline bot setting edits
+
+Not ported, with the `kuvo/data/edits*` adapters ([what not to port](rust-box.md#5-what-not-to-port)):
+`bots/offline.ts` (`botEditView`, `editBot`) answers only `botSettings` record edits, which only
+those adapters submit, and no client calls them (nothing in `gpui/` asks `kuvo/data/edits`). What a
+TypeScript box left of them stays: a bot's `offlineEdits` history and its `offlineJob` are kept as
+its description changes (`bots/here.rs` `change_description`) and its job is read from them
+(`bots/job.rs`), covered by the `bots` fixtures.

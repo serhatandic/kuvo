@@ -55,8 +55,6 @@ pub const AGENT_TOOLS: &[&str] = &[
 
 /// The tools this box doesn't answer yet, and the part of the rewrite each comes with.
 const NOT_YET: &[(&str, &str)] = &[
-    ("plan_limits", "5.4"),
-    ("use_limit_reset", "5.4"),
     ("show_in_panel", "6.4"),
     ("show_file", "6.4"),
     ("mark_final", "6.4"),
@@ -272,6 +270,14 @@ impl Work {
         session: Option<&str>,
         operation: Option<&receipts::Operation>,
     ) -> Result<Said, String> {
+        if name == "plan_limits" {
+            let Some(limits) = self.limits.clone() else {
+                return Ok(refused("Plan limits aren't read on this computer."));
+            };
+            return tokio::task::spawn_blocking(move || said(limits.describe()))
+                .await
+                .map_err(|e| e.to_string());
+        }
         if let Some((_, part)) = NOT_YET.iter().find(|(tool, _)| *tool == name) {
             return Ok(refused(format!(
                 "{name} isn't in this computer's Kuvo Code yet (part {part} of its rewrite). Ask the user to do it in the app."
@@ -294,6 +300,7 @@ impl Work {
         }
         let here = self.own_name_here();
         Ok(match name {
+            "use_limit_reset" => self.use_reset(caller.as_ref(), args).await,
             "list_models" | "list_projects" => match self.computer_of(args.get("computer")) {
                 Err(why) => refused(why),
                 Ok(Some(peer)) => match &caller {
@@ -347,8 +354,15 @@ impl Work {
                         .filter(|data| data["id"] == session),
                     _ => None,
                 };
-                self.wake_tool(name, args, session, own.as_ref(), caller.as_ref(), operation)
-                    .await
+                self.wake_tool(
+                    name,
+                    args,
+                    session,
+                    own.as_ref(),
+                    caller.as_ref(),
+                    operation,
+                )
+                .await
             }
             "set_job" => self.set_job_tool(args, session, caller.as_ref()).await,
             "notify_user" => match &caller {

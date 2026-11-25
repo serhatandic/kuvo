@@ -174,7 +174,6 @@ pub struct Unavailable {
     pub why: &'static str,
 }
 
-const SANDBOX_OFF: &str = "Auto needs the sandbox, which isn't running on this computer.";
 const WINDOWS: &str = "Coming soon on Windows.";
 const FULL_ACCESS_OFF: &str = "Full Access isn't confirmed on this computer yet: confirm it first.";
 
@@ -199,7 +198,6 @@ pub struct Approvals {
     settings: PathBuf,
     /// On a machine, its settings are its own only once their file is there.
     owns_settings_by_file: bool,
-    windows: bool,
     is_mac: bool,
 }
 
@@ -214,7 +212,6 @@ impl Approvals {
             },
             owns_settings_by_file: !is_mac,
             is_mac,
-            windows: kuvo_os::platform::Platform::current().is_windows_host(),
         }
     }
 
@@ -239,7 +236,7 @@ impl Approvals {
     pub fn allow_full_access(&self, on: bool) {
         let mut change = Map::from_iter([("fullAccess".into(), json!(on))]);
         if !on && self.kept().get("last") == Some(&json!("fullAccess")) {
-            change.insert("last".into(), json!("auto"));
+            change.insert("last".into(), json!("askFirst"));
         }
         self.keep(change);
     }
@@ -259,7 +256,7 @@ impl Approvals {
 
     /// `approval` kept as the last one you picked here (never Auto where it can't be had at all).
     pub fn remember(&self, approval: Approval) {
-        if approval == Approval::Auto && self.windows {
+        if approval == Approval::Auto {
             return;
         }
         if self.kept().get("last") != Some(&json!(approval)) {
@@ -273,7 +270,7 @@ impl Approvals {
     }
 
     /// The approval a new conversation here gets where nothing says: the last you picked here,
-    /// Auto the first time; on Windows, Ask First in place of Auto.
+    /// Ask First while Auto is unavailable.
     pub fn default_approval(&self) -> Approval {
         let kept = self.kept();
         let wanted = kept
@@ -282,8 +279,8 @@ impl Approvals {
             .filter(|last| {
                 *last != Approval::FullAccess || kept.get("fullAccess") == Some(&Value::Bool(true))
             })
-            .unwrap_or(Approval::Auto);
-        if wanted == Approval::Auto && self.windows {
+            .unwrap_or(Approval::AskFirst);
+        if wanted == Approval::Auto {
             Approval::AskFirst
         } else {
             wanted
@@ -307,13 +304,9 @@ impl Approvals {
                 reason: "fullAccessOff",
                 why: FULL_ACCESS_OFF,
             }),
-            Approval::Auto if self.windows => Some(Unavailable {
+            Approval::Auto => Some(Unavailable {
                 reason: "windows",
                 why: WINDOWS,
-            }),
-            Approval::Auto => Some(Unavailable {
-                reason: "sandbox",
-                why: SANDBOX_OFF,
             }),
             _ => None,
         }
@@ -329,10 +322,7 @@ impl Approvals {
             held = Some(not);
             approval = Approval::Auto;
         }
-        if approval == Approval::Auto
-            && let Some(not) = self.unavailable(approval)
-        {
-            held = Some(not);
+        if approval == Approval::Auto {
             approval = Approval::AskFirst;
         }
         (approval, held)

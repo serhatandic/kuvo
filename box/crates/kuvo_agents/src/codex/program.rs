@@ -172,6 +172,49 @@ impl Program {
         })
     }
 
+    /// Native sign-in metadata, without starting Codex or renewing its credentials. The claims
+    /// are for display only, never authorization. API keys are not returned from this method.
+    pub async fn account_info(&self) -> Option<(Value, Option<String>)> {
+        let home = self.codex_home()?;
+        tokio::task::spawn_blocking(move || {
+            let saved = read_auth(&home)?;
+            if let Some(credentials) = oauth(&saved) {
+                let access = claims(&credentials.token).unwrap_or_default();
+                let id = saved["tokens"]["id_token"]
+                    .as_str()
+                    .and_then(claims)
+                    .unwrap_or_default();
+                let auth = "https://api.openai.com/auth";
+                let profile = "https://api.openai.com/profile";
+                let email = id["email"]
+                    .as_str()
+                    .or_else(|| access[profile]["email"].as_str());
+                let plan = id[auth]["chatgpt_plan_type"]
+                    .as_str()
+                    .or_else(|| access[auth]["chatgpt_plan_type"].as_str());
+                let identity = chatgpt_identity(&credentials.token, credentials.account.as_deref());
+                return Some((
+                    json!({"type":"chatgpt","email":email,"planType":plan}),
+                    identity,
+                ));
+            }
+            saved["OPENAI_API_KEY"]
+                .as_str()
+                .filter(|key| !key.is_empty())?;
+            Some((json!({"type":"apiKey"}), None))
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    pub fn catalog_file(&self) -> PathBuf {
+        self.home
+            .run()
+            .join("agents/codex/catalogs")
+            .join(format!("{}.json", self.provider))
+    }
+
     /// Its ChatGPT sign-in: `auth.json`, or the Keychain's or keyring's item where its settings
     /// keep it there. Never an API key's, and never renewed here.
     pub async fn credentials(&self) -> Option<Credentials> {
@@ -235,6 +278,10 @@ impl Program {
 }
 
 fn read_credentials(home: &Path) -> Option<Credentials> {
+    oauth(&read_auth(home)?)
+}
+
+fn read_auth(home: &Path) -> Option<Value> {
     let mode = fs::read_to_string(home.join("config.toml"))
         .ok()
         .and_then(|settings| {
@@ -247,15 +294,13 @@ fn read_credentials(home: &Path) -> Option<Credentials> {
         });
     if mode.is_some()
         && let Some(saved) = keychain(home)
-        && let Some(found) = oauth(&saved)
     {
-        return Some(found);
+        return Some(saved);
     }
     if mode.as_deref() == Some("keyring") {
         return None;
     }
-    let saved = serde_json::from_slice(&fs::read(home.join("auth.json")).ok()?).ok()?;
-    oauth(&saved)
+    serde_json::from_slice(&fs::read(home.join("auth.json")).ok()?).ok()
 }
 
 fn oauth(saved: &Value) -> Option<Credentials> {

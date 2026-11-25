@@ -22,10 +22,9 @@ use serde_json::{Map, Value, json};
 use super::{Approval, Approvals, Kept, Rule, Unavailable};
 use crate::bots::{here::BotHere, reach::segment};
 
-const ALL: [Approval; 4] = [
+const ALL: [Approval; 3] = [
     Approval::AskFirst,
     Approval::AcceptEdits,
-    Approval::Auto,
     Approval::FullAccess,
 ];
 /// The most pages of 200 conversations the round reads: half a million.
@@ -40,10 +39,7 @@ fn words(approval: Approval) -> (&'static str, &'static str) {
             "Accept Edits",
             "Edits files in the project on its own; asks before commands.",
         ),
-        Approval::Auto => (
-            "Auto",
-            "Works on its own inside the sandbox; asks before anything beyond it.",
-        ),
+        Approval::Auto => unreachable!("unavailable approval is not offered"),
         Approval::FullAccess => (
             "Full Access",
             "Runs everything outside the sandbox and never asks.",
@@ -125,8 +121,13 @@ impl ApprovalService {
     /// A conversation's approval as clients read it.
     fn shown(&self, at: &Found) -> Value {
         let kept = self.of(at);
+        let shown_approval = if kept.approval == Approval::Auto {
+            Approval::AskFirst
+        } else {
+            kept.approval
+        };
         let mut shown = json!({
-            "approval": kept.approval, "effective": kept.effective, "stored": kept.stored,
+            "approval": shown_approval, "effective": kept.effective, "stored": kept.stored,
             "plan": at.data["agent"] == "plan", "options": self.options(),
         });
         if let Some(held) = &kept.held {
@@ -137,14 +138,10 @@ impl ApprovalService {
 
     /// This computer's: whether Full Access may be picked, the default, and whether Auto runs.
     fn here(&self) -> Value {
-        let auto = match self.approvals.unavailable(Approval::Auto) {
-            Some(not) => json!({ "held": why(&not) }),
-            None => json!({}),
-        };
         json!({
             "fullAccess": self.approvals.full_access_allowed(),
             "default": self.approvals.default_approval(),
-            "auto": {"engine": auto, "agents": auto},
+            "auto": {"engine": {}, "agents": {}},
             "options": {"engine": self.options(), "agents": self.options()},
             "otherComputers": self.approvals.other_computers_allowed(),
         })
@@ -237,8 +234,10 @@ impl ApprovalService {
     /// A conversation's rules made for what its approval comes to now, where they aren't (a bot's
     /// from before there were approvals: this computer's default). Whether it's so.
     pub async fn settle_session(&self, engine: &BotEngine, id: &str) -> bool {
-        match self.session(engine, id).await {
-            Some(at) => self.settle(engine, &at).await,
+        // (A bot's, which may be the coding agents'.)
+        let data = engine.session_data(id).await.ok();
+        match data.filter(|data| data["id"].is_string()) {
+            Some(data) => self.settle(engine, &self.found(data)).await,
             None => false,
         }
     }

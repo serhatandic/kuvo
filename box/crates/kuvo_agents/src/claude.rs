@@ -22,6 +22,7 @@ use std::{
 
 use futures_util::future::{BoxFuture, join_all};
 use kuvo_store::home::Home;
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::{
@@ -40,6 +41,7 @@ use crate::{
 pub struct ClaudeFactory {
     home: Home,
     holder_binary: PathBuf,
+    feed: Option<crate::feed::Feed>,
 }
 
 impl ClaudeFactory {
@@ -47,7 +49,13 @@ impl ClaudeFactory {
         Self {
             home,
             holder_binary,
+            feed: None,
         }
+    }
+
+    pub fn with_feed(mut self, feed: crate::feed::Feed) -> Self {
+        self.feed = Some(feed);
+        self
     }
 }
 
@@ -88,16 +96,18 @@ pub async fn adopt_console_folder(home: &Home) -> io::Result<()> {
 
 impl Factory for ClaudeFactory {
     fn create(&self, account: &Account, home: Option<PathBuf>) -> io::Result<Arc<dyn Agent>> {
+        let program = program::Program::new(
+            self.home.clone(),
+            self.holder_binary.clone(),
+            account.id.clone(),
+            home,
+        );
+        let models = model::Catalog::new(program.catalog_file(), self.feed.clone())?;
         Ok(Arc::new(Claude {
-            program: program::Program::new(
-                self.home.clone(),
-                self.holder_binary.clone(),
-                account.id.clone(),
-                home,
-            ),
+            program,
             provider: account.provider().to_string(),
             threads: Mutex::new(Threads::default()),
-            models: model::Catalog::new()?,
+            models,
         }))
     }
 }
@@ -158,6 +168,122 @@ impl Claude {
 }
 
 impl Agent for Claude {
+    fn plan_sign_in(&self) -> BoxFuture<'_, Option<(String, String)>> {
+        Box::pin(self.program.plan_sign_in())
+    }
+
+    fn read_plan_limits(
+        &self,
+        explicit: bool,
+    ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
+        Box::pin(async move {
+            // A passive usage request must not launch a separate Claude native probe.
+            if !explicit {
+                return Ok(None);
+            }
+            let Some((_, identity)) = self.plan_sign_in().await else {
+                return Ok(None);
+            };
+            let answer = model::usage(self.program.clone()).await?;
+            let Some((mark, current)) = self.plan_sign_in().await else {
+                return Ok(None);
+            };
+            if identity != current {
+                return Ok(None);
+            }
+            use crate::session::{DirectPlanReading, LimitWindow, PlanLimitReading, PlanSpend};
+            let rate = &answer["rate_limits"];
+            let mut windows = vec![];
+            let timestamp = |value: &Value| {
+                value
+                    .as_str()
+                    .and_then(|at| at.parse::<jiff::Timestamp>().ok())
+                    .and_then(|at| at.as_millisecond().try_into().ok())
+            };
+            let number = |value: &Value| {
+                value
+                    .as_f64()
+                    .or_else(|| value.as_str()?.parse::<f64>().ok())
+                    .filter(|v| v.is_finite())
+            };
+            let mut add = |id: &str, v: &Value, minutes: u32, model: Option<String>| {
+                if let Some(used) = number(&v["utilization"]) {
+                    if windows.iter().any(|w: &LimitWindow| w.id == id) {
+                        return;
+                    }
+                    windows.push(LimitWindow {
+                        id: id.into(),
+                        used: used / 100.0,
+                        minutes: Some(minutes),
+                        resets_at: timestamp(&v["resets_at"]),
+                        model,
+                    });
+                }
+            };
+            add("five_hour", &rate["five_hour"], 300, None);
+            add("seven_day", &rate["seven_day"], 10080, None);
+            add(
+                "seven_day_sonnet",
+                &rate["seven_day_sonnet"],
+                10080,
+                Some("Sonnet".into()),
+            );
+            add(
+                "seven_day_opus",
+                &rate["seven_day_opus"],
+                10080,
+                Some("Opus".into()),
+            );
+            for scope in rate["model_scoped"].as_array().into_iter().flatten() {
+                if let Some(model) = scope["display_name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                {
+                    let id = format!(
+                        "seven_day_{}",
+                        model
+                            .to_ascii_lowercase()
+                            .chars()
+                            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                            .collect::<String>()
+                    );
+                    add(&id, scope, 10080, Some(model.into()));
+                }
+            }
+            let mut direct = DirectPlanReading::windows(PlanLimitReading {
+                windows,
+                sign_in: Some(mark),
+            });
+            direct.no_plan = answer["rate_limits_available"] == false;
+            direct.plan = answer["subscription_type"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    let mut chars = s.chars();
+                    format!(
+                        "{}{}",
+                        chars.next().unwrap().to_uppercase(),
+                        chars.as_str().to_lowercase()
+                    )
+                });
+            let extra = &rate["extra_usage"];
+            if extra["is_enabled"] == true
+                && let Some(used) = number(&extra["used_credits"])
+            {
+                direct.extra_usage = Some(PlanSpend {
+                    amount: used.max(0.0) / 100.0,
+                    limit: number(&extra["monthly_limit"])
+                        .filter(|n| *n > 0.0)
+                        .map(|n| n / 100.0),
+                    resets_at: timestamp(&extra["resets_at"]),
+                });
+            }
+            if cfg!(target_os = "macos") {
+                direct.reset_unreadable=Some("Claude Code keeps this Mac's sign-in in the Keychain, so its resets show only from a Linux computer of yours signed in to Claude Code with the same account.".into());
+            }
+            Ok(Some(direct))
+        })
+    }
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>> {
         Box::pin(async {
             let (status, replaced) =

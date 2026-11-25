@@ -22,7 +22,10 @@ const areas = new Map([
   ["agent-sessions", "./agent-sessions.test.mjs"],
   ["agent-turn-fixture", "./agent-turn-fixture.test.mjs"],
   ["compat", "./compat.test.mjs"],
+  ["compat-repair", "./compat-repair.test.mjs"],
+  ["compat-shim", "./compat-shim.test.mjs"],
   ["clock", "./clock.test.mjs"],
+  ["settings", "./settings.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],
   ["engine-typed", "./engine-typed.test.mjs"],
   ["engine-delivery", "./engine-delivery.test.mjs"],
@@ -37,6 +40,7 @@ const areas = new Map([
   ["files", "./files.test.mjs"],
   ["git", "./git.test.mjs"],
   ["library", "./library.test.mjs"],
+  ["usage", "./usage.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
   // Bots, wake-ups and work: their route scenarios (`bots.json` and `wakes.json`).

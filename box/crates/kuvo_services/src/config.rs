@@ -235,6 +235,11 @@ fn parse_changes(raw: &Value) -> Option<Vec<SettingChange>> {
 }
 
 pub fn change_settings_file(raw: &Value, file: &Path, lock: &Path, keys_named: &str) -> SettingsChanged {
+    change_settings_recorded(raw,file,lock,keys_named,|_,_,_|{})
+}
+
+pub fn change_settings_recorded(raw: &Value, file: &Path, lock: &Path, keys_named: &str,
+    record: impl FnOnce(&Map<String,Value>,&Map<String,Value>,&[SettingChange])) -> SettingsChanged {
     let Some(parsed) = parse_changes(raw) else {
         return SettingsChanged::Err { status: 400, message: BAD_CHANGES.into(), problem: None };
     };
@@ -261,10 +266,12 @@ pub fn change_settings_file(raw: &Value, file: &Path, lock: &Path, keys_named: &
             }
         }
     }
-    write_settings_file(&settings, &parsed, file, keys_named)
+    let result=write_settings_file(&settings, &parsed, file, keys_named);
+    if let SettingsChanged::Ok(after)=&result {record(&settings,after,&parsed);}
+    result
 }
 
-pub fn register(routes: &mut Registry, paths: ConfigPaths) {
+pub fn register(routes: &mut Registry, paths: ConfigPaths, setup: kuvo_setup::SetupHandle) {
     let gp = paths.clone();
     routes.register::<get_kuvo_config::Spec, _, _>(Access::Any, move |_| {
         let p = gp.clone();
@@ -278,13 +285,21 @@ pub fn register(routes: &mut Registry, paths: ConfigPaths) {
     });
     routes.register::<patch_kuvo_config::Spec, _, _>(Access::Any, move |call| {
         let (p, body) = (paths.clone(), call.request.body.clone());
+        let setup=setup.clone();
+        let receipt = form_urlencoded::parse(call.request.path.split_once('?').map(|(_,q)|q).unwrap_or_default().as_bytes()).any(|(k,v)|k=="receipt"&&v=="1");
         async move {
             if !p.owns_settings() { return Err(Refusal::new(StatusCode::CONFLICT, UNOWNED_SETTINGS)); }
             let changes = serde_json::from_slice::<Value>(&body).ok().and_then(|v| v.get("changes").cloned()).unwrap_or(Value::Null);
-            let res = tokio::task::spawn_blocking(move || p.change_settings(&changes)).await
+            let (res,receipts) = tokio::task::spawn_blocking(move || {
+                let mut receipts=Vec::new();
+                let result=change_settings_recorded(&changes,&p.config_file,&p.lock_file,&p.keys_named,|before,after,changes|{
+                    if receipt && let Some(scope)=setup.config_receipt_scope() && let Ok(Some(id))=crate::config_receipts::record(&p.home,scope,before,after,changes,None) {receipts.push(id);}
+                });
+                (result,receipts)
+            }).await
                 .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             match res {
-                SettingsChanged::Ok(s) => Ok(RouteReply::json_as_kept::<200>(Value::Object(s))),
+                SettingsChanged::Ok(s) => Ok(RouteReply::json_as_kept::<200>(if receipt {json!({"settings":s,"configChanges":receipts})} else {Value::Object(s)})),
                 SettingsChanged::Err { status, message, problem } => Err(SettingsChanged::into_refusal(status, message, problem)),
             }
         }

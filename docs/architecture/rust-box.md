@@ -38,7 +38,7 @@ keep speed optimization (level 3), use thin LTO and strip symbols for size.
 | `kuvo_server` | One dispatcher; local HTTP with its password and `run/serve.json`; the route-version header; the line (`kuvo/line`); the SSH pipe (`route`, `route-to`); paired relay sessions. |
 | `kuvo_setup` | Lease, leadership and takeover, membership, shared saves, devices and pairing, adding, unlinking and wiping a computer, backups. |
 | `kuvo_peers` | Relay client, mail and outbox, reach, merged lists, `ownerOf`, moves and handoffs, receipts, letters, notices. |
-| `kuvo_engine` | OpenCode on demand, `api/…` passthrough (WebSocket and PTY included), sessions, queues, send-once receipts, asks, search. |
+| `kuvo_engine` | OpenCode on demand, `api/…` passthrough (WebSocket and PTY included), sessions, queues, send-once receipts, asks, search. After 4.7 and 9.0 only the sessions half stays, renamed `kuvo_sessions`. |
 | `kuvo_agents` | Holders, roster, accounts and sign-in, the tools relay and MCP, one module per agent, subagents, reviews, handover. |
 | `kuvo_work` | Bots, wake-ups and watches, the Work Queue, group chats and seats, autopilot. |
 | `kuvo_services` | Usage, limits and Insights, Library, artifacts, marketplace, integrations, skills, settings pages, vault, files, Git, Changes, worktrees, the browser keeper. |
@@ -52,7 +52,8 @@ tokio-tungstenite; x25519-dalek, aes-gcm, sha2, hkdf and ed25519-dalek; rusqlite
 notify, with polling for WSL's Windows drives; tokio's named pipes and `windows-sys` for Job
 Objects, ACLs and start identity; rustix on Unix; the `landlock` crate; `rmcp` for MCP;
 `agent-client-protocol` for ACP; jiff for time zones; pulldown-cmark; tracing. Git stays the `git`
-command, as today. No PTY crate: terminals are the engine's (`api/pty`), and the box passes them on.
+command, as today. Terminals are the box's own (row 4.7c): `kuvo_os::pty` with `openpty` on Unix
+and ConPTY on Windows, served by `kuvo_services` at today's `api/pty` paths and frames.
 
 **Processes.** The single binary `kuvo-box` has these modes:
 
@@ -117,6 +118,7 @@ The Win32 probes ran over OpenSSH in a scratch folder:
 | Antigravity | ACP through `agy acp` or `agy_acp_server.par` for older sign-ins. Follows the agent's transcript file. | ACP in Rust. Keep both launches until a valid legacy profile can use `agy acp` without signing in again. |
 | Claude Code | `@anthropic-ai/claude-agent-sdk` drives the user's Claude CLI. | Speak stream-json and the CLI's control protocol directly. No tested feature needs the SDK sidecar. |
 | Cursor | `@cursor/sdk`, with `cursor-worker.ts` already running it under a holder. | Run the pinned SDK in the engine's Bun sidecar. The headless CLI's event stream lacks parity. |
+| OpenCode | The engine itself, over its HTTP server and `api/…` passthrough. | One more ACP agent (`opencode acp`), one process per computer, on 4.3's client (4.7, [design](opencode-agent.md)). |
 
 Session 0.3 ran the Mini's Claude Code 2.1.330 and Antigravity 1.5.14, plus a scratch
 installation of Cursor CLI 2026.11.22-e9042b2. All ran with private homes, Keychain access
@@ -383,7 +385,7 @@ public release: the compatibility older Macs need is ported (section 4).
 | Unconverted setup authority and standby receipts | 750 | Every main converts on its first lease; no public release wrote a setup. The Rust box refuses an unconverted one. |
 | Split launch (`run` with `serve --kept`, `box-services`) | 400 | The resident owns services ([one client process](one-client-process.md), step 7). |
 | Folder layout steps as steps (20 of 23 empty) | 400 | Frozen layout; the move does step 1's work. |
-| `kuvo/data/edits*` adapters and non-session owner reads | 60 | No desktop caller. Storage and the ordinary session owner reads stay. |
+| `kuvo/data/edits*` adapters and non-session owner reads, with the bot settings they edit (`bots/offline.ts`) | 175 | No desktop caller. Storage and the ordinary session owner reads stay, and a bot keeps the `offlineEdits` and `offlineJob` a TypeScript box wrote. |
 | Goal cards: `link/work/goals.ts`, `agents/goals.ts`, `shared/goals.ts` | 2,320 | Removed from the TypeScript box on 23 November. |
 | Typed keywords and slash commands | 310 | Removed on 22 November. Composer draft delivery and the 0.7.x `/typed` compatibility route remain. |
 | Letters' `peerOf` and `moved` | 100 | Ported onto `ownerOf` instead. |
@@ -427,16 +429,18 @@ parallel.
 | 4.1b | **Done.** Resident agent runtime and holder adoption through keeper updates, roster, accounts and sign-in, session and model integration. Authenticated resident and keeper proof is owned by 4.4; the carried cases are named in the [coverage](rust-agents-coverage.md). | agents | 3.2, 4.1a | — | B |
 | 4.1c | **Done.** Tools relay, `mcp` mode, shared RPC and the Bun sidecar installer. Every resident gives sandboxed or held agents the forwarder, Macs included. Adapter rows pass the relay to their factory; 6.1 brings the sandbox launcher, 6.4 the browser tools program and engine-own-tools. [Coverage](rust-agents-coverage.md) | agents | 4.1a | — | B |
 | 4.2 | **Done.** Codex over its app-server: account, sign-in, models, turns, asks, background terminals and holder adoption through keeper updates, with the shared program updater and its turn hold. It also serves the `kuvo/agents/` routes the app uses that had no Rust route: Settings › Accounts' rows, install, program updates and notices, a conversation's run state, read and model, and the agents' feed (`kuvo/agents/api/event`). Every `codex.test.ts` case is ported or has an owner. Passes on macOS, Linux, WSL and native Windows, and live on GPT-6-Luna across a keeper switch (macOS). [Coverage](rust-agents-coverage.md#codex-42) | agents | 4.1 | 5 | B |
-| 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch | agents | 4.1 | 6 | C |
+| 4.3 | Grok and Antigravity over ACP, with extensions and the Antigravity legacy launch. One shared ACP client with a small flavour per agent, carrying several sessions on one agent process under one holder, so OpenCode (4.7) can run one process per computer. | agents | 4.1 | 7 | C |
 | 4.4 | **Done.** Claude Code over stream-json and control stdio. 4.4a covers account checks, sign-in, legacy account migration and model discovery. 4.4b covers turns, holder handoff, steer receipts, refused sign-ins and the live keeper proof (macOS and WSL). Both pass on macOS, Linux, WSL and native Windows. Per-scenario parity for the remaining `claude.test.ts` groups and the complete home comparison remain. [Coverage](rust-agents-coverage.md#claude-code-44) | agents | 4.1, 0.3 | 6 | B |
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
-| 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4 | 4 ×2 | B |
+| 4.7 | OpenCode as one more coding agent, on 4.3's ACP client ([design](opencode-agent.md)). 4.7a: parity spike, ACP or HTTP (2 h). 4.7b: adapter, one held process per computer, catalog cache, sign-in paths, MCP config read by the box, bots and wake-ups pointed at it (6 ×2). 4.7c: the box's own terminals, `kuvo_os::pty` and `api/pty` in `kuvo_services`, lane D, any time after 1.3 and before 4.7d (5 h). 4.7d: existing conversations listed, read and continued, then the engine place removed: every `Place::Engine` branch and the engine's start triggers (5 h). | agents | 4.3, 3.2 | 24 | B |
+| 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4, 4.7 | 4 ×2 | B |
+| 4.8 | **In progress.** [Idle work](#48-idle-work): agent discovery and version checks made lazy; Library, marketplace, session and settings follows, keeper, work and peer timers, and setup lease remain. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
 | 5.1 | 5.1a done: wake-ups and watches fired by the resident and the bot list; 5.1b done: making, changing, deleting and telling bots, on macOS, Windows and Linux; 5.1c-1 done: approval routes and the round that keeps conversations' rules; 5.1c-2 done: work settings, Keep This Mac Awake, oversight, work changes and the asks list; 5.1c-3 done: a bot's work (`kuvo/work?bot=`) from the session list; 5.1c-4 done: `kuvo/projects/new` and answering what's asked; 5.1c-5 done: models that can't answer now; 5.1c-6a and 6b done: the work watcher (live, catch-up, held finishes, late answers) and the engine's place in the background model; 5.1c-7 done: Stop on someone's work and Stop All; 5.1f-1 done: a lead's sessions here listed, stopped, summarized and answered from another computer, and their rows told it; 5.1f-2 done: work started here for a lead on another computer, its models and projects read, and its Stop All; 5.1e-1 done: the agents' work tools and letters (`kuvo/agent-tools`: sessions here and on your other computers, starts with a bot's limits, the start rate and 5.2's Work Queue link, models, projects, make_project, Stop All elsewhere, list_agents, send_message, read_conversation). Open: 5.1e-2 (the wake tools, set_job), the rest of 5.1c (notices and their holds) and 5.1d (held edits, bots elsewhere, bots' old keys). [Coverage](rust-work-coverage.md)<br>Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |
 | 5.2 | **Done for the resident contract.** Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Verified on Mac (both boxes), native Windows and static Linux musl under WSL. [Coverage and integration dependencies](rust-workqueue-coverage.md) Queue cases from `setup-shared.test.ts`, `setup-merge.test.ts`, `work-queue-numbering.test.ts`, `offline-merge.test.ts`, `setup-two-boxes.test.js`, `documents.test.js`, `owner-mutations.test.js`, and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`.<br>Reuse 3.2's `kuvo_peers::memory_read` transport for authenticated read-only requests without a disk spool.<br>2.3 cannot close until setup merge reserves Work Queue numbers on the current relay lease with a durable source-bound approval, then connects the queue import, retained aliases and Markdown reference rewrite. | work | 2.2 | 5 ×2 | C |
 | 5.3 | Group chats and seats, autopilot. Group clock consumer in `time-zone.test.ts`.<br>Also covers `mac-peers.test.js`. | work | 4.6, 2.2 | 4 ×2 | B |
-| 5.4 | Usage, limits, Insights (SQLite), pricing<br>Also covers `notices-usage.test.ts`. | services | 4.1, 2.2 | 5 ×2 | C |
+| 5.4 | **In progress:** the local usage settings routes, accepted Claude Code/Codex turn readings, native Claude/Codex/Grok, Cursor/Antigravity readings, engine credential plans, local Codex reset confirmation/replay and work asks, menu/notice consistency, bundled pricing resolution and a startup/file-watch SQLite Insights index with portable mutation cursors and native JSONL offsets, peer limit merge, passive Codex log readings that never start an app-server, read-only engine SQLite/Antigravity history, native usage calendar aggregation, Codex fallback and price catalog refresh have verified slices. Claude grants, provider edge cases, peer reset/notice-state/usage mail, engine ChatGPT/Cursor history and full Insights parity are open. [Coverage](rust-usage-coverage.md).<br>Also covers `notices-usage.test.ts`. | services | 4.1, 2.2 | 5 ×2 | C |
 | 5.5 | **Done.** Library, artifacts, attachments, setup-list peer views (cases 17, 23, 28), marketplace, integrations, skills, MCP catalog and `kuvo/programs` ported to `kuvo_services` (plus additive `kuvo_setup` marketplace installations helper) and verified on macOS, Linux musl and native Windows. Live bot creation from Marketplace Add Agent stays with 5.1b; Settings pages stay with 6.1. [Coverage](rust-library-coverage.md) | services | 2.2 | 4 ×2 | A |
-| 6.1 | Settings pages and flows, permissions, sandbox (Seatbelt, `fence-exec`). From 5.1: Auto's reviewer (`kuvo/sessions/:id/decisions`, `work/reviewer.ts`, `work/reviewing.ts`) and Auto itself once the sandbox runs ([coverage](rust-work-coverage.md#51c-1--approval)) | services | 4.1 | 5 ×2 | D |
+| 6.1 | Settings pages and flows, permissions. 6.1b serves the settings sections, forms, revision-guarded writes, events, Git migration, Custom Auto lists and peer archive copies/actions. [Coverage and remaining owner gates](rust-settings-coverage.md). Auto mode, its reviewer and the sandbox are postponed past 0.8 (user 11-25); every computer answers as one without the sandbox. | services | 4.1 | 5 ×2 | D |
 | 6.2 | **Done.** (Mac wipe end to end is verified in 2.3; Helper supervision cases are 7.2's, browser and settings cases 6.4 and 6.1.) Vault: Helper Keychain, wrapped-key files, broker and SSH agent. The released move uses the TypeScript `security` path for custom Claude Code credentials, verified with a disposable Mac Keychain. Installed Helper and Keychain cases in `setup-mac.test.js` remain open. See the [coverage and remaining gates](rust-vault-coverage.md). | services | 1.3, 4.1, 6.1 | 6 | D |
 | 6.3 | Files, Git, Changes, worktrees, projects, folders. Golden-home projects in `protocol/conformance/compat.test.mjs`. 6.3a files and folders: a file's info, text and bytes, folder lists, a new folder, a folder's tree, finding files and suggested folders ported (`kuvo_services::files`, `files` conformance area, every TS case covered); **part A done** on macOS and native Windows (15 of 16 there, unreadable files skipped: no mode bits); Linux left ([coverage](rust-files-coverage.md)). 6.3b1 projects list: `GET kuvo/projects` ported (`kuvo_services::git`, `git` conformance area, macOS, Windows, Linux); 6.3b2 safe git: `ownArgs`/`askedArgs` ported (`kuvo_services::git::safe`), the argument table matching TS and a hostile repository starting nothing through either box; TS gaps fixed in both: `write-tree`, and a repository's transports and askPass (the box's own git reaches only local paths). 6.3c: project edit and every Git/Changes route the desktop calls are served; conformance 16/16 in TypeScript and Rust on macOS, and in Rust 15/15 applicable on Linux and WSL, 13/13 applicable on native Windows. Windows folder queries fixed in both; Mac login cache and native Trash deadline matched. Differential matches the Git/project answers and files, not unrelated startup files; remaining scenario and worktree lifecycle gaps in the [coverage map](rust-git-coverage.md). | services | 1.4 | 5 ×2 | D |
 | 6.4 | Browser keeper: Chrome for Testing, CDP pipe, browser tools, live view, downloads | services | 4.1 | 5 ×2 | A |
@@ -444,20 +448,58 @@ parallel.
 | 7.2 | **Done.** Fleet update with per-target packs, `kuvo-install` starting the move, uninstall, footprint. Keep each Rust release's `box.json` beside `bin` with a top-level `launch: "rust"`, including when the previous TypeScript stager moves only `bin`. TypeScript beta interoperability is limited to the deployed beta.48 taking the bridge and then Rust. [Coverage and carried cases](rust-updates-coverage.md). | keeper | 7.1, 2.1, 2.6 | 4 ×2 | A |
 | 7.3 | **Part A done:** historical SSH verbs and unsigned beta.1 roster mail, both tagged machine homes and app moves ([coverage](rust-released-coverage.md)). For released Macs: the `stays` and `next` items, served; repairing a machine a 0.7 Mac overwrote. Released Mac coexistence, legacy roster mail and leave-running integration from `documents.test.js`, `setup-mac.test.js`, `time-zone.test.ts`, `personalities-box.test.js`, `setup-handover.test.js`, and tagged `compat.test.mjs`.<br>Also covers `peers.test.js`, `mac-peers.test.js`, `devices.test.js`, `devices-two-boxes.test.js`. | move | 7.1, 2.4 | 6 | D |
 | 8.1 | **Done.** Native Windows: profile ACLs and private secret folders, logon task and starter (sign-out and restart proven), Git Bash for Kuvo's commands, path vectors and long paths, services by process tree, the last computer's wipe and reinstall, and a fresh install on the administrator test account (no standard-account run, at the user's choice). [Coverage](rust-windows-coverage.md) | os, keeper | 7.1 | 5 ×2 | D |
-| 8.2 | Native engine, browser and the five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
-| 9.0 | Consolidation before the switch (build, not review): remove duplication across crates, split files over ~1,000 lines (engine queue, move driver, setup actor), a typed command line for `kuvo-box`, collapse the coverage maps into one short reference. Every change stays green against both boxes; measure lines before and after. | all | all of 2–8 | 4 | B |
+| 8.2 | The OpenCode agent on Windows, browser and the other five agents; `windows-box-check.sh` runs the suite on unsigned builds | all | 8.1, 4.5, 6.4 | 6 ×2 | D |
+| 9.0 | Consolidation before the switch (build, not review): remove duplication across crates, split files over ~1,000 lines (engine queue, move driver, setup actor), a typed command line for `kuvo-box`, collapse the coverage maps into one short reference. Delete what's left of the engine in `kuvo_engine` (`launch`, `lifetime`, `proxy`, `api`, `release`, `model_refresh`: about 2,425 lines) and rename the crate `kuvo_sessions`; 3.2's queues, receipts, delivery, asks, search and list stay. Every change stays green against both boxes; measure lines before and after. | all | all of 2–8 | 4 | B |
 | 9.1 | The switch from the TypeScript beta: backup, first-start take-over of its home (running turns end once), and the update of a computer that was off. Cross-process link writer handoff from `setup-mac.test.js` and `setup-handover.test.js` | move, keeper | all | 6 | A |
 | 9.2 | Budget check and a 24-hour soak with turns | — | 9.1 | 4 | B |
 | 9.3 | Rehearsal: the user's four computers (Mac, Linux, WSL2, native Windows) from the TypeScript beta, plus a 0.7.2 Mac and a 0.8.0-beta.1 machine straight to Rust. Rust-to-Rust mixed versions and rollback, real Helper and released Mac cases from `setup-handover.test.js`, `setup-mac.test.js`, and `setup-two-boxes.test.js`. | — | 9.2 | 7 ×2 | A |
 | 9.4 | Four weeks after the user's computers switched: remove the TypeScript box, shapes source moves to Rust, docs | all | 9.3 | 6 | A |
 
-Totals by phase: 0: 21 · 1: 39 · 2: 54 · 3: 18 · 4: 39 · 5: 46 · 6: 36 · 7: 24 · 8: 22 · 9: 30.
-**The total is 329 hours.** By lane: A 100, B 81, C 73, D 75. Lane A is the longest chain.
+Totals by phase: 0: 21 · 1: 39 · 2: 54 · 3: 18 · 4: 64 · 5: 46 · 6: 36 · 7: 24 · 8: 22 · 9: 30.
+**The total is 354 hours.** By lane: A 100, B 100, C 74, D 80. Lanes A and B are the longest chains.
 
 While the plan runs, the TypeScript box keeps taking fixes. Each fix lands with a route scenario or
 conformance test, so the Rust lane for that area takes it in. Windows sessions 4–11 in
 [windows.md](windows.md) are replaced by 0.4, 1.3, 7.1 and 8.1–8.2. The native box is the Rust
 box.
+
+### 4.8 Idle work
+
+The resident should do nothing until there is useful work. The following intentionally change when
+work happens, not which computer owns it or the route shapes:
+
+- **Agent accounts and model lists:** Codex reads its native sign-in metadata and its last catalog
+  without starting an app-server; it refreshes the catalog when the app-server starts for work or
+  a sign-in completes. On first use it can read Codex's own model cache; without either cache the
+  catalog is incomplete (the resident must not pretend an unlisted model has gone). Claude reads
+  native sign-in metadata and a saved catalog, or offers its usual provisional models. Its first
+  real turn or sign-in discovers the complete catalog and context limits. Both keep disposable,
+  per-account catalogs under `run/agents` across resident restarts. The Rust-only timing cases in
+  `agents-codex` and `agents-claude` fail on the previous binary; the ordinary catalog cases exercise
+  the same account and model answers after work. Claim labels available only from a native probe
+  may be less specific until the agent does work. Plan usage probes belong to row 5.4.
+- **Agent program checks:** no version or installer check at resident startup. The agents settings
+  asks on first use or refresh; otherwise the check is daily. A local executable's canonical path,
+  modification time and length identify the last successful version read even after a resident
+  restart. Package release lookups keep their daily result. The `agents-updates` case checks that
+  reopening Settings and restarting do not run the unchanged executable, and a changed executable
+  gives its new version.
+
+Mac baseline (debug binary, isolated home with a signed-in scripted Codex, one computer, local
+relay stand-in). For each sample: three seconds to settle, then eleven `top -l` samples a second
+apart; IDLEW differences divided by ten. RSS is `ps`'s resident pages, including shared pages,
+not PSS. The connected sample includes a persistent line plus model and account requests.
+
+| Run | No client: RSS / processes / idle wakes/s | One client: total RSS / processes / idle wakes/s |
+|---|---|---|
+| Before 4.8, `27ed3c8e6` | 79,904 KiB / 1 / 2.8 | 144,720 KiB / 3 / 8.2 |
+| After the agent catalog and program changes | 77,440 KiB / 1 / 0.0 | 81,984 KiB / 1 / 0.0 |
+
+The baseline's other two live processes were the holder (18,288 KiB) and its scripted app-server
+(44,016 KiB); neither starts on the new route reads. The version command can run briefly when the
+agents settings is opened, not at startup. The wake readings are short OS samples on a busy Mac;
+zero reported idle wakes does not mean the remaining application timers have been removed. Repeat
+after the remaining work, including the keeper.
 
 ## 7. Release decisions
 

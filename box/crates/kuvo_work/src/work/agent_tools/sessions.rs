@@ -278,7 +278,7 @@ impl Work {
         if let Some(bot) = bot {
             ask["bot"] = json!(bot.id);
             if self.bot_allows(&bot.id, action) && (named.is_some() || root.is_some()) {
-                let (text, failed) = self.do_work(&ask).await;
+                let (text, failed) = self.do_work(&ask, false).await;
                 return Said {
                     text,
                     refused: failed,
@@ -310,6 +310,82 @@ impl Work {
         }
     }
 
+    pub(super) async fn use_reset(
+        &self,
+        caller: Option<&Caller>,
+        args: &Map<String, Value>,
+    ) -> Said {
+        let Some(caller) = caller else {
+            return refused("Only a conversation on this computer can use a reset from here.");
+        };
+        let Some(wanted) = args
+            .get("account")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return refused("Say which account (account), as plan_limits lists it.");
+        };
+        let Some(resets) = self.resets.as_ref() else {
+            return refused("The coding agents aren't running here now, so no reset can be used.");
+        };
+        let row = match resets.find(wanted).await {
+            Ok(row) => row,
+            Err(why) => return refused(why),
+        };
+        let id = row["id"].as_str().unwrap_or_default();
+        let name = row["title"].as_str().unwrap_or_default();
+        let offer = match resets.offer(id).await {
+            Ok(offer) => offer,
+            Err(error) => {
+                return refused(format!(
+                    "{name}'s resets can't be used now: {}",
+                    kuvo_services::usage::resets::refusal_words(error).await
+                ));
+            }
+        };
+        if offer["always"] == true {
+            let (text, error) = resets.spend_for(id, &caller.name, false, true).await;
+            return Said {
+                text,
+                refused: error,
+            };
+        }
+        let mut reset =
+            json!({"row":id,"account":name,"service":row["service"],"count":offer["count"]});
+        if let Some(refills) = offer.get("refills") {
+            reset["refills"] = refills.clone();
+        }
+        let mut ask = json!({"action":"resetLimits","session":caller.session,"name":caller.name,"project":name,"given":{"name":name,"reset":reset}});
+        if let Some(bot) = caller.works_for() {
+            ask["bot"] = json!(bot.bot);
+        }
+        let Ok(id) = self.ask_work(ask, None, None, None) else {
+            return refused("Couldn't ask the user: this computer couldn't keep the ask.");
+        };
+        let wait = if caller.data["metadata"]["kuvo"]["autopilot"] == true {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(
+                std::env::var("KUVO_WORK_ASK_WAIT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(600_000),
+            )
+        };
+        match self.answer_of(&id, wait).await {
+            Some(answer) => Said {
+                text: answer["text"].as_str().unwrap_or_default().to_owned(),
+                refused: answer["isError"] == true,
+            },
+            None => said(format!(
+                "The user hasn't answered yet: it stays asked on {}, and you'll hear when they answer. Carry on with what you can meanwhile.",
+                self.settings.here()
+            )),
+        }
+    }
+
     /// What's asked, kept for the user to answer (one open card a conversation for each
     /// project): its id.
     fn ask_work(
@@ -328,8 +404,12 @@ impl Work {
                 !each["answered"].is_object()
                     && each["session"] == ask["session"]
                     && each["action"] == ask["action"]
-                    && each["project"].as_str().unwrap_or_default().to_lowercase()
-                        == project.to_lowercase()
+                    && if ask["action"] == "resetLimits" {
+                        each["given"]["reset"]["row"] == ask["given"]["reset"]["row"]
+                    } else {
+                        each["project"].as_str().unwrap_or_default().to_lowercase()
+                            == project.to_lowercase()
+                    }
             });
             if let Some(same) = same {
                 same.as_object_mut().map(|same| same.shift_remove("late"));
@@ -355,6 +435,11 @@ impl Work {
                     .unwrap_or(project.clone())
             );
             ask["folder"] = json!(folder);
+            if ask["action"] == "resetLimits" {
+                ask["folder"] = Value::Null;
+                ask["folderName"] = json!("");
+                ask["reset"] = ask["given"]["reset"].clone();
+            }
             ask["at"] = json!(jiff::Timestamp::now().as_millisecond());
             asks.push(ask.clone());
             id

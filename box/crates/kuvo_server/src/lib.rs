@@ -10,7 +10,7 @@ pub mod ssh;
 
 pub use dispatch::{
     Access, Body, Caller, DispatchRequest, Dispatcher, JsonLine, LocalOrigin, Pairing, Refusal,
-    Registry, Reply, RouteCall, RouteReply, Transport,
+    Registry, Reply, RouteCall, RouteReply, Transport, WeakDispatcher,
 };
 pub use line::LineTiming;
 pub use resident::{Resident, ServeRecord};

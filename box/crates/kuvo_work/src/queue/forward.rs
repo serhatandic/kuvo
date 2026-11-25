@@ -337,3 +337,35 @@ impl Drop for Sending {
         records::forget(&self.store, &self.id);
     }
 }
+
+impl kuvo_services::settings::ArchiveForward for Forward {
+    fn write<'a>(
+        &'a self,
+        peer: [u8; 32],
+        computer: Value,
+        session: &'a str,
+        action: &'a str,
+        revision: &'a str,
+        caller: &'a kuvo_server::Caller,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Refusal>> + Send + 'a>> {
+        Box::pin(async move {
+            if !matches!(caller, kuvo_server::Caller::Local(_)) {
+                return Err(Refusal::new(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "Open this record on {} to change it.",
+                        computer["name"].as_str().unwrap_or_default()
+                    ),
+                ));
+            }
+            self.owner_write(
+                peer,
+                computer,
+                &format!("kuvo/peer-archive/{session}/{action}"),
+                json!({"was":revision}),
+            )
+            .await?;
+            Ok(())
+        })
+    }
+}

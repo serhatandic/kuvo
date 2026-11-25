@@ -40,6 +40,34 @@ pub(crate) struct Inventory {
 }
 
 impl Inventory {
+    /// The conversation put on `model`, said on the agents' feed where it changed; false for
+    /// one not here.
+    async fn select_model(&self, id: &str, model: Value) -> io::Result<bool> {
+        let (Some(runs), Some(agents)) = (&self.running, &self.agents) else {
+            return Err(io::ErrorKind::Unsupported.into());
+        };
+        let Some(changed) = runs.select_model(id, model.clone(), agents).await? else {
+            return Ok(false);
+        };
+        if let Some(previous) = changed {
+            let mut data = serde_json::json!({ "sessionID": id, "model": model });
+            if !previous.is_null() {
+                data["previous"] = previous;
+            }
+            let directory = self
+                .store
+                .read(id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|header| header.directory().map(str::to_owned));
+            agents
+                .feed()
+                .emit_from("session.model.selected", data, directory);
+        }
+        Ok(true)
+    }
+
     /// The agents' feed, where there are agents here.
     fn feed(&self) -> Option<&kuvo_agents::feed::Feed> {
         self.agents.as_ref().map(ResidentAgents::feed)
@@ -294,6 +322,41 @@ impl AgentSessionSource for Inventory {
             input.metadata = metadata;
             runs.prompt(id.to_owned(), input, None).await
         })
+    }
+
+    fn synthetic<'a>(
+        &'a self,
+        id: &'a str,
+        text: String,
+        description: Option<String>,
+    ) -> AgentCall<'a, ()> {
+        Box::pin(async move {
+            let runs = self.runs()?;
+            let message = SessionStore::make_id("msg")?;
+            let mut input = Input::new(message, text, Vec::new(), Delivery::Steer);
+            input.synthetic = Some(kuvo_agents::inbox::Synthetic {
+                description,
+                metadata: None,
+            });
+            runs.prompt(id.to_owned(), input, None).await
+        })
+    }
+
+    fn set_instruction<'a>(
+        &'a self,
+        id: &'a str,
+        key: &'a str,
+        text: Option<String>,
+    ) -> AgentCall<'a, bool> {
+        Box::pin(async move { self.store.set_instruction(id, key, text).await })
+    }
+
+    fn instructions<'a>(&'a self, id: &'a str) -> AgentCall<'a, Option<Map<String, Value>>> {
+        Box::pin(async move { self.store.kuvo_instructions(id).await })
+    }
+
+    fn select_model<'a>(&'a self, id: &'a str, model: Value) -> AgentCall<'a, bool> {
+        Box::pin(Inventory::select_model(self, id, model))
     }
 
     fn set_delivery<'a>(&'a self, id: &'a str, item: &'a str, queue: bool) -> AgentCall<'a, ()> {
@@ -593,32 +656,13 @@ pub(crate) fn register_reads(inventory: Inventory, routes: &mut Registry) {
                 .decode_utf8()
                 .map_err(|_| missing(given))?
                 .into_owned();
-            let (Some(runs), Some(agents)) = (&inventory.running, &inventory.agents) else {
-                return Err(super::refuse(std::io::ErrorKind::Unsupported.into()));
-            };
             let model = call.body["model"].clone();
-            let changed = runs
-                .select_model(&id, model.clone(), agents)
+            if !inventory
+                .select_model(&id, model)
                 .await
-                .map_err(super::refuse)?;
-            let Some(changed) = changed else {
+                .map_err(super::refuse)?
+            {
                 return Err(missing(&id));
-            };
-            if let Some(previous) = changed {
-                let mut data = serde_json::json!({ "sessionID": id, "model": model });
-                if !previous.is_null() {
-                    data["previous"] = previous;
-                }
-                let directory = inventory
-                    .store
-                    .read(&id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|header| header.directory().map(str::to_owned));
-                agents
-                    .feed()
-                    .emit_from("session.model.selected", data, directory);
             }
             Ok(RouteReply::json::<200>(select_model::Status200 {}))
         }

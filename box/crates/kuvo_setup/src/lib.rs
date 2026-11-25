@@ -86,7 +86,7 @@ pub use actor::{
 };
 pub use discovery::locate;
 pub use model::{Receipt, SharedKind};
-pub use routes::{RecordEditAnswer, RecordEditCall, RecordEditFuture, RecordEdits};
+pub use routes::{PERSONALITY_EXCHANGE, RecordEditAnswer, RecordEditCall, RecordEditFuture, RecordEdits};
 
 pub use preferences::{project_app_personalities, project_kit_personalities};
 pub use ssh::{SavedMachine, SavedOutput, with_saved_machine};

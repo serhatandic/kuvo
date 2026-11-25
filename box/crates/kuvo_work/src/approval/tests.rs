@@ -85,12 +85,7 @@ fn a_new_bot_gets_this_computers_default_and_auto_asks_first_without_the_sandbox
     let rules = [rule("external_directory", "/bots/bot_a/*", "allow")];
     let kept = approvals.of_bot(&rules, None);
     assert!(!kept.stored);
-    let expected = if kuvo_os::platform::Platform::current().is_windows_host() {
-        Approval::AskFirst
-    } else {
-        Approval::Auto
-    };
-    assert_eq!(kept.approval, expected);
+    assert_eq!(kept.approval, Approval::AskFirst);
     assert_eq!(kept.effective, Approval::AskFirst);
     let made = approvals.rules(kept.effective, &rules, &[]);
     assert_eq!(made[0], rule("edit", "*", "ask"));

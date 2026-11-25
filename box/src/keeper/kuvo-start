@@ -411,6 +411,15 @@ EOF
 }
 # The previous target also tells a startup whether the rename actually happened.
 bin_target() { readlink "$K/bin" 2>/dev/null; }
+keeper_path() {
+  if rust_release && [ -f "$K/bin/.kuvo-start-keeper" ]; then
+    printf '%s\n' "$K/bin/.kuvo-start-keeper"
+  else
+    printf '%s\n' "$K/bin/kuvo-start"
+  fi
+}
+
+keeper_verb() { is "$1" "kuvo-start $2" || is "$1" "kuvo-start-keeper $2"; }
 previous() { cat "$R/previous" 2>/dev/null; }
 update_runs() { is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link; }
 switch_waiting() {
@@ -418,9 +427,9 @@ switch_waiting() {
   local owner
   owner=$(cat "$R/.launching.pid" 2>/dev/null)
   # A rollback also holds the launch lock while it stops the failed workers and seals bin.
-  is "$owner" 'kuvo-start start-guard' && return 0
+  keeper_verb "$owner" start-guard && return 0
   [ "$(previous)" = "$(bin_target)" ] &&
-    { update_runs || is "$owner" 'kuvo-start stop --switch'; }
+    { update_runs || keeper_verb "$owner" 'stop --switch'; }
 }
 valid_bin() {
   printf '%s\n' "$1" | grep -Eq '^versions/[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?-[0-9a-f]{12}/bin$' &&
@@ -494,7 +503,7 @@ stop_clients() {
 # A bridge or service bundle can change while the engine keeps its port, data and turns.
 keep_engine_for_switch() {
   local target=$1 before after running
-  before=$(sed -n 's/^V=//p' "$K/bin/kuvo-start" | head -n 1)
+  before=$(sed -n 's/^V=//p' "$(keeper_path)" | head -n 1)
   after=$(sed -n 's/^V=//p' "$K/$target/kuvo-start" | head -n 1)
   if up; then
     running=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
@@ -552,7 +561,7 @@ switch_workers() {
 }
 case "${1:-box}" in
 box)
-  [ -f "$K/bin/kuvo-start" ] || exit 0
+  [ -f "$(keeper_path)" ] || exit 0
   [ -f "$R/off" ] && exit 0
   if [ -z "${KUVO_MACHINE_RESTORING-}" ] && recover_machine_job; then exit 0; fi
   if machine_helper; then start_helper; exit $?; fi
@@ -571,7 +580,7 @@ wsl-keep)
     sleep 2
   done
   [ -f "$R/wsl-task" ] && [ ! -f "$R/off" ] || exit 0
-  exec sh "$K/bin/kuvo-start" keep
+  exec sh "$(keeper_path)" keep
   ;;
 keep)
   if machine_helper && [ -z "${KUVO_MACHINE_HELPER_PID-}" ]; then start_helper; exit $?; fi
@@ -635,18 +644,25 @@ keep)
   r=${KUVO_TEST_KEEP_ROUND:-15}; case $r in '' | *[!0-9]* | 0) r=15 ;; esac
   fails=0; next=0; started=; round=0; bfails=0; bnext=0; saw_trial=; bstarted=
   while :; do
-    [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
+    { [ -f "$K/bin/kuvo-start" ] || [ -f "$K/bin/.kuvo-start-keeper" ]; } && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
     current=$(bin_target)
-    if [ "$selected" != "$current" ]; then exec sh "$K/bin/kuvo-start" keep; fi
+    if [ "$selected" != "$current" ]; then exec sh "$(keeper_path)" keep; fi
     if switch_waiting; then sleep 1; continue; fi
     if [ -n "$selected" ] && [ -f "$R/previous" ] && [ "$(previous)" != "$selected" ] &&
-      ! is "${guard-}" 'kuvo-start start-guard'; then
-      sh "$K/bin/kuvo-start" start-guard "$selected" "$$" >>"$R/update-start.log" 2>&1 </dev/null &
+      ! keeper_verb "${guard-}" start-guard; then
+      sh "$(keeper_path)" start-guard "$selected" "$$" >>"$R/update-start.log" 2>&1 </dev/null &
       guard=$!
     fi
     if [ -f "$R/previous" ] && [ "$(previous)" = "$selected" ]; then rm -f "$R/previous"; fi
     hold
     if rust_release; then
+      # The signed Rust pack survives an older Mac's replacement of the
+      # ordinary launcher, link and browser files.
+      if { [ "$round" -eq 0 ] || [ $((round % 240)) -eq 0 ] || { [ -f "$R/attached" ] && [ "$R/attached" -nt "$R/repair.pid" ]; } || [ -n "$(find "$R/attached" -mmin +1380 2>/dev/null)" ]; } &&
+         ! worker_here "$(cat "$R/repair.pid" 2>/dev/null)" "$K/bin/kuvo-box repair"; then
+        (environment; cd "$K"; rust_command repair --format-version 1) >"$R/repair.log" 2>&1 </dev/null &
+        echo $! >"$R/repair.pid"
+      fi
       if ! own_mac && [ ! -e "$R/off" ] && [ ! -e "$R/paused" ] && [ ! -d "$R/.rolling-back" ] &&
          ! worker_here "$(cat "$R/link.pid" 2>/dev/null)" "$K/bin/kuvo-box serve" &&
          ! worker_here "${resident_starting-}" "$K/bin/kuvo-box serve"; then
@@ -657,6 +673,7 @@ keep)
           resident_starting=$!
         fi
       fi
+      round=$((round + 1))
       sleep "$r"
       continue
     fi
@@ -680,7 +697,7 @@ keep)
         # The independent guard will put the previous release back if migration can't run.
         [ -f "$R/previous" ] && { sleep 1; continue; }
         if [ -f "$R/update-trial" ] && ! update_runs; then
-          sh "$K/bin/kuvo-start" rollback && exec sh "$K/bin/kuvo-start" keep
+          sh "$(keeper_path)" rollback && exec sh "$(keeper_path)" keep
         fi
         exit 1
       fi
@@ -690,7 +707,7 @@ keep)
     if [ -z "$selected" ] && [ "$V" = "$P" ] && { ! up || [ "${rv:-}" = "$P" ]; } &&
       [ ! -f "$R/update-trial" ] && ! update_runs && [ -x "$K/engine/$V/opencode" ] && grep -q '"version-layout"' "$K/bin/kuvo-link.js" 2>/dev/null; then
       link_command version-layout </dev/null >>"$R/update-start.log" 2>&1
-      [ -z "$(bin_target)" ] || exec sh "$K/bin/kuvo-start" keep
+      [ -z "$(bin_target)" ] || exec sh "$(keeper_path)" keep
     fi
     if up && bridge_runs && [ ! -f "$R/previous" ] && { [ -f "$R/continue-after-update.json" ] || [ -f "$R/update-engine-hold.json" ]; } && ! update_runs &&
       ! is "${continuing-}" 'kuvo-link.js continue-update-turns'; then
@@ -701,7 +718,7 @@ keep)
       saw_trial=1
     elif { [ -n "$saw_trial" ] || [ ! -e "$K/folder-version.json" ]; } && [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
       # Rollback can restore a pre-marker keeper before this keeper has seen a new boot token.
-      if ! grep -q '"folder-upgrade"' "$K/bin/kuvo-link.js"; then exec sh "$K/bin/kuvo-start" keep; fi
+      if ! grep -q '"folder-upgrade"' "$K/bin/kuvo-link.js"; then exec sh "$(keeper_path)" keep; fi
       # A confirming process from the previous release may leave the folder step to the keeper.
       KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || exit 1
       saw_trial=
@@ -710,7 +727,7 @@ keep)
     # Its script replaced: a newer keeper carries on; an older Mac's gets this one back (its
     # mark left as it is, so that Mac doesn't put its own there again).
     if mine; then
-      [ "$(cat "$K/bin/.kuvo-boot" 2>/dev/null)" = "$boot" ] || exec sh "$K/bin/kuvo-start" keep
+      [ "$(cat "$K/bin/.kuvo-boot" 2>/dev/null)" = "$boot" ] || exec sh "$(keeper_path)" keep
     else
       boot=$(cat "$K/bin/.kuvo-boot" 2>/dev/null)
     fi
@@ -1018,14 +1035,14 @@ bridge-again)
     fi
     unlock
   fi
-  sh "$K/bin/kuvo-start" box
-  sh "$K/bin/kuvo-start" bridge
+  sh "$(keeper_path)" box
+  sh "$(keeper_path)" bridge
   ;;
 serve)
   while switch_waiting; do sleep 1; done
   # If the helper entered this script during a switch, reload the selected engine line.
-  if [ "$P" != "$(sed -n 's/^V=//p' "$K/bin/kuvo-start" | head -n 1)" ]; then
-    exec sh "$K/bin/kuvo-start" "$@"
+  if [ "$P" != "$(sed -n 's/^V=//p' "$(keeper_path)" | head -n 1)" ]; then
+    exec sh "$(keeper_path)" "$@"
   fi
   # A Mac's own box's server (`box/kind` says `mac`), for its helper, Kuvo Code Box, which
   # starts it and keeps it running, its password and the vault's secrets on its stdin: here,
@@ -1058,13 +1075,13 @@ route|route-to)
   ;;
 start)
   if [ "${2:-}" = --switch ]; then
-    exec sh "$K/bin/kuvo-start" box
+    exec sh "$(keeper_path)" box
   fi
   rm -f "$R/stopped"
-  if rust_release; then exec sh "$K/bin/kuvo-start" box; fi
-  sh "$K/bin/kuvo-start" engine
-  sh "$K/bin/kuvo-start" bridge
-  sh "$K/bin/kuvo-start" box
+  if rust_release; then exec sh "$(keeper_path)" box; fi
+  sh "$(keeper_path)" engine
+  sh "$(keeper_path)" bridge
+  sh "$(keeper_path)" box
   up
   ;;
 stop)
@@ -1104,7 +1121,7 @@ stop)
     fi
     select_bin "$target" || exit 1
     unlock
-    exec sh "$K/bin/kuvo-start" start --switch
+    exec sh "$(keeper_path)" start --switch
   fi
   touch "$R/stopped"
   halt
@@ -1147,9 +1164,9 @@ restart)
   lock || { echo "A start of the engine is under way there." >&2; exit 4; }
   halt
   unlock
-  sh "$K/bin/kuvo-start" engine
-  sh "$K/bin/kuvo-start" bridge
-  sh "$K/bin/kuvo-start" box
+  sh "$(keeper_path)" engine
+  sh "$(keeper_path)" bridge
+  sh "$(keeper_path)" box
   up
   ;;
 quiesce-services)
@@ -1189,7 +1206,7 @@ start-guard)
   version=${release%-*}; digest=${release##*-}
   deadline=$(($(date +%s) + 120))
   still_selected() {
-    [ "$(cat "$R/box.pid" 2>/dev/null)" = "$keeper" ] && is "$keeper" "$K/bin/kuvo-start" &&
+    [ "$(cat "$R/box.pid" 2>/dev/null)" = "$keeper" ] && { is "$keeper" "$K/bin/kuvo-start" || is "$keeper" "$K/bin/.kuvo-start-keeper"; } &&
       [ "$(previous)" = "$old" ] && [ "$(bin_target)" = "$selected" ]
   }
   while still_selected && [ "$(date +%s)" -lt "$deadline" ]; do
@@ -1245,7 +1262,7 @@ start-guard)
   unlock
   [ -z "$crossing" ] || exit 1
   # A keeper busy starting the failed release also sees the link change at its next round.
-  exec sh "$K/bin/kuvo-start" start --switch
+  exec sh "$(keeper_path)" start --switch
   ;;
 rollback)
   # The update on trial judged unwell (or its judge never ran): the code it replaced put back, as

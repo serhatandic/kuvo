@@ -723,6 +723,9 @@ impl Actor {
             ));
         }
         let state_before = self.state.clone();
+        // Discover the account's models when its first real turn needs them, including context
+        // limits for the compaction decision. The picker alone never starts this probe.
+        let _ = self.models.refresh(self.program.clone()).await;
         let compact_at = self.compact_at(&model.id).await?;
         let instructions_changed = self
             .instructions

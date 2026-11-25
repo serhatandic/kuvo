@@ -238,7 +238,10 @@ mod programs {
         let version = home.join("version");
         std::fs::write(&version, "1.0.0").unwrap();
         let update = match to {
-            Some(to) => format!("printf {to} > '{}'", version.display()),
+            Some(to) => format!(
+                "printf {to} > '{}'; printf '\\n' >> \"$0\"",
+                version.display()
+            ),
             None => "echo 'no network' >&2; exit 1".into(),
         };
         let script = format!(
@@ -268,7 +271,9 @@ mod programs {
             told: AtomicUsize::new(0),
         });
         let (updates, _) = updates(&home, account.clone());
-        let found = maintenance(account.definition.as_ref().unwrap(), true).await;
+        let found = updates
+            .maintenance(account.definition.as_ref().unwrap(), true)
+            .await;
         assert_eq!(found.installed.as_deref(), Some("1.0.0"));
         assert_eq!(found.shown.as_deref(), Some("stand update"));
         let running = updates.update(account.clone(), None);

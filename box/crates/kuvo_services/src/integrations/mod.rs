@@ -18,7 +18,7 @@ use crate::config::ConfigPaths;
 pub const FEATURES: &[&str] = &["integrations", "keys", "mcp.catalog"];
 
 /// Start and register integrations, keys, MCP catalog, and config routes for one box home.
-pub fn register(routes: &mut Registry, home: &Path, is_mac: bool) -> Arc<keys::KeyStore> {
+pub fn register(routes: &mut Registry, home: &Path, is_mac: bool, setup: kuvo_setup::SetupHandle) -> Arc<keys::KeyStore> {
     let config = ConfigPaths::for_home(home, is_mac);
     let catalog_file = upgrade::integrations_file_for(home, is_mac);
     let popular_file = mcp_catalog::catalog_file_for(home);
@@ -29,9 +29,10 @@ pub fn register(routes: &mut Registry, home: &Path, is_mac: bool) -> Arc<keys::K
         config.clone(),
         key_store.clone(),
     ));
-    crate::config::register(routes, config.clone());
+    crate::config::register(routes, config.clone(), setup.clone());
+    crate::git_preferences::register(routes, config.clone());
     keys::register(routes, key_store.clone());
-    mcp_catalog::register(routes, config.clone());
+    mcp_catalog::register(routes, config.clone(), setup);
     routes::register(routes, integrations);
     let upgrade_keys = key_store.clone();
     tokio::spawn(async move {

@@ -185,9 +185,21 @@ pub struct RouteCall<T> {
     pub body: T,
     pub cancel: CancellationToken,
     params: Vec<(&'static str, String)>,
+    dispatcher: Dispatcher,
+    extensions: http::Extensions,
 }
 
 impl<T> RouteCall<T> {
+    /// The same authenticated dispatcher, for sections composed from existing routes.
+    pub fn dispatcher(&self) -> Dispatcher {
+        self.dispatcher.clone()
+    }
+
+    /// Server-created request authority, never decoded from wire headers or bodies.
+    pub fn extension<U: Send + Sync + 'static>(&self) -> Option<&U> {
+        self.extensions.get::<U>()
+    }
+
     /// An encoded path segment matched by the generated route pattern.
     pub fn param(&self, name: &str) -> Option<&str> {
         self.params
@@ -376,7 +388,13 @@ fn status(value: u16) -> StatusCode {
 
 type FutureReply = Pin<Box<dyn Future<Output = Reply> + Send>>;
 type Handler = Box<
-    dyn Fn(DispatchRequest, CancellationToken, Vec<(&'static str, String)>) -> FutureReply
+    dyn Fn(
+            DispatchRequest,
+            CancellationToken,
+            Vec<(&'static str, String)>,
+            Dispatcher,
+            http::Extensions,
+        ) -> FutureReply
         + Send
         + Sync,
 >;
@@ -403,6 +421,7 @@ pub struct Registry {
     engine: Option<Fallback>,
     socket: Option<SocketHandler>,
     activity: Option<Activity>,
+    client_activity: Option<tokio::sync::watch::Sender<usize>>,
     retired: Vec<Retired>,
 }
 
@@ -415,6 +434,15 @@ struct Retired {
 impl Registry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The number of admitted client requests/streams still being served. A short
+    /// request releases its interest with its response; a followed line holds it
+    /// until disconnected. Internal box/agent calls do not keep periodic work alive.
+    pub fn client_activity(&mut self) -> tokio::sync::watch::Receiver<usize> {
+        self.client_activity
+            .get_or_insert_with(|| tokio::sync::watch::channel(0).0)
+            .subscribe()
     }
 
     /// Observe the authenticated callers of admitted requests.
@@ -464,7 +492,7 @@ impl Registry {
         self.entries.push(Entry {
             route: R::ROUTE,
             access,
-            handler: Box::new(move |request, cancel, params| {
+            handler: Box::new(move |request, cancel, params, dispatcher, extensions| {
                 let bytes = if R::ROUTE.body.is_none() {
                     b"null"
                 } else {
@@ -477,6 +505,8 @@ impl Registry {
                             body,
                             cancel,
                             params,
+                            dispatcher,
+                            extensions,
                         });
                         Box::pin(async move {
                             answer.await.map_or_else(Refusal::reply, |typed| typed.0)
@@ -530,18 +560,101 @@ impl Registry {
     }
 }
 
+struct ClientLease(tokio::sync::watch::Sender<usize>);
+impl ClientLease {
+    fn new(sender: &tokio::sync::watch::Sender<usize>) -> Self {
+        sender.send_modify(|n| *n += 1);
+        Self(sender.clone())
+    }
+}
+impl Drop for ClientLease {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n = n.saturating_sub(1));
+    }
+}
+struct ClientBody {
+    body: Body,
+    _lease: ClientLease,
+}
+impl hyper::body::Body for ClientBody {
+    type Data = Bytes;
+    type Error = io::Error;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<io::Result<Frame<Bytes>>>> {
+        Pin::new(&mut self.body).poll_frame(cx)
+    }
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.body.size_hint()
+    }
+}
+
 #[derive(Clone)]
 pub struct Dispatcher(Arc<Registry>);
 
+/// Internal services can refer to the resident's routes without keeping it alive.
+#[derive(Clone)]
+pub struct WeakDispatcher(std::sync::Weak<Registry>);
+
+impl WeakDispatcher {
+    pub fn upgrade(&self) -> Option<Dispatcher> {
+        self.0.upgrade().map(Dispatcher)
+    }
+}
+
 impl Dispatcher {
+    pub fn downgrade(&self) -> WeakDispatcher {
+        WeakDispatcher(Arc::downgrade(&self.0))
+    }
+
     pub(crate) fn from_registry(inner: Arc<Registry>) -> Self {
         Self(inner)
     }
 
     /// All transport entries enter here after transport authentication.
     pub async fn dispatch(&self, request: DispatchRequest, cancel: CancellationToken) -> Reply {
-        let reply = self.route(request, cancel).await;
-        let mut reply = reply;
+        self.dispatch_scoped(request, cancel, http::Extensions::new())
+            .await
+    }
+
+    /// An internal composed route may carry authority it already established on the original request.
+    pub async fn dispatch_scoped(
+        &self,
+        request: DispatchRequest,
+        cancel: CancellationToken,
+        extensions: http::Extensions,
+    ) -> Reply {
+        let client = self
+            .0
+            .client_activity
+            .as_ref()
+            .filter(|_| {
+                admissible(&request).is_ok()
+                    && match request.caller.transport() {
+                        Transport::Http {
+                            internal: false,
+                            origin: LocalOrigin::App | LocalOrigin::Mac | LocalOrigin::Direct,
+                        }
+                        | Transport::Ssh { internal: false } => true,
+                        Transport::AddressedSsh | Transport::Relay => {
+                            request.caller.pairing().is_some()
+                        }
+                        _ => false,
+                    }
+            })
+            .map(ClientLease::new);
+        let mut reply = self.route(request, cancel, extensions).await;
+        if let Some(lease) = client {
+            reply.body = ClientBody {
+                body: reply.body,
+                _lease: lease,
+            }
+            .boxed_unsync();
+        }
         reply.headers.insert(
             ROUTE_VERSION_HEADER,
             HeaderValue::from_static(ROUTE_VERSION),
@@ -567,7 +680,12 @@ impl Dispatcher {
         handler(request, cancel).await
     }
 
-    async fn route(&self, mut request: DispatchRequest, cancel: CancellationToken) -> Reply {
+    async fn route(
+        &self,
+        mut request: DispatchRequest,
+        cancel: CancellationToken,
+        extensions: http::Extensions,
+    ) -> Reply {
         if let Err(refusal) = admissible(&request) {
             return refusal.reply();
         }
@@ -605,7 +723,7 @@ impl Dispatcher {
         }
         if let Some((entry, params)) = best {
             if entry.access.admits(&request.caller) {
-                return (entry.handler)(request, cancel, params).await;
+                return (entry.handler)(request, cancel, params, self.clone(), extensions).await;
             }
             return Refusal::new(
                 StatusCode::FORBIDDEN,
@@ -617,7 +735,12 @@ impl Dispatcher {
             return Reply::empty_json(StatusCode::METHOD_NOT_ALLOWED);
         }
         if canonical == request.path && path.starts_with("kuvo/") {
-            if let Some(retired) = self.0.retired.iter().find(|retired| (retired.matches)(path)) {
+            if let Some(retired) = self
+                .0
+                .retired
+                .iter()
+                .find(|retired| (retired.matches)(path))
+            {
                 return Refusal::new(StatusCode::NOT_FOUND, retired.message).reply();
             }
             return Reply::empty_json(StatusCode::NOT_FOUND);

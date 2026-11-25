@@ -28,6 +28,15 @@ pub fn open_index(path: &Path, busy: Duration) -> Result<Connection, Error> {
     connect(path, OpenFlags::SQLITE_OPEN_READ_ONLY, busy)
 }
 
+/// A closed maker database in WAL mode can lack its shared-memory side file.
+/// The caller has checked that no WAL needs replaying before supplying an immutable URI.
+pub fn open_immutable_index(uri: &str, busy: Duration) -> Result<Connection, Error> {
+    connect(
+        Path::new(uri),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        busy,
+    )
+}
 /// Adopt each schema step in one immediate transaction before enabling WAL.
 /// Passing a future user_version fails without changing the database or its journal mode.
 pub fn open_wal(

@@ -1,6 +1,8 @@
 mod agents;
 mod library_artifacts;
 mod marketplace;
+mod usage;
+mod usage_peers;
 
 use std::{fs, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -176,6 +178,27 @@ pub async fn run(
         .with_peer_waiting(waiting_source)
         .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
+    let menu_limits = kuvo_services::limits_menu::MenuLimits::default();
+    let usage_settings =
+        kuvo_services::usage::settings::Service::new(home.to_owned(), setup.handle());
+    let limits = kuvo_services::usage::limits::Service::new(
+        home.to_owned(),
+        usage_settings.clone(),
+        menu_limits.clone(),
+        peers.reader().view().roster.local().name,
+        peers
+            .reader()
+            .view()
+            .roster
+            .here
+            .as_ref()
+            .map(|key| kuvo_wire::keys::encode(key))
+            .unwrap_or_default(),
+    );
+    let standalone_plans = kuvo_services::usage::standalone::Readers::for_home(home, &account);
+    if let Some(readers) = &standalone_plans {
+        readers.confirm(&limits).await;
+    }
     let mut agent_handover = None;
     let mut routes = Registry::new();
     crate::box_app::register(
@@ -208,7 +231,9 @@ pub async fn run(
                 eprintln!("Kuvo could not read the coding agents' handover: {error}");
                 None
             });
-        let runs = kuvo_agents::session_runs::SessionRuns::start_after(
+        usage::confirm(&limits, &accounts).await;
+        tokio::spawn(usage::Turns::follow(limits.clone(), accounts.clone()));
+        let runs = kuvo_agents::session_runs::SessionRuns::start_with_limits(
             accounts.clone(),
             sessions.clone(),
             home.to_owned(),
@@ -217,6 +242,7 @@ pub async fn run(
                 adopted: accounts.adopted_turns().to_vec(),
                 handover,
             },
+            usage::Turns::start(limits.clone(), accounts.clone()),
         );
         agent_handover = Some((runs.clone(), runtime.clone()));
         agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
@@ -315,7 +341,7 @@ pub async fn run(
     let search_engine = engine.clone();
     let read_owner = kuvo_peers::owner_read::Service::new(
         peers.reader(),
-        owners,
+        owners.clone(),
         memory.clone(),
         engine.clone(),
     );
@@ -361,6 +387,17 @@ pub async fn run(
         .handle()
         .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
+    let archives = kuvo_services::settings::register(
+        &mut routes,
+        home.to_owned(),
+        account.clone(),
+        setup.handle(),
+        kind == ComputerKind::Mac,
+        vault.clone(),
+        peers.reader(),
+        engine.clone(),
+        work_queue.archive_forward(),
+    );
     kuvo_services::files::register(
         &mut routes,
         kuvo_services::files::Places {
@@ -371,8 +408,12 @@ pub async fn run(
     );
     kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
     kuvo_services::programs::register(&mut routes, account.clone());
-    let integration_keys =
-        kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
+    let integration_keys = kuvo_services::integrations::register(
+        &mut routes,
+        home,
+        kind == ComputerKind::Mac,
+        setup.handle(),
+    );
     let skills = kuvo_services::skills::ResidentSkills::start(&mut routes, home, &account);
     let resident_marketplace = kuvo_services::marketplace::ResidentMarketplace::start(
         &mut routes,
@@ -412,6 +453,10 @@ pub async fn run(
         .service
         .give_agent_bots(Arc::new(bots.clone()));
     let bots_follow_engine = bots.follow_engine();
+    // Edits held for bots on your other computers, sent; and theirs for bots here, taken.
+    let bots_held = peers
+        .relay_handle()
+        .map(|relay| bots.follow_held(owners.clone(), relay));
     // Bots' old keys of their own taken away, with no client there.
     let _own_keys = kuvo_work::bots::own_keys::keep_bots_own_keys_gone(
         home.to_owned(),
@@ -432,6 +477,16 @@ pub async fn run(
         kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
     let working = sessions.clone();
     let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
+    let resets = kuvo_services::usage::resets::Resets::new(
+        home,
+        limits.clone(),
+        Arc::new(usage::ResetPort {
+            agents: agent_shutdown.clone(),
+            limits: limits.clone(),
+        }),
+    );
+    resets.follow_sign_ins();
+    kuvo_services::usage::resets::register(&mut routes, resets.clone());
     let work = kuvo_work::work::Work::new(
         work_settings,
         home,
@@ -439,7 +494,9 @@ pub async fn run(
         peers.reader(),
         Arc::new(super::bot_setup::BotSetup(setup.handle())),
         bots.clone(),
-    );
+    )
+    .with_limits(limits.clone())
+    .with_resets(resets);
     work.attach_start_link(work_queue.start_link());
     // (What it tells, read again for the clients that follow it.)
     let (told_peers, told_run) = (peers.clone(), home.join("run"));
@@ -452,6 +509,7 @@ pub async fn run(
                 .await
         });
     }));
+    usage::notices(&limits, work.notices.clone());
     work.register(&mut routes);
     let work_watch = work.watch();
     let work_rows = work_calls.map(|calls| elsewhere.serve(work.clone(), calls));
@@ -468,9 +526,76 @@ pub async fn run(
     } else {
         (None, None)
     };
-    // 5.4 publishes its plan-limit account rows into this source. The Helper's
-    // route and events consume the same current rows without another account read.
-    let menu_limits = kuvo_services::limits_menu::MenuLimits::default();
+    kuvo_services::usage::settings::register(&mut routes, usage_settings.clone());
+    kuvo_services::usage::limits::register(&mut routes, limits.clone());
+    let insights = kuvo_services::usage::insights::Service::new(
+        home.to_owned(),
+        peers.reader().view().roster.local().name,
+        peers
+            .reader()
+            .view()
+            .roster
+            .here
+            .as_ref()
+            .map(|key| kuvo_wire::keys::encode(key))
+            .unwrap_or_default(),
+        &hostname::get()?.to_string_lossy(),
+    )
+    .with_history(usage_settings, limits.clone());
+    let price_watch = insights.follow_prices(&account);
+    let usage_watch = kuvo_os::watch::WatchHub::default();
+    let insights_watch = insights.follow(usage_watch.clone());
+    let engine_usage_watch = insights.follow_engine(usage_watch.clone());
+    let native_usage_watch = insights.follow_native(usage_watch, limits.clone());
+    kuvo_services::usage::insights::register(&mut routes, insights);
+    let refresh_limits = limits.clone();
+    let refresh_agents = agent_shutdown.clone();
+    let refresh_engine = engine.clone();
+    let refresh_home = home.to_owned();
+    let engine_reader = usage::engine_reader(home, &account);
+    kuvo_services::usage::limits::register_refresh(
+        &mut routes,
+        limits.clone(),
+        move |selected, explicit| {
+            let (limits, agents, engine, reader, standalone, home) = (
+                refresh_limits.clone(),
+                refresh_agents.clone(),
+                refresh_engine.clone(),
+                engine_reader.clone(),
+                standalone_plans.clone(),
+                refresh_home.clone(),
+            );
+            async move {
+                let agents_failed = if let Some(agents) = agents {
+                    usage::refresh(limits.clone(), agents, selected.clone(), explicit).await
+                } else {
+                    false
+                };
+                let standalone_failed = if let Some(standalone) = standalone {
+                    standalone
+                        .refresh(limits.clone(), selected.as_deref(), explicit)
+                        .await
+                } else {
+                    false
+                };
+                let engine_failed = if let Some(reader) = reader {
+                    usage::refresh_engine(limits, engine, reader, home, selected).await
+                } else {
+                    false
+                };
+                agents_failed || engine_failed || standalone_failed
+            }
+        },
+    );
+    let limits_peers = peers.relay_handle().map(|relay| {
+        tokio::spawn(usage_peers::follow_limits(
+            limits.clone(),
+            peers.reader(),
+            relay,
+            setup.handle(),
+        ))
+    });
+    let _ = limits.answer(kuvo_services::usage::limits::now());
     crate::box_at_work::register(
         &mut routes,
         home,
@@ -541,6 +666,34 @@ pub async fn run(
     });
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
+    work_queue.serve_archives(archives.clone(), dispatcher.clone());
+    let archive_source = tokio::spawn({
+        let peers = peers.clone();
+        let dispatcher = dispatcher.clone();
+        let mut sessions = sessions.clone();
+        async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(10));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut previous = None;
+            loop {
+                let periodic = tokio::select! {
+                    _ = timer.tick() => true,
+                    changed = sessions.changed() => if changed { false } else { break },
+                };
+                if peers.reader().view().roster.members.is_empty() {
+                    continue;
+                }
+                let revised = sessions.archive_revision();
+                if !periodic && revised == previous {
+                    continue;
+                }
+                if let Some(copy) = archives.snapshot(dispatcher.clone()).await {
+                    previous = revised;
+                    peers.archives(copy).await;
+                }
+            }
+        }
+    });
     let vault_holder =
         match kuvo_services::vault::Holder::start(home, vault, dispatcher.clone()).await {
             Ok(holder) => Some(holder),
@@ -617,7 +770,17 @@ pub async fn run(
     }
     firing.stop().await;
     bots_follow_engine.abort();
+    bots_held.inspect(tokio::task::JoinHandle::abort);
     approvals_kept.abort();
+    insights_watch.abort();
+    native_usage_watch.abort();
+    engine_usage_watch.abort();
+    if let Some(task) = price_watch {
+        task.abort();
+    }
+    if let Some(task) = limits_peers {
+        task.abort();
+    }
     work_watch.abort();
     work_rows.inspect(tokio::task::JoinHandle::abort);
     if let Some(kept_awake) = kept_awake {
@@ -635,6 +798,8 @@ pub async fn run(
     peer_waiting_source.abort();
     let _ = peer_waiting_source.await;
     session_source.abort();
+    archive_source.abort();
+    let _ = archive_source.await;
     if let Some(owner_requests) = owner_requests {
         owner_requests.abort();
         let _ = owner_requests.await;
@@ -746,10 +911,12 @@ fn info(
     features.extend_from_slice(kuvo_services::programs::FEATURES);
     features.extend_from_slice(kuvo_services::integrations::FEATURES);
     features.extend_from_slice(kuvo_services::skills::FEATURES);
+    features.extend_from_slice(kuvo_services::settings::FEATURES);
     features.extend_from_slice(kuvo_services::marketplace::FEATURES);
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
     features.extend_from_slice(kuvo_work::asks::FEATURES);
     features.push("shell.stop");
+    features.push("usage.settings");
     if permits_pairing {
         features.push("devices.pair");
     }
