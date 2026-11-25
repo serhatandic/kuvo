@@ -406,6 +406,28 @@ function receiptPeer(t, relay, observer, seed, { sealOneWay, openOneWay, readFra
   };
 }
 
+test("a signed replacement without a removal record leaves the setup available", {timeout: 30000}, async t => {
+  const { computer, relay } = await bench(t);
+  const box = await computer("replacement-without-removal", undefined, folder => ({
+    CODEX_HOME: path.join(folder, "codex"), GROK_HOME: path.join(folder, "grok"),
+    CLAUDE_CONFIG_DIR: path.join(folder, "claude"), KUVO_TEST_PATH_ONLY: "1", KUVO_TEST_PRICE_FEEDS: "off",
+  }));
+  const retired = Buffer.alloc(32, 44).toString("base64url");
+  const { main, spare } = seedPeerSetup(box.home, relay.url, 1, 3, retired);
+  seedPeerSetup(box.home, relay.url, 1, 3, retired, {
+    ownershipRecovery: { sequence: 1, value: {
+      [`replacement:${retired}`]: { source: `b_${Buffer.alloc(16, 2).toString("base64url")}`, computer: spare.key }
+    } },
+  });
+  const seeded = readJSON(path.join(box.home, "run/link.json"));
+  assert.equal(seeded.shared.membershipAndAccess.value.removals, undefined);
+  const resident = await box.start().ready();
+  const setup = await request(resident, "GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  assert.equal(setup.json.setup, seeded.setup.id);
+  assert.equal(setup.json.you.key, main.key);
+});
+
 test("receipt pages keep the same cursor while the setup assigns a replacement issuer", {
   timeout: 55000, skip: !fs.existsSync(wireFixture) && "Build the reference peer mail fixture",
 }, async t => {

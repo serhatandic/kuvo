@@ -7,6 +7,54 @@ pub(super) struct Kept {
     revision: u64,
     value: Value,
 }
+/// A bounded snapshot of the last complete summary, separate from the busy index.
+/// It is consulted only when catch-up is still running and only under the same
+/// admitted computer set. Routine ready reads remain mutation-invalidated SQL.
+#[derive(Deserialize, Serialize)]
+struct Snapshot {
+    at: i64,
+    data: Value,
+}
+#[derive(Default, Deserialize, Serialize)]
+pub(super) struct KeptSummaries(BTreeMap<String, Snapshot>);
+impl KeptSummaries {
+    fn load(path: &Path) -> Self {
+        kuvo_store::files::text_of(path)
+            .and_then(|text| serde_json::from_str::<Self>(&text).ok())
+            .unwrap_or_default()
+    }
+    fn previous(&self, key: &str) -> Option<Value> {
+        let found = self.0.get(key)?;
+        if found.data["data"]["state"] == "loading" {
+            return None;
+        }
+        let mut answer = found.data.clone();
+        answer["data"]["asOf"] = json!(found.at);
+        Some(answer)
+    }
+    fn keep(&mut self, path: &Path, key: String, now: i64, answer: &Value) -> Result<()> {
+        self.0.insert(
+            key,
+            Snapshot {
+                at: now,
+                data: answer.clone(),
+            },
+        );
+        while self.0.len() > 24 {
+            let Some(oldest) = self
+                .0
+                .iter()
+                .min_by_key(|(_, snapshot)| snapshot.at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.0.remove(&oldest);
+        }
+        kuvo_store::files::write_atomic(path, &serde_json::to_vec(self)?)?;
+        Ok(())
+    }
+}
 const SUMS: &str = "COALESCE(SUM(cost),0),COALESCE(SUM(processed),0),COALESCE(SUM(cache_read),0),COALESCE(SUM(input),0)+COALESCE(SUM(cache_read),0)+COALESCE(SUM(cache_write),0)";
 fn sums(row: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<Sums> {
     Ok(Sums {
@@ -376,7 +424,6 @@ fn where_summary(
 }
 impl Service {
     pub(super) fn summary(&self, params: BTreeMap<String, String>) -> Result<Value> {
-        let _gate = self.gate.lock().expect("insights gate");
         let now = super::super::limits::now() as i64;
         let period = params
             .get("period")
@@ -391,10 +438,39 @@ impl Service {
             .and_then(|z| TimeZone::get(z).ok())
             .unwrap_or_else(TimeZone::system);
         let bounds = time_bounds(now, &zone, period * 2)?;
+        let scope = self.scope();
+        let (keys, selected) = self.keys(&scope, params.get("computer").map(String::as_str));
+        // The full admitted scope (including the setup identity) binds a snapshot;
+        // a removed computer's former records cannot be returned via this cache.
+        let mut narrowed = params.clone();
+        let fresh = narrowed.remove("refresh").as_deref() == Some("1");
+        let kept_key = hash(&json!([
+            narrowed,
+            scope.setup,
+            keys,
+            selected,
+            zone.iana_name()
+        ]));
+        let kept_path = self.home.join("agents/usage/insights-kept-rust.json");
+        if !fresh && !self.ready() {
+            let mut slot = self.kept_summary.lock().expect("kept Insights summary");
+            let kept = slot.get_or_insert_with(|| KeptSummaries::load(&kept_path));
+            if let Some(previous) = kept.previous(&kept_key) {
+                return Ok(previous);
+            }
+        }
+        let _gate = self.gate.lock().expect("insights gate");
         let mut db = self.open()?;
         self.ensure(&mut db, now)?;
         let scope = self.scope();
         let (keys, selected) = self.keys(&scope, params.get("computer").map(String::as_str));
+        let kept_key = hash(&json!([
+            narrowed,
+            scope.setup,
+            keys,
+            selected,
+            zone.iana_name()
+        ]));
         let pending =
             self.pending_computers(&db, &scope, params.get("computer").map(String::as_str))?;
         let named = self.computers(&scope);
@@ -408,7 +484,7 @@ impl Service {
             bounds[period as usize].1,
             zone.iana_name()
         ]));
-        if self.ready() && pending.is_empty() {
+        if !fresh && self.ready() && pending.is_empty() {
             let cache = self.summary_cache.lock().expect("Insights summary cache");
             if let Some(kept) = cache
                 .get(&cache_key)
@@ -491,66 +567,91 @@ impl Service {
                 loose.push(conversation(id, top, true, overall));
             }
         }
-        let sessions =
-            if params.contains_key("session") {
-                rank_rows(
-                    rows.iter()
-                        .map(|row| {
-                            item(
-                                "session",
-                                &row.id,
-                                title(row.title.as_deref().or_else(|| {
-                                    tops.get(&row.id).and_then(|t| t.title.as_deref())
-                                })),
-                                &row.sums,
-                                overall,
-                            )
-                        })
-                        .collect(),
-                    None,
-                )
-            } else if params.contains_key("bot") {
-                rank_rows(
-                    by_bot
-                        .values()
-                        .flatten()
+        let sessions = if params.contains_key("session") {
+            rank_rows(
+                rows.iter()
+                    .map(|row| {
+                        item(
+                            "session",
+                            &row.id,
+                            title(
+                                row.title
+                                    .as_deref()
+                                    .or_else(|| tops.get(&row.id).and_then(|t| t.title.as_deref())),
+                            ),
+                            &row.sums,
+                            overall,
+                        )
+                    })
+                    .collect(),
+                None,
+            )
+        } else if params.contains_key("bot") {
+            rank_rows(
+                by_bot
+                    .values()
+                    .flatten()
+                    .map(|(id, top)| conversation(id, top, false, overall))
+                    .collect(),
+                None,
+            )
+        } else {
+            let appearances = lineage::Bots::read(&self.home);
+            let remote = self
+                .peer_bots()
+                .into_iter()
+                .filter_map(|(_, bot)| Some((bot.id.clone()?, bot)))
+                .collect::<BTreeMap<_, _>>();
+            for (id, children) in by_bot {
+                let mut sums = Sums::default();
+                let mut overseen = 0;
+                for (_, top) in &children {
+                    sums.add(&top.sums);
+                    if !top.own {
+                        overseen += 1;
+                    }
+                }
+                let appearance = appearances.appearance(&id);
+                let peer = remote.get(&id);
+                let name = children
+                    .iter()
+                    .find_map(|(_, top)| top.name.as_deref())
+                    .or_else(|| appearance.map(|(name, _)| name))
+                    .or_else(|| peer.map(|bot| bot.name.as_str()))
+                    .unwrap_or("A bot");
+                let mut row = item("bot", &id, name, &sums, overall);
+                let look = match appearance {
+                    Some((_, look)) => look.cloned(),
+                    None => peer
+                        .and_then(|bot| bot.look.as_ref())
+                        .and_then(|look| serde_json::to_value(look).ok()),
+                };
+                if let Some(look) = look.filter(|look| {
+                    ["color", "shape", "face"]
+                        .iter()
+                        .all(|field| look[*field].is_string())
+                }) {
+                    row["look"] =
+                        json!({"color":look["color"],"shape":look["shape"],"face":look["face"]});
+                }
+                if overseen > 0 {
+                    row["note"] = json!(format!(
+                        "{} session{}",
+                        overseen,
+                        if overseen == 1 { "" } else { "s" }
+                    ));
+                }
+                row["sessions"] = json!(rank_rows(
+                    children
+                        .iter()
                         .map(|(id, top)| conversation(id, top, false, overall))
                         .collect(),
-                    None,
-                )
-            } else {
-                for (id, children) in by_bot {
-                    let mut sums = Sums::default();
-                    let mut overseen = 0;
-                    for (_, top) in &children {
-                        sums.add(&top.sums);
-                        if !top.own {
-                            overseen += 1;
-                        }
-                    }
-                    let name = children
-                        .iter()
-                        .find_map(|(_, top)| top.name.as_deref())
-                        .unwrap_or("A bot");
-                    let mut row = item("bot", &id, name, &sums, overall);
-                    if overseen > 0 {
-                        row["note"] = json!(format!(
-                            "{} session{}",
-                            overseen,
-                            if overseen == 1 { "" } else { "s" }
-                        ));
-                    }
-                    row["sessions"] = json!(rank_rows(
-                        children
-                            .iter()
-                            .map(|(id, top)| conversation(id, top, false, overall))
-                            .collect(),
-                        None
-                    ));
-                    loose.push(row);
-                }
-                rank_rows(loose, None)
-            };
+                    None
+                ));
+                loose.push(row);
+            }
+            rank_rows(loose, None)
+        };
         let mut providers = BTreeMap::<String, Sums>::new();
         let mut models = BTreeMap::<String, (String, Sums, BTreeMap<String, Sums>)>::new();
         {
@@ -657,6 +758,13 @@ impl Service {
             answer["data"]["countedAt"] = json!(counted);
         }
         if ready {
+            // Take the on-disk snapshot only once per completed view, not during
+            // an incremental scan. Its failure must not make a valid summary fail.
+            {
+                let mut slot = self.kept_summary.lock().expect("kept Insights summary");
+                let kept = slot.get_or_insert_with(|| KeptSummaries::load(&kept_path));
+                let _ = kept.keep(&kept_path, kept_key, now, &answer);
+            }
             let mut cache = self.summary_cache.lock().expect("Insights summary cache");
             if cache.len() >= 24 {
                 cache.clear();
@@ -671,5 +779,49 @@ impl Service {
             );
         }
         Ok(answer)
+    }
+}
+
+#[cfg(test)]
+mod kept_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Release;
+
+    #[test]
+    fn a_completed_summary_survives_restart_and_does_not_wait_for_the_catch_up_gate() {
+        let folder = tempfile::tempdir().unwrap();
+        let service = Service::new(folder.path().into(), "Fixture".into(), "".into(), "fixture");
+        let params = BTreeMap::from([("period".into(), "7".into()), ("zone".into(), "UTC".into())]);
+        service.caught_up.store(true, Release);
+        service.native_ready.store(true, Release);
+        service.engine_ready.store(true, Release);
+        let first = service.summary(params.clone()).unwrap();
+        assert_eq!(first["data"]["state"], "empty");
+        drop(service);
+
+        let reopened = Service::new(folder.path().into(), "Fixture".into(), "".into(), "fixture");
+        let gate = reopened.gate.lock().unwrap();
+        std::thread::scope(|scope| {
+            let (send, receive) = std::sync::mpsc::channel();
+            let read = reopened.clone();
+            let query = params.clone();
+            scope.spawn(move || {
+                send.send(read.summary(query).unwrap()).unwrap();
+            });
+            let answer = receive.recv_timeout(std::time::Duration::from_secs(2));
+            drop(gate);
+            let answer =
+                answer.expect("The previous summary must not wait for the catch-up worker");
+            assert_eq!(answer["data"]["state"], "empty");
+            assert!(answer["data"]["asOf"].is_u64());
+            assert_eq!(answer["data"]["totals"], first["data"]["totals"]);
+        });
+        // A different signed setup never gets the former scope's saved answer.
+        let mut new_scope = reopened.scope();
+        new_scope.setup = Some("different-setup".into());
+        reopened.peer_roster(new_scope).unwrap();
+        let loading = reopened.summary(params.clone()).unwrap();
+        assert_eq!(loading["data"]["state"], "loading");
+        assert!(loading["data"].get("asOf").is_none());
     }
 }

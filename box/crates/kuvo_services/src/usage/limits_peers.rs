@@ -3,7 +3,7 @@
 use super::{
     limits::{Account, Fact, Provider},
     plan_facts::{Balance, Extra, Facts, Problem, ProblemKind},
-    readings::{NoticeState, Source, Trail, Window},
+    readings::{NoticeState, Source, Trail, Window, equivalent_trail},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -169,6 +169,7 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
             p
         });
     let facts = Facts {
+        partial: false,
         plan: words(&value["plan"], 100),
         balance,
         extras,
@@ -335,7 +336,28 @@ impl Book {
         let Some(bytes) = kuvo_store::files::read(path)? else {
             return Ok(Self::default());
         };
-        if let Ok(book) = serde_json::from_slice(&bytes) {
+        if let Ok(mut book) = serde_json::from_slice::<Self>(&bytes) {
+            // Earlier Rust caches keyed shared windows by the maker's ID. Reuse
+            // their accepted evidence, not those labels, when opening them.
+            for group in book.groups.values_mut() {
+                if group
+                    .iter()
+                    .all(|(key, trail)| *key == trail.current.limit_key())
+                {
+                    continue;
+                }
+                let mut old = std::mem::take(group).into_values().collect::<Vec<_>>();
+                old.sort_by_key(|trail| trail.current.read);
+                for trail in old {
+                    let key = trail.current.limit_key();
+                    if let Some(current) = group.get_mut(&key) {
+                        current.observe(trail.current.clone(), &Default::default());
+                        current.merge_fired(&trail);
+                    } else {
+                        group.insert(key, trail);
+                    }
+                }
+            }
             return Ok(book);
         }
         let old: Value = serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
@@ -447,26 +469,55 @@ impl Book {
             let ids = account
                 .windows
                 .iter()
-                .map(|w| w.id.clone())
+                .map(Window::limit_key)
                 .collect::<BTreeSet<_>>();
-            trail.retain(|id, _| ids.contains(id));
+            trail.retain(|_, t| ids.contains(&t.current.limit_key()));
+            let mut aliases = BTreeMap::new();
+            let mut order = vec![];
             for window in std::mem::take(&mut account.windows) {
-                if let Some(existing) = trail.get_mut(&window.id) {
+                let given = window.id.clone();
+                let old_id = equivalent_trail(&trail, &window);
+                let mut current = old_id.as_ref().and_then(|id| trail.remove(id));
+                if let Some(existing) = current.as_mut() {
                     existing.observe(window, &Default::default());
-                } else if let Some(next) = Trail::new(window) {
-                    trail.insert(next.current.id.clone(), next);
+                } else {
+                    current = Trail::new(window);
+                }
+                if let Some(current) = current {
+                    let id = current.current.id.clone();
+                    if let Some(old_id) = old_id {
+                        if old_id != id {
+                            if let Some(position) = order.iter().position(|old| old == &old_id) {
+                                order[position] = id.clone();
+                            }
+                        }
+                    }
+                    if !order.contains(&id) {
+                        order.push(id.clone());
+                    }
+                    aliases.insert(given, id.clone());
+                    trail.insert(id, current);
                 }
             }
-            account.windows = trail.values().map(|t| t.current.clone()).collect();
-            account.notices.retain(|n| {
+            account.windows = order
+                .iter()
+                .filter_map(|id| trail.get(id).map(|t| t.current.clone()))
+                .collect();
+            account.notices.retain_mut(|n| {
+                if let Some(id) = aliases.get(&n.window) {
+                    n.window = id.clone();
+                }
                 n.row == row
                     && trail
                         .get(&n.window)
                         .is_some_and(|t| t.current.resets_at == n.resets_at)
             });
-            for (id, state) in &account.notice_state {
-                if let Some(trail) = trail.get_mut(id) {
-                    trail.take_notice_state(state);
+            let states = std::mem::take(&mut account.notice_state);
+            for (id, state) in states {
+                let id = aliases.get(&id).cloned().unwrap_or(id);
+                if let Some(t) = trail.get_mut(&id) {
+                    t.take_notice_state(&state);
+                    account.notice_state.insert(id, t.notice_state());
                 }
             }
             for notice in &account.notices {

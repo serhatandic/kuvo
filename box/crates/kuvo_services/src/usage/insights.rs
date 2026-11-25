@@ -22,6 +22,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[path = "insight_lineage.rs"]
+pub(super) mod lineage;
 #[path = "insight_peers.rs"]
 mod peers;
 #[path = "insight_summary.rs"]
@@ -102,6 +104,7 @@ pub struct Service {
     caught_up: Arc<std::sync::atomic::AtomicBool>,
     prices: Arc<Mutex<Option<PriceBook>>>,
     history: Option<HistoryContext>,
+    directory: Option<kuvo_peers::setup_lists::Reader>,
     native_ready: Arc<std::sync::atomic::AtomicBool>,
     engine_ready: Arc<std::sync::atomic::AtomicBool>,
     issues: Arc<Mutex<BTreeSet<String>>>,
@@ -111,6 +114,7 @@ pub struct Service {
     manual_refresh: tokio::sync::broadcast::Sender<()>,
     summary_revision: Arc<std::sync::atomic::AtomicU64>,
     summary_cache: Arc<Mutex<BTreeMap<String, summary::Kept>>>,
+    kept_summary: Arc<Mutex<Option<summary::KeptSummaries>>>,
     cursor_reader: Option<super::standalone::Readers>,
     cursor_busy: Arc<tokio::sync::Mutex<()>>,
 }
@@ -133,6 +137,7 @@ impl Service {
             caught_up: Arc::default(),
             prices: Arc::default(),
             history: None,
+            directory: None,
             native_ready: Arc::default(),
             engine_ready: Arc::default(),
             issues: Arc::default(),
@@ -142,9 +147,64 @@ impl Service {
             manual_refresh: tokio::sync::broadcast::channel(4).0,
             summary_revision: Arc::default(),
             summary_cache: Arc::default(),
+            kept_summary: Arc::default(),
             cursor_reader: None,
             cursor_busy: Arc::default(),
         }
+    }
+    pub fn with_directory(mut self, directory: kuvo_peers::setup_lists::Reader) -> Self {
+        self.directory = Some(directory);
+        self
+    }
+    fn conversation_destination(&self, session: &str) -> Value {
+        let key = self.directory.as_ref().and_then(|directory| {
+            let view = directory.view();
+            let owner = view.owner_of(
+                kuvo_peers::directory::RecordScope::Session,
+                session,
+                directory.now(),
+            )?;
+            let key = owner.key?;
+            (owner.local || view.roster.member(&key).is_some())
+                .then(|| kuvo_wire::keys::encode(&key))
+        });
+        key.map_or_else(
+            || json!({"status":"unavailable"}),
+            |computer| json!({"status":"available","computer":computer}),
+        )
+    }
+    fn peer_bots(&self) -> Vec<(String, kuvo_peers::directory::AnnouncedAgent)> {
+        use kuvo_peers::directory::AgentKind;
+        let Some(directory) = &self.directory else {
+            return vec![];
+        };
+        let view = directory.view();
+        view.roster
+            .members
+            .iter()
+            .flat_map(|member| {
+                let key = kuvo_wire::keys::encode(&member.key);
+                view.told_agents(&member.key)
+                    .into_iter()
+                    .filter(|a| a.kind == AgentKind::Bot)
+                    .map(move |bot| (key.clone(), bot))
+            })
+            .collect()
+    }
+    fn bot_homes(&self) -> BTreeMap<String, String> {
+        let mut homes = self
+            .peer_bots()
+            .into_iter()
+            .map(|(key, bot)| (bot.session, key))
+            .collect::<BTreeMap<_, _>>();
+        if let Some(directory) = &self.directory {
+            if let Some(bots) = directory.view().local.bots.as_ref() {
+                for bot in bots.values() {
+                    homes.insert(bot.session.clone(), self.own_key().to_owned());
+                }
+            }
+        }
+        homes
     }
     pub fn with_history(
         mut self,
@@ -289,6 +349,7 @@ impl Service {
         )?;
         native_index::schema(&db)?;
         super::history::schema(&db)?;
+        lineage::schema(&db)?;
         Ok(db)
     }
     fn pricing(&self) -> Result<Arc<Pricing>> {
@@ -349,13 +410,29 @@ impl Service {
             if session["id"].as_str() != Some(&id) {
                 continue;
             }
-            if let Some(parent) = session["parentID"].as_str() {
-                wanted.push(parent.to_owned());
-            }
+            let node = lineage::Node::from_metadata(
+                session["parentID"].as_str().map(str::to_owned),
+                &session["metadata"],
+            );
+            wanted.extend(node.parent.iter().chain(node.starters.iter()).cloned());
             headers.insert(id, (folder, session));
         }
         let tx = db.transaction()?;
         let mut seq = get(&tx, "sequence")?.and_then(|v| v.as_u64()).unwrap_or(0);
+        let nodes = headers
+            .iter()
+            .map(|(id, (_, session))| {
+                (
+                    id.clone(),
+                    lineage::Node::from_metadata(
+                        session["parentID"].as_str().map(str::to_owned),
+                        &session["metadata"],
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let bots = lineage::Bots::read(&self.home);
+        lineage::take(&tx, 1, &nodes, &bots, &mut seq, changed.is_none())?;
         for (id, (folder, session)) in &headers {
             if changed.is_some_and(|selected| !selected.contains(id)) {
                 continue;
@@ -374,23 +451,10 @@ impl Service {
             let checkpoint = format!("scan/rust-transcript-v1/{id}");
             let before = get(&tx, &checkpoint)?
                 .and_then(|v| serde_json::from_value::<TranscriptCheckpoint>(v).ok());
-            let mut lineage = id.as_str();
-            let mut seen = BTreeSet::new();
-            while seen.insert(lineage) {
-                let Some(parent) = headers
-                    .get(lineage)
-                    .and_then(|(_, s)| s["parentID"].as_str())
-                else {
-                    break;
-                };
-                if !headers.contains_key(parent) || seen.contains(parent) {
-                    break;
-                }
-                lineage = parent;
-            }
-            let top = &headers[lineage].1;
-            let bot = top["metadata"]["kuvo"]["by"]["bot"].as_str();
-            let bot_name = top["metadata"]["kuvo"]["by"]["name"].as_str();
+            let line = lineage::line_of(&tx, id)?;
+            let lineage = line.root.as_str();
+            let bot = line.bot.as_deref();
+            let bot_name = line.name.as_deref();
             // A session's updated timestamp changes on each turn, but its attribution
             // usually does not. Only that relevant header signature forces re-attribution.
             let agent = kuvo_store::files::text_of(&folder.join("agent.json"))
@@ -404,6 +468,8 @@ impl Service {
                 lineage,
                 bot,
                 bot_name,
+                line.own,
+                "skills-v1",
                 threads
             ]));
             if before
@@ -497,13 +563,16 @@ impl Service {
                 } else {
                     put("model", model_id);
                     put("agent", message["agent"].as_str());
-                    body["skills"] = json!([]);
+                    body["skills"] = json!(super::insight_skills::portable(&message));
                     if let Some(t) = tokens.as_ref() {
                         body["tokens"] = json!({"input":t.input,"output":t.output,"cacheRead":t.cache_read,"cacheWrite5m":t.cache_write_5m,"cacheWrite1h":t.cache_write_1h});
                     }
                     if partial {
                         body["partial"] = json!(true);
                     }
+                }
+                if line.own {
+                    body["botOwn"] = json!(true);
                 }
                 if message["time"]["origin"].is_string() {
                     body["attributed"] = json!(true);
@@ -846,7 +915,10 @@ impl Service {
                 service
                     .native_ready
                     .store(true, std::sync::atomic::Ordering::Release);
-                service.fold_engine(super::engine_index::databases(&service.engine_folder())?)?;
+                service.fold_engine(
+                    super::engine_index::databases(&service.engine_folder())?,
+                    true,
+                )?;
                 if !service
                     .engine_ready
                     .swap(true, std::sync::atomic::Ordering::AcqRel)
@@ -932,7 +1004,7 @@ impl Service {
             while let Some(paths) = inbox.recv().await {
                 let worker = service.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    worker.fold_engine(paths).map_err(|e| e.to_string())
+                    worker.fold_engine(paths, false).map_err(|e| e.to_string())
                 })
                 .await;
                 if !matches!(result, Ok(Ok(()))) {
@@ -947,7 +1019,7 @@ impl Service {
             }
         })
     }
-    fn fold_engine(&self, paths: Vec<PathBuf>) -> Result<()> {
+    fn fold_engine(&self, paths: Vec<PathBuf>, force_headers: bool) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
         let prices = self.pricing()?;
         let folder = self.engine_folder();
@@ -984,19 +1056,45 @@ impl Service {
                 let tx = db.transaction()?;
                 let mut seq = get(&tx, "sequence")?.and_then(|v| v.as_u64()).unwrap_or(0);
                 let mut decoded = 0u64;
+                // Read relevant saved session headers only on a changed engine channel.
+                // An old index seeds that set once, including retained peer observations.
+                let known = if checkpoint.lineage_version == 0 || force_headers {
+                    let mut q = tx.prepare("SELECT DISTINCT session FROM event")?;
+                    let rows = q.query_map([], |row| row.get::<_, String>(0))?;
+                    rows.collect::<rusqlite::Result<Vec<_>>>()?
+                } else {
+                    lineage::channel_sessions(&tx, &key)?
+                };
+                let mut lines = BTreeMap::<String, lineage::Line>::new();
                 let next = super::engine_index::read(
                     &path,
                     now - 366 * DAY,
                     &checkpoint,
+                    &known,
+                    force_headers,
                     |version| super::engine_hosted_history::reset(&tx, &key, version),
                     |record, sessions| {
                         decoded += 1;
                         super::engine_codex_history::observe(&tx, &key, &record, &prices)?;
                         super::engine_hosted_history::observe(&tx, &key, &record)?;
-                        self.accept_engine(&tx, &mut seq, now, &prices, record, sessions)
+                        if !lines.contains_key(&record.session) {
+                            lines.insert(
+                                record.session.clone(),
+                                lineage::line_of(&tx, &record.session)?,
+                            );
+                        }
+                        let line = &lines[&record.session];
+                        self.accept_engine(&tx, &mut seq, now, &prices, record, sessions, line)
                     },
                 )?;
-                if let Some(next) = next {
+                if let Some((next, sessions)) = next {
+                    let bots = lineage::Bots::read(&self.home);
+                    let nodes = sessions
+                        .into_iter()
+                        .map(|(id, header)| (id, header.node))
+                        .collect::<BTreeMap<_, _>>();
+                    lineage::keep_channel(&tx, &key, &nodes)?;
+                    lineage::take(&tx, 0, &nodes, &bots, &mut seq, force_headers)?;
                     super::engine_codex_history::source(&tx, &key, next.sign_in, now, &place)?;
                     super::engine_hosted_history::source(
                         &tx,
@@ -1043,11 +1141,12 @@ impl Service {
         pricing: &Pricing,
         record: super::engine_index::Record,
         sessions: &BTreeMap<String, super::engine_index::Session>,
+        line: &lineage::Line,
     ) -> Result<()> {
         let human = record.role == "user";
         let saved = sessions.get(&record.session);
         if human
-            && (saved.is_some_and(|s| s.parent.is_some() || s.seat)
+            && (saved.is_some_and(|s| s.node.parent.is_some() || s.seat)
                 || matches!(
                     record.source.as_deref(),
                     Some("agent" | "group" | "queue" | "wake" | "system")
@@ -1078,27 +1177,17 @@ impl Service {
                 body["title"] = json!(title);
             }
         }
-        let mut lineage = record.session.as_str();
-        let mut seen = BTreeSet::new();
-        while seen.insert(lineage) {
-            let Some(parent) = sessions.get(lineage).and_then(|s| s.parent.as_deref()) else {
-                break;
-            };
-            if !sessions.contains_key(parent) || seen.contains(parent) {
-                break;
-            }
-            lineage = parent;
+        if line.root != record.session {
+            body["root"] = json!(line.root);
         }
-        if lineage != record.session {
-            body["root"] = json!(lineage);
+        if let Some(bot) = &line.bot {
+            body["bot"] = json!(bot);
         }
-        if let Some(s) = sessions.get(lineage) {
-            if let Some(bot) = &s.bot {
-                body["bot"] = json!(bot);
-            }
-            if let Some(name) = &s.bot_name {
-                body["botName"] = json!(name);
-            }
+        if let Some(name) = &line.name {
+            body["botName"] = json!(name);
+        }
+        if line.own {
+            body["botOwn"] = json!(true);
         }
         if record.origin.is_some() {
             body["attributed"] = json!(true);
@@ -1111,6 +1200,9 @@ impl Service {
         }
         if let Some(agent) = &record.agent {
             body["agent"] = json!(agent);
+        }
+        if let Some(skills) = &record.skills {
+            body["skills"] = json!(skills);
         }
         let mut input = None;
         let mut output = None;
@@ -1373,10 +1465,10 @@ fn save_event(
         return Ok(());
     }
     *seq += 1;
-    db.execute("INSERT INTO event VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,'[]',?22,?23,?24)
-        ON CONFLICT(key) DO UPDATE SET seq=excluded.seq,sender=NULL,received=MIN(event.received,excluded.received),at=excluded.at,session=excluded.session,computer=excluded.computer,bot=excluded.bot,bot_name=excluded.bot_name,title=excluded.title,provider=excluded.provider,account=excluded.account,model=excluded.model,agent=excluded.agent,human=excluded.human,partial=excluded.partial,cost=excluded.cost,tokens=excluded.tokens,input=excluded.input,cache_read=excluded.cache_read,cache_write=excluded.cache_write,output=excluded.output,body=excluded.body,supersedes=excluded.supersedes,processed=excluded.processed
+    db.execute("INSERT INTO event VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
+        ON CONFLICT(key) DO UPDATE SET seq=excluded.seq,sender=NULL,received=MIN(event.received,excluded.received),at=excluded.at,session=excluded.session,computer=excluded.computer,bot=excluded.bot,bot_name=excluded.bot_name,title=excluded.title,provider=excluded.provider,account=excluded.account,model=excluded.model,agent=excluded.agent,human=excluded.human,partial=excluded.partial,cost=excluded.cost,tokens=excluded.tokens,input=excluded.input,cache_read=excluded.cache_read,cache_write=excluded.cache_write,output=excluded.output,skills=excluded.skills,body=excluded.body,supersedes=excluded.supersedes,processed=excluded.processed
         WHERE (event.computer=excluded.computer OR (json_extract(excluded.body,'$.attributed')=1 AND COALESCE(json_extract(event.body,'$.attributed'),0)=0)) AND (event.partial=1 OR excluded.partial=0)",
-        params![key,*seq,now,body["at"].as_i64(),field("session"),field("computer"),field("bot"),field("botName"),field("title"),field("provider"),field("account"),field("model"),field("agent"),body["human"].as_bool().unwrap_or(false),body["partial"].as_bool().unwrap_or(false),cost,count,input,cached,creation,output,encoded,field("supersedes"),processed])?;
+        params![key,*seq,now,body["at"].as_i64(),field("session"),field("computer"),field("bot"),field("botName"),field("title"),field("provider"),field("account"),field("model"),field("agent"),body["human"].as_bool().unwrap_or(false),body["partial"].as_bool().unwrap_or(false),cost,count,input,cached,creation,output,serde_json::to_string(body.get("skills").unwrap_or(&json!([])))?,encoded,field("supersedes"),processed])?;
     Ok(())
 }
 fn estimate_body(body: &Value, pricing: &Pricing, now: i64) -> Option<f64> {
@@ -1614,8 +1706,13 @@ pub fn register(routes: &mut Registry, service: Service) {
     register_history(routes, service.clone());
     routes.register::<Summary, _, _>(Access::Any, move |call| {
         let service = service.clone();
-        let params = crate::artifacts::routes::parse_query(&call.request.path);
+        let mut params = crate::artifacts::routes::parse_query(&call.request.path);
         async move {
+            validate_period(
+                &mut params,
+                &[7, 30, 90],
+                "Choose a 7, 30 or 90 day period.",
+            )?;
             if params.get("refresh").is_some_and(|value| value == "1") {
                 service.request_peer_refresh();
                 let reader = service.clone();
@@ -1765,10 +1862,10 @@ impl Service {
         let scope = self.scope();
         let (keys, selected) = self.keys(&scope, params.get("computer").map(String::as_str));
         let filter = Filter::new(&keys, &selected, &params, days[0].1, now + 1);
-        let local_computers = [self.own_key(), self.alias()]
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let named = self.computers(&scope);
+        let mut local_computers = vec![self.own_key()];
+        if self.alias() != self.own_key() {
+            local_computers.push(self.alias());
+        }
         let pending =
             self.pending_computers(&db, &scope, params.get("computer").map(String::as_str))?;
         let where_sql = &filter.clauses;
@@ -1792,8 +1889,14 @@ impl Service {
                 }
                 let next = (calls.len() > 100).then_some(offset + 100);
                 calls.truncate(100);
+                let destination = self.conversation_destination(
+                    params
+                        .get("session")
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                );
                 return Ok(
-                    json!({"data":{"calls":calls,"next":next,"destination":{"status":"unavailable"},"pendingComputers":pending,"localComputers":local_computers}}),
+                    json!({"data":{"calls":calls,"next":next,"destination":destination,"pendingComputers":pending,"localComputers":local_computers}}),
                 );
             }
             View::Sessions => {
@@ -1813,6 +1916,7 @@ impl Service {
                     ))
                 })?;
                 let mut sessions = vec![];
+                let homes = self.bot_homes();
                 for row in rows {
                     let (id, title, at, computer, m) = row?;
                     let mut row = json!(m);
@@ -1820,7 +1924,7 @@ impl Service {
                     row["title"] = json!(title);
                     row["at"] = json!(at);
                     row["computer"] = json!(computer);
-                    row["home"] = json!(computer);
+                    row["home"] = json!(homes.get(&id).unwrap_or(&computer));
                     share(&mut row, &totals);
                     sessions.push(row);
                 }
@@ -1889,32 +1993,114 @@ impl Service {
         total["sessions"] = json!(sessions);
         let issues = self.issues.lock().expect("usage issues").clone();
         let counted = self.counted(&db)?;
-        let mut coverage = vec![
-            json!({"key":self.own_key(),"name":self.name,"scanned":counted,"stale":false,"issues":issues}),
-        ];
-        for (id, name) in &scope.peers {
-            let covered = get(&db, &format!("peer/{id}"))?.unwrap_or_default();
-            let scanned = covered["scanned"].as_i64();
-            coverage.push(json!({"key":id,"name":name,"scanned":scanned,"stale":scanned.is_none_or(|at|now-at>25*60_000),"issues":covered["issues"].as_array().cloned().unwrap_or_default()}));
+        let mut current = vec![(self.own_key().to_owned(), self.name.clone())];
+        if let Some(directory) = &self.directory {
+            for member in &directory.view().roster.members {
+                let key = kuvo_wire::keys::encode(&member.key);
+                if let Some(name) = scope.peers.get(&key) {
+                    current.push((key, name.clone()));
+                }
+            }
+        } else {
+            current.extend(
+                scope
+                    .peers
+                    .iter()
+                    .map(|(id, name)| (id.clone(), name.clone())),
+            );
         }
-        let computers = named
-            .iter()
-            .map(|(id, name)| json!({"key":id,"name":name}))
+        let chosen = params.get("computer").map(String::as_str);
+        let requested_provider = params.get("provider").map(String::as_str);
+        let mut coverage = vec![];
+        for (id, name) in &current {
+            if chosen.is_some_and(|key| key != id) {
+                continue;
+            }
+            let (scanned, issues, stale) = if id == self.own_key() {
+                (counted, issues.iter().cloned().collect::<Vec<_>>(), false)
+            } else {
+                let kept = get(&db, &format!("peer/{id}"))?.unwrap_or_default();
+                let scanned = kept["scanned"].as_i64();
+                let issues = kept["issues"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                // A change-driven index remains current while its peer is connected,
+                // even with no new log lines to advance its counted timestamp.
+                let away = self
+                    .directory
+                    .as_ref()
+                    .and_then(|d| kuvo_wire::keys::decode_exact(id).map(|key| d.view().away(&key)))
+                    .unwrap_or(true);
+                (
+                    scanned,
+                    issues,
+                    away && scanned.is_some_and(|at| now - at > 10 * 60_000),
+                )
+            };
+            let issues = issues
+                .into_iter()
+                .filter(|issue| requested_provider.is_none_or(|provider| provider == issue))
+                .collect::<Vec<_>>();
+            let mut row = json!({"key":id,"name":name,"stale":stale,"issues":issues});
+            if let Some(scanned) = scanned {
+                row["scanned"] = json!(scanned);
+            }
+            coverage.push(row);
+        }
+        let computers = current
+            .into_iter()
+            .chain(
+                scope
+                    .historical
+                    .iter()
+                    .map(|(id, name)| (id.clone(), name.clone())),
+            )
+            .map(|(key, name)| json!({"key":key,"name":name}))
             .collect::<Vec<_>>();
+        let bot_choices = {
+            let mut query=db.prepare("SELECT bot,COALESCE(MAX(bot_name),bot) FROM event WHERE bot IS NOT NULL AND computer IN (SELECT value FROM json_each(?)) GROUP BY bot ORDER BY 2 COLLATE NOCASE,bot")?;
+            let rows = query.query_map([serde_json::to_string(&keys)?], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            let mut choices = vec![];
+            for row in rows {
+                let (key, name) = row?;
+                choices.push(json!({"key":key,"name":name}));
+            }
+            choices
+        };
         let state = if !self.ready() || !pending.is_empty() {
             "loading"
-        } else if !issues.is_empty() || totals.partial > 0 {
+        } else if coverage.iter().any(|r| r["stale"] == true) {
+            "stale"
+        } else if totals.partial > 0
+            || coverage.iter().any(|r| {
+                !r["scanned"].is_number() || r["issues"].as_array().is_some_and(|a| !a.is_empty())
+            })
+        {
             "partial"
         } else if sessions == 0 {
             "empty"
         } else {
             "ready"
         };
+        let unavailable = if providers
+            .iter()
+            .any(|r| r["name"] == "cursor" && r["partial"].as_u64().unwrap_or(0) > 0)
+        {
+            vec!["Cursor API call counts where the run only reports context size"]
+        } else {
+            vec![]
+        };
         let updated_day = counted
             .and_then(|at| Timestamp::from_millisecond(at).ok())
             .map(|at| at.to_zoned(zone.clone()).date().to_string());
         Ok(
-            json!({"data":{"totals":total,"daily":daily,"providers":providers,"breakdowns":{"model":models,"agent":agents,"skill":skills,"day":days_shared},"computers":computers,"bots":[],"coverage":coverage,"state":state,"zone":zone.iana_name().unwrap_or("UTC"),"period":period,"pendingComputers":pending,"updatedDay":updated_day,"scanning":!self.ready(),"localComputers":local_computers,"unavailable":[]}}),
+            json!({"data":{"totals":total,"daily":daily,"providers":providers,"breakdowns":{"model":models,"agent":agents,"skill":skills,"day":days_shared},"computers":computers,"bots":bot_choices,"coverage":coverage,"state":state,"zone":zone.iana_name().unwrap_or("UTC"),"period":period,"pendingComputers":pending,"updatedDay":updated_day,"scanning":!self.ready(),"localComputers":local_computers,"unavailable":unavailable}}),
         )
     }
 }
@@ -1982,11 +2168,46 @@ pub fn register_views(routes: &mut Registry, service: Service) {
         }
     });
 }
+fn validate_period(
+    params: &mut BTreeMap<String, String>,
+    allowed: &[i32],
+    message: &str,
+) -> std::result::Result<(), Refusal> {
+    let given = params.get("period").map(String::as_str).unwrap_or("30");
+    let period = given
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|n| allowed.iter().any(|p| f64::from(*p) == *n))
+        .map(|n| n as i32)
+        .ok_or_else(|| Refusal::new(StatusCode::BAD_REQUEST, message))?;
+    if params.contains_key("period") {
+        params.insert("period".into(), period.to_string());
+    }
+    Ok(())
+}
 async fn read_view(
     service: Service,
     view: View,
-    params: BTreeMap<String, String>,
+    mut params: BTreeMap<String, String>,
 ) -> std::result::Result<Value, Refusal> {
+    let message = "Choose a 7, 30, 90 or 365 day period and a valid page.";
+    validate_period(&mut params, &[7, 30, 90, 365], message)?;
+    if let Some(given) = params.get("offset") {
+        let offset = if given.trim().is_empty() {
+            Some(0.)
+        } else {
+            given.trim().parse::<f64>().ok()
+        };
+        let offset = offset
+            .filter(|n| n.is_finite() && *n >= 0. && *n <= 1_000_000. && n.fract() == 0.)
+            .ok_or_else(|| Refusal::new(StatusCode::BAD_REQUEST, message))?
+            as u64;
+        params.insert("offset".into(), offset.to_string());
+    }
+    if matches!(view, View::Detail) && params.get("session").is_none_or(String::is_empty) {
+        return Err(Refusal::new(StatusCode::BAD_REQUEST, message));
+    }
     tokio::task::spawn_blocking(move || {
         service
             .view(params, view)
@@ -2017,5 +2238,88 @@ mod price_cache {
         let newer = service.pricing().unwrap();
         assert!(!Arc::ptr_eq(&first, &newer));
         assert!(Arc::ptr_eq(&newer, &service.pricing().unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod lineage_repair_tests {
+    use super::*;
+
+    #[test]
+    fn a_manual_engine_header_refresh_repairs_retained_calls_without_recounting_their_origin() {
+        let temp = tempfile::tempdir().unwrap();
+        let service = Service::new(
+            temp.path().into(),
+            "New computer".into(),
+            "new-key".into(),
+            "fixture",
+        );
+        let folder = service.home.join("data/opencode");
+        std::fs::create_dir_all(&folder).unwrap();
+        let maker = folder.join("opencode.db");
+        let at = Timestamp::now().as_millisecond() - 60_000;
+        let db = Connection::open(&maker).unwrap();
+        db.execute_batch("CREATE TABLE session_v2(id TEXT PRIMARY KEY,title TEXT,parent_id TEXT,metadata TEXT);CREATE TABLE session_message(id TEXT,session_id TEXT,time_created INTEGER,time_updated INTEGER,type TEXT,data TEXT);").unwrap();
+        for (id, parent, metadata) in [
+            ("starter", None, json!({"kuvo":{"startedBy":"bot-chat"}})),
+            ("work", None, json!({"kuvo":{"startedBy":"starter"}})),
+            (
+                "child",
+                Some("work"),
+                json!({"kuvo":{"by":{"bot":"other"}}}),
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO session_v2 VALUES(?,?,?,?)",
+                params![id, id, parent, metadata.to_string()],
+            )
+            .unwrap();
+        }
+        // The maker has an old copy with different counts. It is not a local
+        // observation of the retained call and must not replace its origin.
+        db.execute("INSERT INTO session_message VALUES(?,?,?,?,?,?)",params!["old","work",at,at,"assistant",json!({"model":{"providerID":"claude","id":"claude-opus-4-6"},"time":{"completed":at,"origin":"first"},"tokens":{"input":9999,"output":50,"cache":{"read":500,"write":2}}}).to_string()]).unwrap();
+        drop(db);
+        let bot = service.home.join("bots/bot_lead");
+        std::fs::create_dir_all(&bot).unwrap();
+        std::fs::write(
+            bot.join("bot.json"),
+            json!({"id":"bot_lead","kuvo":1,"name":"Lead"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(bot.join("session"), "bot-chat").unwrap();
+        service.fold_engine(vec![maker.clone()], false).unwrap();
+        // The other computer's observations arrive after the maker channel's
+        // first scan. The next explicit refresh must recover their lineage even
+        // though that channel's database revision did not change.
+        let db = service.open().unwrap();
+        let mut seq = 0;
+        for session in ["work", "child"] {
+            let key = hash(&json!(["engine", session, "old"]));
+            save_event(&db,&mut seq,at,json!({"key":key,"at":at,"session":session,"call":"old","computer":"first","provider":"claude","model":"claude-opus-4-6","attributed":true,"tokens":{"input":100,"output":50,"cacheRead":500,"cacheWrite5m":2,"cacheWrite1h":0}}),Some(0.123),Some(152),Some(652),Some(100),Some(500),Some(2),Some(50)).unwrap();
+        }
+        set(&db, "sequence", &json!(seq)).unwrap();
+        drop(db);
+        service.fold_engine(vec![maker.clone()], true).unwrap();
+        let db = service.open().unwrap();
+        for (session, root) in [("work", None), ("child", Some("work"))] {
+            let (body, processed, cost): (String, u64, f64) = db
+                .query_row(
+                    "SELECT body,processed,cost FROM event WHERE session=?",
+                    [session],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            let body: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["computer"], "first");
+            assert_eq!(processed, 652);
+            assert_eq!(cost, 0.123);
+            assert_eq!(body["bot"], "bot_lead");
+            assert_eq!(body["root"].as_str(), root);
+        }
+        let key = format!(
+            "scan/rust-engine-v1/{}",
+            hex::encode(Sha256::digest(maker.as_os_str().as_encoded_bytes()))
+        );
+        assert_eq!(get(&db, &format!("{key}/decoded")).unwrap(), Some(json!(0)));
     }
 }
