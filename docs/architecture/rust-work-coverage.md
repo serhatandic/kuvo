@@ -621,9 +621,12 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   - reads Lab's models;
   - stops the session from Studio;
   - has a model Lab has no account for refused with nothing made;
-  - starts one on a model it names.
+  - starts one on a model it names;
+  - as a bot's conversation, runs Stop All on Studio, which reaches Lab and stops the session there
+    that's at work (`stop_work`).
 
-  It passes with Lab as either box on macOS.
+  It passes with Lab as either box on macOS, and as the Rust box on Linux (WSL); skipped on native
+  Windows until the Rust box has a lead (5.1e). `work` 15/15 and `bots` 40/40 on all three.
 - The client's own start stays as it was: `engine-sessions`, `engine-worktree` and `agent-sessions`
   against both boxes.
 
