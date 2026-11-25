@@ -1067,7 +1067,8 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   and an empty name (400), lists it held and the bot waiting under its new name; Studio back takes
   it and Lab lets it go; one Studio refuses is said; then Studio holds a delete for Lab's bot and
   Lab, back, deletes it. Passes with Lab and Studio each TypeScript or Rust (all four pairings).
-  Failed on the old Rust (404 for a bot not here).
+  Failed on the old Rust (404 for a bot not here). WSL2 (static musl, Rust Lab and TypeScript
+  Studio): `bots-held`, `bots-elsewhere`, `agents-bots`. Native Windows: in 5.1's Windows slot.
 - Regressions: `bots` 40/40, `bots-elsewhere`, `agents-bots`, kuvo_work's bot tests, kuvo_peers
   (but for the three relay cases that are the peers row's).
 
