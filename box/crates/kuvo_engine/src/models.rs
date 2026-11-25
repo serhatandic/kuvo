@@ -605,6 +605,41 @@ async fn picker_place(
     })
 }
 
+/// The models every client's picker offers here, the engine's and the coding agents', as their
+/// rows (`providerID`, `id`, `name`, `side`, `aliases`, `efforts`, `retiring`, `hidden`); and
+/// whether each place could say (`engine`, `agents`), where it runs.
+pub struct OfferedModels {
+    pub models: Vec<Value>,
+    pub engine: Option<bool>,
+    pub agents: Option<bool>,
+}
+
+impl Engine {
+    /// What a lead may start sessions on here (list_models): the engine's only while it runs.
+    pub async fn offered_models(&self) -> OfferedModels {
+        let lease = self.acquire(Demand::Existing).await;
+        let read_engine = async {
+            let lease = lease.as_ref()?;
+            self.catalogs.get(self, lease, "", false).await
+        };
+        let read_agents = async { self.agent_models.as_ref()?.catalog(false).await.ok() };
+        let (catalog, agents) = tokio::join!(read_engine, read_agents);
+        let engine_models = catalog.as_deref().map(Catalog::offered).unwrap_or_default();
+        let mut models: Vec<Value> = engine_models
+            .iter()
+            .map(|model| model.picker_row())
+            .collect();
+        if let Some(agents) = &agents {
+            models.extend(agents.models());
+        }
+        OfferedModels {
+            models,
+            engine: lease.is_some().then_some(catalog.is_some()),
+            agents: self.agent_models.is_some().then_some(agents.is_some()),
+        }
+    }
+}
+
 async fn picker(
     engine: &Engine,
     list: &LocalSessions,

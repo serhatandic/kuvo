@@ -226,10 +226,12 @@ impl Writer {
         let status_changed = previous != new_status;
         let to_top = fields["top"].as_bool() == Some(true);
         let stamp = json!({"at":now,"by":who});
-        if let Some(source) = row.get("source") {
-            let display = source["ref"].as_str().unwrap_or_default();
-            let title = row["title"].as_str().unwrap_or(&item.title);
-            let name = format!("{display} \"{title}\"");
+        if row.get("source").is_some() {
+            let mut projection = row.clone();
+            Seen::read(&self.store)
+                .map_err(storage_refusal)?
+                .apply(&self.refs, &mut projection);
+            let name = tools::item_name(&projection);
             if fields.get("title").is_some()
                 || fields.get("body").is_some()
                 || fields.get("removeInlineImages").is_some()
@@ -243,10 +245,6 @@ impl Writer {
                     "{name} takes its description from GitHub: attach files there."
                 )));
             }
-            let mut projection = row.clone();
-            Seen::read(&self.store)
-                .map_err(storage_refusal)?
-                .apply(&self.refs, &mut projection);
             if projection.get("keptIn").is_some()
                 && (who["user"] == true || fields.get("status").is_some())
             {

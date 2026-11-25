@@ -186,7 +186,7 @@ impl PeerReads {
             &[],
             self.peers.now(),
         )?;
-        Ok(view::detail(
+        let mut answer = view::detail(
             item,
             all,
             &far.items,
@@ -194,7 +194,21 @@ impl PeerReads {
             &Seen::read(&self.store)?,
             &sessions,
             &Assignees::read(&self.store),
-        ))
+        );
+        if self.store.move_fences().map_or_else(
+            |_| {
+                self.peers
+                    .view()
+                    .local
+                    .ownership
+                    .frozen
+                    .contains(&item.owner)
+            },
+            |fences| !fences.permits(&item.owner, |_| true),
+        ) {
+            view::held(&mut answer["item"]);
+        }
+        Ok(answer)
     }
 
     pub(super) async fn item(&self, name: String, client: bool) -> Result<Value, Refusal> {
@@ -218,6 +232,14 @@ impl PeerReads {
             let mut all = here.store.items()?;
             mentions::recover(&here.refs.mentions, &mut all);
             if let Some(item) = here.refs.find(&all, &reference) {
+                // Tools use a live match on another computer before a deleted
+                // local reference. A direct client read retains its local match.
+                if !refresh
+                    && item.removed.is_some()
+                    && let Some(live) = here.told(&all, &reference, false)?
+                {
+                    return Ok((None, Some(live)));
+                }
                 return Ok((Some(here.detail(item, &all)?), None));
             }
             let far = here.told(&all, &reference, client)?;

@@ -211,10 +211,8 @@ impl Fixture {
                     .unwrap()
                     .clone(),
                     portable_requests: None,
-                    limits: Limits {
-                        orphan: Some(Duration::from_secs(90)),
-                        ..Limits::default()
-                    },
+                    // Use the production orphan window, including a full keeper trial.
+                    limits: Limits::default(),
                 },
             )
             .await?;

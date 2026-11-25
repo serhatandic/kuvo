@@ -9,6 +9,7 @@ mod offline;
 mod peer_actions;
 mod review;
 mod session_links;
+pub use session_links::StartLink;
 mod started;
 mod tools;
 
@@ -51,6 +52,7 @@ use kuvo_store::{
 use kuvo_wire::mail::Envelope;
 use serde_json::{Value, json};
 use std::{
+    collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -94,6 +96,7 @@ struct Writer {
     engine: Engine,
     reads: PeerReads,
     forward: Forward,
+    owners: ownership::Handle,
     revisions: Arc<offline::Revisions>,
     retell: told::Retell,
 }
@@ -119,7 +122,8 @@ pub(super) fn register(
         revisions: Arc::new(offline::Revisions::new()),
         numbers: Numbers::new(store, setup.clone(), peers.clone()),
         files: Arc::new(ClientFiles::new()),
-        forward: Forward::new(store.clone(), owners, relay.clone()),
+        forward: Forward::new(store.clone(), owners.clone(), relay.clone()),
+        owners,
         sessions: sessions.clone(),
         engine: engine.clone(),
         store: store.clone(),
@@ -218,6 +222,7 @@ pub(super) fn register(
 
 pub struct Runtime {
     task: tokio::task::JoinHandle<()>,
+    pub(super) link: session_links::StartLink,
     pub(super) edits: Arc<dyn kuvo_setup::RecordEdits>,
     pub(super) review: Arc<dyn kuvo_setup::backup::QueueReview>,
 }
@@ -244,6 +249,7 @@ impl Writer {
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let edits = Arc::new(offline::Routes(self.clone()));
         let review = Arc::new(self.clone());
+        let link = session_links::StartLink(self.clone());
         let task = tokio::spawn(async move {
             let mut exchange = Exchange::default();
             loop {
@@ -265,6 +271,7 @@ impl Writer {
         });
         Runtime {
             task,
+            link,
             edits,
             review,
         }
@@ -452,10 +459,28 @@ impl Writer {
         .map_err(io::Error::other)?
     }
 
-    fn may_number(&self, item: &Item) -> bool {
+    // Read durable ownership once per possible owner, on the disk worker while
+    // the queue lock is held. A move starting afterwards must wait for that lock.
+    fn numberable(&self, items: &[Item]) -> HashSet<String> {
+        items
+            .iter()
+            .filter(|item| {
+                (item.number.is_none() || book::wanted(item).is_some())
+                    && item.source().is_none()
+                    && !item.saved.contains_key("handing")
+            })
+            .map(|item| item.owner.as_str())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter(|owner| self.admit(owner).is_ok())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn may_number(item: &Item, owners: &HashSet<String>) -> bool {
         item.source().is_none()
             && !item.saved.contains_key("handing")
-            && self.admit(&item.owner).is_ok()
+            && owners.contains(&item.owner)
     }
 
     async fn number_waiting(&self, received: Option<Grant>) -> Result<(), Error> {
@@ -469,10 +494,15 @@ impl Writer {
         })
         .await
         .map_err(io::Error::other)??;
-        let store = self.store.clone();
-        let items = tokio::task::spawn_blocking(move || store.items())
-            .await
-            .map_err(io::Error::other)??;
+        let writer = self.clone();
+        let (items, numberable, sync_mentions) = tokio::task::spawn_blocking(move || {
+            let items = writer.store.items()?;
+            let numberable = writer.numberable(&items);
+            let sync_mentions = crate::queue::mentions::before_numbering(&items);
+            Ok::<_, Error>((items, numberable, sync_mentions))
+        })
+        .await
+        .map_err(io::Error::other)??;
         let mut book = book::Book::new(items);
         let now = Timestamp::now().as_millisecond();
         let grant = match received {
@@ -482,7 +512,7 @@ impl Writer {
                 let claims = book
                     .items
                     .iter()
-                    .filter(|item| item.removed.is_none() && self.may_number(item))
+                    .filter(|item| item.removed.is_none() && Self::may_number(item, &numberable))
                     .filter_map(|item| {
                         let number = book::wanted(item)?;
                         (!book::flag(item, "backGranted")
@@ -505,7 +535,7 @@ impl Writer {
                     .await?
             }
         };
-        let (waiting, used) = book.settle(grant, |item| self.may_number(item), now);
+        let (waiting, used) = book.settle(grant, |item| Self::may_number(item, &numberable), now);
         let assigned = self
             .numbers
             .allocate_with_used(waiting.len(), used, highest(&book.items), now)
@@ -516,6 +546,9 @@ impl Writer {
         let writer = self.clone();
         tokio::task::spawn_blocking(move || {
             let _guard = guard;
+            if let Some(before) = sync_mentions {
+                book.sync_mentions(&writer, &before);
+            }
             book.save(&writer, now).map_err(|error| {
                 io::Error::other(format!(
                     "Cannot persist Work Queue numbers (status {}).",
@@ -840,31 +873,52 @@ impl Writer {
         .map_err(internal)?
     }
 
+    async fn admit_async(&self, owner: &str) -> Result<(), Refusal> {
+        let writer = self.clone();
+        let owner = owner.to_owned();
+        tokio::task::spawn_blocking(move || writer.admit(&owner))
+            .await
+            .map_err(internal)?
+    }
+
+    fn session_scope(&self, owner: &str) -> Result<ownership::Scope, Refusal> {
+        self.owners
+            .scope(owner, None)
+            .map_err(|_| bad("This queue is held while its owner changes."))
+    }
+
     fn admit(&self, owner: &str) -> Result<(), Refusal> {
-        let view = self.peers.view();
-        if view.local.ownership.frozen.contains(owner) {
-            let message = if owner.starts_with("grp_") {
-                "This group chat is moving to another computer, with its Work Queue: try again once it's there."
-            } else {
-                "That conversation is moving to another computer, with its Work Queue: try again once it's there."
-            };
-            return Err(bad(message));
-        }
-        let scope = if owner.starts_with("ses_") {
-            RecordScope::Session
+        if owner.starts_with("ses_") {
+            let scope = self.session_scope(owner)?;
+            if let Some(other) = scope.owner.filter(|owner| !owner.local) {
+                return Err(bad(format!(
+                    "Open this queue on {} to change it.",
+                    other.name
+                )));
+            }
+            if scope.held {
+                return Err(bad("This queue is held while its owner changes."));
+            }
         } else if owner.starts_with("grp_") {
-            RecordScope::Group
-        } else {
-            return Ok(());
-        };
-        if let Some(here) = view
-            .owner_of(scope, owner, self.peers.now())
-            .filter(|owner| !owner.local)
-        {
-            return Err(bad(format!(
-                "Open this queue on {} to change it.",
-                here.name
-            )));
+            // The group admission/seat route is integrated in row 5.3.
+            let view = self.peers.view();
+            if let Some(other) = view
+                .owner_of(RecordScope::Group, owner, self.peers.now())
+                .filter(|owner| !owner.local)
+            {
+                return Err(bad(format!(
+                    "Open this queue on {} to change it.",
+                    other.name
+                )));
+            }
+            if !self
+                .store
+                .move_fences()
+                .map_err(storage_refusal)?
+                .permits(owner, |_| true)
+            {
+                return Err(bad("This queue is held while its owner changes."));
+            }
         }
         Ok(())
     }

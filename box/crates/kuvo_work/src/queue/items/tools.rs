@@ -350,7 +350,7 @@ impl Writer {
         operation: Option<String>,
     ) -> Result<Value, Refusal> {
         let owner = self.tool_owner(&caller, true)?;
-        self.admit(&owner)?;
+        self.admit_async(&owner).await?;
         let issue = self.issue_for(&args["issue"], &owner, None).await?;
         let writer = self.clone();
         let folder = caller.directory.clone();
@@ -440,6 +440,17 @@ impl Writer {
         }).await.map_err(internal)?
     }
 
+    fn current_name(&self, row: &Value) -> Result<String, Refusal> {
+        if row.get("source").is_none() {
+            return Ok(read::item_name(row));
+        }
+        let mut projected = row.clone();
+        crate::queue::github::Seen::read(&self.store)
+            .map_err(storage_refusal)?
+            .apply(&self.refs, &mut projected);
+        Ok(read::item_name(&projected))
+    }
+
     fn refuse_issue(
         &self,
         all: &[Item],
@@ -465,7 +476,7 @@ impl Writer {
                 .source()
                 .and_then(|source| source["ref"].as_str())
                 .unwrap_or_default();
-            let name = named(reference, &item.title);
+            let name = self.current_name(&Value::Object(item.saved.clone()))?;
             if item.owner == owner {
                 return Err(bad(format!(
                     "{name} is in your Work Queue already: refer to it as {reference}."
@@ -501,11 +512,7 @@ impl Writer {
             )));
         }
         if let Some(item) = existing.first() {
-            let reference = item
-                .source()
-                .and_then(|source| source["ref"].as_str())
-                .unwrap_or_default();
-            let name = named(reference, &item.title);
+            let name = self.current_name(&Value::Object(item.saved.clone()))?;
             let removed = item.removed.as_ref().expect("removed");
             return Err(bad(if removed.by["user"] == true {
                 format!(

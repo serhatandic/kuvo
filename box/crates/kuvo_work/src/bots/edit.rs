@@ -166,7 +166,7 @@ fn note_edited(folder: &Path, fields: &[&str]) {
 
 impl Bots {
     /// `PATCH kuvo/bots/<id>`: a bot here changed as Edit Bot changes it.
-    pub(super) async fn change(&self, id: &str, given: Value) -> Answer {
+    pub(crate) async fn change(&self, id: &str, given: Value) -> Answer {
         let Some(session) = BotHere::read(&self.inner.bots, id).map(|here| here.session) else {
             return no(404, GONE);
         };

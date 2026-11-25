@@ -32,12 +32,17 @@ fn session_id(session: &str) -> bool {
 /// The sessions at work in the engine now.
 async fn working_now(engine: &BotEngine) -> HashSet<String> {
     let active = engine.call(Method::GET, "api/session/active", None, WAIT);
-    active
+    let mut working: HashSet<String> = active
         .await
         .map(|active| ids_of(&active))
         .unwrap_or_default()
         .into_iter()
-        .collect()
+        .collect();
+    // (And the coding agents' conversations in a turn.)
+    let agents = engine.agent_sessions().await.into_iter();
+    let turns = agents.filter(|(_, running)| *running);
+    working.extend(turns.filter_map(|(data, _)| data["id"].as_str().map(str::to_owned)));
+    working
 }
 
 /// Whether a session (or one of its subagents) asks something now.
@@ -95,7 +100,7 @@ impl Work {
     }
 
     /// The sessions at work now: in a turn, or with something they left running.
-    pub(super) async fn at_work_now(
+    pub(crate) async fn at_work_now(
         &self,
         engine: &BotEngine,
     ) -> (HashSet<String>, HashSet<String>) {
@@ -123,8 +128,26 @@ impl Work {
 
     // What it left running, ended: its commands and its subagents.
     async fn end_background(&self, engine: &BotEngine, session: &str) {
-        // (A coding agents' conversation: through its agent.)
+        // (A coding agents' conversation: through its agent, and again once its turn ended, as
+        // its agent tells what that left running only then; never into a turn since.)
         if engine.stop_agent_background(session).await.is_some() {
+            let (engine, session) = (self.list.engine().clone(), session.to_owned());
+            tokio::spawn(async move {
+                if !engine
+                    .agent_turn_ended(&session, Duration::from_secs(20))
+                    .await
+                {
+                    return;
+                }
+                for wait in [200, 1000, 3000] {
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    if !engine.agent_turn_ended(&session, Duration::ZERO).await {
+                        return;
+                    }
+                    let stops = engine.work_engine().await;
+                    stops.stop_agent_background(&session).await;
+                }
+            });
             return;
         }
         let path = format!("api/session/{}/background", encoded(session));
@@ -213,9 +236,8 @@ impl Work {
         session: &str,
         items: Vec<String>,
     ) -> Option<Result<Value, Refusal>> {
-        let engine = self.list.engine().running_bot_engine().await?;
-        let path = format!("api/session/{}", encoded(session));
-        let data = engine.call(Method::GET, &path, None, WAIT).await.ok()?;
+        let engine = self.list.engine().work_engine().await;
+        let data = engine.session_data(session).await.ok()?;
         started_by(&data)?;
         let lead = self.lead_waiting_on(&engine, &data, None).await;
         let state = self.stop_work(&engine, session, true, items).await;
@@ -242,13 +264,12 @@ impl Work {
                 "There's no such bot here.",
             ));
         };
-        let refused = || Refusal::new(StatusCode::SERVICE_UNAVAILABLE, "The engine isn't running.");
-        let engine = self
-            .list
-            .engine()
-            .running_bot_engine()
-            .await
-            .ok_or_else(refused)?;
+        // (The coding agents' conversations stop with the engine down too.)
+        let engine = self.list.engine().work_engine().await;
+        if !engine.reachable() {
+            let down = "The engine isn't running.";
+            return Err(Refusal::new(StatusCode::SERVICE_UNAVAILABLE, down));
+        }
         let (own, engine_here) = (here.session.as_str(), self.list.engine());
         // A due reset mustn't start the bot while its sessions are stopped.
         let _ = engine_here.pause_for_user(own, true).await;
@@ -293,6 +314,13 @@ impl Work {
         let marked = self.kept().stopped();
         told.retain(|(starter, _)| starter == own || !marked.contains_key(starter));
         self.tell_starters(&told);
+        // Its work on your other computers too: each is told, now or once it's back.
+        let name = here
+            .described
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        self.stop_work_elsewhere(own, name);
         self.records.note_changed(bot);
         Ok(stopped)
     }

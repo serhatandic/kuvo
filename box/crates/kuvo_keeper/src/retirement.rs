@@ -26,6 +26,10 @@ pub(crate) fn share(home: &Path, release: &Release) -> io::Result<File> {
     locks::try_shared_file_lock(&lease_path(home, release)?)
 }
 
+pub(crate) fn exclusive(home: &Path, release: &Release) -> io::Result<File> {
+    locks::try_file_lock(&lease_path(home, release)?)
+}
+
 /// Protect this program's published release until it exits.
 pub fn lease_running_release(home: &Path) -> io::Result<Option<File>> {
     let versions = match home.join("versions").canonicalize() {
@@ -106,7 +110,7 @@ pub(crate) fn sweep(home: &Home, staged: &Release) -> io::Result<()> {
 }
 
 fn retire(home: &Path, versions: &Path, release: &Release) -> io::Result<PathBuf> {
-    let _exclusive = locks::try_file_lock(&lease_path(home, release)?)?;
+    let _exclusive = exclusive(home, release)?;
     let retired = tempfile::Builder::new()
         .prefix(RETIRED)
         .tempdir_in(versions)?

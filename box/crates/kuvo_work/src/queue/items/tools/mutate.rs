@@ -174,7 +174,7 @@ impl Writer {
                     append_event(row, json!({"at":now,"by":actor,"kind":"edited","fields":changes}));
                 }
                 writer.observe_known(row, &item.id);
-                let display = read::item_name(row);
+                let display = writer.current_name(row)?;
                 let where_ = row["status"].as_str().unwrap_or_default();
                 let sessions = store::array(row.get("sessions")).len();
                 let linked_sessions = match sessions {
@@ -407,7 +407,7 @@ impl Writer {
         operation: Option<String>,
     ) -> Result<Value, Refusal> {
         let owner = self.tool_owner(&caller, true)?;
-        self.admit(&owner)?;
+        self.admit_async(&owner).await?;
         let now = Timestamp::now().as_millisecond();
         let who = actor(&caller);
         let working = args["working"] == true && !caller.seat;

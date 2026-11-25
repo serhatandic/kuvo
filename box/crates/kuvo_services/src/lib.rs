@@ -6,6 +6,7 @@ pub mod files;
 pub mod git;
 pub mod integrations;
 pub mod library;
+pub mod mac_app;
 pub mod marketplace;
 pub mod programs;
 pub mod skills;

@@ -85,7 +85,7 @@ pub fn shown_path(folder: &str, home: &Path) -> String {
     }
 }
 
-fn is_empty_folder(folder: &Path) -> bool {
+pub(super) fn is_empty_folder(folder: &Path) -> bool {
     let finders = |entry: std::io::Result<std::fs::DirEntry>| {
         entry.is_ok_and(|entry| entry.file_name() == ".DS_Store")
     };
@@ -94,7 +94,7 @@ fn is_empty_folder(folder: &Path) -> bool {
 
 /// The folder you named for a project (written with `~` or in full), as a full path, or why it
 /// can't be one.
-fn named_place(given: Option<&str>, home: &Path) -> Result<PathBuf, Refused> {
+pub(super) fn named_place(given: Option<&str>, home: &Path) -> Result<PathBuf, Refused> {
     let given = given.map(str::trim).unwrap_or_default();
     let written = match given.strip_prefix('~') {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => {
@@ -134,7 +134,7 @@ async fn run(mut command: Command, limit: u64) -> Result<Output, String> {
 }
 
 /// Git in `folder` by the box itself (`gitLater`): its trimmed output, or none where it failed.
-async fn git(folder: &Path, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
+pub(crate) async fn git(folder: &Path, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
     let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     let at = folder.to_owned();
     let own = spawn_blocking(move || safe::own_args(&args, Some(&at), None));

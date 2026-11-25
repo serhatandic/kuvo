@@ -219,6 +219,11 @@ impl Runtime {
         self._writer.review.clone()
     }
 
+    /// The Work Queue's link for a session a tool starts.
+    pub fn start_link(&self) -> super::items::StartLink {
+        self._writer.link.clone()
+    }
+
     pub fn peer_reads(&self) -> PeerReads {
         self.reads.clone()
     }

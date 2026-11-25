@@ -38,6 +38,15 @@ impl Mentions {
     }
 
     pub fn find(&self, text: &str) -> Vec<Mention> {
+        self.find_in(text, false)
+    }
+
+    /// As `find`, in a session's task, where "#1 in the API" names an item.
+    pub fn find_in_task(&self, text: &str) -> Vec<Mention> {
+        self.find_in(text, true)
+    }
+
+    fn find_in(&self, text: &str, task: bool) -> Vec<Mention> {
         if !text.contains('#') {
             return Vec::new();
         }
@@ -86,7 +95,7 @@ impl Mentions {
             }
             let prefix = utf16_tail(&text[..span.start], 80).trim_end();
             if self.excluded.is_match(prefix)
-                || (number <= 10 && self.rank(prefix, &text[span.end..]))
+                || (number <= 10 && self.rank(prefix, &text[span.end..], task))
             {
                 continue;
             }
@@ -146,7 +155,7 @@ impl Mentions {
         text
     }
 
-    fn rank(&self, prefix: &str, suffix: &str) -> bool {
+    fn rank(&self, prefix: &str, suffix: &str, task: bool) -> bool {
         let ranked = |word: &str| {
             matches!(
                 word,
@@ -178,7 +187,8 @@ impl Mentions {
             .map(|word| self.punctuation.replace_all(word, ""));
         ranked(&left)
             || ranked(next)
-            || (matches!(next, "on" | "in")
+            || (!task
+                && matches!(next, "on" | "in")
                 && second
                     .as_ref()
                     .is_some_and(|word| word.chars().any(char::is_alphabetic)))
@@ -244,7 +254,7 @@ fn utf16_tail(text: &str, units: usize) -> &str {
 pub(super) struct Mention {
     start: usize,
     end: usize,
-    number: u32,
+    pub number: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
 }
@@ -353,6 +363,70 @@ fn live_ranges(text: &str, ranges: &[Mention]) -> bool {
                 .fold(0, |n, digit| n * 10 + u32::from(digit - 48))
                 == range.number
     })
+}
+
+/// A valid, already-bound range is never rebound by an unrelated write.
+/// Missing indexes and as-yet-unbound ranges can gain their item when a number
+/// arrives or an older queue is recovered.
+pub(super) fn needs_sync(item: &Item) -> bool {
+    Index::read(item).is_none_or(|index| {
+        std::iter::once(&index.body)
+            .chain(&index.notes)
+            .flatten()
+            .any(|range| range.item.is_none())
+    })
+}
+
+pub(super) fn before_numbering(items: &[Item]) -> Option<HashMap<String, u32>> {
+    items.iter().any(needs_sync).then(|| {
+        items
+            .iter()
+            .filter(|item| item.removed.is_none())
+            .filter_map(|item| {
+                Some((
+                    item.id.clone(),
+                    item.number.filter(|number| *number < 1_000_000.0)? as u32,
+                ))
+            })
+            .collect()
+    })
+}
+
+pub(super) fn sync_indexes(
+    parser: &Mentions,
+    items: &[Item],
+    before: &HashMap<String, u32>,
+) -> Vec<(usize, Index)> {
+    let mut by_number = HashMap::<u32, &str>::new();
+    for item in items.iter().filter(|item| item.removed.is_none()) {
+        if let Some(number) = item.number.filter(|number| *number < 1_000_000.0) {
+            by_number.entry(number as u32).or_insert(&item.id);
+        }
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(at, item)| {
+            let Some(mut index) = Index::read(item) else {
+                return Some((at, Index::rebuild(parser, item, items, None)));
+            };
+            let mut changed = false;
+            for range in std::iter::once(&mut index.body)
+                .chain(&mut index.notes)
+                .flatten()
+            {
+                if range.item.is_none()
+                    && let Some(id) = by_number
+                        .get(&range.number)
+                        .filter(|id| **id != item.id && before.get(**id) != Some(&range.number))
+                {
+                    range.item = Some((*id).to_owned());
+                    changed = true;
+                }
+            }
+            changed.then(|| (at, Index::from_ranges(index.body, index.notes)))
+        })
+        .collect()
 }
 
 /// A recovered owner file may be missing an index. Rebuild it in memory until

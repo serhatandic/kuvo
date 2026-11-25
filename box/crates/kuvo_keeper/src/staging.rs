@@ -103,8 +103,9 @@ pub fn prepare(
     target: &str,
     bytes: &[u8],
     envelope: &[u8],
+    step: impl Fn(crate::update_status::Step),
 ) -> io::Result<ReleaseRef> {
-    prepare_pack(home, signed, target, bytes, envelope, StageFor::Fleet)
+    prepare_pack(home, signed, target, bytes, envelope, StageFor::Fleet, step)
 }
 
 enum StageFor {
@@ -119,6 +120,7 @@ fn prepare_pack(
     bytes: &[u8],
     envelope: &[u8],
     purpose: StageFor,
+    step: impl Fn(crate::update_status::Step),
 ) -> io::Result<ReleaseRef> {
     let pack = signed.pack_for(target)?;
     if bytes.len() as u64 > MAX_PACK || sha256(bytes) != pack.sha256 {
@@ -157,7 +159,10 @@ fn prepare_pack(
     let probe = tempfile::Builder::new()
         .prefix(".probe-")
         .tempdir_in(&versions)?;
-    let engine = EnginePack::find_or_fetch(home, signed, target, probe.path())?;
+    let engine = EnginePack::find_or_fetch(home, signed, target, probe.path(), || {
+        step(crate::update_status::Step::DownloadingEngine)
+    })?;
+    step(crate::update_status::Step::CheckingIt);
     let cwd = Some(home.root());
     check_engine(engine.executable(), cwd, "The new engine doesn't run here.")?;
     probe_program(
@@ -268,7 +273,7 @@ pub fn prepare_install(home: &Home, signed: &SignedRelease, source: &Path) -> io
     let probe = tempfile::Builder::new()
         .prefix(".probe-")
         .tempdir_in(&install)?;
-    let engine = EnginePack::find_or_fetch(&media, signed, target, probe.path())?;
+    let engine = EnginePack::find_or_fetch(&media, signed, target, probe.path(), || {})?;
     check_engine(
         engine.executable(),
         None,
@@ -339,7 +344,16 @@ pub fn prepare_install_selection(
     let target = crate::manifest::local_target()?;
     let pack = signed.pack_for(target)?;
     let bytes = read_release(&source.join(pack.filename()?), MAX_PACK)?;
-    prepare_pack(home, signed, target, &bytes, envelope, StageFor::Install)?.target()
+    prepare_pack(
+        home,
+        signed,
+        target,
+        &bytes,
+        envelope,
+        StageFor::Install,
+        |_| {},
+    )?
+    .target()
 }
 
 /// Select the staged release before the installed keeper starts.

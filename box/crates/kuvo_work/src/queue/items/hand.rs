@@ -51,7 +51,7 @@ impl Writer {
             )));
         }
         let display = tools::item_name(&Value::Object(item.saved.clone()));
-        if view.local.ownership.frozen.contains(&owner) {
+        if self.session_scope(&owner)?.held {
             return Err(bad(
                 "That conversation is moving to another computer, with its Work Queue: try again once it's there.",
             ));

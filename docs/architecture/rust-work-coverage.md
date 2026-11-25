@@ -556,9 +556,8 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Gaps and owners
 
-- **start_session, list_models, list_projects and stop_work from another computer**: these go under
-  `work.elsewhere.start`, which isn't advertised yet. A lead's homes come from a start's call; the
-  case seeds `run/work/homes.json` meanwhile. 5.1f-2.
+- **A lead's homes before any start**: the first case seeds `run/work/homes.json`, as a start
+  from there would have noted it (5.1f-2 notes them).
 - **Answers to this computer's own calls** (`RemoteWork::deliver`): it makes none until its leads
   have the tools, 5.1e.
 - **The coding agents' sessions**: only the engine's sessions are listed and reached from another
@@ -601,3 +600,211 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **An allow given in a mode that lets it through**: no case gives a session such a mode; the
   checks are judged by the peers' `Permission::refusal`, which has its own tests. Open, with 5.1e's
   local answer_ask cases.
+
+## 5.1f-2 — starting work here for a lead on another computer
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `kuvo_engine::start_session::create_as` with a `RemoteLead` and `StartSteps`; `Engine::start_for_lead`. It's the one start: the client's start is `create_as` with neither. A remote lead brings: its approval as the ceiling (kept no higher than Full Access confirmed here), its Don't Allows kept with the session (`kuvo.held`), the `call` and `lead` marks, its line, its bot's `by` and `depth`, the task's letter from it "on" its computer with its bot's note, and why it got less (`held`). | `letters/start.ts` `startSessionHere`'s remote branches, `sessionNote`, `heldThere`, `composeLetter` |
+| `pick_model`, `lead_model`: the model it names, with its effort, from the models every picker offers; else its own where it runs here, else this computer's default, saying why; none at all is refused | `work/models.ts` `pickModel`; `startSessionHere`'s remote model choice |
+| `work::starts`: `take_start` (the journal at `run/calls/<id>.json`, the TypeScript box's file, finished from the step it got to when its call comes again), `start_call` (`as.start` checked whole, its line ending with its lead), `started_words`, `note_line_homes` | `letters/start-call.ts` `takeStart`, `finishStart`, `startAsOfMail`, `noteLineHomes`; `start.ts` `startedWords` |
+| `Work::list_models_tool` (from `Engine::offered_models`, the picker's own list), `list_projects_tool`, `stop_line_work`; the switch for work from other computers checked first | `work/tools.ts` `listModelsTool`, `listProjectsTool`; `start-call.ts` `readHere`, `stopLineWork`; `calls.ts` `isOpenTool` |
+| `work.elsewhere.start` advertised with `work.elsewhere` | `START_FEATURE` |
+
+### Proof
+
+- `work-elsewhere.test.mjs`, a new case. A TypeScript lead on Studio:
+  - lists Lab's projects;
+  - starts a session there in one of them, which is marked with its call, its lead and its line, and gets its task "from Lead on Studio";
+  - reads Lab's models;
+  - stops the session from Studio;
+  - has a model Lab has no account for refused with nothing made;
+  - starts one on a model it names;
+  - as a bot's conversation, runs Stop All on Studio, which reaches Lab and stops the session there
+    that's at work (`stop_work`).
+
+  It passes with Lab as either box on macOS, and as the Rust box on Linux (WSL); skipped on native
+  Windows until the Rust box has a lead (5.1e). `work` 15/15 and `bots` 40/40 on all three.
+- The client's own start stays as it was: `engine-sessions`, `engine-worktree` and `agent-sessions`
+  against both boxes.
+
+### Gaps and owners
+
+- **A bot's work limits and the start rate** (`heldByLimits`, `allowed`): counted by the starting
+  computer's tool since 5.1e-1; the computer taking a start doesn't count them again.
+- **A Work Queue item linked at the start** (`given.item`, `linkStartedItem`): the starting
+  computer's start links it (5.1e-1); one carried in a call isn't linked on the computer taking
+  it. 5.2, with the item's keeper across computers.
+- **A start cut short, finished without its call coming again** (`resumeStarts`'s round): a start
+  is finished when its call is retried. The worktree a start cut short made isn't reused.
+- **What's done to a session as it's marked** (`markMade`: its project's other folders told to it,
+  Autopilot, Full Access outside the sandbox): as the client's start does it now. Autopilot 5.3,
+  the sandbox 6.1.
+- **The reason a lead's model can't run here**: retiring or no account, as the picker's list says.
+  TS also tells a sign-in, a key or an agent missing. 4.x, with the agents' account states.
+- **Stop All reaching your other computers** (`stopBotWorkElsewhere`, the sending side): done in
+  5.1e-1.
+
+## 5.1e-1 — the agents' work tools and letters
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `work::agent_tools`: `POST kuvo/agent-tools` (the tool named, its operation id checked), `Work::agent_tool` (each tool for the conversation it works for: `root_of`, up a subagent's starter and the conversation an engine run is for), `Caller` (its name, its bot) and `Caller::lead` (the rules it goes by here and its own, as a call carries them) | `areas/agent-tools.ts` `agentToolsRoute`; `letters/tools.ts` `agentTool`, `rootOf`, `nameOf`; `work/tools.ts` `leadOf` |
+| `agent_tools::sessions`: list_sessions' words (`describe_list`, `row_line`, the rows of your other computers live or as of when they last told), make_project (`make_project_tool`, `ask_work`, `answer_of`, Always) | `work/tools.ts` `describeList`, `rowLine`, `makeProjectTool`; `work/asks.ts` `askWork`, `answerOf`, `botAllows` |
+| `agent_tools::calls`: which computer (`computer_of`), the call there (`call_peer` over `kuvo_peers::remote_work::WorkHandle`), list_models and list_projects there (`read_elsewhere`), stop, compact and answer for a session there or wherever it may be (`elsewhere_tool`, `box_of`), list_sessions' rows from each (`rows_everywhere`, `started_on`), and a bot's Stop All told to each (`stop_work_elsewhere`) | `letters/start-call.ts` `computerOf`, `readElsewhere`, `stopBotWorkElsewhere`; `letters/calls.ts` `callPeer`, `elsewhereTool`, `boxOf`, `rowsEverywhere`; `work/elsewhere.ts` `noteStartedOn`, `startedOn` |
+| `agent_tools::start`: start_session here (`start_here`, through the engine's one start with a `ParentLead`: its name, its bot's `by` and depth, the bot's note) and on another computer (`start_elsewhere`) | `letters/start-call.ts` `startToolSession`, `startElsewhere`; `start.ts` `startSessionHere`'s local starter |
+| `agent_tools::limits`: the start rate in `run/tool-limits.json` (shared with the letters' count, the TypeScript box's file), a bot's limits counting its sessions here, on your other computers and the starts before it (`count_start`, `Counted`) | `letters/limits.ts`; `work/limits.ts` `pastLimit`; `start.ts` `heldByLimits` |
+| `kuvo_engine::start_session`: `ParentLead`, `Engine::start_for_parent`, `StartSteps::prompting` (just before the task is given), a starter's model by name or effort | `startSessionHere`'s `by` branches and `pickModel` for a starter |
+| `agent_tools::letters`: list_agents (`everyone`: this computer's bots and latest conversations, then each other computer's it alone lists; `describe_agents`), send_message (`find_agent`; here through the engine's `deliver_letter`, so one to a stopped conversation waits in its queue; elsewhere a letter left in `run/outbox/sending` for the peers to send), read_conversation (here the engine's `transcript`; elsewhere a letter that waits for its reply in `run/replies`) | `letters/tools.ts` `everyone`, `findAgent`, `sendMessage`, `readOne`, `describeAgents`, `whatAgent`; `peers/agents.ts` `ownAgents`; `peers/directory.ts` `composeAgents`, `peerOf`; `letters/leave.ts` `leaveLetter`, `letterAnswer` |
+| `agent_tools::limits` `count_message`: twenty messages in ten minutes, in the same file | `letters/limits.ts` `messages` |
+| `work::sent` (`run/work/sent.json`): what a session wrote with send_message, and the watcher's finish not told again when its reply says what it sent (#768) | `work/sent.ts` `noteSent`, `saidAlready`; `work/wakes.ts`'s `quiet` |
+| `Elsewhere::deliver` (`Work::tell_lead`): the answer to a kept call that came after its tool stopped waiting, told to its lead from "Your other computers" | `letters/calls.ts` `tellLead` |
+| `queue::StartLink` (5.2's hook): the item named, else the first its task mentions (`Mentions::find_in_task`), linked before the session sees its task, only from its agent's real call (`Engine::active_tool`) | `work-queue/start.ts` `startItem`, `linkStartedItem`; `vault/who.ts` `isCalling` |
+
+### Proof
+
+- `KUVO_CONFORMANCE_AREA=tools`, a new area: 9 scenarios pass against both boxes. Besides those
+  below: list_agents; send_message to a name with "&", from a subagent as its conversation, the
+  words its recipient reads, refused for no one, itself, a subagent's conversation, no text;
+  read_conversation, refused for itself; twenty messages in ten minutes at most. A tool's name
+  checked; list_sessions for a conversation and its subagent; stop and compact refused for one
+  that isn't yours; stop; a conversation not here; list_projects; a computer that isn't one of
+  yours; make_project's refusals; start_session as its conversation's, six in ten minutes at most;
+  a bot's depth and at-once limits.
+- `work-elsewhere.test.mjs`: both cases pass with a Rust lead on Studio and Lab as either box, as
+  well as with a TypeScript lead (5.1f). The Rust lead lists, stops, summarizes and answers its
+  sessions on Lab, starts sessions there, reads Lab's models and projects, and runs Stop All on
+  Studio, which stops its work on Lab. On native Windows the case now runs with the Rust lead.
+  Two new cases pass in all four pairings: a stop given while Lab is off is kept, done once it's
+  back, and its lead hears how it went; and a conversation on Studio finds one on Lab in
+  list_agents, writes to it and reads its conversation there.
+- `work-queue.test.mjs`, a new case (TypeScript `work-queue.test.js` 9): a session started with
+  the tool is linked to the item its task mentions, or to the `item` it names, before its task
+  reaches it; one with no item isn't; a call its agent didn't make links nothing; the new session
+  reads the item. Passes against both boxes.
+- Regressions: `work`, `bots`, `approval`, `engine-sessions`, `engine-worktree`, `agent-sessions`,
+  `peers`, `two-boxes` and the work-queue file against both boxes.
+- Platforms: `tools` 9/9, `work` 15/15, `bots` 40/40, `engine-sessions` 81/81 and the work-queue
+  start case on native Windows and Linux (WSL, static musl); `work-elsewhere` 4/4 with the Rust
+  lead on both, and with the TypeScript lead on Linux.
+- Side by side (`.claude`-local seed with a bot and four conversations, 14 requests, the
+  differential now seeding the engine's sessions): every answer matches. The home files differ only
+  in ids and times, and in the approval round keeping the bot's conversation's rules sooner (5.1c).
+- `kuvo-box` `peers` tests on remote work pass with `Outcome::Away` saying whether the relay said
+  the computer isn't there.
+- Size: about 90,000 characters of Rust for about 70,000 of TypeScript (the route, the tools'
+  callers, starts, limits, calls, letters and what they share): 1.28×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [agent-tools](../../box/bridge-tests/agent-tools.test.js) | 350 start_session where its conversation works, marked as its; 387 six in ten minutes; 375, 918 Plan mode | `tools` scenarios; the engine's one start (`engine-sessions`) |
+| | 365, 457, 492, 525 approval and Autopilot at a start | the one start's existing checks (`engine-sessions`); Autopilot 5.3 |
+| | 399, 412 the starter's note, review: false | `ParentLead` and `session_note`; a scenario reading the task's words: 5.1e-2 |
+| | 424 a seat neither writes nor starts | refused in `agent_tool`; seats are 5.3's |
+| | 162, 171, 226, 235, 244 list_agents, send_message, read_conversation | `tools` scenarios; `work-elsewhere`'s letters case |
+| | 180, 193 one to a stopped conversation, or one stopped at a limit, waits there | the engine's `deliver_letter` and its words; a scenario: 5.1e-2 |
+| | 220 the legacy wait argument | ignored, as there |
+| | 255 what the box wrote isn't the user's words | the engine's `transcript` (3.2) |
+| | 264 an Antigravity session through lookup failures; 613 a starter that moved | the coding agents' conversations, 4.6; a starter that moved, the letters (2.4) and 4.6 |
+| | 569–599 summaries a lead hears | the work watcher (5.1c-6) |
+| [bots-work](../../box/bridge-tests/bots-work.test.js) | 285, 305, 316, 327, 697 a bot's start: model, effort, mode, depth, refusals | `pick_model` for a starter; the remote start's case in `work-elsewhere` |
+| | 356–394, 906 limits | `tools` scenario (depth, at once); per day and tokens: `past_limit`, unproven by a scenario |
+| | 404–573 list_sessions, stop_session, compact_session | `tools` scenarios; the shared cores, through `work-elsewhere` |
+| | 600–661, 832–895, 940–1214 answer_ask | the shared core and its check (`admit_answer`, `Permission::refusal`), through `work-elsewhere`; the sandbox's parts 6.1 |
+| | 669–722 list_models | `list_models_tool`, through `work-elsewhere` |
+| | 782 Stop All, on your other computers too | `work` scenarios; `work-elsewhere` |
+| [bots-work-wakes](../../box/bridge-tests/bots-work-wakes.test.js) | 148, 173 a report sent with send_message isn't told again | `Work::said_already` in the watcher's finish; a scenario: 5.1e-2 |
+| [bots-projects](../../box/bridge-tests/bots-projects.test.js) | 100–208, 290, 299, 330, 338 make_project | `tools` scenario (refusals); asking and answering through `ask_work`, `answer_of` and 5.1c-4's answer route |
+| | 276 list_projects | `tools` scenario; `work-elsewhere` |
+| [work-queue](../../box/bridge-tests/work-queue.test.js) | 9 an item named at a start | the new `work-queue.test.mjs` case |
+
+### Gaps and owners
+
+- **A start's operation, kept and finished when its call comes again**: done in 5.1e-2.
+- **A start from no conversation here** (`OUTSIDE`): refused; the tool servers always name the
+  conversation calling.
+- **A start on another computer waited for 45 seconds**: the peers' call waits 20 (`remote_work`).
+  kuvo_peers (7.2 owns its waits).
+- **A start on a model that just failed** (`warning`, `holdOf`): started without the word. 5.1e-2.
+- **The coding agents' conversations as callers** (`placeOfSession` on the bridge): only the
+  engine's are found. 4.6.
+- **Commands run free of the sandbox** (`Lead::free`): true on every Rust box, which has no sandbox
+  yet. 6.1.
+- **The wake tools and set_job**: done in 5.1e-2. notify_user 5.1c, plan_limits and
+  use_limit_reset 5.4, the show tools 6.4: each answers "not in this computer's Kuvo Code yet",
+  naming its part.
+- **A message to a conversation that moved to another computer since** (`tellMovedAway`), and the
+  answer to a kept call for a lead that moved: the letters, 2.4.
+- **A message's delivery confirmed after a cut**: done in 5.1e-2.
+- **Waiting for an answer** (`awaitedBy`): nothing in the Rust box waits on one (send_message
+  ignores `wait`, as the TypeScript box does; a client's start with `wait` doesn't wait here yet,
+  3.2), so no wait holds a finish.
+- **A letter to a computer on the relay that's off it now** is left in the outbox, as there;
+  `offRelay` is the peers' `relay_connected`.
+- **A kept call sent again once its computer is back**: the TypeScript lead's took over a minute
+  once on Linux under load; the case waits two.
+
+## 5.1e-2 — calls done once, the agents' own tools, and Stop for the coding agents' conversations
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `agent_tools::receipts`: an operation (`operation`, or `x-kuvo-operation`) keyed by the conversation calling and its id; its answer kept in `run/tool-calls/<key>.receipt.json` and given again; what it got to in `run/tool-calls/<key>.json`; one cut short gone on with for send_message, start_session and the wake tools, else refused (409); a call answered 503 `retryToolCall` while it waits to be confirmed | `server/tool-call.ts` `answerToolCall`, `ToolCallPending`; the operations' journal |
+| `agent_tools::start` `resume_start`: a start cut short finds the session its call made (marked `kuvo.call`), links its Work Queue item and gives it the task it journaled, once | `letters/start-call.ts` `startToolSession`'s journal, `resumeOfferedStart`, `messageReached` |
+| `send_message_tool` with its operation: the letter's id and recipient kept before it goes, the same id when sent again (the engine's `deliver_letter` takes it once), not counted twice; a letter for another computer left once | `letters/tools.ts` `sendMessage`'s journal |
+| `agent_tools::own`: schedule_wake_up, watch_for_change, list_wake_ups and cancel_wake_up through this computer's `kuvo-wake`, for the conversation (a subagent's, the one that started it; a bot's, its folder), never a group chat's seat; a watch in Ask First refused unless the user was asked (`watch_went_unasked`); set_job through Edit Bot's change | `letters/own-tools.ts`; `bots/jobs.ts` |
+| `BotEngine::session_data`, `agent_sessions`, `work_engine` (the engine's, or the coding agents' alone while it isn't running); `Engine::agent_turn_ended`: Stop on someone's work, stop_session and Stop All find the coding agents' conversations, end their turns and, through their agent, what they left running, once more after the turn ended (Codex lists a thread's terminals only then) | `areas/queue.ts` `placeOfSession` over the bridge; `work/stop.ts` over `targetsOf`; the bridge's background stop |
+
+### Proof
+
+- `agent-tools.test.mjs`: a start cut short and sent again makes one session, given its task once;
+  a message cut short and sent again reaches its conversation once, as one message; each answered
+  the same when sent again; an id used for another call is refused. Both pass against both boxes
+  (each fails on the old Rust: a second session; 200 "couldn't be confirmed" with nothing to send
+  again).
+- `tools` area, a new scenario: the wake tools through a stand-in `kuvo-wake` (its arguments,
+  folder and environment), their refusals, and set_job kept, cleared and refused for a conversation
+  that isn't a bot's. 10/10 against both boxes.
+- `agents-codex.test.mjs`, two new cases on the scripted Codex: Stop on a session someone started,
+  mid-turn with a terminal it left running, ends both through Codex; Stop All on a bot whose work is
+  a Codex conversation does the same. Both pass against both boxes (the Rust box with no engine
+  running); on the old Rust, the terminal stays and Stop All stops none. The file: 53/53 Rust;
+  52/52 TypeScript, with one case failing once in one run and passing on the next (noted).
+- Regressions: `work` 15/15, `bots` 40/40 and `work-elsewhere` 4/4 with either lead, both boxes.
+- Platforms: native Windows: `tools` 9/9 (the wake tools' scenario, marked `unix`, skipped: no
+  `kuvo-wake` there yet), `work` 15/15, `agent-tools` 2/2, `agents-codex` 53/53 and `work-elsewhere`
+  4/4 with the Rust lead. Linux (WSL, static musl): `tools` 10/10, `work` 15/15, `agent-tools` 2/2,
+  `agents-codex` 53/53, `work-elsewhere` 4/4 with either lead. Seen once each, and passing when run
+  again: on Windows, 4.2's "a Codex that turns down being started isn't left running" (2 of 4 runs);
+  on macOS, one TypeScript case in `agents-codex`.
+- Size: the receipts and the own tools are about 11,300 characters of Rust for about 17,700 of
+  TypeScript; with the start's resume and Stop's changes the part stays under 1.2×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [own-tools](../../box/bridge-tests/own-tools.test.js) | 119, 140, 148, 179, 194 the wake tools for a subagent and a bot, their refusals, Ask First watches, set_job | `tools` scenario; `watch_went_unasked`'s unit test |
+| | 166 an archived conversation's wake-up held | `kuvo-wake`'s own, as there |
+| | 173 a coding agent's conversation's wake-ups through the bridge | 4.6 (its conversations as callers) |
+| [set-job](../../box/bridge-tests/set-job.test.js) | 86 set_job kept and told; 128 a coding agent's wake-ups | `tools` scenario; 128 with 4.6 |
+| [start-elsewhere-rules](../../box/bridge-tests/start-elsewhere-rules.test.js) | 496 a start sent again reads its kept answer | `agent-tools.test.mjs` |
+
+### Gaps and owners
+
+- **The wake tools on native Windows**: there's no `kuvo-wake` there, so they answer that it can't
+  be run. 5.1a's wake-ups on native Windows (`docs/architecture/windows.md`).
+- **stop_session from a coding agent's conversation**: refused as there, which finds only the
+  engine's conversations as callers. 4.6.
+- **A wake tool's command cut short by the box stopping mid-run** (`runToolCommand`'s receipt): run
+  again when its call comes again. Its answer once given is kept, as any call's. Owner: 5.1a (the
+  wake-ups' commands).
+- Those following wake-ups are told as a tool changes them (`Wakes::changed`), as there.
+

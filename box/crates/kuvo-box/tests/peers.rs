@@ -2337,7 +2337,8 @@ mod work {
                 stopped,
                 Outcome::Away {
                     kept: true,
-                    sent: false
+                    sent: false,
+                    ..
                 }
             ));
             assert!(mailbox.try_recv().is_err());
@@ -2360,10 +2361,10 @@ mod work {
             assert_eq!(offer["from"], LEAD);
             let quiet = a_work.call(key(2), LEAD.into(), request(Tool::StopSession, json!({"session":MISSING})),
                 true, true).await.unwrap();
-            assert!(matches!(quiet, Outcome::Away { kept: true, sent: false }));
+            assert!(matches!(quiet, Outcome::Away { kept: true, sent: false, .. }));
             let doomed = a_work.call(key(2), LEAD.into(), request(Tool::StopSession, json!({"session":MISSING})),
                 true, false).await.unwrap();
-            assert!(matches!(doomed, Outcome::Away { kept: true, sent: false }));
+            assert!(matches!(doomed, Outcome::Away { kept: true, sent: false, .. }));
 
 
             now.store(NOW + 80_000, Ordering::Relaxed);

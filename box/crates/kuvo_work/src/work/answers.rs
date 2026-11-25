@@ -43,7 +43,7 @@ impl Work {
     /// The asks as `change` leaves them, under their lock (`run/work/.asks.lock`, the TS box's
     /// too): answered ones go once their tool has had them (or their conversation, told a week at
     /// most); unanswered ones of a bot that's gone, or asked a week ago and more.
-    fn change_asks<T>(&self, change: impl FnOnce(&mut Vec<Value>) -> T) -> Result<T, Refused> {
+    pub(super) fn change_asks<T>(&self, change: impl FnOnce(&mut Vec<Value>) -> T) -> Result<T, Refused> {
         let folder = self.records.folder();
         std::fs::create_dir_all(folder).map_err(failed)?;
         let (stale, wait) = (Duration::from_secs(10), Duration::from_secs(3));
@@ -88,7 +88,7 @@ impl Work {
     }
 
     /// What the asked action does, in its maker's words, and whether it failed; done now.
-    async fn do_work(&self, ask: &Value) -> (String, bool) {
+    pub(super) async fn do_work(&self, ask: &Value) -> (String, bool) {
         let here = self.settings.here();
         if ask["action"] == "resetLimits" {
             // (Your plans' resets are used through the coding agents, which aren't in this box yet.)

@@ -138,7 +138,7 @@ impl Lead {
     }
 }
 
-pub(crate) fn plain(value: &str, limit: usize) -> String {
+pub fn plain(value: &str, limit: usize) -> String {
     let stripped = value.replace(
         |c: char| {
             matches!(c,
@@ -613,7 +613,7 @@ impl Calls {
                 }
                 continue;
             }
-            if state == PeerState::Unknown
+            if matches!(state, PeerState::Unknown | PeerState::Held)
                 || (state == PeerState::Away && !away.insert(key))
                 || !online
                 || self.tries.get(id.as_str()).is_some_and(|at| {
@@ -1123,6 +1123,8 @@ impl Failure {
 pub enum PeerState {
     Online,
     Away,
+    /// Known peer on a release handoff: do not send even an away probe.
+    Held,
     Unknown,
     Removed,
 }
@@ -1186,12 +1188,12 @@ struct KeptHome {
     at: Millis,
 }
 
-pub(crate) fn known_home(run: &Path, session: &str) -> Option<ComputerKey> {
+pub fn known_home(run: &Path, session: &str) -> Option<ComputerKey> {
     let homes = kept::read::<BTreeMap<String, KeptHome>>(&run.join("work/homes.json"))?;
     decode_exact(&homes.get(session)?.key)
 }
 
-pub(crate) fn note_homes<'a>(
+pub fn note_homes<'a>(
     run: &Path,
     key: ComputerKey,
     at: Millis,

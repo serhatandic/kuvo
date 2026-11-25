@@ -172,6 +172,13 @@ pub async fn run(
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
     let mut agent_handover = None;
     let mut routes = Registry::new();
+    crate::box_app::register(
+        &mut routes,
+        update_home.clone(),
+        kind == ComputerKind::Mac,
+        peers.clone(),
+    )
+    .await?;
     let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
     agents::sessions::register(sessions.clone(), &mut routes);
     let agent_background = sessions.background().clone();
@@ -399,6 +406,7 @@ pub async fn run(
         Arc::new(super::bot_setup::BotSetup(setup.handle())),
         bots.clone(),
     );
+    work.attach_start_link(work_queue.start_link());
     work.register(&mut routes);
     let work_watch = work.watch();
     let work_rows = work_calls.map(|calls| elsewhere.serve(work.clone(), calls));
@@ -415,35 +423,16 @@ pub async fn run(
     } else {
         (None, None)
     };
-    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
-    let update_profile = account.clone();
-    let update_engine = engine.clone();
-    routes.register::<kuvo_protocol::routes::get_kuvo_update::Spec, _, _>(Access::Any, move |_| {
-        let answer = kuvo_keeper::update_status::read(&update_home, &update_profile);
-        let engine = update_engine.clone();
-        async move {
-            let result: io::Result<_> = async {
-                let mut body = answer?;
-                if let Some((change, installing)) = engine.release_change().await? {
-                    body["engineChange"] = change;
-                    if installing {
-                        body["updating"] = json!("installing");
-                    }
-                }
-                Ok(serde_json::from_value(body)?)
-            }
-            .await;
-            result.map(RouteReply::json::<200>).map_err(|error| {
-                Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            })
-        }
-    });
     crate::updates::register_helper_stop(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
         kind == ComputerKind::Mac,
     );
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let backup_sweep = crate::updates::sweep_backups(
+        update_home.clone(),
+        kuvo_services::config::is_own_home_mac(home, kind == ComputerKind::Mac),
+    );
     let updates = crate::updates::start(
         update_home,
         &account,
@@ -456,6 +445,7 @@ pub async fn run(
         kuvo_store::home::Home::new(home.to_owned())?,
         account.clone(),
         updates.as_ref(),
+        engine.clone(),
     );
     vault.register(&mut routes);
     #[cfg(target_os = "macos")]
@@ -573,6 +563,7 @@ pub async fn run(
     if let Some(kept_awake) = kept_awake {
         kept_awake.abort();
     }
+    backup_sweep.abort();
     if let Some(updates) = updates {
         updates.stop().await;
     }

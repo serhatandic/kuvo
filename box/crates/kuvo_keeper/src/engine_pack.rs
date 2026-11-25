@@ -100,13 +100,21 @@ impl EnginePack {
         release: &SignedRelease,
         target: &str,
         scratch: &Path,
+        downloading: impl FnOnce(),
     ) -> io::Result<Self> {
         let installed = home
             .root()
             .join("engine")
             .join(release.engine())
             .join(EXECUTABLE);
-        Self::in_home(installed, || release.engine_build(target), scratch)
+        Self::in_home(
+            installed,
+            || {
+                downloading();
+                release.engine_build(target)
+            },
+            scratch,
+        )
     }
 
     fn in_home(

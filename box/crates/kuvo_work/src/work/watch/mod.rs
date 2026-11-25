@@ -59,7 +59,7 @@ const EVENTS: &[&str] = &[
 static ADDRESS: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\(address (\S+?)\)").expect("a pattern"));
 
-fn address_in(line: &str) -> Option<&str> {
+pub(crate) fn address_in(line: &str) -> Option<&str> {
     Some(ADDRESS.captures(line)?.get(1)?.as_str())
 }
 
@@ -93,7 +93,7 @@ pub fn is_archived(session: &Value) -> bool {
         || truthy(&metadata["kuvo"]["archived"])
 }
 
-fn truthy(value: &Value) -> bool {
+pub(crate) fn truthy(value: &Value) -> bool {
     !matches!(value, Value::Null | Value::Bool(false)) && value != 0 && value != ""
 }
 
@@ -109,7 +109,7 @@ const COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMER
     .remove(b'(')
     .remove(b')');
 
-fn encoded(id: &str) -> String {
+pub(crate) fn encoded(id: &str) -> String {
     percent_encoding::utf8_percent_encode(id, COMPONENT).to_string()
 }
 
@@ -783,7 +783,21 @@ impl Watcher {
             }
             return;
         }
-        self.tell(starter, line, false);
+        // What its reply says came to its starter already, in a message it sent it in this turn
+        // (its report, by send_message): not told again (#768).
+        let serving = still
+            .as_ref()
+            .is_some_and(|still| !still.services_words().is_empty());
+        let quiet = last.as_ref().is_some_and(|last| {
+            let since = last.began.at.or(was.at).unwrap_or(0) as i64;
+            !yours
+                && !serving
+                && !last.text.is_empty()
+                && self.work().said_already(id, starter, &last.text, since)
+        });
+        if !quiet {
+            self.tell(starter, line, false);
+        }
         // One of a bot's sessions done: for clients to show it seeing that, once, as it's told.
         if let Some(bot) = works_for(session) {
             self.work().records.note_oversight(bot, id, "finished");

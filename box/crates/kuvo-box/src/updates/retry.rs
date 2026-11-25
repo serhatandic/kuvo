@@ -19,11 +19,14 @@ pub(super) type Request = route::Request;
 pub(super) type Answer = route::Status202;
 const RECORD: &str = "fleet-cannot.json";
 
-pub(super) struct Failure(pub(super) CannotUpdate);
+pub(super) struct Failure {
+    pub(super) record: CannotUpdate,
+    attempted: bool,
+}
 
 impl Failure {
     pub(super) fn download(release: PreparedRelease, error: io::Error) -> Self {
-        Self::new(release, error, true)
+        Self::new(release, error, true, false)
     }
 
     pub(super) fn prepare(release: PreparedRelease, error: io::Error) -> Self {
@@ -34,20 +37,42 @@ impl Failure {
             error.kind(),
             NotConnected | PermissionDenied | QuotaExceeded | StorageFull | TimedOut | WouldBlock
         );
-        Self::new(release, error, fixable)
+        Self::new(release, error, fixable, true)
     }
 
-    fn new(release: PreparedRelease, error: io::Error, fixable: bool) -> Self {
-        let reason = error.to_string().chars().take(300).collect();
-        Self(CannotUpdate {
+    pub(super) fn bad_archive(release: PreparedRelease) -> Self {
+        Self::new(
             release,
-            reason,
-            fixable,
-        })
+            io::Error::other("The release's files aren't what it says."),
+            false,
+            false,
+        )
+    }
+
+    fn new(release: PreparedRelease, error: io::Error, fixable: bool, attempted: bool) -> Self {
+        let reason = kuvo_keeper::fleet::release_error_message(&error)
+            .chars()
+            .take(300)
+            .collect();
+        Self {
+            record: CannotUpdate {
+                release,
+                reason,
+                fixable,
+            },
+            attempted,
+        }
     }
 
     pub(super) fn save(&self, home: &Home) -> io::Result<()> {
-        files::write_secret(&home.run().join(RECORD), &serde_json::to_vec(&self.0)?)
+        files::write_secret(&home.run().join(RECORD), &serde_json::to_vec(&self.record)?)
+    }
+
+    pub(super) fn outcome(self) -> update_status::Outcome {
+        update_status::Outcome::Failed {
+            version: self.attempted.then_some(self.record.release.version),
+            message: self.record.reason,
+        }
     }
 
     pub(super) fn for_release(

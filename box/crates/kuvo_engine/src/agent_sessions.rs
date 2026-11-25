@@ -124,12 +124,7 @@ pub trait AgentSessionSource: Send + Sync {
     }
 
     /// Steer or queue a waiting message.
-    fn set_delivery<'a>(
-        &'a self,
-        _id: &'a str,
-        _item: &'a str,
-        _queue: bool,
-    ) -> AgentCall<'a, ()> {
+    fn set_delivery<'a>(&'a self, _id: &'a str, _item: &'a str, _queue: bool) -> AgentCall<'a, ()> {
         Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
     }
 
@@ -179,6 +174,22 @@ impl crate::Engine {
             crate::queue::follow_agents(self.clone(), events);
         }
         self
+    }
+
+    /// Whether the coding agents' conversation is out of its turn, waiting `wait` at most for it
+    /// to be: true for one that isn't theirs.
+    pub async fn agent_turn_ended(&self, id: &str, wait: std::time::Duration) -> bool {
+        let Some(mut running) = self
+            .agent_sessions
+            .as_ref()
+            .and_then(|source| source.running_changes())
+        else {
+            return true;
+        };
+        let ended = running.wait_for(|running| !running.contains(id));
+        tokio::time::timeout(wait, ended)
+            .await
+            .is_ok_and(|ended| ended.is_ok())
     }
 
     /// The coding agents' conversation `id`, or `None` for the engine's.

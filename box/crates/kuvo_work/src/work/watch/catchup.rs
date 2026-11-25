@@ -375,29 +375,44 @@ pub(super) fn question_text(form: &Value) -> String {
 /// Every session here that's someone's work (started by another conversation), whole: none when a
 /// page can't be read.
 pub(super) async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
+    work_sessions_as(engine, false).await
+}
+
+/// As `work_sessions`, those put away too where `archived`.
+pub(super) async fn work_sessions_as(engine: &BotEngine, archived: bool) -> Option<Vec<Value>> {
+    let theirs = |data: &Value| {
+        data["id"].is_string()
+            && data["parentID"].is_null()
+            && (archived || !is_archived(data))
+            && started_by(data).is_some()
+    };
     let mut found = Vec::new();
     let mut query = Some("limit=200&order=desc&parentID=null".to_owned());
     for _ in 0..15 {
         let Some(asked) = query.take() else {
             break;
         };
-        let page = engine
-            .call_whole(Method::GET, &format!("api/session?{asked}"), WAIT)
-            .await
-            .ok()?;
+        let path = format!("api/session?{asked}");
+        // (None of the engine's while it isn't running.)
+        let page = match engine.call_whole(Method::GET, &path, WAIT).await {
+            Ok(page) => page,
+            Err(_) if !engine.running() => break,
+            Err(_) => return None,
+        };
         let listed = page["data"].as_array().cloned()?;
         let next = page["cursor"]["next"].as_str().map(super::encoded);
         query = next
             .filter(|_| listed.len() == 200)
             .map(|next| format!("limit=200&parentID=null&cursor={next}"));
-        let theirs = |data: &Value| {
-            data["id"].is_string()
-                && data["parentID"].is_null()
-                && !is_archived(data)
-                && started_by(data).is_some()
-        };
         found.extend(listed.into_iter().filter(theirs));
     }
+    // (The coding agents' conversations too: someone's work as the engine's are.)
+    let agents = engine
+        .agent_sessions()
+        .await
+        .into_iter()
+        .map(|(data, _)| data);
+    found.extend(agents.filter(theirs));
     let created = |data: &Value| data["time"]["created"].as_f64().unwrap_or(0.0);
     found.sort_by(|a, b| created(b).total_cmp(&created(a)));
     Some(found)

@@ -188,9 +188,9 @@ export function standInCodex(root, { signedIn = "chatgpt" } = {}) {
   return bin;
 }
 
-export function seedCodexSession(home, id, { directory = home, model = "gpt-test", permissions, agent = "build", state } = {}) {
+export function seedCodexSession(home, id, { directory = home, model = "gpt-test", permissions, agent = "build", state, metadata } = {}) {
   write(path.join(home, "agents/sessions", id, "session.json"), JSON.stringify({
-    id, title: "Codex fixture", projectID: "fixture", agent, ...(permissions && { permissions }),
+    id, title: "Codex fixture", projectID: "fixture", agent, ...(permissions && { permissions }), ...(metadata && { metadata }),
     location: { directory }, model: { providerID: provider, id: model },
     time: { created: 1, updated: 1 }, cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },

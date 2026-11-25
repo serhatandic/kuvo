@@ -92,6 +92,11 @@ pub async fn all_work(engine: &BotEngine) -> Option<Vec<Value>> {
     work_sessions(engine).await
 }
 
+/// As `all_work`, those put away too.
+pub async fn all_work_archived(engine: &BotEngine) -> Option<Vec<Value>> {
+    super::catchup::work_sessions_as(engine, true).await
+}
+
 /// The sessions at work in the engine now.
 pub async fn working_now(engine: &BotEngine) -> HashSet<String> {
     let active = engine
@@ -157,7 +162,7 @@ fn reply_of_last_turn(page: &[Value]) -> Option<String> {
 
 impl Work {
     /// The bot a conversation is, by its session.
-    fn bot_of_conversation(&self, session: &str) -> Option<BotHere> {
+    pub(crate) fn bot_of_conversation(&self, session: &str) -> Option<BotHere> {
         let names = crate::wakes::folder::names(&self.bots).into_iter();
         names
             .filter_map(|id| BotHere::read(&self.bots, &id))
@@ -349,8 +354,7 @@ impl Work {
         let title = match all.iter().find(|each| each["id"] == session) {
             Some(any) => Some(title_of(any).to_owned()),
             None => {
-                let path = format!("api/session/{}", encoded(session));
-                let found = engine.call(Method::GET, &path, None, WAIT).await;
+                let found = engine.session_data(session).await;
                 found
                     .ok()
                     .filter(|found| found.is_object())
@@ -447,8 +451,7 @@ impl Work {
 
     /// Whether a conversation is here.
     pub async fn has_session_here(&self, engine: &BotEngine, session: &str) -> bool {
-        let path = format!("api/session/{}", encoded(session));
-        let found = engine.call(Method::GET, &path, None, WAIT).await;
+        let found = engine.session_data(session).await;
         found.is_ok_and(|found| found["id"] == session)
     }
 }
@@ -752,6 +755,191 @@ impl Work {
             .await;
         self.work_changed(&data, Some((lead, "answered")));
         said(answered)
+    }
+}
+
+impl Work {
+    /// list_projects: the projects here, with where each is, whether it's a git repository, and
+    /// who made it; `place`: this computer, by its name.
+    pub async fn list_projects_tool(&self, place: &str) -> Said {
+        let home = self.settings.account();
+        let projects = kuvo_services::git::read_projects(&self.home).unwrap_or_default();
+        let projects: Vec<_> = projects
+            .iter()
+            .filter(|each| each.get("removed") != Some(&Value::Bool(true)))
+            .collect();
+        let folder = match self.settings.projects_folder() {
+            Some(root) => format!(" New ones go in {}.", super::super::projects::shown_path(&root.to_string_lossy(), home)),
+            None => " No projects folder is picked yet: the user picks one the first time you make a project.".into(),
+        };
+        if projects.is_empty() {
+            return said(format!("There are no projects on {place} yet.{folder}"));
+        }
+        let mut lines = Vec::new();
+        for each in projects.into_iter().take(60) {
+            let directory = each
+                .get("directory")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let inside = super::super::projects::git(
+                std::path::Path::new(directory),
+                &["rev-parse", "--is-inside-work-tree"],
+                &[],
+            )
+            .await;
+            let git = if inside.as_deref() == Some("true") {
+                "git"
+            } else {
+                "not git"
+            };
+            let base = std::path::Path::new(directory)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let name = each
+                .get("name")
+                .and_then(Value::as_str)
+                .map_or(base, str::to_owned);
+            let made = each
+                .get("madeBy")
+                .and_then(|by| by["name"].as_str())
+                .map(|by| format!(", made by {by}"))
+                .unwrap_or_default();
+            lines.push(format!(
+                "- {name}: {} ({git}){made}",
+                super::super::projects::shown_path(directory, home)
+            ));
+        }
+        said(format!(
+            "Projects on {place}:\n{}\n{}",
+            lines.join("\n"),
+            folder.trim()
+        ))
+    }
+
+    /// list_models: the models a session can be started on here, by the one rule every client's
+    /// picker offers by; those that can't answer now apart, at its end. `place`: this computer.
+    pub async fn list_models_tool(&self, place: &str) -> Said {
+        use super::super::unanswering::{ModelRef, hold_of, hold_words};
+        let offered = self.list.engine().offered_models().await;
+        let shown = |model: &&Value| model["retiring"] != true && model["hidden"] != true;
+        let models: Vec<&Value> = offered.models.iter().filter(shown).collect();
+        let mut notes = Vec::new();
+        if offered.engine == Some(false) {
+            notes.push(format!("The engine on {place} can't say which of its models run yet: try list_models again in a moment."));
+        }
+        if offered.agents == Some(false) {
+            notes.push(format!("The coding agents on {place} can't say which of their models run yet: try list_models again in a moment."));
+        }
+        if models.is_empty() {
+            return said(if notes.is_empty() {
+                format!(
+                    "There's no model with an account on {place}. Ask the user to sign in to one in Settings › Accounts."
+                )
+            } else {
+                notes.join("\n")
+            });
+        }
+        let text =
+            |model: &Value, field: &str| model[field].as_str().unwrap_or_default().to_owned();
+        let strings = |model: &Value, field: &str| -> Vec<String> {
+            model[field]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        };
+        let held = self.unanswering.now();
+        let held_by = |model: &Value, holds: &[_]| {
+            let mut reference = ModelRef::new(&text(model, "providerID"), &text(model, "id"));
+            reference.free = Some(model["free"] == true);
+            hold_of(&reference, &strings(model, "aliases"), holds).is_some()
+        };
+        let hold = |model: &Value| held_by(model, &held).then_some(());
+        let line = |model: &Value| {
+            let efforts = strings(model, "efforts");
+            let efforts = if efforts.is_empty() {
+                String::new()
+            } else {
+                format!(", efforts: {}", efforts.join(", "))
+            };
+            format!(
+                "- {}/{} ({}){efforts}",
+                text(model, "providerID"),
+                text(model, "id"),
+                text(model, "name")
+            )
+        };
+        let answering: Vec<String> = models
+            .iter()
+            .filter(|model| hold(model).is_none())
+            .map(|model| line(model))
+            .collect();
+        let mut holds: Vec<String> = Vec::new();
+        for each in &held {
+            if models
+                .iter()
+                .any(|model| held_by(model, std::slice::from_ref(each)))
+            {
+                holds.push(format!("- {}", hold_words(each, &self.home)));
+            }
+        }
+        let list = if answering.is_empty() {
+            "No model here can answer now: tell the user why, from below.".to_owned()
+        } else {
+            format!(
+                "Models you can start a session on, as provider/model (give it to start_session as model, and an effort as effort):\n{}",
+                answering.join("\n")
+            )
+        };
+        let whole = if holds.is_empty() {
+            list
+        } else {
+            format!(
+                "{list}\n\nLeft out, as a session on them just failed:\n{}",
+                holds.join("\n")
+            )
+        };
+        said(if notes.is_empty() {
+            whole
+        } else {
+            format!("{whole}\n\n{}", notes.join("\n"))
+        })
+    }
+
+    /// Every session under `lead` here that's working, waiting on an answer or on a timer of its
+    /// own, made before `before`, stopped (a bot's Stop All, from the computer it lives on): how
+    /// many.
+    pub async fn stop_line_work(&self, engine: &BotEngine, lead: &str, before: f64) -> usize {
+        let all = work_sessions(engine).await.unwrap_or_default();
+        let made = |data: &Value| data["time"]["created"].as_f64().unwrap_or(0.0);
+        let work: Vec<&Value> = under(lead, &all)
+            .into_iter()
+            .filter(|data| made(data) <= before)
+            .collect();
+        if work.is_empty() {
+            return 0;
+        }
+        let (working, turns) = self.at_work_now(engine).await;
+        let mut stopped = 0;
+        for data in work {
+            let id = data["id"].as_str().unwrap_or_default();
+            let turn = turns.contains(id);
+            let asking = !turn && asking_now(engine, id).await.is_some();
+            if !working.contains(id) && !self.has_wake_ups(id) && !asking {
+                continue;
+            }
+            if self
+                .stop_work(engine, id, turn || asking, Vec::new())
+                .await
+                .is_ok()
+            {
+                stopped += 1;
+            }
+        }
+        stopped
     }
 }
 

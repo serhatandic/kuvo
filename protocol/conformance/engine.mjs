@@ -204,7 +204,8 @@ export async function standInEngine(root, env) {
       if (prompt && request.method === "POST") {
         const session = decodeURIComponent(prompt[1]);
         if (!engine.sessions.some(row => row.id === session)) return send({}, 404);
-        if (engine.refusePrompt?.id === given.id) {
+        // (`any`: the next prompt, whichever it is.)
+        if (engine.refusePrompt && (engine.refusePrompt.id === given.id || engine.refusePrompt.any)) {
           const refusal = engine.refusePrompt;
           refusal.seen?.();
           engine.refusePrompt = null;

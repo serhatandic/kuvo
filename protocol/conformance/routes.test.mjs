@@ -29,7 +29,10 @@ test("routes", { concurrency: 3 }, async t => {
     for (const scenario of readJSON(source).scenarios) {
       for (const kind of ["machine", ...(macFiles.has(file) ? ["mac"] : [])]) {
         const name = `${file.slice(0, -5)} [${kind}] ${scenario.name}`;
-        const skip = !isOurs(scenario.only, kind) ? scenario.why : binary.typescript && referenceGaps.get(name);
+        // (`unix`: through kuvo-wake, a shell script, which native Windows doesn't run yet.)
+        const skip = !isOurs(scenario.only, kind) ? scenario.why
+          : scenario.unix && process.platform === "win32" ? "kuvo-wake doesn't run on native Windows yet (5.1a)."
+          : binary.typescript && referenceGaps.get(name);
         runs.push(t.test(name, { skip, timeout: 60000 }, t => run(t, scenario, kind)));
       }
     }
@@ -92,8 +95,10 @@ async function run(t, scenario, kind) {
       let answer = await ask();
       // These reads show projections updated by the engine stream and filesystem watches.
       // Wait for the expected projection once it can answer, without replaying mutations.
-      if (method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering", "kuvo/work/background"].includes(route.split("?")[0])
-        && answer.status === expect.status && mismatch(expect.json, answer.json)) {
+      // (An agent's tool that only reads, too.)
+      const projection = method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering", "kuvo/work/background"].includes(route.split("?")[0])
+        || route === "kuvo/agent-tools" && ["list_sessions", "list_projects", "list_models", "list_agents", "read_conversation", "list_wake_ups"].includes(step.body?.name);
+      if (projection && answer.status === expect.status && mismatch(expect.json, answer.json)) {
         await until(async () => {
           answer = await ask();
           return answer.status !== expect.status || mismatch(expect.json, answer.json) === null;
