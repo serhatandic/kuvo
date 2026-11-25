@@ -360,8 +360,8 @@ impl Work {
                 ))
             }
             "send_message" => {
-                self.send_message_tool(engine.as_ref(), caller.as_ref(), args)
-                    .await
+                self.send_message_tool(engine.as_ref(), caller.as_ref(), args, operation)
+                    .await?
             }
             "read_conversation" => {
                 self.read_conversation_tool(engine.as_ref(), caller.as_ref(), args)
