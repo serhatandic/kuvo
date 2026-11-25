@@ -598,6 +598,7 @@ impl Owner {
         Ok(local_wipe_reply(&operation, proof))
     }
 
+    /// Removals still offered to their computer, as `offer_unlinks` sends them (a wipe too).
     pub(super) fn pending_unlinks(&self) -> bool {
         self.roster().is_ok_and(|roster| {
             roster
@@ -607,7 +608,7 @@ impl Owner {
                 .is_some_and(|rows| {
                     rows.iter().any(|(key, value)| {
                         read_removal(key, value)
-                            .is_some_and(|record| record.plain() && !record.delivered)
+                            .is_some_and(|record| record.exchanges_mail() && !record.delivered)
                     })
                 })
         })
