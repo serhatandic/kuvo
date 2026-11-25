@@ -54,11 +54,11 @@ is in the thin app rather than kuvo_box). All have resident route specs.
 | Claude grants | `Claude file-owned reset grants spend the maker’s named next grant once, with a saved request` | Rust maker fixture (Mac, Lokum, WSL and native Windows verified) |
 | Notice handoff | `a peer remembers a crossing even after its visible notice expires` | Rust correction (Mac, Lokum, WSL and native Windows verified) |
 
-| Peer resets | `a computer without the plan sign-in spends once on the holder, and shares Always Allow decisions` | Rust pair, Mac verified; cross runs pending |
-| Billed channel history | `a copied billed engine message uses the first channel and falls back when it is removed` | Both boxes; Rust final empty-channel reconciliation verified on Mac |
-| Antigravity refusals | `Antigravity never resends a refused bearer or refresh token after restart` | Rust loopback maker; Mac verified; cross runs pending |
-| Antigravity holds | `Antigravity keeps another host’s usable windows while one quota call is held` | Rust loopback maker; Mac verified; cross runs pending |
-| Antigravity local | `Antigravity reads only its running profile’s owned loopback TLS server without a bearer token` | Rust synthetic process/socket fixture and temporary self-signed TLS; Mac verified; native Windows not applicable |
+| Peer resets | `a computer without the plan sign-in spends once on the holder, and shares Always Allow decisions` | Rust pair; Mac, Lokum, WSL and native Windows verified |
+| Billed channel history | `a copied billed engine message uses the first channel and falls back when it is removed` | Both boxes; Rust empty-channel reconciliation verified on all four platforms |
+| Antigravity refusals | `Antigravity never resends a refused bearer or refresh token after restart` | Rust loopback maker; Mac, Lokum, WSL and native Windows verified |
+| Antigravity holds | `Antigravity keeps another host’s usable windows while one quota call is held` | Rust loopback maker; Mac, Lokum, WSL and native Windows verified |
+| Antigravity local | `Antigravity reads only its running profile’s owned loopback TLS server without a bearer token` | Rust synthetic process/socket fixture and temporary self-signed TLS; Mac, Lokum and WSL verified; native Windows not applicable as in TS |
 | Notice recovery | `usage_readings.rs`: corroborated recovery and off-toggle crossing | Deterministic scoped Rust tests; Mac 5/5 |
 | Peer scheduling | `usage_peers` exact deadline helper; no timer with no reachable member | Rust idle design; verification pending |
 
@@ -356,7 +356,7 @@ existing production characters (471,443 total, 0.686× the 687,546 TS characters
 
 ## Verification of the eighth port slice
 
-Mac and static musl Lokum Rust usage: 40/40; TypeScript: 14/14 applicable, 26 Rust-only skips. WSL and Windows runs await the shared PC.
+Mac, static musl Lokum and WSL Rust usage: 40/40; native Windows: 39/39 applicable, one deliberate skip (the TS reader has no native Windows local Antigravity discovery). TypeScript: 14/14 applicable, 26 Rust-only skips. All remote scratch and cross target folders removed; the shared PC was passed to the next row after checking no test processes remained.
 Workspace check and Bun check pass (existing unused wake helper warning); engine-sessions 81/81.
 Scoped current-window reading tests: 5/5. The last billed channel removal
 regression passed after fixing reconciliation on an empty channel set.
