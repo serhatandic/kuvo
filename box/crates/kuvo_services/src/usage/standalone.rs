@@ -540,6 +540,12 @@ impl Readers {
             if selected.is_some_and(|id| id != source.account.provider) {
                 continue;
             }
+            if !explicit
+                && selected.is_none()
+                && service.defer_passive(&source.account, at, 10 * MINUTE)
+            {
+                continue;
+            }
             let result = match &source.credential {
                 Credential::Grok { home, api_key } => {
                     if !explicit {

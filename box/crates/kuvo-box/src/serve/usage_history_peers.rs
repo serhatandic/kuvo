@@ -54,7 +54,9 @@ async fn send(relay: &RelayHandle, host: Host, payload: Value, at: i64) -> bool 
     true
 }
 async fn send_insight(relay: &RelayHandle, host: Host, mail: Mail, at: i64) -> bool {
-    let mut body = serde_json::to_value(mail).expect("Insight metadata");
+    let Ok(mut body) = serde_json::to_value(mail) else {
+        return false;
+    };
     body["kind"] = json!("insights");
     send(relay, host, body, at).await
 }

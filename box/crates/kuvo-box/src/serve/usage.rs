@@ -130,6 +130,20 @@ pub async fn refresh(
         {
             continue;
         }
+        if !explicit
+            && selected.is_none()
+            && service.defer_passive_provider(
+                &provider.to_string(),
+                limits::now(),
+                if provider.kind == AgentKind::Claude {
+                    15 * 60_000
+                } else {
+                    10 * 60_000
+                },
+            )
+        {
+            continue;
+        }
         match entry.agent.read_plan_limits(explicit).await {
             Ok(Some(reading)) => {
                 let Some((mark, identity)) = entry.agent.plan_sign_in().await else {
@@ -295,6 +309,7 @@ pub async fn refresh_engine(
     reader: kuvo_services::usage::engine_readers::Reader,
     home: std::path::PathBuf,
     selected: Option<String>,
+    explicit: bool,
 ) -> bool {
     // Never wake the engine solely to poll quota. A saved reading is usable only
     // when the engine still has the matching active credential.
@@ -319,7 +334,19 @@ pub async fn refresh_engine(
     if let Some(accounts) = kuvo_services::usage::engine_readers::admitted_accounts(&credentials) {
         service.confirm_engine_sign_ins(&accounts, at);
     }
-    let held = service.held_engine_providers(at);
+    let mut held = service.held_engine_providers(at);
+    if !explicit
+        && selected.is_none()
+        && let Some(accounts) =
+            kuvo_services::usage::engine_readers::admitted_accounts(&credentials)
+    {
+        for account in accounts {
+            if !held.contains(&account.provider) && service.defer_passive(&account, at, 10 * 60_000)
+            {
+                held.insert(account.provider);
+            }
+        }
+    }
     let Some(mut batch) = reader
         .read(credentials, at, &held, selected.as_deref())
         .await
@@ -613,6 +640,7 @@ impl kuvo_services::usage::resets::Port for ResetPort {
                         reader.clone(),
                         home.clone(),
                         Some(provider.into()),
+                        true,
                     )
                     .await;
                 }

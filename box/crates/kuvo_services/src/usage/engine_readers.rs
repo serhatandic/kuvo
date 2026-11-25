@@ -511,7 +511,9 @@ impl Reader {
                 providers.push(account.provider);
                 continue;
             }
-            let secret = sign_in.secret(kind).expect("admitted credential").trim();
+            let Some(secret) = sign_in.secret(kind).map(str::trim) else {
+                continue;
+            };
             let result = if kind != Integration::Copilot
                 && sign_in.oauth()
                 && sign_in.expires.is_some_and(|at| at <= now)
