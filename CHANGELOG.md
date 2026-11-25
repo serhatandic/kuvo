@@ -6,6 +6,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers keep consistent plan rings and forecasts across upgrades, group many accounts in one rail card, and show Insights bot conversations, their subagents and completed skill use without recounting older calls.
+
+- Rust computers no longer show a signed-out account’s old plan limits as a live sign-in. Its previous usage remains in history.
+
 - Rust computers offer ChatGPT reset credits through the engine’s saved sign-in, settle an older uncertain reset before a later one, and read native Windows Antigravity quotas from the computer’s own running profile. Codex history uses the live log’s tier before archived copies and uses the previous box’s cost arithmetic.
 
 - Rust computers can ask the computer holding a plan sign-in to spend a reset, share Always Allow decisions, and retry without spending twice. Antigravity can read its own running profile’s local quotas; copied billed history is counted once.

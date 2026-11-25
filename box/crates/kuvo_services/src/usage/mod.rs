@@ -25,3 +25,7 @@ pub mod insight_mail;
 pub mod cursor_history_store;
 pub mod engine_codex_history;
 mod engine_hosted_history;
+
+mod legacy_limits;
+
+mod insight_skills;

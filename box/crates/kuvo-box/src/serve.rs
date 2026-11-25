@@ -238,7 +238,11 @@ pub async fn run(
                 None
             });
         usage::confirm(&limits, &accounts).await;
-        tokio::spawn(usage::Turns::follow(limits.clone(), accounts.clone()));
+        tokio::spawn(usage::Turns::follow(
+            limits.clone(),
+            accounts.clone(),
+            standalone_plans.clone(),
+        ));
         let runs = kuvo_agents::session_runs::SessionRuns::start_with_limits(
             accounts.clone(),
             sessions.clone(),
@@ -549,7 +553,34 @@ pub async fn run(
         (None, None)
     };
     kuvo_services::usage::settings::register(&mut routes, usage_settings.clone());
-    kuvo_services::usage::limits::register(&mut routes, limits.clone());
+    usage::verify_sign_ins(
+        &limits,
+        agent_shutdown.as_ref(),
+        standalone_plans.as_ref(),
+        &engine,
+        home,
+    )
+    .await;
+    let (verify_service, verify_agents, verify_readers, verify_engine, verify_home) = (
+        limits.clone(),
+        agent_shutdown.clone(),
+        standalone_plans.clone(),
+        engine.clone(),
+        home.to_owned(),
+    );
+    kuvo_services::usage::limits::register(&mut routes, limits.clone(), move || {
+        let (service, agents, readers, engine, home) = (
+            verify_service.clone(),
+            verify_agents.clone(),
+            verify_readers.clone(),
+            verify_engine.clone(),
+            verify_home.clone(),
+        );
+        async move {
+            usage::verify_sign_ins(&service, agents.as_ref(), readers.as_ref(), &engine, &home)
+                .await;
+        }
+    });
     let insights = kuvo_services::usage::insights::Service::new(
         home.to_owned(),
         peers.reader().view().roster.local().name,
@@ -564,10 +595,14 @@ pub async fn run(
         &hostname::get()?.to_string_lossy(),
     )
     .with_history(usage_settings, limits.clone())
+    .with_directory(peers.reader())
     .with_cursor(standalone_plans.clone());
     let cursor_watch = insights.follow_cursor(routes.client_activity());
     let price_watch = insights.follow_prices(&account);
     let usage_watch = kuvo_os::watch::WatchHub::default();
+    let usage_sign_ins = standalone_plans
+        .as_ref()
+        .map(|reader| reader.follow_sign_ins(usage_watch.clone(), limits.clone()));
     let insights_watch = insights.follow(usage_watch.clone());
     let engine_usage_watch = insights.follow_engine(usage_watch.clone());
     let native_usage_watch = insights.follow_native(usage_watch, limits.clone());
@@ -590,6 +625,7 @@ pub async fn run(
             );
             async move {
                 let agents_failed = if let Some(agents) = agents {
+                    usage::confirm(&limits, &agents).await;
                     usage::refresh(limits.clone(), agents, selected.clone(), explicit).await
                 } else {
                     false
@@ -834,6 +870,9 @@ pub async fn run(
     approvals_kept.abort();
     insights_watch.abort();
     native_usage_watch.abort();
+    if let Some(watch) = usage_sign_ins {
+        watch.abort();
+    }
     engine_usage_watch.abort();
     if let Some(task) = cursor_watch {
         task.abort();

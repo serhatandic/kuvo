@@ -248,35 +248,58 @@ impl Program {
         let path = self.record_home()?.join(".claude.json");
         let stamp = tokio::fs::metadata(&path).await.ok()?;
         let stamp = (stamp.len(), stamp.modified().ok());
-        let mut cache = self.identity.lock().await;
-        if let Some(kept) = cache
-            .as_ref()
-            .filter(|c| c.path == path && c.stamp == stamp)
-        {
-            return kept.value.clone();
-        }
-        let raw = tokio::fs::read(&path).await.ok()?;
-        let parsed = (|| {
-            let record: serde_json::Value = serde_json::from_slice(&raw).ok()?;
-            let account = &record["oauthAccount"];
-            let uuid = account["accountUuid"].as_str()?.trim().to_lowercase();
-            if uuid.is_empty() {
+        let identity = {
+            let mut cache = self.identity.lock().await;
+            if let Some(kept) = cache
+                .as_ref()
+                .filter(|c| c.path == path && c.stamp == stamp)
+            {
+                kept.value.clone()
+            } else {
+                let raw = tokio::fs::read(&path).await.ok()?;
+                let parsed = (|| {
+                    let record: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+                    let account = &record["oauthAccount"];
+                    let uuid = account["accountUuid"].as_str()?.trim().to_lowercase();
+                    if uuid.is_empty() {
+                        return None;
+                    }
+                    let organization = account["organizationUuid"]
+                        .as_str()
+                        .map(|id| id.trim().to_lowercase())
+                        .unwrap_or_default();
+                    let raw = format!("anthropic:{uuid}|{organization}");
+                    let mark = hex::encode(&Sha256::digest(&raw)[..8]);
+                    Some((mark, raw))
+                })();
+                *cache = Some(IdentityCache {
+                    path,
+                    stamp,
+                    value: parsed.clone(),
+                });
+                parsed
+            }
+        }?;
+        // The identity record outlives some sign-outs. Accounts' local status
+        // also requires the CLI's actual OAuth credential (file or Keychain).
+        let program = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let status = program.local_status(&program.environment(false));
+            if !status.logged_in || status.auth_method != "claude.ai" {
                 return None;
             }
-            let organization = account["organizationUuid"]
-                .as_str()
-                .map(|id| id.trim().to_lowercase())
-                .unwrap_or_default();
-            let raw = format!("anthropic:{uuid}|{organization}");
-            let mark = hex::encode(&Sha256::digest(&raw)[..8]);
-            Some((mark, raw))
-        })();
-        *cache = Some(IdentityCache {
-            path,
-            stamp,
-            value: parsed.clone(),
-        });
-        parsed
+            let turned_away = *program
+                .turned_away
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if turned_away.is_some_and(|at| program.credentials_written() <= at) {
+                return None;
+            }
+            Some(identity)
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     pub fn scratch(&self) -> PathBuf {

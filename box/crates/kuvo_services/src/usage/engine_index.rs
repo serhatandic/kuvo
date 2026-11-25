@@ -52,6 +52,10 @@ pub struct Checkpoint {
     pub sign_in: super::engine_codex_history::SignIn,
     #[serde(default)]
     history_version: u8,
+    #[serde(default)]
+    pub lineage_version: u8,
+    #[serde(default)]
+    pub skills_version: u8,
 }
 fn side(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -159,10 +163,8 @@ fn columns(db: &Connection, table: &str) -> rusqlite::Result<BTreeSet<String>> {
 }
 #[derive(Clone, Debug)]
 pub struct Session {
-    pub parent: Option<String>,
     pub title: Option<String>,
-    pub bot: Option<String>,
-    pub bot_name: Option<String>,
+    pub node: super::insights::lineage::Node,
     pub seat: bool,
 }
 #[derive(Debug)]
@@ -176,6 +178,7 @@ pub struct Record {
     pub model: Option<String>,
     pub agent: Option<String>,
     pub usage: Option<Value>,
+    pub skills: Option<Vec<String>>,
     pub source: Option<String>,
     pub origin: Option<String>,
     pub observed_account: Option<String>,
@@ -189,9 +192,11 @@ pub fn read(
     path: &Path,
     since: i64,
     previous: &Checkpoint,
+    known_headers: &[String],
+    force_headers: bool,
     mut reset: impl FnMut(i64) -> Result<()>,
     mut take: impl FnMut(Record, &BTreeMap<String, Session>) -> Result<()>,
-) -> Result<Option<Checkpoint>> {
+) -> Result<Option<(Checkpoint, BTreeMap<String, Session>)>> {
     let Some(stamp) = stamp(path)? else {
         return Ok(None);
     };
@@ -201,10 +206,12 @@ pub fn read(
         .flatten()
         .as_ref()
         .map(signature);
-    if previous.history_version == 2
+    let unchanged = previous.history_version == 2
+        && previous.lineage_version == 1
+        && previous.skills_version == 1
         && previous.stamp.as_ref() == Some(&stamp)
-        && previous.auth_revision == auth_revision
-    {
+        && previous.auth_revision == auth_revision;
+    if unchanged && !force_headers {
         return Ok(None);
     }
     let db = open_maker(path)?;
@@ -222,17 +229,9 @@ pub fn read(
             continue;
         }
         let col = |field: &'static str| if names.contains(field) { field } else { "NULL" };
-        let (bot, name, seat) = if names.contains("metadata") {
-            (
-                "CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.kuvo.by.bot') END",
-                "CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.kuvo.by.name') END",
-                "CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.kuvo.seat') END",
-            )
-        } else {
-            ("NULL", "NULL", "NULL")
-        };
+        let metadata = col("metadata");
         let sql = format!(
-            "SELECT id,{},{},{bot},{name},{seat} FROM {table} WHERE id=?",
+            "SELECT id,{},{},{metadata} FROM {table} WHERE id=?",
             col("parent_id"),
             col("title")
         );
@@ -245,6 +244,30 @@ pub fn read(
         auth_revision,
         sign_in,
         history_version: 2,
+        lineage_version: 1,
+        skills_version: 1,
+    };
+    collect_headers(
+        &read,
+        &headers,
+        known_headers.iter().cloned(),
+        &mut sessions,
+        &mut missing,
+    )?;
+    // Explicit recount may have acquired retained peer calls from an unchanged
+    // channel. Repair their compact lineage without replaying any maker calls.
+    if unchanged {
+        checkpoint.watermarks = previous.watermarks.clone();
+        checkpoint.headers = sessions.len() as u64;
+        read.commit()?;
+        return Ok(Some((checkpoint, sessions)));
+    }
+    let part_columns = columns(&read, "part")?;
+    let legacy_parts = part_columns.contains("message_id") && part_columns.contains("data");
+    let skill_parts = |data: &str, from: &str| {
+        format!(
+            "(SELECT json_group_array(json_array(COALESCE(json_extract({data},'$.name'),json_extract({data},'$.tool')),json_object('skill',json_extract({data},'$.state.input.skill'),'name',json_extract({data},'$.state.input.name'),'file_path',json_extract({data},'$.state.input.file_path'),'filePath',json_extract({data},'$.state.input.filePath'),'path',json_extract({data},'$.state.input.path')))) FROM {from} WHERE json_valid({data}) AND json_extract({data},'$.type')='tool' AND json_extract({data},'$.state.status')='completed' AND lower(COALESCE(json_extract({data},'$.name'),json_extract({data},'$.tool'))) IN ('skill','read','read_file') {{tail}})"
+        )
     };
     for (table, role) in [
         ("message", "json_extract(data,'$.role')"),
@@ -275,6 +298,7 @@ pub fn read(
                     previous.stamp.as_ref().is_some_and(|old| {
                         old.identity == stamp.identity && old.bytes <= stamp.bytes
                     }) && previous.history_version == 2
+                        && previous.skills_version == 1
                         && last.is_some_and(|last| last >= *before)
                         && previous.sign_in == sign_in
                 });
@@ -290,13 +314,24 @@ pub fn read(
         } else {
             "AND ?2 IS NULL"
         };
+        let parts = if version == 2 {
+            skill_parts(
+                "p.value",
+                "json_each(json_extract(session_message.data,'$.content')) AS p",
+            )
+            .replace("{tail}", "")
+        } else if legacy_parts {
+            skill_parts("p.data", "part p").replace("{tail}", "AND p.message_id=message.id")
+        } else {
+            "NULL".into()
+        };
         let sql = format!(
             r#"SELECT session_id,id,{role},time_created,json_extract(data,'$.time.completed'),
         COALESCE(json_extract(data,'$.model.providerID'),json_extract(data,'$.providerID')),
         COALESCE(json_extract(data,'$.model.id'),json_extract(data,'$.modelID')),
         json_extract(data,'$.agent'),json_extract(data,'$.tokens'),
         json_extract(data,'$.metadata.source'),json_extract(data,'$.time.origin'),json_extract(data,'$.time.usageAccount'),
-        json_extract(data,'$.cost'),json_type(data,'$.finish') FROM {table}
+        json_extract(data,'$.cost'),json_type(data,'$.finish'),{parts} FROM {table}
         WHERE time_created>=?1 {changed} AND json_valid(data)
         AND ({role} IN ('user','assistant') OR ({role}='compaction' AND json_extract(data,'$.status')='completed'))"#
         );
@@ -314,6 +349,12 @@ pub fn read(
                 model: row.get(6)?,
                 agent: row.get(7)?,
                 usage: usage.and_then(|v| serde_json::from_str(&v).ok()),
+                skills: row
+                    .get::<_, Option<String>>(14)
+                    .ok()
+                    .flatten()
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .and_then(|parts| super::insight_skills::engine(&parts)),
                 source: row.get(9)?,
                 origin: row.get(10)?,
                 observed_account: row.get(11)?,
@@ -335,47 +376,68 @@ pub fn read(
                         .is_none_or(|at| record.completed.unwrap_or(record.created) >= at));
             // Only a changed call's session and parent lineage are read. A
             // channel with many inactive headers does not walk them for one call.
-            let mut id = Some(record.session.clone());
-            while let Some(key) = id.take() {
-                if sessions.contains_key(&key) || missing.contains(&key) {
-                    break;
-                }
-                let mut found = None;
-                for sql in &headers {
-                    let mut query = read.prepare_cached(sql)?;
-                    found = query
-                        .query_row([&key], |row| {
-                            Ok(Session {
-                                parent: row.get(1)?,
-                                title: row.get(2)?,
-                                bot: row.get(3)?,
-                                bot_name: row.get(4)?,
-                                seat: matches!(
-                                    row.get_ref(5)?,
-                                    rusqlite::types::ValueRef::Text(_)
-                                        | rusqlite::types::ValueRef::Integer(1)
-                                ),
-                            })
-                        })
-                        .optional()?;
-                    if found.is_some() {
-                        break;
-                    }
-                }
-                if let Some(session) = found {
-                    id = session.parent.clone();
-                    sessions.insert(key, session);
-                } else {
-                    missing.insert(key);
-                    break;
-                }
-            }
+            collect_headers(
+                &read,
+                &headers,
+                [record.session.clone()],
+                &mut sessions,
+                &mut missing,
+            )?;
             take(record, &sessions)?;
         }
     }
     checkpoint.headers = sessions.len() as u64;
     read.commit()?;
-    Ok(Some(checkpoint))
+    Ok(Some((checkpoint, sessions)))
+}
+fn collect_headers(
+    db: &Connection,
+    headers: &[String],
+    pending: impl IntoIterator<Item = String>,
+    sessions: &mut BTreeMap<String, Session>,
+    missing: &mut BTreeSet<String>,
+) -> Result<()> {
+    let mut pending = pending.into_iter().collect::<Vec<_>>();
+    while let Some(key) = pending.pop() {
+        if sessions.contains_key(&key) || missing.contains(&key) {
+            continue;
+        }
+        let mut found = None;
+        for sql in headers {
+            let mut query = db.prepare_cached(sql)?;
+            found = query
+                .query_row([&key], |row| {
+                    let metadata: Option<String> = row.get(3).ok().flatten();
+                    let meta = metadata
+                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                        .unwrap_or_default();
+                    let parent = row.get(1)?;
+                    Ok(Session {
+                        title: row.get(2)?,
+                        node: super::insights::lineage::Node::from_metadata(parent, &meta),
+                        seat: !meta["kuvo"]["seat"].is_null(),
+                    })
+                })
+                .optional()?;
+            if found.is_some() {
+                break;
+            }
+        }
+        if let Some(session) = found {
+            pending.extend(
+                session
+                    .node
+                    .parent
+                    .iter()
+                    .chain(session.node.starters.iter())
+                    .cloned(),
+            );
+            sessions.insert(key, session);
+        } else {
+            missing.insert(key);
+        }
+    }
+    Ok(())
 }
 pub async fn follow(root: PathBuf, hub: WatchHub, send: tokio::sync::mpsc::Sender<Vec<PathBuf>>) {
     loop {
