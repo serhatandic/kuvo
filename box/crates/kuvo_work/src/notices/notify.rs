@@ -97,3 +97,70 @@ pub fn sentence_of(text: &Value) -> Option<String> {
     Some(words::one_sentence(&text, words::SENTENCE_LONGEST))
         .filter(|sentence| !sentence.is_empty())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn told(session: &str, body: &str, at: i64, by_agent: bool) -> Told {
+        let notice = Notice {
+            body: Some(body.to_owned()),
+            category: "finished".to_owned(),
+            thread: Some(session.to_owned()),
+            ..Notice::default()
+        };
+        let by = by_agent.then(|| "agent".to_owned());
+        Told {
+            id: format!("ntc_{at}"),
+            at,
+            notice,
+            by,
+        }
+    }
+
+    #[test]
+    fn an_agent_is_held_to_its_limits_and_all_agents_together_too() {
+        let (now, minute) = (100 * HOUR, 60_000);
+        // The same sentence today, past news written since.
+        let kept = [
+            told("ses_a", "Ready.", now - 30 * minute, true),
+            told("ses_x", "News.", now - minute, false),
+        ];
+        assert!(
+            past_limit(&kept, "ses_a", "Ready.", now)
+                .unwrap()
+                .starts_with("You already sent")
+        );
+        assert_eq!(past_limit(&kept, "ses_a", "Other.", now), None);
+        let soon = [told("ses_a", "One.", now - minute, true)];
+        assert!(
+            past_limit(&soon, "ses_a", "Two.", now)
+                .unwrap()
+                .contains("a moment ago")
+        );
+        let hour: Vec<Told> = (1..=3)
+            .map(|n| told("ses_a", &format!("{n}."), now - n * 10 * minute, true))
+            .collect();
+        assert!(
+            past_limit(&hour, "ses_a", "Four.", now)
+                .unwrap()
+                .contains("3 times this hour")
+        );
+        let day: Vec<Told> = (1..=12)
+            .map(|n| told("ses_a", &format!("{n}."), now - n * HOUR, true))
+            .collect();
+        assert!(
+            past_limit(&day, "ses_a", "More.", now)
+                .unwrap()
+                .contains("12 times today")
+        );
+        let many: Vec<Told> = (1..=10)
+            .map(|n| told(&format!("ses_{n}"), "Hi.", now - n * 5 * minute, true))
+            .collect();
+        assert!(
+            past_limit(&many, "ses_new", "Hello.", now)
+                .unwrap()
+                .contains("many notifications from agents")
+        );
+    }
+}
