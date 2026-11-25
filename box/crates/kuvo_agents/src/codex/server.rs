@@ -152,7 +152,8 @@ pub(super) struct Shared {
     pub routes: Plain<HashMap<String, Route>>,
     pub account: Account,
     next: AtomicU64,
-    shutdowns: AtomicU64,
+    /// Shut down (or let go of) this many times: a start under way then fails, and stops its own.
+    shutdowns: tokio::sync::watch::Sender<u64>,
     idle_check: AtomicBool,
 }
 
@@ -165,7 +166,7 @@ impl Shared {
             routes: Plain::default(),
             account: Account::new()?,
             next: AtomicU64::new(0),
-            shutdowns: AtomicU64::new(0),
+            shutdowns: tokio::sync::watch::Sender::new(0),
             idle_check: AtomicBool::new(false),
         }))
     }
@@ -187,9 +188,9 @@ impl Shared {
 
     /// The app-server, started the first time it's needed and again after it stops.
     pub async fn server(self: &Arc<Self>) -> io::Result<Arc<Server>> {
-        let shutdowns = self.shutdowns.load(Ordering::Relaxed);
+        let shutdowns = *self.shutdowns.borrow();
         let _starting = self.starting.lock().await;
-        if self.shutdowns.load(Ordering::Relaxed) != shutdowns {
+        if *self.shutdowns.borrow() != shutdowns {
             return Err(stopped());
         }
         let compaction = self.program.compaction();
@@ -215,9 +216,9 @@ impl Shared {
             slot.stops
         };
         self.watch_idle();
-        let server = self.start(&compaction, identity).await?;
+        let server = self.start(&compaction, identity, shutdowns).await?;
         let mut slot = self.slot.lock().await;
-        if slot.stops != stops || self.shutdowns.load(Ordering::Relaxed) != shutdowns {
+        if slot.stops != stops || *self.shutdowns.borrow() != shutdowns {
             server.rpc.stop().await;
             return Err(stopped());
         }
@@ -239,7 +240,9 @@ impl Shared {
         self: &Arc<Self>,
         compaction: &str,
         identity: Option<String>,
+        shutdowns: u64,
     ) -> io::Result<Arc<Server>> {
+        let mut halted = self.shutdowns.subscribe();
         let program = self.program.clone();
         let launch = {
             let compaction = compaction.to_owned();
@@ -255,21 +258,23 @@ impl Shared {
             1,
             Default::default(),
         );
-        let initialized = server
-            .rpc
-            .request(
-                "initialize",
-                Some(json!({
-                    "clientInfo": {"name":"kuvo-code","title":"Kuvo Code","version":"1"},
-                    "capabilities": {"experimentalApi":true,"optOutNotificationMethods":["turn/diff/updated"]},
-                })),
-                Some(INITIALIZE),
-            )
-            .await;
+        let initialize = server.rpc.request(
+            "initialize",
+            Some(json!({
+                "clientInfo": {"name":"kuvo-code","title":"Kuvo Code","version":"1"},
+                "capabilities": {"experimentalApi":true,"optOutNotificationMethods":["turn/diff/updated"]},
+            })),
+            Some(INITIALIZE),
+        );
+        // Stopped while it starts: it isn't left running, nor kept for a next resident.
+        let initialized = tokio::select! {
+            initialized = initialize => initialized.map_err(io::Error::from),
+            _ = halted.wait_for(|now| *now != shutdowns) => Err(stopped()),
+        };
         if let Err(error) = initialized {
             // One that won't start isn't left running: the next ask starts another.
             server.rpc.stop().await;
-            return Err(error.into());
+            return Err(error);
         }
         server.rpc.notify("initialized", None).await;
         Ok(server)
@@ -545,9 +550,14 @@ impl Shared {
         }
     }
 
+    /// A start under way fails, and stops what it started.
+    pub fn halt(&self) {
+        self.shutdowns.send_modify(|count| *count += 1);
+    }
+
     /// Stops the app-server (and one starting: its start then fails).
     pub async fn shutdown(&self) {
-        self.shutdowns.fetch_add(1, Ordering::Relaxed);
+        self.halt();
         let server = {
             let mut slot = self.slot.lock().await;
             slot.stops += 1;
@@ -592,7 +602,7 @@ impl Shared {
 
     /// Lets go of the app-server for the next resident, as it is.
     pub async fn detach(&self) {
-        self.shutdowns.fetch_add(1, Ordering::Relaxed);
+        self.shutdowns.send_modify(|count| *count += 1);
         self.slot.lock().await.server.take();
     }
 }

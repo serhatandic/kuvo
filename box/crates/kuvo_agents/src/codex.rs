@@ -81,6 +81,8 @@ impl Codex {
     /// Its conversations let go of, and their app-server stopped: they're loaded again in a new one
     /// as they're next used.
     async fn stop_all(&self, signed_out: bool) {
+        // (A start under way fails first: a thread waiting on it is closed next.)
+        self.shared.halt();
         let threads: Vec<_> = self
             .threads
             .lock()

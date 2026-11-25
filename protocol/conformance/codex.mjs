@@ -81,7 +81,11 @@ process.stdin.on("data", (chunk) => {
     const answer = (result) => send({ id, result });
     const refuse = (code, words) => send({ id, error: { code, message: words } });
     if (method === undefined) { waiting.get(id)?.(); waiting.delete(id); continue; }
-    if (method === "initialize") answer({ userAgent: "codex-stand-in/1" });
+    if (method === "initialize") {
+      // (An older or newer Codex turns it down; one stuck never answers.)
+      if (fs.existsSync(path.join(root, "codex-refuses-initialize"))) refuse(-32601, "Unknown method");
+      else if (!fs.existsSync(path.join(root, "codex-never-initializes"))) answer({ userAgent: "codex-stand-in/1" });
+    }
     else if (method === "initialized") {}
     else if (method === "account/read") {
       const saved = fs.existsSync(auth) ? JSON.parse(fs.readFileSync(auth, "utf8")) : null;

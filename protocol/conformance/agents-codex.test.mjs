@@ -670,6 +670,52 @@ test("signed out while it works: Codex is told to sign out, and the turn on it e
   }, (codex) => codex.seed(id, { directory: codex.root }));
 });
 
+describe("Codex that won't start", { skip }, () => {
+  const running = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const started = (codex) => [...new Set(codex.heard().filter((line) => line.message?.method === "initialize").map((line) => line.pid))];
+
+  test("a Codex that turns down being started isn't left running, however often it's tried", { timeout: 60000 }, async () => {
+    const id = "ses_codex_refuses";
+    await withCodex({}, async (codex) => {
+      await codex.prompt(id, "Hello.");
+      await codex.idles(id, 1);
+      await codex.prompt(id, "Hello again.");
+      const rows = await codex.idles(id, 2);
+      assert.ok(idles(rows).every((idle) => idle.outcome === "failed"), JSON.stringify(idles(rows)));
+      const pids = started(codex);
+      assert.ok(pids.length >= 2, `Started ${pids.length} times.`);
+      await until(() => !pids.some(running), "A Codex that wouldn't start was left running.");
+      assert.equal(codex.sent("turn/start").length, 0);
+    }, (codex) => {
+      codex.seed(id, { directory: codex.root });
+      write(path.join(codex.root, "codex-refuses-initialize"), "");
+    });
+  });
+
+  test("a Codex stopped while it's still starting (its account signed out) isn't left running", { timeout: 60000 }, async () => {
+    const id = "ses_codex_stuck";
+    await withCodex({}, async (codex) => {
+      await codex.prompt(id, "Hello.");
+      const [pid] = await until(() => started(codex).length && started(codex), "Codex was never started.");
+      // (The reference answers with the start it cut short: "The agent stopped".)
+      await request(codex.listener, "POST", `kuvo/agents/api/integration/${provider}/disconnect`, {}, headers, 20000);
+      // Its start fails as it's stopped, long before the 30 s it's given to answer.
+      await until(() => !running(pid), "The Codex stopped while starting was left running.", 5000);
+      assert.equal(codex.sent("turn/start").length, 0);
+    }, (codex) => {
+      codex.seed(id, { directory: codex.root });
+      write(path.join(codex.root, "codex-never-initializes"), "");
+    });
+  });
+});
+
 describe("Codex in the session's modes, and MCP asks", { skip }, () => {
   const box = resident();
   const mcpAsk = (item, server, tool) => ({ ask: ["mcpServer/elicitation/request", { itemId: item, serverName: server, message: `Allow the ${server} MCP server to run tool "${tool}"?`, mode: "form", requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call", tool_name: tool } }] });
