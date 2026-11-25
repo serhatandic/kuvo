@@ -15,10 +15,10 @@ use std::{
 };
 
 use kuvo_keeper::{
-    fleet::{self, Candidate, Fetcher},
+    fleet::{self, Candidate, FeedRelease, Fetcher},
     manifest::{UPDATE_KEY, local_target},
     prepare_command::is_scratch,
-    update_status,
+    update_status::{self, Outcome, Step},
 };
 use kuvo_peers::{
     directory::{PreparedRelease, ReleaseProgress, UpdateFacts},
@@ -30,7 +30,7 @@ use kuvo_store::{files, home::Home};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
     time::Instant,
 };
@@ -43,6 +43,7 @@ const UPDATING: &str = "It's updating already.";
 
 pub struct Worker {
     checks: mpsc::Sender<Check>,
+    step: watch::Receiver<Option<Step>>,
     task: JoinHandle<()>,
 }
 
@@ -79,7 +80,7 @@ enum CheckReply {
 struct FeedCheck {
     manual: bool,
     round: Option<String>,
-    task: JoinHandle<io::Result<Candidate>>,
+    task: JoinHandle<io::Result<Option<FeedRelease>>>,
 }
 
 fn check_offset(home: &Home) -> i64 {
@@ -151,12 +152,14 @@ pub fn start(
         .relay_handle()
         .map(|relay| mail::Mail::new(relay, peers.reader(), key.clone()));
     let (checks, mut requests) = mpsc::channel(8);
+    let (progress, step) = watch::channel(None);
     let pack_server = mail
         .as_ref()
         .and_then(|mail| mail.serve(home.clone(), checks.clone()));
     let summary = summary::History::load(&home);
     let mut fleet = Fleet {
         check_offset: check_offset(&home),
+        step: progress,
         home,
         peers,
         setup,
@@ -199,7 +202,31 @@ pub fn start(
             }
         }
     });
-    Some(Worker { checks, task })
+    Some(Worker { checks, step, task })
+}
+
+#[derive(Clone)]
+struct Status {
+    home: Home,
+    profile: PathBuf,
+    engine: kuvo_engine::Engine,
+    step: Option<watch::Receiver<Option<Step>>>,
+}
+
+impl Status {
+    async fn read(&self) -> io::Result<Value> {
+        let mut body = update_status::read(&self.home, &self.profile)?;
+        if let Some(step) = self.step.as_ref().and_then(|step| *step.borrow()) {
+            body["updating"] = step.words().into();
+        }
+        if let Some((change, installing)) = self.engine.release_change().await? {
+            body["engineChange"] = change;
+            if installing {
+                body["updating"] = Step::Installing.words().into();
+            }
+        }
+        Ok(body)
+    }
 }
 
 pub fn register_check(
@@ -207,13 +234,31 @@ pub fn register_check(
     home: Home,
     profile: PathBuf,
     worker: Option<&Worker>,
+    engine: kuvo_engine::Engine,
 ) {
-    use kuvo_protocol::routes::post_kuvo_update as update;
+    use kuvo_protocol::routes::{get_kuvo_update as read, post_kuvo_update as update};
     use kuvo_server::{Access, Refusal, RouteReply};
 
     let checks = worker.map(|worker| worker.checks.clone());
+    let status = Status {
+        home,
+        profile,
+        engine,
+        step: worker.map(|worker| worker.step.clone()),
+    };
+    let read_status = status.clone();
+    routes.register::<read::Spec, _, _>(Access::Any, move |_| {
+        let status = read_status.clone();
+        async move {
+            let result: io::Result<_> =
+                async { Ok(serde_json::from_value(status.read().await?)?) }.await;
+            result.map(RouteReply::json::<200>).map_err(|error| {
+                Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            })
+        }
+    });
     retry::register(routes, checks.clone());
-    register_offer(routes, home.clone(), profile.clone(), checks.clone());
+    register_offer(routes, status.clone(), checks.clone());
     routes.register_decoded::<update::Spec, _, _, _>(
         Access::Any,
         |body| {
@@ -222,13 +267,13 @@ pub fn register_check(
             })
         },
         move |_| {
-            let (home, profile, checks) = (home.clone(), profile.clone(), checks.clone());
+            let (status, checks) = (status.clone(), checks.clone());
             async move {
                 let internal = |error: io::Error| {
                     Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
                 };
                 let busy = || Refusal::new(http::StatusCode::CONFLICT, UPDATING);
-                let mut status = update_status::read(&home, &profile).map_err(internal)?;
+                let mut status = status.read().await.map_err(internal)?;
                 if let Some(blocked) = status["blocked"].as_str() {
                     return Err(Refusal::new(http::StatusCode::CONFLICT, blocked));
                 }
@@ -250,20 +295,19 @@ pub fn register_check(
 
 fn register_offer(
     routes: &mut kuvo_server::Registry,
-    home: Home,
-    profile: PathBuf,
+    status: Status,
     checks: Option<mpsc::Sender<Check>>,
 ) {
     use http::StatusCode;
     use kuvo_protocol::routes::post_kuvo_box_update as offer;
     use kuvo_server::{Access, Caller, LocalOrigin, Refusal, RouteReply, Transport};
 
-    let key = feed(&home, &profile).map_or_else(|| UPDATE_KEY.into(), |(_, key, _)| key);
+    let key =
+        feed(&status.home, &status.profile).map_or_else(|| UPDATE_KEY.into(), |(_, key, _)| key);
     let accepting = Arc::new(tokio::sync::Mutex::new(()));
     routes.register::<offer::Spec, _, _>(Access::Any, move |call| {
-        let (home, profile, checks, key, accepting) = (
-            home.clone(),
-            profile.clone(),
+        let (status, checks, key, accepting) = (
+            status.clone(),
             checks.clone(),
             key.clone(),
             accepting.clone(),
@@ -293,7 +337,7 @@ fn register_offer(
                     )
                 })?;
             let guard = accepting.lock_owned().await;
-            let offered_home = home.clone();
+            let offered_home = status.home.clone();
             tokio::task::spawn_blocking(move || {
                 let _guard = guard;
                 Candidate::receive_offer(&offered_home, &source, &key)
@@ -309,7 +353,7 @@ fn register_offer(
             if let Some(checks) = checks {
                 let _ = checks.try_send(Check::Offered);
             }
-            let status = update_status::read(&home, &profile).map_err(|error| {
+            let status = status.read().await.map_err(|error| {
                 Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
             })?;
             serde_json::from_value(status)
@@ -364,6 +408,7 @@ struct Fleet {
     early_fixture: bool,
     next_check: Instant,
     check_offset: i64,
+    step: watch::Sender<Option<Step>>,
     check_now: bool,
     fetcher: Fetcher,
     checking: Option<FeedCheck>,
@@ -374,7 +419,7 @@ struct Fleet {
     summary: summary::History,
     attempted: Option<PreparedRelease>,
     receiving: Option<(PreparedRelease, mail::PullProgress)>,
-    pending: Option<JoinHandle<Result<(), retry::Failure>>>,
+    pending: Option<JoinHandle<Result<PreparedRelease, retry::Failure>>>,
     mail: Option<mail::Mail>,
     pack_server: Option<JoinHandle<()>>,
 }
@@ -448,12 +493,38 @@ impl Fleet {
             || self.checking.is_some()
             || self.pending.is_some()
             || self.home.run().join("previous").try_exists()?
-            || fleet::installed(&self.home)?.0.is_none()
+            || update_status::legacy_updating(&self.home)
         {
             return Ok(CheckReply::Busy);
         }
         self.check_now = true;
         Ok(CheckReply::Checking)
+    }
+
+    fn blocked_check(&mut self, now: i64, message: &str) -> io::Result<()> {
+        if self.checking.is_some()
+            || self.pending.is_some()
+            || self.home.run().join("previous").exists()
+            || update_status::legacy_updating(&self.home)
+            || (!self.check_now && Instant::now() < self.next_check)
+        {
+            return Ok(());
+        }
+        let manual = std::mem::take(&mut self.check_now);
+        let round = release_round(now, self.check_offset);
+        self.next_check = Instant::now() + CHECK_POLL;
+        if !manual && update_status::checked_round(&self.home)?.as_deref() == Some(round.as_str()) {
+            return Ok(());
+        }
+        update_status::note_check(
+            &self.home,
+            None,
+            now,
+            (!manual).then_some(round.as_str()),
+            Some(Outcome::Blocked {
+                message: message.into(),
+            }),
+        )
     }
 
     async fn send_pending_check(&self, view: &View, now: i64) -> io::Result<()> {
@@ -485,18 +556,34 @@ impl Fleet {
     }
 
     async fn round(&mut self) -> io::Result<()> {
+        update_status::settle_shell_trial(&self.home)?;
+        update_status::settle_legacy_trial(&self.home)?;
         self.engine.recover_release_drain().await?;
         if self.pending.as_ref().is_some_and(JoinHandle::is_finished)
             && let Some(pending) = self.pending.take()
-            && let Err(error) = pending.await.map_err(io::Error::other)?
         {
-            eprintln!("Preparing Kuvo's release: {}", error.0.reason);
-            error.save(&self.home)?;
+            let outcome = match pending.await {
+                Ok(Ok(prepared)) => Outcome::Waiting {
+                    version: prepared.version,
+                    message: None,
+                },
+                Ok(Err(error)) => {
+                    eprintln!("Preparing Kuvo's release: {}", error.record.reason);
+                    if let Err(error) = error.save(&self.home) {
+                        eprintln!("Recording the release failure: {error}");
+                    }
+                    error.outcome()
+                }
+                Err(error) => Outcome::Failed {
+                    version: None,
+                    message: error.to_string(),
+                },
+            };
+            let recorded = update_status::note_last(&self.home, self.peers.reader().now(), outcome);
+            self.step.send_replace(None);
+            recorded?;
         }
         let (version, working) = fleet::installed(&self.home)?;
-        let Some(version) = version else {
-            return Ok(());
-        };
         let reader = self.peers.reader();
         let view = reader.view();
         let now = reader.now();
@@ -506,6 +593,12 @@ impl Fleet {
         if let Err(error) = self.send_pending_check(&view, now).await {
             eprintln!("Asking the main to check Kuvo's release: {error}");
         }
+        let Some(version) = version else {
+            if standalone || local_main {
+                self.blocked_check(now, "This computer’s box version is unknown.")?;
+            }
+            return Ok(());
+        };
         let mut candidate =
             Candidate::kept(&self.home, &self.key).filter(|next| next.newer_than(Some(&version)));
         let offered = Candidate::offered(&self.home, &self.key)
@@ -536,32 +629,92 @@ impl Fleet {
                 .is_some_and(|checking| checking.task.is_finished())
                 && let Some(checking) = self.checking.take()
             {
-                let result = checking.task.await.map_err(io::Error::other)?;
-                // Keep an eligible signed offer before recording this round as finished.
-                // A restart after the round write must still be able to prepare it.
-                if let Ok(fetched) = &result
-                    && (checking.manual
-                        || self.early_fixture
-                        || fetched.old_enough_for_automatic_check())
-                {
-                    self.consider(&mut candidate, fetched.envelope().to_owned(), &version)?;
-                }
-                let latest = result.as_ref().ok().map(Candidate::version);
-                if (latest.is_some() || checking.round.is_some())
-                    && let Err(error) = update_status::note_check(
+                let result = checking
+                    .task
+                    .await
+                    .map_err(io::Error::other)
+                    .and_then(|result| result);
+                let recorded = (|| -> io::Result<()> {
+                    let mut latest = None;
+                    let outcome = match result {
+                        Ok(None) => Some(Outcome::Current {
+                            version: version.clone(),
+                        }),
+                        Ok(Some(fetched)) => {
+                            latest = Some(fetched.version().to_owned());
+                            if !fetched.newer_than(Some(&version)) {
+                                Some(Outcome::Current {
+                                    version: version.clone(),
+                                })
+                            } else if !checking.manual
+                                && !self.early_fixture
+                                && !fetched.old_enough_for_automatic_check()
+                            {
+                                Some(Outcome::Waiting {
+                                    version: fetched.version().into(),
+                                    message: Some(
+                                        "Automatic checks wait a few days after publication."
+                                            .into(),
+                                    ),
+                                })
+                            } else {
+                                match fetched.into_shared() {
+                                    Ok(fetched) => {
+                                        // Retain the signed choice before saving the round.
+                                        self.consider(
+                                            &mut candidate,
+                                            fetched.envelope().to_owned(),
+                                            &version,
+                                        )?;
+                                        if fetched.is_prepared(&self.home)?
+                                            || candidate.as_ref().is_some_and(|choice| {
+                                                choice.newer_than(Some(fetched.version()))
+                                            })
+                                        {
+                                            Some(Outcome::Waiting {
+                                                version: fetched.version().into(),
+                                                message: None,
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    Err(error) => Some(Outcome::Failed {
+                                        version: None,
+                                        message: fleet::release_error_message(&error),
+                                    }),
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("Checking Kuvo's release: {error}");
+                            Some(Outcome::Failed {
+                                version: None,
+                                message: fleet::release_error_message(&error)
+                                    .chars()
+                                    .take(300)
+                                    .collect(),
+                            })
+                        }
+                    };
+                    update_status::note_check(
                         &self.home,
-                        latest,
+                        latest.as_deref(),
                         now,
                         checking.round.as_deref(),
+                        outcome,
                     )
-                {
+                })();
+                self.step.send_replace(None);
+                if let Err(error) = recorded {
                     eprintln!("Recording the release check: {error}");
                 }
-                if let Err(error) = result {
-                    eprintln!("Checking Kuvo's release: {error}");
-                }
             }
-            if self.checking.is_none() && (self.check_now || Instant::now() >= self.next_check) {
+            if fleet::stopped(&self.home) {
+                self.blocked_check(now, "This computer’s box is stopped.")?;
+            } else if self.checking.is_none()
+                && (self.check_now || Instant::now() >= self.next_check)
+            {
                 let manual = self.check_now;
                 let round = release_round(now, self.check_offset);
                 if !manual
@@ -569,6 +722,7 @@ impl Fleet {
                 {
                     self.next_check = Instant::now() + CHECK_POLL;
                 } else if self.pending.is_none()
+                    && !update_status::legacy_updating(&self.home)
                     && !self.home.run().join("previous").try_exists()?
                     && (standalone || self.setup.may_switch_fleet().await)
                 {
@@ -576,16 +730,18 @@ impl Fleet {
                     self.check_now = false;
                     let (fetcher, url, key) =
                         (self.fetcher.clone(), self.url.clone(), self.key.clone());
+                    self.step.send_replace(Some(Step::Checking));
                     self.checking = Some(FeedCheck {
                         manual,
                         round: (!manual).then_some(round),
-                        task: tokio::spawn(async move { fetcher.candidate(&url, &key).await }),
+                        task: tokio::spawn(async move { fetcher.check(&url, &key).await }),
                     });
                 }
             }
         } else if let Some(main) = main {
             if let Some(checking) = self.checking.take() {
                 checking.task.abort();
+                self.step.send_replace(None);
                 self.next_check = Instant::now();
             }
             self.check_now = false;
@@ -675,6 +831,9 @@ impl Fleet {
                 facts.staged = Some(prepared.clone());
             } else if !failed
                 && self.pending.is_none()
+                && self.checking.is_none()
+                && !update_status::legacy_updating(&self.home)
+                && !self.home.run().join("previous").exists()
                 && self.attempted.as_ref() != Some(&prepared)
                 && !fleet::stopped(&self.home)
             {
@@ -686,6 +845,8 @@ impl Fleet {
                 let key = self.key.clone();
                 let progress = progress.clone();
                 let prepared = prepared.clone();
+                let step = self.step.clone();
+                step.send_replace(Some(Step::Downloading));
                 self.pending = Some(tokio::spawn(async move {
                     let pack = match candidate.download_or_held(&home, &key, &fetcher).await {
                         Ok(pack) => pack,
@@ -698,6 +859,9 @@ impl Fleet {
                                 .map_err(|_| retry::Failure::download(prepared.clone(), error))?
                         }
                     };
+                    if !local.matches_bytes(&pack) {
+                        return Err(retry::Failure::bad_archive(prepared));
+                    }
                     if let Some(bridge) = candidate
                         .bridge(&key)
                         .map_err(|error| retry::Failure::prepare(prepared.clone(), error))?
@@ -708,9 +872,12 @@ impl Fleet {
                             .map_err(|error| retry::Failure::download(prepared.clone(), error))?;
                     }
                     candidate
-                        .prepare(home, pack)
+                        .prepare(home, pack, move |phase| {
+                            step.send_replace(Some(phase));
+                        })
                         .await
-                        .map_err(|error| retry::Failure::prepare(prepared, error))
+                        .map_err(|error| retry::Failure::prepare(prepared.clone(), error))?;
+                    Ok(prepared)
                 }));
             }
             if !failed && facts.staged.is_none() && facts.switching.is_none() {
@@ -797,6 +964,7 @@ impl Fleet {
                         .is_some_and(|roster| roster.main == main)
             };
             if authorized
+                && !update_status::legacy_updating(&self.home)
                 && !fleet::stopped(&self.home)
                 && !self.home.run().join("previous").exists()
             {
@@ -838,7 +1006,10 @@ impl Fleet {
                         false
                     };
                     if still_authorized && !fleet::stopped(&self.home) {
-                        if let Err(error) = candidate.activate(&self.home).await {
+                        self.step.send_replace(Some(Step::Installing));
+                        let result = candidate.activate(&self.home).await;
+                        self.step.send_replace(None);
+                        if let Err(error) = result {
                             self.engine.cancel_release_drain().await?;
                             return Err(error);
                         }

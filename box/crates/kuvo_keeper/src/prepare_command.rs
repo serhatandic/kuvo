@@ -84,7 +84,7 @@ fn prepare_update(home: &Home, folder: &Path, test_key: Option<&str>) -> io::Res
     let pack = signed.pack_for(target)?;
     let ref_id = signed.reference(pack);
     let result = staging::read_release(&folder.join(pack.filename()?), MAX_PACK)
-        .and_then(|bytes| staging::prepare(home, &signed, target, &bytes, &envelope));
+        .and_then(|bytes| staging::prepare(home, &signed, target, &bytes, &envelope, |_| {}));
     Ok(match result {
         Ok(release) => json!({"result":"waiting","version":release.version}),
         Err(error) => {

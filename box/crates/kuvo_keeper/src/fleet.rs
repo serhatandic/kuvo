@@ -57,15 +57,20 @@ pub struct InstallerMedia {
 
 impl Candidate {
     pub fn verify(envelope: String, key: &str) -> io::Result<Self> {
-        if envelope.len() as u64 > staging::MAX_ENVELOPE {
-            return Err(io::Error::other("That release can't be read."));
-        }
-        let signed = SignedRelease::verify(envelope.as_bytes(), &[key])?;
-        if !signed.spreads() {
+        let candidate = Self::verify_signed(envelope, key)?;
+        if !candidate.signed.spreads() {
             return Err(io::Error::other(
                 "This release cannot be shared with your setup.",
             ));
         }
+        Ok(candidate)
+    }
+
+    fn verify_signed(envelope: String, key: &str) -> io::Result<Self> {
+        if envelope.len() as u64 > staging::MAX_ENVELOPE {
+            return Err(io::Error::other("That release can't be read."));
+        }
+        let signed = SignedRelease::verify(envelope.as_bytes(), &[key])?;
         Ok(Self { signed, envelope })
     }
 
@@ -313,7 +318,12 @@ impl Candidate {
         .map_err(io::Error::other)?
     }
 
-    pub async fn prepare(self, home: Home, bytes: Vec<u8>) -> io::Result<()> {
+    pub async fn prepare(
+        self,
+        home: Home,
+        bytes: Vec<u8>,
+        step: impl Fn(update_status::Step) + Send + 'static,
+    ) -> io::Result<()> {
         tokio::task::spawn_blocking(move || {
             staging::prepare(
                 &home,
@@ -321,6 +331,7 @@ impl Candidate {
                 local_target()?,
                 &bytes,
                 self.envelope.as_bytes(),
+                step,
             )?;
             Ok(())
         })
@@ -622,11 +633,54 @@ pub fn installed_envelope(home: &Home, release: &Release) -> Option<String> {
 #[derive(Default, Clone)]
 pub struct Fetcher(reqwest::Client);
 
-impl Fetcher {
-    pub async fn candidate(&self, url: &str, key: &str) -> io::Result<Candidate> {
-        let bytes = download(&self.0, url, staging::MAX_ENVELOPE, Duration::from_secs(30)).await?;
-        Candidate::verify(String::from_utf8(bytes).map_err(io::Error::other)?, key)
+/// A checked feed can name the running version or a release not for sharing.
+/// Only a shareable signed release can become a fleet candidate.
+pub struct FeedRelease(Candidate);
+
+impl FeedRelease {
+    pub fn version(&self) -> &str {
+        self.0.version()
     }
+    pub fn newer_than(&self, version: Option<&str>) -> bool {
+        self.0.newer_than(version)
+    }
+    pub fn old_enough_for_automatic_check(&self) -> bool {
+        self.0.old_enough_for_automatic_check()
+    }
+    pub fn into_shared(self) -> io::Result<Candidate> {
+        if !self.0.signed.spreads() {
+            return Err(io::Error::other(
+                "This release cannot be shared with your setup.",
+            ));
+        }
+        Ok(self.0)
+    }
+}
+
+impl Fetcher {
+    pub async fn check(&self, url: &str, key: &str) -> io::Result<Option<FeedRelease>> {
+        let bytes =
+            match download(&self.0, url, staging::MAX_ENVELOPE, Duration::from_secs(30)).await {
+                Ok(bytes) => bytes,
+                Err(error) if response_status(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+        Candidate::verify_signed(String::from_utf8(bytes).map_err(io::Error::other)?, key)
+            .map(|candidate| Some(FeedRelease(candidate)))
+    }
+}
+
+fn response_status(error: &io::Error) -> Option<reqwest::StatusCode> {
+    error.get_ref()?.downcast_ref::<reqwest::Error>()?.status()
+}
+
+pub fn release_error_message(error: &io::Error) -> String {
+    response_status(error).map_or_else(
+        || error.to_string(),
+        |status| format!("It answered {}.", status.as_u16()),
+    )
 }
 
 async fn download(
@@ -727,6 +781,9 @@ async fn shell_switch(home: &Home, target: Release) -> io::Result<()> {
     }
     let previous = home.run().join("previous");
     files::write_new(&previous, current.to_string().as_bytes())?;
+    if let Err(error) = update_status::mark_shell_trial(home, &current, &target) {
+        eprintln!("Recording the shell keeper trial: {error}");
+    }
     let mut command = kuvo_os::process::Spawn::new("/bin/sh", std::env::vars_os().collect());
     command
         .env
