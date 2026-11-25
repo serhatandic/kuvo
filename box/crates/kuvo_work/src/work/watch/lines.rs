@@ -30,7 +30,7 @@ pub fn folder_of(session: &Value) -> &str {
 impl Work {
     /// The project a session's folder is filed under, by its name: as the session list files it
     /// (its worktrees and other folders too), else as the box's projects name it.
-    fn project_name(&self, session: &Value) -> Option<String> {
+    pub(crate) fn project_name(&self, session: &Value) -> Option<String> {
         let folder = folder_of(session);
         if folder.is_empty() {
             return None;

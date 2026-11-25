@@ -68,7 +68,7 @@ async fn end_command(engine: &BotEngine, job: &Value, folder: &str) {
 }
 
 impl Work {
-    fn kept(&self) -> Kept {
+    pub(super) fn kept(&self) -> Kept {
         Kept::new(&self.home.join("run"))
     }
 
@@ -95,7 +95,7 @@ impl Work {
     }
 
     /// The sessions at work now: in a turn, or with something they left running.
-    async fn at_work_now(&self, engine: &BotEngine) -> (HashSet<String>, HashSet<String>) {
+    pub(super) async fn at_work_now(&self, engine: &BotEngine) -> (HashSet<String>, HashSet<String>) {
         let turns = working_now(engine).await;
         let mut working = turns.clone();
         let file = self.home.join("run/work/background.json");
