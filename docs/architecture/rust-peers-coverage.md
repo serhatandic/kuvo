@@ -133,3 +133,10 @@ projects typed values from its watch view. It shares the same working-session ca
 the route and announcements. The persisted empty work snapshot deliberately keeps its timestamp
 so a delayed older snapshot cannot restore rows after a clear. TypeScript deletes the cleared file
 in `box/src/link/work/elsewhere.ts` and can accept that older snapshot afterward.
+
+### 7.3 released roster, Part A
+
+[R1–R3](rust-released-coverage.md) cover peers cases 1–2 and the unsigned
+list/no-address portion of 22 and 24–25. Enroller online-time expiry (3–4),
+legacy signed roster replacement and the explicit no-address reply check remain
+open. No unsigned list is forwarded as a signed document.

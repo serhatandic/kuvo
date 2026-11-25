@@ -994,6 +994,20 @@ impl Resident {
                     }
                     Some(event @ (relay::Event::Mail { .. } | relay::Event::Unreachable(_))) => {
                         let now = clock();
+                        if let (relay::Event::Mail { key, envelope, .. }, Some(devices), Some(relay)) = (&event, &devices, &relay) {
+                            match devices.legacy_mail(*key, &envelope.0, now).await {
+                                Ok(Some(members)) => {
+                                    Arc::make_mut(&mut self.view.roster).members = members;
+                                    let hosts = self.view.roster.members.iter().filter_map(|member| member.host()).collect();
+                                    let _ = relay.sender.trust(grants.clone(), hosts).await;
+                                    if let Some(publisher) = &mut publisher {
+                                        publisher.request(self.view.clone(), now, Refresh::All);
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => eprintln!("Keeping released Mac roster: {error}"),
+                            }
+                        }
                         match tokio::task::spawn_blocking(move || {
                             let result = self.receive(event, now);
                             (self, result)

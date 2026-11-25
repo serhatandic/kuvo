@@ -4,6 +4,7 @@ pub mod install;
 mod machine;
 mod status;
 
+pub use machine::settings::adopt_legacy_settings;
 pub use status::{progress as rehome_progress, rehome_status};
 
 #[cfg(target_os = "macos")]

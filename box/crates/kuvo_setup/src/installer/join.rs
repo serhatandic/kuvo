@@ -340,6 +340,7 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         },
         grants: HashMap::new(),
         peers: Vec::new(),
+        legacy_enrollers: vec![],
     });
     let local = identity.self_peer(KIND, &name);
     let mut given = Applicant {

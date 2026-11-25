@@ -292,7 +292,7 @@ pub struct ReleasedLaunch {
 impl ReleasedLaunch {
     const MARKER: &str = "released-install.json";
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub fn acquire(run: &Path) -> io::Result<Self> {
         files::create_private_dirs(run)?;
         let path = run.join(".launching");

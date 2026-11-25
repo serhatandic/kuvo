@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Released beta.1 Macs' machine settings commands and peer lists work with Rust computers.
+
 - Background commands that Codex or Claude Code leave running stay visible and stoppable through a Rust computer update. The installer also refuses release receipts it cannot read.
 
 - The installer can finish a previously approved standalone computer wipe after a crash, then offer reinstall without touching replacement data.

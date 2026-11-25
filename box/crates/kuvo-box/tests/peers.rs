@@ -459,6 +459,7 @@ async fn connecting_client(url: &str, key: u8, peers: Vec<Host>) -> Relay {
         key: [key; 32],
         secret: [key + 50; 32],
         peers,
+        legacy_enrollers: vec![],
         hello: BoxHello {
             v: 1,
             name: "Client".into(),
@@ -1101,6 +1102,7 @@ async fn desktop(url: String, pairing: String) -> (Relay, session::Id) {
         key: [4; 32],
         grants: HashMap::new(),
         peers: vec![],
+        legacy_enrollers: vec![],
         hello: BoxHello {
             v: 1,
             kind: ComputerKind::Machine,
@@ -1564,6 +1566,7 @@ mod work {
             url: url.into(),
             grants: HashMap::new(),
             peers: members.iter().filter_map(Member::host).collect(),
+            legacy_enrollers: vec![],
             hello: BoxHello {
                 v: 1,
                 name: member(id).name,
@@ -1645,6 +1648,7 @@ mod work {
             secret: [id; 32],
             grants: HashMap::new(),
             peers: vec![member(peer).host().unwrap()],
+            legacy_enrollers: vec![],
             hello: BoxHello {
                 v: 1,
                 name: "Observer".into(),

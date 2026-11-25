@@ -261,3 +261,8 @@ serve as search terms. Some writers split paths into components, including `RUN`
 | `run/github-sign-in`, `run/queues-scanned.json`, `run/work-queue/forward` | `services.ts`, `engine/queue.ts` and `work-queue/forward.ts` own them. Empty scratch directories have no desktop or installer reader. | 5.2 queue and GitHub. |
 | `artifacts/*`, `library/backfill.json`, `box/marketplace/mcp-relay-v1.json` | `artifacts/prepare.ts`, `library/service.ts` and `marketplace/connections.ts` read or create them. | 5.5 services. |
 | `config/opencode/plugins/kuvo-defaults.js`, `run/fence/agents.md`, `box/approval.json`, `chats` | Engine boot, fence and approval code read their own inputs. Backup and move also interpret approval and the chats root. GPUI discovers the resident through `run/serve.json`; it gets the chats root from `kuvo/info`. | 3.1 plugin. 5.1 approval. 6.1 fence. 2.5 and 2.6 backup and migration. |
+
+For 7.3 Part A, [R1–R3](rust-released-coverage.md) prove directly enrolled
+unsigned beta.1 roster mail, including discovery before its address is known.
+Legacy signed-aside authority, old Mac associations, time-zone and personality
+mail remain assigned as above.

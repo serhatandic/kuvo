@@ -42,7 +42,7 @@ export async function withTag(tag, use) {
 }
 
 export function taggedCommand(script, home, env, args, input) {
-  return runSync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", "--import", noLaunch, script, ...args],
+  return runSync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", "--import", pathToFileURL(noLaunch).href, script, ...args],
     { ...env, KUVO_HOME: home }, home, input);
 }
 
@@ -84,6 +84,24 @@ export function mailVector(code, tag, peer) {
   assert.deepEqual(code.openOneWay(code.readFrame(frame).body, recipient, code.publicOf(sender)).payload, bytes);
   return { sender: sender.toString("hex"), recipient: recipient.toString("hex"),
     ephemeral: ephemeral.toString("hex"), plaintext: bytes.toString(), frame: frame.toString("hex") };
+}
+
+// The released wire writer, with multiple roster updates and ordinary agent
+// announcements used as deterministic receipt barriers.
+export function rosterVectors(code, mac) {
+  const identity = (key, secret, name) => ({ key: code.publicOf(fixed(key)).toString("base64url"),
+    address: code.addressOf(fixed(secret)).toString("base64url"), kind: "machine", name });
+  const second = identity(8, 9, "Second Machine");
+  const third = identity(10, 11, "Third Machine");
+  const own = identity(6, 5, "Fixture Machine");
+  const frame = (n, fields, announced) => {
+    const bytes = Buffer.from(JSON.stringify({ ...fields, agents: { at: announced, list: [] } }));
+    return code.frame(code.Frame.mail, 0, code.sealOneWay(bytes, fixed(n), code.publicOf(fixed(6)), code.MAIL_PROLOGUE, fixed(announced - at + 20)).message).toString("hex");
+  };
+  return { second, third, own, added: frame(2, { at: at + 2, peers: [mac, second, own, { key: "bad" }] }, at + 2),
+    stale: frame(2, { at: at + 1, peers: [mac] }, at + 3),
+    notEnroller: frame(8, { at: at + 10, peers: [third] }, at + 4),
+    removed: frame(2, { at: at + 3, peers: [mac] }, at + 5) };
 }
 
 export function settingsVectors(script, home, env) {
