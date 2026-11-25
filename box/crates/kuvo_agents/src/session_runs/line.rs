@@ -1034,6 +1034,10 @@ impl Service {
             {
                 eprintln!("Kuvo could not close the unfinished turn in {session}: {error}");
             }
+            // (Codex's replies an older bridge kept with its directives as words.)
+            if let Err(error) = crate::codex::read_kept_citations(&self.store, &session).await {
+                eprintln!("Kuvo could not read Codex's citations in {session}: {error}");
+            }
             let Ok(Some(line)) = self.store.line(&session).await else {
                 continue;
             };

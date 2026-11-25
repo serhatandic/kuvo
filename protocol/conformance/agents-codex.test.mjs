@@ -312,6 +312,22 @@ describe("Codex, more of what it does", { skip }, () => {
     assertMatch(tools[2].state, { status: "completed", input: { detail: "new" }, content: [{ type: "text", text: "It worked." }] });
   });
 
+  test("an image it made shows as a picture, and one it couldn't make for a limit says so", { timeout: 60000 }, async () => {
+    const { id, folder } = box.next();
+    const saved = path.join(folder, "apple.png");
+    fs.writeFileSync(saved, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+    await box.begin([
+      item("item/completed", { type: "imageGeneration", id: "g1", status: "completed", revisedPrompt: "an apple", savedPath: saved }),
+      item("item/completed", { type: "imageGeneration", id: "g2", status: "failed", failure: { type: "usageLimitExceeded", limitId: "images", resetsAt: 1900000000 } }),
+    ], undefined, { id, folder });
+    const rows = await box.codex.idles(id);
+    const [made, refused] = toolCalls(rows);
+    assertMatch(made, { name: "generate_image", state: { status: "completed", input: { prompt: "an apple" } } });
+    assert.ok(made.state.content.some((part) => part.type === "file" && part.mime === "image/png"), JSON.stringify(made.state.content));
+    assertMatch(refused, { name: "generate_image", state: { status: "error" } });
+    assert.ok(JSON.stringify(refused.state).includes("limit for making images"), JSON.stringify(refused.state));
+  });
+
   test("what Codex says for you to read, and a hook of yours, as notes and a step", { timeout: 60000 }, async () => {
     const { id } = await box.begin([
       ["warning", { message: "Your config has an unknown key." }],
@@ -669,6 +685,34 @@ describe("Commands Codex leaves running in a background terminal", { skip }, () 
     await until(async () => !(await work(id)), "Its end never showed.", 45000, 500);
     // It wasn't woken for that.
     assert.equal(box.codex.sent("turn/start").filter((message) => message.params.input[0].text.includes(id)).length, 1);
+  });
+});
+
+test("a reply kept from before its citations were read shows as one does now: the file it made shown, and no directive", { timeout: 60000, skip }, async () => {
+  const id = "ses_codex_cited";
+  const pdf = "/w/output/moon.pdf";
+  const words = `Created the field note: one page.\n\n:codex-file-citation{path="${pdf}" purpose="output"}\n\nIt follows :codex-file-citation{path="/w/notes.md" purpose="source"}.`;
+  await withCodex({}, async (codex) => {
+    const rows = await codex.rows(id);
+    const reply = rows.find((row) => row.id === "msg_kept");
+    assert.deepEqual(reply.content.map((part) => (part.type === "text" ? part.text : `[${part.name} ${part.state.status} ${part.state.input.path}]`)), [
+      "Created the field note: one page.\n\n",
+      `[kuvo-browser_show_file completed ${pdf}]`,
+      "\n\nIt follows `/w/notes.md`.",
+    ]);
+    // Another agent's words quoting one (Auto went on with Claude Code): words, as they were.
+    assert.deepEqual(rows.find((row) => row.id === "msg_quoted").content, [{ type: "text", text: words }]);
+    assert.equal(codex.saved(id).title, "Notes on moon.pdf");
+  }, (codex) => {
+    codex.seed(id, { directory: codex.root });
+    const file = path.join(codex.home, "agents/sessions", id, "session.json");
+    write(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), title: `Notes on :codex-file-citation{path="${pdf}" purpose="output"}` }));
+    const model = (providerID, id) => ({ providerID, id });
+    write(path.join(codex.home, "agents/sessions", id, "messages.json"), JSON.stringify([
+      { type: "user", id: "msg_asked", time: { created: 1 }, agent: "build", model: model(provider, "gpt-test"), text: "Make the note.", files: [] },
+      { type: "assistant", id: "msg_kept", time: { created: 1, completed: 2 }, agent: "build", model: model(provider, "gpt-test"), content: [{ type: "text", text: words }] },
+      { type: "assistant", id: "msg_quoted", time: { created: 3, completed: 4 }, agent: "build", model: model("claude-code", "sonnet"), content: [{ type: "text", text: words }] },
+    ]));
   });
 });
 

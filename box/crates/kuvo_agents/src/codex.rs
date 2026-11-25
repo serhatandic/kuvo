@@ -37,6 +37,42 @@ use crate::{
 
 use server::Shared;
 
+/// A conversation's replies kept from before Codex's directives in its words were read (an older
+/// bridge kept them as words), and its title with one, as they read now: read once, as the
+/// resident starts. Whether anything changed.
+pub async fn read_kept_citations(
+    store: &crate::session_store::SessionStore,
+    id: &str,
+) -> io::Result<bool> {
+    let replies: Vec<_> = store
+        .rows_saying(id, ":codex-")
+        .await?
+        .iter()
+        .filter_map(citations::kept_reply)
+        .collect();
+    let mut changed = !replies.is_empty();
+    if changed {
+        store.write_messages(id, replies).await?;
+    }
+    let Some(header) = store.read(id).await? else {
+        return Ok(changed);
+    };
+    let fields = header.into_fields();
+    let codex = fields["model"]["providerID"]
+        .as_str()
+        .and_then(crate::accounts::Provider::parse)
+        .is_some_and(|provider| provider.kind == crate::accounts::AgentKind::Codex);
+    if let Some(title) = fields["title"].as_str().filter(|title| codex && title.contains(":codex-")) {
+        let plain = citations::plain(title);
+        changed |= store
+            .change_header(id, move |header| {
+                header.insert("title".into(), plain.into());
+            })
+            .await?;
+    }
+    Ok(changed)
+}
+
 #[derive(Clone)]
 pub struct CodexFactory {
     home: Home,

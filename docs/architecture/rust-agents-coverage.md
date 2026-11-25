@@ -798,9 +798,9 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 13–14 | Rust: a stop while the holder starts, or while its sign-in is read, fails that start once the holder answers, and stops it (the same `Shared::halt`); a holder is never dropped half-started. |
 | 15 | Not applicable: a conversation's actor handles one command at a time, so closing it waits for its start. The app-server it started is the account's, shared, and stops when idle. |
 | 16 | 6.1 (vault and the sandbox). |
-| 17–19 | Ported (both boxes). Making an image and failing to are open (4.2). |
+| 17–19 | Ported to agents-codex on both boxes, including an image it made (a picture) and one it couldn't make for a limit. |
 | 20–22 | Ported. |
-| 23 | Open (4.2): replies saved before citations were read, on reading. |
+| 23 | Ported to agents-codex on both boxes. As the resident starts, Codex's replies an older bridge saved with its directives as words are read as a reply is now (`codex::read_kept_citations`, through `SessionStore::rows_saying`), and so is a title with one. Another agent's words quoting one stay as they were. The reference also keeps a list of the files it found (`sessions.cited`), which nothing reads. |
 | 24–28 | Ported. |
 | 29–32, 34 | Open (4.2): answers turned down with words, the asking words, a refused steer with a card up. |
 | 33, 55 | Ported. |

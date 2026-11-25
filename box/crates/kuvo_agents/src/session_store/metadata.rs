@@ -236,6 +236,39 @@ impl SessionStore {
         Ok(changed.then(|| updated.try_recv().ok()).flatten())
     }
 
+    /// Its rows whose saved words contain `words`, oldest first, read without the rest.
+    pub async fn rows_saying(&self, id: &str, words: &str) -> io::Result<Vec<Value>> {
+        let Some(folder) = self.folder(id) else {
+            return Ok(Vec::new());
+        };
+        let words = words.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let transcript = folder.join(TRANSCRIPT);
+            if transcript.try_exists()? {
+                let db = sqlite::open_index(&transcript, Duration::from_secs(1))
+                    .map_err(io::Error::other)?;
+                let mut query = db
+                    .prepare("SELECT body FROM message WHERE instr(body, ?1) > 0 ORDER BY position")
+                    .map_err(io::Error::other)?;
+                let bodies = query
+                    .query_map([&words], |row| row.get::<_, String>(0))
+                    .map_err(io::Error::other)?;
+                return bodies
+                    .map(|body| Ok(serde_json::from_str(&body.map_err(io::Error::other)?)?))
+                    .collect();
+            }
+            let Some(raw) = files::read(&folder.join("messages.json"))? else {
+                return Ok(Vec::new());
+            };
+            let rows: Vec<Value> = serde_json::from_slice(&raw)?;
+            Ok(rows
+                .into_iter()
+                .filter(|row| row.to_string().contains(&words))
+                .collect())
+        })
+        .await?
+    }
+
     pub async fn has_message(&self, id: &str, message: &str) -> io::Result<bool> {
         let Some(folder) = self.folder(id) else {
             return Ok(false);
