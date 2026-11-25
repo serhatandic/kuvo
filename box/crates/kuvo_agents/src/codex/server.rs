@@ -283,7 +283,10 @@ impl Shared {
         server.rpc.notify("initialized", None).await;
         server
             .rpc
-            .note(Metadata::from_iter([("initialized".into(), Value::Bool(true))]))
+            .note(Metadata::from_iter([(
+                "initialized".into(),
+                Value::Bool(true),
+            )]))
             .await;
         Ok(server)
     }
@@ -624,6 +627,21 @@ impl Shared {
         }
         server.ready(&thread);
         Ok(())
+    }
+
+    /// Its program was updated: the app-server on the old one (or starting on it now) starts
+    /// again once nothing uses it, and what it listed is asked anew.
+    pub async fn program_updated(&self) {
+        self.account.forget_models();
+        let starting = self.starting.lock().await;
+        {
+            let mut slot = self.slot.lock().await;
+            if let Some(server) = slot.server.clone() {
+                mark(&mut slot, server.id, "program");
+            }
+        }
+        drop(starting);
+        self.restart_if_quiet(None, None).await;
     }
 
     /// Lets go of the app-server for the next resident, as it is.

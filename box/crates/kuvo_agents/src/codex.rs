@@ -29,6 +29,7 @@ use crate::{
     accounts::Account,
     catalog::Models,
     hold::{Controller, HoldKind, Record, TurnNote},
+    program_updates::{Definition, Native},
     roster::{Agent, Factory},
     runtime::{AdapterCall, Adoption},
     session::{SessionContext, Thread},
@@ -63,7 +64,10 @@ pub async fn read_kept_citations(
         .as_str()
         .and_then(crate::accounts::Provider::parse)
         .is_some_and(|provider| provider.kind == crate::accounts::AgentKind::Codex);
-    if let Some(title) = fields["title"].as_str().filter(|title| codex && title.contains(":codex-")) {
+    if let Some(title) = fields["title"]
+        .as_str()
+        .filter(|title| codex && title.contains(":codex-"))
+    {
         let plain = citations::plain(title);
         changed |= store
             .change_header(id, move |header| {
@@ -188,6 +192,28 @@ impl Agent for Codex {
     fn shutdown(&self) -> AdapterCall<'_, ()> {
         Box::pin(async {
             self.stop_all(false).await;
+            Ok(())
+        })
+    }
+
+    /// Updated by its own updater (`codex update`) where its installer put it, else by npm's.
+    fn program(&self) -> Option<Definition> {
+        let env = self.shared.program.environment();
+        Some(Definition {
+            name: "Codex".into(),
+            executable: self.shared.program.executable(&env)?.path().to_owned(),
+            npm_package: Some("@openai/codex".into()),
+            native: Some(Native {
+                args: vec!["update".into()],
+                marker: "/.codex/".into(),
+                dist_tag: None,
+            }),
+        })
+    }
+
+    fn program_updated(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async {
+            self.shared.program_updated().await;
             Ok(())
         })
     }

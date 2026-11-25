@@ -318,7 +318,8 @@ impl Service {
                 if !input.held
                     && input.delivery != Delivery::Queue
                     && !live.turn.is_done()
-                    && live.thread.takes_steers() =>
+                    && live.thread.takes_steers()
+                    && !self.programs.holds(&live.provider) =>
             {
                 Some(live.clone())
             }
@@ -851,7 +852,7 @@ impl Service {
 
     /// Starts the first message you steered, now if nothing runs. (A turn
     /// under way decides at its end.)
-    async fn wake(&self, state: &mut State, session: &str) {
+    pub(super) async fn wake(&self, state: &mut State, session: &str) {
         let conversation = state.conversation(session);
         if !matches!(conversation.doing, Doing::Idle) {
             return;
@@ -894,6 +895,10 @@ impl Service {
             conversation.go = false;
         }
         let Some(index) = index else { return };
+        // (Its program updating, it waits in line, kept.)
+        if self.held_for_program(session, index).await {
+            return;
+        }
         let id = line[index].id.clone();
         let sent = self.store.has_message(session, &id).await.unwrap_or(false);
         let taken = self

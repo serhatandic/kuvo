@@ -12,6 +12,7 @@ pub mod hold;
 pub mod inbox;
 pub mod live_asks;
 pub mod permissions;
+pub mod program_updates;
 mod pictures;
 pub mod resident;
 pub mod roster;

@@ -3,7 +3,7 @@
 
 use crate::{
     accounts::Provider,
-    inbox::{Delivery, Input, InboxEvent},
+    inbox::{Delivery, InboxEvent, Input},
     live_asks::{Ask, AskKey, LiveAsks, Reply as AskReply},
     permissions::{
         Allowance, ConfigLocation, Policy, covers, remember,
@@ -31,6 +31,7 @@ use tokio::{
 };
 
 mod line;
+mod programs;
 mod update;
 
 pub use update::{HandedTurn, Handover, Update};
@@ -91,6 +92,13 @@ enum Command {
         held: BTreeSet<String>,
         reply: Reply<Handover>,
     },
+    /// A program's update is over: what it held goes.
+    WakeHeld,
+    /// Whether a program has turns under way.
+    ProgramWorks {
+        program: String,
+        reply: oneshot::Sender<bool>,
+    },
 }
 
 struct Start {
@@ -122,7 +130,10 @@ enum Doing {
     Idle,
     /// Its agent is getting ready for message `id`. `stop` once asked to
     /// stop meanwhile.
-    Starting { stop: bool, id: String },
+    Starting {
+        stop: bool,
+        id: String,
+    },
     Running(Live),
     Stopping(Live),
 }
@@ -167,6 +178,7 @@ pub struct SessionRuns {
     running: watch::Receiver<Arc<BTreeSet<String>>>,
     events: broadcast::Sender<InboxEvent>,
     restoring: Arc<update::Restorings>,
+    programs: programs::Holds,
 }
 
 impl SessionRuns {
@@ -193,7 +205,9 @@ impl SessionRuns {
         let (events, _) = broadcast::channel(256);
         let asks = LiveAsks::start();
         let restoring = Arc::new(watch::channel(update::expected_asks(&update)).0);
+        let programs = programs::Holds::new(&home);
         let service = Service {
+            programs: programs.clone(),
             restoring: restoring.clone(),
             agents,
             store: store.clone(),
@@ -212,6 +226,7 @@ impl SessionRuns {
             running,
             events,
             restoring,
+            programs,
         }
     }
 
@@ -374,7 +389,12 @@ impl SessionRuns {
     pub async fn recent(&self, session: &str, limit: u32) -> io::Result<Vec<Value>> {
         Ok(self
             .store
-            .message_page(session, None, limit, crate::session_store::MessageOrder::NewestFirst)
+            .message_page(
+                session,
+                None,
+                limit,
+                crate::session_store::MessageOrder::NewestFirst,
+            )
             .await?
             .map(|page| page.messages)
             .unwrap_or_default())
@@ -562,6 +582,7 @@ struct Service {
     events: broadcast::Sender<InboxEvent>,
     commands: mpsc::WeakSender<Command>,
     restoring: Arc<update::Restorings>,
+    programs: programs::Holds,
 }
 
 type Prepared = (String, io::Result<Live>, Option<Reply<RunningTurn>>);
@@ -686,6 +707,10 @@ impl Service {
             Command::HandOver { held, reply } => {
                 let _ = reply.send(Ok(self.hand_over(state, &held).await));
             }
+            Command::WakeHeld => self.wake_held(state).await,
+            Command::ProgramWorks { program, reply } => {
+                let _ = reply.send(self.program_works(state, &program).await);
+            }
         }
     }
 
@@ -716,6 +741,7 @@ impl Service {
 
     async fn prepared(&self, state: &mut State, prepared: Prepared) {
         let (session, mut outcome, reply) = prepared;
+        self.programs.entered(&session);
         let conversation = state.conversation(&session);
         let stop = matches!(conversation.doing, Doing::Starting { stop: true, .. });
         if conversation.retired
@@ -836,9 +862,7 @@ impl Service {
         let parsed = Provider::parse(provider)?;
         let roster = self.agents.roster();
         let entry = roster.find(&parsed)?.clone();
-        let out = |status: Option<Result<crate::account_check::AccountStatus, _>>| {
-            matches!(status, Some(Ok(status)) if status.installed && !status.signed_in && !status.unchecked)
-        };
+        let out = |status: Option<Result<crate::account_check::AccountStatus, _>>| matches!(status, Some(Ok(status)) if status.installed && !status.signed_in && !status.unchecked);
         let within = Duration::from_secs(10);
         if !out(tokio::time::timeout(within, entry.status(false)).await.ok()) {
             return None;
@@ -908,6 +932,11 @@ impl Service {
             }
             return Err(io::Error::new(ErrorKind::PermissionDenied, message));
         }
+        // Its program updating, it waits for it (a turn taken up runs already).
+        let recovering = matches!(input.kind, TurnKind::Recover { .. });
+        self.programs
+            .enter(session, &input.model.provider, !recovering)
+            .await;
         let thread = match self.thread(session, &input.model.provider).await {
             Ok(thread) => thread,
             Err(error) => {
@@ -996,8 +1025,12 @@ impl Service {
                 }
             })
         });
-        let foreground =
-            crate::foreground::Foreground::new(session, &cwd, self.store.background().clone(), stop);
+        let foreground = crate::foreground::Foreground::new(
+            session,
+            &cwd,
+            self.store.background().clone(),
+            stop,
+        );
         let turn = RunningTurn::launch(thread.clone(), input, sink, writes, writer, foreground);
         Ok(Live {
             turn,
