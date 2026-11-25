@@ -176,6 +176,11 @@ impl crate::Engine {
         self
     }
 
+    /// The coding agents' conversations' events, in the engine's words, where they keep any.
+    pub fn agent_events(&self) -> Option<broadcast::Receiver<AgentEvent>> {
+        self.agent_sessions.as_ref()?.events()
+    }
+
     /// Whether the coding agents' conversation is out of its turn, waiting `wait` at most for it
     /// to be: true for one that isn't theirs.
     pub async fn agent_turn_ended(&self, id: &str, wait: std::time::Duration) -> bool {

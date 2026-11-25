@@ -412,6 +412,13 @@ pub async fn run(
         bots.clone(),
     );
     work.attach_start_link(work_queue.start_link());
+    // (What it tells, read again for the clients that follow it.)
+    let (told_peers, told_run) = (peers.clone(), home.join("run"));
+    work.notices.attach_told(Arc::new(move || {
+        let (peers, run) = (told_peers.clone(), told_run.clone());
+        let telling = kind == ComputerKind::Mac;
+        tokio::spawn(async move { peers.notices(kuvo_peers::notices::load(&run, telling)).await });
+    }));
     work.register(&mut routes);
     let work_watch = work.watch();
     let work_rows = work_calls.map(|calls| elsewhere.serve(work.clone(), calls));

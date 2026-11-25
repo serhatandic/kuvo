@@ -12,7 +12,7 @@ import { referenceGaps } from "./reference-gaps.mjs";
 
 const vectors = new URL("../../box/test/fixtures/routes/", import.meta.url);
 const area = process.env.KUVO_CONFORMANCE_AREA;
-const macFiles = new Set(["artifacts.json", "bots.json", "features.json"]);
+const macFiles = new Set(["artifacts.json", "bots.json", "features.json", "notices.json"]);
 const files = [...fs.readdirSync(vectors).filter(name => name.endsWith(".json")), "features.json"].sort();
 const binary = boxBinary();
 const isOurs = (only, kind) => only === undefined || only === kind;
@@ -96,7 +96,7 @@ async function run(t, scenario, kind) {
       // These reads show projections updated by the engine stream and filesystem watches.
       // Wait for the expected projection once it can answer, without replaying mutations.
       // (An agent's tool that only reads, too.)
-      const projection = method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering", "kuvo/work/background"].includes(route.split("?")[0])
+      const projection = method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering", "kuvo/work/background", "kuvo/notices"].includes(route.split("?")[0])
         || route === "kuvo/agent-tools" && ["list_sessions", "list_projects", "list_models", "list_agents", "read_conversation", "list_wake_ups"].includes(step.body?.name);
       if (projection && answer.status === expect.status && mismatch(expect.json, answer.json)) {
         await until(async () => {

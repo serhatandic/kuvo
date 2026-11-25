@@ -198,6 +198,40 @@ impl Work {
         }
     }
 
+    /// notify_user: `caller` telling you its sentence on purpose, unless it's past its limit or
+    /// says the same as one it sent today.
+    pub(super) async fn notify_user_tool(
+        &self,
+        caller: &Caller,
+        args: &Map<String, Value>,
+    ) -> Said {
+        if crate::work::watch::truthy(&caller.data["metadata"]["kuvo"]["seat"]) {
+            return refused("In a group chat, say it in the chat: the user reads it there.");
+        }
+        let given = args.get("text").unwrap_or(&Value::Null);
+        let Some(sentence) = crate::notices::notify::sentence_of(given) else {
+            return refused("Give the text: one sentence saying what you need from the user.");
+        };
+        let engine = self.list.engine().work_engine().await;
+        let news = crate::notices::news::News {
+            engine: &engine,
+            home: &self.home,
+            names: &self.names,
+        };
+        let mut data = caller.data.clone();
+        data["id"] = json!(caller.session);
+        let notice = news.sent_notice(&data, Some(&caller.name), sentence.clone());
+        let now = crate::notices::now();
+        let past = |kept: &[crate::notices::Told]| {
+            crate::notices::notify::past_limit(kept, &caller.session, &sentence, now)
+        };
+        match self.notices.keep(notice, true, past) {
+            None => refused("The notification couldn't be sent just now. Put it in your reply."),
+            Some(Err(why)) => refused(why),
+            Some(Ok(_)) => said(format!("Sent to the user: “{sentence}”")),
+        }
+    }
+
     /// set_job: a bot keeping its job in its record, as Edit Bot changes it, for the bot whose
     /// conversation this is (a subagent's, the one that started it).
     pub(super) async fn set_job_tool(
