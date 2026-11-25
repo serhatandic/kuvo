@@ -132,6 +132,285 @@ test("an update cannot move to an earlier release or spread a private build", t 
   }
 });
 
+test("the resident retires only expired legacy engine backup copies", { timeout: 30000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("The TypeScript own-home Helper reference checks the same retention.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Backup retention");
+  const { home } = here;
+  seedPeerSetup(home, relay.url, 2); // A member must sweep without checking the feed itself.
+  write(path.join(home, "bin/box-version"), "0.8.0\n");
+  const backup = path.join(home, "updates/backups");
+  const old = path.join(backup, "2026-10-16-2.1.0-to-2.2.6");
+  const fresh = path.join(backup, "2026-10-29-2.2.5-to-2.2.6");
+  const retired = path.join(backup, ".retired-engine-backup-interrupted");
+  const rollback = path.join(home, "updates/rollback/files");
+  const outside = path.join(here.env.HOME, "outside-backup");
+  for (const [folder, data] of [[old, "old"], [fresh, "fresh"], [retired, "retired"], [rollback, "rollback"], [outside, "outside"]]) {
+    write(path.join(folder, "opencode.db"), data);
+  }
+  const expired = new Date(Date.now() - 31 * 86_400_000);
+  const recent = new Date(Date.now() - 29 * 86_400_000);
+  for (const folder of [old, rollback, outside]) fs.utimesSync(folder, expired, expired);
+  fs.utimesSync(fresh, recent, recent);
+  const link = path.join(backup, "old-link");
+  if (process.platform !== "win32") {
+    fs.symlinkSync(outside, link, "dir");
+    fs.lutimesSync(link, expired, expired);
+  }
+  const child = here.start(binary); // Retention is independent of the release feed worker.
+  await child.ready();
+  await until(() => fs.readdirSync(backup).every(name => name === path.basename(fresh)),
+    () => `the expired backup copies and their retired folders should be gone\n${child.log()}`);
+  assert.equal(fs.existsSync(old) || fs.existsSync(retired) || fs.existsSync(link), false);
+  assert.deepEqual(fs.readdirSync(backup), [path.basename(fresh)]);
+  assert.equal(fs.readFileSync(path.join(fresh, "opencode.db"), "utf8"), "fresh");
+  assert.equal(fs.readFileSync(path.join(rollback, "opencode.db"), "utf8"), "rollback");
+  assert.equal(fs.readFileSync(path.join(outside, "opencode.db"), "utf8"), "outside");
+});
+
+test("legacy backup cleanup does not follow a linked backup directory", { timeout: 30000 }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Checks native footprint containment.");
+  const { computer } = await bench(t);
+  const here = await computer("Linked backup folder");
+  const { home } = here;
+  write(path.join(home, "bin/box-version"), "0.8.0\n");
+  const outside = path.join(here.env.HOME, "outside-backups"), old = path.join(outside, "earlier-data");
+  write(path.join(old, "opencode.db"), "outside the backup folder");
+  const expired = new Date(Date.now() - 31 * 86_400_000);
+  fs.utimesSync(old, expired, expired);
+  const linked = path.join(home, "updates/backups");
+  fs.mkdirSync(path.dirname(linked), { recursive: true });
+  fs.symlinkSync(outside, linked, process.platform === "win32" ? "junction" : "dir");
+  const key = keypair();
+  const feed = createServer((_req, res) => res.writeHead(404).end());
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const child = here.start(binary, { KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key });
+  await child.ready();
+  const state = path.join(home, "run/update.json");
+  await until(() => fs.existsSync(state) && readJSON(state).round, "the normal release round should run");
+  assert.ok(fs.lstatSync(linked).isSymbolicLink());
+  assert.equal(fs.readFileSync(path.join(old, "opencode.db"), "utf8"), "outside the backup folder");
+});
+
+test("the Mac Helper's foreground resident waits for its keeper's trial verdict and restarts on the selected release", { timeout: releaseReturnMs + firstPreparationMs }, t => macHelperRelease(t));
+
+test("the disposable Mac Helper itself restarts the foreground resident after a signed release switch", { timeout: releaseReturnMs + firstPreparationMs }, t => {
+  const swift = process.env.KUVO_UPDATE_HELPER_BIN;
+  if (!swift) return t.skip("Set KUVO_UPDATE_HELPER_BIN to the debug Mac Helper.");
+  return macHelperRelease(t, swift);
+});
+
+test("a replaced signed Mac Helper leaves for its selected bundle and the next Helper confirms", { timeout: releaseReturnMs + firstPreparationMs }, t => {
+  const swift = process.env.KUVO_UPDATE_HELPER_BIN;
+  if (!swift) return t.skip("Set KUVO_UPDATE_HELPER_BIN to the debug Mac Helper.");
+  return macHelperRelease(t, swift, true);
+});
+
+async function macHelperRelease(t, swift, renew = false) {
+  const binary = boxBinary();
+  if (binary.typescript || process.platform !== "darwin") return t.skip("This is the Mac Helper's native foreground resident.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Helper signed switch");
+  const home = path.join(here.env.HOME, ".kuvo-code");
+  fs.renameSync(here.home, home);
+  const run = path.join(home, "run");
+  write(path.join(home, "box/kind"), "mac\n");
+  const previous = "0.8.0-beta.1", current = "0.8.0", next = "0.8.1", engineVersion = "2.2.6";
+  const old = `versions/${previous}-111111111111/bin`, selected = `versions/${current}-222222222222/bin`;
+  const helperBundle = path.join(here.env.HOME, "debug-helper", "Kuvo Helper.app");
+  const executable = "Contents/MacOS/Kuvo Helper";
+  const helperID = "run.kuvo.code.updatetrial.box";
+  const signHelper = build => {
+    write(path.join(helperBundle, executable), fs.readFileSync(swift), { mode: 0o700 });
+    write(path.join(helperBundle, "Contents/Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+  <plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>${helperID}</string>
+  <key>CFBundleExecutable</key><string>Kuvo Helper</string>
+  <key>CFBundleName</key><string>Kuvo Helper</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>${build}</string>
+  <key>KuvoHelperRenews</key><true/>
+  </dict></plist>`);
+    const signedHelper = spawnSync("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", helperID, helperBundle], { env: here.env, encoding: "utf8" });
+    assert.equal(signedHelper.status, 0, signedHelper.stderr);
+    return Object.fromEntries([executable, "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"].map(name => [name, digest(fs.readFileSync(path.join(helperBundle, name)))]));
+  };
+  let bundleFiles = swift && signHelper(1);
+  const native = fs.readFileSync(binary.file);
+  const starter = fs.readFileSync(new URL("../../box/src/keeper/kuvo-start", import.meta.url), "utf8").replaceAll("@ENGINE@", engineVersion);
+  const setsid = fs.readFileSync(new URL("../../box/src/keeper/kuvo-setsid", import.meta.url));
+  const packFiles = version => ({ "bin/kuvo-box": native, "bin/box-version": Buffer.from(version + "\n"),
+    "bin/kuvo-start": starter, "bin/kuvo-setsid": setsid });
+  const writeTree = (folder, version) => {
+    const files = packFiles(version);
+    for (const [name, bytes] of Object.entries(files)) write(path.join(folder, name), bytes, { mode: 0o700 });
+    fs.mkdirSync(path.join(folder, "bin/opencode-plugins"), { recursive: true });
+    if (swift) fs.cpSync(helperBundle, path.join(folder, "bin/Kuvo Helper.app"), { recursive: true });
+    write(path.join(folder, "box.json"), encode({ kuvo: "box/1", version, launch: "rust", engine: engineVersion,
+      files: Object.fromEntries(Object.entries(files).map(([file, bytes]) => [file, digest(bytes)])),
+      ...(bundleFiles && { bundles: { "bin/Kuvo Helper.app": bundleFiles } }) }));
+  };
+  writeTree(path.join(home, path.dirname(old)), previous);
+  writeTree(path.join(home, path.dirname(selected)), current);
+  fs.symlinkSync(selected, path.join(home, "bin"), "dir");
+  write(path.join(run, "previous"), old + "\n");
+  write(path.join(run, "engine.json"), encode({ ...here.engine.record, version: engineVersion }));
+  const backup = path.join(home, "updates/backups/2026-10-16-2.2.5-to-2.2.6");
+  const rollback = path.join(home, "updates/rollback/files/engine-before");
+  write(path.join(backup, "opencode.db"), "old data copy");
+  write(rollback, "the trial's saved data");
+  const expired = new Date(Date.now() - 31 * 86_400_000);
+  fs.utimesSync(backup, expired, expired);
+  const release = path.join(here.env.HOME, "release"), tree = path.join(release, "tree");
+  if (renew) bundleFiles = signHelper(2);
+  writeTree(tree, next);
+  const tar = path.join(release, "signed.tar");
+  assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 90000 }).status, 0);
+  const packBytes = gzipSync(fs.readFileSync(tar), { level: 1 });
+  const engine = await engineFeed(t, path.join(release, "engine"), undefined, { damageFirst: false });
+  const key = keypair();
+  let offered = false, signed, checks = 0;
+  const feed = createServer((req, res) => {
+    if (req.url === "/boxes.json") {
+      checks++;
+      return offered ? res.end(signed) : res.writeHead(404).end();
+    }
+    if (req.url === "/next.tar.gz" && offered) return res.end(packBytes);
+    res.writeHead(404).end();
+  });
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const pack = { url: `${url}/next.tar.gz`, sha256: digest(packBytes) };
+  signed = encode(envelope({ kuvo: "box/1", version: next, engine: engineVersion, spreads: true, launch: "rust", pack,
+    packs: { [target]: pack }, darwin: { [process.arch === "arm64" ? "aarch64" : "x86_64"]: engine.build } }, key));
+  const tools = path.join(here.env.HOME, "tools");
+  write(path.join(tools, "launchctl"), '#!/bin/sh\ntouch "$HOME/launchd-contacted"\nexit 1\n', { mode: 0o700 });
+  write(path.join(tools, "caffeinate"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const env = { ...here.env, HOME: here.env.HOME, KUVO_HOME: home, PATH: `${tools}:${here.env.PATH}`,
+    KUVO_TEST_RELAY: relay.url, KUVO_RELAY_URL: relay.url, KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`,
+    KUVO_TEST_RELEASE_KEY: key.key, KUVO_TEST_KEEP_ROUND: "1", KUVO_TEST_UNINSTALL_TOOLS: tools };
+  const shell = path.join(home, "bin/kuvo-start");
+  const startHelperChild = () => {
+    const child = launch("/bin/sh", [shell, "serve"], env, home);
+    child.child.stdin.write(JSON.stringify({ password: "fixture-helper", renews: true }) + "\n");
+    return child;
+  };
+  const keychain = path.join(here.env.HOME, "fixture.keychain-db");
+  const password = "temporary-keychain-fixture";
+  const security = (...args) => spawnSync("/usr/bin/security", args, { env, stdio: "ignore" });
+  const startRealHelper = () => launch(path.join(home, "bin/Kuvo Helper.app", executable), ["keep", "--home", home, "--test-keychain", keychain, "--test-keychain-password", password, "--test-look-every", "0.2"], env, home);
+  let keychainCreated = false, helperChild, judge;
+  const serve = path.join(run, "serve.json");
+  const diagnostics = () => `the Helper's foreground child did not answer\n${helperChild?.log()}\n${fs.existsSync(path.join(run,"serve.log")) ? fs.readFileSync(path.join(run,"serve.log"),"utf8").slice(-3000) : ""}`;
+  const ready = earlier => until(async () => {
+    if (helperChild.child.exitCode !== null) throw new Error(diagnostics());
+    try {
+      const record = readJSON(serve);
+      if (record.pid === earlier || (!swift && record.pid !== helperChild.child.pid)) return false;
+      return (await request(record, "GET", "kuvo/info")).status === 200 && record;
+    } catch { return false; }
+  }, diagnostics, 25000);
+  try {
+    if (swift) {
+      // A debug Helper uses only this explicit disposable keychain, with no launchd job.
+      assert.equal(security("create-keychain", "-p", password, keychain).status, 0);
+      keychainCreated = true;
+      if (renew) {
+        // Two ad-hoc fixture signatures have different designated requirements.
+        // Trust precisely these two builds in the disposable keychain, as a
+        // release's signing identity lets the next signed Helper read its keys.
+        // No production entitlement or Keychain ACL is changed.
+        const beforeBundle = path.join(home, selected, "Kuvo Helper.app");
+        const nextBundle = path.join(tree, "bin/Kuvo Helper.app");
+        const requirement = bundle => {
+          const said = spawnSync("/usr/bin/codesign", ["-d", "-r-", bundle], { env, encoding: "utf8" });
+          assert.equal(said.status, 0, said.stderr);
+          const rule = said.stdout.match(/^#? *designated => .+$/m)?.[0];
+          assert.ok(rule, "the signed fixture has a designated requirement");
+          return rule;
+        };
+        assert.notEqual(requirement(beforeBundle), requirement(nextBundle));
+        const trusted = ["-T", beforeBundle, "-T", nextBundle];
+        const fileKey = JSON.stringify({ key: Buffer.alloc(32, 4).toString("base64url"), generations: {} });
+        for (const [service, account, secret] of [
+          ["phone-link", "key", "k".repeat(32)], ["phone-link", "secret", "s".repeat(32)],
+          ["phone-link", "sign", "g".repeat(32)], ["vault", "files", fileKey],
+        ]) {
+          assert.equal(security("add-generic-password", "-s", `${helperID}.${service}`, "-a", account, "-w", secret, ...trusted, keychain).status, 0);
+        }
+      }
+      write(path.join(run, "launch.env"), ["KUVO_SANDBOX=off", "RUST_BACKTRACE=1", "KUVO_TEST_KEEP_ROUND=1", `KUVO_TEST_RELAY=${relay.url}`, `KUVO_RELAY_URL=${relay.url}`, `KUVO_TEST_RELEASE_FEED=${url}/boxes.json`, `KUVO_TEST_RELEASE_KEY=${key.key}`, `KUVO_TEST_UNINSTALL_TOOLS=${tools}`].join("\n") + "\n");
+      helperChild = startRealHelper();
+    } else {
+      helperChild = startHelperChild();
+    }
+    const before = await ready();
+    const identity = renew && (await request(before, "GET", "kuvo/setup")).json.you?.key;
+    if (renew) assert.ok(identity, "the first Helper must supply its fixture link identity");
+    await until(() => !fs.existsSync(backup), "the old data copy should go while the Helper's resident answers");
+    assert.equal(fs.readFileSync(rollback, "utf8"), "the trial's saved data");
+    if (!swift) {
+      assert.equal(fs.readFileSync(path.join(run, "previous"), "utf8").trim(), old);
+      judge = launch("/bin/sh", [shell, "keep"], env, home);
+    }
+    await until(() => fs.existsSync(path.join(run, "box.pid")), diagnostics);
+    await until(() => !fs.existsSync(path.join(run, "previous")), () => "the separate shell guard must confirm\n" + diagnostics(), keeperTrialMs);
+    assert.equal(readJSON(serve).pid, before.pid);
+    const state = path.join(run, "update.json");
+    await until(() => checks > 0 && fs.existsSync(state) && readJSON(state).round,
+      "the first automatic 404 check should finish after trial confirmation");
+    offered = true;
+    const manual = await request(before, "POST", "kuvo/update", { now: true });
+    assert.equal(manual.status, 202, manual.text);
+    const nextTarget = `versions/${next}-${pack.sha256.slice(0,12)}/bin`;
+    await until(() => fs.readlinkSync(path.join(home, "bin")) === nextTarget, "the signed switch should select the next native release", releaseReturnMs);
+    if (renew) {
+      const prior = helperChild.child.pid;
+      await until(() => helperChild.child.exitCode !== null || helperChild.child.signalCode !== null,
+        "the old Helper must leave for the newly selected signed bundle", keeperTrialMs);
+      assert.equal((await helperChild.exited).code, 75, diagnostics());
+      // What launchd would do for a nonzero exit, only in this fixture.
+      helperChild = startRealHelper();
+      assert.notEqual(helperChild.child.pid, prior);
+    } else if (!swift) {
+      const exited = await helperChild.exited;
+      assert.equal(exited.code, 0, JSON.stringify(exited));
+      helperChild = startHelperChild();
+    }
+    const after = await ready(before.pid);
+    assert.notEqual(after.pid, before.pid);
+    if (renew) assert.equal((await request(after, "GET", "kuvo/setup")).json.you?.key, identity);
+    await until(() => !fs.existsSync(path.join(run, "previous")), "the independent guard confirms the restarted Helper resident", keeperTrialMs);
+    const settled = await until(async () => {
+      const status = (await request(after, "GET", "kuvo/update")).json;
+      return status.last?.result === "updated" && status;
+    }, "the confirmed release must have a saved outcome");
+    assert.equal(settled.version, next);
+    assert.deepEqual(settled.last, { at: settled.last.at, result: "updated", from: current, to: next });
+    if (swift) {
+      assert.equal(helperChild.child.exitCode, null, "the selected Helper stays to supervise its own resident");
+      // Launchd would stop exactly this Helper with SIGTERM; no real job is involved.
+      helperChild.child.kill("SIGTERM");
+    } else {
+      helperChild.child.stdin.end();
+    }
+    assert.equal((await helperChild.exited).code, 0, diagnostics());
+    await until(() => !fs.existsSync(serve), "the exited foreground resident must retire its rendezvous");
+    assert.equal(fs.existsSync(path.join(here.env.HOME, "launchd-contacted")), false);
+  } finally {
+    write(path.join(run, "off"), "");
+    await helperChild?.stop();
+    await judge?.stop();
+    if (keychainCreated) assert.equal(security("delete-keychain", keychain).status, 0);
+  }
+}
+
 test("the update status reports the installed release and a keeper's failed trial", async t => {
   const { computer } = await bench(t);
   const here = await computer("update-status", undefined, folder => {

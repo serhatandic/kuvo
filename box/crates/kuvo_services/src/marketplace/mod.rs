@@ -77,8 +77,14 @@ impl ResidentMarketplace {
         ));
         routes::register(routes, service.clone());
         let bg = service.clone();
-        bg.reconcile(None, &[]);
-        bg.connections.clean_removed_connections();
+        // Reading an unlocked Mac vault can call its Helper synchronously.
+        // Initial reconciliation runs on the same blocking lane as later rounds.
+        let initial = bg.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let _ = initial.reconcile(None, &[]);
+            initial.connections.clean_removed_connections();
+        })
+        .await;
         let projection = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             interval.tick().await;

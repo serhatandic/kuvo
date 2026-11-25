@@ -421,6 +421,10 @@ pub async fn run(
         kind == ComputerKind::Mac,
     );
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let backup_sweep = crate::updates::sweep_backups(
+        update_home.clone(),
+        kuvo_services::config::is_own_home_mac(home, kind == ComputerKind::Mac),
+    );
     let updates = crate::updates::start(
         update_home,
         &account,
@@ -551,6 +555,7 @@ pub async fn run(
     if let Some(kept_awake) = kept_awake {
         kept_awake.abort();
     }
+    backup_sweep.abort();
     if let Some(updates) = updates {
         updates.stop().await;
     }

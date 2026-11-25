@@ -338,13 +338,9 @@ impl PreparedSetup {
         self.kind == ComputerKind::Mac && self.identity.is_some()
     }
 
-    /// The legacy machine link marker uses the resident build identifier and has no newline.
+    /// The native keeper checks this resident build identifier, including the foreground Mac.
     pub fn record_build(&self, build: &str) -> Result<(), Error> {
-        if self.kind == ComputerKind::Machine {
-            self.files
-                .write_bytes("run/link.version", build.as_bytes())?;
-        }
-        Ok(())
+        self.files.write_bytes("run/link.version", build.as_bytes())
     }
 
     pub fn relay_config(&self) -> Result<Option<relay::Config>, Error> {

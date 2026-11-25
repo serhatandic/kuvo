@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A Mac can finish an update under its Helper, and manual engine-data copies older than thirty days are removed.
+
 - Automatic update checks keep their six-hour schedule across restarts. Check for Updates still looks for the latest release immediately.
 - Work Queue agents on Rust computers name GitHub issues by their latest title and find a live item on another computer instead of a deleted local copy.
 
