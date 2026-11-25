@@ -890,7 +890,8 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   Windows it goes through the verbs and must say what `kuvo-wake` says on the Mac.
 - macOS, both boxes: `tools` 10/10, `bots` 40/40 (with the wake-up routes), `work` 15/15, `notices`
   4/4, `agent-tools` 3/3. Linux (WSL, static musl): `tools` 10/10, `bots` 40/40, `notices` 4/4,
-  `agent-tools` 3/3. Native Windows: waits for a slot on the PC.
+  `agent-tools` 3/3. Native Windows, the Rust box: `tools` 10/10 (the wake tools through the
+  verbs), `bots` 40/40, `notices` 4/4 (one skipped, as elsewhere), `agent-tools` 3/3.
 
 ### Gaps and owners
 
