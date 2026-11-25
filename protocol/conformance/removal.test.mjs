@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxBinary, boxCommand, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 const fromMac = { "x-kuvo-from": "mac" };
@@ -17,6 +17,7 @@ test("uninstalling a stopped machine clears its desktop identity and sign-ins bu
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "box");
   const env = isolatedEnv(root);
+  privateHome(home);
   write(path.join(home, "folder-version.json"), '{"version":23}\n');
   write(path.join(home, "desktop", "identity"), "fixture identity");
   write(path.join(home, "box", "keys", "KUVO_KEY_SAMPLE"), "fixture key");

@@ -516,7 +516,10 @@ work happens, not which computer owns it or the route shapes:
   without the exit facility uses the old fallback; real release trials and restart backoff still
   have deadlines. A supervised Windows resident receives a private local socket notification and
   verifies its durable stop identity; a file watch accepts the older keeper's request. Native
-  process and keeper scenarios exercise the exit notification and matching stop identity. Update
+  process and keeper scenarios exercise the exit notification and matching stop identity.
+  A fast release switch can precede the holder's batched acknowledgement; saved Codex terminal
+  outputs retain their last applied holder line per item, so replay does not append those bytes
+  twice. The existing idle-terminal adoption scenario and a deterministic replay test cover it. Update
   rounds follow setup, peers, files and engine, and sleep until the next check when there is no
   release to prepare; active release progress and switch barriers still have a short deadline.
   A failed direct release download can wait for a holder announcement during preparation and
@@ -524,10 +527,13 @@ work happens, not which computer owns it or the route shapes:
   frozen snapshot. Fleet rounds follow changes in release facts rather than each transfer chunk;
   authenticated part mail reaches transfer subscribers without queuing a durable peer-list rebuild
   for each part. A newly promoted main's started feed request gets a one-shot old-round grace
-  before replacing its resident, without waiting for the feed's response. The failover and
+  before replacing its resident, without waiting for the feed's response. The preparation task
+  settles its outcome before that switch, even if its ready-file event arrives first. The failover and
   alternate-holder progress cases cover these active paths.
   Wake-ups sleep until their next due time and watch their folders, with a minute deadline only
-  for active watches or blocked work. Approval changes use live channels/file watches with a
+  for active watches or blocked work. Windows uses recursive watches on the stable wake-up roots
+  rather than handles inside a removable bot; the bot deletion scenarios exercise moving those
+  directories to Trash. Approval changes use live channels/file watches with a
   one-shot grace for initial conversation writes. Peer lists follow local and ownership changes;
   the old copy-standing heartbeat remains only with connected peers. The relay's departure push
   (`0x07`, already in the wire contract) marks the departing computer away rather than waiting
@@ -558,6 +564,14 @@ work happens, not which computer owns it or the route shapes:
   the final unlink is fenced at the relay before solo numbering resumes. The backup fixture uses
   a current approval record with `since` so independent normalization does not race its exact-byte
   assertion.
+
+The conformance harness creates private NTFS homes before testing installer rejection or stopped
+uninstall. Windows Node's forced process termination exercises the stale discovery-record restart
+case, rather than the Unix graceful shutdown assertion. The vault plaintext fixture tolerates a
+disappearing file during enumeration and Windows's lock on the transient Insights WAL index;
+it still checks the database, WAL and other files. Seen once in the cross runs: the Codex repeated
+Autopilot question and the native Windows move's withheld-part resend; both passed on focused
+reruns (the latter completed the full lost-part and switch recovery in 177 seconds).
 
 Mac baseline (debug binary, isolated home with a signed-in scripted Codex, one computer, local
 relay stand-in). For each sample: three seconds to settle, then eleven `top -l` samples a second

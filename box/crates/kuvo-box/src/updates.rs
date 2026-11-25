@@ -1079,6 +1079,13 @@ impl Fleet {
         }
 
         if let Some(candidate) = candidate {
+            // Preparation publishes fleet-ready just before its task returns. A native
+            // file notification can get here before the task's completion has been
+            // recorded, particularly on a newly elected main. Settle that result
+            // before activation so the same round can start its due feed check.
+            if prepared && self.pending.is_some() {
+                return Ok(());
+            }
             // A promoted main can finish preparation and start its feed check in
             // the same event round. Give that actual request one old-round grace
             // to get on the wire before replacing this resident; don't wait for

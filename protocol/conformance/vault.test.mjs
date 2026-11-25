@@ -22,7 +22,18 @@ const value = () => randomBytes(24).toString("base64url");
 function checkNoPlaintext(home, forbidden) {
   for (const file of fs.readdirSync(home, { recursive: true, withFileTypes: true })) {
     if (!file.isFile()) continue;
-    const bytes = fs.readFileSync(path.join(file.parentPath, file.name));
+    let bytes;
+    try { bytes = fs.readFileSync(path.join(file.parentPath, file.name)); }
+    catch (error) {
+      // SQLite can remove a transient WAL/shm file between the enumeration and
+      // this open. Windows also byte-locks the transient Insights WAL index
+      // while its connection is open. The index holds page locations, not page
+      // contents; the database and WAL contents are still checked.
+      if (error.code === "ENOENT") continue;
+      if (error.code === "EBUSY" && file.name === "insights.sqlite-shm" && process.platform === "win32") continue;
+      error.message += ` (${path.join(file.parentPath, file.name)})`;
+      throw error;
+    }
     assert.ok(forbidden.every(secret => !bytes.includes(secret)), "fixture plaintext was written into a file");
   }
 }

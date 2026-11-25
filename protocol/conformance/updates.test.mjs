@@ -3647,7 +3647,7 @@ Buffer.from = function (value, encoding, ...args) {
     const released = performance.now();
     for (const res of waiting) res.end(pack);
     await until(() => confirmed(leader), diagnose, shellKeepers ? releaseReturnMs : failover ? keeperTrialMs : 75000);
-    if (failover) assert.ok(heldChecks > 0, "the new main checks the feed without waiting to activate");
+    if (failover) assert.ok(heldChecks > 0, `the new main checks the feed without waiting to activate\n${diagnose()}`);
     if (!stageDeadline) t.diagnostic(`main confirmed ${Math.round(performance.now() - released)} ms after member download resumed`);
     await until(() => confirmed(member), diagnose, shellKeepers ? releaseReturnMs : 75000);
     await shellOutcome(leader);

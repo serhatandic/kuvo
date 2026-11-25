@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, boxCommand, isolatedEnv, readJSON, scratch, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, privateHome, readJSON, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 test("an installer code binds one computer, survives a retry, and keeps its identity", { timeout: 90000 }, async t => {
@@ -103,7 +103,7 @@ test("an unsupported installer code leaves the new computer’s home untouched",
   const implementation = boxBinary();
   const root = fs.realpathSync(scratch());
   const home = path.join(root, "box");
-  fs.mkdirSync(home);
+  privateHome(home);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   for (const version of [0, 2]) {
     const args = implementation.typescript ? ["join"] : ["install", "--join"];
@@ -121,7 +121,7 @@ test("a Rust applicant leaves an older home for the move", {
 }, async t => {
   const root = fs.realpathSync(scratch());
   const home = path.join(root, "box");
-  fs.mkdirSync(home);
+  privateHome(home);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const layout = '{"version":22}\n';
   fs.writeFileSync(path.join(home, "folder-version.json"), layout);

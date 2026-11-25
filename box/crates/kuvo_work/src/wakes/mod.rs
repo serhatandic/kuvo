@@ -98,12 +98,17 @@ impl Wakes {
                 roots.run.join("paused"),
                 roots.run.join("stopped"),
             ];
-            let mut folders = vec![(roots.bots.clone(), false), (roots.sessions.clone(), false)];
+            // A Windows directory watch keeps a handle to the directory. Holding
+            // one inside a bot's folder prevents moving that bot to Trash. Watch
+            // the two stable roots recursively there, not the removable children.
+            let mut folders = vec![(roots.bots.clone(), cfg!(windows)), (roots.sessions.clone(), cfg!(windows))];
             let mut has_watches = false;
             for (_, folder) in roots.folders() {
-                paths.extend(["session", "paused", "via", ".retry"].map(|name| folder.join(name)));
-                folders.push((folder.join("wakes"), false));
-                folders.push((folder.join("watches"), true));
+                if !cfg!(windows) {
+                    paths.extend(["session", "paused", "via", ".retry"].map(|name| folder.join(name)));
+                    folders.push((folder.join("wakes"), false));
+                    folders.push((folder.join("watches"), true));
+                }
                 has_watches |= folder.join("session").exists()
                     && !folder.join("paused").exists()
                     && !folder::names(&folder.join("watches")).is_empty();
