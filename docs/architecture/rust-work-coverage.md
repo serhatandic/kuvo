@@ -454,7 +454,7 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 | Rust | TypeScript |
 |---|---|
 | `watch::background::EngineBackground` (the engine's place in `run/work/background.json`: commands left running a folder at a time, subagents at work, looked at as events say; `of`, `known`, `noted`, `start`, `gone`); `Running` (`counting`, `awaited`, `started_since`, `services_words`); `write_place` | `work/background.ts` `backgroundWatcher` (its engine side), `counting`, `awaited`, `startedSince`, `servicesWords`, `write` |
-| `watch::services::listening_ports` (`lsof` on macOS, `/proc` on Linux) | `work/services.ts` |
+| `watch::services::listening_ports` (`lsof` on macOS, `/proc` on Linux, the process tree on Windows, 8.1) | `work/services.ts` |
 | `watch::held` (`holds`, `wait_for`, `look_while_waiting`, `settle`, `background_ended`, `finished_quietly`) | `wakes.ts` `holds`, `waitFor`, `lookWhileWaiting`, `settle`, `backgroundEnded`, `markLater` |
 | `watch::catchup` (`catch_up`, `tell_what_happened`, `tell_if_finished`, `work_sessions`, `asks_in`; late answers at start and every five minutes) | `wakes.ts` `catchUp`, `tellWhatHappened`, `tellIfFinished`, `catchingUp`, `lateAgain`; `tree.ts` `workSessions` (whole); `answers.ts` `asksIn`, `askersOf`; `asks.ts` `tellLateAnswers` |
 | `Watcher::finish` held while what its session left running goes on; `done_since_line`, "Still serving" | `wakes.ts` `finish`, `doneSinceLine` |
@@ -480,7 +480,5 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Gaps and owners
 
-- **Services on Windows**: no process groups to read listening ports from; nothing there is a
-  service yet, so a dev server left up holds its finish until its limit. 8.1.
 - **Autopilot's catch-up** (questions its conversations asked meanwhile going ahead first): 5.3.
 
