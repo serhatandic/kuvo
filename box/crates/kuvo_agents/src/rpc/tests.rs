@@ -68,7 +68,10 @@ async fn a_request_gets_its_own_answer_in_either_framing() {
     });
     let asking = tokio::spawn({
         let rpc = rpc.clone();
-        async move { rpc.request("thread/start", Some(json!({"cwd":"/p"})), None).await }
+        async move {
+            rpc.request("thread/start", Some(json!({"cwd":"/p"})), None)
+                .await
+        }
     });
     let sent = agent.line().await;
     assert_eq!(
@@ -115,18 +118,35 @@ async fn the_agents_own_requests_and_notifications_reach_the_adapter() {
     agent
         .say(r#"{"jsonrpc":"2.0","id":"ask-1","method":"session/request_permission","params":{"tool":"x"}}"#)
         .await;
+    let Incoming::Notification {
+        method,
+        params,
+        sequence,
+    } = next(&mut incoming).await
+    else {
+        panic!("expected the agent's notification");
+    };
     assert_eq!(
-        next(&mut incoming).await,
-        Incoming::Notification {
-            method: "session/update".into(),
-            params: json!({"n":1})
-        }
+        (method.as_str(), &params),
+        ("session/update", &json!({"n":1}))
     );
-    let Incoming::Request { id, method, params } = next(&mut incoming).await else {
+    let Incoming::Request {
+        id,
+        method,
+        params,
+        sequence: asked,
+    } = next(&mut incoming).await
+    else {
         panic!("expected the agent's request");
     };
-    assert_eq!((method.as_str(), &params), ("session/request_permission", &json!({"tool":"x"})));
-    rpc.respond(id.clone(), Ok(json!({"outcome":"allow"}))).await;
+    assert_eq!(
+        (method.as_str(), &params),
+        ("session/request_permission", &json!({"tool":"x"}))
+    );
+    // Each says the holder's number for its own line.
+    assert_eq!(asked, sequence + 1);
+    rpc.respond(id.clone(), Ok(json!({"outcome":"allow"})))
+        .await;
     assert_eq!(
         agent.line().await.to_string(),
         r#"{"jsonrpc":"2.0","id":"ask-1","result":{"outcome":"allow"}}"#
@@ -161,8 +181,14 @@ async fn replayed_lines_come_once_and_late_answers_are_strays() {
         })
         .await
         .unwrap();
-    assert!(matches!(next(&mut incoming).await, Incoming::Notification { .. }));
-    assert!(matches!(next(&mut incoming).await, Incoming::Request { .. }));
+    assert!(matches!(
+        next(&mut incoming).await,
+        Incoming::Notification { .. }
+    ));
+    assert!(matches!(
+        next(&mut incoming).await,
+        Incoming::Request { .. }
+    ));
 
     let asking = tokio::spawn({
         let rpc = rpc.clone();
@@ -173,7 +199,9 @@ async fn replayed_lines_come_once_and_late_answers_are_strays() {
     });
     let id = agent.line().await["id"].clone();
     assert!(matches!(asking.await.unwrap(), Err(Failure::TookTooLong(method)) if method == "slow"));
-    agent.say(&json!({"id": id, "result": true}).to_string()).await;
+    agent
+        .say(&json!({"id": id, "result": true}).to_string())
+        .await;
     agent.say(r#"{"id":3,"error":{"message":"old"}}"#).await;
     assert_eq!(
         next(&mut incoming).await,
@@ -217,8 +245,13 @@ async fn an_exit_ends_open_requests_with_what_the_agent_last_said() {
         })
         .await
         .unwrap();
-    assert!(matches!(asking.await.unwrap(), Err(Failure::Closed(why)) if why == "two\nthree\nfour"));
-    assert!(matches!(next(&mut incoming).await, Incoming::Notification { .. }));
+    assert!(
+        matches!(asking.await.unwrap(), Err(Failure::Closed(why)) if why == "two\nthree\nfour")
+    );
+    assert!(matches!(
+        next(&mut incoming).await,
+        Incoming::Notification { .. }
+    ));
     assert_eq!(
         next(&mut incoming).await,
         Incoming::Exited {
@@ -230,7 +263,10 @@ async fn an_exit_ends_open_requests_with_what_the_agent_last_said() {
     assert_eq!(agent.written().await, Write::Ack(1));
     assert_eq!(agent.written().await, Write::Bye);
     assert_eq!(rpc.stderr(), "one\ntwo\nthree\nfour\n");
-    assert!(matches!(rpc.request("again", None, None).await, Err(Failure::Closed(_))));
+    assert!(matches!(
+        rpc.request("again", None, None).await,
+        Err(Failure::Closed(_))
+    ));
 
     let (rpc, _incoming, mut agent) = connect(Options::default());
     let asking = tokio::spawn(async move { rpc.request("x", None, None).await });
@@ -256,7 +292,9 @@ async fn a_lost_holder_ends_the_agent_but_a_fenced_one_is_handed_over() {
         let rpc = rpc.clone();
         async move { rpc.request("x", None, None).await }
     });
-    let Agent { frames, mut writes, .. } = agent;
+    let Agent {
+        frames, mut writes, ..
+    } = agent;
     assert!(matches!(writes.recv().await, Some(Write::Line(_))));
     drop(frames);
     assert!(matches!(asking.await.unwrap(), Err(Failure::Closed(_))));
@@ -269,7 +307,9 @@ async fn a_lost_holder_ends_the_agent_but_a_fenced_one_is_handed_over() {
     );
 
     let (rpc, mut incoming, agent) = connect(Options::default());
-    let Agent { frames, mut writes, .. } = agent;
+    let Agent {
+        frames, mut writes, ..
+    } = agent;
     let asking = tokio::spawn({
         let rpc = rpc.clone();
         async move { rpc.request("x", None, None).await }
