@@ -198,6 +198,64 @@ fn google(folder: &Path) -> std::io::Result<Option<Google>> {
         client_secret: str_at(&v["client_secret"]).map(str::to_owned),
     }))
 }
+async fn watch_credential(
+    path: PathBuf,
+    hub: kuvo_os::watch::WatchHub,
+    changed: tokio::sync::watch::Sender<u64>,
+) {
+    use kuvo_os::watch::{Notice, Options};
+    loop {
+        // Missing provider folders are never created merely to watch a login.
+        let Some(folder) = path
+            .ancestors()
+            .skip(1)
+            .find(|p| p.is_dir())
+            .map(Path::to_owned)
+        else {
+            return;
+        };
+        let Some(next) = path
+            .strip_prefix(&folder)
+            .ok()
+            .and_then(|p| p.iter().next())
+            .map(ToOwned::to_owned)
+        else {
+            return;
+        };
+        let Ok(mut watch) = hub.subscribe(&folder, Options::default()).await else {
+            return;
+        };
+        loop {
+            let Some(notice) = watch.recv().await else {
+                return;
+            };
+            let relevant = match notice {
+                Notice::Changed { paths } => paths
+                    .iter()
+                    .any(|p| p.as_os_str().is_empty() || p.iter().next() == Some(next.as_os_str())),
+                Notice::Rescan => true,
+                Notice::Failed(_) => {
+                    changed.send_modify(|n| *n = n.wrapping_add(1));
+                    if !folder.is_dir() {
+                        break;
+                    }
+                    return;
+                }
+            };
+            if !relevant {
+                continue;
+            }
+            changed.send_modify(|n| *n = n.wrapping_add(1));
+            // Move down as the provider creates its folder, or back up on removal.
+            if !folder.is_dir()
+                || path.ancestors().skip(1).find(|p| p.is_dir()) != Some(folder.as_path())
+            {
+                break;
+            }
+        }
+    }
+}
+
 impl Readers {
     pub fn for_home(home: &Path, personal: &Path) -> Option<Self> {
         let isolated = std::env::var("KUVO_TEST_PATH_ONLY").as_deref() == Ok("1");
@@ -371,6 +429,72 @@ impl Readers {
         })
         .await;
     }
+    /// Watch credentials, not transcripts. A CLI sign-out on an otherwise idle
+    /// computer must withdraw its peer row even before a local client opens Usage.
+    pub fn follow_sign_ins(
+        &self,
+        hub: kuvo_os::watch::WatchHub,
+        service: Service,
+    ) -> tokio::task::JoinHandle<()> {
+        use kuvo_os::watch::{Notice, Options};
+        let readers = self.clone();
+        tokio::spawn(async move {
+            let Ok(mut roster) = hub
+                .subscribe(
+                    &readers.root,
+                    Options {
+                        recursive: false,
+                        create: true,
+                    },
+                )
+                .await
+            else {
+                return;
+            };
+            let (changed, mut changes) = tokio::sync::watch::channel(0u64);
+            struct Watches(BTreeMap<PathBuf, tokio::task::JoinHandle<()>>);
+            impl Drop for Watches {
+                fn drop(&mut self) {
+                    for task in self.0.values() {
+                        task.abort();
+                    }
+                }
+            }
+            let mut watches = Watches(BTreeMap::new());
+            loop {
+                tokio::select! {
+                    notice=roster.recv()=>{
+                        let Some(notice)=notice else {return;};
+                        if matches!(&notice,Notice::Changed{paths} if !paths.iter().any(|p|p==Path::new("accounts.json"))) {continue;}
+                        let Ok(records)=readers.accounts.all().await else{continue;};
+                        let mut wanted=BTreeSet::new();
+                        for record in records {
+                            let managed=readers.accounts.home(&record);
+                            match record.kind {
+                                AgentKind::Grok=>{wanted.insert(grok_native::folder(managed,&readers.env,&readers.personal).join("auth.json"));},
+                                AgentKind::Cursor if !readers.isolated||readers.fixture.is_some()=>{wanted.insert(managed.unwrap_or_else(||readers.root.join("cursor")).join("auth.json"));},
+                                AgentKind::Antigravity if !readers.isolated||readers.fixture.is_some()=>{
+                                    let folder=managed.unwrap_or_else(||readers.root.join("antigravity")).join("profile/antigravity-acp");
+                                    for name in ["acp_token.json","kuvo-sign-in.json"] {wanted.insert(folder.join(name));}
+                                },
+                                _=>{},
+                            }
+                        }
+                        watches.0.retain(|path,task|{let keep=wanted.contains(path)&&!task.is_finished();if !keep{task.abort();}keep});
+                        for path in wanted {
+                            watches.0.entry(path.clone()).or_insert_with(||tokio::spawn(watch_credential(path,hub.clone(),changed.clone())));
+                        }
+                        readers.confirm(&service).await;
+                    },
+                    result=changes.changed()=>{
+                        if result.is_err(){return;}
+                        readers.confirm(&service).await;
+                    },
+                }
+            }
+        })
+    }
+
     pub async fn confirm(&self, service: &Service) {
         if let Ok((found, unreadable)) = self.candidates(now()).await {
             self.prune_google(&found, &unreadable).await;

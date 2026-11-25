@@ -66,7 +66,7 @@ impl Provider {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Account {
     pub provider: String,
@@ -728,7 +728,12 @@ impl Service {
                 ) == standalone)
         };
         let mut state = self.state.lock().expect("limits lock");
-        let before = state.entries.len();
+        let before = state
+            .entries
+            .iter()
+            .map(|(id, e)| (id.clone(), e.account.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let old_order = state.order.clone();
         state.entries.retain(|provider, entry| {
             !belongs(&entry.account)
                 || unreadable.contains(provider)
@@ -757,12 +762,7 @@ impl Service {
         let mut order = state
             .order
             .iter()
-            .filter(|id| {
-                state
-                    .entries
-                    .get(*id)
-                    .is_some_and(|e| !belongs(&e.account) || unreadable.contains(*id))
-            })
+            .filter(|id| state.entries.get(*id).is_some())
             .cloned()
             .collect::<Vec<_>>();
         for account in accounts {
@@ -770,18 +770,82 @@ impl Service {
                 order.push(account.provider.clone());
             }
         }
-        // Coding agent accounts come before engine-only sign-ins in the contract.
-        order.sort_by_key(|id| {
+        // All default accounts precede added accounts, and the engine's follow both.
+        // Keep the existing order within each group; a read-only check must not
+        // reorder rows or notify clients just because the groups finished in another order.
+        order.sort_by_key(|id| match state.entries.get(id).map(|e| &e.account) {
+            Some(a) if a.account.as_deref() == Some("default") => match a.service {
+                Provider::Claude => 0,
+                Provider::Codex => 1,
+                Provider::Cursor => 2,
+                Provider::Grok => 3,
+                Provider::Antigravity => 4,
+                _ => 5,
+            },
+            Some(a) if a.account.is_some() => 6,
+            _ => 7,
+        });
+        state.order = order;
+        let changed = before.len() != state.entries.len()
+            || state
+                .entries
+                .iter()
+                .any(|(id, e)| before.get(id) != Some(&e.account))
+            || old_order != state.order;
+        if !changed {
+            return;
+        }
+        // Persist removals and changed sign-ins, even when the account count stays equal.
+        if before.iter().any(|(id, a)| {
             state
                 .entries
                 .get(id)
-                .is_some_and(|e| e.account.account.is_none())
-        });
-        state.order = order;
-        if state.entries.len() < before && self.file.exists() && self.cache_error.is_none() {
+                .is_none_or(|e| !same_sign_in(a, &e.account))
+        }) && self.file.exists()
+            && self.cache_error.is_none()
+        {
             if let Ok(bytes) = serde_json::to_vec(&*state) {
                 if let Err(error) = kuvo_store::files::write_secret(&self.file, &bytes) {
                     eprintln!("Couldn't keep the current plan sign-ins: {error}");
+                }
+            }
+        }
+        self.publish(&state, now);
+        self.changes.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
+    /// Withdraw only rows whose current credential no longer belongs to them.
+    /// A new engine credential isn't a plan reading until its maker answers.
+    pub fn has_engine_accounts(&self) -> bool {
+        self.state
+            .lock()
+            .expect("limits lock")
+            .entries
+            .values()
+            .any(|e| e.account.account.is_none())
+    }
+    pub fn confirm_engine_sign_ins(&self, accounts: &[Account], now: u64) {
+        let mut state = self.state.lock().expect("limits lock");
+        let before = state.entries.len();
+        state.entries.retain(|provider, entry| {
+            entry.account.account.is_some()
+                || accounts
+                    .iter()
+                    .any(|a| provider == &a.provider && same_sign_in(a, &entry.account))
+        });
+        if state.entries.len() == before {
+            return;
+        }
+        let keep = state
+            .entries
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        state.order.retain(|id| keep.contains(id));
+        if self.file.exists() && self.cache_error.is_none() {
+            if let Ok(bytes) = serde_json::to_vec(&*state) {
+                if let Err(error) = kuvo_store::files::write_secret(&self.file, &bytes) {
+                    eprintln!("Couldn't keep the current engine plan sign-ins: {error}");
                 }
             }
         }
@@ -1648,10 +1712,16 @@ where
     }
 }
 
-pub fn register(routes: &mut Registry, service: Service) {
+pub fn register<F, Fut>(routes: &mut Registry, service: Service, verify: F)
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
     routes.register::<Get, _, _>(Access::Any, move |_| {
         let service = service.clone();
+        let verify = verify();
         async move {
+            verify.await;
             tokio::task::spawn_blocking(move || RouteReply::json::<200>(service.answer(now())))
                 .await
                 .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))

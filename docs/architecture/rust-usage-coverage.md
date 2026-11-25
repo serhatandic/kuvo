@@ -421,6 +421,36 @@ not a simulated `/proc` on Windows. Cross-Mac, Lokum, WSL and native Windows ver
 Cumulative non-test size: 490,289 new-module characters plus 38,482 added
 existing production characters (528,771 total, 0.769× the 687,546 TS characters).
 
+## Sign-in admission correction
+
+Work Queue #5053 was observed on TS beta.48 in the field: a Grok weekly
+window named an otherwise signed-out computer. Not reproduced in the scratch
+TS bridge (provider reads are off). The both-box scenario `old Grok transcripts
+are history, never proof of a current sign-in` passes on the scratch TS box:
+it indexes a fixture `updates.jsonl` without any credential and requires no live
+Grok limit row. A Rust-only regression extends the standalone fixture: after
+Grok, Cursor and Antigravity have supplied real fixture plan readings, removing
+all three credential files must remove the live rows and the retained readings,
+without waiting for another maker request. The old ninth Rust tip failed that
+regression (all three stale windows remained on the next GET).
+
+Credential admission is separate from history: historical native and engine
+logs are indexed even after sign-out. Standalone credential file changes and
+account-change events withdraw the local admitted row and publish the change to
+peers without scheduling a provider read; the file watches use the shared
+watcher registry and never create a missing provider folder. A limits GET
+reconfirms current local credentials rather than treating yesterday's cache as
+sign-in proof. Native Claude also needs the actual OAuth sign-in Accounts checks,
+not just a retained account identity record; Codex's native OAuth admission
+remains the existing file/Keychain check. Engine plan admission uses the active
+credential rows in its own read-only SQLite database, not its last model usage;
+removing the credential withdraws its retained plan and a response in flight is
+rechecked against current credentials before it can be accepted. No agent is
+started for admission, and unchanged checks do not republish identical rows.
+An away peer's last reported row is still explicitly last-told evidence, not a
+new local sign-in; an old TS peer cannot be made to send an updated account list
+by checking files on another computer.
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity partial-read lifetime, local CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state edge cases.

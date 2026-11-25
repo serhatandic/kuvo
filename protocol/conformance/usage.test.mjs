@@ -237,6 +237,10 @@ test('a subscribed rail reads Codex logs without starting an app-server (Rust re
     }
     assert.equal(codex.sent('account/rateLimits/read').length,0);
     assert.equal(codex.sent('initialize').length,0);
+    const fs=await import('node:fs');
+    fs.unlinkSync(path.join(codex.root,'.codex','auth.json'));
+    const signedOut=await request(listener,'GET','kuvo/agents/api/kuvo/limits');
+    assert.ok(!signedOut.json.data.accounts.some(a=>a.provider==='codex-cli'));
   } finally {line.close();}
 });
 
@@ -348,6 +352,7 @@ test('Claude Code answers its plan via its own demand-started control process (R
   const claude=await scriptedClaude();
   t.after(()=>claude.close());
   write(path.join(claude.env.CLAUDE_CONFIG_DIR,'.claude.json'),JSON.stringify({oauthAccount:{accountUuid:'usage-fixture',organizationUuid:'fixture-org'}}));
+  write(path.join(claude.env.CLAUDE_CONFIG_DIR,'.credentials.json'),JSON.stringify({claudeAiOauth:{accessToken:'fixture-plan',expiresAt:Date.now()+3600000}}));
   const reset=new Date(Date.now()+7200000).toISOString();
   write(path.join(claude.env.HOME,'claude-usage.json'),JSON.stringify({subscription_type:'max',rate_limits_available:true,rate_limits:{five_hour:{utilization:42,resets_at:reset},seven_day:{utilization:17,resets_at:reset},extra_usage:{is_enabled:true,used_credits:1234,monthly_limit:5000}}}));
   const listener=await claude.start();
@@ -361,6 +366,11 @@ test('Claude Code answers its plan via its own demand-started control process (R
   assert.equal(account.plan,'Max');
   assert.equal(account.windows.find(w=>w.id==='five_hour').used,0.42);
   assert.deepEqual(account.extras.find(e=>e.id==='extra_usage'),{kind:'capped',id:'extra_usage',name:'Extra Usage',amount:12.34,limit:50,unit:'usd'});
+  // The account identity file alone is not an OAuth sign-in.
+  const fs=await import('node:fs');
+  fs.unlinkSync(path.join(claude.env.CLAUDE_CONFIG_DIR,'.credentials.json'));
+  const signedOut=await request(listener,'GET','kuvo/agents/api/kuvo/limits');
+  assert.ok(!signedOut.json.data.accounts.some(a=>a.provider==='claude-code'));
 });
 
 test('a Codex reset is offered without spending, journaled before the maker, and replayed once after restart (Rust reader)', async t=>{
@@ -557,7 +567,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   fs.appendFileSync(path.join(home,'heard.jsonl'),JSON.stringify(request)+'\n');
   const answer=result=>console.log(JSON.stringify({jsonrpc:'2.0',id:request.id,result}));
   if(request.method==='initialize')answer({protocolVersion:1});
-  else if(request.method==='authenticate'){authed=request.params.methodId==='cached_token';answer({});}
+  else if(request.method==='authenticate'){authed=request.params.methodId===(process.env.XAI_API_KEY?'xai.api_key':'cached_token');answer({});}
   else if(request.method==='_x.ai/billing'){
     if(!authed)console.log(JSON.stringify({jsonrpc:'2.0',id:request.id,error:{code:-32000,message:'Authentication required'}}));
     else answer(JSON.parse(fs.readFileSync(path.join(home,'billing.json'),'utf8')));
@@ -575,7 +585,9 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   });
   write(path.join(box.home,'agents','cursor','auth.json'),JSON.stringify({apiKey:'fixture-cursor'}));
   write(path.join(box.home,'agents','antigravity','profile','antigravity-acp','acp_token.json'),JSON.stringify({access_token:jwt,expires_at:Math.floor(now/1000)+3600}));
-  const call=box.connect(await box.start().ready());
+  writeGrokHistory(box.env.GROK_HOME,now-60_000);
+  let resident=box.start();
+  let call=box.connect(await resident.ready());
   assert.equal(requests.length,0);
   const refresh=async()=>{
     const reply=await call('POST','kuvo/agents/api/kuvo/limits/refresh',{});
@@ -604,6 +616,49 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   replies['/antigravity/main/v1internal:retrieveUserQuotaSummary'].groups[0].buckets[0]=bucket('gemini-5h',1,now+10800000);
   const next=await refresh();
   assert.equal(next.accounts.find(a=>a.provider==='antigravity').windows.find(w=>w.id==='gemini-5h').used,0.8);
+  // Signing out externally must withdraw the live rows without waiting for a provider fetch.
+  fs.unlinkSync(path.join(box.env.GROK_HOME,'auth.json'));
+  fs.unlinkSync(path.join(box.home,'agents','cursor','auth.json'));
+  fs.unlinkSync(path.join(box.home,'agents','antigravity','profile','antigravity-acp','acp_token.json'));
+  await until(()=>{
+    const cache=JSON.parse(fs.readFileSync(path.join(box.home,'agents','usage','accepted-limits.json'),'utf8'));
+    return !['grok-cli','cursor','antigravity'].some(id=>cache.entries[id]);
+  },'Sign-out did not remove the retained limits while no client was reading');
+  const signedOut=await call('GET','kuvo/agents/api/kuvo/limits');
+  assert.equal(signedOut.status,200,signedOut.text);
+  assert.deepEqual(signedOut.json.data.accounts,[]);
+  assert.deepEqual(signedOut.json.data.rows,[]);
+  const history=await call('POST','kuvo/agents/api/kuvo/usage/refresh?zone=UTC',{});
+  assert.ok(history.json.data.rows.find(r=>r.provider==='grok-cli')?.days.some(d=>d.tokens>0));
+  // The same environment API-key sign-in Accounts uses also counts as a real
+  // credential. The CLI stand-in answers only for that auth method, never a real key.
+  await resident.stop();
+  resident=box.start(undefined,{XAI_API_KEY:'fixture-key'});
+  call=box.connect(await resident.ready());
+  const withKey=await refresh();
+  assert.equal(withKey.accounts.find(a=>a.provider==='grok-cli')?.windows[0]?.used,0.61);
+  const keyCalls=fs.readFileSync(path.join(box.env.GROK_HOME,'heard.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(keyCalls.filter(m=>m.method==='authenticate').at(-1)?.params.methodId,'xai.api_key');
+});
+
+function writeGrokHistory(folder,at){
+  const update={sessionUpdate:'turn_completed',usage:{modelUsage:{'grok-5':{inputTokens:1000,cachedReadTokens:200,cacheCreationTokens:100,outputTokens:300,reasoningTokens:120,costUsdTicks:120000000}}}};
+  write(path.join(folder,'sessions','old-session','updates.jsonl'),JSON.stringify({jsonrpc:'2.0',method:'session/update',params:{sessionId:'old-session',update,_meta:{eventId:'fixture-grok-history',agentTimestampMs:at}}})+'\n');
+}
+
+test('old Grok transcripts are history, never proof of a current sign-in',async t=>{
+  const {computer}=await bench(t);
+  const box=await computer('GrokHistory',undefined,isolated);
+  writeGrokHistory(box.env.GROK_HOME,Date.now()-60_000);
+  const call=box.connect(await box.start().ready());
+  const history=await call('POST','kuvo/agents/api/kuvo/usage/refresh?zone=UTC',{});
+  assert.equal(history.status,200,history.text);
+  const grok=history.json.data.rows.find(r=>r.provider==='grok-cli');
+  assert.ok(grok?.days.some(d=>d.tokens>0),JSON.stringify(grok));
+  const limits=await call('GET','kuvo/agents/api/kuvo/limits');
+  assert.equal(limits.status,200,limits.text);
+  assert.ok(!limits.json.data.accounts.some(a=>a.provider==='grok-cli'));
+  assert.ok(!limits.json.data.rows.some(a=>a.provider==='grok-cli'));
 });
 
 test('Insights decodes only changed SQLite transcript projections (Rust writer)',async t=>{
@@ -896,6 +951,11 @@ test('OpenCode Go limits read the engine’s saved credentials without starting 
   assert.equal(box.engine.asked.filter(r=>r.path==='/api/credential').length,0);
   assert.equal(fs.existsSync(engineRecord),false);
   assert.deepEqual(fs.readFileSync(sqlite),before,'The maker database remained read-only');
+  const signedOutDb=new DatabaseSync(sqlite);
+  signedOutDb.exec('DELETE FROM credential');signedOutDb.close();
+  const signedOut=await call('GET','kuvo/agents/api/kuvo/limits');
+  assert.ok(!signedOut.json.data.accounts.some(a=>a.provider==='opencode-go'));
+  assert.equal(requests,1,'A sign-out is a local credential check, not a maker request');
 });
 
 test('empty usage history retains service order on both boxes', async t=>{

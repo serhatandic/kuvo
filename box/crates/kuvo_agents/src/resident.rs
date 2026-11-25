@@ -130,6 +130,10 @@ impl ResidentAgents {
             .ok_or_else(over)?;
         if status == Status::Complete {
             entry.credentials_changed().await;
+            self.feed.emit(
+                "kuvo.agent.account.changed",
+                serde_json::json!({"provider":provider.to_string()}),
+            );
         }
         Ok(status)
     }
@@ -156,6 +160,10 @@ impl ResidentAgents {
         let entry = lookup(&roster, provider)?;
         entry.agent.sign_in_with_key(key.trim().into()).await?;
         entry.credentials_changed().await;
+        self.feed.emit(
+            "kuvo.agent.account.changed",
+            serde_json::json!({"provider":provider.to_string()}),
+        );
         Ok(())
     }
 
@@ -164,6 +172,10 @@ impl ResidentAgents {
         let entry = lookup(&roster, provider)?;
         entry.agent.sign_out().await?;
         entry.credentials_changed().await;
+        self.feed.emit(
+            "kuvo.agent.account.changed",
+            serde_json::json!({"provider":provider.to_string()}),
+        );
         Ok(())
     }
 
