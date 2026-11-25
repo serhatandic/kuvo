@@ -115,6 +115,10 @@ WSL 2 run passes 47 Rust cases with three Mac skips and 43 TypeScript cases
 with seven skips. The static lokum run repeats the wipe handover successfully.
 A new native Windows run passes the earlier
 27 cases and verifies invalid input while the target directory is absent.
+The [native wipe scenario](../../box/crates/kuvo-box/tests/windows_wipe.rs) covers U7 on Windows:
+the resident runs from inside the home, hands the erase to a copy of itself in the receipts
+folder and exits. The copy detaches and erases the home, and the reinstall at the same path
+deletes the copy. The wipe is refused while the installation's sign-in task is registered.
 The Windows PC’s WSL 2 account joined a Rust setup,
 acknowledged plain unlink and re-enrolled with fresh keys. Native Windows also
 joined, acknowledged unlink and re-enrolled after starting its resident in a

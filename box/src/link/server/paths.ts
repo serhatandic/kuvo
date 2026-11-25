@@ -47,7 +47,10 @@ export const canonicalPath = (path: string): string | null => {
   }
 };
 // The query values that name a folder on this computer, by route.
-const FOLDER_PATHS = new Set(["kuvo/folders?path", "kuvo/folders/tree?path", "kuvo/files/find?directory"]);
+const FOLDER_PATHS = new Set([
+  "kuvo/folders?path", "kuvo/folders/tree?path", "kuvo/files/find?directory",
+  "kuvo/git/files?directory", "kuvo/git/files/events?directory", "kuvo/projects?directory",
+]);
 // Percent-decoded once, or null when it doesn't decode or holds a control character, or a
 // backslash where it can't be part of a query path or project key.
 const decodedPart = (raw: string, allowBackslashes = false): string | null => {

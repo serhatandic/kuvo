@@ -96,6 +96,12 @@ store.add({ id: "ses_golden", title: "Golden Conversation", projectID: "prj_gold
   location: { directory }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: now, updated: now } });
 const conversation = store.get("ses_golden")!;
 conversation.messages.push({ type: "user", id: "msg_golden", text: "Keep this conversation.", time: { created: now } });
+// What waits for its agent, and its agent's own slot, as the bridge keeps them.
+conversation.agent = {
+  inbox: [{ id: "msg_goldeninbox", text: "Keep this waiting message.", files: [], delivery: "queue",
+    metadata: { kuvo: { golden: true } } }],
+  threads: { "codex-cli": { state: { codexThread: "thr_golden" }, seen: "msg_golden" } },
+}
 store.save("ses_golden", true);
 store.flush();
 changeQueue("ses_golden", state => ({ ...state, paused: true, userPaused: true }));

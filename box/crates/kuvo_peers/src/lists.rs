@@ -30,6 +30,18 @@ pub type Ask = GetKuvoSessionsListStatus200NeedsYouItemAsks;
 pub type Queue = GetKuvoSessionsQueuesEventsStatus200QueuesItem;
 type NeedsYou = GetKuvoSessionsListStatus200NeedsYouItem;
 
+/// One of your other computers' bots as it last told this box (`View::bots_told`).
+pub struct BotsTold<'a> {
+    pub computer: &'a crate::directory::Member,
+    /// When it was last heard from.
+    pub heard: Millis,
+    pub standing: Standing,
+    /// Where a bot deleted there ends up, as it said (`trash` or `kuvo`).
+    pub trash: Option<&'a str>,
+    pub bots: Vec<&'a crate::directory::AnnouncedAgent>,
+    pub activity: Option<&'a BTreeMap<String, BotActivity>>,
+}
+
 pub const FEATURE: &str = "line.setup-lists";
 pub const BOT_FEATURE: &str = "bots.peer-activity";
 pub const QUEUE_FEATURE: &str = "work-queue.elsewhere";
@@ -102,6 +114,12 @@ pub struct BotActivity {
     pub paused: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wakes: Option<Number>,
+    /// Its look and job, for what this computer tells the others its agents are (`agents`), not
+    /// sent with its lists.
+    #[serde(default, skip_serializing)]
+    pub look: Option<serde_json::Value>,
+    #[serde(default, skip_serializing)]
+    pub job: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -139,6 +157,63 @@ pub struct LocalList {
     pub gone: BTreeMap<String, serde_json::Value>,
     pub needs_you: Option<Vec<NeedsYou>>,
     pub pending: Option<Vec<String>>,
+}
+
+impl LocalList {
+    fn visible(&self) -> impl Iterator<Item = (&String, &Facts)> {
+        self.sessions
+            .iter()
+            .map(|(id, row)| (id, &row.facts))
+            .filter(|(_, facts)| {
+                facts.archived != Some(true)
+                    && facts.away != Some(true)
+                    && !matches!(facts.kind, Kind::Subagent | Kind::Hidden)
+            })
+    }
+
+    /// Local sessions at work, newest first; asking sessions aren't working.
+    pub fn working(&self) -> Vec<(&String, &Facts)> {
+        let mut rows: Vec<_> = self
+            .visible()
+            .filter(|(_, facts)| facts.running == Some(true) && facts.asked.is_none())
+            .collect();
+        rows.sort_by(|(a_id, a), (b_id, b)| {
+            b.updated
+                .as_f64()
+                .unwrap_or_default()
+                .total_cmp(&a.updated.as_f64().unwrap_or_default())
+                .then(a_id.cmp(b_id))
+        });
+        rows
+    }
+
+    /// Local sessions waiting on you, newest ask first, with the list's summary.
+    pub fn asking(&self) -> Vec<GetKuvoBoxAtWorkStatus200AskingItem> {
+        let summaries: BTreeMap<_, _> = self
+            .needs_you
+            .iter()
+            .flatten()
+            .map(|row| (row.session.as_str(), row.asks.summary.as_str()))
+            .collect();
+        let mut rows: Vec<_> = self
+            .visible()
+            .filter_map(|(id, facts)| Some((id, facts, facts.asked.as_ref()?.as_f64()?)))
+            .collect();
+        rows.sort_by(|(a_id, _, a), (b_id, _, b)| b.total_cmp(a).then(a_id.cmp(b_id)));
+        rows.into_iter()
+            .map(|(id, facts, _)| GetKuvoBoxAtWorkStatus200AskingItem {
+                id: id.clone(),
+                title: facts
+                    .title
+                    .as_deref()
+                    .and_then(crate::directory::work_title),
+                asks: summaries
+                    .get(id.as_str())
+                    .filter(|text| !text.is_empty())
+                    .map(|text| (*text).to_owned()),
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -410,6 +485,53 @@ impl View {
         self.pending(FEATURE, |key| self.lists.contains_key(key))
     }
 
+    /// Your other computers whose bots this box hasn't heard yet (`kuvo/bots`).
+    pub fn pending_bots(&self) -> Vec<Computer> {
+        self.pending(BOT_FEATURE, |key| {
+            self.lists
+                .get(key)
+                .is_some_and(|copy| copy.value.bots.is_some())
+        })
+    }
+
+    /// What each of your other computers last told this box of its bots, by computer as this box
+    /// knows them: each named, with what it was doing as its lists said it (`activity`). One with
+    /// no name isn't there: nothing to show it by.
+    pub fn bots_told(&self, now: Millis) -> Vec<BotsTold<'_>> {
+        self.roster
+            .members
+            .iter()
+            .filter_map(|member| {
+                let key = kuvo_wire::keys::encode(&member.key);
+                let told = self.announced.get(&key)?;
+                let seen = told.heard.unwrap_or(told.at);
+                let quiet = self.reach.peer_is_away(&key, told.heard, now);
+                let standing = self
+                    .reach
+                    .standing_of(&key, quiet, Some(seen), told.release(), now);
+                Some(BotsTold {
+                    computer: member,
+                    heard: seen,
+                    standing,
+                    trash: told.trash.as_deref(),
+                    bots: told
+                        .list
+                        .iter()
+                        .filter(|agent| {
+                            agent.kind == crate::directory::AgentKind::Bot
+                                && agent.id.is_some()
+                                && !agent.name.is_empty()
+                        })
+                        .collect(),
+                    activity: self
+                        .lists
+                        .get(&member.key)
+                        .and_then(|copy| copy.value.bots.as_ref()),
+                })
+            })
+            .collect()
+    }
+
     pub fn sessions(&self, now: Millis) -> routes::get_kuvo_setup_sessions_events::Status200 {
         let local = &self.local_lists;
         let mut sessions = Vec::new();
@@ -521,15 +643,20 @@ impl View {
         };
         let computers = std::iter::once(here)
             .chain(self.list_origins(now).map(|(lists, origin)| {
+                let catching_up = self.in_bridge_handoff(&origin.computer.id);
+                let standing = match origin.standing {
+                    Standing::Live if catching_up => Standing::Updating,
+                    current => current,
+                };
                 GetKuvoSetupRunsOnEventsStatus200ComputersItem {
                     computer: origin.computer.clone(),
                     agents: lists.catalog.agents.clone(),
                     offered: lists.catalog.offered.clone(),
                     here: None,
                     pending: None,
-                    away: (origin.standing != Standing::Live).then_some(true),
+                    away: (standing != Standing::Live).then_some(true),
                     last_seen: origin.last_seen(),
-                    updating: origin.standing.updating(),
+                    updating: standing.updating(),
                 }
             }))
             .collect();

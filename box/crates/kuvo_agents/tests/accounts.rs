@@ -322,6 +322,7 @@ async fn a_failed_model_refresh_keeps_only_that_accounts_last_catalog_until_sign
                         hidden: false,
                         retiring: false,
                         provisional: false,
+                        context: None,
                     }],
                 })
             })

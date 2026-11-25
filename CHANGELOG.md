@@ -15,6 +15,78 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Add over SSH copies the settings, keys and sign-ins you choose before enrolling the computer. If enrollment fails after the copy, it removes the copied keys and sign-ins.
 - Uninstalling a computer added over SSH keeps its wipe pending until that computer confirms its data was erased.
 - Removing a computer still revokes its access if its SSH address can’t be cleared. Retrying clears the address when the list is writable again.
+- Rust computers support editing projects and using Changes to view, stage, discard, commit, switch branches, merge worktrees and create pull requests.
+- Changes and project edits accept Windows folder paths.
+- On Rust computers, Mac Git commands reuse a recent login environment and the native Trash command stops waiting after 30 seconds.
+
+- Released beta.1 Macs' machine settings commands and peer lists work with Rust computers.
+
+- Background commands that Codex or Claude Code leave running stay visible and stoppable through a Rust computer update. The installer also refuses release receipts it cannot read.
+
+- The installer can finish a previously approved standalone computer wipe after a crash, then offer reinstall without touching replacement data.
+
+- An installer leaves an interrupted installation from a newer version untouched instead of offering to start over.
+
+- Kuvo Helper’s menu on a Rust computer shows current work, what waits on you, background work, and what your other computers last told it.
+
+- Kuvo on a Mac tells the desktop app when it runs a newer release, and keeps the desktop’s location separate from its browser connection.
+
+- A Mac can finish an update under its Helper, and manual engine-data copies older than thirty days are removed.
+
+- Automatic update checks keep their six-hour schedule across restarts. Check for Updates still looks for the latest release immediately.
+- Work Queue agents on Rust computers name GitHub issues by their latest title and find a live item on another computer instead of a deleted local copy.
+
+- Work waiting for a computer’s first Rust update is sent only after that computer confirms the update.
+- Rust computers hold Work Queue changes while the conversation moves, and keep saved mentions linked when their item receives a number. Local attachments selected for work kept on another computer travel with their file contents.
+
+- Rust computers preserve Work Queue mentions when a conversation moves, return recoverable old import numbers, and retry unacknowledged queue updates promptly. Label restore previews identify an unreachable main computer.
+
+- When one computer cannot download an update, another can send the right build even if they use different systems.
+
+- Send Now, Steer and Resume still arrange waiting messages during an engine update, and attached files wait with them.
+- Saved Work Queue attachments on Rust computers stay available while other work is being saved.
+
+- After restoring a backup on a Rust computer, you can keep or discard held Work Queue items without recreating a deleted item or overwriting an existing attachment.
+
+- A saved message whose conversation is no longer in the engine stays saved without holding up the computer’s next engine update.
+
+- When a Rust computer needs a different engine for an update, current work finishes first and new messages wait. They go in order once the new release is ready or the previous one is restored.
+- After restoring a backup on a Rust computer, you can keep or discard held Work Queue items without recreating a deleted item or overwriting an existing attachment.
+
+- Rust computers reuse fresh GitHub Work Queue readings from your other computers and refuse to restore or hand over an item beside a live copy of the same issue.
+
+- A computer removed from your setup can be added back after it restarts; it no longer says it has setup data that needs a merge.
+- Work Queue history on Rust computers no longer records an edit just because an old item lacked empty fields, and an interrupted local handoff is cleaned up on the next write.
+- Assigning personal Work Queue items to a local bot moves them into its queue on Rust computers.
+- Moving a conversation to another computer carries its Work Queue, its attachments and saved decisions; a changed attachment keeps the move from switching.
+- Work Queue totals on Rust computers include older Done and Canceled items kept on other Rust computers, even when only recent items are listed.
+- The Rust box checks Claude Code sign-in and lists the models available to each account.
+- Allowing a coding agent's command works again after a while with only coding agents at work: it no longer fails with "Kuvo couldn't verify this computer's current permissions", and Full Access no longer asks about every command then.
+- When Claude Code stops before answering, the error shows its last complete line, including words it wrote just after it stopped, and never part of a line it was still writing.
+
+- On Rust computers, a coding agent's turn goes on through an update: an approval it was waiting for shows again once, approvals you gave for the turn still apply, and messages waiting behind it go once, in order.
+- Stop still works while a conversation waits for its current turn to finish before moving.
+- Rust computers answer conversation reads from your other computers.
+- A move carries forwarding decisions saved while the conversation is on its way.
+- Messages can still reach another computer after the sending tool stops waiting for a reply.
+- A conversation with a background command or subagent running stays on its computer until the work finishes.
+- Kuvo retries deleting an expired backup when the first attempt fails.
+- Before moving a conversation, Kuvo says if its delegated sessions or unanswered questions will stay on the current computer.
+- Messages still reach a conversation after it moves back to its first computer, even while that computer is refreshing its session list.
+- A computer can retry a conversation move when its own unfinished copy is still on the destination.
+- A conversation’s follow-up notes reach its latest computer after the sender restarts or the move announcement expires.
+- An older conversation can still hear from the conversation that started it, even after it leaves the list of recent conversations.
+- After a restart, Kuvo still asks the destination to remove an unfinished copy of a failed move.
+- An older move that already started switching on a managed setup stays held until the destination confirms ownership.
+- A paused queue keeps its message order after a move and shows the original words alongside its attachment names.
+- A conversation stays on its current computer and resumes its wake-ups if preparing the move takes too long.
+- A moved conversation can send and receive replies by name while its old computer is still cleaning up the original.
+- Your other computer learns a newly created conversation’s name before its message arrives.
+- Notes for a moving conversation wait for its new computer to confirm the move, then reach it while the original is being cleaned up.
+- A conversation stays on its current computer while Kuvo indexes the receipts required for its move.
+- Undo and worktree snapshots no longer run a project's own git filters or hooks while saving its files.
+- The Rust box can reopen Work Queue items and attachments, recover an interrupted status migration, and use the main computer’s signed labels and number grants.
+- Undo and worktree snapshots no longer run a project's own git filters or hooks while saving its files.
 - Deleting a conversation while its agent is stopping no longer causes a transcript write error.
 - Undo waits for file recovery when it is the first action after a restart.
 
@@ -24,6 +96,23 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Windows uninstall completes when there is no sign-in task to remove.
 
 - Windows installer codes can enroll a computer before enabling sign-in startup.
+- The Mac installer can set up a new computer directly from the signed Rust release and start Kuvo Helper.
+- The Mac installer explains why it leaves a machine installation and an earlier app’s sessions in place.
+- The Mac installer recognizes the selected home even when its name is written with different capitalization.
+- The Mac installer reports that it is waiting when another move is already running.
+- When the Mac installer resumes an interrupted setup, it says where it saved the earlier files.
+- When an earlier Mac app still has sessions, the installer explains why it offers a move.
+- The Mac installer explains when it keeps an existing machine setup in place.
+- The Mac installer explains when there is nothing to move or an earlier move needs to finish first.
+- The Mac installer reports an unreadable move journal before preparing a release.
+- The Mac installer offers to start Kuvo Helper when its launchd job is loaded but stopped.
+- A returning computer taking the TypeScript bridge stays out of Runs on, conversation moves and cross-computer messages until the keeper confirms Rust.
+- On Linux, a route socket from the earlier program no longer blocks the backup before switching to Rust.
+- The Linux installer can set up a computer from a signed Rust release and retry a failed first start while keeping earlier work.
+- After a successful Linux install, earlier unfinished installer staging no longer makes the computer look uninstalled.
+- A Linux installation stays complete if its old staging files cannot be deleted.
+- Uninstall on a stopped Mac removes Kuvo Helper’s login job and retains your saved work.
+- Uninstall removes Kuvo’s reboot entry from a stopped computer’s crontab and preserves the other jobs.
 
 - The Rust box can open existing encrypted vaults, and a Mac move carries sign-ins for custom Claude Code accounts.
 
@@ -32,6 +121,22 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The main computer waits for reachable computers to prepare a Rust update before switching. A computer that was offline can catch up when it returns.
 - A returning computer can get a signed update from another computer when the release feed no longer serves it. On a Mac, Kuvo restarts an older Helper when the update is ready.
 - A computer keeps a manual update check until its main computer can receive it, even if the computer restarts first.
+- A failed release or engine download can be retried for the same signed release after the computer restarts.
+- A reachable computer can retry a failed fleet download when another computer in its setup asks.
+- The computers list reports failed release downloads across the setup and whether they can be retried.
+- The computers list shows when each computer is preparing, ready, switching, up to date, or out of reach during a signed release update.
+- The computers list shows the setup’s release progress and keeps the completion visible for ten minutes.
+- A computer reports how much of a release it has received from its peers.
+- The computers list keeps showing a signed release switch during the computer’s restart.
+- A computer reports when it must wait for the next release after it receives an unusable update.
+- If a release fails to start and Kuvo switches back, the computer shows why it is waiting for the next release.
+- Kuvo clears superseded release files after preparing an update and keeps the files still used by running work.
+- The computers list shows when it last heard from an unreachable computer even if that computer sent no update status.
+- The installer reports damaged release media, a local engine archive path, or a failed engine download during its status check, before it writes to the computer’s home.
+- A computer keeps checking the signed release feed if a saved update has an untrusted signature.
+- Kuvo keeps the signed release carried by its app for the fleet update, even after the app goes away or the computer restarts.
+- Update status reports the step actually under way and remembers how the last check or release switch went, including after a restart.
+- A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address, including when its earlier engine and link are still running.
 
 - An acknowledgement for the wrong part no longer advances a move before that part arrives.
 - A moved conversation opens on its new computer while the original is still being cleaned up.

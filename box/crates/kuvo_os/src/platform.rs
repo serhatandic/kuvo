@@ -68,6 +68,18 @@ pub fn env_value<'a>(platform: Platform, env: &'a Environment, key: &str) -> Opt
         .map(OsString::as_os_str)
 }
 
+/// This process's user ID, where the system has one (Unix).
+pub fn user_id() -> Option<u32> {
+    #[cfg(unix)]
+    {
+        Some(rustix::process::getuid().as_raw())
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Account {
     pub name: OsString,
@@ -490,18 +502,26 @@ pub fn is_wsl_windows_drive(path: &Path) -> bool {
 }
 
 /// Git for Windows supplies the shell. In particular, System32\bash.exe is the WSL launcher.
+/// Its own installation comes first, then the one whose `git.exe` is on PATH (in its `cmd`
+/// or `mingw64\bin` folder), then the usual places.
 pub fn git_bash(env: &Environment) -> io::Result<PathBuf> {
     let platform = Platform::Windows;
     let on_path = env_value(platform, env, "PATH")
         .and_then(OsStr::to_str)
         .unwrap_or_default();
-    let candidates = windows_path_folders(on_path)
-        .map(PathBuf::from)
-        .filter(|path| path.join("git.exe").is_file())
-        .filter_map(|path| {
-            path.parent()
-                .map(|parent| parent.join("bin").join("bash.exe"))
-        })
+    let installed = env_value(platform, env, "GIT_INSTALL_ROOT")
+        .and_then(OsStr::to_str)
+        .and_then(windows_wire_path)
+        .map(|root| PathBuf::from(root.replace('/', "\\")));
+    let candidates = installed
+        .into_iter()
+        .chain(
+            windows_path_folders(on_path)
+                .map(PathBuf::from)
+                .filter(|path| path.join("git.exe").is_file())
+                .flat_map(|path| path.ancestors().skip(1).take(2).map(Path::to_owned).collect::<Vec<_>>()),
+        )
+        .map(|root| root.join("bin").join("bash.exe"))
         .chain(
             ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"]
                 .into_iter()
@@ -530,12 +550,11 @@ pub fn git_bash(env: &Environment) -> io::Result<PathBuf> {
 /// Run shell source through Git for Windows. Git Bash takes its working
 /// directory from the process, so a Windows path never becomes shell source.
 #[cfg(windows)]
-pub fn git_bash_command(
-    env: &Environment,
+pub fn git_bash_spawn(
+    mut env: Environment,
     folder: &Path,
     source: &str,
-) -> io::Result<std::process::Command> {
-    use std::os::windows::process::CommandExt as _;
+) -> io::Result<crate::process::Spawn> {
     let folder = folder.canonicalize()?;
     let folder = windows_conventional_path(&folder)
         .and_then(|path| windows_wire_path(path.to_str()?))
@@ -545,32 +564,27 @@ pub fn git_bash_command(
                 "Kuvo needs an absolute Windows shell folder",
             )
         })?;
-    let configs = env_value(Platform::Windows, env, "GIT_CONFIG_COUNT")
+    let configs = env_value(Platform::Windows, &env, "GIT_CONFIG_COUNT")
         .and_then(OsStr::to_str)
         .and_then(|count| count.parse::<u16>().ok())
         .unwrap_or(0);
-    let mut command = std::process::Command::new(git_bash(env)?);
-    command
-        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
-        .env_clear()
-        .envs(
-            env.iter()
-                .filter(|(name, _)| !name.as_encoded_bytes().starts_with(b"=")),
-        )
-        .env_remove("BASH_ENV")
-        .env("MSYS", "winsymlinks:nativestrict")
-        .env("GIT_CONFIG_COUNT", (u32::from(configs) + 1).to_string())
-        .env(format!("GIT_CONFIG_KEY_{configs}"), "core.longpaths")
-        .env(format!("GIT_CONFIG_VALUE_{configs}"), "true")
-        .args(["--noprofile", "--norc", "-c"])
-        // CreateProcess cannot take every working directory that Bash supports.
-        // Keep the Windows path separate from the shell source.
-        .arg(format!(
-            "cd -- \"$1\" || exit\nshift\n{}",
-            source.replace("\r\n", "\n")
-        ))
-        .args(["kuvo", &folder]);
-    Ok(command)
+    let bash = git_bash(&env)?;
+    env.retain(|name, _| {
+        !name.as_encoded_bytes().starts_with(b"=")
+            && !name.eq_ignore_ascii_case("BASH_ENV")
+            && !name.eq_ignore_ascii_case("GIT_CONFIG_COUNT")
+    });
+    env.insert("MSYS".into(), "winsymlinks:nativestrict".into());
+    env.insert("GIT_CONFIG_COUNT".into(), (u32::from(configs) + 1).to_string().into());
+    env.insert(format!("GIT_CONFIG_KEY_{configs}").into(), "core.longpaths".into());
+    env.insert(format!("GIT_CONFIG_VALUE_{configs}").into(), "true".into());
+    let mut spawn = crate::process::Spawn::new(bash, env);
+    spawn.args = ["--noprofile", "--norc", "-c"].map(OsString::from).to_vec();
+    // CreateProcess cannot take every working directory that Bash supports.
+    // Keep the Windows path separate from the shell source.
+    spawn.args.push(format!("cd -- \"$1\" || exit\nshift\n{}", source.replace("\r\n", "\n")).into());
+    spawn.args.extend(["kuvo".into(), folder.into()]);
+    Ok(spawn)
 }
 
 /// Capture the environment of a terminal's login shell, then try a non-interactive login.

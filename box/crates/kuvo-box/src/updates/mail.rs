@@ -1,31 +1,54 @@
 //! Target packs over the existing authenticated peer release mail.
 
-use std::{io, time::Duration};
+use std::{
+    io,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use kuvo_keeper::{
-    fleet::{Candidate, HeldPack, PACK_PART},
+    fleet::{Candidate, Fetcher, HeldPack, PACK_PART},
     manifest::ReleaseRef,
     staging::MAX_PACK,
 };
 use kuvo_peers::{
+    directory::UpdateFacts,
     relay::{RelayEvent, RelayHandle},
     setup_lists::{Reader, system_clock},
 };
 use kuvo_store::home::Home;
 use kuvo_wire::{keys::Host, mail::Envelope};
-use serde_json::{Value, json};
+use serde_json::{Number, Value, json};
 use tokio::{
-    sync::{broadcast, mpsc},
-    task::JoinHandle,
+    sync::{Semaphore, broadcast, mpsc},
+    task::{JoinHandle, JoinSet},
     time::timeout,
 };
 
 use super::Check;
 
 const WINDOW: usize = 16;
+const MIRROR_REQUESTS: usize = 4;
 const QUIET: Duration = Duration::from_secs(60);
-const MOST: Duration = Duration::from_secs(300);
+
+#[derive(Clone, Default)]
+pub(super) struct PullProgress(Arc<Mutex<Option<f64>>>);
+
+impl PullProgress {
+    fn note(&self, received: usize, parts: usize) {
+        let mut fill = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = received as f64 / parts as f64;
+        *fill = Some(fill.map_or(next, |previous| previous.max(next)));
+    }
+
+    pub(super) fn fraction(&self) -> Option<Number> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .and_then(Number::from_f64)
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct Mail {
@@ -44,8 +67,15 @@ impl Mail {
         let mail = self.clone();
         Some(tokio::spawn(async move {
             let mut held = None;
+            let mut mirrors = JoinSet::new();
+            let gate = Arc::new(Semaphore::new(1));
+            let fetcher = Fetcher::default();
             loop {
-                let event = match events.recv().await {
+                let incoming = tokio::select! {
+                    _ = mirrors.join_next(), if !mirrors.is_empty() => continue,
+                    event = events.recv() => event,
+                };
+                let event = match incoming {
                     Ok(event) => event,
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => return,
@@ -70,9 +100,48 @@ impl Mail {
                         let _ = checks.try_send(Check::Peer);
                         continue;
                     }
+                    if let Some(retry) = value.get("retry")
+                        && let Ok(release) = serde_json::from_value(retry.clone())
+                    {
+                        if view
+                            .peer_updates(key, mail.reader.now())
+                            .1
+                            .release_target
+                            .is_some()
+                        {
+                            let _ = checks.try_send(Check::PeerRetry(release));
+                        }
+                        continue;
+                    }
                     match answer(value, &home, &mail.key, &mut held) {
-                        Ok(Some(value)) => {
-                            let _ = mail.send(&peer, value).await;
+                        Ok(Some(reply)) => {
+                            if reply["none"] == true
+                                && mirrors.len() < MIRROR_REQUESTS
+                                && let (Some(version), Some(hash)) =
+                                    (value["want"].as_str(), value["sha256"].as_str())
+                            {
+                                let (mail, home, gate, fetcher) =
+                                    (mail.clone(), home.clone(), gate.clone(), fetcher.clone());
+                                let release = ReleaseRef {
+                                    version: version.into(),
+                                    sha256: hash.into(),
+                                };
+                                mirrors.spawn(async move {
+                                    let mirrored = timeout(kuvo_keeper::fleet::peer_transfer_limit(), async {
+                                        let _permit = gate.acquire_owned().await.ok()?;
+                                        HeldPack::mirror(&home, &mail.key, &release.version, &release.sha256, &fetcher).await.ok()?
+                                    }).await.ok().flatten();
+                                    let reply = match mirrored {
+                                        Some(pack) => json!({"version":release.version,"sha256":release.sha256,"boxes":pack.candidate.envelope(),"size":pack.size}),
+                                        None => reply,
+                                    };
+                                    if mail.reader.view().roster.member(&peer.key).and_then(|member| member.host()).as_ref() == Some(&peer) {
+                                        let _ = mail.send(&peer, reply).await;
+                                    }
+                                });
+                            } else {
+                                let _ = mail.send(&peer, reply).await;
+                            }
                         }
                         Ok(None) => {}
                         Err(error) => eprintln!("Answering a release request: {error}"),
@@ -86,27 +155,100 @@ impl Mail {
         self.send(peer, json!({"check":true})).await
     }
 
-    pub(super) async fn pull(&self, release: &ReleaseRef) -> io::Result<Vec<u8>> {
+    pub(super) async fn request_retry(
+        &self,
+        peer: &Host,
+        release: &kuvo_peers::directory::PreparedRelease,
+    ) -> io::Result<()> {
+        self.send(peer, json!({"retry":release})).await
+    }
+
+    pub(super) async fn pull(
+        &self,
+        release: &ReleaseRef,
+        progress: &PullProgress,
+    ) -> io::Result<Vec<u8>> {
         let mut events = self.relay.subscribe().ok_or_else(unavailable)?;
         let view = self.reader.view();
         let now = self.reader.now();
-        let peers = view.roster.members.iter().filter_map(|member| {
-            let (away, facts) = view.peer_updates(&member.key, now);
-            let installing = facts.staged.as_ref().is_some_and(|stage| {
-                stage.version == release.version && stage.sha256 == release.sha256
-            });
-            let installed = facts.kuvo.as_deref() == Some(&release.version)
-                && facts.installed_sha256.as_deref() == Some(&release.sha256);
-            (!away && (installing || installed))
-                .then(|| member.host())
-                .flatten()
-        });
-        for peer in peers {
-            if let Ok(Ok(pack)) = timeout(MOST, self.pull_from(&mut events, &peer, release)).await {
+        let mut peers: Vec<_> = view
+            .roster
+            .members
+            .iter()
+            .filter_map(|member| {
+                let (away, facts) = view.peer_updates(&member.key, now);
+                if away {
+                    return None;
+                }
+                let installing = facts.staged.as_ref().is_some_and(|stage| {
+                    stage.version == release.version && stage.sha256 == release.sha256
+                });
+                let installed = facts.kuvo.as_deref() == Some(&release.version)
+                    && facts.installed_sha256.as_deref() == Some(&release.sha256);
+                let offered = facts
+                    .release_manifest
+                    .as_ref()
+                    .filter(|_| facts.candidate.as_deref() == Some(&release.version))
+                    .and_then(|envelope| Candidate::verify(envelope.clone(), &self.key).ok())
+                    .filter(|candidate| candidate.local().ok().as_ref() == Some(release))
+                    .and_then(|candidate| {
+                        Some(
+                            candidate.pack_digest(facts.release_target.as_deref()?)?
+                                == release.sha256,
+                        )
+                    });
+                let priority = if installing || installed {
+                    0
+                } else if offered == Some(true) {
+                    1
+                } else if offered.is_some() || self.can_mirror(&facts, release) {
+                    2
+                } else {
+                    return None;
+                };
+                Some((member.host()?, priority))
+            })
+            .collect();
+        peers.sort_by_key(|(_, priority)| *priority);
+        for (peer, priority) in peers {
+            if let Ok(Ok(pack)) = timeout(
+                kuvo_keeper::fleet::peer_transfer_limit(),
+                self.pull_from(&mut events, &peer, release, progress, priority == 2),
+            )
+            .await
+            {
                 return Ok(pack);
             }
         }
         Err(unavailable())
+    }
+
+    fn can_mirror(&self, facts: &UpdateFacts, release: &ReleaseRef) -> bool {
+        let Some(target) = &facts.release_target else {
+            return false;
+        };
+        for (envelope, version, digest) in [
+            (
+                facts.running_manifest.as_ref(),
+                facts.kuvo.as_ref(),
+                facts.installed_sha256.as_ref(),
+            ),
+            (
+                facts.release_manifest.as_ref(),
+                facts.staged.as_ref().map(|stage| &stage.version),
+                facts.staged.as_ref().map(|stage| &stage.sha256),
+            ),
+        ] {
+            if let (Some(envelope), Some(version), Some(digest)) = (envelope, version, digest)
+                && version == &release.version
+                && let Ok(candidate) = Candidate::verify(envelope.clone(), &self.key)
+                && candidate.local().ok().as_ref() == Some(release)
+                && candidate.matches_pack(target, digest)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     async fn pull_from(
@@ -114,6 +256,8 @@ impl Mail {
         events: &mut broadcast::Receiver<std::sync::Arc<RelayEvent>>,
         peer: &Host,
         release: &ReleaseRef,
+        progress: &PullProgress,
+        mirror: bool,
     ) -> io::Result<Vec<u8>> {
         self.send(
             peer,
@@ -121,7 +265,11 @@ impl Mail {
         )
         .await?;
         let header = timeout(
-            QUIET,
+            if mirror {
+                kuvo_keeper::fleet::peer_transfer_limit()
+            } else {
+                QUIET
+            },
             reply(events, peer, release, |value| {
                 value["none"] == true || value["boxes"].is_string()
             }),
@@ -137,6 +285,8 @@ impl Mail {
             return Err(unavailable());
         }
         let parts = size.div_ceil(PACK_PART);
+        let mut received = 0;
+        progress.note(received, parts);
         let mut pack = vec![0; size];
         for first in (0..parts).step_by(WINDOW) {
             let end = (first + WINDOW).min(parts);
@@ -168,6 +318,8 @@ impl Mail {
                         }
                         slice.copy_from_slice(&bytes);
                         missing.retain(|part| *part != index);
+                        received += 1;
+                        progress.note(received, parts);
                     }
                     Ok(())
                 })
@@ -227,7 +379,10 @@ fn answer(
     {
         if !held.as_ref().is_some_and(|pack| {
             pack.reference.version == version
-                && hash.is_none_or(|hash| hash == pack.reference.sha256)
+                && hash.map_or_else(
+                    || pack.candidate.local().ok().as_ref() == Some(&pack.reference),
+                    |hash| hash == pack.reference.sha256,
+                )
         }) {
             *held = HeldPack::find(home, key, version, hash)?;
         }

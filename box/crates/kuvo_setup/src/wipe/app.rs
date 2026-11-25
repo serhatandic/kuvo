@@ -123,11 +123,11 @@ impl Target {
         Ok(())
     }
 
-    pub(super) async fn install_state(
+    pub(super) async fn installer_wipe(
         &self,
         keychain: &dyn AppWipeKeychain,
-    ) -> io::Result<Option<super::InstallState>> {
-        use super::{InstallState, ReinstallReceipt, pending_hint};
+    ) -> io::Result<super::InstallerWipe> {
+        use super::{InstallerWipe, ReinstallReceipt, pending_hint};
         let kept = self.box_files();
         if kept.read::<Value>(LINK).ok().flatten().is_some_and(|link| {
             link["setup"]["role"] == "member"
@@ -135,24 +135,27 @@ impl Target {
                 && link["setup"]["id"] == link["removalSource"]["setup"]
                 && link["removalSource"]["review"].is_string()
         }) {
-            return Ok(Some(InstallState::MemberReview));
+            return Ok(InstallerWipe::MemberReview);
         }
         if let Err(error) = self.finish(keychain, Report::Installer).await {
             eprintln!("finishing the earlier app wipe: {error}");
         }
         if self.pending()? || pending_hint(&kept) {
-            return Ok(Some(InstallState::Pending));
+            return Ok(InstallerWipe::Waiting);
         }
         if self.root.exists() {
-            return Ok(None);
+            return Ok(InstallerWipe::None);
         }
         Ok(
-            read_journal(&self.marker(AppWipeKind::LastComputer)?)?.map(|journal| {
-                InstallState::Erased(ReinstallReceipt {
-                    setup: journal.setup,
-                    operation: journal.operation,
-                })
-            }),
+            read_journal(&self.marker(AppWipeKind::LastComputer)?)?.map_or(
+                InstallerWipe::None,
+                |journal| {
+                    InstallerWipe::Complete(ReinstallReceipt {
+                        setup: journal.setup,
+                        operation: journal.operation,
+                    })
+                },
+            ),
         )
     }
 

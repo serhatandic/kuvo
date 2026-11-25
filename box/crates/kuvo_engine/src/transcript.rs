@@ -133,6 +133,57 @@ struct ToolState {
 }
 
 impl Engine {
+    /// The owner's unrendered message page for another computer's snapshot.
+    pub async fn owner_message_page(
+        &self,
+        session: &str,
+        offset: Option<&str>,
+    ) -> Result<Value, kuvo_server::Refusal> {
+        let unavailable = || {
+            kuvo_server::Refusal::new(
+                http::StatusCode::SERVICE_UNAVAILABLE,
+                "The engine isn't answering. Try again in a moment.",
+            )
+        };
+        let lease = self
+            .acquire(Demand::Passive)
+            .await
+            .ok_or_else(unavailable)?;
+        let path = sessions::path(session);
+        sessions::read(self, &lease, &path).await?;
+        let after = offset.map_or_else(String::new, |offset| {
+            format!("&cursor={}", api::segment(offset))
+        });
+        let mut page = self
+            .call_raw(
+                &lease,
+                Method::GET,
+                &format!("{path}/message?limit=40&order=desc{after}"),
+                None,
+                Duration::from_secs(8),
+            )
+            .await
+            .map_err(|error| match error {
+                api::Error::Status(
+                    status @ (StatusCode::UNAUTHORIZED
+                    | StatusCode::FORBIDDEN
+                    | StatusCode::CONFLICT),
+                    message,
+                ) => kuvo_server::Refusal::new(status, message),
+                _ => unavailable(),
+            })?;
+        let messages = page
+            .get_mut("data")
+            .filter(|rows| rows.is_array())
+            .ok_or_else(unavailable)?
+            .take();
+        let mut result = serde_json::json!({"messages": messages});
+        if let Some(cursor) = page.get_mut("cursor") {
+            result["cursor"] = cursor.take();
+        }
+        Ok(result)
+    }
+
     /// Reads the native conversation after the caller has resolved its current owner.
     pub async fn transcript(
         &self,
@@ -505,7 +556,8 @@ fn take(text: &str, count: usize) -> String {
     String::from_utf16_lossy(&text.encode_utf16().take(count).collect::<Vec<_>>())
 }
 
-fn folded(text: &str) -> String {
+/// Text as names and queries are compared: accents and case aside.
+pub fn folded(text: &str) -> String {
     text.nfd()
         .filter(|ch| !is_combining_mark(*ch))
         .collect::<String>()

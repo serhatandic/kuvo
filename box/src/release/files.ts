@@ -16,6 +16,7 @@ export interface EnginePin {
   version: string;
   linux: Record<string, { url: string; integrity: string }>;
   darwin: Record<string, { url: string; integrity: string }>;
+  windows?: Record<string, { url: string; integrity: string }>;
   /** The engine the release before ran (N-1), for the release check (scripts/engine-check.mjs):
    * moved here as the pin moves to a newer engine. */
   previous?: Omit<EnginePin, "previous">;
@@ -26,6 +27,11 @@ export interface BoxFile {
   path: string;
   mode: number;
   data: Buffer;
+}
+
+interface RustProgram {
+  executable: string;
+  windows: boolean;
 }
 
 /** A version as a release has one: 1.2.3, or a beta's 1.2.3-beta.4. */
@@ -46,8 +52,9 @@ export function enginePin(root: string): EnginePin {
   const pin = JSON.parse(fs.readFileSync(path.join(root, "box/src/shared/engine-pin.json"), "utf8")) as EnginePin;
   for (const each of [pin, ...(pin.previous ? [pin.previous] : [])]) {
     if (!/^\d+\.\d+\.\d+$/.test(each.version)) throw new Error("box/src/shared/engine-pin.json names no engine version.");
-    for (const system of ["linux", "darwin"] as const) {
-      for (const kind of ["x86_64", "aarch64"]) {
+    for (const system of ["linux", "darwin", "windows"] as const) {
+      if (system === "windows" && !each.windows) continue;
+      for (const kind of system === "windows" ? ["x86_64"] : ["x86_64", "aarch64"]) {
         const build = each[system]?.[kind];
         if (!build?.url?.endsWith(`-${each.version}.tgz`) || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(build.integrity ?? "")) {
           throw new Error(`box/src/shared/engine-pin.json has no ${system} ${kind} build of ${each.version}, with its integrity.`);
@@ -97,7 +104,7 @@ function browser(root: string, file: string): Buffer {
 
 /** Read a bundle prepared by scripts/build-built.sh. */
 function built(root: string, file: string): Buffer {
-  const data = fs.readFileSync(path.join(root, file));
+  const data = fs.readFileSync(path.resolve(root, file));
   if (!data.length) throw new Error(`${file} is empty.`);
   return data;
 }
@@ -109,10 +116,24 @@ function built(root: string, file: string): Buffer {
 const marked = (bundle: Buffer): Buffer => Buffer.concat([bundle, Buffer.from(`\n// kuvo-agents ${sha256(bundle).slice(0, 16)}\n`)]);
 
 /** A release's files for `version`, but for `box.json`, in the order they're installed by name. */
-export function boxFiles(root: string, version: string): BoxFile[] {
+export function boxFiles(root: string, version: string, rust?: RustProgram): BoxFile[] {
   if (!RELEASE_VERSION.test(version)) throw new Error(`${version} isn't a version (1.2.3, or 1.2.3-beta.4).`);
   const pin = enginePin(root);
   const boot = BOOT.map(name => ({ name, data: keeperFile(root, name, pin.version) }));
+  const programs: BoxFile[] = [];
+  if (rust) {
+    const name = rust.windows ? "kuvo-box.exe" : "kuvo-box";
+    programs.push({ path: `bin/${name}`, mode: 0o700, data: built(root, rust.executable) });
+    if (rust.windows) {
+      const unwind = path.join(path.dirname(rust.executable), "libunwind.dll");
+      if (fs.existsSync(unwind)) programs.push({ path: "bin/libunwind.dll", mode: 0o644, data: built(root, unwind) });
+    }
+  } else {
+    programs.push(
+      { path: "bin/kuvo-link.js", mode: 0o600, data: built(root, "box/dist/kuvo-link.js") },
+      { path: "bin/kuvo-agents.js", mode: 0o644, data: marked(built(root, "box/dist/kuvo-agents.js")) },
+    );
+  }
   const files: BoxFile[] = [
     ...boot.map(({ name, data }) => ({ path: `bin/${name}`, mode: 0o700, data })),
     // What says which keeper files a box has: a hash over their names and bytes, in this order.
@@ -120,10 +141,7 @@ export function boxFiles(root: string, version: string): BoxFile[] {
     ...TOOLS.map(name => ({ path: `bin/${name}`, mode: 0o755, data: keeperFile(root, name, pin.version) })),
     // The engine's plugin, which gives the commands an agent runs your own folders back.
     { path: "config/opencode/plugins/kuvo-code.js", mode: 0o644, data: fs.readFileSync(path.join(root, "box/src/plugins/kuvo-code.js")) },
-    // The link (with the vault's and the phones' keys passing through it, yours alone to read),
-    // the coding agents' bridge and the browser.
-    { path: "bin/kuvo-link.js", mode: 0o600, data: built(root, "box/dist/kuvo-link.js") },
-    { path: "bin/kuvo-agents.js", mode: 0o644, data: marked(built(root, "box/dist/kuvo-agents.js")) },
+    ...programs,
     { path: "bin/kuvo-browser.js", mode: 0o644, data: browser(root, "box/dist/kuvo-browser.js") },
     // Settings › Integrations and › MCP Servers: a machine's, a Mac's box's, and the popular servers.
     { path: "bin/integrations.json", mode: 0o644, data: Buffer.from(integrationsCatalog(false)) },
@@ -138,13 +156,15 @@ export function boxFiles(root: string, version: string): BoxFile[] {
 
 /** `box.json`: the version, its engine and where each system gets it, and each file by its path
  * in `~/.kuvo-code` with its SHA-256. (A Mac's bundles are added as they're packed.) */
-export function boxManifest(root: string, version: string, files: BoxFile[]): string {
+export function boxManifest(root: string, version: string, files: BoxFile[], rust = false): string {
   const pin = enginePin(root);
+  if (rust && !pin.windows) throw new Error("box/src/shared/engine-pin.json needs a Windows build for Rust releases.");
   const checked = engineCheck(pin);
   const builds = (system: EnginePin["linux"]) =>
     Object.fromEntries(["aarch64", "x86_64"].map(kind => [kind, { integrity: system[kind]!.integrity, url: system[kind]!.url }]));
   return JSON.stringify({
     formatVersion: boxFilesFormat.version,
+    ...(rust ? { kuvo: "box/1", launch: "rust", windows: pin.windows } : {}),
     darwin: builds(pin.darwin),
     ...(checked.downgradeSafe ? { downgradeSafe: true } : {}),
     engine: pin.version,
@@ -157,8 +177,8 @@ export function boxManifest(root: string, version: string, files: BoxFile[]): st
 
 /** Writes a release's files into `folder` (new, or empty), each with its own mode whatever the
  * umask, and `box.json` beside them. */
-export function writeBoxFiles(root: string, version: string, given: string): void {
-  const files = boxFiles(root, version);
+export function writeBoxFiles(root: string, version: string, given: string, rust?: RustProgram): void {
+  const files = boxFiles(root, version, rust);
   // (As the system names it: a path given with `//` or a last `/` in it is the same folder.)
   const folder = path.resolve(given);
   fs.mkdirSync(folder, { recursive: true });
@@ -166,7 +186,7 @@ export function writeBoxFiles(root: string, version: string, given: string): voi
   // The release's own folders, by their paths in it ("" is `folder` itself): nothing above it is
   // ever touched.
   const folders = new Set<string>([""]);
-  for (const file of [...files, { path: "box.json", mode: 0o644, data: Buffer.from(boxManifest(root, version, files)) }]) {
+  for (const file of [...files, { path: "box.json", mode: 0o644, data: Buffer.from(boxManifest(root, version, files, rust !== undefined)) }]) {
     const parts = file.path.split("/").slice(0, -1);
     parts.forEach((_, index) => folders.add(parts.slice(0, index + 1).join("/")));
     const to = path.join(folder, file.path);
@@ -178,13 +198,14 @@ export function writeBoxFiles(root: string, version: string, given: string): voi
 }
 
 if (import.meta.main) {
-  const [root, version, folder] = process.argv.slice(2);
-  if (!root || !version || !folder) {
-    console.error("Usage: bun box/src/release/files.ts <checkout> <version> <folder>");
+  const [root, version, folder, kind, executable, ...extra] = process.argv.slice(2);
+  const rust = (kind === "unix" || kind === "windows") && executable ? { executable, windows: kind === "windows" } : undefined;
+  if (!root || !version || !folder || (kind && !rust) || extra.length) {
+    console.error("Usage: bun box/src/release/files.ts <checkout> <version> <folder> [<unix|windows> <Rust executable>]");
     process.exit(2);
   }
   try {
-    writeBoxFiles(root, version, folder);
+    writeBoxFiles(root, version, folder, rust);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

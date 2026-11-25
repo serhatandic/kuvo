@@ -67,7 +67,8 @@ routes cover lease renewal, the one-minute cap and malformed requests.
   checks, and applies effects and queue delivery idempotently by ID. It must recheck authority
   during an effect. Phase 3.2 registers the local engine/bridge adapter, conversation reads
   and the open-work/start state machine. Phase 2.4 supplies switched-session and moved lead
-  delivery. The binary advertises `work.elsewhere` only after attachment.
+  delivery. The binary advertises `work.elsewhere` only after attachment. Attached in 5.1f-1:
+  `kuvo_work::work::elsewhere` (see rust-work-coverage.md); starts and answers are 5.1f-1b and 5.1f-2.
 - The peer task retains the TypeScript outbox call and kept work rows formats. It journals call
   results under `run/work/call-results` and accepted answer origins under `run/work/call-answers`.
   Engine effects and answer queue deliveries carry a stable ID across restart. An empty kept
@@ -132,3 +133,10 @@ projects typed values from its watch view. It shares the same working-session ca
 the route and announcements. The persisted empty work snapshot deliberately keeps its timestamp
 so a delayed older snapshot cannot restore rows after a clear. TypeScript deletes the cleared file
 in `box/src/link/work/elsewhere.ts` and can accept that older snapshot afterward.
+
+### 7.3 released roster, Part A
+
+[R1–R3](rust-released-coverage.md) cover peers cases 1–2 and the unsigned
+list/no-address portion of 22 and 24–25. Enroller online-time expiry (3–4),
+legacy signed roster replacement and the explicit no-address reply check remain
+open. No unsigned list is forwarded as a signed document.

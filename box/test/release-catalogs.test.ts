@@ -4,8 +4,9 @@
 // written there too would leave every box's runner on a catalog no release has.
 import "./safety"
 import { expect, test } from "bun:test"
-import { createHash } from "node:crypto"
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
+import { createHash, generateKeyPairSync, verify } from "node:crypto"
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { boxFiles, writeBoxFiles } from "../src/release/files"
@@ -94,3 +95,118 @@ test("writing a release's files changes nothing above their folder, however the 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test("the release builder packs Rust target executables with the common release files", () => {
+  const root = sources("2.2.6")
+  const checkout = join(import.meta.dir, "../..")
+  try {
+    const pinFile = join(root, "box/src/shared/engine-pin.json")
+    const pin = JSON.parse(readFileSync(pinFile, "utf8"))
+    pin.windows = { x86_64: pin.linux.x86_64 }
+    writeFileSync(pinFile, JSON.stringify(pin))
+    const common = boxFiles(root, "0.8.0").filter(file => file.path !== "bin/kuvo-link.js" && file.path !== "bin/kuvo-agents.js")
+    for (const [target, program, windows] of [
+      ["x86_64-unknown-linux-musl", "kuvo-box", false],
+      ["x86_64-pc-windows-gnullvm", "kuvo-box.exe", true],
+    ] as const) {
+      const executable = join(root, program)
+      const programBytes = Buffer.from(`fixture executable for ${target}`)
+      writeFileSync(executable, programBytes)
+      if (windows) writeFileSync(join(root, "libunwind.dll"), "runtime library")
+      const output = join(root, target)
+      const packed = spawnSync("sh", ["scripts/box-release.sh", "--rust-pack", target, executable, "0.8.0", output], {
+        cwd: checkout, env: { ...process.env, BOX_SOURCES: root, BUN: process.execPath }, encoding: "utf8",
+      })
+      expect(packed.status, packed.stderr).toBe(0)
+      const extracted = join(output, "extracted")
+      mkdirSync(extracted)
+      const tar = spawnSync("tar", ["-xzf", join(output, `box-0.8.0-${target}.tar.gz`), "-C", extracted], { encoding: "utf8" })
+      expect(tar.status, tar.stderr).toBe(0)
+      const manifest = JSON.parse(readFileSync(join(extracted, "box.json"), "utf8"))
+      expect(manifest).toMatchObject({ kuvo: "box/1", launch: "rust", version: "0.8.0", windows: pin.windows })
+      expect(readFileSync(join(output, "box.json"))).toEqual(readFileSync(join(extracted, "box.json")))
+      expect(manifest.files[`bin/${program}`]).toBe(createHash("sha256").update(programBytes).digest("hex"))
+      expect(readFileSync(join(extracted, "bin", program))).toEqual(programBytes)
+      for (const file of common) {
+        const bundled = join(extracted, file.path)
+        expect<Buffer>(readFileSync(bundled), file.path).toEqual(file.data)
+        expect(statSync(bundled).mode & 0o777, file.path).toBe(file.mode)
+      }
+      expect(existsSync(join(extracted, "bin/kuvo-link.js"))).toBe(false)
+      expect(existsSync(join(extracted, "bin/kuvo-agents.js"))).toBe(false)
+      if (windows) {
+        expect(readFileSync(join(extracted, "bin/libunwind.dll"), "utf8")).toBe("runtime library")
+      } else {
+        expect(readFileSync(join(output, "kuvo-install-bin"))).toEqual(programBytes)
+        expect(existsSync(join(output, "kuvo-install"))).toBe(true)
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("the release signer checks a complete set of target archives and preserves the signed bridge", () => {
+  const root = sources("2.2.6")
+  const checkout = join(import.meta.dir, "../..")
+  const version = "0.8.0"
+  const origin = "https://example.invalid/releases/download/v" + version + "/"
+  const legacy = join(root, "dist", `box-${version}.tar.gz`)
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519")
+  const env = { ...process.env, BOX_SOURCES: root, BUN: process.execPath, KUVO_BOX_SPREADS: "1",
+    KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString() }
+  const release = (...args: string[]) =>
+    spawnSync("sh", ["scripts/box-release.sh", ...args], { cwd: checkout, env, encoding: "utf8" })
+  const sign = (...args: string[]) =>
+    spawnSync("node", ["scripts/sign-box.mjs", ...args], { cwd: checkout, env, encoding: "utf8" })
+  try {
+    const pinFile = join(root, "box/src/shared/engine-pin.json")
+    const pin = JSON.parse(readFileSync(pinFile, "utf8"))
+    pin.windows = { x86_64: { ...pin.linux.x86_64 } }
+    writeFileSync(pinFile, JSON.stringify(pin))
+    const legacyBuilt = release(version, `${origin}box-${version}.tar.gz`, dirname(legacy))
+    expect(legacyBuilt.status, legacyBuilt.stderr).toBe(0)
+    const bridgeVersion = "0.8.0-beta.49"
+    const bridgeDir = join(root, "bridge")
+    const bridgeBuilt = release(bridgeVersion, `https://example.invalid/box-${bridgeVersion}.tar.gz`, bridgeDir)
+    expect(bridgeBuilt.status, bridgeBuilt.stderr).toBe(0)
+    const bridge = join(bridgeDir, "boxes.json")
+    const triples = [
+      "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl", "x86_64-pc-windows-gnullvm",
+    ]
+    const expected = Object.fromEntries(triples.map(target => {
+      const program = join(root, target)
+      writeFileSync(program, `fixture executable for ${target}`)
+      const pack = release("--rust-pack", target, program, version, dirname(legacy))
+      expect(pack.status, pack.stderr).toBe(0)
+      const name = `box-${version}-${target}.tar.gz`
+      const bytes = readFileSync(join(dirname(legacy), name))
+      return [target, { url: origin + name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }]
+    }))
+    const args = [version, legacy, `${origin}box-${version}.tar.gz`, "--rust-packs", "--bridge", bridge]
+    const signed = sign(...args)
+    expect(signed.status, signed.stderr).toBe(0)
+    const record = JSON.parse(signed.stdout)
+    const body = Buffer.from(record.manifest, "base64")
+    const manifest = JSON.parse(body.toString())
+    expect(verify(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), body]), publicKey, Buffer.from(record.signature, "base64"))).toBe(true)
+    expect(manifest).toMatchObject({
+      version, launch: "rust", windows: pin.windows, spreads: true,
+      bridge: readFileSync(bridge, "utf8").trim(),
+      pack: { url: `${origin}box-${version}.tar.gz` },
+    })
+    expect(manifest.packs).toEqual(expected)
+
+    pin.windows.x86_64.url = "https://example.invalid/different-engine-2.2.6.tgz"
+    writeFileSync(pinFile, JSON.stringify(pin))
+    const drifted = release("--rust-pack", triples[4]!, join(root, triples[4]!), version, dirname(legacy))
+    expect(drifted.status, drifted.stderr).toBe(0)
+    const refused = sign(...args)
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toBe("")
+    expect(refused.stderr).toContain("doesn't contain the expected Rust release and engine builds")
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 20_000)

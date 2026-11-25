@@ -1,5 +1,8 @@
 //! A verified removal can erase its installation after its writers stop. The
 //! durable journal follows the directory's original inode.
+//! On Windows a folder can't be renamed while the box holds files in it, so the
+//! resident hands the erase to a copy of itself outside the folder, and the next
+//! box to start deletes that copy.
 
 #[cfg(target_os = "macos")]
 mod app;
@@ -80,10 +83,9 @@ impl LocalWipe {
 
 fn boundary(home: &Path) -> io::Result<Option<PathBuf>> {
     let platform = Platform::current();
-    if platform == Platform::Windows
-        || std::env::var_os("KUVO_BOX")
-            .as_deref()
-            .is_some_and(|v| v == "mac")
+    if std::env::var_os("KUVO_BOX")
+        .as_deref()
+        .is_some_and(|v| v == "mac")
         || home.file_name().is_none_or(|part| part != ".kuvo-code")
     {
         return Ok(None);
@@ -96,6 +98,10 @@ fn boundary(home: &Path) -> io::Result<Option<PathBuf>> {
 }
 
 pub(crate) fn supports_member(home: &Path) -> io::Result<bool> {
+    // A Windows member's erase isn't handed to a copy outside its folder yet.
+    if cfg!(windows) {
+        return Ok(false);
+    }
     #[cfg(target_os = "macos")]
     if let Some(target) = app::Target::for_box(home)? {
         return Ok(target.check_layout(&app::Target::settings()?).is_ok());
@@ -137,6 +143,12 @@ pub(crate) fn check(home: &Path) -> io::Result<()> {
             Err(error) => return Err(error),
         }
     }
+    #[cfg(windows)]
+    if kuvo_keeper::windows::StartupTask::for_home(&root)?.registered()? {
+        return Err(io::Error::other(
+            "Kuvo Code couldn’t confirm its startup entries were removed.",
+        ));
+    }
     if std::env::var_os("KUVO_KEYS_ON_HOST").is_some_and(|value| value == "1")
         || std::env::var_os("KUVO_HOST_URL").is_some()
         || fs::read_to_string(root.join("box/kind")).is_ok_and(|kind| kind.trim() == "mac")
@@ -174,17 +186,19 @@ struct Journal {
     format_version: u8,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, PartialEq, Eq, Serialize)]
 pub struct ReinstallReceipt {
     setup: String,
     operation: String,
 }
 
-pub enum InstallState {
-    Pending,
+/// What an installer finds of an earlier wipe at its target.
+pub enum InstallerWipe {
+    None,
+    Waiting,
     #[cfg(target_os = "macos")]
     MemberReview,
-    Erased(ReinstallReceipt),
+    Complete(ReinstallReceipt),
 }
 
 #[cfg(target_os = "macos")]
@@ -204,10 +218,10 @@ pub async fn app_install_state(
     folder: &Path,
     account: &Path,
     keychain: &dyn AppWipeKeychain,
-) -> io::Result<Option<InstallState>> {
+) -> io::Result<InstallerWipe> {
     match app::Target::for_folder(folder, account)? {
-        Some(target) => target.install_state(keychain).await,
-        None => Ok(None),
+        Some(target) => target.installer_wipe(keychain).await,
+        None => Ok(InstallerWipe::None),
     }
 }
 
@@ -544,15 +558,26 @@ fn app_boundary(folder: &Path, account: &Path) -> io::Result<Option<PathBuf>> {
     Ok((actual == support).then(|| support.join(id)))
 }
 
-impl InstallState {
+impl InstallerWipe {
+    pub fn waiting(&self) -> bool {
+        self.pending_message().is_some()
+    }
+
     pub fn pending_message(&self) -> Option<&'static str> {
         match self {
-            Self::Pending => Some("This computer’s wipe hasn’t finished."),
+            Self::Waiting => Some("This computer’s wipe hasn’t finished."),
             #[cfg(target_os = "macos")]
             Self::MemberReview => Some(
                 "This computer’s wipe needs review on the main Box. If the source is offline, restart the original app’s Box to continue.",
             ),
-            Self::Erased(_) => None,
+            Self::None | Self::Complete(_) => None,
+        }
+    }
+
+    pub fn receipt(&self) -> Option<&ReinstallReceipt> {
+        match self {
+            Self::Complete(receipt) => Some(receipt),
+            _ => None,
         }
     }
 }
@@ -619,44 +644,57 @@ fn pending_hint(records: &Files) -> bool {
     }
 }
 
-pub fn install_state(home: &Path) -> io::Result<Option<InstallState>> {
+/// Installer status can resume the existing erase. The recorded operation and
+/// directory identity remain the sole authority in `finish`; a marker alone
+/// can make the installer wait, but cannot authorize deletion.
+pub fn installer_wipe(home: &Path, resume: bool) -> io::Result<InstallerWipe> {
     let Some(root) = boundary(home)? else {
-        return Ok(None);
+        return Ok(InstallerWipe::None);
     };
     let marker = journal_path(&root)?;
     let records = Files::new(root.clone());
     let mut journal = read_journal(&marker)?;
     if journal.as_ref().is_some_and(|kept| kept.phase.is_some()) || pending_hint(&records) {
+        if !resume {
+            return Ok(InstallerWipe::Waiting);
+        }
         match finish(&root) {
             Ok(true) => journal = read_journal(&marker)?,
-            Ok(false) => return Ok(Some(InstallState::Pending)),
+            Ok(false) => return Ok(InstallerWipe::Waiting),
             Err(error) => {
+                // A live owner or an incomplete erase leaves its receipt for retry.
                 eprintln!("finishing the installation's earlier wipe: {error}");
-                return Ok(Some(InstallState::Pending));
+                return Ok(InstallerWipe::Waiting);
             }
         }
     }
-    Ok(journal.map(|kept| {
-        if kept.phase.is_some() {
-            InstallState::Pending
-        } else {
-            InstallState::Erased(ReinstallReceipt {
-                setup: kept.setup,
-                operation: kept.operation,
-            })
-        }
-    }))
+    Ok(match journal {
+        None => InstallerWipe::None,
+        Some(kept) if kept.phase.is_some() => InstallerWipe::Waiting,
+        Some(kept) => InstallerWipe::Complete(ReinstallReceipt {
+            setup: kept.setup,
+            operation: kept.operation,
+        }),
+    })
 }
 
-pub fn finish_reinstall(home: &Path) -> io::Result<()> {
+/// Only a successful reinstall consumes the completed receipt it observed.
+pub fn finish_reinstall(home: &Path, receipt: &ReinstallReceipt) -> io::Result<()> {
     let Some(root) = boundary(home)? else {
         return Ok(());
     };
     let marker = journal_path(&root)?;
-    if read_journal(&marker)?.is_some_and(|kept| kept.phase.is_none()) {
+    let observed = || -> io::Result<bool> {
+        Ok(read_journal(&marker)?.is_some_and(|kept| {
+            kept.phase.is_none()
+                && kept.setup == receipt.setup
+                && kept.operation == receipt.operation
+        }))
+    };
+    if observed()? {
         let _guard =
             OwnedLock::acquire(&parent(&root)?.join(".kuvo-code-wipe.lock"), Duration::ZERO)?;
-        if read_journal(&marker)?.is_some_and(|kept| kept.phase.is_none()) {
+        if observed()? {
             files::remove_file_synced(&marker)?;
         }
     }
@@ -692,6 +730,8 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     let receipts = marker
         .parent()
         .ok_or_else(|| io::Error::other(UNSUPPORTED))?;
+    #[cfg(windows)]
+    forget_erasers(receipts);
     let records = Files::new(root.clone());
     let pending = || pending_link(&records);
     let read = || read_journal(&marker);
@@ -703,6 +743,9 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     let kept = read()?;
     let save = |journal: &Journal| -> io::Result<()> {
         files::create_private_dirs(receipts)?;
+        // Windows makes the folder with the profile's ACL; close it as Unix makes it 0700.
+        #[cfg(windows)]
+        files::private_folder(receipts)?;
         private(receipts, true)?;
         files::write_atomic_through(&marker, &serde_json::to_vec(journal)?, parent)
     };
@@ -753,7 +796,7 @@ pub fn finish(home: &Path) -> io::Result<bool> {
                 .map_err(io::Error::other)?;
             save(&approval)?;
             erase_approved(&root, receipts, approval, save, || {
-                // Drop guards by token after detach, leaving any replacement alone.
+                // Drop guards by token, leaving any replacement alone.
                 drop((owner, link));
                 Ok(())
             })
@@ -774,6 +817,8 @@ fn erase_approved(
     save: impl Fn(&Journal) -> io::Result<()>,
     after_detach: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut after_detach = Some(after_detach);
     let target = receipts.join(format!("erase-{}", journal.operation));
     let old = identity(&target)?;
     if old
@@ -788,12 +833,20 @@ fn erase_approved(
             if identity(root)? != journal.source {
                 return Err(io::Error::other("The folder to erase has changed."));
             }
+            // Windows can't rename a folder holding open files, these locks included.
+            // The wipe lock beside the folder still keeps other boxes out.
+            #[cfg(windows)]
+            if let Some(release) = after_detach.take() {
+                release()?;
+            }
             files::replace_synced(root, &target)?;
         }
         journal.phase = Some(Phase::Detached);
         save(&journal)?;
     }
-    after_detach()?;
+    if let Some(after_detach) = after_detach {
+        after_detach()?;
+    }
     files::remove_tree_synced(&target)?;
     journal.source = None;
     journal.phase = None;
@@ -811,17 +864,14 @@ fn identity(path: &Path) -> io::Result<Option<String>> {
     Ok(files::file_stamp(path)?.map(|stamp| format!("{}:{}", stamp.device, stamp.file)))
 }
 
-#[cfg(unix)]
 fn private(path: &Path, directory: bool) -> io::Result<bool> {
-    use std::os::unix::fs::MetadataExt as _;
     match fs::symlink_metadata(path) {
         Ok(info)
             if (if directory {
                 info.is_dir()
             } else {
                 info.is_file()
-            }) && info.mode() & 0o077 == 0
-                && info.uid() == fs::metadata(parent(path)?)?.uid() =>
+            }) && closed(path, &info)? =>
         {
             Ok(true)
         }
@@ -833,12 +883,98 @@ fn private(path: &Path, directory: bool) -> io::Result<bool> {
     }
 }
 
+#[cfg(unix)]
+fn closed(path: &Path, info: &fs::Metadata) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok(info.mode() & 0o077 == 0 && info.uid() == fs::metadata(parent(path)?)?.uid())
+}
+
 #[cfg(windows)]
-fn private(_path: &Path, _directory: bool) -> io::Result<bool> {
-    // A native keeper must perform the detach after the executable releases it.
-    Err(io::Error::other(UNSUPPORTED))
+fn closed(path: &Path, _info: &fs::Metadata) -> io::Result<bool> {
+    kuvo_os::windows::is_private(path)
 }
 
 fn parent(path: &Path) -> io::Result<&Path> {
     path.parent().ok_or_else(|| io::Error::other(UNSUPPORTED))
+}
+
+/// Hand an authorized wipe to a copy of this program outside the folder it erases, which
+/// starts once this process has exited. Its own copy is deleted by the next box to start.
+#[cfg(windows)]
+pub fn hand_over(home: &Path) -> io::Result<bool> {
+    use std::os::windows::process::CommandExt as _;
+    let Some(root) = boundary(home)? else {
+        return Ok(false);
+    };
+    let receipts = parent(&root)?.join(".kuvo-code-removal-receipts");
+    files::create_private_dirs(&receipts)?;
+    files::private_folder(&receipts)?;
+    let eraser = receipts.join(format!("{ERASER}{}", std::process::id()));
+    fs::create_dir_all(&eraser)?;
+    let program = std::env::current_exe()?;
+    for entry in fs::read_dir(parent(&program)?)? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"))
+        {
+            fs::copy(&path, eraser.join(path.file_name().unwrap_or_default()))?;
+        }
+    }
+    let copy = eraser.join("kuvo-box.exe");
+    fs::copy(&program, &copy)?;
+    let mut command = std::process::Command::new(copy);
+    command
+        .arg("wipe-member")
+        .env("KUVO_HOME", &root)
+        .env(AFTER, std::process::id().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    use windows_sys::Win32::System::Threading::{
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, DETACHED_PROCESS,
+    };
+    // Outlive this process's job when it allows that; a test harness may not.
+    let flags = CREATE_NO_WINDOW | DETACHED_PROCESS;
+    command
+        .creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+        .or_else(|_| command.creation_flags(flags).spawn())?;
+    Ok(true)
+}
+
+#[cfg(windows)]
+const ERASER: &str = "eraser-";
+/// The process an eraser waits for before it starts.
+#[cfg(windows)]
+pub const AFTER: &str = "KUVO_WIPE_AFTER";
+
+/// Wait for the resident that handed over the erase to exit.
+#[cfg(windows)]
+pub fn wait_for_hand_over() {
+    use kuvo_os::process::ProcessIdentity;
+    let Some(pid) = std::env::var(AFTER).ok().and_then(|pid| pid.parse().ok()) else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while ProcessIdentity::read(pid).is_ok_and(|live| live.is_some())
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Erasers that have finished: each one's program is free once it has exited.
+#[cfg(windows)]
+fn forget_erasers(receipts: &Path) {
+    let own = format!("{ERASER}{}", std::process::id());
+    for entry in fs::read_dir(receipts).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with(ERASER) && name != own)
+        {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }

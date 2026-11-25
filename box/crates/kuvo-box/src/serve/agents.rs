@@ -8,6 +8,8 @@ use std::{
 
 use kuvo_agents::{
     accounts::{AgentKind, Provider},
+    claude::{ClaudeFactory, adopt_console_folder},
+    codex::CodexFactory,
     resident::ResidentAgents,
     roster::Factory,
     runtime::Runtime,
@@ -30,14 +32,69 @@ use kuvo_protocol::routes::{
 use kuvo_server::{Access, Refusal, Registry, RouteReply};
 use serde_json::json;
 
-pub(super) fn factories(_home: &std::path::Path) -> HashMap<AgentKind, Arc<dyn Factory>> {
+pub(super) mod asks;
+pub(super) mod background;
+pub(super) mod rows;
+pub(super) mod sessions;
+pub(super) mod shells;
+pub(super) mod tools;
+pub(super) mod turns;
+
+/// What a resident making way leaves for the next about the coding agents'
+/// turns that go on.
+pub(super) fn handover_file(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("run/agents-handover.json")
+}
+
+/// Make way for the next resident: the turns that go on in held agents are
+/// handed over with what they were asking and what was approved for them.
+pub(super) async fn hand_over(
+    home: &std::path::Path,
+    runs: &kuvo_agents::session_runs::SessionRuns,
+    runtime: &Runtime,
+) {
+    let result = async {
+        let held = runtime.held_sessions().await?;
+        let handover = tokio::time::timeout(std::time::Duration::from_secs(2), runs.hand_over(held))
+            .await
+            .map_err(io::Error::other)??;
+        if handover.sessions.is_empty() {
+            return Ok(());
+        }
+        handover.save(&handover_file(home))
+    }
+    .await;
+    if let Err(error) = result {
+        eprintln!("Kuvo could not hand the coding agents' turns over: {error}");
+    }
+}
+
+/// The adapters, each given the resident's tools relay for its agents'
+/// tools (the 4.2–4.5 adapters take it up).
+pub(super) async fn factories(
+    home: &std::path::Path,
+    relay: &kuvo_agents::tool_relay::ToolRelay,
+    feed: &kuvo_agents::feed::Feed,
+) -> HashMap<AgentKind, Arc<dyn Factory>> {
     #[cfg(feature = "agent-runtime-fixture")]
-    if let Some(fixture) = fixture::for_home(_home) {
+    if let Some(fixture) = fixture::for_home(home, relay.clone()) {
         return HashMap::from([(AgentKind::Codex, fixture)]);
     }
 
-    // Rows 4.2–4.5 register their compiled factories here.
-    HashMap::new()
+    let Ok(home) = kuvo_store::home::Home::new(home.to_owned()) else {
+        return HashMap::new();
+    };
+    if let Err(error) = adopt_console_folder(&home).await {
+        eprintln!("Kuvo could not register the previous Claude Code account: {error}");
+    }
+    let Ok(binary) = std::env::current_exe() else {
+        return HashMap::new();
+    };
+    let codex: Arc<dyn Factory> = Arc::new(
+        CodexFactory::new(home.clone(), binary.clone(), Some(relay.clone())).with_feed(feed.clone()),
+    );
+    let claude: Arc<dyn Factory> = Arc::new(ClaudeFactory::new(home, binary));
+    HashMap::from([(AgentKind::Claude, claude), (AgentKind::Codex, codex)])
 }
 
 pub(super) struct Models {
@@ -63,11 +120,20 @@ impl AgentModelSource for Models {
                 if row.unavailable || status.is_none() {
                     catalog.unavailable.push(provider.clone());
                 }
+                let program = row.account.kind.display_name();
+                let name = if row.account.id == "default" {
+                    program.to_owned()
+                } else {
+                    format!(
+                        "{program} · {}",
+                        row.account.label.as_deref().unwrap_or("Another account")
+                    )
+                };
                 catalog.accounts.push(ModelAccount {
                     provider: provider.clone(),
                     kind: row.account.kind.name().into(),
                     id: row.account.id,
-                    name: display_name(row.account.kind).into(),
+                    name,
                     label: row.account.label,
                     signed_in_as: status.and_then(|status| status.label.clone()),
                     plan: None,
@@ -109,16 +175,6 @@ impl AgentModelSource for Models {
 
     fn session_folder<'a>(&'a self, session: &'a str) -> CatalogRead<'a, Option<String>> {
         Box::pin(self.runtime.session_folder(session))
-    }
-}
-
-fn display_name(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "Claude Code",
-        AgentKind::Codex => "Codex",
-        AgentKind::Cursor => "Cursor",
-        AgentKind::Grok => "Grok",
-        AgentKind::Antigravity => "Antigravity",
     }
 }
 

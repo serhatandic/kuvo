@@ -1,0 +1,1812 @@
+{
+ "about": "Where new projects go on a box (PROTOCOL.md, \"Work\"): none until you pick a folder, a folder checked before it's kept, and a change made only while it's still as you read it; a project made there, and what's asked before a bot does something answered.",
+ "scenarios": [
+  {
+   "name": "where new projects go: none at first, a folder that isn't one refused, one picked kept, and a change on what was read",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": null,
+       "keepsAwake": "<absent>"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {},
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Send {projectsFolder}: a full path, or null."
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "   "
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Say which folder (projectsFolder), as a full path."
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "projects"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Give a full path to the folder."
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/README.md",
+       "text": "Projects\n"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": "<string>",
+       "suggested": "<absent>"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": null,
+      "was": {
+       "projectsFolder": null
+      }
+     },
+     "why": "Changed since it was read: refused.",
+     "expect": {
+      "status": 409,
+      "json": {
+       "message": "It changed since you read it."
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": null,
+      "was": "x"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Send was as the fields you read."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": "<string>"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": null
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": null
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "what bots just did to their sessions: none on a new box",
+   "steps": [
+    {
+     "send": "GET kuvo/work/oversight",
+     "expect": {
+      "status": 200,
+      "json": {
+       "marks": []
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/oversight",
+     "expect": {
+      "status": 405
+     }
+    }
+   ]
+  },
+  {
+   "name": "what's asked before a bot does it: nothing on a new box",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "expect": {
+      "status": 200,
+      "json": {
+       "asks": []
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a bot's work: none yet for a new bot, and a bot that isn't named or isn't here",
+   "steps": [
+    {
+     "given": {
+      "bot": {
+       "id": "bot_ada",
+       "name": "Ada",
+       "session": "ses_ada"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work?bot=bot_ada",
+     "expect": {
+      "status": 200,
+      "json": {
+       "bot": "bot_ada",
+       "sessions": [],
+       "answered": [],
+       "today": {
+        "started": 0,
+        "answered": 0,
+        "working": 0,
+        "tokens": 0,
+        "cost": "<absent>"
+       },
+       "limits": null,
+       "asks": [],
+       "projects": [],
+       "activity": {
+        "working": 0,
+        "asking": 0,
+        "sessions": []
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work",
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Name the bot: kuvo/work?bot=<id>."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work?bot=bot_nobody",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "There's no such bot here."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a client makes a project where new projects go: a git repository or a plain folder, and what won't do refused",
+   "steps": [
+    {
+     "send": "POST kuvo/projects/new",
+     "body": [],
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Send {name}, and git or clone."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "  "
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Say what it's called (name)."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tidepool"
+     },
+     "why": "No projects folder picked yet.",
+     "expect": {
+      "status": 403,
+      "json": {
+       "message": "There's no projects folder here yet: the user picks one.",
+       "needs": "projectsFolder"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tidepool",
+      "folder": "projects/tidepool"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Give the folder as a full path, like ~/projects/tidepool."
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/notes/todo.md",
+       "text": "mine\n"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "???"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "??? can't be a folder's name: use letters or numbers."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Sneaky",
+      "clone": "--upload-pack=touch x"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "--upload-pack=touch x isn't a repository address git can clone: give an https or ssh one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Local",
+      "clone": "/etc"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "/etc isn't a repository address git can clone: give an https or ssh one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Notes"
+     },
+     "why": "A folder with files in it already.",
+     "expect": {
+      "status": 409,
+      "json": {
+       "message": {
+        "<contains>": "already, with files in it. Pick another name."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tide Pool",
+      "git": false
+     },
+     "expect": {
+      "status": 201,
+      "json": {
+       "project": {
+        "directory": "<string>",
+        "folders": [],
+        "addedByBox": true,
+        "name": "Tide Pool",
+        "madeBy": "<absent>"
+       },
+       "text": {
+        "<contains>": ", a plain folder, on this machine. It's in the sidebar; start sessions in it with start_session (project: \"Tide Pool\")."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "Tide Pool"
+     },
+     "expect": {
+      "status": 409,
+      "json": {
+       "message": {
+        "<contains>": "already: Tide Pool."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/projects/new",
+     "body": {
+      "name": "lighthouse"
+     },
+     "expect": {
+      "status": 201,
+      "json": {
+       "project": {
+        "directory": "<string>",
+        "folders": [],
+        "addedByBox": true,
+        "name": "<absent>"
+       },
+       "text": {
+        "<contains>": ", a new git repository, on this machine."
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/projects",
+     "expect": {
+      "status": 200
+     }
+    }
+   ]
+  },
+  {
+   "name": "what's asked answered: allow with the projects folder picked, deny, and one answered or not asked",
+   "steps": [
+    {
+     "send": "POST kuvo/work/asks/wak_none",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "That's been answered, or it isn't asked any more."
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_harbor",
+       "session": "ses_chat",
+       "project": "Harbor",
+       "git": false
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_reef",
+       "session": "ses_chat",
+       "project": "Reef"
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_clone",
+       "session": "ses_chat",
+       "project": "B",
+       "action": "cloneProject",
+       "clone": "https://example.com/a/b"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/asks",
+     "expect": {
+      "status": 200,
+      "json": {
+       "asks": {
+        "<length>": 3,
+        "<includes>": [
+         {
+          "id": "wak_harbor",
+          "action": "makeProject",
+          "project": "Harbor",
+          "folder": null,
+          "given": "<absent>"
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "maybe"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Answer allow, always or deny."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Pick the folder new projects go in."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow",
+      "folder": "relative"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Give a full path to the folder."
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/README.md",
+       "text": "Projects\n"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow",
+      "folder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "allow",
+       "isError": false,
+       "text": {
+        "<contains>": ", a plain folder, on this machine."
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/settings",
+     "why": "The folder picked with the answer is where new projects go now.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "projectsFolder": "<string>"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_harbor",
+     "body": {
+      "answer": "allow"
+     },
+     "why": "Answered once: another client finds it gone.",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "That's been answered, or it isn't asked any more."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_reef",
+     "body": {
+      "answer": "deny"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "deny",
+       "isError": true,
+       "text": "The user said no to making Reef. Don't ask again for it: go on without it, or ask them in a line what they'd like instead."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_clone",
+     "body": {
+      "answer": "deny",
+      "overnight": true
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "deny",
+       "isError": true,
+       "text": "No one could answer cloning https://example.com/a/b as B overnight, so it's no for now. Go on without it; it waits for the user in the morning report."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/asks",
+     "expect": {
+      "status": 200,
+      "json": {
+       "asks": []
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "an answer given after its tool stopped waiting is told to its conversation",
+   "steps": [
+    {
+     "given": {
+      "session": {
+       "id": "ses_late",
+       "title": "Planning"
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{work}}/projects/README.md",
+       "text": "Projects\n"
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/work/settings",
+     "body": {
+      "projectsFolder": "{{work}}/projects"
+     },
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_late",
+       "session": "ses_late",
+       "project": "Late",
+       "git": false,
+       "late": true
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/work/asks/wak_late",
+     "body": {
+      "answer": "allow"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "answer": "allow",
+       "isError": false
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_late/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[The user answered] Made Late at "
+       },
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "from": "Your answer",
+          "line": {
+           "<contains>": "You answered: Made Late at "
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "what can't answer now: an account's paid models and one model held, until its account changes or a session on it answers",
+   "steps": [
+    {
+     "send": "GET kuvo/work/unanswering",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": []
+      }
+     }
+    },
+    {
+     "given": {
+      "models": [
+       {
+        "id": "opus",
+        "providerID": "opencode",
+        "name": "Opus",
+        "cost": [
+         {
+          "input": 5,
+          "output": 25
+         }
+        ]
+       },
+       {
+        "id": "flash-free",
+        "providerID": "opencode",
+        "name": "Flash Free",
+        "cost": [
+         {
+          "input": 0,
+          "output": 0
+         }
+        ]
+       },
+       {
+        "id": "flash",
+        "providerID": "opencode-go",
+        "name": "Flash",
+        "cost": [
+         {
+          "input": 0.2,
+          "output": 0.8
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_paid",
+       "title": "Build",
+       "model": {
+        "providerID": "opencode",
+        "id": "opus"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{home}}/run/work/unanswering.json",
+       "text": "[{\"key\": \"opencode\", \"scope\": \"provider\", \"paid\": true, \"why\": \"Insufficient account funds\", \"at\": 1000, \"until\": 9999999999999}, {\"key\": \"opencode-go/flash\", \"scope\": \"model\", \"why\": \"Rate limited\", \"at\": 1000, \"until\": 9999999999999}, {\"key\": \"gone\", \"scope\": \"provider\", \"why\": \"Over\", \"at\": 1, \"until\": 2}]"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "One over by now isn't held; a hold on an account's paid ones names the models it covers.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": [
+        {
+         "provider": "opencode",
+         "model": "<absent>",
+         "only": "paid",
+         "models": [
+          "opus"
+         ],
+         "why": "Insufficient account funds",
+         "since": 1000,
+         "until": 9999999999999
+        },
+        {
+         "provider": "opencode-go",
+         "model": "flash",
+         "only": "<absent>",
+         "models": "<absent>",
+         "why": "Rate limited",
+         "since": 1000,
+         "until": 9999999999999
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "credential.updated",
+       "data": null
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "credential.switched",
+       "data": {
+        "integrationID": "opencode-go",
+        "credentialID": "cred_1"
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "A new key for that account offers its models again; the bare credential.updated says nothing.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": [
+        {
+         "provider": "opencode",
+         "only": "paid"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_paid"
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "A paid model of it answering: the account can again.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": []
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a session's starter hears it finished, failed or asks",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "models": [
+       {
+        "id": "opus",
+        "providerID": "opencode",
+        "name": "Opus",
+        "cost": [
+         {
+          "input": 5,
+          "output": 25
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_step",
+       "title": "Build the app",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_step",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "## Built it\n- with tests"
+          }
+         ],
+         "time": {
+          "created": 20
+         }
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "outcome": "succeeded",
+         "time": {
+          "created": 21
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_step"
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[Session finished] \"Build the app\" in app (address ses_step), after "
+       },
+       "delivery": "queue",
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "from": "Its sessions",
+          "line": "“Build the app” finished"
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": ":\nBuilt it with tests"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_pick",
+       "title": "Pick",
+       "directory": "{{work}}/app",
+       "model": {
+        "providerID": "opencode",
+        "id": "opus"
+       },
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_pick",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_4",
+         "type": "idle",
+         "outcome": "failed",
+         "error": {
+          "type": "provider.quota",
+          "message": "Insufficient account funds"
+         },
+         "time": {
+          "created": 30
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.failed",
+       "data": {
+        "sessionID": "ses_pick",
+        "error": {
+         "type": "provider.quota",
+         "message": "Insufficient account funds"
+        }
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[Session failed] \"Pick\" in app (address ses_pick) stopped: No paid opencode model can answer now: Insufficient account funds (since "
+       },
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "line": "“Pick” stopped with an error"
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/unanswering",
+     "why": "The account that failed is held back.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "held": [
+        {
+         "provider": "opencode",
+         "only": "paid",
+         "models": [
+          "opus"
+         ],
+         "why": "Insufficient account funds"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "permission.asked",
+       "data": {
+        "id": "per_1",
+        "sessionID": "ses_step",
+        "action": "edit",
+        "resources": [
+         "a.txt"
+        ]
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": "[Session asks] \"Build the app\" in app (address ses_step) asks to edit files: a.txt (ask per_1). Answer with answer_ask if it's yours to allow, or tell the user in a line and carry on.",
+       "delivery": "steer",
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "line": "“Build the app” asks something"
+         }
+        }
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a session you stopped, or one you wrote to yourself, tells its starter nothing",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_mine",
+       "title": "Mine",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_mine",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "Fix the header",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Fixed."
+          }
+         ]
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_mine"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_held",
+       "title": "Held",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_held",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_5",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Half done."
+          }
+         ]
+        },
+        {
+         "id": "msg_6",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "write": {
+       "path": "{{home}}/run/work/stopped.json",
+       "text": "{\"ses_held\": 99999999999999}"
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_held"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_told",
+       "title": "Told",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_told",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_7",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Done here."
+          }
+         ]
+        },
+        {
+         "id": "msg_8",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_told"
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "why": "Only the one asked for by its lead is told: the user's own turn and the stopped one say nothing.",
+      "json": {
+       "text": {
+        "<contains>": "[Session finished] \"Told\""
+       },
+       "metadata": {
+        "kuvo": {
+         "note": {
+          "line": "“Told” finished"
+         }
+        }
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a finish waits for what its session left running, then its starter hears it",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_build",
+       "title": "Build",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_build",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "Started the build."
+          }
+         ]
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "shell": {
+       "id": "shl_1",
+       "session": "ses_build",
+       "folder": "{{work}}/app",
+       "command": "npm run build"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/background",
+     "why": "What it left running, as the engine's place says.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "sessions": {
+        "ses_build": {
+         "commands": 1,
+         "subagents": 0
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "engineEvent": {
+       "type": "session.execution.succeeded",
+       "data": {
+        "sessionID": "ses_build"
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "shellEnded": {
+       "id": "shl_1"
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "why": "Told once what it left running is over.",
+      "json": {
+       "text": {
+        "<contains>": "[Session finished] \"Build\" in app (address ses_build)"
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/background",
+     "expect": {
+      "status": 200,
+      "json": {
+       "sessions": {}
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "what happened while the box was down is told as it starts, and an answer given late",
+   "steps": [
+    {
+     "given": {
+      "write": {
+       "path": "{{home}}/run/work/told.json",
+       "text": "{\"since\": 0, \"sessions\": {}}"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_other",
+       "title": "Other",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_done",
+       "title": "Done meanwhile",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished",
+          "asks"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "messages": {
+       "session": "ses_done",
+       "rows": [
+        {
+         "id": "msg_1",
+         "type": "user",
+         "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nBuild it.",
+         "time": {
+          "created": 10
+         }
+        },
+        {
+         "id": "msg_2",
+         "type": "assistant",
+         "content": [
+          {
+           "type": "text",
+           "text": "All done."
+          }
+         ]
+        },
+        {
+         "id": "msg_3",
+         "type": "idle",
+         "outcome": "succeeded"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "given": {
+      "workAsk": {
+       "id": "wak_late",
+       "session": "ses_other",
+       "project": "Late",
+       "late": true,
+       "answered": "Made Late."
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[Session finished] \"Done meanwhile\" in app (address ses_done)"
+       }
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_other/prompt",
+      "json": {
+       "text": "[The user answered] Made Late."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "Stop on a session someone started: what it left running and its wake-ups end, and its lead hears the user stopped it",
+   "steps": [
+    {
+     "send": "GET kuvo/work/asks",
+     "why": "The box running, following its engine.",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "send": "POST kuvo/sessions/ses_nobody/stop",
+     "body": {},
+     "why": "A conversation that isn't anywhere here.",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "There's no such conversation here."
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead",
+       "directory": "{{work}}/app"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_step",
+       "title": "Build the app",
+       "directory": "{{work}}/app",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead",
+         "wake": [
+          "finished"
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "shell": {
+       "id": "sh_1",
+       "session": "ses_step",
+       "folder": "{{work}}/app",
+       "command": "npm test"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/background",
+     "expect": {
+      "status": 200,
+      "json": {
+       "sessions": {
+        "ses_step": {
+         "commands": 1
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "wake": {
+       "session": "ses_step",
+       "in": 3600,
+       "letters": "abc",
+       "note": "Look again."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/sessions/ses_step/stop",
+     "body": {},
+     "expect": {
+      "status": 200,
+      "json": {
+       "paused": true
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "DELETE",
+      "path": "/api/shell/sh_1"
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_lead/prompt",
+      "json": {
+       "text": {
+        "<contains>": "[Session stopped] \"Build the app\" in app (address ses_step) was stopped by the user."
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/work/background",
+     "why": "Its command ended with it.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "sessions": {}
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "Stop All stops what a bot's work has going and holds the bot until you write to it",
+   "steps": [
+    {
+     "given": {
+      "bot": {
+       "id": "bot_ada1",
+       "name": "Ada",
+       "session": "ses_ada"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/bots/bot_nobody/stop-all",
+     "expect": {
+      "status": 404
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_one",
+       "title": "One",
+       "running": true,
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_ada",
+         "wake": [
+          "finished"
+         ],
+         "by": {
+          "bot": "bot_ada1",
+          "name": "Ada"
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_two",
+       "title": "Two",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_ada",
+         "wake": [
+          "finished"
+         ],
+         "by": {
+          "bot": "bot_ada1",
+          "name": "Ada"
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "wake": {
+       "session": "ses_two",
+       "in": 3600,
+       "letters": "abc",
+       "note": "Look again."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/bots/bot_ada1/stop-all",
+     "why": "The one at work, and the one only waiting on a timer of its own.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "stopped": 2
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_one/interrupt"
+     }
+    },
+    {
+     "send": "GET kuvo/sessions/ses_one/queue",
+     "why": "A turn stopped: what waits is held, as Stop does.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "paused": true
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/sessions/ses_ada/queue",
+     "why": "The bot hears it as it goes on, not now.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "paused": true
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/sessions/ses_two/queue",
+     "expect": {
+      "status": 200,
+      "json": {
+       "paused": false
+      }
+     },
+     "why": "No turn ran there: its next message just goes."
+    }
+   ]
+  }
+ ]
+}

@@ -1,4 +1,8 @@
-use std::io;
+mod record_edits;
+
+pub use record_edits::{RecordEditAnswer, RecordEditCall, RecordEditFuture, RecordEdits};
+
+use std::{io, sync::Arc};
 
 use http::StatusCode;
 use kuvo_protocol::{
@@ -16,13 +20,21 @@ use tokio::sync::{oneshot, watch};
 use crate::{
     Error, SetupHandle,
     actor::{Command, Request, Response, Unlink, View, computer_requests::ComputerRequest},
-    edits::{Edit, Submitter, Target},
+    edits::Submitter,
     preferences::PersonalityChange,
     seed::source::Selection,
 };
 
 impl SetupHandle {
     pub fn register(&self, routes: &mut Registry) {
+        self.register_with_record_edits(routes, None);
+    }
+
+    pub fn register_with_record_edits(
+        &self,
+        routes: &mut Registry,
+        records: Option<Arc<dyn RecordEdits>>,
+    ) {
         let setup = self.clone();
         routes.register::<get_kuvo_setup::Spec, _, _>(Access::Any, move |_| {
             let answer = typed::<get_kuvo_setup::Spec, 200>(setup.views.borrow().setup.clone());
@@ -260,7 +272,7 @@ impl SetupHandle {
         self.register_unlink::<delete_kuvo_computers_key::Spec>(routes, None);
         self.register_unlink::<post_kuvo_computers_key_unlink::Spec>(routes, Some(false));
         self.register_unlink::<post_kuvo_computers_key_unlink_and_wipe::Spec>(routes, Some(true));
-        self.register_edits(routes);
+        self.register_edits(routes, records);
         self.register_personalities(routes);
         self.register_clock(routes);
     }
@@ -327,77 +339,6 @@ impl SetupHandle {
             .await
             .map_err(|_| Error::SetupUnavailable)?;
         result.await.map_err(|_| Error::SetupUnavailable)?
-    }
-
-    fn register_edits(&self, routes: &mut Registry) {
-        let setup = self.clone();
-        routes.register::<get_kuvo_data_edits::Spec, _, _>(Access::DesktopOrPaired, move |call| {
-            let setup = setup.clone();
-            async move {
-                submitter(&call.request.caller)?;
-                let query = call.request.path.split_once('?').map(|(_, query)| query);
-                let url = reqwest::Url::parse(&format!(
-                    "http://localhost/?{}",
-                    query.unwrap_or_default()
-                ))
-                .map_err(|_| Refusal::new(StatusCode::BAD_REQUEST, "Name the record to edit."))?;
-                let kind = url
-                    .query_pairs()
-                    .find(|(key, _)| key == "kind")
-                    .map(|(_, kind)| kind.into_owned());
-                let target: Target =
-                    serde_json::from_value(json!({"kind": kind})).map_err(|_| {
-                        Refusal::new(StatusCode::BAD_REQUEST, "Name the record to edit.")
-                    })?;
-                respond(setup.request(Command::ReadEdit(target)).await?)
-            }
-        });
-
-        let setup = self.clone();
-        routes.register::<post_kuvo_data_edits::Spec, _, _>(Access::DesktopOrPaired, move |call| {
-            let setup = setup.clone();
-            async move {
-                let by = submitter(&call.request.caller)?;
-                if call.request.body.len() > 512 * 1024 {
-                    return Err(Refusal::new(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "This draft is too large to send to the owner.",
-                    ));
-                }
-                let edit = Edit::read(read(&call.request.body)?).map_err(refusal)?;
-                let answer = setup.request(Command::SubmitEdit(edit, by)).await?;
-                if answer.status == 202 {
-                    typed::<post_kuvo_data_edits::Spec, 202>(answer.value)
-                } else {
-                    respond(answer)
-                }
-            }
-        });
-
-        let setup = self.clone();
-        routes.register::<get_kuvo_data_edits_outbox::Spec, _, _>(
-            Access::DesktopOrPaired,
-            move |call| {
-                let setup = setup.clone();
-                async move {
-                    submitter(&call.request.caller)?;
-                    respond(setup.request(Command::EditOutbox).await?)
-                }
-            },
-        );
-
-        let setup = self.clone();
-        routes.register::<get_kuvo_data_edits_operation::Spec, _, _>(
-            Access::DesktopOrPaired,
-            move |call| {
-                let setup = setup.clone();
-                async move {
-                    submitter(&call.request.caller)?;
-                    let operation = decoded_id(call.param("operation"))?;
-                    respond(setup.request(Command::EditReceipt(operation)).await?)
-                }
-            },
-        );
     }
 
     fn register_personalities(&self, routes: &mut Registry) {

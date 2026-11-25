@@ -1,18 +1,19 @@
 //! Counts derived from the same local snapshot as the session list.
 
-use std::{collections::BTreeMap, io, path::Path, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
 use kuvo_protocol::routes::{get_kuvo_waiting as read, get_kuvo_waiting_events as events};
 use kuvo_server::{Access, JsonLine, Registry, RouteReply};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
-use crate::{Engine, LocalSessions, session_list::Snapshot, sessions::typed};
+use crate::{Engine, LocalSessions, session_list::Snapshot};
 
 /// Current asking activity reported by peers. The work runtime filters away
 /// computers and superseded copies before publishing this snapshot.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PeerWaiting {
     pub session: String,
     pub line: Vec<String>,
@@ -187,40 +188,77 @@ async fn bot_count(folder: &Path, list: Option<&Snapshot>, peers: &[PeerWaiting]
     asking
 }
 
-async fn counts(home: &Path, list: Option<Arc<Snapshot>>, peers: &[PeerWaiting]) -> Value {
+async fn counts(
+    home: &Path,
+    list: Option<Arc<Snapshot>>,
+    peers: &[PeerWaiting],
+) -> read::Status200 {
     let list = list.as_deref();
     let bots = home.join("bots");
     let queues = home.join("run/work-queue/queues");
     let (bots, queue) = tokio::join!(bot_count(&bots, list, peers), queue_count(&queues, list));
-    json!({"sessions":list.map_or(0, Snapshot::waiting_sessions),"bots":bots,"queue":queue})
+    read::Status200 {
+        sessions: list.map_or(0, Snapshot::waiting_sessions).into(),
+        bots: bots.into(),
+        queue: queue.into(),
+        dock: None,
+        pending_computers: None,
+    }
 }
 
-pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Registry) {
-    let home = engine.home.clone();
-    let session_list = list.clone();
-    let activity = engine.peer_waiting.clone();
-    let here = engine.clone();
-    routes.register::<read::Spec, _, _>(Access::Any, move |call| {
-        let home = home.clone();
-        let mut list = session_list.clone();
-        let engine = here.clone();
-        let peers = activity
+impl Engine {
+    async fn waiting_list(
+        &self,
+        list: &mut LocalSessions,
+        cancel: &CancellationToken,
+    ) -> Option<Arc<Snapshot>> {
+        let snapshot = list.snapshot_now();
+        if snapshot.is_none()
+            && self
+                .acquire(crate::lifetime::Demand::Passive)
+                .await
+                .is_some()
+        {
+            return list.current(cancel).await.ok();
+        }
+        snapshot
+    }
+
+    /// The Helper reads the same list and counts as the Waiting route, from one snapshot.
+    pub async fn waiting_snapshot(
+        &self,
+        list: &mut LocalSessions,
+        cancel: &CancellationToken,
+    ) -> (Option<Value>, read::Status200) {
+        let snapshot = self.waiting_list(list, cancel).await;
+        let peers = self
+            .peer_waiting
             .as_ref()
             .map(|activity| activity.borrow().clone())
             .unwrap_or_default();
+        let record = snapshot
+            .as_ref()
+            .and_then(|snapshot| serde_json::to_value(snapshot.as_ref()).ok());
+        (record, counts(&self.home, snapshot, &peers).await)
+    }
+}
+
+pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Registry) {
+    let session_list = list.clone();
+    let here = engine.clone();
+    routes.register::<read::Spec, _, _>(Access::Any, move |call| {
+        let mut list = session_list.clone();
+        let engine = here.clone();
         async move {
-            let mut snapshot = list.snapshot_now();
-            if snapshot.is_none()
-                && engine
-                    .acquire(crate::lifetime::Demand::Passive)
-                    .await
-                    .is_some()
-            {
-                snapshot = list.current(&call.cancel).await.ok();
-            }
-            Ok(RouteReply::json::<200>(typed(
-                counts(&home, snapshot, &peers).await,
-            )?))
+            let snapshot = engine.waiting_list(&mut list, &call.cancel).await;
+            let peers = engine
+                .peer_waiting
+                .as_ref()
+                .map(|activity| activity.borrow().clone())
+                .unwrap_or_default();
+            Ok(RouteReply::json::<200>(
+                counts(&engine.home, snapshot, &peers).await,
+            ))
         }
     });
 
@@ -233,21 +271,18 @@ pub(crate) fn register(engine: &Engine, list: LocalSessions, routes: &mut Regist
         let mut activity = activity.clone();
         let engine = here.clone();
         async move {
-            if list.snapshot_now().is_none() && engine.acquire(crate::lifetime::Demand::Passive).await.is_some() {
-                let _ = list.current(&call.cancel).await;
-            }
+            let _ = engine.waiting_list(&mut list, &call.cancel).await;
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
-                let mut last = Value::Null;
+                let mut last = None;
                 let mut next = tokio::time::interval(Duration::from_secs(1));
                 next.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     let snapshot = list.snapshot_now();
                     let peers = activity.as_ref().map(|activity| activity.borrow().clone()).unwrap_or_default();
                     let current = counts(&home, snapshot, &peers).await;
-                    if current != last {
-                        let value: events::Status200 = serde_json::from_value(current.clone()).map_err(io::Error::other)?;
-                        yield JsonLine::new(value)?;
-                        last = current;
+                    if last.as_ref() != Some(&current) {
+                        yield JsonLine::new(current.clone())?;
+                        last = Some(current);
                     }
                     tokio::select! {
                         changed = list.changed() => if !changed { break; },

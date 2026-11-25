@@ -41,3 +41,7 @@ tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+kuvo_keeper = { path = "../kuvo_keeper" }
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }

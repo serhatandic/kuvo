@@ -12,8 +12,16 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
+    NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
+        TCP_TABLE_OWNER_PID_LISTENER,
+    },
     System::{
         Console::*,
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        },
         JobObjects::*,
         SystemInformation::GetSystemDirectoryW,
         SystemServices::{JOB_OBJECT_QUERY, JOB_OBJECT_TERMINATE},
@@ -581,4 +589,71 @@ impl Adopted {
             _ => Err(io::Error::last_os_error()),
         }
     }
+}
+
+pub(super) fn parents() -> io::Result<std::collections::HashMap<u32, u32>> {
+    // SAFETY: a process snapshot takes no buffers.
+    let snapshot = owned(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) })?;
+    let mut entry = PROCESSENTRY32W {
+        dwSize: size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut parents = std::collections::HashMap::new();
+    // SAFETY: the snapshot is open and the entry states its own size.
+    let mut more = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    while more {
+        parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } != 0;
+    }
+    Ok(parents)
+}
+
+pub(super) fn tcp_listeners() -> io::Result<Vec<(u32, u16)>> {
+    // The port is in network byte order in the low 16 bits.
+    let port = |field: u32| u16::from_be(field as u16);
+    let mut found = listeners(2, |row: &MIB_TCPROW_OWNER_PID| {
+        (row.dwOwningPid, port(row.dwLocalPort))
+    })?;
+    found.extend(listeners(23, |row: &MIB_TCP6ROW_OWNER_PID| {
+        (row.dwOwningPid, port(row.dwLocalPort))
+    })?);
+    Ok(found)
+}
+
+/// One address family's listening table: a count, then its rows.
+fn listeners<Row>(family: u32, read: impl Fn(&Row) -> (u32, u16)) -> io::Result<Vec<(u32, u16)>> {
+    let mut buffer: Vec<u64> = Vec::new();
+    let mut size = 0;
+    loop {
+        // SAFETY: the buffer is writable for `size` bytes, as the last call asked.
+        let status = unsafe {
+            GetExtendedTcpTable(
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+                0,
+                family,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            )
+        };
+        match status {
+            NO_ERROR => break,
+            ERROR_INSUFFICIENT_BUFFER => buffer.resize((size as usize).div_ceil(8), 0),
+            error => return Err(io::Error::from_raw_os_error(error as i32)),
+        }
+    }
+    let Some(&first) = buffer.first() else {
+        return Ok(Vec::new());
+    };
+    let count = (first as u32) as usize;
+    let offset = size_of::<u32>().next_multiple_of(align_of::<Row>());
+    if offset + count * size_of::<Row>() > buffer.len() * 8 {
+        return Err(io::Error::other("a short TCP table"));
+    }
+    // SAFETY: the table holds `count` rows after its count, within the checked buffer.
+    let rows = unsafe {
+        std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>().add(offset).cast::<Row>(), count)
+    };
+    Ok(rows.iter().map(read).collect())
 }

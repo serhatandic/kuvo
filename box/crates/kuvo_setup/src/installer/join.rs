@@ -209,8 +209,10 @@ async fn join_and_reinstall(
     input: &str,
     staged: bool,
 ) -> Result<Joined, Error> {
-    let joined = join_at(home, name, input, staged).await?;
-    if let Err(error) = wipe::finish_reinstall(home.root()) {
+    let (joined, prior) = join_at(home, name, input, staged).await?;
+    if let Some(receipt) = prior.receipt()
+        && let Err(error) = wipe::finish_reinstall(home.root(), receipt)
+    {
         eprintln!("clearing the former installation’s wipe receipt: {error}");
     }
     Ok(joined)
@@ -251,14 +253,19 @@ fn read_join_code(input: &str) -> Result<(Code, Host), Error> {
     Ok((code, primary))
 }
 
-async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result<Joined, Error> {
+async fn join_at(
+    home: &Home,
+    name: String,
+    input: &str,
+    staged: bool,
+) -> Result<(Joined, wipe::InstallerWipe), Error> {
     let (code, primary) = read_join_code(input)?;
-    let prior = wipe::install_state(home.root()).map_err(|source| Error::File {
+    let prior = wipe::installer_wipe(home.root(), true).map_err(|source| Error::File {
         action: "checking the earlier wipe at",
         path: home.root().to_owned(),
         source,
     })?;
-    if let Some(message) = prior.as_ref().and_then(wipe::InstallState::pending_message) {
+    if let Some(message) = prior.pending_message() {
         return Err(refused(message));
     }
     let ssh_account = if staged {
@@ -395,10 +402,13 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
                 && !claim.credentials_ack_pending
         })
     {
-        return Ok(Joined {
-            setup: code.setup,
-            primary: code.primary,
-        });
+        return Ok((
+            Joined {
+                setup: code.setup,
+                primary: code.primary,
+            },
+            prior,
+        ));
     }
     let identity = Identity::read(&link)?;
     if !already_joined && cancellation.is_none() {
@@ -419,6 +429,7 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         },
         grants: HashMap::new(),
         peers: Vec::new(),
+        legacy_enrollers: vec![],
     });
     let local = identity.self_peer(KIND, &name);
     let mut given = Applicant {
@@ -448,7 +459,8 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
             &mut given,
             problem,
         )
-        .await;
+        .await
+        .map(|joined| (joined, prior));
     }
     let mut copy = None;
     if !already_joined {
@@ -511,7 +523,8 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
                 &mut given,
                 problem,
             )
-            .await;
+            .await
+            .map(|joined| (joined, prior));
         }
         let accepted = accepted?.ok_or(Error::Invalid("installer membership"))?;
         adopt(&mut link, &identity, &code, accepted.doc)?;
@@ -606,10 +619,13 @@ async fn join_at(home: &Home, name: String, input: &str, staged: bool) -> Result
         claim.credentials_ack_pending = false;
         saved_link.keep_claim(&mut link, claim)?;
     }
-    Ok(Joined {
-        setup: code.setup,
-        primary: code.primary,
-    })
+    Ok((
+        Joined {
+            setup: code.setup,
+            primary: code.primary,
+        },
+        prior,
+    ))
 }
 
 async fn cancel_join(

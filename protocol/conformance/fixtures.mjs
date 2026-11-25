@@ -31,7 +31,7 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
   const botsRoot = path.join(home, "bots");
   const wakesRoot = path.join(home, "wakes");
   const vars = { chats: path.join(home, "chats"), skills: path.join(home, "config", "opencode", "skills"),
-    work: path.join(root, "work"), keys: path.join(home, "box", "keys") };
+    work: path.join(root, "work"), keys: path.join(home, "box", "keys"), home };
   let browserProcess;
 
   const look = { color: "mint", shape: "round", face: "calm" };
@@ -43,7 +43,7 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
       // The resident starts services itself.
     },
     session(given) {
-      engine.sessions.push(sessionOf(given));
+      engine.sessions.push({ ...sessionOf(given), ...(given.model ? { model: given.model } : {}), ...(given.metadata ? { metadata: given.metadata } : {}) });
       if (given.running) engine.running.add(given.id);
       engine.emit({ type: "session.created", data: { sessionID: given.id } });
       if (given.running) engine.emit({ type: "session.execution.started", data: { sessionID: given.id } });
@@ -118,6 +118,40 @@ export function routeFixtures({ binary, home, root, env, engine, children }) {
         throw new Error(`Fixture write escapes its scratch folder: ${given.path}`);
       }
       write(given.path, given.text);
+    },
+    // The engine's models, as `api/model` lists them.
+    models(given) {
+      engine.models = given;
+    },
+    // A session's messages, oldest first, as its conversation has them (read newest first).
+    messages(given) {
+      engine.orderedMessages = true;
+      engine.messages.set(given.session, given.rows);
+    },
+    // A command a session left running in its folder, as the engine lists it.
+    shell(given) {
+      engine.shells = [...(engine.shells ?? []), { id: given.id, status: "running", command: given.command ?? "npm test", folder: given.folder, metadata: { sessionID: given.session }, time: { started: Date.now() } }];
+      engine.emit({ type: "shell.created", location: { directory: given.folder }, data: { id: given.id } });
+    },
+    // That command ended.
+    shellEnded(given) {
+      const job = (engine.shells ?? []).find(each => each.id === given.id);
+      engine.shells = (engine.shells ?? []).filter(each => each.id !== given.id);
+      engine.emit({ type: "shell.exited", location: { directory: job?.folder }, data: { id: given.id } });
+    },
+    // One of the engine's events, as its feed tells it.
+    engineEvent(given) {
+      engine.emit(given);
+    },
+    // What a conversation asks before it's done (`run/work/asks.json`), asked just now: making a
+    // project unless it says otherwise.
+    workAsk(given) {
+      const file = path.join(home, "run", "work", "asks.json");
+      const asks = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).asks : [];
+      const { id, session, name = "Your chat", project, action = "makeProject", clone, late, git } = given;
+      const made = { name: project, ...(git === undefined ? {} : { git }), ...(clone ? { clone } : {}) };
+      const ask = { id, action, session, name, project, ...(clone ? { clone } : {}), folderName: project.toLowerCase(), folder: null, at: Date.now(), given: made, ...(late ? { late } : {}), ...(given.answered ? { answered: { answer: "allow", text: given.answered, isError: false, at: Date.now() } } : {}) };
+      write(file, JSON.stringify({ asks: [...asks, ask] }));
     },
     // What an agent browsing here asks you for, as the browser's keeper leaves it for the bridge
     // (`run/browser-asks.json`, while the keeper runs: a process named as it is stands in for it).

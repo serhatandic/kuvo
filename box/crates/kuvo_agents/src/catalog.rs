@@ -24,6 +24,8 @@ pub struct Model {
     pub hidden: bool,
     pub retiring: bool,
     pub provisional: bool,
+    /// How much it holds, in tokens, where its agent says (or its list does).
+    pub context: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,6 +67,16 @@ impl Roster {
 }
 
 impl Entry {
+    /// Whether its last list is every model it runs (one missing from it is gone).
+    pub async fn lists_every_model(&self) -> bool {
+        self.model_cache
+            .lock()
+            .await
+            .last
+            .as_ref()
+            .is_some_and(|models| models.complete)
+    }
+
     async fn catalog(&self, refresh: bool) -> CatalogEntry {
         loop {
             let (epoch, read) = {

@@ -6,7 +6,7 @@ import { relayLeaseStandIn } from "../../box/bridge-tests/relay-lease-stand-in.j
 import { boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { standInEngine } from "./engine.mjs";
 
-export async function bench(t, { handover = false } = {}) {
+export async function bench(t, { handover = false, orderedMessages = false } = {}) {
   const binary = boxBinary();
   const root = fs.realpathSync(scratch());
   const children = [];
@@ -25,6 +25,7 @@ export async function bench(t, { handover = false } = {}) {
       const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off", ...configure(folder) };
       const home = canonical ? path.join(env.HOME, ".kuvo-code") : path.join(folder, "box");
       const engine = await standInEngine(folder, env);
+      engine.orderedMessages = orderedMessages;
       engines.push(engine);
       // This fixture seeds records in the current layout before either resident starts.
       privateHome(home);

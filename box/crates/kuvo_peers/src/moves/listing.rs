@@ -101,7 +101,8 @@ pub(super) fn supports_moves(view: &View, key: &str, checkpointed: bool) -> bool
         .announced
         .get(key)
         .and_then(|entry| entry.features.as_ref());
-    features.is_none_or(|features| features.iter().any(|feature| feature == "moves"))
+    view.work_admitted(key)
+        && features.is_none_or(|features| features.iter().any(|feature| feature == "moves"))
         && (!checkpointed
             || features.is_some_and(|features| {
                 features
@@ -313,6 +314,77 @@ pub(super) fn save_outcome(
     )
 }
 
+#[derive(Serialize)]
+struct Stays {
+    #[serde(skip_serializing_if = "zero")]
+    sessions: usize,
+    #[serde(skip_serializing_if = "zero")]
+    asks: usize,
+}
+
+fn zero(count: &usize) -> bool {
+    *count == 0
+}
+
+#[derive(Deserialize)]
+struct WorkAsks {
+    asks: Vec<WorkAsk>,
+}
+
+#[derive(Deserialize)]
+struct WorkAsk {
+    id: String,
+    action: String,
+    session: Option<String>,
+    answered: Option<Value>,
+}
+
+fn stays_here(view: &View, run: &Path, root: &str) -> Stays {
+    let sessions = view.local.list.as_ref().map_or(0, |list| {
+        list.sessions
+            .keys()
+            .filter(|id| {
+                let mut above = id.as_str();
+                for _ in 0..20 {
+                    let Some(row) = list.sessions.get(above).filter(|row| {
+                        row.facts.parent.is_none()
+                            && row.facts.archived != Some(true)
+                            && row.facts.away != Some(true)
+                    }) else {
+                        break;
+                    };
+                    let Some(line) = &row.facts.line else {
+                        break;
+                    };
+                    if line.iter().any(|id| id == root) {
+                        return true;
+                    }
+                    let Some(starter) = line.last() else {
+                        break;
+                    };
+                    above = starter;
+                }
+                false
+            })
+            .count()
+    });
+    let asks = crate::kept::read::<WorkAsks>(&run.join("work/asks.json")).map_or(0, |book| {
+        book.asks
+            .into_iter()
+            .filter(|ask| {
+                !ask.id.is_empty()
+                    && matches!(
+                        ask.action.as_str(),
+                        "makeProject" | "cloneProject" | "resetLimits"
+                    )
+                    && ask.session.as_deref() == Some(root)
+                    && ask.answered.is_none()
+            })
+            .count()
+    });
+    Stays { sessions, asks }
+}
+
 pub(crate) fn register_start(
     registry: &mut Registry,
     peers: &Reader,
@@ -339,6 +411,8 @@ pub(crate) fn register_start(
             let view = look.view();
             let source = plain_name(&view.roster.name);
             let moving = journals(&look.run).map_err(format_refusal)?.iter().any(|row| row.live() && row.covers(&id));
+            let background = super::background::refusal(&look.run, [id.as_str()], &what, look.now());
+            let stays = stays_here(&view, &look.run, &id);
             let busy = match engine.session_move().await {
                 Ok(engine) => engine.running(&id).await.unwrap_or(false),
                 Err(_) => false,
@@ -352,21 +426,35 @@ pub(crate) fn register_start(
                 let shown = plain_name(&peer.name);
                 let name = if !shown.is_empty() { &shown } else if peer.kind == crate::session::ComputerKind::Mac { "Mac" } else { "Machine" };
                 let why = if moving { Some((super::driver::MOVING.into(), "Moving already")) }
+                    else if let Some(reason) = &background { Some((reason.clone(), "Running something")) }
                     else if !supports_moves(&view, &key, accepted) {
-                        Some((needs_update(name), "Needs a newer Kuvo Code"))
+                        Some((needs_update(if view.local_work_admitted() { name } else { "This computer" }), "Needs a newer Kuvo Code"))
                     } else if view.reach.peer_is_away(&key, entry.and_then(|entry| entry.heard), look.now()) {
                         Some((format!("{name} isn’t connected. Connect to it, then try again."), "Can’t be reached"))
                     } else { None };
                 if let Some((why, note)) = why {
                     json!({"key":key,"name":name,"kind":peer.kind,"ok":false,"why":why,"note":note})
                 } else {
+                    let mut message = format!("Its conversation and wake-ups move with it.{waits} New messages and wake-ups wait during the move.");
+                    if stays.sessions != 0 {
+                        message.push_str(&format!(" Sessions it started stay on {source}. It can still reach them from {name}."));
+                    }
+                    if stays.asks != 0 {
+                        message.push_str(&format!(" Its unanswered questions stay on {source}."));
+                    }
+                    message.push_str(&format!(" Vault items, integrations and browser sign-ins stay on {source}. The original goes to {trash} on {source}."));
                     json!({"key":key,"name":name,"kind":peer.kind,"ok":true,"confirm": {
                         "title":format!("Move {what} to {name}?"), "label":"Move",
-                        "message":format!("Its conversation and wake-ups move with it.{waits} New messages and wake-ups wait during the move. Vault items, integrations and browser sign-ins stay on {source}. The original goes to {trash} on {source}."),
+                        "message":message,
                     }})
                 }
             }).collect();
-            Ok(RouteReply::json::<200>(route_shape(json!({"places":places}))?))
+            let answer = if stays.sessions != 0 || stays.asks != 0 {
+                json!({"places":places, "stays":stays})
+            } else {
+                json!({"places":places})
+            };
+            Ok(RouteReply::json::<200>(route_shape(answer)?))
         }
     });
     let peers = peers.clone();

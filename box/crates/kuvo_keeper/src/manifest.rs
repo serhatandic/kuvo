@@ -196,6 +196,14 @@ impl SignedRelease {
         }
     }
 
+    pub(crate) fn rust_pack_by_hash(&self, digest: &str) -> Option<&Pack> {
+        self.launches_rust().then_some(())?;
+        self.manifest
+            .packs
+            .values()
+            .find(|pack| pack.sha256 == digest)
+    }
+
     pub fn reference(&self, pack: &Pack) -> ReleaseRef {
         ReleaseRef {
             version: self.manifest.version.clone(),

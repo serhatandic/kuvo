@@ -79,11 +79,14 @@ fn random<const N: usize>() -> Result<[u8; N], Error> {
 }
 
 pub use actor::{
-    ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave, ModelStar, PreparedSetup,
-    SetupHandle, SetupRuntime, is_mac_home, transient_ssh_pairings,
+    AcceptedQueueLabels, ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave,
+    MarketplaceSetup, ModelStar, PreparedSetup, QueueLabel, QueueLabelLibrary,
+    QueueNumberAllocation, QueueNumberLease, QueueSetup, SetupHandle, SetupRuntime, is_mac_home,
+    transient_ssh_pairings,
 };
 pub use discovery::locate;
 pub use model::{Receipt, SharedKind};
+pub use routes::{RecordEditAnswer, RecordEditCall, RecordEditFuture, RecordEdits};
 
 pub use preferences::{project_app_personalities, project_kit_personalities};
 pub use ssh::{SavedMachine, SavedOutput, with_saved_machine};

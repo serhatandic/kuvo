@@ -11,7 +11,16 @@ const areas = new Map([
   ["rehome", "./rehome.test.mjs"],
   ["holder", "./holder.test.mjs"],
   ["agents", "./holder.test.mjs"],
+  ["agents-claude", "./agents-claude.test.mjs"],
+  ["agents-claude-live", "./agents-claude-live.test.mjs"],
+  ["agents-claude-turns", "./agents-claude-turns.test.mjs"],
+  ["agents-codex", "./agents-codex.test.mjs"],
+  ["agents-codex-live", "./agents-codex-live.test.mjs"],
+  ["agents-updates", "./agents-updates.test.mjs"],
+  ["agents-session-reads", "./agents-session-reads.test.mjs"],
   ["agent-accounts", "./agent-accounts.test.mjs"],
+  ["agent-sessions", "./agent-sessions.test.mjs"],
+  ["agent-turn-fixture", "./agent-turn-fixture.test.mjs"],
   ["compat", "./compat.test.mjs"],
   ["clock", "./clock.test.mjs"],
   ["engine-sessions", "./engine-sessions.test.mjs"],
@@ -24,10 +33,14 @@ const areas = new Map([
   ["engine-worktree", "./engine-worktree.test.mjs"],
   ["backups", "./backups.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
+  ["work-queue", "./work-queue.test.mjs"],
   ["files", "./files.test.mjs"],
   ["git", "./git.test.mjs"],
+  ["library", "./library.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
+  // Bots, wake-ups and work: their route scenarios (`bots.json` and `wakes.json`).
+  ["bots", "./routes.test.mjs"],
 ]);
 const area = process.env.KUVO_CONFORMANCE_AREA;
 if (!area) {

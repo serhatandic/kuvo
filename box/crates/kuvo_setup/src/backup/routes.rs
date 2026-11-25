@@ -66,6 +66,9 @@ struct Request {
     recovery_key: Option<String>,
     previous: Option<String>,
     replacement: Option<String>,
+    kind: Option<String>,
+    operation: Option<String>,
+    decision: Option<String>,
 }
 
 struct Service {
@@ -74,6 +77,7 @@ struct Service {
     account: PathBuf,
     relay: Option<super::relay::mail::PeerMail>,
     vault: Option<Arc<dyn super::vault::VaultBackend>>,
+    queue_review: Option<Arc<dyn super::QueueReview>>,
 }
 
 impl Service {
@@ -432,7 +436,25 @@ impl Service {
                 status
             }
             Action::Destination => self.destination(request, config)?,
-            Action::Pending => super::pending::list(&self.backups)?,
+            Action::Pending => super::pending::list(&self.backups, self.queue_review.as_deref())?,
+            Action::ReviewPending => {
+                if request.kind.as_deref() != Some("queueItem") {
+                    return Err(Error::Message(
+                        "Check whether this work already ran, then confirm it’s still due.",
+                    ));
+                }
+                let review = self
+                    .queue_review
+                    .as_deref()
+                    .ok_or(Error::Message("Work Queue review is unavailable."))?;
+                super::pending::settle(
+                    &self.backups,
+                    review,
+                    request.id.as_deref().unwrap_or_default(),
+                    request.operation.as_deref().unwrap_or_default(),
+                    request.decision.as_deref().unwrap_or_default(),
+                )?
+            }
             Action::Match => {
                 let _operation = self.backups.scratch()?;
                 let source = request.source.unwrap_or_default().try_into().map_err(|_| {
@@ -613,6 +635,7 @@ enum Action {
     Now,
     Match,
     Pending,
+    ReviewPending,
     Points,
     Restore,
     Erase,
@@ -678,6 +701,7 @@ macro_rules! legacy {
 static ANY: Shape = Shape::Primitive(Primitive::Any);
 legacy!(Read, "GET", "", None);
 legacy!(Pending, "GET", "/pending", None);
+legacy!(ReviewPending, "POST", "/pending", Some(&ANY));
 legacy!(Configure, "POST", "/destination", Some(&ANY));
 legacy!(Now, "POST", "/now", Some(&ANY));
 legacy!(Match, "POST", "/match", Some(&ANY));
@@ -740,6 +764,7 @@ pub fn register(
     setup: SetupHandle,
     relay: Option<super::relay::mail::PeerMail>,
     vault: Option<Arc<dyn super::vault::VaultBackend>>,
+    queue_review: Option<Arc<dyn super::QueueReview>>,
 ) -> Resident {
     let service = Arc::new(Service {
         backups: Backups::with_environment(home, &std::env::vars_os().collect()),
@@ -747,6 +772,7 @@ pub fn register(
         account,
         relay,
         vault,
+        queue_review,
     });
     let health = service.clone();
     routes.register::<health::Spec, _, _>(Access::Any, move |call| {
@@ -776,6 +802,7 @@ pub fn register(
     });
     register_local::<Read>(routes, &service, Action::Read);
     register_local::<Pending>(routes, &service, Action::Pending);
+    register_local::<ReviewPending>(routes, &service, Action::ReviewPending);
     register_local::<Configure>(routes, &service, Action::Destination);
     register_local::<Now>(routes, &service, Action::Now);
     register_local::<Match>(routes, &service, Action::Match);

@@ -35,11 +35,12 @@ pub fn restore_symbolic_link(path: &Path, relative: &Path, directory: bool) -> i
 }
 
 // The account's Kuvo home supplies the inheritable ACL on Windows.
+// A file takes its folder's ACL; a secret's folder is private (restrict_folder).
 pub fn private_file(_: &File) -> io::Result<()> {
     Ok(())
 }
-pub fn restrict_folder(_: &Path) -> io::Result<()> {
-    Ok(())
+pub fn restrict_folder(folder: &Path) -> io::Result<()> {
+    kuvo_os::windows::private_folder(folder)
 }
 
 // Windows exposes no equivalent of fsync on a directory.
@@ -166,6 +167,10 @@ pub fn publish_new(from: &Path, to: &Path) -> io::Result<()> {
     let from = wide(from)?;
     let to = wide(to)?;
     retry(None, || move_file(&from, &to, 0))
+}
+
+pub fn remove_file(path: &Path) -> io::Result<()> {
+    retry(None, || fs::remove_file(path))
 }
 
 pub fn launcher_runs(pid: u32) -> io::Result<bool> {

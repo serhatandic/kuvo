@@ -303,6 +303,13 @@ impl Catalog {
         rows
     }
 
+    /// The model a new conversation starts on, with none named: `None` while the engine can't say.
+    pub(crate) fn starting_model(&self) -> Option<Option<Value>> {
+        let offered = self.offered();
+        self.starting(None, &offered)
+            .map(|model| model.map(|model| json!({"id": model.id, "providerID": model.provider})))
+    }
+
     fn starting(&self, wanted: Option<ModelRef>, offered: &[&Listed]) -> Option<Option<ModelRef>> {
         let runnable = |model: &ModelRef| {
             self.named(model).filter(|listed| {
@@ -598,18 +605,104 @@ async fn picker_place(
     })
 }
 
+/// The models every client's picker offers here, the engine's and the coding agents', as their
+/// rows (`providerID`, `id`, `name`, `side`, `aliases`, `efforts`, `retiring`, `hidden`); and
+/// whether each place could say (`engine`, `agents`), where it runs.
+pub struct OfferedModels {
+    pub models: Vec<Value>,
+    pub engine: Option<bool>,
+    pub agents: Option<bool>,
+}
+
+impl Engine {
+    /// What a lead may start sessions on here (list_models): the engine's only while it runs.
+    pub async fn offered_models(&self) -> OfferedModels {
+        let lease = self.acquire(Demand::Existing).await;
+        let read_engine = async {
+            let lease = lease.as_ref()?;
+            self.catalogs.get(self, lease, "", false).await
+        };
+        let read_agents = async { self.agent_models.as_ref()?.catalog(false).await.ok() };
+        let (catalog, agents) = tokio::join!(read_engine, read_agents);
+        let engine_models = catalog.as_deref().map(Catalog::offered).unwrap_or_default();
+        let mut models: Vec<Value> = engine_models
+            .iter()
+            .map(|model| model.picker_row())
+            .collect();
+        if let Some(agents) = &agents {
+            models.extend(agents.models());
+        }
+        OfferedModels {
+            models,
+            engine: lease.is_some().then_some(catalog.is_some()),
+            agents: self.agent_models.is_some().then_some(agents.is_some()),
+        }
+    }
+}
+
 async fn picker(
     engine: &Engine,
     list: &LocalSessions,
     path: &str,
 ) -> Result<RouteReply<offered::Spec>, Refusal> {
+    let (answer, providers) = offer(engine, list, path, Demand::Start).await?;
+    // Existing clients read the account detail carried beside a provider's base wire fields.
+    RouteReply::json_with::<200>(sessions::typed(answer)?, [("providers", providers)]).map_err(
+        |_| {
+            Refusal::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The model picker could not be read.",
+            )
+        },
+    )
+}
+
+impl Engine {
+    /// What the model picker offers here (`kuvo/models/offered`), starting on `wanted` where it
+    /// runs: the engine started for it (`start`), else its models only while it runs. None where
+    /// neither it nor the coding agents can say.
+    pub async fn offered_here(
+        &self,
+        list: &LocalSessions,
+        wanted: Option<&Value>,
+        start: bool,
+    ) -> Option<Value> {
+        let mut path = "kuvo/models/offered".to_owned();
+        if let Some(wanted) = wanted
+            && let (Some(provider), Some(id)) =
+                (wanted["providerID"].as_str(), wanted["id"].as_str())
+        {
+            path = format!(
+                "{path}?provider={}&model={}",
+                crate::api::segment(provider),
+                crate::api::segment(id)
+            );
+        }
+        let demand = if start {
+            Demand::Start
+        } else {
+            Demand::Existing
+        };
+        let (mut answer, providers) = offer(self, list, &path, demand).await.ok()?;
+        answer["providers"] = providers;
+        Some(answer)
+    }
+}
+
+/// The picker's answer, and its providers apart (as the route carries them).
+async fn offer(
+    engine: &Engine,
+    list: &LocalSessions,
+    path: &str,
+    demand: Demand,
+) -> Result<(Value, Value), Refusal> {
     let query = |key| {
         crate::query(path, key)
             .map(|text| text.trim().to_owned())
             .filter(|text| !text.is_empty())
     };
     let refresh = query("refresh").as_deref() == Some("1");
-    let lease = engine.acquire(Demand::Start).await;
+    let lease = engine.acquire(demand).await;
     if lease.is_none() && engine.agent_models.is_none() {
         return Err(Refusal::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -744,14 +837,7 @@ async fn picker(
         };
         answer["note"] = json!(note);
     }
-    // Existing clients read the account detail carried beside a provider's base wire fields.
-    RouteReply::json_with::<200>(sessions::typed(answer)?, [("providers", json!(providers))])
-        .map_err(|_| {
-            Refusal::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "The model picker could not be read.",
-            )
-        })
+    Ok((answer, json!(providers)))
 }
 
 fn article(word: &str) -> &'static str {
@@ -779,6 +865,19 @@ impl Names {
             .find(|(provider, id, _)| provider == &model.provider && id == &model.id)
             .map(|(_, _, name)| name.as_str())
     }
+}
+
+/// The model a new conversation in `directory` starts on here, with none named (`starting_model`).
+pub(crate) async fn starting_here(
+    engine: &Engine,
+    lease: &Lease,
+    directory: &str,
+) -> Option<Option<Value>> {
+    engine
+        .catalogs
+        .get(engine, lease, directory, false)
+        .await?
+        .starting_model()
 }
 
 pub(crate) async fn readiness(engine: &Engine, lease: &Lease, session: &Session) -> Option<Value> {

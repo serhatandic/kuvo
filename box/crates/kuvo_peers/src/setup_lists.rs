@@ -9,7 +9,11 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use kuvo_protocol::routes::types::GetKuvoComputersStatus200ComputersItemAtWorkItem;
+use kuvo_protocol::routes::types::{
+    GetKuvoComputersStatus200ComputersItemAtWorkItem, GetKuvoComputersStatus200FleetUpdate,
+    PostKuvoUpdateRetryStatus202 as FleetRow,
+};
+use kuvo_store::files::{FileStamp, file_stamp};
 use kuvo_wire::{
     keys::{Host, encode},
     mail::{Envelope, MAX_PLAINTEXT},
@@ -18,7 +22,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::{
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 
@@ -27,13 +31,13 @@ use crate::{
     devices::Devices,
     directory::{
         AgentKind, AnnouncedAgent, Announcement, Announcements, ComputerKey, Owner, Ownership,
-        RecordScope, Roster, UpdateFacts, owned_digest,
+        PreparedRelease, RecordScope, Roster, UpdateFacts, owned_digest,
     },
     kept,
     lists::{self, Computer, Lists, Local},
     notices::{self, History},
     parts::{self, Part, Parts},
-    reach::{Millis, Reach, Standing},
+    reach::{Millis, Reach, Standing, UpdatePresence},
     relay::{self, Relay},
     relay_routes, remote_work,
 };
@@ -65,8 +69,8 @@ pub struct View {
     pub(crate) move_waiting: Arc<BTreeSet<String>>,
     pub(crate) activities: BTreeMap<ComputerKey, Arc<activity::Saved>>,
     pub relay_connected: bool,
-    update: UpdateFacts,
-    bridge_update: Option<BridgeUpdate>,
+    bridge: Option<Arc<BridgeAdmission>>,
+    update: Arc<UpdatePublication>,
     work_calls: bool,
     transfers: bool,
     submission_recovery: bool,
@@ -74,24 +78,100 @@ pub struct View {
     backup_receiver: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
+    pub(crate) versions: LocalVersions,
 }
 
 impl View {
+    pub(crate) fn local_running_version(&self) -> Option<&str> {
+        self.update
+            .facts
+            .kuvo
+            .as_deref()
+            .or(self.versions.running.as_deref())
+    }
+
+    pub(crate) fn in_bridge_handoff(&self, peer: &str) -> bool {
+        self.bridge.as_ref().is_some_and(|bridge| {
+            self.announced
+                .get(peer)
+                .and_then(|entry| entry.computer.as_ref())
+                .is_some_and(|computer| computer.in_bridge_handoff(&bridge.release))
+        })
+    }
+
+    pub(crate) fn local_work_admitted(&self) -> bool {
+        self.bridge.as_ref().is_none_or(|bridge| {
+            !bridge.local_trial
+                || self
+                    .update
+                    .facts
+                    .kuvo
+                    .as_deref()
+                    .is_some_and(|version| version != bridge.release.version)
+        })
+    }
+
+    pub(crate) fn work_admitted(&self, peer: &str) -> bool {
+        self.local_work_admitted() && !self.in_bridge_handoff(peer)
+    }
+
+    pub(crate) fn local_update_row(&self) -> Option<&FleetRow> {
+        self.update.local_row.as_ref()
+    }
+
+    pub(crate) fn peer_update_row(&self, key: &ComputerKey) -> Option<&FleetRow> {
+        self.update.peer_rows.get(key)
+    }
+
+    pub(crate) fn fleet_summary(&self) -> Option<&GetKuvoComputersStatus200FleetUpdate> {
+        self.update.summary.as_ref()
+    }
+
+    /// Check for Updates uses the already persisted observation even while the
+    /// receiver is still publishing its new in-memory view.
+    pub fn kept_peer_is_away(&self, run: &Path, key: &ComputerKey, now: Millis) -> bool {
+        let key = encode(key);
+        let heard = self.announced.get(&key).and_then(|entry| entry.heard);
+        Reach::load(run).peer_is_away(&key, heard, now)
+    }
+
     pub fn peer_updates(&self, key: &ComputerKey, now: Millis) -> (bool, UpdateFacts) {
+        let (presence, facts) = self.peer_update(key, now);
+        (presence.away_for.is_some(), facts.unwrap_or_default())
+    }
+
+    pub fn peer_update(
+        &self,
+        key: &ComputerKey,
+        now: Millis,
+    ) -> (UpdatePresence, Option<UpdateFacts>) {
         let key = encode(key);
         let announcement = self.announced.get(&key);
-        let away = self
-            .reach
-            .peer_is_away(&key, announcement.and_then(|entry| entry.heard), now);
+        let presence =
+            self.reach
+                .update_presence(&key, announcement.and_then(|entry| entry.heard), now);
         let facts = announcement
             .and_then(|entry| entry.computer.as_ref())
-            .map_or_else(UpdateFacts::default, |computer| computer.updates());
-        (away, facts)
+            .map(|computer| computer.updates());
+        (presence, facts)
     }
 
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
         self.roster
             .pending(&self.reach, &self.announced, feature, kept)
+    }
+
+    /// The agents a computer last told this one of.
+    pub fn told_agents(&self, key: &ComputerKey) -> Vec<AnnouncedAgent> {
+        self.announced
+            .get(&encode(key))
+            .map(|copy| copy.list.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether the relay says a computer isn't there now.
+    pub fn away(&self, key: &ComputerKey) -> bool {
+        self.reach.away_since(&encode(key)).is_some()
     }
 
     pub fn advertises(&self, key: &ComputerKey, feature: &str) -> bool {
@@ -112,6 +192,39 @@ impl View {
             })
             .map(|member| member.key)
             .collect()
+    }
+
+    pub fn peer_session_name(&self, key: &ComputerKey, session: &str) -> Option<&str> {
+        self.announced
+            .get(&encode(key))
+            .and_then(|copy| copy.list.iter().find(|agent| agent.session == session))
+            .map(|agent| agent.name.as_str())
+            .or_else(|| {
+                self.lists
+                    .get(key)?
+                    .value
+                    .sessions
+                    .iter()
+                    .find(|row| row.id == session)?
+                    .facts
+                    .title
+                    .as_deref()
+            })
+    }
+
+    pub fn peer_bot_named(&self, name: &str) -> Option<&AnnouncedAgent> {
+        let lowered = name.to_lowercase();
+        let mut candidates = self
+            .roster
+            .members
+            .iter()
+            .filter_map(|member| self.announced.get(&encode(&member.key)))
+            .flat_map(|copy| &copy.list)
+            .filter(|agent| agent.kind == AgentKind::Bot && agent.name.to_lowercase() == lowered);
+        let found = candidates.next()?;
+        candidates
+            .all(|agent| agent.session == found.session)
+            .then_some(found)
     }
 
     pub fn announced_sessions(&self) -> Vec<String> {
@@ -149,17 +262,20 @@ impl View {
 
     pub(crate) fn features(&self) -> Vec<&'static str> {
         let mut features = crate::routes::FEATURES.to_vec();
+        features.push("box.atWork");
+        features.push("data.queued-device-authority");
         if self.backup_receiver {
             features.push("box.backups.relay");
         }
         if self.work_calls {
-            features.push(crate::calls::FEATURE);
+            features.extend([crate::calls::FEATURE, "work.elsewhere.start"]);
         }
         if self.transfers {
             features.extend([
                 "moves",
                 "moves.check",
                 "moves.two-computers",
+                "letters-read",
                 "data.session-notes",
                 "data.forward-evidence",
             ]);
@@ -171,6 +287,7 @@ impl View {
             features.extend([
                 crate::memory_read::FEATURE,
                 crate::memory_read::SEARCH_FEATURE,
+                crate::owner_read::FEATURE,
             ]);
         }
         if self
@@ -184,42 +301,85 @@ impl View {
     }
 
     pub(crate) fn at_work(&self) -> Vec<GetKuvoComputersStatus200ComputersItemAtWorkItem> {
-        let Some(list) = self.local.list.as_ref() else {
-            return vec![];
-        };
-        let mut running: Vec<_> = list
-            .sessions
-            .iter()
-            .filter(|(_, row)| {
-                let facts = &row.facts;
-                facts.running == Some(true)
-                    && facts.asked.is_none()
-                    && facts.archived != Some(true)
-                    && facts.away != Some(true)
-                    && !matches!(facts.kind, lists::Kind::Subagent | lists::Kind::Hidden)
-            })
-            .collect();
-        running.sort_by(|(a_id, a), (b_id, b)| {
-            b.facts
-                .updated
-                .as_f64()
-                .unwrap_or_default()
-                .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
-                .then(a_id.cmp(b_id))
-        });
-        running
+        self.local
+            .list
+            .as_ref()
             .into_iter()
+            .flat_map(lists::LocalList::working)
             .map(
-                |(id, row)| GetKuvoComputersStatus200ComputersItemAtWorkItem {
+                |(id, facts)| GetKuvoComputersStatus200ComputersItemAtWorkItem {
                     id: id.clone(),
-                    title: row
-                        .facts
+                    title: facts
                         .title
                         .as_deref()
                         .and_then(crate::directory::work_title),
                 },
             )
             .collect()
+    }
+
+    pub(crate) fn announced_agents(&self) -> Vec<AnnouncedAgent> {
+        let mut agents = vec![];
+        if let Some(lists) = &self.local_lists {
+            let mut sessions: Vec<_> = lists
+                .sessions
+                .iter()
+                .filter(|row| {
+                    row.facts.parent.is_none()
+                        && row.facts.archived != Some(true)
+                        && !row.actions.is_empty()
+                })
+                .collect();
+            sessions.sort_by(|a, b| {
+                b.facts
+                    .updated
+                    .as_f64()
+                    .unwrap_or_default()
+                    .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
+            });
+            agents = sessions
+                .into_iter()
+                .filter_map(|row| {
+                    // (A bot by its id and what this box has of it: its look and job.)
+                    let bot = (row.facts.kind == lists::Kind::Bot)
+                        .then(|| {
+                            self.local
+                                .bots
+                                .as_ref()?
+                                .iter()
+                                .find(|(_, bot)| bot.session == row.id)
+                        })
+                        .flatten();
+                    let id = row
+                        .facts
+                        .bot
+                        .clone()
+                        .or_else(|| bot.map(|(id, _)| id.clone()));
+                    let bot = bot.map(|(_, bot)| bot);
+                    Some(AnnouncedAgent {
+                        session: row.id.clone(),
+                        name: row.facts.title.clone()?,
+                        kind: if row.facts.kind == lists::Kind::Bot {
+                            AgentKind::Bot
+                        } else {
+                            AgentKind::Session
+                        },
+                        id,
+                        look: bot
+                            .and_then(|bot| bot.look.as_ref())
+                            .and_then(crate::directory::Look::of),
+                        about: bot
+                            .and_then(|bot| bot.job.clone())
+                            .filter(|job| !job.is_empty()),
+                        project: None,
+                        machine: None,
+                        marketplace_agent: None,
+                    })
+                })
+                .take(120)
+                .collect();
+        }
+        agents
     }
 
     pub(crate) fn moved(&self, id: &str, now: Millis) -> Option<String> {
@@ -232,11 +392,23 @@ impl View {
         now: Millis,
         ownership: &Ownership,
     ) -> Option<String> {
+        self.move_address(id, now, ownership).map(|(key, _)| key)
+    }
+
+    pub(crate) fn move_address(
+        &self,
+        id: &str,
+        now: Millis,
+        ownership: &Ownership,
+    ) -> Option<(String, Option<Millis>)> {
         let recorded = ownership.journal.get(&(RecordScope::Session, id.into()));
         let recorded_key = || {
             recorded.map(|location| {
                 let key = &location.key;
-                encode(ownership.replacements.get(key).unwrap_or(key))
+                (
+                    encode(ownership.replacements.get(key).unwrap_or(key)),
+                    location.departed_at,
+                )
             })
         };
         if self.local.holds(id) || recorded.is_some_and(|location| location.departed_at.is_none()) {
@@ -254,7 +426,7 @@ impl View {
                     && now.saturating_sub(hint.at) < crate::moves::ROUTING_FOR
             })
             .max_by_key(|hint| hint.at)
-            .map(|hint| hint.key.clone())
+            .map(|hint| (hint.key.clone(), Some(hint.at)))
             .or_else(recorded_key)
     }
 
@@ -315,6 +487,7 @@ pub fn system_clock() -> Millis {
 #[derive(Clone)]
 pub struct Reader {
     views: watch::Receiver<Arc<View>>,
+    agent_mail: watch::Receiver<AgentMail>,
     clock: Clock,
     pub(crate) run: Arc<PathBuf>,
 }
@@ -329,10 +502,30 @@ impl Reader {
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
         self.views.changed().await
     }
+
+    /// Whether this computer's agent publication named the sender to this peer.
+    pub(crate) fn agent_sent_to(&self, peer: &ComputerKey, session: &str) -> Option<bool> {
+        let sent = self.agent_mail.borrow();
+        let list = sent.get(peer)?;
+        if list.sessions.contains(session) {
+            Some(true)
+        } else {
+            list.complete.then_some(false)
+        }
+    }
+}
+
+type AgentMail = BTreeMap<ComputerKey, SentAgents>;
+
+#[derive(PartialEq, Eq)]
+struct SentAgents {
+    sessions: Arc<BTreeSet<String>>,
+    complete: bool,
 }
 
 enum Change {
-    Update(UpdateFacts, Option<BridgeUpdate>),
+    Update(Arc<UpdatePublication>),
+    Versions(LocalVersions, oneshot::Sender<()>),
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
@@ -344,10 +537,38 @@ enum Change {
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
 }
 
+struct PublishedViews {
+    views: watch::Sender<Arc<View>>,
+    sent_agents: watch::Sender<AgentMail>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BridgeUpdate {
     pub recipients: BTreeSet<ComputerKey>,
     pub facts: UpdateFacts,
+}
+
+pub struct BridgeAdmission {
+    pub release: PreparedRelease,
+    pub local_trial: bool,
+}
+
+/// The local row's installed versions and the desktop's private update check.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct LocalVersions {
+    pub version: Option<String>,
+    pub running: Option<String>,
+    pub app_check: Option<String>,
+    pub is_mac: bool,
+}
+
+#[derive(Default, PartialEq)]
+pub struct UpdatePublication {
+    pub facts: UpdateFacts,
+    pub bridge: Option<BridgeUpdate>,
+    pub local_row: Option<FleetRow>,
+    pub peer_rows: BTreeMap<ComputerKey, FleetRow>,
+    pub summary: Option<GetKuvoComputersStatus200FleetUpdate>,
 }
 
 pub struct ResidentPeers {
@@ -386,20 +607,37 @@ impl ResidentPeers {
         telling: bool,
         clock: Clock,
     ) -> io::Result<Self> {
+        Self::start_with_bridge(home, roster, relay, devices, telling, clock, None).await
+    }
+
+    pub async fn start_with_bridge(
+        home: &Path,
+        roster: Roster,
+        relay: Option<Relay>,
+        devices: Option<Devices>,
+        telling: bool,
+        clock: Clock,
+        bridge: Option<BridgeAdmission>,
+    ) -> io::Result<Self> {
         let run = home.join("run");
         let files = Arc::new(run.clone());
         let endpoint = relay.as_ref().map(|relay| Arc::new(relay.endpoint.clone()));
-        let resident =
+        let mut resident =
             tokio::task::spawn_blocking(move || Resident::load(run, roster, telling, endpoint))
                 .await?;
+        resident.view.bridge = bridge.map(Arc::new);
         let (publish, views) = watch::channel(Arc::new(resident.view.clone()));
+        let (sent_agents, agent_mail) = watch::channel(AgentMail::new());
         let (changes, change_rx) = mpsc::channel(16);
         let (move_waiting, waiting_updates) = watch::channel(resident.view.move_waiting.clone());
         let handle = relay.as_ref().map(Relay::handle);
         let task = tokio::spawn(resident.run(
             relay,
             devices,
-            publish,
+            PublishedViews {
+                views: publish,
+                sent_agents,
+            },
             change_rx,
             waiting_updates,
             clock.clone(),
@@ -407,6 +645,7 @@ impl ResidentPeers {
         Ok(Self {
             reader: Reader {
                 views,
+                agent_mail,
                 clock,
                 run: files,
             },
@@ -465,6 +704,15 @@ impl ResidentPeers {
         engine: kuvo_engine::Engine,
         ownership: crate::ownership::Handle,
     ) -> io::Result<()> {
+        self.attach_moves_with_queue(engine, ownership, None).await
+    }
+
+    pub async fn attach_moves_with_queue(
+        &mut self,
+        engine: kuvo_engine::Engine,
+        ownership: crate::ownership::Handle,
+        queue: Option<Arc<dyn crate::moves::work_queue::WorkQueueTransfer>>,
+    ) -> io::Result<()> {
         let Some(relay) = self.relay_handle() else {
             return Ok(());
         };
@@ -478,6 +726,7 @@ impl ResidentPeers {
             engine.clone(),
             ownership.clone(),
             self.move_waiting.clone(),
+            queue,
         )?);
         self.letters = Some(crate::letters::start(
             self.reader(),
@@ -530,13 +779,29 @@ impl ResidentPeers {
         let _ = self.changes.send(Change::Notices(Arc::new(notices))).await;
     }
 
-    pub async fn announce_update(&self, facts: UpdateFacts, bridge: Option<BridgeUpdate>) {
-        let _ = self.changes.send(Change::Update(facts, bridge)).await;
+    pub async fn announce_versions(&self, versions: LocalVersions) -> io::Result<()> {
+        let (done, published) = oneshot::channel();
+        let unavailable = || {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "The computer list is not running.",
+            )
+        };
+        self.changes
+            .send(Change::Versions(versions, done))
+            .await
+            .map_err(|_| unavailable())?;
+        published.await.map_err(|_| unavailable())
+    }
+
+    pub async fn announce_update(&self, update: Arc<UpdatePublication>) {
+        let _ = self.changes.send(Change::Update(update)).await;
     }
 }
 
 struct Resident {
     run: PathBuf,
+    move_files: Option<FileStamp>,
     view: View,
     list_parts: BTreeMap<ComputerKey, Parts>,
     notice_parts: BTreeMap<ComputerKey, Parts>,
@@ -572,8 +837,8 @@ impl Resident {
             move_notices: Arc::new(crate::moves::Notices::load(&run)),
             move_waiting: Arc::default(),
             relay_connected: false,
-            update: UpdateFacts::default(),
-            bridge_update: None,
+            bridge: None,
+            update: Arc::default(),
             work_calls: false,
             transfers: false,
             submission_recovery: false,
@@ -581,9 +846,11 @@ impl Resident {
             backup_receiver: false,
             endpoint,
             system: system_name(),
+            versions: LocalVersions::default(),
         };
         Self {
             run,
+            move_files: None,
             view,
             list_parts: BTreeMap::new(),
             notice_parts: BTreeMap::new(),
@@ -596,18 +863,22 @@ impl Resident {
         mut self,
         mut relay: Option<Relay>,
         mut devices: Option<Devices>,
-        publish: watch::Sender<Arc<View>>,
+        publication: PublishedViews,
         mut changes: mpsc::Receiver<Change>,
         mut waiting_updates: watch::Receiver<Arc<BTreeSet<String>>>,
         clock: Clock,
     ) {
+        let PublishedViews {
+            views: publish,
+            sent_agents,
+        } = publication;
         let mut paired = relay_routes::Routes::default();
         let mut dispatch = None;
         let mut round = tokio::time::interval(PEER_ROUND);
         round.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
-            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone()));
+            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
         let mut pending_trust = None;
         let mut setup_rosters = None;
@@ -620,14 +891,29 @@ impl Resident {
                     }
                 }
                 change = changes.recv() => match change {
-                    Some(Change::Update(update, bridge)) => {
+                    Some(Change::Update(update)) => {
+                        let announce = self.view.update.facts != update.facts
+                            || self.view.update.bridge != update.bridge;
                         self.view.update = update;
-                        self.view.bridge_update = bridge;
-                        if let Some(publisher) = &mut publisher {
+                        if announce && let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::None);
                         }
                     }
-                    Some(Change::Local(local)) => {
+                    Some(Change::Versions(versions, done)) => {
+                        if self.view.versions != versions {
+                            self.view.versions = versions;
+                            if let Some(publisher) = &mut publisher {
+                                publisher.request(self.view.clone(), clock(), Refresh::None);
+                            }
+                            publish.send_replace(Arc::new(self.view.clone()));
+                        }
+                        let _ = done.send(());
+                        continue;
+                    }
+                    Some(Change::Local(mut local)) => {
+                        let incoming = Arc::make_mut(&mut local);
+                        incoming.ownership.frozen.clone_from(&self.view.local.ownership.frozen);
+                        incoming.ownership.journal.clone_from(&self.view.local.ownership.journal);
                         self.view.local_lists = local.publication().map(Arc::new);
                         self.view.local = local;
                     }
@@ -708,6 +994,20 @@ impl Resident {
                     }
                     Some(event @ (relay::Event::Mail { .. } | relay::Event::Unreachable(_))) => {
                         let now = clock();
+                        if let (relay::Event::Mail { key, envelope, .. }, Some(devices), Some(relay)) = (&event, &devices, &relay) {
+                            match devices.legacy_mail(*key, &envelope.0, now).await {
+                                Ok(Some(members)) => {
+                                    Arc::make_mut(&mut self.view.roster).members = members;
+                                    let hosts = self.view.roster.members.iter().filter_map(|member| member.host()).collect();
+                                    let _ = relay.sender.trust(grants.clone(), hosts).await;
+                                    if let Some(publisher) = &mut publisher {
+                                        publisher.request(self.view.clone(), now, Refresh::All);
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => eprintln!("Keeping released Mac roster: {error}"),
+                            }
+                        }
                         match tokio::task::spawn_blocking(move || {
                             let result = self.receive(event, now);
                             (self, result)
@@ -745,6 +1045,9 @@ impl Resident {
                 },
                 _ = round.tick() => {
                     let now = clock();
+                    if let Err(error) = self.refresh_move_ownership().await {
+                        eprintln!("Refreshing move ownership: {error}");
+                    }
                     if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, now) {
                         eprintln!("Keeping moves on other computers: {error}");
                     }
@@ -755,6 +1058,31 @@ impl Resident {
             }
             publish.send_replace(Arc::new(self.view.clone()));
         }
+    }
+
+    /// A move can activate after OpenCode already published the imported row.
+    /// Use the durable ownership change to publish it even if that row stays the same.
+    async fn refresh_move_ownership(&mut self) -> io::Result<()> {
+        let run = self.run.clone();
+        let last = self.move_files.clone();
+        let refreshed = tokio::task::spawn_blocking(move || {
+            let stamp = file_stamp(&run.join("moves"))?;
+            if stamp == last {
+                return Ok(None);
+            }
+            let mut ownership = Ownership::default();
+            crate::moves::locate_checked(&run, &mut ownership)?;
+            Ok::<_, io::Error>(Some((stamp, ownership)))
+        })
+        .await??;
+        if let Some((stamp, ownership)) = refreshed {
+            self.move_files = stamp;
+            let local = Arc::make_mut(&mut self.view.local);
+            local.ownership.frozen = ownership.frozen;
+            local.ownership.journal = ownership.journal;
+            self.view.local_lists = local.publication().map(Arc::new);
+        }
+        Ok(())
     }
 
     fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Received> {
@@ -1006,7 +1334,7 @@ impl Drop for Publisher {
 }
 
 impl Publisher {
-    fn start(relay: relay::Sender, run: PathBuf) -> Self {
+    fn start(relay: relay::Sender, run: PathBuf, sent_agents: watch::Sender<AgentMail>) -> Self {
         let (tx, mut rx) = mpsc::channel::<(View, Millis, Refresh)>(16);
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
@@ -1029,6 +1357,7 @@ impl Publisher {
                     refresh,
                     &mut previous,
                     &mut announcements,
+                    &sent_agents,
                 )
                 .await;
             }
@@ -1048,6 +1377,7 @@ async fn publish_round(
     refresh: Refresh,
     previous: &mut BTreeMap<(ComputerKey, &'static str), ([u8; 32], Millis)>,
     announcements: &mut BTreeMap<ComputerKey, ([u8; 32], Millis)>,
+    sent_agents: &watch::Sender<AgentMail>,
 ) {
     let lists = &view.local_lists;
     let mut older_lists = None;
@@ -1055,15 +1385,21 @@ async fn publish_round(
     let activity_digest: [u8; 32] =
         Sha256::digest(serde_json::to_vec(&activity).expect("activity serializes")).into();
     let notice = serde_json::to_value(view.notices(now)).expect("notice history serializes");
+    let owns_here = |record: &(RecordScope, String)| {
+        !view.local.ownership.frozen.contains(&record.1)
+            && view
+                .local
+                .ownership
+                .journal
+                .get(record)
+                .is_none_or(|owner| view.roster.here == Some(owner.key))
+    };
     let mut owned: Vec<_> = view
         .local
         .ownership
         .held
         .iter()
-        .filter(|record| {
-            !view.local.ownership.frozen.contains(&record.1)
-                && !view.local.ownership.journal.contains_key(*record)
-        })
+        .filter(|record| owns_here(record))
         .map(|(_, id)| id.as_str())
         .collect();
     if let Some(lists) = lists {
@@ -1073,11 +1409,7 @@ async fn publish_round(
             .filter(|row| {
                 row.facts.parent.is_none()
                     && !row.actions.is_empty()
-                    && !view
-                        .local
-                        .ownership
-                        .journal
-                        .contains_key(&(RecordScope::Session, row.id.clone()))
+                    && owns_here(&(RecordScope::Session, row.id.clone()))
             })
             .collect();
         sessions.sort_by(|a, b| {
@@ -1091,46 +1423,27 @@ async fn publish_round(
     }
     let owns: String = owned.into_iter().take(5000).map(owned_digest).collect();
     let features = view.features();
-    let mut agents = vec![];
-    if let Some(lists) = lists {
-        let mut sessions: Vec<_> = lists
-            .sessions
+    let agents = view.announced_agents();
+    let sessions = Arc::new(
+        agents
             .iter()
-            .filter(|row| {
-                row.facts.parent.is_none()
-                    && row.facts.archived != Some(true)
-                    && !row.actions.is_empty()
-            })
-            .collect();
-        sessions.sort_by(|a, b| {
-            b.facts
-                .updated
-                .as_f64()
-                .unwrap_or_default()
-                .total_cmp(&a.facts.updated.as_f64().unwrap_or_default())
-        });
-        agents = sessions
-            .into_iter()
-            .filter_map(|row| {
-                Some(AnnouncedAgent {
-                    session: row.id.clone(),
-                    name: row.facts.title.clone()?,
-                    kind: if row.facts.kind == lists::Kind::Bot {
-                        AgentKind::Bot
-                    } else {
-                        AgentKind::Session
-                    },
-                    id: row.facts.bot.clone(),
-                })
-            })
-            .take(120)
-            .collect();
-    }
+            .map(|agent| agent.session.clone())
+            .collect::<BTreeSet<_>>(),
+    );
     let mut active = view.at_work();
     let working = active.len();
     active.truncate(20);
-    let mut state = json!({"list": agents, "owns": owns, "features": features, "computer": {
-        "working":working, "atWork":active,
+    let mut asking = view
+        .local
+        .list
+        .as_ref()
+        .map_or_else(Vec::new, lists::LocalList::asking);
+    let waiting = asking.len();
+    asking.truncate(10);
+    // (And where a bot deleted here ends up: Kuvo Code's own trash folder, so a computer that lists
+    // this one's bots says what deleting one takes as this one would.)
+    let mut state = json!({"list": agents, "owns": owns, "features": features, "trash": "kuvo", "computer": {
+        "working":working, "atWork":active, "waiting":waiting, "asking":asking,
     }});
     if let Some(system) = view.system.as_deref() {
         state["computer"]["system"] = json!(system);
@@ -1142,22 +1455,36 @@ async fn publish_round(
     {
         state["computer"]["engine"] = json!(engine);
     }
-    let offer = |update: &UpdateFacts| {
+    let offer = |update: &UpdateFacts, normal: bool| {
+        // A legacy recipient must get only the bridge's signed facts. Do not
+        // expose a selected Rust version while the first update facts are pending.
+        let metadata = normal && (view.bridge.is_none() || update.kuvo.is_some());
         let mut state = state.clone();
         if let (Some(computer), Ok(Value::Object(update))) = (
             state["computer"].as_object_mut(),
             serde_json::to_value(update),
         ) {
             computer.extend(update);
+            if metadata {
+                if let Some(version) = &view.versions.version {
+                    computer.insert("version".into(), json!(version));
+                }
+                if !computer.contains_key("kuvo")
+                    && let Some(running) = &view.versions.running
+                {
+                    computer.insert("kuvo".into(), json!(running));
+                }
+            }
         }
         let digest: [u8; 32] = Sha256::digest(state.to_string()).into();
         (state, digest)
     };
-    let current = offer(&view.update);
+    let current = offer(&view.update.facts, true);
     let bridge = view
-        .bridge_update
+        .update
+        .bridge
         .as_ref()
-        .map(|bridge| (bridge, offer(&bridge.facts)));
+        .map(|bridge| (bridge, offer(&bridge.facts, false)));
     for peer in &view.roster.members {
         let Some(host) = peer.host() else {
             continue;
@@ -1186,6 +1513,22 @@ async fn publish_round(
             if relay.mail(host.clone(), envelope(fields)).await.is_ok() {
                 announcements.insert(peer.key, (*announcement_digest, at));
             }
+        }
+        if announcements
+            .get(&peer.key)
+            .is_some_and(|(digest, _)| digest == announcement_digest)
+        {
+            let sent = SentAgents {
+                sessions: sessions.clone(),
+                complete: lists.is_some(),
+            };
+            sent_agents.send_if_modified(|known| {
+                if known.get(&peer.key) == Some(&sent) {
+                    return false;
+                }
+                known.insert(peer.key, sent);
+                true
+            });
         }
         let activity_key = (peer.key, "activity");
         let before = previous.get(&activity_key);

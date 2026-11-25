@@ -209,6 +209,19 @@ fn executable_search_uses_pathext_and_git_bash_from_its_own_installation() {
     assert!(matches!(shim, Executable::CmdScript(_)));
     assert!(shim.path().ends_with("runner.CMD"));
     assert_eq!(git_bash(&env).unwrap(), bin.join("bash.exe"));
+    // Git's own mingw64\bin on PATH names the same installation.
+    let mingw = prefix.join("mingw64").join("bin");
+    fs::create_dir_all(&mingw).unwrap();
+    fs::write(mingw.join("git.exe"), "").unwrap();
+    let inner = Environment::from([("PATH".into(), mingw.as_os_str().to_owned())]);
+    assert_eq!(git_bash(&inner).unwrap(), bin.join("bash.exe"));
+    // The installation Git names for itself comes first.
+    let own = temp.path().join("Own Git");
+    fs::create_dir_all(own.join("bin")).unwrap();
+    fs::write(own.join("bin").join("bash.exe"), "").unwrap();
+    let mut named = env.clone();
+    named.insert("GIT_INSTALL_ROOT".into(), own.as_os_str().to_owned());
+    assert_eq!(git_bash(&named).unwrap(), own.join("bin").join("bash.exe"));
     fs::remove_file(bin.join("bash.exe")).unwrap();
     assert_eq!(
         git_bash(&env).unwrap_err().kind(),
@@ -956,4 +969,32 @@ fn a_descendant_has_time_to_finish_after_the_group_leader_exits() {
     assert_eq!(done.recv_timeout(LIMIT).unwrap().unwrap().code(), Some(42));
     stop.join().unwrap();
     assert_eq!(fs::read_to_string(root.join("descendant")).unwrap(), "done");
+}
+
+/// The resident ignores SIGPIPE (Rust does at startup); an agent it starts
+/// must get the default, so a pipeline it runs ends quietly on a closed pipe.
+#[cfg(unix)]
+#[test]
+fn a_child_starts_with_the_default_broken_pipe_signal() {
+    let Some(perl) = ["/usr/bin/perl", "/bin/perl"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+    else {
+        eprintln!("skipped: no perl to report the inherited disposition");
+        return;
+    };
+    // SAFETY: this test process is single purpose; ignoring SIGPIPE here is
+    // what the resident's own runtime does before it starts children.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+    let mut spec = Spawn::new(perl, Environment::new());
+    spec.args = ["-e", "print 'PIPE=', ($SIG{PIPE} // 'DEFAULT'), \"\\n\""]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    spec.stdout = Stdio::Pipe;
+    let mut child = spec.spawn().unwrap();
+    assert_eq!(read_field(&mut child, "PIPE="), "DEFAULT");
+    child.wait().unwrap();
 }

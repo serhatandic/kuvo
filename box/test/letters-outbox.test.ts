@@ -8,9 +8,10 @@ import path from "node:path"
 import { RUN } from "../src/link/home"
 import { writeLink, readLink } from "../src/link/state"
 import { newKey, publicOf } from "../src/link/crypto/keys"
-import { letterWent, sendOutbox } from "../src/link/letters/outbox"
+import { letterWent, sendOutbox, deliverLeftAnswers } from "../src/link/letters/outbox"
+import { takeLetter } from "../src/link/letters/take"
 import { LETTER_MEMORY, SENDING } from "../src/link/letters/letter"
-import { MOVED_FOR, compactDecisionHints, endedFor, noteEnded, switchedHere } from "../src/link/moves/records"
+import { MOVED_FOR, compactDecisionHints, endedFor, forgetMove, noteEnded, noteMovedAway, saveMove, switchedHere } from "../src/link/moves/records"
 import { boxNoteOf } from "../src/shared/queues"
 
 const mine = newKey(), remote = newKey(), stranger = newKey(), mac = publicOf(newKey()).toString("base64url")
@@ -176,4 +177,106 @@ test("a chat switched to here is taken for two days, the subagents it brought to
   noteEnded("mov_later", "switched", now + MOVED_FOR, ["ses_later"])
   expect([...switchedHere(now + MOVED_FOR)]).toEqual(["ses_later"])
   expect(endedFor("mov_switched", key)).toEqual({ as: "switched", at: now })
+})
+
+test("concurrent incoming letters to the same conversation reach the engine in arrival order", async () => {
+  const arrived: string[] = []
+  let releaseFirst!: () => void
+  let serverReady!: () => void
+  const firstEntered = new Promise<void>(resolve => {
+    serverReady = resolve
+  })
+  const firstDone = new Promise<void>(resolve => { releaseFirst = resolve })
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    async fetch(request) {
+      const url = new URL(request.url)
+      if (url.pathname === "/api/session/ses_ordered") {
+        return Response.json({ data: { id: "ses_ordered", title: "Ordered" } })
+      }
+      if (url.pathname === "/api/session/active") return Response.json({ data: {} })
+      if (url.pathname === "/api/session/ses_ordered/prompt" && request.method === "POST") {
+        const body = await request.json() as { text?: string }
+        const text = String(body.text ?? "")
+        if (text.endsWith("first")) {
+          serverReady()
+          await firstDone
+        }
+        arrived.push(text.split("\n\n").at(-1) ?? text)
+        return Response.json({ data: {} })
+      }
+      return new Response("", { status: 404 })
+    },
+  })
+  const target = { port: server.port!, password: "pw" }
+  const sent: unknown[] = []
+  const opts = {
+    send: (_to: unknown, mail: unknown) => { sent.push(mail); return true },
+    targets: [target],
+    currentPlaces: () => ({ targets: [target], bridge: false }),
+    now,
+    told: {},
+    peers: [],
+    moved: new Map(),
+  }
+  try {
+    const p1 = takeLetter({ key, name: "Studio" }, { id: "ltr_ord001", to: "ses_ordered", text: "first", wait: false, at: now }, opts)
+    const p2 = takeLetter({ key, name: "Studio" }, { id: "ltr_ord002", to: "ses_ordered", text: "second", wait: false, at: now }, opts)
+    await firstEntered
+    await new Promise(resolve => setTimeout(resolve, 40))
+    releaseFirst()
+    await Promise.all([p1, p2])
+    expect(arrived).toEqual(["first", "second"])
+  } finally {
+    server.stop(true)
+  }
+})
+
+test("a note queued while a chat moves goes immediately once the move retires, and gaveup clears alive", async () => {
+  const replies = path.join(RUN, "replies")
+  fs.mkdirSync(replies, { recursive: true })
+  const movedChat = "ses_movingNoteTarget"
+  const moveId = "mov_heldNote01"
+  fs.writeFileSync(path.join(RUN, "agents.json"), JSON.stringify({ machine: "here", agents: [{ session: movedChat, name: "Trip", machine: "here" }] }))
+  saveMove({
+    id: moveId, kind: "chat", thing: movedChat, name: "Trip", peer: key, from: own, to: key,
+    role: "from", stage: "switching", started: now, sessions: [movedChat],
+  } as any)
+  const noteFile = path.join(SENDING, "ltr_heldNote01.json")
+  fs.writeFileSync(noteFile, JSON.stringify({
+    to: movedChat, text: "News while held", wait: false, at: now,
+    note: { from: "Its sessions", words: "News while held", line: "News", delivery: "queue" },
+  }))
+  // Also seed a gave-up waiting letter with a fresh .alive file.
+  const gaveId = "ltr_gaveUpAlive"
+  fs.writeFileSync(path.join(replies, `${gaveId}.alive`), "")
+  fs.writeFileSync(path.join(replies, `${gaveId}.gaveup`), "")
+
+  const sentBytes: Buffer[] = []
+  const sender = { send: (bytes: Buffer) => { sentBytes.push(bytes); return true } }
+  try {
+    // Round 1 while chat is frozen: note must stay unsent (and NOT arm a 60s letterTries cooldown),
+    // and gaveup must remove .alive as well as .gaveup.
+    await sendOutbox(sender, readLink(), now)
+    expect(sentBytes).toHaveLength(0)
+    expect(fs.existsSync(path.join(replies, `${gaveId}.alive`))).toBe(false)
+    expect(fs.existsSync(path.join(replies, `${gaveId}.gaveup`))).toBe(false)
+
+    // Move switches to finishing (still locally frozen while backup cleans up, but lives on peer):
+    // next sendOutbox must send immediately (<60s) to the new owner rather than blocking on frozen().
+    saveMove({
+      id: moveId, kind: "chat", thing: movedChat, name: "Trip", peer: key, from: own, to: key,
+      role: "from", stage: "finishing", started: now, sessions: [movedChat],
+    } as any)
+    noteMovedAway([movedChat], key)
+    await sendOutbox(sender, readLink(), now + 2_000)
+    expect(sentBytes).toHaveLength(1)
+  } finally {
+    forgetMove(moveId)
+    fs.rmSync(noteFile, { force: true })
+    fs.rmSync(path.join(replies, `${gaveId}.alive`), { force: true })
+    fs.rmSync(path.join(replies, `${gaveId}.gaveup`), { force: true })
+    fs.rmSync(path.join(RUN, "moves", "moved.json"), { force: true })
+  }
 })

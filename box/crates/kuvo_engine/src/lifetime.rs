@@ -59,6 +59,7 @@ pub struct Engine {
     pub(crate) attachment_source: Option<std::sync::Arc<dyn crate::AttachmentSource>>,
     pub(crate) legacy_attachments: Option<PathBuf>,
     pub(crate) agent_models: Option<std::sync::Arc<dyn crate::AgentModelSource>>,
+    pub(crate) agent_sessions: Option<std::sync::Arc<dyn crate::AgentSessionSource>>,
     pub(crate) model_stars: Option<std::sync::Arc<dyn crate::ModelStarSource>>,
     pub(crate) external_asks: Option<std::sync::Arc<dyn crate::ExternalAsks>>,
     pub(crate) ownership: Option<std::sync::Arc<dyn crate::SessionOwnership>>,
@@ -71,13 +72,29 @@ pub struct Engine {
     pub(crate) submission_turns: Turns,
     pub(crate) draft_turns: Turns,
     pub(crate) decision_writer: std::sync::Arc<tokio::sync::Semaphore>,
+    pub(crate) heard: tokio::sync::broadcast::Sender<std::sync::Arc<EngineEvent>>,
+    pub(crate) work_stops:
+        std::sync::Arc<std::sync::OnceLock<std::sync::Arc<dyn crate::WorkStops>>>,
 
-    version: String,
+    pub(crate) version: String,
     commands: mpsc::UnboundedSender<Command>,
     state: watch::Receiver<State>,
 }
 
 pub(crate) use crate::turns::Turns;
+
+/// One of the engine's events: its type (`session.execution.succeeded`, `credential.updated`, ...)
+/// and what it says.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct EngineEvent {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default, alias = "properties")]
+    pub data: serde_json::Value,
+    /// Where it happened, as the engine says (`directory`), for an event about a folder.
+    #[serde(default)]
+    pub location: serde_json::Value,
+}
 
 pub(crate) struct Lease {
     pub record: Record,
@@ -97,6 +114,7 @@ impl Drop for Lease {
 pub(crate) enum Demand {
     Start,
     Existing,
+    Owned,
     Passive,
 }
 
@@ -119,6 +137,7 @@ enum Command {
     StopInstall(ProcessIdentity, oneshot::Sender<io::Result<()>>),
     Release,
     Control(Control),
+    Drain(oneshot::Sender<io::Result<bool>>),
 }
 
 impl Engine {
@@ -163,6 +182,8 @@ impl Engine {
             submission_turns: Turns::new(),
             draft_turns: Turns::new(),
             decision_writer: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+            heard: tokio::sync::broadcast::channel(256).0,
+            work_stops: std::sync::Arc::default(),
             context_windows: crate::context::Windows::open(&home),
             catalogs: crate::models::CatalogCache::new(),
             queues: crate::queue::QueueStore::open(&home),
@@ -171,6 +192,7 @@ impl Engine {
             attachment_source: None,
             legacy_attachments: None,
             agent_models: None,
+            agent_sessions: None,
             model_stars: None,
             external_asks: None,
             ownership: None,
@@ -190,7 +212,14 @@ impl Engine {
         self.turns.acquire(session).await
     }
 
-    pub(crate) fn states(&self) -> watch::Receiver<State> {
+    /// The engine's events as its feed hears them, for those that follow what its sessions do
+    /// (one that falls behind misses some, and hears that it did).
+    pub fn events(&self) -> tokio::sync::broadcast::Receiver<std::sync::Arc<EngineEvent>> {
+        self.heard.subscribe()
+    }
+
+    /// The engine's state as it changes.
+    pub fn states(&self) -> watch::Receiver<State> {
         self.state.clone()
     }
 
@@ -269,6 +298,23 @@ impl Engine {
             .send(Command::StopInstall(identity, reply))
             .map_err(|_| stopped())?;
         result.await.map_err(|_| stopped())?
+    }
+
+    pub(crate) async fn quiet_for_release(&self) -> io::Result<bool> {
+        // A borrowed engine may answer the same endpoints but its inbox is
+        // not ours to move. Probe a verified worker without blocking the actor.
+        let Some(lease) = self.acquire(Demand::Owned).await else {
+            return Ok(!fs::try_exists(self.home.join("run/engine.json")).await?);
+        };
+        Ok(!browser_asks(&self.home).await && !busy(&self.upstream, &lease.record).await)
+    }
+
+    pub(crate) async fn stop_for_release(&self) -> io::Result<bool> {
+        let (answer, reply) = oneshot::channel();
+        self.commands
+            .send(Command::Drain(answer))
+            .map_err(|_| io::Error::other("The engine supervisor stopped."))?;
+        reply.await.map_err(io::Error::other)?
     }
 
     pub(crate) async fn control(&self, action: Control) -> Result<(), &'static str> {
@@ -350,6 +396,9 @@ impl Supervisor {
                             eprintln!("Starting the engine on request: {error}");
                         }
                     }
+                    Some(Command::Drain(reply)) => {
+                        let _ = reply.send(self.drain().await);
+                    }
                     Some(Command::Acquire(..)) => {},
                     None => break,
                 },
@@ -411,7 +460,9 @@ impl Supervisor {
         let lease = self
             .worker
             .as_ref()
-            .filter(|_| self.healthy && result.is_ok())
+            .filter(|worker| {
+                self.healthy && result.is_ok() && (demand != Demand::Owned || worker.owned())
+            })
             .map(|worker| {
                 let commands = if demand != Demand::Passive {
                     self.commands.upgrade()
@@ -584,6 +635,24 @@ impl Supervisor {
         }
     }
 
+    async fn drain(&mut self) -> io::Result<bool> {
+        self.reap().await?;
+        let Some(worker) = &self.worker else {
+            return Ok(!fs::try_exists(self.home.join("run/engine.json")).await?);
+        };
+        if !worker.owned()
+            || !self.healthy
+            || self.leases != 0
+            || browser_asks(&self.home).await
+            || busy(&self.upstream, &worker.record).await
+        {
+            return Ok(false);
+        }
+        self.recover = false;
+        self.stop().await?;
+        Ok(true)
+    }
+
     async fn control(&mut self, action: Control) -> io::Result<()> {
         if starting_fenced(&self.home).await
             || exists(&self.home, "off").await
@@ -627,6 +696,7 @@ impl Supervisor {
             && worker.owned()
             && self.healthy
             && self.idle()
+            && !crate::release::holding(&self.home.join("run"))
             && !switching(&self.home).await
             && !updating(&self.home).await
         {
@@ -662,6 +732,7 @@ impl Supervisor {
         if probe.busy {
             self.touch();
         } else if !stopped(&self.home).await
+            && !crate::release::holding(&self.home.join("run"))
             && !switching(&self.home).await
             && !updating(&self.home).await
         {
@@ -689,7 +760,7 @@ async fn stopped(home: &Path) -> bool {
 }
 
 async fn starting_fenced(home: &Path) -> bool {
-    if switching(home).await {
+    if crate::release::holding(&home.join("run")) || switching(home).await {
         return true;
     }
     if !updating(home).await {

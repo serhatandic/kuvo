@@ -13,15 +13,15 @@ use super::trees::LinkedTrees;
 const PROJECT_LIST: &str = "Project list";
 /// The project list's format: one step, the first.
 const PROJECT_LIST_VERSION: u32 = 1;
-const WORKTREE_RECORDS: ObjectFormat = ObjectFormat::additive("Worktree records");
+pub(super) const WORKTREE_RECORDS: ObjectFormat = ObjectFormat::additive("Worktree records");
 
 /// A record this box can't read: one written by a newer box.
-pub(crate) type Unsupported = format::Error;
+pub type Unsupported = format::Error;
 
 /// The projects `box/projects.json` keeps, each with a full path for its folder, its other folders
 /// those named by text, and without the retired terminal setting. A file that can't be read is
 /// none; one in a newer format is refused.
-pub(crate) fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, Unsupported> {
+pub fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, Unsupported> {
     let Ok(bytes) = std::fs::read(box_home.join("box/projects.json")) else {
         return Ok(Vec::new());
     };
@@ -66,9 +66,103 @@ pub(crate) fn read_projects(box_home: &Path) -> Result<Vec<Map<String, Value>>, 
         .collect())
 }
 
+/// Why the projects weren't changed.
+#[derive(Debug, thiserror::Error)]
+pub enum ChangeFailed {
+    #[error(transparent)]
+    Unsupported(#[from] Unsupported),
+    #[error("Could not lock the file for writing")]
+    Busy,
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
+
+/// The list as `change` makes it, read again just before, under its lock (`box/projects.json.lock`,
+/// shared with the TS box); the session list sees the file change.
+pub fn change_projects<T>(
+    box_home: &Path,
+    change: impl FnOnce(&mut Vec<Map<String, Value>>) -> T,
+) -> Result<T, ChangeFailed> {
+    let file = box_home.join("box/projects.json");
+    let _lock = kuvo_store::locks::StaleLock::acquire(
+        &box_home.join("box/projects.json.lock"),
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(3),
+        kuvo_store::locks::OnBusy::Refuse,
+    )?
+    .ok_or(ChangeFailed::Busy)?;
+    let mut projects = read_projects(box_home)?;
+    let made = change(&mut projects);
+    let kept = serde_json::json!({ "version": PROJECT_LIST_VERSION, "projects": projects });
+    let text = serde_json::to_string_pretty(&kept).map_err(std::io::Error::other)?;
+    kuvo_store::files::write_secret(&file, text.as_bytes())?;
+    Ok(made)
+}
+
+/// Add or edit a project by its named folder without resolving links or requiring it to exist.
+pub(super) fn put(
+    box_home: &Path,
+    folder: &str,
+    given: &Map<String, Value>,
+) -> Result<Map<String, Value>, ChangeFailed> {
+    change_projects(box_home, |projects| {
+        let at = projects
+            .iter()
+            .position(|project| directory(project) == folder);
+        let mut project = at.map(|at| projects[at].clone()).unwrap_or_else(|| {
+            serde_json::json!({"directory": folder, "folders": []})
+                .as_object()
+                .unwrap()
+                .clone()
+        });
+        if given.get("removed") == Some(&Value::Bool(true)) {
+            project.insert("removed".into(), Value::Bool(true));
+        } else {
+            project.remove("removed");
+        }
+        for key in ["name", "run"] {
+            if let Some(value) = given.get(key) {
+                let text = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty());
+                let text = text.filter(|text| {
+                    key != "name"
+                        || Path::new(folder).file_name().and_then(|name| name.to_str())
+                            != Some(text)
+                });
+                if let Some(text) = text {
+                    project.insert(key.into(), Value::String(text.to_owned()));
+                } else {
+                    project.remove(key);
+                }
+            }
+        }
+        if let Some(value) = given.get("folders") {
+            project.remove("addedByBox");
+            let mut seen = std::collections::HashSet::new();
+            let folders = value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|name| absolute(name) && *name != folder && seen.insert(*name))
+                .map(|name| Value::String(name.to_owned()))
+                .collect();
+            project.insert("folders".into(), Value::Array(folders));
+        }
+        if let Some(at) = at {
+            projects[at] = project.clone();
+        } else {
+            projects.insert(0, project.clone());
+        }
+        project
+    })
+}
+
 /// Whether a folder is named by a full path, as Node's `path.isAbsolute` reads it here: on Windows,
 /// one that starts at a drive's top (`\\work`, `/work`) is too.
-fn absolute(folder: &str) -> bool {
+pub(super) fn absolute(folder: &str) -> bool {
     if cfg!(windows) {
         let bytes = folder.as_bytes();
         let separator = |byte: u8| byte == b'/' || byte == b'\\';
@@ -192,6 +286,39 @@ fn filed_projects(
         .collect();
     filed.extend(trees);
     filed
+}
+
+/// Projects' names as every client shows them (`projectNameOf`), worktrees as last found.
+#[derive(Clone, Default)]
+pub struct ProjectNames(LinkedTrees);
+
+impl ProjectNames {
+    /// The name of the project `folder` is in: its own, or its folder's; a worktree's or another
+    /// folder's is its project's, and so is that of a session filed under it from there (`filed`,
+    /// the session's `kuvo.filed`, while it's in that folder).
+    pub fn name_of(&self, box_home: &Path, folder: &str, filed: &Value) -> Option<String> {
+        if folder.is_empty() {
+            return None;
+        }
+        let projects = read_projects(box_home).unwrap_or_default();
+        let trees = worktree_projects(box_home, &self.0).unwrap_or_default();
+        let under = filed_projects(&projects, trees).remove(folder);
+        let project = match (under, filed["project"].as_str()) {
+            (None, Some(project)) if filed["folder"] == folder => project.to_owned(),
+            (under, _) => under.unwrap_or_else(|| folder.to_owned()),
+        };
+        let named = projects.iter().find(|each| directory(each) == project);
+        let name = named
+            .and_then(|each| each.get("name"))
+            .and_then(Value::as_str);
+        name.filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                Path::new(&project)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+    }
 }
 
 /// `GET kuvo/projects`: `{projects, worktrees}`.

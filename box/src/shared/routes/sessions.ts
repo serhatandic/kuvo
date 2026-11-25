@@ -430,6 +430,33 @@ export const SIDE_THREADS = object({
 export type SideThreads = Infer<typeof SIDE_THREADS>;
 
 export const SESSION_ROUTES: RouteShape[] = [
+  // The transcript of a coding-agent session, kept in the same format across box updates.
+  { route: "GET kuvo/agents/api/session/:id/message", feature: "agents", answers: { 200: object({ data: list(any), cursor: object({ "next?": string }) }), 404: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/agents/api/session/:id/prompt", feature: "agents", body: any, answers: { 200: object({}), 400: REFUSED, 404: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/agents/api/session/:id/interrupt", feature: "agents", answers: { 200: object({ interrupted: bool }), 404: REFUSED, 503: REFUSED } },
+  // Stop what a coding-agent conversation left running besides its turn: the commands its agent left running.
+  { route: "DELETE kuvo/agents/api/session/:id/background", feature: "agents", answers: { 200: object({}), 404: REFUSED, 503: REFUSED } },
+  // Stop one command a coding agent runs (the bars over the composer): one its turn waits on stops that turn.
+  { route: "DELETE kuvo/agents/api/shell/:id", feature: "agents", answers: { 200: object({}), 404: REFUSED } },
+  // What one printed, from byte `cursor` on (`limit` bytes at most); only its end is kept, so what's asked from before that comes from where it begins.
+  { route: "GET kuvo/agents/api/shell/:id/output", feature: "agents", answers: { 200: object({ location: object({ directory: string }), data: object({ output: string, cursor: number, size: number }) }), 404: REFUSED } },
+  // The coding-agent conversations with a run under way now (`release-switch`: and the turns that
+  // follow an engine model through this bridge).
+  { route: "GET kuvo/agents/api/session/active", feature: "agents", answers: { 200: object({ data: any, "engineTurns?": list(string) }), 503: REFUSED } },
+  // A coding-agent conversation as clients read it: how full its context is, its model's window
+  // (`context=0`: as saved, without asking its agent) and where it's summarized.
+  { route: "GET kuvo/agents/api/session/:id", feature: "agents", answers: { 200: object({ data: any }), 404: REFUSED, 503: REFUSED } },
+  // A coding-agent conversation's model (with its effort as `variant`) from its next turn.
+  { route: "POST kuvo/agents/api/session/:id/model", feature: "agents", body: any, answers: { 200: object({}), 400: REFUSED, 404: REFUSED, 503: REFUSED } },
+  // A coding-agent conversation's mode (`build`, `plan`, an agent of yours) from its next message.
+  { route: "POST kuvo/agents/api/session/:id/agent", feature: "agents", body: any, answers: { 200: object({}), 404: REFUSED, 503: REFUSED } },
+  // Summarize a coding-agent conversation now, or once its turn ends (`waiting`).
+  { route: "POST kuvo/agents/api/session/:id/compact", feature: "agents", answers: { 200: object({ data: object({ state: string }) }), 400: REFUSED, 404: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/agents/api/session/:id/permission", feature: "agents", answers: { 200: object({ data: list(any) }), 404: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/agents/api/session/:id/permission/:request/reply", feature: "agents", body: any, answers: { 200: object({}), 400: REFUSED, 403: REFUSED, 404: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/agents/api/session/:id/form", feature: "agents", answers: { 200: object({ data: list(any) }), 404: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/agents/api/session/:id/form/:request/reply", feature: "agents", body: any, answers: { 200: object({}), 404: REFUSED, 503: REFUSED } },
+  { route: "DELETE kuvo/agents/api/session/:id/form/:request", feature: "agents", answers: { 200: object({}), 404: REFUSED, 503: REFUSED } },
   // Carry a conversation on with the coding agents, as picking one of their models does.
   { route: "POST kuvo/sessions/:id/agents", feature: "sessions.agents", answers: { 200: CARRIED } },
   // Give a conversation its project's other folders as a client opens it.

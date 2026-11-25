@@ -96,6 +96,8 @@ export const DATA_DECLARATIONS = {
     externalStorage: { root: "Box sibling removal receipts", journal: "last-setup-wipe or app-member-wipe", formatVersion: 1 },
     families: ["Computer removal delivery"] },
   computerRemovalDelivery: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Computer removal delivery"] },
+  // The departing computer's own inventory of the work it kept at unlink: file stamps only it can match.
+  releasedWork: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Retained work after unlink"] },
   diskBackupArchives: { owner: "backup source", conflict: "owner order", backup: false, restore: "needs fresh approval",
     externalStorage: { root: "kuvo-backups", archiveSuffix: ".kuvo", formatVersion: BACKUP_ARCHIVE_VERSION }, families: ["Encrypted backup archives"] },
   sshBackupArchives: { owner: "backup source", conflict: "owner order", backup: false, restore: "needs fresh approval",

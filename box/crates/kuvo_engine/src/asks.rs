@@ -865,7 +865,7 @@ pub(crate) async fn stop_waiting(engine: &Engine, lease: &Lease, session: &str) 
     }
     if crate::queue::hold_on(
         engine,
-        lease,
+        crate::queue::Target::Engine(lease),
         session,
         Vec::new(),
         crate::queue::Hold::Queue,
@@ -873,7 +873,7 @@ pub(crate) async fn stop_waiting(engine: &Engine, lease: &Lease, session: &str) 
     .await
     .is_ok()
     {
-        let _ = crate::queue::interrupt(engine, lease, session, false).await;
+        let _ = crate::queue::interrupt(engine, crate::queue::Target::Engine(lease), session, false).await;
     }
     let children = asks
         .into_iter()
@@ -881,7 +881,7 @@ pub(crate) async fn stop_waiting(engine: &Engine, lease: &Lease, session: &str) 
         .filter(|id| id != session)
         .collect::<BTreeSet<_>>();
     for child in children {
-        let _ = crate::queue::interrupt(engine, lease, &child, false).await;
+        let _ = crate::queue::interrupt(engine, crate::queue::Target::Engine(lease), &child, false).await;
     }
 }
 

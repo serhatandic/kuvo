@@ -52,7 +52,9 @@ pub struct Scope {
     pub setup: Option<String>,
     pub here: Option<ComputerKey>,
     pub owner: Option<PeerOwner>,
-    pub(crate) letter_home: Option<ComputerKey>,
+    pub(crate) letter_home: Option<(ComputerKey, Option<crate::reach::Millis>)>,
+    /// Letters can follow the confirmed destination even while cleanup fences the source.
+    pub(crate) letter_held: bool,
     pub receipt_issuer: Option<ComputerKey>,
     pub held: bool,
 }
@@ -249,6 +251,11 @@ impl Handle {
                 reachable: owner.local || (view.relay_connected && owner.reachable),
             }
         });
+        let held = inventory.frozen.contains(session);
+        let retiring = inventory
+            .journal
+            .get(&(RecordScope::Session, session.into()))
+            .is_some_and(|move_to| move_to.retiring);
         Ok(Scope {
             setup: setup.id,
             here: view.roster.here,
@@ -256,12 +263,12 @@ impl Handle {
             // A newer move announcement can locate a delivery without
             // granting authority to perform a forwarded mutation.
             letter_home: view
-                .moved_with(session, now, &inventory)
-                .as_deref()
-                .and_then(decode_exact),
+                .move_address(session, now, &inventory)
+                .and_then(|(key, at)| Some((decode_exact(&key)?, at))),
+            letter_held: held && !retiring,
             receipt_issuer: original_issuer
                 .map(|key| *inventory.replacements.get(&key).unwrap_or(&key)),
-            held: inventory.frozen.contains(session),
+            held,
         })
     }
 
@@ -272,6 +279,10 @@ impl Handle {
         }
         self.devices
             .forwarded_pairing(key, pairing, accepted.grants_current)
+    }
+
+    pub fn receipt_issuers(&self) -> BTreeMap<ComputerKey, ComputerKey> {
+        resolved_replacements(&self.reader.view(), &(self.accepted)())
     }
 
     /// Known remote members in setup order, including computers that are offline.
@@ -435,6 +446,16 @@ impl Handle {
             .ok_or(Error::UnknownPeer)?;
         Ok((here, host))
     }
+
+    /// The accepted member destination of an ordinary Work Queue action.
+    pub fn work_queue_destination(
+        &self,
+        peer: ComputerKey,
+    ) -> Result<(Arc<View>, String, kuvo_wire::keys::Host), Error> {
+        let setup = (self.accepted)().id.ok_or(Error::SetupChanged)?;
+        let (_, host) = self.address(peer, &setup)?;
+        Ok((self.reader.view(), setup, host))
+    }
 }
 
 impl IncomingRequests {
@@ -524,7 +545,7 @@ impl Request {
     }
 }
 
-fn session_id(id: &str) -> bool {
+pub(crate) fn session_id(id: &str) -> bool {
     id.strip_prefix("ses_").is_some_and(|id| token(id, 95))
 }
 

@@ -204,9 +204,20 @@ pub fn place_mac_entry(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Exchange the entries themselves in one operation, including a link and a directory.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn exchange_entries(from: &Path, to: &Path) -> io::Result<()> {
+    platform::exchange(from, to).map_err(|error| at("exchanging", to, error))?;
+    sync_parent(to)?;
+    if parent(from)? != parent(to)? {
+        sync_parent(from)?;
+    }
+    Ok(())
+}
+
 /// Retire a file or link without following it. Missing entries are already retired.
 pub fn remove_file_synced(path: &Path) -> io::Result<()> {
-    remove_synced(path, |path| fs::remove_file(path))
+    remove_synced(path, platform::remove_file)
 }
 
 /// Retire a directory tree without following its links.

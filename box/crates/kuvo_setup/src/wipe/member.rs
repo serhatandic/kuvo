@@ -211,6 +211,7 @@ impl Completion {
                 engine: None,
             },
             peers: Vec::new(),
+            legacy_enrollers: vec![],
             grants: Default::default(),
         });
         let handle = link.handle();

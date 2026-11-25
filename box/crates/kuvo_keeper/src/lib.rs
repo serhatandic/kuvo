@@ -3,6 +3,8 @@
 //! The updater stages complete packs before requesting a selection. The keeper
 //! only switches executable code and records the trial. It never restores a data snapshot.
 
+#[cfg(unix)]
+pub mod crontab;
 mod engine_pack;
 pub mod fleet;
 #[cfg(target_os = "macos")]
@@ -11,6 +13,7 @@ pub mod manifest;
 pub mod prepare_command;
 mod readiness;
 mod release;
+mod retirement;
 pub mod staging;
 pub mod update_status;
 mod worker;
@@ -21,7 +24,8 @@ pub mod windows;
 pub use engine_pack::provision_pinned_engine;
 pub use readiness::resident_info;
 pub use release::Release;
-pub use worker::wait_for_stop;
+pub use retirement::lease_running_release;
+pub use worker::{next_resident_coming, wait_for_stop};
 
 use std::{
     fs::{self, File},
@@ -56,7 +60,6 @@ pub enum Command {
 
 const ROUND: Duration = Duration::from_secs(1);
 const RESTART: Duration = Duration::from_secs(15);
-const TRIAL: Duration = Duration::from_secs(120);
 
 struct Installation {
     home: PathBuf,
@@ -190,6 +193,19 @@ impl Installation {
     async fn confirm(&self, selected: &Release) -> io::Result<()> {
         let _lock = self.lock_selection().await?;
         if &self.selected()? == selected {
+            if let Some(previous) = Release::read(&self.previous)? {
+                let home = Home::new(self.home.clone())?;
+                if let Err(error) = update_status::note_last(
+                    &home,
+                    jiff::Timestamp::now().as_millisecond(),
+                    update_status::Outcome::Updated {
+                        from: previous.version().into(),
+                        to: selected.version().into(),
+                    },
+                ) {
+                    eprintln!("Recording the confirmed release: {error}");
+                }
+            }
             files::remove_file_synced(&self.run.join("update-cannot"))?;
             files::remove_file_synced(&self.previous)?;
         }
@@ -364,7 +380,7 @@ impl Installation {
                 _ = interval.tick() => {}
             }
             if self.run.join("off").try_exists()? || self.run.join("paused").try_exists()? {
-                self.stop(&mut worker).await?;
+                self.stop(&mut worker, false).await?;
                 return Ok(());
             }
             if let Some(handover) = self.pending_handover()?
@@ -380,21 +396,21 @@ impl Installation {
             let (current, trial) = match self.selection().await {
                 // No prior release exists until the installer publishes the very first selector.
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    self.stop(&mut worker).await?;
+                    self.stop(&mut worker, false).await?;
                     return Err(error);
                 }
                 result => result?,
             };
             if selected.as_ref() != Some(&current) {
                 selected = Some(current.clone());
-                trial_deadline = Instant::now() + TRIAL;
+                trial_deadline = Instant::now() + fleet::keeper_trial_limit();
                 next_start = Instant::now();
             }
             if worker
                 .as_ref()
                 .is_some_and(|worker| worker.release != current)
             {
-                self.stop(&mut worker).await?;
+                self.stop(&mut worker, true).await?;
             }
             if let Some(resident) = &mut worker
                 && resident.finished()?
@@ -405,7 +421,7 @@ impl Installation {
             }
             if let Some(trial) = &trial {
                 if let Some(previous) = trial.previous_to_restore(trial_deadline) {
-                    self.stop(&mut worker).await?;
+                    self.stop(&mut worker, true).await?;
                     self.rollback(&current, previous).await?;
                     continue;
                 }
@@ -430,9 +446,10 @@ impl Installation {
         }
     }
 
-    async fn stop(&self, worker: &mut Option<Worker>) -> io::Result<()> {
+    /// Stop the resident it keeps: for good, or (`next`) for another to take its place.
+    async fn stop(&self, worker: &mut Option<Worker>, next: bool) -> io::Result<()> {
         if let Some(worker) = worker.take() {
-            worker.stop(&self.run).await?;
+            worker.stop(&self.run, next).await?;
         }
         files::remove_file_synced(&self.worker)
     }
@@ -445,7 +462,8 @@ impl Installation {
             Err(error) => return Err(error),
         };
         let mut worker = Worker::adopt(&self.home, &self.worker)?;
-        self.stop(&mut worker).await?;
+        // (Off or paused: it stops for good.)
+        self.stop(&mut worker, false).await?;
         files::remove_file_synced(&self.run.join("box.pid"))
     }
 

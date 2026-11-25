@@ -1,0 +1,676 @@
+//! Create ordinary queue items and apply the fields that agents can submit.
+use super::*;
+use crate::queue::items::session_links::{last_word, unlink_session};
+use std::collections::BTreeMap;
+
+impl Writer {
+    pub(super) async fn remove_words(
+        &self,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+    ) -> Result<Value, Refusal> {
+        self.tool_owner(&caller, false)?;
+        let removal = if args["undo"] == true {
+            Removal::Restore
+        } else {
+            Removal::Delete
+        };
+        let reference = self.tool_item_reference(&args["item"])?;
+        let answer = self.reads.item_for_tool(reference).await?;
+        let target = &answer["item"];
+        if target.get("computer").is_some() {
+            return self
+                .change_there(
+                    target,
+                    forward::records::Tool::Remove,
+                    args,
+                    caller,
+                    operation,
+                )
+                .await;
+        }
+        let id = target["id"].as_str().expect("queue item id").to_owned();
+        self.change_as(id, removal, actor(&caller), operation).await
+    }
+    pub(super) async fn update_words(
+        &self,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+    ) -> Result<Value, Refusal> {
+        self.tool_owner(&caller, false)?;
+        let reference = self.tool_item_reference(&args["item"])?;
+        let answer = self.reads.item_for_tool(reference).await?;
+        let target = &answer["item"];
+        if target.get("computer").is_some() {
+            return self
+                .change_there(
+                    target,
+                    forward::records::Tool::Update,
+                    args,
+                    caller,
+                    operation,
+                )
+                .await;
+        }
+        let id = target["id"].as_str().expect("queue item id").to_owned();
+        self.update_local(id, args, caller, operation, false).await
+    }
+
+    pub(super) async fn update_local(
+        &self,
+        id: String,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+        forwarded: bool,
+    ) -> Result<Value, Refusal> {
+        let existing = self.store.clone();
+        let item = id.clone();
+        let target = blocking(move || {
+            Ok(existing
+                .items()?
+                .into_iter()
+                .find(|row| row.id == item)
+                .map(|row| Value::Object(row.saved)))
+        })
+        .await?
+        .ok_or_else(|| bad("There's no item like that."))?;
+        let linked = if let Some(given) = args.get("issue") {
+            if let Some(source) = target.get("source") {
+                let display = read::item_name(&target);
+                let reference = source["ref"].as_str().unwrap_or_default();
+                let named = given.as_str().and_then(|issue| self.refs.issue(issue));
+                let current = self.refs.issue(reference);
+                if named
+                    .zip(current)
+                    .is_some_and(|(named, current)| named.key() == current.key())
+                {
+                    return Err(bad(format!("{display} is that one already.")));
+                }
+                return Err(bad(format!(
+                    "{display} is {reference} already: one item is one issue or pull request."
+                )));
+            }
+            Some(
+                self.issue_for(given, &self.tool_owner(&caller, false)?, Some(&id))
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let writer = self.clone();
+        let folder = caller.directory.clone();
+        let file_args = args.get("files").cloned();
+        let staged = tokio::task::spawn_blocking(move || {
+            if forwarded {
+                writer.files.stage(&writer.store, file_args.as_ref(), false)
+            } else {
+                writer
+                    .files
+                    .stage_agent(&writer.store, file_args.as_ref(), folder.as_deref())
+            }
+        })
+        .await
+        .map_err(internal)??;
+        let guard = self.lock().await?;
+        let writer = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let now = Timestamp::now().as_millisecond();
+            let (all, compaction) = writer.changes(now)?;
+            if let Some(answer) = operation.as_deref().and_then(|operation| receipt::kept_answer(&all, operation)) {
+                compaction.finish(&writer, now)?;
+                return Ok(answer);
+            }
+            let item = all.iter().find(|item| item.id == id).ok_or_else(|| bad("There's no item like that."))?;
+            writer.admit(&item.owner)?;
+            if item.removed.is_some() {
+                return Err(deleted(item));
+            }
+            edit::refuse_handing(item)?;
+            let people = Assignees::read(&writer.store);
+            let actor = actor(&caller);
+            let initial = if let Some(issue) = &linked {
+                writer.refuse_issue(&all, &issue.source_key, issue.source["id"].as_str(), &item.owner, Some(&id))?;
+                writer.attach_issue(item, issue, &actor, now)?
+            } else { Value::Object(item.saved.clone()) };
+            let mut result = None;
+            writer.edit_row(item, &args, &staged, ChangeContext { all: &all, people: &people, now, who: &actor }, initial, |row, docs| {
+                fields(row, &args, now, &actor)?;
+                let status = row["status"].as_str().unwrap_or_default().to_owned();
+                if !status::closed(&status) {
+                    if args["working"] == true && !caller.seat {
+                        let joined = writer.link_session(&all, docs, row, &caller.root, &actor, now)?;
+                        if args.get("status").is_none() && matches!(status.as_str(), "todo" | "backlog" | "waiting") {
+                            row["status"] = "in-progress".into();
+                            row["order"] = json!(place(&all, Some(&id), "in-progress", false));
+                            append_event(row, json!({"at":now,"by":actor,"kind":"moved","from":status,"to":"in-progress"}));
+                        }
+                        if joined || last_word(row, &caller.root) != Some("started") {
+                            append_event(row, json!({"at":now,"by":actor,"kind":"started"}));
+                        }
+                    }
+                    for session in named(&args["sessions"]) {
+                        writer.link_session(&all, docs, row, session, &actor, now)?;
+                    }
+                }
+                if args["working"] == false {
+                    unlink_session(row, &caller.root, &actor, now);
+                }
+                for session in named(&args["unlink"]) {
+                    unlink_session(row, session, &actor, now);
+                }
+                // Legacy rows can omit the empty lists and default values that
+                // a write fills in. Those are not changes made by this agent.
+                let before = item.clone().normalized();
+                let after = Item::read(&item.owner, row).expect("edited item").normalized();
+                let changes = ["title", "body", "priority", "labels", "assignee", "due", "progress", "source", "files", "links", "sessions"]
+                    .into_iter()
+                    .filter(|field| before.get(*field) != after.get(*field) && (*field != "sessions" || before.get("events") == after.get("events")))
+                    .collect::<Vec<_>>();
+                if !changes.is_empty() {
+                    append_event(row, json!({"at":now,"by":actor,"kind":"edited","fields":changes}));
+                }
+                writer.observe_known(row, &item.id);
+                let display = writer.current_name(row)?;
+                let where_ = row["status"].as_str().unwrap_or_default();
+                let sessions = store::array(row.get("sessions")).len();
+                let linked_sessions = match sessions {
+                    0 => String::new(),
+                    1 => ", 1 session linked".into(),
+                    n => format!(", {n} sessions linked"),
+                };
+                let answer = if let Some(issue) = &linked {
+                    let reference = issue.display();
+                    let state = seen_words(&issue.state);
+                    let status = status_name(where_);
+                    let (named, still) = item.number.map_or(("It".into(), String::new()), |n| (format!("#{n}"), format!(" (#{n} still finds it)")));
+                    said(format!("{named} is {display} now ({state} on GitHub), {status}: refer to it as {reference}{still}. Its title and description are GitHub's (what it said before is kept as a note), and it's Done once it's closed there."))
+                } else {
+                    said(match where_ {
+                        "done" => format!("Marked {display} done."),
+                        "canceled" => format!("Marked {display} canceled."),
+                        _ => format!("Changed {display} ({}{linked_sessions}).", status_name(where_)),
+                    })
+                };
+                keep_reply(row, operation, &answer);
+                result = Some(answer);
+                Ok(())
+            })?;
+            compaction.finish(&writer, now)?;
+            Ok(result.expect("saved tool answer"))
+        }).await.map_err(internal)?
+    }
+    pub(super) async fn hand_words(
+        &self,
+        args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+        engine: &Engine,
+        forwarded: bool,
+    ) -> Result<Value, Refusal> {
+        self.tool_owner(&caller, false)?;
+        let id = if forwarded {
+            args["item"]
+                .as_str()
+                .expect("parsed forwarded item id")
+                .to_owned()
+        } else {
+            let reference = self.tool_item_reference(&args["item"])?;
+            let answer = self.reads.item_for_tool(reference).await?;
+            let target = &answer["item"];
+            if target.get("computer").is_some() {
+                return self
+                    .change_there(
+                        target,
+                        forward::records::Tool::Hand,
+                        args,
+                        caller,
+                        operation,
+                    )
+                    .await;
+            }
+            target["id"].as_str().expect("queue item id").to_owned()
+        };
+        let to = args["to"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .trim_start_matches('&')
+            .trim();
+        if to.is_empty() {
+            return Err(bad(
+                "Say who to hand it to (to), by a session's address or a bot's name.",
+            ));
+        }
+        let people = Assignees::read(&self.store);
+        let (owner, name, peer) = if store::session_id(to) {
+            let (computer, heading) = self.computer_words();
+            let found = engine.tool_session_owner(to).await.map_err(|_| {
+                bad(format!(
+                    "{heading}'s engine can't say where {to} is now. Try again in a moment."
+                ))
+            })?;
+            if let Some((owner, mut name, _)) = found {
+                if let Some(bot) = people.for_session(&owner) {
+                    name = bot.info.name.clone();
+                }
+                (owner, name, None)
+            } else if let Some(peer) = self.hand_peer(to) {
+                let view = self.peers.view();
+                let name = view
+                    .peer_session_name(&peer.key, to)
+                    .unwrap_or(to)
+                    .to_owned();
+                (to.to_owned(), name, Some(peer))
+            } else {
+                return Err(bad(format!(
+                    "There's no session {to} on {computer} or your other computers that this one knows of. Give the address list_agents or list_sessions shows."
+                )));
+            }
+        } else {
+            let matching = people
+                .rows()
+                .into_iter()
+                .filter(|row| {
+                    row["kind"] == "bot"
+                        && row["name"]
+                            .as_str()
+                            .is_some_and(|name| name.to_lowercase() == to.to_lowercase())
+                })
+                .collect::<Vec<_>>();
+            if let Some((owner, bot)) = matching
+                .first()
+                .filter(|_| matching.len() == 1)
+                .and_then(|bot| Some((people.bot_session(bot["id"].as_str()?)?, bot)))
+            {
+                (
+                    owner.to_owned(),
+                    bot["name"].as_str().unwrap_or_default().to_owned(),
+                    None,
+                )
+            } else {
+                let view = self.peers.view();
+                let far = view.peer_bot_named(to).and_then(|bot| {
+                    self.hand_peer(&bot.session)
+                        .map(|peer| (bot.session.clone(), bot.name.clone(), Some(peer)))
+                });
+                far.ok_or_else(|| bad(format!(
+                    "There's no bot called {to} on {} or your other computers. Give a session's address (from start_session or list_sessions).",
+                    self.computer_words().0
+                )))?
+            }
+        };
+        let guard = self.lock().await?;
+        let writer = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let now = Timestamp::now().as_millisecond();
+            let (all, compaction) = writer.changes(now)?;
+            if let Some(answer) = operation
+                .as_deref()
+                .and_then(|operation| receipt::kept_answer(&all, operation))
+            {
+                compaction.finish(&writer, now)?;
+                return Ok(answer);
+            }
+            let item = all
+                .iter()
+                .find(|item| item.id == id)
+                .ok_or_else(|| bad("There's no item like that."))?;
+            writer.admit(&item.owner)?;
+            if item.removed.is_some() {
+                return Err(deleted(item));
+            }
+            if item.owner == owner {
+                let item = read::item_name(&Value::Object(item.saved.clone()));
+                return Err(bad(format!("{item} is in that queue already.")));
+            }
+            if let Some(peer) = peer {
+                let answer = writer.hand_away(
+                    item,
+                    &all,
+                    hand::Destination { peer, owner, name },
+                    actor(&caller),
+                    operation,
+                    now,
+                )?;
+                compaction.finish(&writer, now)?;
+                return Ok(answer);
+            }
+            writer.admit(&owner)?;
+            edit::refuse_handing(item)?;
+            if all
+                .iter()
+                .filter(|item| {
+                    item.owner == owner && item.removed.is_none() && !status::closed(&item.status)
+                })
+                .count()
+                >= 2000
+            {
+                return Err(bad("That queue has 2000 open items already."));
+            }
+            let now = now.max((item.updated.at + 1.0) as i64);
+            let who = actor(&caller);
+            let mut row = Value::Object(item.saved.clone());
+            row["owner"] = owner.clone().into();
+            row["updated"] = json!({"at":now,"by":who});
+            hand::note_hand(&mut row, &item.owner, &owner, &who, now);
+            let mut docs = BTreeMap::new();
+            if owner.starts_with("ses_") && !status::closed(&item.status) {
+                writer.link_session(&all, &mut docs, &mut row, &owner, &who, now)?;
+            }
+            writer.observe_known(&mut row, &item.id);
+            let display = read::item_name(&row);
+            let linked = if owner.starts_with("ses_") {
+                ", linked to it"
+            } else {
+                ""
+            };
+            let answer = said(format!(
+                "Handed {display} to {name}: it's in its queue now{linked}, and stays in your view."
+            ));
+            keep_reply(&mut row, operation, &answer);
+            let destination = writer.document(&mut docs, &owner, now)?;
+            destination.items.retain(|row| row["id"] != item.id);
+            destination.items.push(row);
+            let destination = docs.remove(&owner).expect("queued destination");
+            destination.save(&writer.store).map_err(storage_refusal)?;
+            let mut source = match docs.remove(&item.owner) {
+                Some(source) => source,
+                None => writer.read_owner(&item.owner, now)?,
+            };
+            source.items.retain(|row| row["id"] != item.id);
+            if source.items.is_empty() {
+                files::remove_file_synced(&source.path)
+                    .map_err(Error::from)
+                    .map_err(storage_refusal)?;
+            } else {
+                source.save(&writer.store).map_err(storage_refusal)?;
+            }
+            for document in docs.into_values() {
+                document.save(&writer.store).map_err(storage_refusal)?;
+            }
+            compaction.finish(&writer, now)?;
+            Ok(answer)
+        })
+        .await
+        .map_err(internal)?
+    }
+
+    pub(super) async fn add_ordinary(
+        &self,
+        mut args: Value,
+        caller: ActiveTool,
+        operation: Option<String>,
+    ) -> Result<Value, Refusal> {
+        let owner = self.tool_owner(&caller, true)?;
+        self.admit_async(&owner).await?;
+        let now = Timestamp::now().as_millisecond();
+        let who = actor(&caller);
+        let working = args["working"] == true && !caller.seat;
+        if working && args.get("status").is_none() {
+            args["status"] = "in-progress".into();
+        }
+        let writer = self.clone();
+        let folder = caller.directory.clone();
+        let file_args = args.get("files").cloned();
+        let staged = tokio::task::spawn_blocking(move || {
+            writer
+                .files
+                .stage_agent(&writer.store, file_args.as_ref(), folder.as_deref())
+        })
+        .await
+        .map_err(internal)??;
+        let mut bytes = [0; 15];
+        getrandom::fill(&mut bytes).map_err(internal)?;
+        let id = format!("wqi_{}", kuvo_wire::keys::encode(&bytes));
+        let guard = self.lock().await?;
+        let writer = self.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            let (all, compaction) = writer.changes(now)?;
+            if let Some(answer) = operation
+                .as_deref()
+                .and_then(|operation| receipt::kept_answer(&all, operation))
+            {
+                compaction.finish(&writer, now)?;
+                return Ok(AgentAdd::Replay(answer));
+            }
+            writer.admit(&owner)?;
+            let people = Assignees::read(&writer.store);
+            let mut row = writer.new_row(
+                &id,
+                &owner,
+                &args,
+                ChangeContext {
+                    all: &all,
+                    people: &people,
+                    now,
+                    who: &who,
+                },
+            )?;
+            let mut docs = BTreeMap::new();
+            if working && !status::closed(row["status"].as_str().expect("item status")) {
+                writer.link_session(&all, &mut docs, &mut row, &caller.root, &who, now)?;
+                append_event(&mut row, json!({"at":now,"by":who,"kind":"started"}));
+            }
+            fields(&mut row, &args, now, &who)?;
+            writer.document(&mut docs, &owner, now)?;
+            Ok::<_, Refusal>(AgentAdd::New {
+                all,
+                owner,
+                docs,
+                row,
+                staged,
+                compaction: Box::new(compaction),
+                operation,
+            })
+        })
+        .await
+        .map_err(internal)??;
+        let AgentAdd::New {
+            all,
+            owner,
+            mut docs,
+            mut row,
+            staged,
+            compaction,
+            operation,
+        } = prepared
+        else {
+            let AgentAdd::Replay(answer) = prepared else {
+                unreachable!()
+            };
+            return Ok(answer);
+        };
+        let allocated = self
+            .numbers
+            .allocate(1, highest(&all), now)
+            .await
+            .map_err(storage_refusal)?;
+        if let Some(number) = allocated.first() {
+            row["number"] = (*number).into();
+        }
+        let writer = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let published = writer.files.publish(&writer.store, &mut row, &staged, true, now)?;
+            let item = Item::read(&owner, &row).expect("new Work Queue item");
+            row["mentionIndex"] = json!(Index::rebuild(&writer.refs.mentions, &item, &all, None));
+            let where_ = status_name(&item.status);
+            let answer = said(if let Some(number) = item.number {
+                let linked = if working { ", linked to you" } else { "" };
+                format!("Added #{number} \"{}\" as {where_}{linked}. Refer to it as #{number}.", item.title)
+            } else {
+                let (computer, _) = writer.computer_words();
+                format!("Added \"{}\" as {where_}. It has no number yet: {computer} gets one from the user's main computer, which isn't answering now. Name it as {} meanwhile.", item.title, item.id)
+            });
+            if let Some(operation) = operation {
+                row["toolReplies"] = json!({operation:answer});
+            }
+            let mut document = docs.remove(&owner).expect("new item's queue");
+            document.items.push(row);
+            document.save(&writer.store).map_err(storage_refusal)?;
+            published.commit();
+            for document in docs.into_values() {
+                document.save(&writer.store).map_err(storage_refusal)?;
+            }
+            compaction.finish(&writer, now)?;
+            Ok(answer)
+        }).await.map_err(internal)?
+    }
+}
+
+enum AgentAdd {
+    Replay(Value),
+    New {
+        all: Vec<Item>,
+        owner: String,
+        docs: BTreeMap<String, Document>,
+        row: Value,
+        staged: Staged,
+        compaction: Box<Compaction>,
+        operation: Option<String>,
+    },
+}
+
+pub(super) fn fields(
+    row: &mut Value,
+    args: &Value,
+    now: i64,
+    actor: &Value,
+) -> Result<(), Refusal> {
+    let mut progress = row["progress"].as_object().cloned().unwrap_or_default();
+    if let Some(value) = args.get("progress") {
+        if value.is_null() {
+            progress.remove("value");
+        } else if value
+            .as_f64()
+            .is_some_and(|value| (0.0..=1.0).contains(&value))
+        {
+            progress.insert("value".into(), value.clone());
+        } else {
+            return Err(bad(
+                "progress is a number from 0 to 1 (3 of 8 is 0.375), or null to take it away.",
+            ));
+        }
+    }
+    if let Some(note) = args.get("progress_note") {
+        let note = if note.is_null() {
+            String::new()
+        } else {
+            limit(&plain_name(&text(note, 600, "progress_note")?), 300)
+        };
+        if note.is_empty() {
+            progress.remove("note");
+        } else {
+            progress.insert("note".into(), note.into());
+        }
+    }
+    if progress.is_empty() {
+        row.as_object_mut().expect("queue item").remove("progress");
+    } else {
+        row["progress"] = Value::Object(progress);
+    }
+    if let Some(note) = args.get("note") {
+        let note = text(note, 20_000, "The note")?;
+        if !note.trim().is_empty() {
+            let mut notes = store::array(row.get("notes")).to_vec();
+            notes.push(json!({"at":now,"by":actor,"text":note.trim()}));
+            notes.drain(..notes.len().saturating_sub(200));
+            row["notes"] = notes.into();
+        }
+    }
+    let mut links = store::array(row.get("links")).to_vec();
+    if let Some(removing) = args.get("remove") {
+        let removed = removing
+            .as_array()
+            .map_or(std::slice::from_ref(removing), Vec::as_slice);
+        links.retain(|link| !removed.iter().any(|name| name == &link["url"]));
+    }
+    if let Some(given) = args.get("links") {
+        for value in given
+            .as_array()
+            .map_or(std::slice::from_ref(given), Vec::as_slice)
+        {
+            let address = value
+                .as_str()
+                .or_else(|| value["url"].as_str())
+                .unwrap_or_default();
+            let url = address.trim();
+            if !url.split_once("://").is_some_and(|(scheme, rest)| {
+                ["http", "https"]
+                    .iter()
+                    .any(|prefix| scheme.eq_ignore_ascii_case(prefix))
+                    && !rest.is_empty()
+                    && !rest.chars().any(char::is_whitespace)
+            }) {
+                let shown = if address.is_empty() {
+                    "A link"
+                } else {
+                    address
+                };
+                return Err(bad(format!("{shown} isn't a web address (https://…).")));
+            }
+            let url = limit(url, 2_000);
+            if !links.iter().any(|link| link["url"] == url) {
+                let mut link = json!({"url":url});
+                if let Some(title) = value["title"].as_str() {
+                    let title = limit(&plain_name(title), 200);
+                    if !title.is_empty() {
+                        link["title"] = title.into();
+                    }
+                }
+                links.push(link);
+            }
+        }
+        if links.len() > 50 {
+            return Err(bad("An item keeps 50 links at most."));
+        }
+    }
+    row["links"] = links.into();
+    Ok(())
+}
+
+fn named(value: &Value) -> Vec<&str> {
+    value
+        .as_array()
+        .map_or(std::slice::from_ref(value), Vec::as_slice)
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|name| name.starts_with("ses_") && owner_id(name))
+        .collect()
+}
+
+pub(in crate::queue::items) fn deleted(item: &Item) -> Refusal {
+    let entry = item.removed.as_ref().expect("deleted queue item");
+    let name = read::item_name(&Value::Object(item.saved.clone()));
+    if entry.by["user"] == true {
+        bad(format!(
+            "The user deleted {name}: only they bring it back. Ask them if it's still needed."
+        ))
+    } else {
+        let actor = entry.by["name"]
+            .as_str()
+            .or_else(|| entry.by["source"].as_str())
+            .unwrap_or("someone else");
+        bad(format!(
+            "{name} was deleted by {actor}: queue_remove with undo brings it back."
+        ))
+    }
+}
+
+pub(in crate::queue::items) fn keep_reply(
+    row: &mut Value,
+    operation: Option<String>,
+    result: &Value,
+) {
+    if let Some(operation) = operation {
+        if !row["toolReplies"].is_object() {
+            row["toolReplies"] = json!({});
+        }
+        row["toolReplies"][operation] = result.clone();
+    }
+}

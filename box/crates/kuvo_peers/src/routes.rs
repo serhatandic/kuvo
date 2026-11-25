@@ -34,6 +34,13 @@ pub const FEATURES: &[&str] = &[
     "notices",
     "phones",
     "sessions.location",
+    crate::WORK_QUEUE_SNAPSHOTS,
+    "work-queue.forward",
+    "work-queue.forward.agent",
+    "work-queue.attachments",
+    "work-queue.labels.restore",
+    "work-queue.labels.restore.preview",
+    "data.offline-edits",
 ];
 
 const NOT_READY: &str = "The session list isn’t ready.";
@@ -481,7 +488,14 @@ fn computers(
             local.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
         }
     }
+    if view.versions.is_mac {
+        local.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
+    }
+    local.version.clone_from(&view.versions.version);
+    local.kuvo = view.local_running_version().map(str::to_owned);
+    local.app_check.clone_from(&view.versions.app_check);
     local.system = view.system.as_deref().map(str::to_owned);
+    local.fleet_update = view.local_update_row().cloned();
     let features = view.features();
     local.compatibility = computer_compatibility(&features);
     local.features = Some(features.into_iter().map(str::to_owned).collect());
@@ -491,14 +505,7 @@ fn computers(
     active.truncate(100);
     local.at_work = Some(active);
     let mut rows = vec![local];
-    let mut peers: Vec<_> = view.roster.members.iter().collect();
-    peers.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then(a.key.cmp(&b.key))
-    });
-    for peer in peers {
+    for peer in view.roster.members_by_name() {
         let id = encode(&peer.key);
         let said = view.announced.get(&id);
         let heard = said.and_then(|said| said.heard);
@@ -510,6 +517,7 @@ fn computers(
             Reach::Connected
         };
         let mut row = computer_row(id, peer.name.clone(), reach, Via::Relay, false, &here.name);
+        row.fleet_update = view.peer_update_row(&peer.key).cloned();
         row.address = peer.address.as_ref().map(|address| encode(address));
         row.relay = view.endpoint.as_ref().map(|endpoint| endpoint.url.clone());
         if peer.kind == crate::session::ComputerKind::Mac {
@@ -552,7 +560,7 @@ fn computers(
     }
     get_kuvo_computers::Status200 {
         computers: rows,
-        fleet_update: None,
+        fleet_update: view.fleet_summary().cloned(),
         wipe_pending: (!pending_wipes.is_empty()).then_some(pending_wipes),
     }
 }

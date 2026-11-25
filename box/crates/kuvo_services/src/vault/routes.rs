@@ -58,6 +58,14 @@ impl Resident {
         })
     }
 
+    pub(crate) fn with_vault<T>(&self, work: impl FnOnce(&mut Vault) -> Result<T>) -> Result<T> {
+        self.with(|local| work(&mut local.vault))
+    }
+
+    pub(crate) fn now_millis() -> u64 {
+        millis()
+    }
+
     pub(super) fn with<T>(&self, work: impl FnOnce(&mut Local) -> Result<T>) -> Result<T> {
         let mut local = self
             .local

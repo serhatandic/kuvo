@@ -1,4 +1,6 @@
 mod agents;
+mod library_artifacts;
+mod marketplace;
 
 use std::{fs, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -77,7 +79,9 @@ pub async fn run(
     } else {
         bootstrap.devices
     };
-    let factories = agents::factories(home);
+    let tools = agents::tools::relay(home, engine.clone())?;
+    let feed = kuvo_agents::feed::Feed::default();
+    let factories = agents::factories(home, &tools, &feed).await;
     let resident_agents = if factories.is_empty() {
         None
     } else {
@@ -85,6 +89,7 @@ pub async fn run(
         let runtime = kuvo_agents::runtime::Runtime::for_home(&agent_home);
         match kuvo_agents::resident::ResidentAgents::start(runtime.clone(), factories).await {
             Ok((agents, failures)) => {
+                let agents = agents.with_feed(feed);
                 for failure in failures {
                     eprintln!(
                         "Kuvo could not take up agent holder {}: {}",
@@ -99,6 +104,9 @@ pub async fn run(
             }
         }
     };
+    if let Some((runtime, _)) = &resident_agents {
+        agents::tools::take_up(&tools, runtime).await;
+    }
     let info = info(
         home,
         &roster.name,
@@ -107,13 +115,22 @@ pub async fn run(
         resident_agents.is_some(),
     )?;
     let vault_machine = (kind != ComputerKind::Mac).then(|| roster.name.clone());
-    let mut peers = ResidentPeers::start(
+    let bot_name = roster.name.clone();
+    let identity = kuvo_os::platform::Account::current()?;
+    let account = identity.home_folder(
+        kuvo_os::platform::Platform::current(),
+        &std::env::vars_os().collect(),
+    )?;
+    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let bridge = crate::updates::installed_bridge(&update_home, &account);
+    let mut peers = ResidentPeers::start_with_bridge(
         home,
         roster,
         relay,
         Some(devices.clone()),
         kind == ComputerKind::Mac,
         Arc::new(system_clock),
+        bridge,
     )
     .await?;
     let authority = setup.handle();
@@ -123,14 +140,22 @@ pub async fn run(
         devices.clone(),
         move || authority.ownership_state(),
     );
-    peers.attach_moves(engine.clone(), owners.clone()).await?;
+    peers
+        .attach_moves_with_queue(
+            engine.clone(),
+            owners.clone(),
+            Some(kuvo_work::queue::move_transfer(home, setup.handle())),
+        )
+        .await?;
+    // Work for leads on your other computers: taken once this box's work is there (below).
+    let elsewhere = kuvo_work::work::elsewhere::Elsewhere::new();
+    let work_calls = match peers.attach_work(Arc::new(elsewhere.clone())).await {
+        Ok(calls) => Some(calls),
+        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => None,
+        Err(error) => return Err(error.into()),
+    };
     let peers = Arc::new(peers);
     peers.follow_setup_roster(setup.handle().rosters()).await;
-    let identity = kuvo_os::platform::Account::current()?;
-    let account = identity.home_folder(
-        kuvo_os::platform::Platform::current(),
-        &std::env::vars_os().collect(),
-    )?;
     let vault = kuvo_services::vault::Resident::new(
         home,
         kind == ComputerKind::Mac,
@@ -139,22 +164,90 @@ pub async fn run(
         &identity.home,
         vault_machine,
     );
+    let (peer_waiting, waiting_source) = tokio::sync::watch::channel(Arc::new(
+        peers.reader().view().peer_waiting(peers.reader().now()),
+    ));
+    let peer_waiting_source = tokio::spawn(publish_peer_waiting(peers.reader(), peer_waiting));
     let engine = engine
         .with_session_ownership(Arc::new(super::session_ownership::OwnerPort(
             owners.clone(),
         )))
         .with_model_stars(Arc::new(super::model_stars::SetupStars(setup.handle())))
+        .with_peer_waiting(waiting_source)
         .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
+    let mut agent_handover = None;
     let mut routes = Registry::new();
+    crate::box_app::register(
+        &mut routes,
+        update_home.clone(),
+        kind == ComputerKind::Mac,
+        peers.clone(),
+    )
+    .await?;
+    let sessions = resident_agents.as_ref().map_or_else(
+        || kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions")),
+        |(runtime, _)| runtime.sessions().clone(),
+    );
+    agents::sessions::register(sessions.clone(), &mut routes);
+    let agent_background = sessions.background().clone();
+    let shell_commands = agent_background.clone();
     let engine = if let Some((runtime, accounts)) = resident_agents {
+        // What its coding agents keep going, for the work routes and those that read the file.
+        let _published = sessions
+            .background()
+            .publish(home.join("run/work/background.json"));
         agents::register(accounts.clone(), &mut routes);
-        engine.with_agent_model_source(Arc::new(agents::Models {
-            runtime,
-            agents: accounts,
-        }))
-    } else {
+        let location = if kind == ComputerKind::Mac {
+            kuvo_agents::permissions::ConfigLocation::Desktop
+        } else {
+            kuvo_agents::permissions::ConfigLocation::Machine
+        };
+        let handover = kuvo_agents::session_runs::Handover::take(&agents::handover_file(home))
+            .unwrap_or_else(|error| {
+                eprintln!("Kuvo could not read the coding agents' handover: {error}");
+                None
+            });
+        let runs = kuvo_agents::session_runs::SessionRuns::start_after(
+            accounts.clone(),
+            sessions.clone(),
+            home.to_owned(),
+            location,
+            kuvo_agents::session_runs::Update {
+                adopted: accounts.adopted_turns().to_vec(),
+                handover,
+            },
+        );
+        agent_handover = Some((runs.clone(), runtime.clone()));
+        agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
+        agents::asks::follow(runs.clone(), sessions.clone(), accounts.feed().clone());
+        let inventory = agents::sessions::Inventory {
+            store: sessions.clone(),
+            running: Some(runs.clone()),
+            home: home.to_owned(),
+            agents: Some(accounts.clone()),
+        };
+        let rows = kuvo_agents::account_rows::AccountRows::new(
+            home.to_owned(),
+            accounts.clone(),
+            Some(Arc::new(runs.clone())),
+        );
+        agents::rows::register(rows, Some(runs.clone()), sessions.clone(), &mut routes);
+        agents::sessions::register_reads(inventory.clone(), &mut routes);
+        agents::turns::register(runs, accounts.feed().clone(), &mut routes);
         engine
+            .with_agent_model_source(Arc::new(agents::Models {
+                runtime,
+                agents: accounts,
+            }))
+            .with_agent_sessions(Arc::new(inventory))
+    } else {
+        engine.with_agent_sessions(Arc::new(agents::sessions::Inventory {
+            store: sessions,
+            running: None,
+            home: home.to_owned(),
+            agents: None,
+        }))
     };
     if kind == ComputerKind::Machine {
         let setup = setup.handle();
@@ -178,10 +271,20 @@ pub async fn run(
     let sessions = engine.register_with_merged_pages(&mut routes, move |project, shown, step| {
         kuvo_peers::routes::merged_project_page(&pages, project, shown, step)
     });
+    agents::background::register(
+        home,
+        agent_background,
+        agents::background::Listed {
+            sessions: sessions.clone(),
+            peers: peers.reader(),
+            bots: home.join("bots"),
+        },
+        &mut routes,
+    );
     let owner_requests = if let Ok(requests) = owners.incoming() {
         peers.advertise_engine_submissions().await?;
         Some(tokio::spawn(super::session_ownership::serve(
-            owners,
+            owners.clone(),
             requests,
             engine.clone(),
             sessions.clone(),
@@ -194,9 +297,56 @@ pub async fn run(
         kuvo_peers::memory_read::Handle::new(peers.reader(), peers.relay_handle(), move || {
             accepted.ownership_state().id
         });
+    let work_queue = kuvo_work::queue::register(
+        &mut routes,
+        home,
+        sessions.clone(),
+        engine.clone(),
+        setup.handle(),
+        kuvo_work::queue::Network {
+            peers: peers.reader(),
+            relay: peers.relay_handle(),
+            memory: memory.clone(),
+            owners: owners.clone(),
+        },
+    )
+    .await?;
+    let queue_reads = work_queue.peer_reads();
     let search_engine = engine.clone();
-    let memory_reads =
-        memory.serve(move |_, read| super::setup_search::answer(search_engine.clone(), read));
+    let read_owner = kuvo_peers::owner_read::Service::new(
+        peers.reader(),
+        owners,
+        memory.clone(),
+        engine.clone(),
+    );
+    read_owner.register(&mut routes);
+    let library_artifacts = Arc::new(
+        library_artifacts::ResidentLibraryArtifacts::start(
+            home,
+            peers.reader().view().roster.local().name,
+            peers.reader(),
+            peers.relay_handle(),
+            memory.clone(),
+            &mut routes,
+        )
+        .await,
+    );
+    let library_reader = library_artifacts.clone();
+    let memory_reads = memory.serve(move |_, read| {
+        let owner = read_owner.clone();
+        let queues = queue_reads.clone();
+        let engine = search_engine.clone();
+        let library_reader = library_reader.clone();
+        async move {
+            match read.area.as_deref() {
+                Some("ownership") if queues.serves_ownership(&read) => queues.answer(read).await,
+                Some("ownership") => owner.answer(read).await,
+                Some("search") => super::setup_search::answer(engine, read).await,
+                Some("library") => library_reader.answer_library_read(read).await,
+                _ => queues.answer(read).await,
+            }
+        }
+    });
     engine.register_setup_search(
         Arc::new(super::setup_search::SetupSearch {
             peers: peers.reader(),
@@ -207,7 +357,9 @@ pub async fn run(
     if memory_reads.is_some() {
         peers.advertise_conversation_search().await?;
     }
-    setup.handle().register(&mut routes);
+    setup
+        .handle()
+        .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
     kuvo_services::files::register(
         &mut routes,
@@ -217,7 +369,92 @@ pub async fn run(
             platform: kuvo_os::platform::Platform::current(),
         },
     );
-    kuvo_services::git::register(&mut routes, home.to_owned());
+    kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
+    kuvo_services::programs::register(&mut routes, account.clone());
+    let integration_keys =
+        kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
+    let skills = kuvo_services::skills::ResidentSkills::start(&mut routes, home, &account);
+    let resident_marketplace = kuvo_services::marketplace::ResidentMarketplace::start(
+        &mut routes,
+        home,
+        &account,
+        kind == ComputerKind::Mac,
+        peers.reader().view().roster.local().name,
+        Some(setup.handle()),
+        vault.clone(),
+        skills.store.clone(),
+        skills.library.clone(),
+        Arc::new(marketplace::PeerBridge::new(peers.reader())),
+    )
+    .await;
+    let wakes = kuvo_work::wakes::Wakes::new(home, engine.clone());
+    wakes.register(&mut routes);
+    // (A machine names itself on its asks; a Mac's own aren't named.)
+    let asks_machine = (kind != ComputerKind::Mac).then(|| bot_name.clone());
+    kuvo_work::asks::Asks::new(home, asks_machine, engine.clone()).register(&mut routes);
+    agents::shells::register(shell_commands, engine.clone(), &mut routes);
+    let bots = kuvo_work::bots::Bots::new(
+        kuvo_work::bots::Setting {
+            home: home.to_owned(),
+            account: account.clone(),
+            name: bot_name,
+            is_mac: kind == ComputerKind::Mac,
+        },
+        wakes.clone(),
+        peers.reader(),
+        sessions.clone(),
+        engine.clone(),
+        Arc::new(super::bot_setup::BotSetup(setup.handle())),
+    );
+    bots.register(&mut routes);
+    // (Add Agent in the Marketplace makes its bots here.)
+    resident_marketplace
+        .service
+        .give_agent_bots(Arc::new(bots.clone()));
+    let bots_follow_engine = bots.follow_engine();
+    // Bots' old keys of their own taken away, with no client there.
+    let _own_keys = kuvo_work::bots::own_keys::keep_bots_own_keys_gone(
+        home.to_owned(),
+        kind == ComputerKind::Mac,
+        home.join("bots"),
+        integration_keys.clone(),
+        kuvo_work::bots::own_keys::reconnecting(engine.clone()),
+    );
+    let approvals = kuvo_work::approval::ApprovalService::new(
+        kuvo_work::approval::Approvals::new(home, kind == ComputerKind::Mac),
+        engine.clone(),
+        home.join("bots"),
+        sessions.clone(),
+    );
+    approvals.register(&mut routes);
+    let approvals_kept = approvals.keep();
+    let work_settings =
+        kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
+    let working = sessions.clone();
+    let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
+    let work = kuvo_work::work::Work::new(
+        work_settings,
+        home,
+        sessions.clone(),
+        peers.reader(),
+        Arc::new(super::bot_setup::BotSetup(setup.handle())),
+        bots.clone(),
+    );
+    work.attach_start_link(work_queue.start_link());
+    // (What it tells, read again for the clients that follow it.)
+    let (told_peers, told_run) = (peers.clone(), home.join("run"));
+    work.notices.attach_told(Arc::new(move || {
+        let (peers, run) = (told_peers.clone(), told_run.clone());
+        let telling = kind == ComputerKind::Mac;
+        tokio::spawn(async move {
+            peers
+                .notices(kuvo_peers::notices::load(&run, telling))
+                .await
+        });
+    }));
+    work.register(&mut routes);
+    let work_watch = work.watch();
+    let work_rows = work_calls.map(|calls| elsewhere.serve(work.clone(), calls));
     let (backup_mail, backup_receiver) = if let Some(relay) = peers.relay_handle()
         && let Some((mail, receiver)) = kuvo_setup::backup::relay::mail::start(
             home.to_owned(),
@@ -231,33 +468,41 @@ pub async fn run(
     } else {
         (None, None)
     };
-    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
-    let update_profile = account.clone();
-    routes.register::<kuvo_protocol::routes::get_kuvo_update::Spec, _, _>(Access::Any, move |_| {
-        let answer = kuvo_keeper::update_status::read(&update_home, &update_profile);
-        async move {
-            let result = answer.and_then(|body| Ok(serde_json::from_value(body)?));
-            result.map(RouteReply::json::<200>).map_err(|error| {
-                Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            })
-        }
-    });
+    // 5.4 publishes its plan-limit account rows into this source. The Helper's
+    // route and events consume the same current rows without another account read.
+    let menu_limits = kuvo_services::limits_menu::MenuLimits::default();
+    crate::box_at_work::register(
+        &mut routes,
+        home,
+        kind == ComputerKind::Mac,
+        engine.clone(),
+        sessions.clone(),
+        peers.reader(),
+        menu_limits,
+    );
     crate::updates::register_helper_stop(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
-        kind == ComputerKind::Mac,
+        crate::box_at_work::applies(home, kind == ComputerKind::Mac),
+    );
+    let update_home = kuvo_store::home::Home::new(home.to_owned())?;
+    let backup_sweep = crate::updates::sweep_backups(
+        update_home.clone(),
+        kuvo_services::config::is_own_home_mac(home, kind == ComputerKind::Mac),
     );
     let updates = crate::updates::start(
-        kuvo_store::home::Home::new(home.to_owned())?,
+        update_home,
         &account,
         peers.clone(),
         setup.handle(),
+        engine.clone(),
     );
     crate::updates::register_check(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
         account.clone(),
         updates.as_ref(),
+        engine.clone(),
     );
     vault.register(&mut routes);
     #[cfg(target_os = "macos")]
@@ -271,6 +516,7 @@ pub async fn run(
         setup.handle(),
         backup_mail,
         Some(vault.clone()),
+        Some(work_queue.queue_review()),
     );
     let removal = setup.handle();
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), move || {
@@ -319,7 +565,14 @@ pub async fn run(
             }
         });
     }
-    let session_source = tokio::spawn(publish_local_sessions(home.join("run"), peers, sessions));
+    let session_source = tokio::spawn(publish_local_sessions(
+        home.join("run"),
+        peers,
+        sessions,
+        bots,
+        wakes.changes(),
+    ));
+    let firing = wakes.start();
     let finishing = setup.handle();
     let result = resident
         .serve(dispatcher, Arc::new(devices), async {
@@ -337,6 +590,16 @@ pub async fn run(
             }
         })
         .await;
+    if let Some((runs, runtime)) = agent_handover {
+        // Making way for the next resident, its coding agents go on for it to take up; stopping
+        // for good (turned off, paused, or with no keeper to start another), they stop with it.
+        if kuvo_keeper::next_resident_coming(home) {
+            agents::hand_over(home, &runs, &runtime).await;
+        } else if let Err(error) = runtime.holders().stop_all().await {
+            eprintln!("Kuvo could not stop the coding agents: {error}");
+        }
+    }
+    tools.shutdown().await;
     if let Some(agents) = agent_shutdown {
         match tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -352,6 +615,15 @@ pub async fn run(
             Err(_) => eprintln!("Kuvo timed out checkpointing the coding agents."),
         }
     }
+    firing.stop().await;
+    bots_follow_engine.abort();
+    approvals_kept.abort();
+    work_watch.abort();
+    work_rows.inspect(tokio::task::JoinHandle::abort);
+    if let Some(kept_awake) = kept_awake {
+        kept_awake.abort();
+    }
+    backup_sweep.abort();
     if let Some(updates) = updates {
         updates.stop().await;
     }
@@ -360,6 +632,8 @@ pub async fn run(
         watch.abort();
         let _ = watch.await;
     }
+    peer_waiting_source.abort();
+    let _ = peer_waiting_source.await;
     session_source.abort();
     if let Some(owner_requests) = owner_requests {
         owner_requests.abort();
@@ -372,6 +646,11 @@ pub async fn run(
     if let Some(holder) = vault_holder {
         holder.shutdown().await;
     }
+    if let Ok(library_artifacts) = Arc::try_unwrap(library_artifacts) {
+        library_artifacts.stop().await;
+    }
+    skills.stop();
+    resident_marketplace.stop().await;
     let _ = session_source.await;
     drop(daily_backups);
     drop(backup_receiver);
@@ -380,23 +659,57 @@ pub async fn run(
     Ok(())
 }
 
+async fn publish_peer_waiting(
+    mut peers: kuvo_peers::setup_lists::Reader,
+    waiting: tokio::sync::watch::Sender<Arc<Vec<kuvo_engine::PeerWaiting>>>,
+) {
+    let mut refresh = tokio::time::interval(std::time::Duration::from_secs(15));
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let current = peers.view().peer_waiting(peers.now());
+        waiting.send_if_modified(|last| {
+            if **last == current {
+                return false;
+            }
+            *last = Arc::new(current);
+            true
+        });
+        tokio::select! {
+            changed = peers.changed() => if changed.is_err() { break; },
+            _ = refresh.tick() => {},
+            _ = waiting.closed() => break,
+        }
+    }
+}
+
 async fn publish_local_sessions(
     run: std::path::PathBuf,
     peers: Arc<ResidentPeers>,
     mut sessions: kuvo_engine::LocalSessions,
+    bots: kuvo_work::bots::Bots,
+    mut wakes: tokio::sync::watch::Receiver<u64>,
 ) {
     loop {
         if let Some(record) = sessions.latest_record()
             && let Ok(list) = serde_json::from_value(record)
         {
-            let run = run.clone();
-            if let Ok(mut local) = tokio::task::spawn_blocking(move || Local::load(&run)).await {
+            let (run, bots) = (run.clone(), bots.clone());
+            if let Ok(mut local) = tokio::task::spawn_blocking(move || {
+                let mut local = Local::load(&run);
+                local.bots = serde_json::to_value(bots.peer_activity())
+                    .and_then(serde_json::from_value)
+                    .ok();
+                local
+            })
+            .await
+            {
                 local.list = Some(list);
                 peers.local(local).await;
             }
         }
-        if !sessions.changed().await {
-            break;
+        tokio::select! {
+            changed = sessions.changed() => if !changed { break },
+            _ = wakes.changed() => {}
         }
     }
 }
@@ -412,14 +725,31 @@ fn info(
     fs::create_dir_all(&chats)?;
     let is_mac = kind == ComputerKind::Mac;
     // Advertise the implemented routes while the desktop remains behind its update gate.
-    let mut features = vec!["info", "line", "engine.restart", "box.backups.status"];
+    let mut features = vec![
+        "info",
+        "line",
+        "engine.restart",
+        "box.backups.status",
+        "box.atWork",
+    ];
     if !is_mac {
         features.push("engine.start");
     }
     features.extend_from_slice(kuvo_peers::routes::FEATURES);
     features.extend_from_slice(kuvo_engine::FEATURES);
     features.push(kuvo_peers::memory_read::FEATURE);
+    features.push(kuvo_peers::owner_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
+    features.extend_from_slice(kuvo_services::git::FEATURES);
+    features.extend_from_slice(kuvo_services::artifacts::FEATURES);
+    features.extend_from_slice(kuvo_services::library::FEATURES);
+    features.extend_from_slice(kuvo_services::programs::FEATURES);
+    features.extend_from_slice(kuvo_services::integrations::FEATURES);
+    features.extend_from_slice(kuvo_services::skills::FEATURES);
+    features.extend_from_slice(kuvo_services::marketplace::FEATURES);
+    features.extend_from_slice(kuvo_work::wakes::FEATURES);
+    features.extend_from_slice(kuvo_work::asks::FEATURES);
+    features.push("shell.stop");
     if permits_pairing {
         features.push("devices.pair");
     }

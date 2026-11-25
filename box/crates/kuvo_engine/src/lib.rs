@@ -1,6 +1,8 @@
 //! The resident's on-demand OpenCode and its API passthrough.
 
+mod active_tool;
 mod agent_models;
+mod agent_sessions;
 mod api;
 mod asks;
 mod attachment_retention;
@@ -20,10 +22,12 @@ mod naming;
 mod notes;
 mod ownership;
 mod parts;
+pub use parts::parts_metadata;
 mod proxy;
 mod queue;
 mod raw_prompts;
 mod receipt_index;
+mod release;
 mod search;
 mod send;
 mod session_list;
@@ -35,6 +39,8 @@ mod transcript;
 mod turns;
 mod typed;
 mod waiting;
+mod bot_port;
+mod wake_port;
 mod worktree_notes;
 
 use http::StatusCode;
@@ -56,8 +62,13 @@ pub const FEATURES: &[&str] = &[
     "typed.submission-recovery",
 ];
 
+pub use active_tool::ActiveTool;
 pub use agent_models::{
     AgentCatalog, AgentModel, AgentModelSource, AutoModel, CatalogRead, ModelAccount,
+};
+pub use agent_sessions::{
+    AgentCall, AgentEvent, AgentLinePrompt, AgentPrompt, AgentSessionPatch, AgentSessionRead,
+    AgentSessionRow, AgentSessionSource, AgentTakeBack, NewAgentSession,
 };
 pub use attachment_retention::{AttachmentConversation, AttachmentRead, AttachmentSource};
 pub use external_asks::{
@@ -65,9 +76,11 @@ pub use external_asks::{
     ExternalReply, ExternalWaiting,
 };
 pub use launch::pinned_version;
-pub use lifetime::{Engine, State, Timing};
+pub use lifetime::{Engine, EngineEvent, State, Timing};
+pub use queue::{WorkStopped, WorkStops};
+pub use queue::limit::{limit_reached, reset_time, resets_in};
 pub use model_preferences::{ModelStar, ModelStarSource, StarSave};
-pub use models::ModelSpeed;
+pub use models::{ModelSpeed, OfferedModels};
 pub use notes::{NoteEdits, NoteWriter};
 pub use ownership::{
     ComputerKey, DeviceAccess, OwnedReply, OwnedRequest, OwnerAction, OwnerScope, PeerReply,
@@ -77,10 +90,14 @@ pub use search::{
     PeerSearch, SearchAvailability, SearchComputer, SearchPeer, SearchPeers, SearchResult,
 };
 pub use session_list::{Activity, ActivityState, LocalSessions};
-pub use session_move::{MoveEngineError, SessionMove};
-pub use start_session::Permission as SessionPermission;
-pub use transcript::{TranscriptError, TranscriptScope};
+pub use session_move::{LetterDelivery, LetterPrompt, LetterText, MoveEngineError, SessionMove};
+pub use start_session::{
+    ParentLead, Permission as SessionPermission, RemoteLead, StartSteps, session_note,
+};
+pub use transcript::{TranscriptError, TranscriptScope, folded};
 pub use waiting::PeerWaiting;
+pub use bot_port::BotEngine;
+pub use wake_port::{BoxMessage, Delivered as WakeDelivered, Unreachable, WAKE_FROM, WAKE_MARKER, WakeEngine};
 pub use worktree_notes::WorktreeConversation;
 
 impl Engine {

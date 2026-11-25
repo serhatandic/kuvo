@@ -1,9 +1,17 @@
+#[cfg(target_os = "linux")]
+mod install_linux;
 #[cfg(target_os = "macos")]
 mod install_media;
 #[cfg(target_os = "macos")]
 mod mac_wipe;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod install_released;
+mod bot_setup;
 mod model_stars;
+mod released_settings;
 mod serve;
+mod box_app;
+mod box_at_work;
 mod session_ownership;
 mod setup_search;
 #[cfg(target_os = "macos")]
@@ -32,13 +40,43 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let word = |index: usize| args.get(index).and_then(|part| part.to_str());
+    let _release = if matches!(word(0), Some("serve" | "keep" | "hold" | "mcp")) {
+        env::var_os("KUVO_HOME")
+            .filter(|home| std::path::Path::new(home).is_absolute())
+            .map(|home| kuvo_keeper::lease_running_release(std::path::Path::new(&home)))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if word(0) == Some("hold") {
         kuvo_agents::hold::run(&args[1..])?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    // The stdio MCP forwarder an agent starts in its sandbox.
+    if (word(0), args.len()) == (Some("mcp"), 1) {
+        let relay = kuvo_agents::tool_forwarder::Relay::from_env()?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(kuvo_agents::tool_forwarder::forward(
+                relay,
+                tokio::io::BufReader::new(tokio::io::stdin()),
+                tokio::io::stdout(),
+            ))?;
         return Ok(ExitCode::SUCCESS);
     }
     #[cfg(target_os = "macos")]
     if word(0) == Some("install-media") {
         return Ok(install_media::run(&args[1..]));
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if word(0) == Some("install-released-machine") {
+        return Ok(install_released::run(&args[1..]));
+    }
+    #[cfg(target_os = "linux")]
+    if word(0) == Some("install-linux") {
+        return Ok(install_linux::run(&args[1..]));
     }
     #[cfg(target_os = "macos")]
     if (word(0), args.len()) == (Some("helper-hand-over"), 1) {
@@ -68,6 +106,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
         ))?;
         kuvo_setup::backup::Backups::new(home).preserve_before_rust()?;
         return Ok(ExitCode::SUCCESS);
+    }
+    if (word(0), word(1)) == (Some("box"), Some("labels")) {
+        return kuvo_work::label_restore::run(&args[2..]);
     }
     if (word(0), word(1), args.len()) == (Some("selftest"), Some("--engine"), 3) {
         if word(2) != Some(kuvo_engine::pinned_version().as_str()) {
@@ -136,6 +177,11 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let supervised =
         cfg!(windows) && (word(0), word(1), args.len()) == (Some("serve"), Some("--supervised"), 2);
+    let released_settings = match (word(0), word(1), args.len()) {
+        (Some("box"), Some("read" | "adopt" | "change"), 2) => word(1),
+        (Some("box"), Some("key"), 3) => word(1),
+        _ => None,
+    };
     let command = match (word(0), word(1), args.len()) {
         _ if serve || wipe => None,
         _ if join
@@ -148,11 +194,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             || startup.is_some()
             || keeper.is_some()
             || probe.is_some()
-            || supervised =>
+            || supervised
+            || released_settings.is_some() =>
         {
             None
         }
-        (Some("route"), _, 1) => Some(ssh::Command::Route {
+        (Some("route"), _, 1) | (Some("box"), Some("route"), 2) => Some(ssh::Command::Route {
             internal: false,
             internal_path: None,
         }),
@@ -198,6 +245,10 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             !wipe && uninstall.is_none() && startup != Some(false),
         )?;
     }
+    #[cfg(windows)]
+    if wipe {
+        kuvo_setup::wipe::wait_for_hand_over();
+    }
     #[cfg(target_os = "macos")]
     if (serve && kuvo_setup::wipe::launch_app_wipe(home.root())?)
         || (wipe && mac_wipe::finish(home.root())?)
@@ -209,25 +260,38 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             return finish_headless_member(&home);
         }
         match kuvo_setup::wipe::finish(home.root())? {
-            true => return Ok(ExitCode::SUCCESS),
+            // A new installation at the path starts after the old one's erase.
+            true if wipe || !home.root().exists() => return Ok(ExitCode::SUCCESS),
             false if wipe => return Ok(ExitCode::FAILURE),
-            false => {}
+            _ => {}
         }
     }
     if let Some(check) = uninstall {
+        let startup = |_check| {
+            Ok(kuvo_setup::uninstall::StartupEntries {
+                #[cfg(unix)]
+                crontab: kuvo_keeper::crontab::uninstall(&home, _check)?,
+                #[cfg(not(unix))]
+                crontab: None,
+                #[cfg(target_os = "macos")]
+                launch_agent: kuvo_keeper::mac_helper::uninstall(&home, _check)?,
+                #[cfg(not(target_os = "macos"))]
+                launch_agent: None,
+            })
+        };
         #[cfg(unix)]
         let outcome = if check {
-            kuvo_setup::uninstall::run(&home, true)
+            kuvo_setup::uninstall::run(&home, true, startup)
         } else {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
             runtime
                 .block_on(kuvo_setup::uninstall::stop_live(&home))
-                .unwrap_or_else(|| kuvo_setup::uninstall::run(&home, false))
+                .unwrap_or_else(|| kuvo_setup::uninstall::run(&home, false, startup))
         };
         #[cfg(not(unix))]
-        let outcome = kuvo_setup::uninstall::run(&home, check);
+        let outcome = kuvo_setup::uninstall::run(&home, check, startup);
         #[cfg(windows)]
         if !check
             && outcome.status == 0
@@ -241,6 +305,9 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             eprintln!("{note}");
         }
         return Ok(ExitCode::from(outcome.status));
+    }
+    if let Some(verb) = released_settings {
+        return released_settings::run(&home, verb, word(2));
     }
     if identity {
         println!("{}", kuvo_setup::backup::ssh_identity(home.root())?);
@@ -384,9 +451,12 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     if serve && result.is_ok() && kuvo_setup::wipe::pending(home.root())? {
         // Let resident tasks and blocking file writers finish before detaching their home.
         drop(runtime);
-        return Ok(ExitCode::from(u8::from(!kuvo_setup::wipe::finish(
-            home.root(),
-        )?)));
+        // Windows: the folder stays open while this process lives; a copy erases it after.
+        #[cfg(windows)]
+        let finished = kuvo_setup::wipe::hand_over(home.root())?;
+        #[cfg(not(windows))]
+        let finished = kuvo_setup::wipe::finish(home.root())?;
+        return Ok(ExitCode::from(u8::from(!finished)));
     }
     // An addressed SSH exchange can finish while its stdin is still open. The
     // source is stdio, so Tokio's blocking read only ends when that SSH channel closes.
@@ -699,19 +769,60 @@ fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::E
     }
 }
 
+fn refused_install_attempt(home: &Home) -> bool {
+    let checked = || -> Result<(), Box<dyn std::error::Error>> {
+        let bin = kuvo_keeper::fleet::selected(home)?.map_or_else(
+            || home.bin(),
+            |release| home.root().join(release.to_string()),
+        );
+        Ok(kuvo_move::install::check_preflight(home, &bin)?)
+    };
+    if let Err(error) = checked() {
+        println!(
+            "{}",
+            serde_json::json!({"result":"refused","message":error.to_string()})
+        );
+        return true;
+    }
+    false
+}
+
+const WIPE_WAIT: &str = "This computer’s wipe hasn’t finished.";
+
+fn wipe_waiting_status(home: &Home, message: &str) -> serde_json::Value {
+    serde_json::json!({"verdict":"waits", "verb":null, "message":message,
+        "status":kuvo_move::rehome_status(home)})
+}
+
+fn install_wipe_offer(
+    reply: &mut serde_json::Value,
+    receipt: Option<&kuvo_setup::wipe::ReinstallReceipt>,
+) {
+    if reply["verdict"] == "fresh"
+        && let Some(receipt) = receipt
+    {
+        reply["verb"] = serde_json::Value::Null;
+        reply["offer"] = "reinstall-local".into();
+        reply["wipeReceipt"] = serde_json::json!(receipt);
+    }
+}
+
 fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::{ffi::OsStr, path::Path};
 
     let usage = || {
-        eprintln!("usage: kuvo-box install --status --root <name> [--app <bundle>]");
+        eprintln!(
+            "usage: kuvo-box install --status --root <name> [--app <bundle>] [--media <folder>]"
+        );
         Ok(ExitCode::from(2))
     };
     let mut words = args.iter().filter(|word| *word != "--status");
-    let (mut root, mut bundle) = (None, None);
+    let (mut root, mut bundle, mut media) = (None, None, None);
     while let Some(word) = words.next() {
         let slot = match word.to_str() {
             Some("--root") if root.is_none() => &mut root,
             Some("--app") if bundle.is_none() => &mut bundle,
+            Some("--media") if media.is_none() => &mut media,
             _ => return usage(),
         };
         *slot = words.next().map(Path::new);
@@ -730,9 +841,14 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         .filter(|path| path != OsStr::new(""))
         .map_or_else(|| folder.join(".kuvo-code"), PathBuf::from);
     let located = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.into());
-    if located(home.root()) != located(&selected) {
+    #[cfg(target_os = "macos")]
+    let same_place = kuvo_move::install::same_mac_home;
+    #[cfg(not(target_os = "macos"))]
+    let same_place = |left: &Path, right: &Path| located(left) == located(right);
+    if !same_place(home.root(), &selected) {
         return usage();
     }
+    let real = same_place(home.root(), &account.home.join(".kuvo-code"));
     #[cfg(target_os = "macos")]
     let source = {
         let Some(id) = bundle
@@ -747,7 +863,6 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
             );
             return Ok(ExitCode::FAILURE);
         };
-        let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
         if real != (id == "run.kuvo.code") {
             let message = if real {
                 "Only Kuvo itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own."
@@ -767,36 +882,41 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
-    let wipe = kuvo_setup::wipe::install_state(home.root())?;
+    if refused_install_attempt(&home) {
+        return Ok(ExitCode::FAILURE);
+    }
+    let wipe = kuvo_setup::wipe::installer_wipe(home.root(), true)?;
     #[cfg(target_os = "macos")]
     let app_wipe = match &source {
-        Some(source) => mac_wipe::install_state(source, &folder)?,
-        None => None,
+        Some(source) => mac_wipe::installer_wipe(source, &folder)?,
+        None => kuvo_setup::wipe::InstallerWipe::None,
     };
     #[cfg(not(target_os = "macos"))]
-    let app_wipe: Option<kuvo_setup::wipe::InstallState> = None;
-    if let Some(message) = app_wipe
-        .as_ref()
-        .and_then(kuvo_setup::wipe::InstallState::pending_message)
-        .or_else(|| {
-            wipe.as_ref()
-                .and_then(kuvo_setup::wipe::InstallState::pending_message)
-        })
-    {
-        println!(
-            "{}",
-            serde_json::json!({
-                "verdict": "waits", "verb": null, "status": kuvo_move::rehome_status(&home),
-                "message": message
-            })
-        );
+    let app_wipe = kuvo_setup::wipe::InstallerWipe::None;
+    if let Some(message) = app_wipe.pending_message().or(wipe.pending_message()) {
+        println!("{}", wipe_waiting_status(&home, message));
         return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(media) = media {
+        if !media.is_absolute() {
+            return usage();
+        }
+        let key = (!real)
+            .then(|| env::var("KUVO_TEST_RELEASE_KEY").ok())
+            .flatten();
+        let key = key.as_deref().unwrap_or(kuvo_keeper::manifest::UPDATE_KEY);
+        if let Err(error) = kuvo_keeper::staging::check_install_media(&home, media, key) {
+            println!(
+                "{}",
+                serde_json::json!({"result":"failed","message":error.to_string()})
+            );
+            return Ok(ExitCode::FAILURE);
+        }
     }
     let helper_ready = {
         #[cfg(target_os = "macos")]
         {
             let profile = located(&folder);
-            let real = located(home.root()) == located(&account.home.join(".kuvo-code"));
             home.bin()
                 .join("kuvo-box")
                 .is_file()
@@ -808,25 +928,17 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         None
     };
     let judge = kuvo_move::install::judge(&home, source.as_deref(), platform, helper_ready)?;
-    if judge.verdict == kuvo_move::install::Verdict::Stuck
-        && judge.status["step"].is_null()
-        && let Some(message) = judge.status["failed"]["message"].as_str()
-    {
+    if let Some(message) = judge.unreadable_move() {
         println!(
             "{}",
             serde_json::json!({"result":"refused","message":message})
         );
         return Ok(ExitCode::FAILURE);
     }
-    let fresh = judge.verdict == kuvo_move::install::Verdict::Fresh;
     let mut reply = serde_json::to_value(judge)?;
-    if fresh && let Some(kuvo_setup::wipe::InstallState::Erased(receipt)) = wipe.or(app_wipe) {
-        reply["verb"] = serde_json::Value::Null;
-        reply["offer"] = "reinstall-local".into();
-        reply["wipeReceipt"] = serde_json::to_value(receipt)?;
-    }
+    install_wipe_offer(&mut reply, wipe.receipt().or(app_wipe.receipt()));
     if reply["verdict"] == "two" {
-        reply["message"] = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.".into();
+        reply["message"] = kuvo_move::install::TWO_HOMES_MOVE.into();
     }
     println!("{reply}");
     Ok(ExitCode::SUCCESS)

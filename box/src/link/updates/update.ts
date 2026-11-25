@@ -38,6 +38,7 @@ import { activeBin, convertBin, previousBin, pruneVersions, stageVersion, versio
 import { rememberCutTurns } from "./interrupted";
 import { isEngineModel } from "../../shared/subagents";
 import { sleep } from "../../shared/wait";
+import fleetTiming from "../../shared/fleet-timing.json";
 
 // The releases' public keys (scripts/set-box-key.sh, scripts/sign-box.mjs), base64: with none, no
 // box updates itself.
@@ -264,9 +265,9 @@ export async function agentsWorking(readEngine: () => EngineRecord = readEngineF
 }
 
 
-const RELEASE_DRAIN_MOST = 5 * 60_000;
+const RELEASE_DRAIN_MOST = fleetTiming.releaseDrainMs;
 const ENGINE_TURNS_WAIT = "The release is ready. Kuvo will try again after the engine has had time to finish.";
-const RELEASE_DRAIN_RETRY = 60_000;
+const RELEASE_DRAIN_RETRY = fleetTiming.releaseDrainRetryMs;
 
 export function releaseDrainDeferred(version: string, now: number): boolean {
   const last = updateState().last;

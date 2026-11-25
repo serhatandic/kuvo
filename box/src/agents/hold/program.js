@@ -23,7 +23,8 @@
 // then {i: line} (to the agent's stdin), {ack: seq}, {meta: {...}}, {end: true} (close its stdin),
 // {signal: name}, {bye: true}. The holder answers {hello, pid, child, generation, seq, first, gap,
 // exited, stderr, meta} or {refused}, then sends {s: seq, o: line} (again: true for a request sent
-// again), {e: text} (stderr), {x: {code, signal}} (the agent ended, after all it wrote), {fenced:
+// again), {e: text} (stderr), {x: {code, signal, heardAll?}} (the agent ended, after all it wrote;
+// heardAll: its stderr ended too, rather than being held open past the wait), {fenced:
 // true} (a newer bridge took over). Files: <folder>/<id>.sock, <id>.json (its record, with the
 // key) and <id>.journal (what its agent said lately, 64 MB at most); the folder is 0700.
 
@@ -329,7 +330,13 @@ function lines(stream, each, { exact = false, most } = {}) {
   }
 }
 
-const outputDone = new Promise((resolve) => child.stdout.once("close", resolve))
+// (Its stderr too: what it says as it stops is why it did. Something it left running can hold
+// either open, which the wait after its end bounds.)
+let heardAll = false
+const outputDone = Promise.all([
+  new Promise((resolve) => child.stdout.once("close", resolve)),
+  new Promise((resolve) => child.stderr.once("close", () => resolve(heardAll = true))),
+])
 const restOfStdout = lines(child.stdout, fromAgent, { exact: kind === "raw" })
 child.stderr.setEncoding("utf8")
 child.stderr.on("data", (text) => {
@@ -487,7 +494,7 @@ function ended(code, signal) {
   void Promise.race([outputDone, new Promise((resolve) => setTimeout(resolve, OUTPUT_AFTER_END))]).then(() => {
     restOfStdout()
     child.stdout.destroy()
-    exited = { code, signal }
+    exited = heardAll ? { code, signal, heardAll } : { code, signal }
     writeRecord()
     if (controller) pump(controller)
     // (Asked to stop, with no bridge there: none is waiting to hear it.)

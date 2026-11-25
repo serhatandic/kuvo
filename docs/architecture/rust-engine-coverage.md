@@ -18,7 +18,7 @@ OpenCode 2.2.6 on macOS, Linux, WSL2 and native Windows.
 | `box/test/engine-own-tools.test.ts` | 4 | Tool registration, compatibility settings, old app-folder exclusion, and generated launch tools follow in 4.1, 6.1 and 7.3. |
 | `box/bridge-tests/own-box-engine.test.js` | 3 | Installed-pin startup and adoption cover the worker lifecycle. Helper launch notes, normalization of the old shell launcher’s HOME, and keeper configuration refusal follow in 7.1 and 7.3. |
 | `box/bridge-tests/start-session.test.js` | 5 | Session ancestry, marking/refusal, worktree admission, new worktree filing and sibling-folder filing follow in 3.2 and 6.3. |
-| `box/bridge-tests/engine-swap.test.js` | 4 | Held turns and ordered sends, rollback after bad launch, bounded hold expiry, and the downgrade fence are the old engine swap. The replacement release paths follow in 3.2 and 7.2. |
+| `box/bridge-tests/engine-swap.test.js` | 4 | Held turns and ordered sends, rollback after bad launch, bounded hold expiry, and the downgrade fence are the old engine swap. U74–U76 in 7.2 prove the versioned release hold, worker ownership, saved inbox, rollback, queue edits, inline attachments, and update status. Coding-agent engine-model fallback remains with 4.1. |
 | `box/bridge-tests/update-engine-turn.test.js` | 3 | A resident restart keeping the engine is covered. A full release switch with a live turn, waiting on a background shell at release switch, and a bridge turn finishing through handover follow in 4.1 and 7.2. |
 | `box/bridge-tests/bridge.test.js`, API forwarding and path vectors | 2 | Authenticated body and header passthrough, a forged client password, refused paths, event streaming/cancellation and all 100 forwarded engine path vectors. Phone message parts and named-agent rewriting, integration enrichment and agent-bridge routes are gaps. |
 | Same file, engine unavailable and info timestamp | 2 | Passive and stopped status, retry wording, and the discovery timestamp surfaced in `kuvo/info`. |
@@ -73,8 +73,8 @@ after the first message, restarts the resident, and checks delivery order.
 ### TypeScript scenario map
 
 Numbers are one-based test declarations in each file at `a21b64fc5`.
-The first inventory recorded 294 cases. Across both inventories, 237 of
-411 declarations are covered, 76 are partial and 98 are gaps.
+The first inventory recorded 294 cases. Across both inventories, 241 of
+411 declarations are covered, 75 are partial and 95 are gaps.
 One gap is a retired phone scenario. Row 3.2 owns zero remaining cases.
 Covered cases have direct Rust evidence. Partial cases exercise only part of
 the original result or use the local OpenCode boundary where the original
@@ -108,16 +108,16 @@ owners on the same case each own the part described by their phase.
 | `box/test/queue-stop.test.ts` (6) | 1–6 | — | — | — |
 | `box/test/queue-items.test.ts` (25) | 1–24 | — | 25 | 4.1 · 25 |
 | `box/test/resident-delivery.test.ts` (2) | — | 1 | 2 | 4.1 · 1<br>5.2 · 2 |
-| `box/test/session-actions.test.ts` (26) | 1, 4, 6–9, 14–16, 20, 24–25 | 3, 5, 10, 23, 26 | 2, 11–13, 17–19, 21–22 | 4.1 · 2, 10<br>2.4 · 11–13, 19<br>5.1 · 3, 5<br>6.1 · 17–19, 21–23, 26 |
+| `box/test/session-actions.test.ts` (26) | 1, 4, 6–9, 11–16, 20, 24–25 | 3, 5, 10, 23, 26 | 2, 17–19, 21–22 | 4.1 · 2, 10<br>5.1 · 3, 5<br>6.1 · 17–19, 21–23, 26 |
 | `box/test/session-pages.test.ts` (3) | 1–2 | 3 | — | 4.1 · 3 |
-| `box/test/session-lists.test.ts` (47) | 1, 3–13, 15–17, 19–22, 24, 26–28, 46–47 | 2, 14, 23, 29 | 18, 25, 30–45 | 4.1 · 14<br>5.1 · 2, 18, 23, 25, 29–45<br>2.4 · 45 |
+| `box/test/session-lists.test.ts` (47) | 1, 3–13, 15–17, 19–22, 24, 26–28, 46–47 | 2, 14, 23, 29 | 18, 25, 30–45 | 4.1 · 14<br>5.1 · 2, 18, 23, 25, 29–45 |
 | `box/test/session-notes.test.ts` (8) | 1–8 | — | — | — |
 | `box/test/session-notes-writers.test.ts` (7) | 3–5, 7 | 1–2, 6 | — | 7.3 · 6<br>5.1 · 1<br>5.3 · 1–2<br>6.1 · 1 |
 | `box/bridge-tests/queue.test.js` (56) | 1–2, 4–34, 36–39, 43, 51–56 | 3 | 35, 40–42, 44–50 | 4.1 · 44–50<br>4.6 · 40–42<br>dropped: phone app retired · 35<br>5.1 · 3 |
 | `box/bridge-tests/queue-live.test.js` (1) | 1 | — | — | — |
 | `box/bridge-tests/start-session.test.js` (5) | — | 1–5 | — | 5.1 · 2<br>6.3 · 3–5<br>4.1 · 1 |
 | `box/test/typed.test.ts` (9) | 1–4, 6–9 | — | 5 | 4.1 · 5 |
-| `box/test/draft-orphan.test.ts` (5) | 1–4 | 5 | — | 2.4 · 5 |
+| `box/test/draft-orphan.test.ts` (5) | 1–5 | — | — | — |
 | `box/test/conversation.test.ts` (3) | 1–3 | — | — | — |
 | `box/test/conversation-activity.test.ts` (2) | — | 1 | 2 | 4.1 · 2<br>5.1 · 1–2 |
 | `box/test/message-words.test.ts` (11) | 1–6 | 7–9 | 10–11 | 5.1 · 8–10<br>5.2 · 7<br>5.3 · 11<br>6.1 · 7<br>6.4 · 7 |
@@ -134,7 +134,7 @@ Each row uses the same one-based numbering and ownership rule.
 
 | Source | Covered | Partial | Gap | Owners for partial and gap cases |
 | --- | --- | --- | --- | --- |
-| `box/test/session-asks.test.ts` (19) | 1, 3–5, 10–11, 14–18 | 2, 6–9, 12–13, 19 | — | 4.1 · 2<br>5.1 · 8<br>5.3 · 9<br>6.1 · 6–7, 12–13, 19<br>2.4 · 19 |
+| `box/test/session-asks.test.ts` (19) | 1, 3–5, 10–11, 14–18 | 2, 6–9, 12–13, 19 | — | 4.1 · 2<br>5.1 · 8<br>5.3 · 9<br>6.1 · 6–7, 12–13, 19 |
 | `box/test/model-readiness.test.ts` (1) | 1 | — | — | — |
 | `box/test/models-offered.test.ts` (15) | 3–4, 6–7, 10, 13 | 1–2, 5, 8–9, 11–12, 14–15 | — | 4.1 · 1–2, 5, 8–9, 11–12, 14–15<br>5.1 · 8<br>5.4 · 14–15 |
 | `box/test/models-starred.test.ts` (7) | 1–2, 4–7 | — | 3 | 7.3 · 3 |
@@ -142,10 +142,10 @@ Each row uses the same one-based numbering and ownership rule.
 | `box/test/model-aliases.test.ts` (3) | — | — | 1–3 | 4.1 · 1–3<br>5.4 · 3 |
 | `box/test/model-names.test.ts` (3) | 1–3 | — | — | — |
 | `box/test/search-snippet.test.ts` (4) | 1–4 | — | — | — |
-| `box/test/attachment-paths.test.ts` (2) | — | 1–2 | — | 2.4 · 1–2<br>2.5 · 1–2<br>4.1 · 1 |
+| `box/test/attachment-paths.test.ts` (2) | — | 1–2 | — | 2.5 · 1–2<br>4.1 · 1 |
 | `box/test/add-address.test.ts` (3) | — | — | 1–3 | 2.3 · 1–3 |
 | `box/bridge-tests/archive-waiting.test.js` (3) | 1 | — | 2–3 | 5.1 · 2<br>6.3 · 3 |
-| `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 4.1 · 1–4<br>2.4 · 5<br>7.3 · 1, 3 |
+| `box/bridge-tests/attachments-go.test.js` (6) | 6 | 1–5 | — | 4.1 · 1–5<br>7.3 · 1, 3 |
 | `box/bridge-tests/search.test.js` (11) | 1–11 | — | — | — |
 | `box/bridge-tests/session-models.test.js` (33) | 1–5, 10, 12–14, 17, 19–20, 22, 25, 28–30, 33 | 9, 16, 18, 23–24, 26–27, 32 | 6–8, 11, 15, 21, 31 | 4.1 · 6–9, 11, 15–16, 18, 21, 23–24, 26–27, 31–32 |
 | `box/bridge-tests/models-refresh.test.js` (4) | 1–2, 4 | 3 | — | 6.1 · 3 |
@@ -447,6 +447,7 @@ records or runtime endpoint they hold.
 | `run/link.json`, `run/setup-card.json`, `run/setup-checkpoints/*.json` | 2.1 | Setup bootstrap identity, signed shared values and outcomes, and local checkpoint projection |
 | `run/link.seen`, `run/link.version` | 7.3 | Legacy Mac activity and link version markers |
 | `run/move-prompt-writes`, `run/move-prompt-writes/*`, `run/moves`, `run/owned-data`, `run/owned-data/mutations`, `run/owned-data/mutations/*.json` | 2.4 | Move writer fences and the shared owner-mutation journal |
+| `run/fleet-engine-hold.json` | 7.2 | Rust release-drain record. The hold survives the keeper verdict and releases saved prompts before clearing; the five-minute deadline and one-minute defer use the fleet timing rules. |
 | `run/outbox`, `run/outbox/sending` | 1.5 | Relay outbox directories and pending envelopes |
 | `run/prompt-receipts`, `run/prompt-receipts/*.json` | Unread by released readers | `rg -n -F prompt-receipts box/src box/crates gpui` finds only the Rust send journal. Released clients read the route, queue and transcript. Scoped and listing receipts use separate records. |
 | `run/queue-removals/spent/*` | Identical | Both boxes now write the same empty marker keyed by session, draft and edit receipt. An earlier queue differential compared empty bytes with Rust's JSON `null`. |

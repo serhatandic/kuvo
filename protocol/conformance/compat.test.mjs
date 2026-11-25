@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, relayAddress, typescriptRuntime, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, relayAddress, typescriptRuntime, until, write } from "./adapter.mjs";
 import { currentChecks } from "./compat/current-checks.mjs";
 import { generateCurrent, generateRelease } from "./compat/generate.mjs";
 import { fixed, runSync, tags } from "./compat/tagged.mjs";
@@ -30,11 +30,12 @@ for (const tag of tags) {
       const seed = path.join(root, "release");
       await generateRelease(tag, seed, { app: false });
       const home = path.join(seed, "machine");
+      privateHome(home);
       const env = isolatedEnv(root);
       const linkFile = path.join(home, "run/link.json");
       const before = readJSON(linkFile);
       const vectors = path.join(seed, "vectors.json");
-      const { setup, ssh, mail } = readJSON(vectors);
+      const { setup, mail } = readJSON(vectors);
       if (binary.typescript) {
         const check = fileURLToPath(new URL("./compat/check-mail.mjs", import.meta.url));
         runSync(typescriptRuntime(), ["--no-env-file", check, binary.file, vectors], { ...env, KUVO_HOME: home, BUN_BE_BUN: "1" }, home);
@@ -63,25 +64,6 @@ for (const tag of tags) {
       assert.equal(after.secret, before.secret);
       const mac = JSON.parse(setup.input).mac;
       if (mac) assert.deepEqual(after.legacy[mac], { ...before.peersFrom[mac], at: JSON.parse(mail.plaintext).at });
-      if (ssh.length) {
-        // Replay the Mac's setting verbs in order on a fresh settings store.
-        const target = path.join(root, "ssh");
-        mkdirSync(target);
-        for (const item of ssh) {
-          const output = command(binary, target, env, item.args, item.input);
-          const actual = JSON.parse(output);
-          const expected = JSON.parse(item.output);
-          // The historical reader decodes these fields and ignores new defaults.
-          const select = (found, wanted) => Object.fromEntries(Object.keys(wanted).map(key => [key, found?.[key]]));
-          const decoded = select(actual, expected);
-          if (expected.settings) decoded.settings = select(decoded.settings, expected.settings);
-          if (expected.body) {
-            expected.body = JSON.parse(expected.body);
-            decoded.body = select(JSON.parse(decoded.body), expected.body);
-          }
-          assert.deepEqual(decoded, expected, item.args.join(" "));
-        }
-      }
     } finally {
       await proc?.stop();
       await relay.close();
@@ -151,6 +133,107 @@ test("the current TypeScript beta's setup records survive opening at layout 23",
       "releasedDatabaseWork", "releasedScopedWork"]) {
       assert.deepEqual(link[key], original[key], key);
     }
+  } finally {
+    await proc?.stop();
+    await relay.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the beta.1 Mac alone replaces its peer list, even before its address is known", { timeout: 60000 }, async () => {
+  const root = scratch();
+  const relay = await localRelay();
+  let proc;
+  const mac = relay.device(fixed(3)), second = relay.device(fixed(9));
+  try {
+    const seed = path.join(root, "release");
+    await generateRelease(tags[1], seed, { app: false });
+    const home = path.join(seed, "machine"), env = isolatedEnv(root);
+    privateHome(home);
+    const file = path.join(home, "run/link.json");
+    const before = readJSON(file), { setup, mail, roster } = readJSON(path.join(seed, "vectors.json"));
+    const key = JSON.parse(setup.input).mac;
+    const at = JSON.parse(mail.plaintext).at - 1;
+    before.peersFrom[key].peers = [];
+    write(file, JSON.stringify({ ...before, relay: relay.url }));
+    const recipient = relayAddress(Buffer.from(before.secret, "base64url"));
+    const send = (device, frame) => device.send(recipient, Buffer.from(frame, "hex"));
+    proc = startBox({ binary: boxBinary(), home, env, relay });
+    const server = await proc.ready();
+    await until(() => relay.has(recipient), "machine connects");
+    const peerKeys = async () => {
+      const result = await request(server, "GET", "kuvo/computers");
+      assert.equal(result.status, 200, result.text);
+      return result.json.computers.map(row => row.key).sort();
+    };
+    const waitFor = async expected => until(async () => JSON.stringify(await peerKeys()) === JSON.stringify(expected.sort()),
+      () => "unexpected computer roster: " + JSON.stringify(readJSON(file)), 10000);
+    const heard = async (peer, at) => until(() => {
+      const entries = path.join(home, "run/peer-agents.json");
+      return existsSync(entries) && readJSON(entries)[peer]?.at === at;
+    }, "peer announcement did not arrive");
+    await waitFor([roster.own.key]);
+    send(mac, roster.added);
+    await waitFor([roster.own.key, key, roster.second.key]);
+    assert.deepEqual(readJSON(file).legacy[key].peers.map(row => row.key), [key, roster.second.key, roster.own.key]);
+    send(mac, roster.stale);
+    await heard(key, at + 3);
+    assert.equal(readJSON(file).legacy[key].at, at + 2);
+    send(second, roster.notEnroller);
+    await heard(roster.second.key, at + 4);
+    assert.deepEqual(Object.keys(readJSON(file).legacy), [key]);
+    assert.deepEqual(await peerKeys(), [roster.own.key, key, roster.second.key].sort());
+    send(mac, roster.removed);
+    await waitFor([roster.own.key, key]);
+    assert.equal(readJSON(file).legacy[key].at, at + 3);
+  } finally {
+    mac.leave(); second.leave();
+    await proc?.stop();
+    await relay.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The released Mac invokes these verbs over SSH independently of the relay.
+test("the beta.1 Mac reads, adopts and changes machine settings over SSH", { timeout: 60000 }, async () => {
+  const root = scratch();
+  let proc;
+  const relay = await localRelay();
+  try {
+    const seed = path.join(root, "release");
+    await generateRelease(tags[1], seed, { app: false });
+    const binary = boxBinary(), env = isolatedEnv(root);
+    const target = path.join(root, "ssh");
+    privateHome(target);
+    const { ssh } = readJSON(path.join(seed, "vectors.json"));
+    const denied = JSON.parse(command(binary, target, env, ["box", "change"], ssh[2].input));
+    assert.deepEqual(denied, { status: 409, message: "This machine's settings aren't its own yet." });
+    for (const item of ssh) {
+      // A Rust machine answers routes through its resident. The actual settings
+      // verbs must also work between resident starts, as the released Mac uses them.
+      if (item.args[1] === "route") {
+        proc = startBox({ binary, home: target, env, relay });
+        await proc.ready();
+      }
+      const actual = JSON.parse(command(binary, target, env, item.args, item.input));
+      const expected = JSON.parse(item.output);
+      // The historical reader decodes these fields and ignores new defaults.
+      const select = (found, wanted) => Object.fromEntries(Object.keys(wanted).map(key => [key, found?.[key]]));
+      const decoded = select(actual, expected);
+      if (expected.settings) decoded.settings = select(decoded.settings, expected.settings);
+      if (expected.body) {
+        expected.body = JSON.parse(expected.body);
+        decoded.body = select(JSON.parse(decoded.body), expected.body);
+      }
+      assert.deepEqual(decoded, expected, item.args.join(" "));
+    }
+    assert.equal(readFileSync(path.join(target, "box/keys/KUVO_KEY_NOTION"), "utf8"), "fixture-value");
+    const repeat = JSON.parse(command(binary, target, env, ["box", "adopt"], '{"settings":{"instructions":["OLD.md"]}}'));
+    assert.equal(repeat.status, "own");
+    assert.deepEqual(repeat.settings.instructions, ["UPDATED.md"]);
+    const erased = JSON.parse(command(binary, target, env, ["box", "key", "KUVO_KEY_NOTION"], ""));
+    assert.deepEqual(erased, {status: 200});
+    assert.equal(existsSync(path.join(target, "box/keys/KUVO_KEY_NOTION")), false);
   } finally {
     await proc?.stop();
     await relay.close();

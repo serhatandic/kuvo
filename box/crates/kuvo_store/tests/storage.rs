@@ -473,7 +473,7 @@ fn declarations_cover_each_required_kind_and_family_with_queue_specific_authorit
         .flat_map(|row| row.families.iter().copied())
         .collect();
     assert_eq!(families, inventory);
-    assert_eq!(families.len(), 55);
+    assert_eq!(families.len(), 56);
 
     for kind in [
         "queueItems",
@@ -682,4 +682,27 @@ fn best_effort_async_writes_still_wait_their_turn_in_one_process() {
         files::write_atomic(&path, b"first\nsecond\n").unwrap();
     });
     assert_eq!(fs::read(path).unwrap(), b"first\nsecond\n");
+}
+
+#[test]
+fn owners_taking_turns_wait_for_each_other_while_a_lock_is_removed() {
+    // Windows refuses to open a lock folder its last owner is removing: the
+    // next owner waits for it rather than failing.
+    let temp = tempfile::tempdir().unwrap();
+    let path = std::sync::Arc::new(temp.path().join(".conversation.lock"));
+    let workers = (0..4)
+        .map(|_| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for _ in 0..200 {
+                    let guard = OwnedLock::acquire(&path, Duration::from_secs(10))
+                        .expect("a busy lock is waited for");
+                    drop(guard);
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
 }

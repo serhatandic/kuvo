@@ -424,6 +424,18 @@ pub const DATA_DECLARATIONS: &[DataDeclaration] = &[
         shared: None,
         external: None,
     },
+    // The departing computer's own inventory of the work it kept at unlink:
+    // file stamps only it can match.
+    DataDeclaration {
+        kind: "releasedWork",
+        owner: Authority::Fixed(Owner::LocalComputer),
+        conflict: Conflict::OwnerOrder,
+        backup: Backup::Disabled,
+        restore: Restore::MachineLocal,
+        families: &["Retained work after unlink"],
+        shared: None,
+        external: None,
+    },
     DataDeclaration {
         kind: "diskBackupArchives",
         owner: Authority::Fixed(Owner::BackupSource),

@@ -5,6 +5,7 @@ use crate::{
     accounts::{Account, Accounts, AgentKind, Provider},
     catalog::{ModelCache, Models},
     runtime::{AdapterCall, Adoption},
+    session::{SessionContext, Thread},
     sign_in::{Attempt, Request},
 };
 use futures_util::future::BoxFuture;
@@ -14,6 +15,22 @@ use tokio::sync::Mutex;
 pub trait Agent: Adoption {
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>>;
     fn models(&self, refresh: bool) -> AdapterCall<'_, Models>;
+
+    /// Open or resume the conversation identified by this Kuvo session. After
+    /// adoption this returns the thread associated with any recovered holder.
+    fn open_thread(&self, _context: SessionContext) -> AdapterCall<'_, Arc<dyn Thread>> {
+        Box::pin(async {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "This agent doesn't run sessions here.",
+            ))
+        })
+    }
+
+    /// Whether it summarizes its conversation when asked (not only by itself as it fills up).
+    fn compacts(&self) -> bool {
+        false
+    }
 
     fn keep_account(&self) -> Duration {
         Duration::ZERO
@@ -64,6 +81,17 @@ pub trait Agent: Adoption {
     /// Finish reading the current turn before returning from an intentional stop.
     /// Removal may call this again after a store operation is retried.
     fn shutdown(&self) -> AdapterCall<'_, ()>;
+
+    /// Its program, and how it's updated (`program_updates`); none when it isn't the box's to.
+    fn program(&self) -> Option<crate::program_updates::Definition> {
+        None
+    }
+
+    /// Its program was updated: what runs the old one starts again once nothing uses it, and its
+    /// models are asked anew.
+    fn program_updated(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// Implemented once per vendor by rows 4.2–4.5. Create an independent

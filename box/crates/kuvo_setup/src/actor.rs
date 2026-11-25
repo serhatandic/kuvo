@@ -38,14 +38,18 @@ pub(crate) mod computer_requests;
 mod device_access;
 mod edit_delivery;
 mod handover;
+mod marketplace;
 mod model_stars;
 mod predecessor;
 mod removal;
 mod replication;
+mod work_queue;
 pub(crate) use removal::{Unlink, WipeProgress, wipe_progress};
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
+pub use work_queue::{AcceptedQueueLabels, QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease, QueueSetup};
 use handover::{Handover, HandoverReply};
+pub use marketplace::MarketplaceSetup;
 pub use model_stars::ModelStar;
 
 pub(crate) const LINK: &str = "run/link.json";
@@ -89,6 +93,27 @@ impl SetupHandle {
 
     pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
         self.rosters.clone()
+    }
+
+    /// Your time zone, with its rules (TZif) where they were given with it; none where you set none.
+    pub fn time_zone(&self) -> Option<(String, Option<Vec<u8>>)> {
+        self.views.borrow().zone.clone()
+    }
+
+    /// Your personalities as the library has them now (each its `id`, `name` and `description`).
+    pub fn personalities(&self) -> Vec<Value> {
+        self.views
+            .borrow()
+            .personalities
+            .as_ref()
+            .ok()
+            .and_then(|library| library["personalities"].as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    /// This computer's id in its link, where it has one.
+    pub fn link_id(&self) -> Option<String> {
+        self.views.borrow().link_id.clone()
     }
 
     pub fn ownership_state(&self) -> kuvo_peers::ownership::SetupState {
@@ -222,6 +247,10 @@ pub(crate) struct View {
     pub setup: Value,
     pub personalities: Result<Value, String>,
     pub clock: Value,
+    zone: Option<(String, Option<Vec<u8>>)>,
+    link_id: Option<String>,
+    work_queue: Option<QueueSetup>,
+    marketplace: Option<MarketplaceSetup>,
     model_stars: Option<Vec<ModelStar>>,
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
@@ -280,6 +309,12 @@ pub(crate) enum Command {
     EditOutbox,
     Attached,
     Personalities(preferences::PersonalityChange),
+    QueueNumberLease,
+    QueueLabelsSave(work_queue::Save),
+    MarketplaceSave {
+        expected: Option<u64>,
+        value: Value,
+    },
     Zone {
         zone: String,
         revision: Option<String>,
@@ -392,13 +427,9 @@ impl PreparedSetup {
         self.link.setup.as_ref().is_some_and(|setup| setup.aside)
     }
 
-    /// The legacy machine link marker uses the resident build identifier and has no newline.
+    /// The native keeper checks this resident build identifier, including the foreground Mac.
     pub fn record_build(&self, build: &str) -> Result<(), Error> {
-        if self.kind == ComputerKind::Machine {
-            self.files
-                .write_bytes("run/link.version", build.as_bytes())?;
-        }
-        Ok(())
+        self.files.write_bytes("run/link.version", build.as_bytes())
     }
 
     pub fn relay_config(&self) -> Result<Option<relay::Config>, Error> {
@@ -477,6 +508,7 @@ impl PreparedSetup {
             pending_handover: None,
             unlink_challenge: None,
             pending_devices: HashMap::new(),
+            pending_queue_labels: HashMap::new(),
             pending_stars: HashMap::new(),
             next_stars_offer: Instant::now(),
             forwarding: computer_requests::Forwarding::default(),
@@ -816,6 +848,7 @@ fn relay_config(
         secret: identity.secret,
         key: identity.key,
         peers: roster.hosts(&identity.public).filter(|_| listed).collect(),
+        legacy_enrollers: vec![],
         grants: grants
             .into_iter()
             .map(|(key, grant)| (key, grant.id))
@@ -1018,6 +1051,15 @@ fn make_view(
             Err(error) => return Err(error),
         },
         clock: preferences::clock(files, link, name)?,
+        zone: preferences::zone(files, link)?.map(|zone| zone.with_rules()),
+        link_id: link
+            .extra
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned),
+        work_queue: work_queue::accepted(link),
+        marketplace: marketplace::accepted(link),
     })
 }
 
@@ -1041,6 +1083,7 @@ struct Owner {
     pending_handover: Option<Handover>,
     unlink_challenge: Option<removal::Challenge>,
     pending_devices: HashMap<String, device_access::Pending>,
+    pending_queue_labels: HashMap<String, work_queue::Pending>,
     pending_stars: HashMap<String, model_stars::Pending>,
     next_stars_offer: Instant,
     forwarding: computer_requests::Forwarding,
@@ -1153,6 +1196,8 @@ impl Owner {
                 if old.setup == view.setup
                     && old.personalities == view.personalities
                     && old.clock == view.clock
+                    && old.work_queue == view.work_queue
+                    && old.marketplace == view.marketplace
                     && old.access == view.access
                     && old.pending_wipes == view.pending_wipes
                     && old.local_wipe == view.local_wipe
@@ -1350,6 +1395,10 @@ impl Owner {
             if let Err(error) = self.begin_computer_request(request, by, reply).await {
                 eprintln!("sending installer request: {error}");
             }
+            return;
+        }
+        if let Command::QueueLabelsSave(change) = command {
+            self.ask_queue_labels(change, reply).await;
             return;
         }
         let result = self.execute(command).await;
@@ -1618,8 +1667,13 @@ impl Owner {
                     .await?;
                 Ok(Response::ok(json!(receipt)))
             }
+            Command::QueueNumberLease => Ok(Response::ok(json!(self.work_queue_number_lease()))),
+            Command::MarketplaceSave { expected, value } => {
+                self.save_marketplace_installations(expected, value).await
+            }
             Command::Handover { .. }
             | Command::DeviceChange(_)
+            | Command::QueueLabelsSave(_)
             | Command::ModelStar(_)
             | Command::ComputerViaMain(..) => {
                 unreachable!("this request can wait on relay mail")

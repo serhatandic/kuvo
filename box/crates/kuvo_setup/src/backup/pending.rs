@@ -10,29 +10,32 @@ use super::{
     recovery::{output, record_key},
 };
 
-pub(super) fn list(backups: &Backups) -> Result<Value> {
+pub(super) fn list(backups: &Backups, queue: Option<&dyn QueueReview>) -> Result<Value> {
     let backup = backups.root().join("backup");
-    let Some(journal) = ObjectFormat::additive("Restore journal")
-        .read(&backup.join("restore.json"))
-        .map_err(|error| Error::Detail(error.to_string()))?
-    else {
-        return Ok(json!({"waiting": [], "queueItems": []}));
-    };
-    if journal.fields.get("state").and_then(Value::as_str) != Some("restored") {
-        return Ok(json!({"waiting": [], "queueItems": []}));
-    }
-    let id = journal
-        .fields
-        .get("id")
-        .and_then(Value::as_str)
-        .and_then(|id| super::PointId::try_from(id.to_owned()).ok());
-    let Some(id) = id else {
+    let Some(id) = held(&backup)? else {
         return Ok(json!({"waiting": [], "queueItems": []}));
     };
     let recovery = output(&backup, &format!("recovered/{id}"))?;
     let waiting = waiting(&recovery)?;
-    let items = items(backups.root(), &backup, &recovery, &id)?;
+    let items = items(backups.root(), &backup, &recovery, &id, queue)?;
     Ok(json!({ "waiting": waiting, "queueItems": items }))
+}
+
+fn held(backup: &Path) -> Result<Option<super::PointId>> {
+    let Some(journal) = ObjectFormat::additive("Restore journal")
+        .read(&backup.join("restore.json"))
+        .map_err(|error| Error::Detail(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    if journal.fields.get("state").and_then(Value::as_str) != Some("restored") {
+        return Ok(None);
+    }
+    Ok(journal
+        .fields
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|id| super::PointId::try_from(id.to_owned()).ok()))
 }
 
 fn waiting(recovery: &Path) -> Result<Vec<Value>> {
@@ -100,6 +103,7 @@ fn items(
     backup: &Path,
     recovery: &Path,
     point: &super::PointId,
+    review: Option<&dyn QueueReview>,
 ) -> Result<Vec<Value>> {
     let folder = output(recovery, "work-queue-items")?;
     if !stat(&folder)?.is_some_and(|info| info.is_dir()) {
@@ -129,8 +133,8 @@ fn items(
             continue;
         };
         let key = record_key(&[id]);
-        let review = output(backup, &format!("reviewed/{point}/work-queue-{key}.json"))?;
-        if stat(&review)?.is_some() {
+        let receipt = output(backup, &format!("reviewed/{point}/work-queue-{key}.json"))?;
+        if stat(&receipt)?.is_some() {
             continue;
         }
         let mut listed = Vec::new();
@@ -150,10 +154,67 @@ fn items(
             output(home, &format!("run/owned-data/edit-{family}/{key}.json"))
                 .and_then(|file| Ok(stat(&file)?.is_some()))
         };
-        let can_keep =
-            queue == "usr_you" && !current_fence("deletions")? && !current_fence("departures")?;
+        let can_keep = if let Some(review) = review {
+            review.can_keep(&item)?
+        } else {
+            queue == "usr_you" && !current_fence("deletions")? && !current_fence("departures")?
+        };
         items.push(json!({ "id": id, "queue": queue, "title": item.get("title").and_then(Value::as_str).unwrap_or(""),
             "body": item.get("body").and_then(Value::as_str).unwrap_or(""), "canKeep": can_keep, "files": listed }));
     }
     Ok(items)
+}
+
+/// The backup service owns review journals; the live Work Queue owns its writes.
+/// Called on a blocking worker, with the backup operation lock held for settlement.
+pub trait QueueReview: Send + Sync {
+    fn can_keep(&self, item: &Value) -> Result<bool>;
+    fn settle(&self, item: Value, recovered: &Path, marker: &str, keep: bool) -> Result<()>;
+}
+
+pub(super) fn settle(
+    backups: &Backups,
+    queue: &dyn QueueReview,
+    id: &str,
+    operation: &str,
+    decision: &str,
+) -> Result<Value> {
+    if !id
+        .strip_prefix("wqi_")
+        .is_some_and(|token| super::url_token(token, 20))
+        || !(1..=80).contains(&operation.len())
+        || !super::url_token(operation, operation.len())
+        || !matches!(decision, "keep" | "discard")
+    {
+        return Err(Error::Message(
+            "Choose a held item, an operation id and whether to keep or discard it.",
+        ));
+    }
+    let (_guard, _scratch) = backups.scratch()?;
+    let backup = backups.root().join("backup");
+    let unavailable = || Error::Message("That item is unavailable in this restore point.");
+    let point = held(&backup)?.ok_or_else(unavailable)?;
+    let recovered = output(&backup, &format!("recovered/{point}"))?;
+    let key = record_key(&[id]);
+    let file = output(&recovered, &format!("work-queue-items/{key}.json"))?;
+    if !stat(&file)?.is_some_and(|meta| meta.is_file()) {
+        return Err(unavailable());
+    }
+    let item: Value = serde_json::from_reader(super::archive::regular(&file)?)?;
+    if item["id"] != id || !item["owner"].is_string() {
+        return Err(unavailable());
+    }
+    let review = output(&backup, &format!("reviewed/{point}/work-queue-{key}.json"))?;
+    let receipt = json!({"id":id,"operation":operation,"decision":decision,"status":"committed"});
+    if stat(&review)?.is_some() {
+        let previous: Value = serde_json::from_reader(super::archive::regular(&review)?)?;
+        if previous["operation"] == operation && previous["decision"] == decision {
+            return Ok(receipt);
+        }
+        return Err(Error::Message("This item was already reviewed."));
+    }
+    let marker = record_key(&[&point.to_string(), id, operation]);
+    queue.settle(item, &recovered, &marker, decision == "keep")?;
+    kuvo_store::files::write_secret(&review, &serde_json::to_vec(&receipt)?)?;
+    Ok(receipt)
 }

@@ -28,6 +28,7 @@ use kuvo_store::{files, home::Home, locks::OwnedLock};
 use serde::{Deserialize, Serialize};
 
 pub use destination::{Destination, DestinationStore, DiskStore, SshStore};
+pub use pending::QueueReview;
 pub use receipts::ReceiptOwner;
 pub use recovery::{Authority, RecoveryResult, Standalone};
 pub use wipe::WipeExport;

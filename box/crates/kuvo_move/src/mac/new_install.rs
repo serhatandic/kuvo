@@ -60,7 +60,7 @@ pub fn new_readiness(
     engine_data: Option<&Path>,
     account: &Path,
 ) -> NewReadiness {
-    check(home, app_box, engine_data, account)
+    check(home, app_box, engine_data, account, None)
         .unwrap_or_else(|error| NewReadiness::refused(error.to_string()))
 }
 
@@ -69,6 +69,7 @@ fn check(
     app_box: Option<&Path>,
     engine_data: Option<&Path>,
     account: &Path,
+    staged_engine: Option<&Path>,
 ) -> Result<NewReadiness, Error> {
     layout::inspect(home)?;
     let located = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
@@ -132,7 +133,11 @@ fn check(
             "Something is running in this Mac's ~/.kuvo-code: it's made there once that's stopped.",
         ));
     }
-    if entries(&app.join("engine")).unwrap_or_default().is_empty() {
+    let engine = app.join("engine");
+    if entries(staged_engine.unwrap_or(&engine))
+        .unwrap_or_default()
+        .is_empty()
+    {
         return Ok(NewReadiness::refused(
             "The engine isn't downloaded yet: Kuvo is set up on this Mac once it is.",
         ));
@@ -152,48 +157,84 @@ pub fn new_home(
     release: Option<&Path>,
     keeps_awake_off: bool,
 ) -> Outcome {
+    make_home(
+        home,
+        app_box,
+        engine_data,
+        account,
+        release,
+        None,
+        keeps_awake_off,
+    )
+    .0
+}
+
+pub fn new_home_from_media(
+    home: &Home,
+    app_box: &Path,
+    account: &Path,
+    media: &Home,
+) -> (Outcome, Option<PathBuf>) {
+    make_home(
+        home,
+        Some(app_box),
+        None,
+        account,
+        Some(&media.root().join("release")),
+        Some(&media.root().join("engine")),
+        false,
+    )
+}
+
+fn make_home(
+    home: &Home,
+    app_box: Option<&Path>,
+    engine_data: Option<&Path>,
+    account: &Path,
+    release: Option<&Path>,
+    staged_engine: Option<&Path>,
+    keeps_awake_off: bool,
+) -> (Outcome, Option<PathBuf>) {
     let say = |result, message| Outcome {
         result,
         message,
         started: None,
         status: crate::rehome_status(home),
     };
-    let make = || -> Result<Outcome, Error> {
+    let make = || -> Result<(Outcome, Option<PathBuf>), Error> {
         let admit = || -> Result<Option<Outcome>, Error> {
-            let readiness = check(home, app_box, engine_data, account)?;
+            let readiness = check(home, app_box, engine_data, account, staged_engine)?;
             Ok(if readiness.made {
                 Some(say("nothing", None))
-            } else if let Some(why) = readiness.why {
-                Some(say("refused", Some(why)))
             } else {
-                None
+                readiness.why.map(|why| say("refused", Some(why)))
             })
         };
         if let Some(outcome) = admit()? {
-            return Ok(outcome);
+            return Ok((outcome, None));
         }
         let Some(release) = release else {
-            return Ok(say("refused", Some(RELEASE_NEEDED.into())));
+            return Ok((say("refused", Some(RELEASE_NEEDED.into())), None));
         };
         if let Some(why) = release_refusal(release)? {
-            return Ok(say("refused", Some(why.into())));
+            return Ok((say("refused", Some(why.into())), None));
         }
         let disk = Disk(home.root().to_owned());
         let wait = Duration::from_secs(3);
         let _layout = match layout::lock_for_move(home, wait) {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                return Ok(say("waits", Some(WAITS.into())));
+                return Ok((say("waits", Some(WAITS.into())), None));
             }
             other => other?,
         };
         let _rehome = match OwnedLock::acquire_rehome(&disk.path("updates/rehome/lock")?, wait) {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                return Ok(say("waits", Some(WAITS.into())));
+                return Ok((say("waits", Some(WAITS.into())), None));
             }
             other => other?,
         };
         if let Some(outcome) = admit()? {
-            return Ok(outcome);
+            return Ok((outcome, None));
         }
         let app = app_box
             .and_then(Path::parent)
@@ -206,25 +247,29 @@ pub fn new_home(
             &serde_json::to_vec(&json!({"at":began,"formatVersion":1}))
                 .map_err(io::Error::other)?,
         )?;
-        if let Err(error) = publish(
+        let set_aside = match publish(
             &disk,
             release,
-            &app.join("engine"),
+            staged_engine.unwrap_or(&app.join("engine")),
             began,
             keeps_awake_off,
             interrupted,
+            staged_engine.is_some(),
         ) {
-            files::remove_tree_synced(&disk.path(STAGE)?)?;
-            if !disk.path("box/kind")?.is_file() {
-                files::remove_file_synced(&marker)?;
+            Ok(path) => path,
+            Err(error) => {
+                files::remove_tree_synced(&disk.path(STAGE)?)?;
+                if !disk.path("box/kind")?.is_file() {
+                    files::remove_file_synced(&marker)?;
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         layout::publish(home)?;
         files::remove_file_synced(&marker)?;
-        Ok(say("done", None))
+        Ok((say("done", None), set_aside))
     };
-    make().unwrap_or_else(|error| say("failed", Some(error.to_string())))
+    make().unwrap_or_else(|error| (say("failed", Some(error.to_string())), None))
 }
 
 fn release_refusal(release: &Path) -> Result<Option<&'static str>, Error> {
@@ -254,7 +299,8 @@ fn publish(
     began: u64,
     keeps_awake_off: bool,
     interrupted: bool,
-) -> Result<(), Error> {
+    native_media: bool,
+) -> Result<Option<PathBuf>, Error> {
     let stage = disk.path(STAGE)?;
     files::remove_tree_synced(&stage)?;
     if interrupted {
@@ -286,15 +332,22 @@ fn publish(
     fs::copy(release.join(PLUGIN), &plugin)?;
     fs::set_permissions(&plugin, fs::Permissions::from_mode(0o644))?;
     files::clone_mac_entry(engine, &stage.join("engine"), true)?;
+    if native_media {
+        fs::copy(release.join("box.json"), stage.join("box.json"))?;
+    }
     if keeps_awake_off {
         files::write_new(&stage.join("box/work.json"), br#"{"keepsAwake":false}"#)?;
     }
     files::write_new(&stage.join("box/kind"), b"mac\n")?;
     files::sync_tree(&stage, &disk.0)?;
-    Destination::fresh(disk, began)?.take(disk, began, || {})?;
-    for name in ["bin", "config", "engine", "box"] {
+    let set_aside = Destination::fresh(disk, began)?.take(disk, began, || {})?;
+    for name in ["bin", "config", "engine"] {
         files::place_mac_entry(&stage.join(name), &disk.path(name)?)?;
     }
+    if native_media {
+        files::place_mac_entry(&stage.join("box.json"), &disk.path("box.json")?)?;
+    }
+    files::place_mac_entry(&stage.join("box"), &disk.path("box")?)?;
     files::remove_empty_dir_synced(&stage)?;
-    Ok(())
+    Ok(set_aside)
 }

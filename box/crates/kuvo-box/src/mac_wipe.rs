@@ -5,7 +5,7 @@ use std::{
 };
 
 use kuvo_os::platform::{Account, Platform};
-use kuvo_setup::wipe::{self, AppWipeKeychain, InstallState};
+use kuvo_setup::wipe::{self, AppWipeKeychain, InstallerWipe};
 
 enum Keychain {
     Account,
@@ -64,7 +64,7 @@ pub fn finish(home: &Path) -> io::Result<bool> {
     run(wipe::finish_prepared_app_wipe(home, &keychain))
 }
 
-pub fn install_state(folder: &Path, account: &Path) -> io::Result<Option<InstallState>> {
+pub fn installer_wipe(folder: &Path, account: &Path) -> io::Result<InstallerWipe> {
     let keychain = Keychain::for_account(account)?;
     run(wipe::app_install_state(folder, account, &keychain))
 }

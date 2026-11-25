@@ -103,7 +103,7 @@ test("a transient addressed SSH Add refuses start, answer and cancel after authe
   const wire = await loadWire(home, env);
   const device = Buffer.alloc(32, 81);
   const pairedDevice = { key: wire.publicOf(device).toString("base64url"), name: "Paired desktop", kind: "desktop", pairing: "fixture" };
-  const { main } = seedPeerSetup(home, relay.url, 1, 2, roster => {
+  const { main } = seedPeerSetup(home, relay.url, 1, 2, undefined, {}, roster => {
     roster.boxes[0].kind = "mac";
     roster.devices.phones.push(pairedDevice);
   });

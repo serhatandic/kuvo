@@ -270,16 +270,11 @@ pub struct ActivitySession {
     pub last_seen: Option<Millis>,
 }
 
+type ActivityRows<'a> = BTreeMap<&'a str, (&'a Fact, Option<ComputerKey>, Option<Millis>)>;
+
 impl View {
-    pub fn activity(
-        &self,
-        root: Option<&str>,
-        bot: Option<&str>,
-        besides: bool,
-        now: Millis,
-    ) -> Activity {
-        let local = local(&self.local);
-        let mut rows: BTreeMap<&str, (&Fact, Option<ComputerKey>, Option<Millis>)> = local
+    fn current_activity<'a>(&'a self, local: &'a [Fact], now: Millis) -> ActivityRows<'a> {
+        let mut rows: ActivityRows = local
             .iter()
             .map(|fact| (fact.session.as_str(), (fact, None, None)))
             .collect();
@@ -311,6 +306,35 @@ impl View {
                 }
             }
         }
+        rows
+    }
+
+    /// Asking peer sessions that still own their live activity. Waiting counts use these
+    /// to count a local bot's work on another computer, not that computer's bots.
+    pub fn peer_waiting(&self, now: Millis) -> Vec<kuvo_engine::PeerWaiting> {
+        let local = local(&self.local);
+        self.current_activity(&local, now)
+            .into_values()
+            .filter(|(fact, computer, away)| {
+                computer.is_some() && away.is_none() && fact.state == State::Asking
+            })
+            .map(|(fact, _, _)| kuvo_engine::PeerWaiting {
+                session: fact.session.clone(),
+                line: fact.line.clone(),
+                bot: fact.bot.clone(),
+            })
+            .collect()
+    }
+
+    pub fn activity(
+        &self,
+        root: Option<&str>,
+        bot: Option<&str>,
+        besides: bool,
+        now: Millis,
+    ) -> Activity {
+        let local = local(&self.local);
+        let rows = self.current_activity(&local, now);
         let mut result = Activity {
             working: 0,
             asking: 0,

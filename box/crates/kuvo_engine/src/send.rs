@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    Engine, api, disk,
-    lifetime::Lease,
-    parts,
+    Engine, api, disk, parts,
     queue::{self, Delivery, Prompt},
     sessions,
 };
@@ -30,6 +28,11 @@ pub(crate) fn valid_id(id: &str) -> bool {
 }
 
 pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
+    new_id_with(engine, "msg")
+}
+
+/// An ID in the engine's ascending format, so it sorts among the engine's own.
+pub(crate) fn new_id_with(engine: &Engine, prefix: &str) -> Result<String, Refusal> {
     let now = disk::now() << 12;
     let tick = engine
         .message_clock
@@ -41,7 +44,7 @@ pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
     getrandom::fill(&mut random).map_err(|_| {
         Refusal::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "The computer couldn’t make a message ID.",
+            "The computer couldn’t make an ID.",
         )
     })?;
     const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -50,7 +53,7 @@ pub(crate) fn new_id(engine: &Engine) -> Result<String, Refusal> {
         .map(|byte| char::from(ALPHABET[usize::from(byte) % ALPHABET.len()]))
         .collect::<String>();
     Ok(format!(
-        "msg_{:012x}{random}",
+        "{prefix}_{:012x}{random}",
         now.max(tick + 1) & 0xffff_ffff_ffff
     ))
 }
@@ -335,10 +338,21 @@ async fn compose(
 
 pub(crate) async fn post(
     engine: &Engine,
-    lease: &Lease,
+    target: queue::Target<'_>,
     session: &str,
     prompt: &Prompt,
 ) -> Result<Value, Refusal> {
+    let queue::Target::Engine(lease) = target else {
+        return target
+            .prompt(engine, session, prompt, Duration::from_secs(120))
+            .await
+            .map_err(|error| match error {
+                api::Error::Status(status, message) => {
+                    Refusal::json(status, json!({ "message": message }))
+                }
+                _ => engine_busy(),
+            });
+    };
     let path = format!("{}/prompt", sessions::path(session));
     let response = engine
         .upstream
@@ -389,7 +403,7 @@ async fn deliver(
             .map_err(disk_failure)?
             .contains(&arrival.id)
     {
-        Some(delivery_target(engine, session, arrival.form).await?)
+        delivery_target(engine, list, session, arrival.form).await?
     } else {
         None
     };
@@ -414,22 +428,24 @@ async fn deliver(
     let mut delivered = false;
     let mut answer = json!({});
     if !admitted {
-        let lease = match lease {
-            Some(lease) => lease,
-            None => delivery_target(engine, session, request.form).await?,
+        let place = match lease {
+            Some(lease) => Some(lease),
+            None => delivery_target(engine, list, session, request.form).await?,
         };
         if interrupted {
-            delivered = queue::reached(engine, &lease, session, id)
-                .await
-                .map_err(|_| engine_busy())?;
+            if let Some(place) = &place {
+                delivered = queue::reached(engine, place.target(), session, id)
+                    .await
+                    .map_err(|_| engine_busy())?;
+            }
         } else {
             disk::durable(path.clone(), receipt.clone())
                 .await
                 .map_err(disk_failure)?;
         }
         if !delivered {
-            let inbox = if request.before.is_some() {
-                queue::inbox(engine, &lease, session)
+            let inbox = if let Some(place) = place.as_ref().filter(|_| request.before.is_some()) {
+                queue::inbox(engine, place.target(), session)
                     .await
                     .unwrap_or_default()
             } else {
@@ -442,17 +458,23 @@ async fn deliver(
                     &request.prompt,
                     request.words.as_deref(),
                     request.from.clone(),
-                    request.before.as_deref(),
-                    &inbox,
+                    request
+                        .before
+                        .as_deref()
+                        .map(|anchor| (anchor, inbox.as_slice())),
+                    place
+                        .as_ref()
+                        .is_none_or(|place| matches!(place, queue::Place::Engine(_))),
                 )
                 .await
                 .map_err(|error| waiting_failure(request.form, error))?;
             if !admitted {
+                let place = place.as_ref().ok_or_else(engine_busy)?;
                 let mut prompt = request.prompt.clone();
                 if arriving {
                     prompt.delivery = Delivery::Queue;
                 }
-                answer = post(engine, &lease, session, &prompt).await?;
+                answer = post(engine, place.target(), session, &prompt).await?;
                 delivered = true;
                 engine.queues.notify();
                 if request.immediate
@@ -463,11 +485,14 @@ async fn deliver(
                         .map_err(disk_failure)?
                         .arriving(id)
                 {
-                    let _ = queue::advance(engine, &lease, session, id, queue::Advance::Now).await;
+                    let _ =
+                        queue::advance(engine, place.target(), session, id, queue::Advance::Now)
+                            .await;
                 }
             }
         }
-        if delivered
+        if let Some(place) = &place
+            && delivered
             && (arriving
                 || engine
                     .queues
@@ -476,7 +501,7 @@ async fn deliver(
                     .map_err(disk_failure)?
                     .arriving(id))
         {
-            queue::hold_arrival(engine, &lease, session, id)
+            queue::hold_arrival(engine, place.target(), session, id)
                 .await
                 .map_err(|_| engine_busy())?;
         }
@@ -508,10 +533,29 @@ async fn deliver(
     Ok(answer)
 }
 
-async fn delivery_target(engine: &Engine, session: &str, form: Form) -> Result<Lease, Refusal> {
-    let lease = api::start(engine).await?;
+async fn delivery_target(
+    engine: &Engine,
+    list: &crate::LocalSessions,
+    session: &str,
+    form: Form,
+) -> Result<Option<queue::Place>, Refusal> {
+    if let Some(place) = queue::Place::agents(engine, session).await? {
+        return Ok(Some(place));
+    }
+    let lease = match api::start(engine).await {
+        Ok(lease) => lease,
+        Err(_)
+            if crate::release::holding(&engine.home.join("run"))
+                && list
+                    .snapshot_now()
+                    .is_some_and(|snapshot| snapshot.has_local(session)) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
     if form == Form::Add {
-        queue::check_add_target(engine, &lease, session).await?;
+        queue::check_add_target(engine, queue::Target::Engine(&lease), session).await?;
     } else {
         match engine
             .call::<Value>(&lease, Method::GET, &sessions::path(session), None)
@@ -527,7 +571,7 @@ async fn delivery_target(engine: &Engine, session: &str, form: Form) -> Result<L
             Err(_) => return Err(engine_busy()),
         }
     }
-    Ok(lease)
+    Ok(Some(queue::Place::Engine(lease)))
 }
 
 async fn apply(

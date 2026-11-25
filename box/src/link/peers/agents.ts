@@ -64,7 +64,7 @@ export function forgetMacsAgents(mac: string, link: LinkState | null): void {
 // agents' (not a bot's, a subagent's, a group chat's seat, nor one put away), as the Mac lists its
 // own: one without a title is "New session", and a chat's project is "Chats". Null when its engine
 // can't say (then what it last said stands).
-export async function ownAgents(readEngine: () => Target, machine?: string, readBridge: () => BridgeRecord = readBridgeFile): Promise<ListedAgent[] | null> {
+export async function ownAgents(readEngine: () => Target, machine?: string, readBridge: () => BridgeRecord = readBridgeFile, source: "resident" | "engine" = "resident"): Promise<ListedAgent[] | null> {
   // Not what doesn't live here (a copy a move brought, not switched to yet; an original going).
   const away = frozen();
   for (const entry of committedDepartures()) away.add(entry.session);
@@ -76,7 +76,7 @@ export async function ownAgents(readEngine: () => Target, machine?: string, read
   });
   const botSessions = new Set(bots.map(bot => bot.session));
   const sessionsOf = async (target: Target): Promise<EngineSession[]> => {
-    if (keepsList()) {
+    if (keepsList() && source === "resident") {
       const kept = keptSessions(target);
       if (!kept) throw new Error("The box has not heard its sessions yet.");
       return [...kept.values()];
@@ -172,12 +172,12 @@ export function writeAgents(link: LinkState | null = readLink()): void {
 }
 
 // This box's own agents, worked out again, and `run/agents.json` with them, relay or not.
-export async function refreshOwn(readEngine: () => Target, link: LinkState | null = readLink()): Promise<ListedAgent[] | null> {
+export async function refreshOwn(readEngine: () => Target, link: LinkState | null = readLink(), source: "resident" | "engine" = "resident"): Promise<ListedAgent[] | null> {
   // A resident box also needs the directory for local tools while disconnected from the relay.
   if (!link?.key && !IS_MAC && !keepsList()) return ownList;
   ownMachine = link?.id ?? null;
   const turn = ++refreshes;
-  const list = await ownAgents(readEngine, link?.id);
+  const list = await ownAgents(readEngine, link?.id, readBridgeFile, source);
   if (list && turn > keptRefresh) {
     ownList = list;
     keptRefresh = turn;
@@ -207,9 +207,9 @@ const ownFeatures = (): readonly string[] => {
 // told, and asked for theirs. `only`: that peer alone, told and asked now (Connect, as a client
 // asks it of one that's away: `reach-again.ts`).
 export const toldPeers = new Map<string, ToldPeer>();
-export async function announce(host: Pick<LinkHost, "send">, readEngine: () => Target, link: LinkState | null = readLink(), now = Date.now(), ask = false, only?: string): Promise<void> {
+export async function announce(host: Pick<LinkHost, "send">, readEngine: () => Target, link: LinkState | null = readLink(), now = Date.now(), ask = false, only?: string, source: "resident" | "engine" = "resident"): Promise<void> {
   if (!link?.key) return;
-  await refreshOwn(readEngine, link);
+  await refreshOwn(readEngine, link, source);
   const list = ownList ?? [];
   // With the conversations it moved away lately, and where each lives now.
   const moved = movedAway(now).map(({ session, key, at }) => ({ session, key, at }));

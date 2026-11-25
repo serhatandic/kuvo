@@ -66,6 +66,9 @@ try {
                 }
             }
         }
+        'exists' {
+            [Console]::WriteLine($(if ($null -ne $task) { 'present' } else { 'absent' }))
+        }
         'remove' {
             if ($null -ne $task) {
                 try {

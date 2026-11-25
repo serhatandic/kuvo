@@ -182,7 +182,8 @@ async fn connection(
     }
     let mut sent = decode::<Sent>(&bytes)?;
     let path = sent.path.split('?').next().unwrap_or_default();
-    if path != "kuvo/vault" && !path.starts_with("kuvo/vault/") {
+    let labels_restore = path == "kuvo/work-queue/labels/restore";
+    if !labels_restore && path != "kuvo/vault" && !path.starts_with("kuvo/vault/") {
         return reply(&mut writer, 404, "application/json", b"{}").await;
     }
 
@@ -215,7 +216,7 @@ async fn connection(
     let body = STANDARD
         .decode(Zeroizing::new(sent.body).as_bytes())
         .map_err(io::Error::other)?;
-    let origin = if proved {
+    let origin = if labels_restore || proved {
         LocalOrigin::VaultHolder
     } else {
         LocalOrigin::Mac

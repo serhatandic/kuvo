@@ -5,11 +5,11 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::Path,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
 use flate2::read::GzDecoder;
-use kuvo_os::process::Spawn;
 use kuvo_store::{files, format::ObjectFormat, home::Home, locks};
 use serde::Deserialize;
 use serde_json::json;
@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Release, SELECTOR,
-    engine_pack::EnginePack,
+    engine_pack::{EnginePack, check_installer_engine},
     manifest::{ReleaseRef, SignedRelease, sha256},
 };
 
@@ -59,6 +59,43 @@ pub fn read_release(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Verify the signed media carried by the installer before reporting its status.
+pub fn check_install_media(home: &Home, source: &Path, key: &str) -> io::Result<()> {
+    let checked: io::Result<(SignedRelease, &str)> = (|| {
+        let envelope = read_release(&source.join("boxes.json"), MAX_ENVELOPE)?;
+        let signed = SignedRelease::verify(&envelope, &[key])?;
+        if !signed.launches_rust() {
+            return Err(damaged());
+        }
+        let target = crate::manifest::local_target()?;
+        if let Some(engine) = signed.engine_build(target)
+            && !reqwest::Url::parse(&engine.url)
+                .is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        {
+            return Err(damaged());
+        }
+        let pack = signed.pack_for(target)?;
+        let archive = File::open(source.join(pack.filename()?))?;
+        let metadata = archive.metadata()?;
+        if !metadata.is_file() || metadata.len() > MAX_PACK {
+            return Err(damaged());
+        }
+        let mut digest = Sha256::new();
+        let size = io::copy(&mut archive.take(MAX_PACK + 1), &mut digest)?;
+        if size > MAX_PACK || pack.sha256 != format!("{:x}", digest.finalize()) {
+            return Err(damaged());
+        }
+        Ok((signed, target))
+    })();
+    let (signed, target) = checked.map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "This copy of Kuvo is damaged. Download it again, then try again.",
+        )
+    })?;
+    check_installer_engine(home, &signed, target)
+}
+
 /// Probe the new programs in a private folder and leave the selected release in place.
 pub fn prepare(
     home: &Home,
@@ -66,6 +103,24 @@ pub fn prepare(
     target: &str,
     bytes: &[u8],
     envelope: &[u8],
+    step: impl Fn(crate::update_status::Step),
+) -> io::Result<ReleaseRef> {
+    prepare_pack(home, signed, target, bytes, envelope, StageFor::Fleet, step)
+}
+
+enum StageFor {
+    Fleet,
+    Install,
+}
+
+fn prepare_pack(
+    home: &Home,
+    signed: &SignedRelease,
+    target: &str,
+    bytes: &[u8],
+    envelope: &[u8],
+    purpose: StageFor,
+    step: impl Fn(crate::update_status::Step),
 ) -> io::Result<ReleaseRef> {
     let pack = signed.pack_for(target)?;
     if bytes.len() as u64 > MAX_PACK || sha256(bytes) != pack.sha256 {
@@ -94,12 +149,20 @@ pub fn prepare(
         .prefix(".staging-")
         .tempdir_in(&versions)?;
     let (contents, actual) = unpack_checked(draft.path(), signed, &reference, bytes)?;
-    check_downgrade(home, &contents)?;
+    if matches!(purpose, StageFor::Install) && !actual.contains_key("bin/kuvo-start") {
+        return Err(io::Error::other("The selected release has no keeper."));
+    }
+    if matches!(purpose, StageFor::Fleet) {
+        check_downgrade(home, &contents)?;
+    }
     let binary = format!("bin/kuvo-box{}", std::env::consts::EXE_SUFFIX);
     let probe = tempfile::Builder::new()
         .prefix(".probe-")
         .tempdir_in(&versions)?;
-    let engine = EnginePack::find_or_fetch(home, signed, target, probe.path())?;
+    let engine = EnginePack::find_or_fetch(home, signed, target, probe.path(), || {
+        step(crate::update_status::Step::DownloadingEngine)
+    })?;
+    step(crate::update_status::Step::CheckingIt);
     let cwd = Some(home.root());
     check_engine(engine.executable(), cwd, "The new engine doesn't run here.")?;
     probe_program(
@@ -136,10 +199,15 @@ pub fn prepare(
     let folder = release.folder(home.root());
     files::write_secret(&folder.join("pack"), bytes)?;
     files::write_secret(&folder.join("boxes.json"), envelope)?;
-    files::write_secret(
-        &home.run().join("fleet-ready.json"),
-        &serde_json::to_vec(&reference)?,
-    )?;
+    if matches!(purpose, StageFor::Fleet) {
+        files::write_secret(
+            &home.run().join("fleet-ready.json"),
+            &serde_json::to_vec(&reference)?,
+        )?;
+        if let Err(error) = crate::retirement::sweep(home, &release) {
+            eprintln!("Sweeping superseded Kuvo releases: {error}");
+        }
+    }
     Ok(reference)
 }
 
@@ -205,7 +273,7 @@ pub fn prepare_install(home: &Home, signed: &SignedRelease, source: &Path) -> io
     let probe = tempfile::Builder::new()
         .prefix(".probe-")
         .tempdir_in(&install)?;
-    let engine = EnginePack::find_or_fetch(&media, signed, target, probe.path())?;
+    let engine = EnginePack::find_or_fetch(&media, signed, target, probe.path(), || {})?;
     check_engine(
         engine.executable(),
         None,
@@ -224,6 +292,108 @@ pub fn prepare_install(home: &Home, signed: &SignedRelease, source: &Path) -> io
     files::sync_tree(draft.path(), home.root())?;
     files::replace_synced(draft.path(), published.root())?;
     Ok(published)
+}
+
+/// Select the verified release that a Mac move or fresh making just installed.
+/// Run before starting the Helper, while the installer still owns its lock.
+#[cfg(target_os = "macos")]
+pub fn select_install(
+    home: &Home,
+    signed: &SignedRelease,
+    source: &Path,
+    envelope: &[u8],
+) -> io::Result<()> {
+    let target = crate::manifest::local_target()?;
+    let pack = signed.pack_for(target)?;
+    let reference = signed.reference(pack);
+    let selection = reference.target()?;
+    let selected = home.bin();
+    let entry = fs::symlink_metadata(&selected)?;
+    if entry.file_type().is_symlink()
+        && fs::read_link(&selected)? == Path::new(&selection.to_string())
+    {
+        return selection.validate(home.root());
+    }
+    let changed = || io::Error::other("The selected installation changed while it was made.");
+    if !entry.is_dir() {
+        return Err(changed());
+    }
+    let installed = read_release(&home.root().join("box.json"), 10_000_000)?;
+    let current = contents(&installed)?;
+    if current.launch != "rust"
+        || current.version != reference.version
+        || current.engine != signed.engine()
+    {
+        return Err(changed());
+    }
+    prepare_install_selection(home, signed, source, envelope)?;
+    if installed != read_release(&selection.folder(home.root()).join("box.json"), 10_000_000)? {
+        return Err(changed());
+    }
+
+    select_initial(home, &selection)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn prepare_install_selection(
+    home: &Home,
+    signed: &SignedRelease,
+    source: &Path,
+    envelope: &[u8],
+) -> io::Result<Release> {
+    let target = crate::manifest::local_target()?;
+    let pack = signed.pack_for(target)?;
+    let bytes = read_release(&source.join(pack.filename()?), MAX_PACK)?;
+    prepare_pack(
+        home,
+        signed,
+        target,
+        &bytes,
+        envelope,
+        StageFor::Install,
+        |_| {},
+    )?
+    .target()
+}
+
+/// Select the staged release before the installed keeper starts.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn select_initial(home: &Home, selection: &Release) -> io::Result<()> {
+    selection.validate(home.root())?;
+    let keeper = selection.folder(home.root()).join("bin/kuvo-start");
+    if !fs::symlink_metadata(keeper).is_ok_and(|entry| entry.is_file()) {
+        return Err(io::Error::other("The selected release has no keeper."));
+    }
+    let selected = home.bin();
+    let target = selection.to_string();
+    match fs::symlink_metadata(&selected) {
+        Ok(entry)
+            if entry.file_type().is_symlink()
+                && fs::read_link(&selected)? == Path::new(&target) =>
+        {
+            return Ok(());
+        }
+        Ok(entry) if entry.is_dir() => {}
+        Ok(_) => {
+            return Err(io::Error::other(
+                "The selected installation changed while it was made.",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::os::unix::fs::symlink(target, &selected)?;
+            return files::sync_parent(&selected);
+        }
+        Err(error) => return Err(error),
+    }
+    let install = home.updates().join("install");
+    files::create_private_dirs(&install)?;
+    let draft = tempfile::Builder::new()
+        .prefix(".selection-")
+        .tempdir_in(install)?;
+    let next = draft.path().join("bin");
+    std::os::unix::fs::symlink(target, &next)?;
+    files::exchange_entries(&next, &selected)?;
+    files::remove_tree_synced(&next)
 }
 
 fn check_downgrade(home: &Home, next: &Contents) -> io::Result<()> {
@@ -273,25 +443,36 @@ fn probe_program(
     failure: &str,
     timeout: Duration,
 ) -> io::Result<()> {
-    let mut command = Spawn::new(program, std::env::vars_os().collect());
-    command.cwd = cwd.map(Path::to_owned);
-    command.args = args.iter().map(|arg| (*arg).into()).collect();
+    // These commands report an exit status and can finish before the keeper can
+    // read a process start identity. The installer itself owns and reaps them.
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
     let mut child = command
         .spawn()
         .map_err(|error| io::Error::other(format!("{failure} {error}")))?;
     let until = Instant::now() + timeout;
     loop {
-        if child.has_exited()? {
-            if !child.wait()?.success() {
-                return Err(io::Error::other(failure));
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => return Err(io::Error::other(failure)),
+            Ok(None) if Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
             }
-            return Ok(());
+            result => {
+                if child.kill().is_ok() {
+                    let _ = child.wait();
+                }
+                return result.and(Err(io::Error::new(io::ErrorKind::TimedOut, failure)));
+            }
         }
-        if Instant::now() >= until {
-            child.stop(Duration::from_millis(100), |_| {})?;
-            return Err(io::Error::new(io::ErrorKind::TimedOut, failure));
-        }
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 

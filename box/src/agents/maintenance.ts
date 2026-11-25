@@ -216,7 +216,9 @@ async function npmLatest(name: string, fresh: boolean, tag = "latest"): Promise<
   const kept = newest.get(key)
   if (!fresh && kept && Date.now() - kept.at < 6 * 60 * 60_000) return kept.value
   try {
-    const response = await fetch(`https://registry.npmjs.org/${name.replace("/", "%2F")}/${tag}`, { signal: AbortSignal.timeout(10_000) })
+    // (Tests name a registry of their own.)
+    const registry = (process.env.KUVO_TEST_NPM_REGISTRY || "https://registry.npmjs.org").replace(/\/+$/, "")
+    const response = await fetch(`${registry}/${name.replace("/", "%2F")}/${tag}`, { signal: AbortSignal.timeout(10_000) })
     const value = response.ok ? (((await response.json()) as { version?: string }).version ?? undefined) : undefined
     newest.set(key, { at: Date.now(), value })
     return value

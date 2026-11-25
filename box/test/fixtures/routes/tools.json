@@ -1,0 +1,1404 @@
+{
+ "about": "The agents' tools every box answers (PROTOCOL.md, \"Agents' tools\" and \"Work\"): a conversation runs the sessions it started with them, a subagent as its conversation.",
+ "scenarios": [
+  {
+   "name": "A tool's call names one of the tools",
+   "steps": [
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "nope",
+      "arguments": {},
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 400
+     }
+    }
+   ]
+  },
+  {
+   "name": "list_sessions lists the sessions a conversation started, a subagent's call as its conversation's",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_sub",
+       "title": "Look around",
+       "parent": "ses_lead"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_build",
+       "title": "Build",
+       "directory": "/tmp/api",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_lead"
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_other",
+       "title": "Other",
+       "directory": "/tmp/api"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_sessions",
+      "arguments": {},
+      "session": "ses_sub"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "Your sessions, the latest first:\n- Build (address ses_build), in api: idle"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_sessions",
+      "arguments": {},
+      "session": "ses_other"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "You haven't started any sessions (or they're archived). Start one with start_session."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "stop_session",
+      "arguments": {
+       "session": "ses_other"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "\"Other\" isn't yours to stop: ask the user."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "compact_session",
+      "arguments": {},
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Say which session (session), by its address from list_sessions."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "stop_session",
+      "arguments": {
+       "session": "ses_build"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "Stopped \"Build\"."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_sessions",
+      "arguments": {},
+      "session": "ses_nowhere"
+     },
+     "why": "A conversation this computer doesn't have has no sessions here.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Only a conversation on this computer has sessions of its own."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "list_projects, and a computer that isn't one of yours",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_projects",
+      "arguments": {},
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "There are no projects on this machine yet. No projects folder is picked yet: the user picks one the first time you make a project."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_models",
+      "arguments": {
+       "computer": "Nowhere"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "There's no computer called Nowhere. You have no other computers set up with Kuvo Code."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_projects",
+      "arguments": {
+       "computer": "this machine"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "make_project asks the user, and says why it can't be made without asking",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "make_project",
+      "arguments": {},
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Say what it's called (name)."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "make_project",
+      "arguments": {
+       "name": "Notes",
+       "clone": "file:///etc"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "file:///etc isn't a repository address git can clone: give an https or ssh one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "make_project",
+      "arguments": {
+       "name": "Notes",
+       "folder": "notes"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Give the folder as a full path, like ~/notes."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "make_project",
+      "arguments": {
+       "name": "Notes"
+      },
+      "session": "ses_nowhere"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Only a conversation on this computer makes projects here."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "start_session starts a session as its conversation's, six in ten minutes at most",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "One",
+       "task": "Do it."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": {
+        "<contains>": "Started \"One\" (address ses_"
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "Two",
+       "task": "Do it."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "Three",
+       "task": "Do it."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "Four",
+       "task": "Do it."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "Five",
+       "task": "Do it."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "Six",
+       "task": "Do it."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "Seven",
+       "task": "Do it."
+      },
+      "session": "ses_lead"
+     },
+     "why": "Six in ten minutes at most: two agents shouldn't fill the window unattended.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "You've started several sessions in the last few minutes. Write to those (send_message), or ask the user before starting more."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "start_session holds a bot's work to the limits the user set for it",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_deep",
+       "title": "Deep",
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_ada",
+         "by": {
+          "bot": "bot_gone1",
+          "name": "Ada"
+         },
+         "depth": 1,
+         "limits": {
+          "depth": 1
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_busy",
+       "title": "Busy",
+       "running": true,
+       "metadata": {
+        "kuvo": {
+         "startedBy": "ses_ada",
+         "by": {
+          "bot": "bot_gone2",
+          "name": "Bo"
+         },
+         "depth": 1,
+         "limits": {
+          "atOnce": 1
+         }
+        }
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "Deeper",
+       "task": "Do it."
+      },
+      "session": "ses_deep"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "The user set your sessions to go one level deep at most, so this one can't start another. Do it in this session, or ask the user."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "start_session",
+      "arguments": {
+       "chat": true,
+       "title": "More",
+       "task": "Do it."
+      },
+      "session": "ses_busy"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "The user set you to 1 session at once at most, and that many are working. Wait for one to finish, or ask the user to raise it (Edit Bot › Work)."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "Agents write to each other and read each other's conversations, a subagent as its conversation",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_other",
+       "title": "Other",
+       "directory": "/tmp/api"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_sub",
+       "title": "Look around",
+       "parent": "ses_lead"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_agents",
+      "arguments": {},
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": {
+        "<contains>": "- Other (session, here, in api) address: ses_other"
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "&Other",
+       "text": "Hello there."
+      },
+      "session": "ses_sub"
+     },
+     "why": "A subagent writes as its conversation.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "Sent to Other. Its answer, if it writes one, comes to you as a message."
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_other/prompt",
+      "json": {
+       "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nHello there."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "Nobody",
+       "text": "Hi."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "There's no agent called Nobody. Use list_agents to see who there is."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_lead",
+       "text": "Hi."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "That's you."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "Other"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Say what to write (text)."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_sub",
+       "text": "Hi."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Couldn't write to ses_sub: It's a subagent's conversation."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "read_conversation",
+      "arguments": {
+       "of": "Other"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": {
+        "<contains>": "Other's conversation (session, here, in api, address ses_other), oldest first."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "read_conversation",
+      "arguments": {
+       "of": "Lead"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "That's this conversation: you have it already."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "A conversation sends twenty messages in ten minutes at most",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_other",
+       "title": "Other"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 1."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 2."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 3."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 4."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 5."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 6."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 7."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 8."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 9."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 10."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 11."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 12."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 13."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 14."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 15."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 16."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 17."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 18."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 19."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 20."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 21."
+      },
+      "session": "ses_lead"
+     },
+     "why": "Two agents shouldn't keep writing to each other unattended.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "You've sent a lot of messages in the last few minutes. Wait a while, or ask the user how to go on."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "A conversation keeps its wake-ups with its tools, and a bot its job",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_work",
+       "title": "Work"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_sub",
+       "title": "Look",
+       "parent": "ses_work"
+      }
+     }
+    },
+    {
+     "given": {
+      "bot": {
+       "id": "bot_scout1",
+       "name": "Scout",
+       "session": "ses_scout"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "when": "+2h",
+       "note": "Look at the last CI run.",
+       "summary": "Check CI"
+      },
+      "session": "ses_sub"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     },
+     "why": "A subagent's wake-up is its conversation's."
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_wake_ups",
+      "arguments": {},
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": {
+        "<contains>": "Look at the last CI run."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "note": "Later."
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Say when (when): +20m, +2h, +1d, or a time like 2026-10-21T09:00."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "when": "+2h",
+       "note": " "
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Add a note for yourself (note): what to do when you wake up."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "cancel_wake_up",
+      "arguments": {},
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Say which one (id), from list_wake_ups."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "when": "+2h",
+       "note": "Later."
+      },
+      "session": "ses_nobody"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Kuvo Code doesn't know this conversation yet. Try again in a moment."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "cancel_wake_up",
+      "arguments": {
+       "id": "abc"
+      },
+      "session": "ses_scout"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "No wake-up \"abc\". See list_wake_ups."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "watch_for_change",
+      "arguments": {
+       "every": "10m",
+       "note": "Say what changed."
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Give how often (every), the check (a shell command) and a note for when it changes."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "when": "yesterday-ish",
+       "note": "Later."
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": {
+        "<contains>": "Couldn't read the time"
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "set_job",
+      "arguments": {
+       "summary": "Keeps CI green.",
+       "details": "Watch main."
+      },
+      "session": "ses_scout"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "Kept. Kuvo Code shows \"Keeps CI green\" under your name."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "set_job",
+      "arguments": {
+       "summary": "Keeps CI green."
+      },
+      "session": "ses_scout"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Provide a non-empty summary and details, or clear: true to clear your job."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "set_job",
+      "arguments": {
+       "summary": "Anything",
+       "details": ""
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Only a bot keeps a job, and this conversation isn't one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "set_job",
+      "arguments": {
+       "clear": true
+      },
+      "session": "ses_scout"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "Kept: you have no job now."
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

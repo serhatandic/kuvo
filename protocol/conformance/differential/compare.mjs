@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "../adapter.mjs";
-import { standInEngine } from "../engine.mjs";
+import { sessionOf, standInEngine } from "../engine.mjs";
+import { claudeEnvironment, seedSession, startClaudeBridge, stopFixtureHolders } from "../claude.mjs";
 
 // These are individual fields, scoped to a route or home file. A missing field,
 // a changed type, a changed path, and every other value remain visible.
@@ -32,6 +33,7 @@ const volatile = new Map([
     started: "session list writer start identity",
   }],
   ["run/work/told.json", { since: "notice scan start time", "sinces/bridge": "bridge notice scan start time" }],
+  ["run/work/asks.json", { "asks/0/answered/at": "answer time", "asks/1/answered/at": "answer time" }],
   ["run/notices/teller", { "": "notice publisher PID" }],
   ["agents/usage/insights.sqlite/state/local", { scanned: "local index scan timestamp" }],
   ["updates/rehome/journal.json", { began: "move start time", clonedAt: "clone start time" }],
@@ -40,11 +42,33 @@ const volatile = new Map([
 
 const reachFiles = ["run/peer-reach.json", "run/peer-reach-checked.json"];
 
+// When a coding agent's conversation was written: its rows, its record and its list entry.
+function conversationTime(name, field) {
+  if (/^GET kuvo\/agents\/api\/session\/[^/]+\/message$/.test(name)
+    && /^data\/\d+\/(content\/\d+\/)?time\/[a-z]+$/.test(field)) return "when the row was written";
+  if (/^agents\/sessions\/[^/]+\/session\.json$/.test(name) && /^time\/(activity|idle|updated)$/.test(field))
+    return "when the conversation last changed";
+  if (name === "run/lists/sessions.json"
+    && (/^projects\/.+\/updated$/.test(field) || /^sessions\/[^/]+\/facts\/(unread|updated)$/.test(field)))
+    return "when the conversation last changed";
+  return undefined;
+}
+
 function normalise(value, name, home, enginePort, field = "") {
+  // (When each session was stopped, and when each bot's work last changed.)
+  if (["run/work/stopped.json", "run/work/changes.json"].includes(name) && /^[A-Za-z0-9_-]+$/.test(field) && typeof value === "number")
+    return "<number: stop or change time>";
   if (reachFiles.includes(name) && /^[A-Za-z0-9_-]{43}$/.test(field) && typeof value === "number")
     return "<number: relay observation timestamp>";
+  if (name === "GET kuvo/models/offered" && /^generations\/[^/]+$/.test(field) && typeof value === "string")
+    return "<string: model catalog generation>";
   const usageScan = name === "agents/usage/usage.json" && /^accounts\/[^/]+\/scanned$/.test(field);
-  const why = usageScan ? "local account scan timestamp" : volatile.get(name)?.[field];
+  const conversation = conversationTime(name, field);
+  if (conversation && typeof value === "number") return `<number: ${conversation}>`;
+  if (/^agents\/sessions\/[^/]+\/agent\.json$/.test(name) && field === "threads/claude-code/state/claudeSession" && typeof value === "string")
+    return "<string: the conversation ID Claude Code was given>";
+  const botSince = name === "GET kuvo/bots" && /^bots\/\d+\/now\/since$/.test(field);
+  const why = usageScan ? "local account scan timestamp" : botSince ? "when this box saw the bot's state begin" : volatile.get(name)?.[field];
   if (why && ["number", "string"].includes(typeof value)) return `<${typeof value}: ${why}>`;
   if (name === "updates/rehome/journal.json" && field === "kept" && typeof value === "string") {
     value = value.replace(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/, "<move start time>");
@@ -63,7 +87,7 @@ function normalise(value, name, home, enginePort, field = "") {
 // Compare schema and typed rows from a private read copy. The inventory still
 // checks that the journal and its rebuildable shared-memory index paths exist.
 const insights = "agents/usage/insights.sqlite";
-const databases = new Set([insights, "data/opencode/opencode.db"]);
+const databases = new Set([insights, "data/opencode/opencode.db", "artifacts/index-v1.sqlite"]);
 export function sqliteContents(file, home, { migrationClockAfter } = {}) {
   const tmp = scratch();
   const target = path.join(tmp, "copy.sqlite");
@@ -206,20 +230,36 @@ function seenReach(home, { key, state }) {
     && (state === "away" ? typeof map[key] === "number" : !Object.hasOwn(map, key))) && maps;
 }
 
-async function run(binary, home, sequence, relay, peerSeed) {
-  const env = isolatedEnv(path.dirname(home));
+async function run(binary, home, sequence, relay, peerSeed, claude) {
+  const isolated = isolatedEnv(path.dirname(home));
+  // A Claude conversation (`claude.sessions`, `claude.script`) runs on a signed-in stand-in.
+  const conversation = claude && typeof claude === "object";
+  const env = claude
+    ? claudeEnvironment(binary, home, isolated, conversation ? { turns: true, ...claude.fixture } : { signedIn: false })
+    : isolated;
+  if (conversation) {
+    for (const [id, options] of Object.entries(claude.sessions ?? {})) seedSession(home, id, { model: "default", ...options });
+    write(path.join(env.HOME, "claude-script.json"), JSON.stringify(claude.script ?? {}));
+  }
   const engine = await standInEngine(path.dirname(home), env);
   const engineFile = path.join(home, "run", "engine.json");
-  let box, peer, peerEngine;
+  let box, peer, peerEngine, bridge;
   const answers = [];
   try {
     wireRelay(home, relay);
+    if (claude) bridge = await startClaudeBridge(binary, home, env);
     write(engineFile, JSON.stringify(engine.record));
     const mac = fs.existsSync(path.join(home, "box", "kind")) && fs.readFileSync(path.join(home, "box", "kind"), "utf8").trim() === "mac";
     box = startBox({ binary, home, env: { ...env, KUVO_SANDBOX: "off" }, relay, mac });
     let record = await box.ready();
-    for (const { method, path: route, body, headers, engineRunning, restartAfterAcceptance, peerReach } of sequence) {
+    for (const { method, path: route, body, headers, engineRunning, engineSessions, restartAfterAcceptance, peerReach, idles } of sequence) {
       if (engineRunning) engine.running = new Set(engineRunning);
+      // (Sessions the engine has from then on, as it lists them.)
+      for (const given of engineSessions ?? []) {
+        engine.sessions.push({ ...sessionOf(given), ...(given.metadata ? { metadata: given.metadata } : {}) });
+        engine.emit({ type: "session.created", data: { sessionID: given.id } });
+      }
+      if (engineSessions) await new Promise(resolve => setTimeout(resolve, 1500));
       const dispatch = () => request(record, method, route.replaceAll("{{home}}", encodeURIComponent(home)), substitute(body, home), headers);
       if (restartAfterAcceptance) {
         const accepted = new Promise(resolve => { engine.holdPrompt = { id: body.id, accepted: resolve }; });
@@ -250,7 +290,11 @@ async function run(binary, home, sequence, relay, peerSeed) {
         const maps = await until(() => seenReach(home, peerReach), "The peer reach files did not reach " + peerReach.state, 18000);
         reach = maps.map((map, index) => normalise(map, reachFiles[index], home));
       }
-      const answer = await dispatch();
+      // A transcript read waits for the turns it names to end.
+      const answer = idles === undefined ? await dispatch() : await until(async () => {
+        const read = await dispatch();
+        return read.status === 200 && read.json.data.filter(row => row.type === "idle").length >= idles && read;
+      }, `${route} never reached ${idles} ended turns.`, 20000);
       const name = `${method.toUpperCase()} ${route.split("?")[0]}`;
       const output = { status: answer.status, ...(reach === undefined ? {} : { reach }) };
       if (answer.json !== undefined) output.json = normalise(answer.json, name, home);
@@ -263,15 +307,18 @@ async function run(binary, home, sequence, relay, peerSeed) {
       if (box) await box.stop();
       if (peer) await peer.stop();
     } finally {
-      await Promise.all([engine.close(), peerEngine?.close()]);
+      await Promise.all([engine.close(), peerEngine?.close(), bridge?.stop()]);
     }
   }
+  // What the run found, before the holders it left go (with their records).
+  const files = inventory(home, { enginePort: engine.record.port });
+  if (claude) await stopFixtureHolders(home);
   const transcript = normalise({
     sessions: engine.sessions,
     messages: Object.fromEntries(engine.messages),
     inboxes: Object.fromEntries(engine.inboxes),
   }, "engine", home);
-  return { answers, files: inventory(home, { enginePort: engine.record.port }), transcript };
+  return { answers, files, transcript };
 }
 
 export function difference(label, a, b, out) {
@@ -286,7 +333,7 @@ export function difference(label, a, b, out) {
   out.push(`${label}\n  A  ${show(a)}\n  B  ${show(b)}`);
 }
 
-export async function compare(seed, sequence, a, b, { peerSeed, secondSeed = seed } = {}) {
+export async function compare(seed, sequence, a, b, { peerSeed, secondSeed = seed, claude = false } = {}) {
   seed = checkSeed(seed);
   secondSeed = checkSeed(secondSeed);
   if (peerSeed) peerSeed = checkSeed(peerSeed);
@@ -302,6 +349,10 @@ export async function compare(seed, sequence, a, b, { peerSeed, secondSeed = see
       assert.ok(typeof key === "string" && /^[A-Za-z0-9_-]{43}$/.test(key)
         && ["absent", "away", "answered"].includes(state), "Name a peer key and its expected reach state.");
     }
+    if (step.idles !== undefined) {
+      assert.ok(step.method.toUpperCase() === "GET" && Number.isInteger(step.idles) && step.idles > 0,
+        "To wait for turns, read a transcript and name how many ended.");
+    }
     if (step.restartAfterAcceptance) {
       assert.ok(step.method.toUpperCase() === "POST" && typeof step.body?.id === "string",
         "To interrupt a send, name its prompt ID in the body.");
@@ -315,8 +366,8 @@ export async function compare(seed, sequence, a, b, { peerSeed, secondSeed = see
     const options = { recursive: true, verbatimSymlinks: true, preserveTimestamps: true };
     fs.cpSync(seed, one, options);
     fs.cpSync(secondSeed, two, options);
-    const first = await run(a, one, sequence, relay, peerSeed);
-    const second = await run(b, two, sequence, relay, peerSeed);
+    const first = await run(a, one, sequence, relay, peerSeed, claude);
+    const second = await run(b, two, sequence, relay, peerSeed, claude);
     const out = [];
     for (const [index, step] of sequence.entries()) {
       difference(`request ${index + 1} ${step.method} ${step.path}`, first.answers[index], second.answers[index], out);
@@ -337,7 +388,11 @@ export async function cli(args) {
     "Usage: node protocol/conformance/differential SEED_HOME REQUESTS.json [PEER_SEED_HOME]");
   const a = boxBinary(process.env.KUVO_BOX_BIN_A || "");
   const b = boxBinary(process.env.KUVO_BOX_BIN_B || "");
-  const out = await compare(args[0], readJSON(args[1]), a, b, { peerSeed: args[2] });
+  const out = await compare(args[0], readJSON(args[1]), a, b, {
+    peerSeed: args[2],
+    claude: process.env.KUVO_CONFORMANCE_AREA === "agents-claude"
+      && (process.env.KUVO_DIFFERENTIAL_CLAUDE ? readJSON(process.env.KUVO_DIFFERENTIAL_CLAUDE) : true),
+  });
   if (out.length) {
     console.error(out.join("\n"));
     process.exitCode = 1;

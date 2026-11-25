@@ -146,6 +146,11 @@ fn attachment_path(line: &str) -> bool {
         || matches!(line.as_bytes(), [drive, b':', b'\\' | b'/', ..] if drive.is_ascii_alphabetic())
 }
 
+/// A message's metadata as the engine keeps it: its parts, read from its words.
+pub fn parts_metadata(text: &str) -> serde_json::Value {
+    serde_json::json!({ "kuvo": { "parts": read_parts(text) } })
+}
+
 pub(crate) fn read_parts(text: &str) -> Parts<'_> {
     if let Some((words, mail)) = mail(text) {
         return Parts {

@@ -61,14 +61,18 @@ impl OwnedLock {
             platform::private_file(&file)?;
         }
         with_deadline(wait, Duration::from_millis(10), || {
+            // On Windows a lock its owner is removing refuses to be opened
+            // until it's gone: busy, as one held.
             match fs::symlink_metadata(path) {
-                Ok(meta) if meta.is_dir() => {
-                    if !reap(path, rehome_pid)? {
-                        return Ok(None);
-                    }
-                }
+                Ok(meta) if meta.is_dir() => match reap(path, rehome_pid) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(None),
+                    Err(err) if platform::directory_conflict(&err) => return Ok(None),
+                    Err(err) => return Err(err),
+                },
                 Ok(_) => return Ok(None),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => (),
+                Err(err) if platform::directory_conflict(&err) => return Ok(None),
                 Err(err) => return Err(err),
             }
             match fs::rename(pending.path(), path) {
@@ -152,14 +156,25 @@ impl Drop for OwnedLock {
 
 /// Kernel-held lock for Rust-only writers. The lock file remains after release.
 pub fn try_file_lock(path: &Path) -> io::Result<File> {
-    let file = File::options()
+    let file = open_lock(path)?;
+    file.try_lock().map_err(io::Error::from)?;
+    Ok(file)
+}
+
+/// Hold a published resource open while readers are still using it.
+pub fn try_shared_file_lock(path: &Path) -> io::Result<File> {
+    let file = open_lock(path)?;
+    file.try_lock_shared().map_err(io::Error::from)?;
+    Ok(file)
+}
+
+fn open_lock(path: &Path) -> io::Result<File> {
+    File::options()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(path)?;
-    file.try_lock().map_err(io::Error::from)?;
-    Ok(file)
+        .open(path)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -263,6 +278,100 @@ impl Drop for LaunchLock {
         {
             let _ = fs::remove_file(&self.holder);
             let _ = fs::remove_dir(&self.lock);
+        }
+    }
+}
+
+/// A released machine's launcher only removes an empty, five-minute-old
+/// directory. Keep a recorded owner inside it while its data is moved.
+pub struct ReleasedLaunch {
+    path: PathBuf,
+    owner: ProcessIdentity,
+}
+
+impl ReleasedLaunch {
+    const MARKER: &str = "released-install.json";
+
+    #[cfg(unix)]
+    pub fn acquire(run: &Path) -> io::Result<Self> {
+        files::create_private_dirs(run)?;
+        let path = run.join(".launching");
+        let owner = ProcessIdentity::read(std::process::id())?
+            .ok_or_else(|| io::Error::other("The installer cannot identify itself."))?;
+        let pending = tempfile::Builder::new()
+            .prefix(".launching.pending-")
+            .tempdir_in(run)?;
+        files::write_new(
+            &pending.path().join(Self::MARKER),
+            &serde_json::to_vec(&owner)?,
+        )?;
+        // Do not replace an empty legacy launch lock, or leave an unowned one
+        // if the installer dies between creating the directory and its marker.
+        if let Err(error) = platform::place_exclusive(pending.path(), &path) {
+            if error.kind() != io::ErrorKind::AlreadyExists {
+                return Err(error);
+            }
+            if !Self::read_owner(&path)?.is_some_and(|old| old.state() == ProcessState::Stale) {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "Another installation change is under way.",
+                ));
+            }
+            Self::retire(&path)?;
+            platform::place_exclusive(pending.path(), &path).map_err(|error| {
+                if error.kind() == io::ErrorKind::AlreadyExists {
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "Another installation change is under way.",
+                    )
+                } else {
+                    error
+                }
+            })?;
+        }
+        Ok(Self { path, owner })
+    }
+
+    fn read_owner(path: &Path) -> io::Result<Option<ProcessIdentity>> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let marker = path.join(Self::MARKER);
+        if !fs::symlink_metadata(&marker).is_ok_and(|meta| meta.is_file()) {
+            return Ok(None);
+        }
+        Ok(files::read(&marker)?
+            .map(|bytes| serde_json::from_slice(&bytes))
+            .transpose()?)
+    }
+
+    pub fn owns(&self, path: &Path) -> bool {
+        self.path == path && Self::read_owner(path).ok().flatten().as_ref() == Some(&self.owner)
+    }
+
+    fn retire(path: &Path) -> io::Result<()> {
+        let aside = tempfile::Builder::new()
+            .prefix(".launching.retired-")
+            .tempdir_in(files::parent(path)?)?
+            .keep();
+        let retired = aside.join("lock");
+        if let Err(error) = fs::rename(path, &retired) {
+            let _ = fs::remove_dir(&aside);
+            return Err(error);
+        }
+        fs::remove_file(retired.join(Self::MARKER))?;
+        fs::remove_dir(retired)?;
+        fs::remove_dir(aside)
+    }
+}
+
+impl Drop for ReleasedLaunch {
+    fn drop(&mut self) {
+        if self.owns(&self.path) {
+            let _ = Self::retire(&self.path);
         }
     }
 }

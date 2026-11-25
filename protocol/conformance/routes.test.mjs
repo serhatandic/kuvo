@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { standInEngine } from "./engine.mjs";
 import { routeFixtures, seed } from "./fixtures.mjs";
 import { filled, mismatch, offShape, pathIn, unnamed } from "./match.mjs";
@@ -12,12 +12,14 @@ import { referenceGaps } from "./reference-gaps.mjs";
 
 const vectors = new URL("../../box/test/fixtures/routes/", import.meta.url);
 const area = process.env.KUVO_CONFORMANCE_AREA;
-const macFiles = new Set(["artifacts.json", "bots.json", "features.json"]);
+const macFiles = new Set(["artifacts.json", "bots.json", "features.json", "notices.json"]);
 const files = [...fs.readdirSync(vectors).filter(name => name.endsWith(".json")), "features.json"].sort();
 const binary = boxBinary();
 const isOurs = (only, kind) => only === undefined || only === kind;
 
-const selected = files.filter(file => !area || file === area + ".json");
+// An area of the Rust plan that spans more than one fixture.
+const groups = new Map([["bots", ["bots.json", "wakes.json"]]]);
+const selected = files.filter(file => !area || (groups.get(area) ?? [area + ".json"]).includes(file));
 if (area && !selected.length) throw new Error(`Unknown route area: ${area}`);
 
 test("routes", { concurrency: 3 }, async t => {
@@ -48,6 +50,7 @@ async function run(t, scenario, kind) {
     await Promise.all([engine.close(), relay.close()]);
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 });
   });
+  privateHome(home);
   seed(home, root, mac, engine.record);
   // The source scenarios started with a machine's folder before enrollment.
   // Reserve it from auto-setup except when a scenario brings peer records.
@@ -89,8 +92,10 @@ async function run(t, scenario, kind) {
       let answer = await ask();
       // These reads show projections updated by the engine stream and filesystem watches.
       // Wait for the expected projection once it can answer, without replaying mutations.
-      if (method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees"].includes(route.split("?")[0])
-        && answer.status === expect.status && mismatch(expect.json, answer.json)) {
+      // (An agent's tool that only reads, too.)
+      const projection = method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering", "kuvo/work/background", "kuvo/notices"].includes(route.split("?")[0])
+        || route === "kuvo/agent-tools" && ["list_sessions", "list_projects", "list_models", "list_agents", "read_conversation", "list_wake_ups"].includes(step.body?.name);
+      if (projection && answer.status === expect.status && mismatch(expect.json, answer.json)) {
         await until(async () => {
           answer = await ask();
           return answer.status !== expect.status || mismatch(expect.json, answer.json) === null;
@@ -122,8 +127,11 @@ async function run(t, scenario, kind) {
       }
     } else if (step.engineGot) {
       const wanted = filled(step.engineGot, vars);
-      const got = engine.asked.findLast(each => each.method === wanted.method && each.path === wanted.path);
-      assert.ok(got, `${where}: engine received no ${wanted.method} ${wanted.path}`);
+      const last = () => engine.asked.findLast(each => each.method === wanted.method && each.path === wanted.path);
+      // (What the box sends on its own, a moment later, is waited for.)
+      await until(() => last() && mismatch(wanted.json ?? {}, last().json, "sent") === null, where, 30000, 100).catch(() => {});
+      const got = last();
+      assert.ok(got, `${where}: engine received no ${wanted.method} ${wanted.path}, only ${engine.asked.map(each => `${each.method} ${each.path}`).slice(-20).join(", ")}`);
       assert.equal(mismatch(wanted.json ?? {}, got.json, "sent"), null, where);
     } else {
       assert.fail(`${where}: expected given, send, or engineGot`);

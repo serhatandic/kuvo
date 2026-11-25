@@ -377,7 +377,18 @@ fn scans_only_live_rust_holders_and_leaves_typescript_records_alone() {
 #[cfg(feature = "agent-runtime-fixture")]
 #[test]
 fn keeper_release_switch_adopts_the_residents_running_holder() {
-    use kuvo_os::process::ProcessIdentity;
+    keeper_switch_holds_turn(false);
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+#[test]
+fn keeper_rollback_adopts_the_residents_running_holder() {
+    keeper_switch_holds_turn(true);
+}
+
+#[cfg(feature = "agent-runtime-fixture")]
+fn keeper_switch_holds_turn(resume_rollback: bool) {
+    use kuvo_os::process::{ProcessIdentity, ProcessState};
 
     const OLD: &str = "versions/0.8.0-beta.1-123456789abc/bin";
     const NEW: &str = "versions/0.8.0-beta.2-123456789abc/bin";
@@ -402,14 +413,39 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
         )
         .unwrap();
         let executable = bin.join(binary.file_name().unwrap());
-        fs::hard_link(&binary, &executable)
-            .or_else(|_| fs::copy(&binary, &executable).map(drop))
+        // The test harness exits without serving when the keeper launches it.
+        let program = if resume_rollback && release == NEW {
+            env::current_exe().unwrap()
+        } else {
+            binary.clone()
+        };
+        fs::hard_link(&program, &executable)
+            .or_else(|_| fs::copy(&program, &executable).map(drop))
             .unwrap();
+        #[cfg(windows)]
+        {
+            let unwind = binary.with_file_name("libunwind.dll");
+            if unwind.is_file() {
+                fs::copy(unwind, bin.join("libunwind.dll")).unwrap();
+            }
+        }
     }
     fs::create_dir_all(root.join("run")).unwrap();
     fs::write(
         root.join("run/agent-fixture-program"),
         env::current_exe().unwrap().to_str().unwrap(),
+    )
+    .unwrap();
+    let session = root.join("agents/sessions/ses_keeper_fixture");
+    fs::create_dir_all(&session).unwrap();
+    fs::write(
+        session.join("session.json"),
+        json!({
+            "id":"ses_keeper_fixture", "projectID":"fixture", "agent":"build",
+            "location":{"directory":root}, "time":{"created":1,"updated":1},
+            "model":{"providerID":"codex-cli","id":"stand-in"},
+        })
+        .to_string(),
     )
     .unwrap();
     let profile = scratch.path().join("profile");
@@ -436,7 +472,27 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
     assert_eq!(started["generation"], 1);
 
     keeper.control(&["select", NEW]);
-    let finished = fixture_until("the new release to finish the held turn", || {
+    if resume_rollback {
+        fixture_until(
+            "the failed release to run after the first resident exits",
+            || {
+                let log = fs::read_to_string(keeper.root.join("run/serve.log")).ok()?;
+                (first.state() == ProcessState::Stale
+                    && (log.contains("running 0 tests") || log.contains("Unrecognized option:")))
+                .then_some(())
+            },
+        );
+        assert_eq!(
+            fs::read_to_string(keeper.root.join("run/previous"))
+                .unwrap()
+                .trim(),
+            OLD
+        );
+        // Replay the durable decision left when rollback was interrupted.
+        kuvo_store::files::write_secret(&keeper.root.join("run/keeper-rollback"), NEW.as_bytes())
+            .unwrap();
+    }
+    let finished = fixture_until("the replacement resident to finish the held turn", || {
         fixture_checkpoint(&keeper.root, "agent-fixture-finished")
     });
     let second = finished["resident"].as_u64().unwrap() as u32;
@@ -444,18 +500,49 @@ fn keeper_release_switch_adopts_the_residents_running_holder() {
     assert_eq!(finished["agent"], started["agent"]);
     assert_eq!(finished["holder"], started["holder"]);
     assert_eq!(finished["generation"], 2);
+    let db =
+        kuvo_store::sqlite::open_index(&session.join("messages-v1.sqlite"), Duration::from_secs(1))
+            .unwrap();
+    let assistant: String = db
+        .query_row(
+            "SELECT body FROM message WHERE id = 'msg_keeper_fixture_1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let assistant: serde_json::Value = serde_json::from_str(&assistant).unwrap();
+    assert_eq!(assistant["content"][0]["text"], "before after");
+    let completed: String = db
+        .query_row(
+            "SELECT body FROM message WHERE id = 'msg_keeper_fixture_2'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let completed: serde_json::Value = serde_json::from_str(&completed).unwrap();
+    assert_eq!(completed["outcome"], "succeeded");
+    drop(db);
+    let expected = if resume_rollback { OLD } else { NEW };
     fixture_until(
-        "the new resident to answer and the keeper to confirm its trial",
+        "the replacement resident to answer and the keeper to settle its trial",
         || {
             (keeper.ready(&second.to_string())
                 && !keeper.root.join("run/previous").exists()
                 && fs::read_to_string(keeper.root.join(kuvo_keeper::SELECTOR))
                     .ok()?
                     .as_str()
-                    == NEW)
+                    == expected)
                 .then_some(())
         },
     );
+    if resume_rollback {
+        let refusal = fs::read_to_string(keeper.root.join("run/update-cannot")).unwrap();
+        assert_eq!(
+            refusal.split_whitespace().skip(1).collect::<Vec<_>>(),
+            ["0.8.0-beta.2", "123456789abc"]
+        );
+        assert!(!keeper.root.join("run/keeper-rollback").exists());
+    }
     keeper.control(&["off"]);
 }
 
@@ -520,4 +607,107 @@ fn fixture_until<T>(what: &str, mut read: impl FnMut() -> Option<T>) -> T {
 #[cfg(feature = "agent-runtime-fixture")]
 fn fixture_checkpoint(root: &Path, name: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&fs::read(root.join("run").join(name)).ok()?).ok()
+}
+
+#[test]
+#[ignore = "agent process launched by the scenario"]
+fn rpc_agent_probe() {
+    let mut lines = std::io::stdin().lock().lines();
+    let first: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(first["jsonrpc"], "2.0");
+    assert_eq!(first["method"], "initialize");
+    println!(r#"{{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{{"tool":"edit"}}}}"#);
+    println!(r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"step":1}}}}"#);
+    let answer: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(answer["id"], "p1");
+    println!(
+        "{}",
+        json!({"jsonrpc":"2.0","id":first["id"],"result":{"saw":answer["result"]["outcome"]}})
+    );
+}
+
+async fn wait(incoming: &mut tokio::sync::mpsc::Receiver<kuvo_agents::rpc::Incoming>) -> kuvo_agents::rpc::Incoming {
+    tokio::time::timeout(Duration::from_secs(20), incoming.recv())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// The shared JSON-RPC connection over a real holder: a request, the agent's
+/// own request answered in between, a notification, and the agent's exit.
+#[test]
+fn json_rpc_runs_through_a_real_holder() {
+    use kuvo_agents::rpc::{Framing, Incoming, Options, Rpc};
+
+    let root = scratch();
+    #[cfg(windows)]
+    kuvo_store::files::write_atomic(
+        &root.path().join("run/socket.key"),
+        "ab".repeat(32).as_bytes(),
+    )
+    .unwrap();
+    let binary = env::var_os("KUVO_HOLDER_TEST_BOX").map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_kuvo-box")),
+        PathBuf::from,
+    );
+    let home = root.path().to_owned();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async move {
+            let runtime = Runtime::for_home(&Home::new(home.clone()).unwrap());
+            let controller = runtime
+                .holders()
+                .start(
+                    &binary,
+                    Start {
+                        command: vec![
+                            env::current_exe().unwrap(),
+                            "--exact".into(),
+                            "rpc_agent_probe".into(),
+                            "--ignored".into(),
+                            "--nocapture".into(),
+                            "--quiet".into(),
+                        ],
+                        cwd: Some(home.clone()),
+                        env: environment(&home),
+                        kind: HoldKind::JsonRpc,
+                        meta: json!({"kind":"grok","provider":"grok-cli","turns":{}})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        portable_requests: None,
+                        limits: Limits::default(),
+                    },
+                )
+                .await
+                .unwrap();
+            let (rpc, mut incoming) = Rpc::over(
+                controller,
+                Options {
+                    framing: Framing::JsonRpc2,
+                    filter: Some(Box::new(|line: &str| line.starts_with('{'))),
+                    ..Options::default()
+                },
+            );
+            let asking = tokio::spawn({
+                let rpc = rpc.clone();
+                async move { rpc.request("initialize", None, Some(Duration::from_secs(20))).await }
+            });
+            let Incoming::Request { id, method, .. } = wait(&mut incoming).await else {
+                panic!("the agent's request came first");
+            };
+            assert_eq!(method, "session/request_permission");
+            rpc.respond(id, Ok(json!({"outcome":"allow"}))).await;
+            assert!(matches!(
+                wait(&mut incoming).await,
+                Incoming::Notification { method, .. } if method == "session/update"
+            ));
+            assert_eq!(asking.await.unwrap().unwrap(), json!({"saw":"allow"}));
+            assert!(matches!(
+                wait(&mut incoming).await,
+                Incoming::Exited { code: 0, .. }
+            ));
+        });
 }

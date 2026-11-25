@@ -15,6 +15,7 @@ notify = "8.2"
 percent-encoding = "2"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
+tempfile = "3"
 tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
 
 [target.'cfg(unix)'.dependencies]
@@ -28,9 +29,11 @@ landlock = "0.4"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
@@ -42,7 +45,6 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 serde_json = "1"
-tempfile = "3"
 tokio = { version = "1", features = ["macros", "test-util"] }
 
 [[test]]

@@ -1,0 +1,226 @@
+{
+ "about": "How much a conversation's agent does on its own (PROTOCOL.md, \"Approval\"): this computer's Full Access switch and default, and a conversation's approval read and set. Auto's own fields are left out: it's held without the sandbox, and not offered on Windows.",
+ "scenarios": [
+  {
+   "name": "this computer's approval: Full Access off until you confirm it, and whether your other computers may start work here",
+   "steps": [
+    {
+     "send": "GET kuvo/approval",
+     "expect": {
+      "status": 200,
+      "json": {
+       "fullAccess": false,
+       "default": "<string>",
+       "auto": {
+        "engine": {
+         "held": "<object>"
+        },
+        "agents": {
+         "held": "<object>"
+        }
+       },
+       "options": {
+        "engine": {
+         "<includes>": [
+          {
+           "approval": "askFirst",
+           "title": "Ask First",
+           "unavailable": "<absent>",
+           "held": "<absent>"
+          },
+          {
+           "approval": "fullAccess",
+           "unavailable": {
+            "reason": "fullAccessOff",
+            "why": "Full Access isn't confirmed on this computer yet: confirm it first."
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/approval",
+     "body": {},
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "Say whether you confirmed Full Access on this computer (fullAccess, true or false), or whether your other computers may start work here (otherComputers, true or false)."
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/approval",
+     "body": {
+      "otherComputers": false
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "otherComputers": false,
+       "fullAccess": false
+      }
+     }
+    },
+    {
+     "send": "PATCH kuvo/approval",
+     "body": {
+      "fullAccess": true
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "fullAccess": true,
+       "otherComputers": false,
+       "options": {
+        "engine": {
+         "<includes>": [
+          {
+           "approval": "fullAccess",
+           "unavailable": "<absent>"
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/approval",
+     "expect": {
+      "status": 200,
+      "json": {
+       "fullAccess": true
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "a conversation's approval read and set; Full Access refused until it's confirmed here",
+   "steps": [
+    {
+     "given": {
+      "session": {
+       "id": "ses_plan",
+       "title": "Plan"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/sessions/ses_plan/approval",
+     "why": "One from before this computer kept approvals runs as its rules say: nothing asks, so Full Access.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "approval": "fullAccess",
+       "effective": "fullAccess",
+       "stored": false,
+       "plan": false,
+       "options": "<array>"
+      }
+     }
+    },
+    {
+     "send": "PUT kuvo/sessions/ses_plan/approval",
+     "body": {
+      "approval": "nope"
+     },
+     "expect": {
+      "status": 400,
+      "json": {
+       "message": "approval is one of askFirst, acceptEdits, auto, fullAccess."
+      }
+     }
+    },
+    {
+     "send": "PUT kuvo/sessions/ses_plan/approval",
+     "body": {
+      "approval": "fullAccess"
+     },
+     "expect": {
+      "status": 409,
+      "json": {
+       "reason": "fullAccessOff",
+       "message": "Full Access isn't confirmed on this computer yet: confirm it first."
+      }
+     }
+    },
+    {
+     "send": "PUT kuvo/sessions/ses_plan/approval",
+     "body": {
+      "approval": "acceptEdits"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "approval": "acceptEdits",
+       "effective": "acceptEdits",
+       "stored": true,
+       "held": "<absent>"
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "PATCH",
+      "path": "/api/session/ses_plan",
+      "json": {
+       "metadata": {
+        "kuvo": {
+         "approval": "acceptEdits",
+         "applied": "acceptEdits"
+        }
+       },
+       "permissions": {
+        "<includes>": [
+         {
+          "action": "edit",
+          "resource": "*",
+          "effect": "allow"
+         },
+         {
+          "action": "shell",
+          "resource": "*",
+          "effect": "ask"
+         }
+        ]
+       }
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/sessions/ses_plan/approval",
+     "expect": {
+      "status": 200,
+      "json": {
+       "approval": "acceptEdits",
+       "stored": true
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/approval",
+     "why": "The last one you picked is the next new conversation's.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "default": "acceptEdits"
+      }
+     }
+    },
+    {
+     "send": "GET kuvo/sessions/ses_nobody/approval",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "That conversation isn't here."
+      }
+     }
+    }
+   ]
+  }
+ ]
+}
