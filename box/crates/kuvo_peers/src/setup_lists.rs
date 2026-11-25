@@ -326,6 +326,9 @@ impl View {
         // (Edits held for a bot here are taken, its effort and its job's two fields too.)
         features.extend(["bots.held", "bots.effort", "bots.job-fields"]);
         features.push("data.queued-device-authority");
+        // Peer-only capability: this computer keeps Library and Outputs copies until a change,
+        // and marks them away from reach, not from the age of their content.
+        features.extend(["library", "line.merged-library", "line.merged-outputs", "data.library-change-copy"]);
         if self.backup_receiver {
             features.push("box.backups.relay");
         }

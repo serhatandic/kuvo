@@ -497,6 +497,35 @@ test("merged Library and Outputs views include away peers' kept copies and pendi
   assert.equal(typeof outFrame.d.artifacts[0].lastSeen, "number");
 });
 
+test("an output change doesn't republish an unchanged Library to another computer", {timeout:30000, skip:boxBinary().typescript}, async t => {
+  const {computer,relay}=await bench(t);
+  const sender=await computer("Studio"), receiver=await computer("Lab");
+  const {main,member}=seedPeerSetup(sender.home,relay.url,1,2);
+  seedPeerSetup(receiver.home,relay.url,2,2);
+  const file=path.join(realpathSync(sender.home),"notes.txt");
+  writeFileSync(file,"notes");
+  const hash=sha256("notes"), id=artId(file), at="2026-10-26T10:00:00.000Z";
+  const loose=path.join(realpathSync(sender.home),"loose.txt");
+  writeFileSync(loose,"untracked");
+  seedLibrary(sender.home,[{id:libId(file),path:file,name:"notes.txt",kind:"document",type:"text/plain",how:"shown",session:"ses_notes",at},
+    {id:libId(loose),path:loose,name:"loose.txt",kind:"document",type:"text/plain",how:"shown",session:"ses_notes",at}]);
+  seedArtifacts(sender.home,[{a:{id,path:file,name:"notes.txt",kind:"document",type:"text/plain",where:{bots:[],sessions:["ses_notes"],groups:[]},pinned:null,gone:null,updated:at},v:{n:1,at,by:{kind:"agent",session:"ses_notes"},via:["write"],status:"added",edits:1,size:5,hash:"sha256:"+hash,kept:true}}],[[hash,Buffer.from("notes")]]);
+  await receiver.start().ready();
+  const ask=sender.connect(await sender.start().ready());
+  await until(()=>relay.has(Buffer.from(main.address,"base64url")) && relay.has(Buffer.from(member.address,"base64url")),"Both computers never connected.");
+  const copy=name=>{
+    try {return JSON.parse(readFileSync(path.join(receiver.home,"run/peers",main.key,name),"utf8"));} catch {return null;}
+  };
+  await until(()=>copy("library-v1.json")?.items?.length===2 && copy("outputs-v1.json")?.artifacts?.length===1,"The initial copies never arrived.");
+  const seen=copy("library-v1.json").seen;
+  const pinned=await ask("POST",`kuvo/artifacts/${id}/pin`,{pinned:true});
+  assert.equal(pinned.status,200,pinned.text);
+  await until(()=>copy("outputs-v1.json")?.artifacts?.[0]?.pinned===true,"The pinned output was never sent.");
+  assert.equal(copy("library-v1.json").seen,seen,"An unchanged Library was sent again.");
+  rmSync(loose);
+  await until(()=>copy("library-v1.json")?.items?.find(item=>item.id===libId(loose))?.there===false,"The disappeared file was never reflected in the peer Library.");
+});
+
 test("marketplace, programs and mcp catalog routes match across boxes", async t => {
   const { computer } = await bench(t);
   const box = await computer("MarketBox");

@@ -72,6 +72,8 @@ impl LibraryService {
         })
     }
 
+    pub fn bots_folder(&self) -> &Path { &self.bots }
+    pub fn clear_bot_descriptions(&self) { self.described.lock().unwrap().clear(); }
     pub fn store(&self) -> &LibraryStore { &self.store }
     pub fn handed(&self, handover: Handover) { let _ = self.store.hand(handover); }
     pub fn computer_name(&self) -> String { (self.computer)() }

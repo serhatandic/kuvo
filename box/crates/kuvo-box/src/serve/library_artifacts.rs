@@ -2,7 +2,7 @@
 //! memory-read answering, bot folder watches, and passive engine event recording.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,7 +10,8 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use kuvo_os::watch::WatchHub;
+use kuvo_os::watch::{WatchHub, Options, Notice};
+use sha2::{Digest, Sha256};
 use kuvo_peers::{
     memory_read::{Answer, Handle as MemoryReads, Kind as ReadKind, Read},
     relay::{RelayEvent, RelayHandle},
@@ -41,13 +42,14 @@ use serde_json::{Map, Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
-    sync::watch,
+    sync::{watch, mpsc},
     task::JoinHandle,
 };
 
 const LIBRARY_FEATURE: &str = "library";
 const MERGED_LIBRARY_FEATURE: &str = "line.merged-library";
 const MERGED_OUTPUTS_FEATURE: &str = "line.merged-outputs";
+const CHANGES_FEATURE: &str = "data.library-change-copy";
 const LIBRARY_FILE: &str = "library-v1.json";
 const OUTPUTS_FILE: &str = "outputs-v1.json";
 
@@ -360,7 +362,7 @@ impl LibraryPeers for PeerAdapter {
                 let copy = self.read_peer_snapshot(&key_str, LIBRARY_FILE);
                 let legacy = copy.is_none().then(|| kept_part(&dir, &key_str, query)).flatten();
                 let seen = copy.as_ref().map(|(s, _)| *s).or_else(|| legacy.as_ref().map(|k| k.seen));
-                let aged = seen.is_some_and(|s| now - s > 180_000);
+                let aged = !view.advertises(&member.key, CHANGES_FEATURE) && seen.is_some_and(|s| now - s > 180_000);
                 let away = view.standing(member.key, now).away() || (seen.is_some() && (!view.relay_connected || aged));
                 if copy.is_none() && legacy.is_none() {
                     if away {
@@ -391,7 +393,7 @@ impl LibraryPeers for PeerAdapter {
 
 async fn sync_peer_snapshots(
     run: PathBuf,
-    peers: Reader,
+    mut peers: Reader,
     relay: RelayHandle,
     artifacts: ArtifactHandle,
     library: LibraryHandle,
@@ -401,33 +403,55 @@ async fn sync_peer_snapshots(
     let mut seq = 0u64;
     let mut art_rx = match &artifacts { ArtifactHandle::Ready(s) => Some(s.subscribe()), _ => None };
     let mut lib_rx = match &library { LibraryHandle::Ready(s) => Some(s.store().subscribe()), _ => None };
-    let mut tick = tokio::time::interval(Duration::from_secs(60));
+    let mut sent = HashMap::<([u8; 32], &'static str), SentCopy>::new();
+    let mut cached = None;
+    let mut source_watches = SourceWatches::new();
     loop {
+        let next_legacy = push_snapshot(&peers, &relay, &artifacts, &library, &mut cached, &mut sent, &mut source_watches).await;
+
         tokio::select! {
             res = events.recv() => match res {
-                Ok(event) => if let RelayEvent::Mail { key, envelope, .. } = event.as_ref() {
-                    let key_str = encode(key);
-                    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-                    let mut updated = false;
-                    for (field, file) in [("libraryCopy", LIBRARY_FILE), ("outputCopy", OUTPUTS_FILE)] {
-                        if let Some(copy) = envelope.0.get(field).and_then(Value::as_object) {
-                            let mut doc = copy.clone();
-                            doc.insert("at".into(), Value::from(now));
-                            doc.insert("seen".into(), Value::from(now));
-                            if let Ok(bytes) = serde_json::to_vec(&Value::Object(doc)) {
-                                let _ = kuvo_store::files::write_secret(&run.join("peers").join(&key_str).join(file), &bytes);
-                                updated = true;
+                Ok(event) => match event.as_ref() {
+                    RelayEvent::Mail { key, envelope, .. } => {
+                        let key_str = encode(key);
+                        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+                        let mut updated = false;
+                        for (field, file) in [("libraryCopy", LIBRARY_FILE), ("outputCopy", OUTPUTS_FILE)] {
+                            if let Some(copy) = envelope.0.get(field).and_then(Value::as_object) {
+                                let mut doc = copy.clone();
+                                doc.insert("at".into(), Value::from(now));
+                                doc.insert("seen".into(), Value::from(now));
+                                if let Ok(bytes) = serde_json::to_vec(&Value::Object(doc)) {
+                                    let _ = kuvo_store::files::write_secret(&run.join("peers").join(&key_str).join(file), &bytes);
+                                    updated = true;
+                                }
                             }
                         }
+                        if updated { seq = seq.wrapping_add(1); let _ = notify.send(seq); }
                     }
-                    if updated { seq = seq.wrapping_add(1); let _ = notify.send(seq); }
+                    RelayEvent::Connected(_) | RelayEvent::Disconnected(_) => sent.clear(),
+                    RelayEvent::Gone { address, replaced: true } => {
+                        if let Some(member) = peers.view().roster.at_address(*address) {
+                            sent.retain(|(key, _), _| *key != member.key);
+                        }
+                    }
+                    _ => {}
                 },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => { sent.clear(); cached = None; }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
-            _ = recv_broadcast(&mut art_rx) => push_snapshot(&peers, &relay, &artifacts, &library).await,
-            _ = recv_broadcast(&mut lib_rx) => push_snapshot(&peers, &relay, &artifacts, &library).await,
-            _ = tick.tick() => push_snapshot(&peers, &relay, &artifacts, &library).await,
+            _ = recv_broadcast(&mut art_rx) => cached = None,
+            _ = recv_broadcast(&mut lib_rx) => cached = None,
+            _ = source_watches.changed() => {
+                if let LibraryHandle::Ready(service) = &library { service.clear_bot_descriptions(); }
+                cached = None;
+                seq = seq.wrapping_add(1); let _ = notify.send(seq);
+            },
+            result = peers.changed() => {
+                if result.is_err() { break; }
+                seq = seq.wrapping_add(1); let _ = notify.send(seq);
+            },
+            _ = legacy_due(next_legacy) => {},
         }
     }
 }
@@ -439,23 +463,143 @@ async fn recv_broadcast<T: Clone>(rx: &mut Option<tokio::sync::broadcast::Receiv
     }
 }
 
-async fn push_snapshot(peers: &Reader, relay: &RelayHandle, artifacts: &ArtifactHandle, library: &LibraryHandle) {
+struct SentCopy {
+    digest: [u8; 32],
+    at: tokio::time::Instant,
+}
+
+type Content = Vec<(&'static str, Value, [u8; 32])>;
+
+async fn legacy_due(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Build a snapshot only after a real store/source change. Each stream has its own digest and
+/// recipient ledger: an unrelated artifact change doesn't send Library data again. A legacy
+/// recipient expects a periodic copy for its standing; only while such a peer is connected is
+/// there a timer at all.
+async fn push_snapshot(
+    peers: &Reader, relay: &RelayHandle, artifacts: &ArtifactHandle, library: &LibraryHandle,
+    cached: &mut Option<Content>, sent: &mut HashMap<([u8; 32], &'static str), SentCopy>,
+    sources: &mut SourceWatches,
+) -> Option<tokio::time::Instant> {
     let view = peers.view();
-    if !view.relay_connected || view.roster.members.is_empty() { return; }
-    let mut payload = Map::new();
-    if let LibraryHandle::Ready(service) = library { payload.insert("libraryCopy".into(), service.peer_copy_json()); }
-    if let ArtifactHandle::Ready(store) = artifacts {
-        payload.insert("outputCopy".into(), json!({ "artifacts": local_output_copy(store, None) }));
+    let recipients = view.roster.members.iter().filter(|member| member.address.is_some() && !view.away(&member.key)).collect::<Vec<_>>();
+    sent.retain(|(key, _), _| recipients.iter().any(|member| member.key == *key));
+    if !view.relay_connected || recipients.is_empty() {
+        sent.clear();
+        *cached = None;
+        sources.clear();
+        return None;
     }
-    if payload.is_empty() || serde_json::to_vec(&Value::Object(payload.clone())).map_or(true, |b| b.len() > kuvo_wire::mail::MAX_PLAINTEXT) {
-        return;
+    let content = cached.get_or_insert_with(|| {
+        let mut content = Vec::new();
+        let mut add = |field, value: Value| {
+            if let Ok(bytes) = serde_json::to_vec(&value) {
+                content.push((field, value, Sha256::digest(bytes).into()));
+            }
+        };
+        if let LibraryHandle::Ready(service) = library {
+            let copy = service.peer_copy_json();
+            sources.keep(&copy, service.bots_folder());
+            add("libraryCopy", copy);
+        }
+        if let ArtifactHandle::Ready(store) = artifacts {
+            add("outputCopy", json!({ "artifacts": local_output_copy(store, None) }));
+        }
+        content
+    });
+    let now = tokio::time::Instant::now();
+    let mut next = None;
+    for member in recipients {
+        let legacy = !view.advertises(&member.key, CHANGES_FEATURE);
+        for (field, value, digest) in content.iter() {
+            let key = (member.key, *field);
+            let previous = sent.get(&key);
+            let due = previous.map(|copy| copy.at + Duration::from_secs(60));
+            if previous.is_none_or(|copy| copy.digest != *digest) || legacy && due.is_some_and(|at| at <= now) {
+                let mut doc = value.clone();
+                doc["at"] = json!(peers.now());
+                let payload = Map::from_iter([((*field).into(), doc)]);
+                if serde_json::to_vec(&payload).map_or(true, |bytes| bytes.len() > kuvo_wire::mail::MAX_PLAINTEXT) {
+                    continue;
+                }
+                if relay.sender.mail(Host { address: member.address.expect("filtered"), key: member.key }, Envelope(payload)).await.is_ok() {
+                    sent.insert(key, SentCopy { digest: *digest, at: now });
+                }
+            }
+            if legacy {
+                let at = sent.get(&key).map_or(now, |copy| copy.at) + Duration::from_secs(60);
+                next = Some(next.map_or(at, |prior: tokio::time::Instant| prior.min(at)));
+            }
+        }
     }
-    for member in &view.roster.members {
-        if let Some(address) = member.address {
-            let _ = relay.sender.mail(Host { address, key: member.key }, Envelope(payload.clone())).await;
+    next
+}
+
+/// A Library item can disappear outside a coding agent's turn. Watch its parent, and its bot's
+/// description, without walking project trees or polling. If a directory is missing, watch the
+/// first existing ancestor for the missing component and rebind after it appears.
+struct SourceWatches {
+    hub: WatchHub,
+    watches: BTreeMap<PathBuf, (BTreeSet<PathBuf>, JoinHandle<()>)>,
+    tx: mpsc::UnboundedSender<()>,
+    rx: mpsc::UnboundedReceiver<()>,
+}
+impl SourceWatches {
+    fn new() -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self { hub: WatchHub::default(), watches: BTreeMap::new(), tx, rx }
+    }
+    fn clear(&mut self) {
+        for (_, (_, task)) in std::mem::take(&mut self.watches) { task.abort(); }
+    }
+    async fn changed(&mut self) {
+        let _ = self.rx.recv().await;
+        while self.rx.try_recv().is_ok() {}
+    }
+    fn keep(&mut self, copy: &Value, bots: &Path) {
+        let mut wanted = BTreeMap::<PathBuf, BTreeSet<PathBuf>>::new();
+        let mut watch = |mut path: PathBuf| {
+            while let Some(parent) = path.parent() {
+                if parent.is_dir() {
+                    if let Some(name) = path.file_name() {
+                        wanted.entry(parent.to_owned()).or_default().insert(name.into());
+                    }
+                    break;
+                }
+                path = parent.to_owned();
+            }
+        };
+        for item in copy["items"].as_array().into_iter().flatten() {
+            if let Some(path) = item["path"].as_str() { watch(PathBuf::from(path)); }
+            if let Some(bot) = item["bot"].as_str() { watch(bots.join(bot).join("bot.json")); }
+        }
+        self.watches.retain(|folder, (names, task)| {
+            let same = wanted.get(folder) == Some(names) && !task.is_finished();
+            if !same { task.abort(); }
+            same
+        });
+        for (folder, names) in wanted {
+            if self.watches.contains_key(&folder) { continue }
+            let (hub, tx, target, names_for_task) = (self.hub.clone(), self.tx.clone(), folder.clone(), names.clone());
+            let task = tokio::spawn(async move {
+                let Ok(mut sub) = hub.subscribe(target, Options::default()).await else { return };
+                while let Some(notice) = sub.recv().await {
+                    match notice {
+                        Notice::Changed { paths } if !paths.iter().any(|path| path.as_os_str().is_empty() || names_for_task.contains(path)) => continue,
+                        _ => { let _ = tx.send(()); }
+                    }
+                }
+            });
+            self.watches.insert(folder, (names, task));
         }
     }
 }
+impl Drop for SourceWatches { fn drop(&mut self) { self.clear(); } }
 
 #[derive(Clone, serde::Deserialize)]
 struct EngineRecord { port: u16, password: String }
