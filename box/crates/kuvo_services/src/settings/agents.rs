@@ -75,35 +75,17 @@ struct Facts {
 }
 async fn facts(ctx: &Context) -> Result<Facts, Refusal> {
     let config = ctx.ask(Method::GET, "kuvo/config", None).await?;
-    let running = std::fs::read(ctx.settings.home.join("run/engine.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .is_some_and(|v| v["port"].as_u64().is_some_and(|p| p > 0));
-    let (agents, models) = if running {
-        let (agents, providers, models) = tokio::join!(
-            ctx.ask(Method::GET, "api/agent", None),
-            ctx.ask(Method::GET, "api/provider", None),
-            ctx.ask(Method::GET, "api/model", None)
-        );
-        let providers = providers
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
-        let models = models
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
-        let models=models.iter().filter(|v|v["enabled"]!=false&&v["id"].is_string()&&v["providerID"].is_string()&&providers.iter().any(|p|p["id"]==v["providerID"])).map(|v|{
-            let provider=text(&v["providerID"]);let id=text(&v["id"]);
-            json!({"id":format!("{provider}/{id}"),"title":v["name"].as_str().filter(|s|!s.is_empty()).unwrap_or(id),"line":provider,"model":{"providerID":provider,"id":id}})
-        }).collect();
-        (
-            agents.ok().and_then(|v| v.as_array().cloned()),
-            Some(models),
-        )
-    } else {
-        (None, None)
-    };
+    let (agents, models) = tokio::join!(
+        ctx.engine_get("api/agent"),
+        ctx.settings.engine.settings_models()
+    );
+    let models = models.map(|models| {
+        models.into_iter().map(|model|json!({
+        "id":format!("{}/{}",model.provider,model.id),"title":model.name,"line":model.provider,
+        "model":{"providerID":model.provider,"id":model.id}
+    })).collect()
+    });
+    let agents = agents.and_then(|v| v.as_array().cloned());
     let title = computer_title(ctx).await;
     let where_ = match title.as_str() {
         "This Mac" => "this Mac".into(),

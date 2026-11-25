@@ -18,15 +18,18 @@ struct Model {
     #[serde(default)]
     aliases: Vec<String>,
 }
-async fn models(ctx: &Context) -> Vec<Model> {
-    ctx.ask(Method::GET, "kuvo/models/offered", None)
-        .await
-        .ok()
-        .and_then(|v| serde_json::from_value::<Vec<Model>>(v["models"].clone()).ok())
-        .unwrap_or_default()
+async fn catalog(ctx: &Context) -> (Vec<Model>, std::collections::BTreeSet<String>) {
+    let offered = ctx.settings.engine.settings_offered_models().await;
+    let models = offered
+        .models
         .into_iter()
-        .filter(|m| m.provider != "auto")
-        .collect()
+        .filter_map(|model| serde_json::from_value::<Model>(model).ok())
+        .filter(|model| model.provider != "auto")
+        .collect();
+    (models, offered.signed_out)
+}
+async fn models(ctx: &Context) -> Vec<Model> {
+    catalog(ctx).await.0
 }
 fn alias(models: &[Model], entry: &Entry) -> Option<String> {
     models
@@ -34,16 +37,25 @@ fn alias(models: &[Model], entry: &Entry) -> Option<String> {
         .find(|m| m.provider == entry.provider && m.aliases.contains(&entry.model))
         .map(|m| m.id.clone())
 }
-fn shown_lists(kept: &Saved, models: &[Model]) -> Vec<Value> {
-    kept.lists.iter().map(|list|json!({"id":list.id,"name":list.name,"entries":fold(list.entries.clone(),|e|alias(models,e)),"revision":list.revision()})).collect()
+fn shown_lists(kept: &Saved, models: &[Model]) -> Vec<ShownList> {
+    kept.lists
+        .iter()
+        .map(|list| ShownList {
+            id: list.id.clone(),
+            name: list.name.clone(),
+            entries: fold(list.entries.clone(), |e| alias(models, e)),
+            revision: list.revision(),
+        })
+        .collect()
 }
 fn answer(kept: &Saved, models: &[Model], read: bool) -> Value {
-    let mut data = json!({"lists":shown_lists(kept,models),"limits":kept.limits});
+    let lists = shown_lists(kept, models);
+    let mut data = json!({"lists":lists,"limits":kept.limits});
     if read {
         data["entries"] = json!(
-            kept.lists
+            lists
                 .first()
-                .map(|l| fold(l.entries.clone(), |e| alias(models, e)))
+                .map(|list| list.entries.as_slice())
                 .unwrap_or_default()
         );
     }
@@ -213,14 +225,13 @@ pub fn register(routes: &mut Registry, state: Arc<Settings>) {
     );
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Serialize)]
 struct ShownList {
     id: String,
     name: String,
     entries: Vec<Entry>,
     revision: String,
 }
-#[derive(Deserialize)]
 struct Shown {
     lists: Vec<ShownList>,
     limits: Vec<Limit>,
@@ -228,15 +239,20 @@ struct Shown {
 struct Facts {
     shown: Shown,
     models: Vec<Model>,
+    signed_out: std::collections::BTreeSet<String>,
 }
 async fn facts(ctx: &Context) -> Result<Facts, Refusal> {
-    let read = ctx.ask(Method::GET, ROOT, None).await?;
-    let data = read.get("data").cloned().unwrap_or(read);
-    let shown = serde_json::from_value::<Shown>(data)
-        .map_err(|e| refused(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
+    // The API and the page use the same typed store and alias fold; read the catalog only once.
+    let (kept, (models, signed_out)) = tokio::join!(kept(ctx), catalog(ctx));
+    let kept = kept?;
+    let shown = Shown {
+        lists: shown_lists(&kept, &models),
+        limits: kept.limits,
+    };
     Ok(Facts {
         shown,
-        models: models(ctx).await,
+        models,
+        signed_out,
     })
 }
 fn name_form(name: Option<&str>) -> Value {
@@ -345,7 +361,7 @@ pub async fn read(ctx: &Context) -> Value {
             if let Some(limit)=known.shown.limits.iter().find(|l|l.key==entry.provider||l.key==format!("{}/{}",entry.provider,entry.model)){
                 row["badge"]=json!({"words":if matches!(limit.scope,Scope::Provider){"Its account is at its limit"}else{"At its limit"},"tone":"warning"});
                 row["notice"]=json!({"words":reset_words(ctx,limit),"tone":"quiet"});
-            }else if model.is_none(){row["notice"]=json!({"words":"Not available now: Custom Auto passes it by","tone":"quiet"});}
+            }else if model.is_none(){row["notice"]=json!({"words":if known.signed_out.contains(&entry.provider){"Not signed in: Custom Auto passes it by"}else{"Not available now: Custom Auto passes it by"},"tone":"quiet"});}
             row
         }).collect::<Vec<_>>();
         let mut card = group(

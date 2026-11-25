@@ -34,9 +34,8 @@ async fn facts(ctx: &Context) -> Result<Known, Refusal> {
         }
     }
     let engine = ctx
-        .ask(Method::GET, "api/skill", None)
+        .engine_get("api/skill")
         .await
-        .ok()
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
     Ok(Known {

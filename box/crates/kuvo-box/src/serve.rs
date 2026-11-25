@@ -387,12 +387,16 @@ pub async fn run(
         .handle()
         .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
-    kuvo_services::settings::register(
+    let archives = kuvo_services::settings::register(
         &mut routes,
         home.to_owned(),
+        account.clone(),
         setup.handle(),
         kind == ComputerKind::Mac,
         vault.clone(),
+        peers.reader(),
+        engine.clone(),
+        work_queue.archive_forward(),
     );
     kuvo_services::files::register(
         &mut routes,
@@ -640,6 +644,30 @@ pub async fn run(
     });
     let dispatcher = routes.build(LineTiming::default());
     peers.dispatch_with(dispatcher.clone()).await;
+    work_queue.serve_archives(archives.clone(), dispatcher.clone());
+    let archive_source = tokio::spawn({
+        let peers = peers.clone();
+        let dispatcher = dispatcher.clone();
+        let mut sessions = sessions.clone();
+        async move {
+            let mut timer = tokio::time::interval(std::time::Duration::from_secs(10));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut previous = None;
+            loop {
+                let periodic = tokio::select! {
+                    _ = timer.tick() => true,
+                    changed = sessions.changed() => if changed { false } else { break },
+                };
+                if peers.reader().view().roster.members.is_empty() { continue; }
+                let revised = sessions.archive_revision();
+                if !periodic && revised == previous { continue; }
+                if let Some(copy) = archives.snapshot(dispatcher.clone()).await {
+                    previous = revised;
+                    peers.archives(copy).await;
+                }
+            }
+        }
+    });
     let vault_holder =
         match kuvo_services::vault::Holder::start(home, vault, dispatcher.clone()).await {
             Ok(holder) => Some(holder),
@@ -736,6 +764,8 @@ pub async fn run(
     peer_waiting_source.abort();
     let _ = peer_waiting_source.await;
     session_source.abort();
+    archive_source.abort();
+    let _ = archive_source.await;
     if let Some(owner_requests) = owner_requests {
         owner_requests.abort();
         let _ = owner_requests.await;
@@ -847,6 +877,7 @@ fn info(
     features.extend_from_slice(kuvo_services::programs::FEATURES);
     features.extend_from_slice(kuvo_services::integrations::FEATURES);
     features.extend_from_slice(kuvo_services::skills::FEATURES);
+    features.extend_from_slice(kuvo_services::settings::FEATURES);
     features.extend_from_slice(kuvo_services::marketplace::FEATURES);
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
     features.extend_from_slice(kuvo_work::asks::FEATURES);

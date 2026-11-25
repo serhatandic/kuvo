@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers show Archived Sessions from other computers with the owner’s confirmation and follow their changes. Opening Settings does not start OpenCode.
+
 - Rust computers keep Agents, Vault and Custom Auto list settings, and carry older Git preferences into their own settings.
 
 - Rust computers serve Settings pages and keep individual changes with their own revisions. New conversations start in Ask First when no supported mode has been chosen.

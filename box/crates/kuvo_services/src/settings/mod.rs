@@ -32,6 +32,10 @@ use tokio_util::sync::CancellationToken;
 use crate::config::CHANGED_SINCE;
 use kit::*;
 
+/// The resident serves the pages, the vault's forms and Custom Auto's kept lists.
+/// The MCP OAuth owner will add settings.flows; list execution is a separate feature.
+pub const FEATURES: &[&str] = &["settings", "settings.vault", "auto.lists", "claude-code"];
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Clock,
@@ -99,11 +103,55 @@ impl Section {
 
 struct Settings {
     home: PathBuf,
+    account: PathBuf,
+    config_file: PathBuf,
     setup: SetupHandle,
     vault: Arc<crate::vault::Resident>,
+    peers: kuvo_peers::setup_lists::Reader,
+    engine: kuvo_engine::Engine,
+    archive_forward: Arc<dyn ArchiveForward>,
     turns: [Mutex<()>; Section::ALL.len()],
     changed: watch::Sender<u64>,
     measurement: Arc<sizes::Measurement>,
+}
+
+/// File-backed pages only need new projections when the file identity changes.
+/// Dynamic pages keep their existing one-second look; Agents also has a
+/// periodic read for its running engine and changes within the import folder.
+#[derive(PartialEq, Eq)]
+struct Look {
+    files: Vec<Option<kuvo_store::files::FileStamp>>,
+    period: i64,
+}
+
+impl Settings {
+    fn look(&self, section: Section) -> Option<Look> {
+        let mut period = 0;
+        let paths = match section {
+            Section::Conversations => vec![self.home.join("box/conversation-compaction.json")],
+            Section::Git => vec![self.config_file.clone()],
+            Section::Permissions => vec![
+                self.config_file.clone(),
+                self.home.join("box/approval.json"),
+            ],
+            Section::Agents => {
+                period = jiff::Timestamp::now().as_millisecond() / 10_000;
+                vec![
+                    self.config_file.clone(),
+                    self.account.join(".claude/agents"),
+                ]
+            }
+            _ => return None,
+        };
+        let files = paths
+            .iter()
+            .map(|path| {
+                let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+                kuvo_store::files::file_stamp(&target).ok()
+            })
+            .collect::<Option<_>>()?;
+        Some(Look { files, period })
+    }
 }
 
 #[derive(Clone)]
@@ -119,11 +167,25 @@ struct Context {
 
 impl Context {
     fn new<T>(settings: Arc<Settings>, call: &RouteCall<T>) -> Self {
+        Self::with_request(
+            settings,
+            call.dispatcher(),
+            call.request.clone(),
+            call.cancel.clone(),
+        )
+    }
+
+    fn with_request(
+        settings: Arc<Settings>,
+        dispatcher: Dispatcher,
+        request: DispatchRequest,
+        cancel: CancellationToken,
+    ) -> Self {
         Self {
             settings,
-            dispatcher: call.dispatcher(),
-            request: call.request.clone(),
-            cancel: call.cancel.clone(),
+            dispatcher,
+            request,
+            cancel,
             receipts: Default::default(),
             vault_client: Default::default(),
             quiet: false,
@@ -195,6 +257,19 @@ impl Context {
         } else {
             Err(Refusal::json(status, body))
         }
+    }
+
+    async fn engine_get(&self, route: &str) -> Option<Value> {
+        let mut answer = self
+            .settings
+            .engine
+            .call_passive(Method::GET, route, Duration::from_secs(5))
+            .await
+            .ok()?;
+        if let Some(data) = answer.get_mut("data").filter(|data| !data.is_null()) {
+            return Some(data.take());
+        }
+        Some(answer)
     }
 
     async fn read(&self, section: Section) -> Value {
@@ -342,19 +417,105 @@ async fn mutate(
     Ok(page)
 }
 
+/// The existing authenticated owner-write transport, shared with the Work Queue.
+pub trait ArchiveForward: Send + Sync {
+    fn write<'a>(
+        &'a self,
+        peer: [u8; 32],
+        computer: Value,
+        session: &'a str,
+        action: &'a str,
+        revision: &'a str,
+        caller: &'a kuvo_server::Caller,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), Refusal>> + Send + 'a>>;
+}
+
+#[derive(Clone)]
+pub struct ArchiveHandle(Arc<Settings>);
+impl ArchiveHandle {
+    fn local_context(&self, dispatcher: Dispatcher) -> Context {
+        Context::with_request(
+            self.0.clone(),
+            dispatcher,
+            DispatchRequest {
+                method: Method::GET,
+                path: "kuvo/settings/archived".into(),
+                headers: Default::default(),
+                body: Default::default(),
+                caller: kuvo_server::Caller::Local(kuvo_server::Transport::Http {
+                    origin: kuvo_server::LocalOrigin::Direct,
+                    internal: true,
+                }),
+            },
+            CancellationToken::new(),
+        )
+    }
+
+    pub async fn snapshot(
+        &self,
+        dispatcher: Dispatcher,
+    ) -> Option<kuvo_peers::setup_lists::Archives> {
+        let ctx = self.local_context(dispatcher);
+        let page = archived::read_here(&ctx).await.ok()?;
+        serde_json::from_value(json!({"groups":page["groups"]})).ok()
+    }
+
+    /// Called only by the peer owner-write handler after it has verified its sender and ownership.
+    pub async fn owner_action(
+        &self,
+        dispatcher: Dispatcher,
+        session: &str,
+        action: &str,
+        revision: &str,
+    ) -> Result<Value, Refusal> {
+        let ctx = self.local_context(dispatcher);
+        let _turn = ctx.settings.turns[Section::Archived as usize].lock().await;
+        let page = archived::read_here(&ctx).await?;
+        let id = if action == "delete-all" {
+            "delete-all".into()
+        } else {
+            format!("session-{session}")
+        };
+        let changed = || refused(StatusCode::CONFLICT, CHANGED_SINCE);
+        let row = find_row(&page, &id).ok_or_else(changed)?;
+        let selected = find_action(row, action).ok_or_else(changed)?;
+        if row["revision"] != revision
+            || (action == "delete-all" && row["value"][0]["id"] != session)
+        {
+            return Err(changed());
+        }
+        if let Some(why) = why_not(selected) {
+            return Err(refused(StatusCode::FORBIDDEN, why));
+        }
+        archived::act(&ctx, row, selected).await?;
+        ctx.settings.changed.send_modify(|n| *n = n.wrapping_add(1));
+        Ok(json!({}))
+    }
+}
+
 pub fn register(
     routes: &mut Registry,
     home: PathBuf,
+    account: PathBuf,
     setup: SetupHandle,
     is_mac: bool,
     vault: Arc<crate::vault::Resident>,
-) {
-    claude::register(routes, home.clone(), is_mac);
+    peers: kuvo_peers::setup_lists::Reader,
+    engine: kuvo_engine::Engine,
+    archive_forward: Arc<dyn ArchiveForward>,
+) -> ArchiveHandle {
+    claude::register(routes, home.clone(), account.clone(), is_mac);
     sandbox::register(routes, home.clone());
+    let config_file = crate::config::ConfigPaths::for_home(&home, is_mac).config_file;
     let settings = Arc::new(Settings {
         home,
+        account,
+        config_file,
         setup,
         vault,
+        peers,
+        engine,
+        archive_forward,
         turns: std::array::from_fn(|_| Mutex::new(())),
         changed: watch::channel(0).0,
         measurement: Arc::new(sizes::Measurement::default()),
@@ -381,16 +542,23 @@ pub fn register(
             let mut changed = ctx.settings.changed.subscribe();
             Ok(RouteReply::ndjson::<200>(async_stream::stream! {
                 let mut previous = None;
+                let mut look = None;
+                let mut force = true;
                 loop {
-                    let page = ctx.read(section).await;
-                    if previous.as_ref() != Some(&page) {
-                        let line = serde_json::from_value(page.clone()).map_err(io::Error::other).and_then(JsonLine::new);
-                        previous = Some(page);
-                        yield line;
+                    let next = ctx.settings.look(section);
+                    if force || next.is_none() || look != next {
+                        let page = ctx.read(section).await;
+                        if previous.as_ref() != Some(&page) {
+                            let line = serde_json::from_value(page.clone()).map_err(io::Error::other).and_then(JsonLine::new);
+                            previous = Some(page);
+                            yield line;
+                        }
                     }
+                    look = next;
+                    force = false;
                     tokio::select! {
                         _ = ctx.cancel.cancelled() => break,
-                        result = changed.changed() => if result.is_err() { break; },
+                        result = changed.changed() => if result.is_err() { break; } else { force = true; },
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {},
                     }
                 }
@@ -451,11 +619,12 @@ pub fn register(
             }
         },
     );
+    let check_state = settings.clone();
     routes.register_decoded::<post_kuvo_settings_section_row_action_check::Spec, _, _, _>(
         Access::Any,
         |bytes| decode_or(bytes, json!({"values":{}})),
         move |call| {
-            let mut ctx = Context::new(settings.clone(), &call);
+            let mut ctx = Context::new(check_state.clone(), &call);
             ctx.quiet = true;
             async move {
                 let section = Section::parse(&decoded(call.param("section")))?;
@@ -481,4 +650,5 @@ pub fn register(
             }
         },
     );
+    ArchiveHandle(settings)
 }

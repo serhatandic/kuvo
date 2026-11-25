@@ -44,6 +44,21 @@ use crate::{
 
 const LIST_FILE: &str = "lists-v1.json";
 const NOTICE_FILE: &str = "notices-v1.json";
+const ARCHIVE_FILE: &str = "archives-v1.json";
+pub const ARCHIVE_FEATURE: &str = "line.merged-archives";
+
+pub type ArchiveGroup = kuvo_protocol::routes::types::GetKuvoSettingsSectionStatus200GroupsItem;
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Archives {
+    pub groups: Vec<ArchiveGroup>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteArchives {
+    pub computer: Computer,
+    pub standing: Standing,
+    pub copy: Arc<Archives>,
+}
 const PEER_ROUND: Duration = Duration::from_secs(3);
 const HEARD_EVERY: Millis = 300_000;
 
@@ -64,6 +79,8 @@ pub struct View {
     pub(crate) announced: Arc<Announcements>,
     pub(crate) lists: BTreeMap<ComputerKey, Arc<Copy<Lists>>>,
     pub(crate) notice_copies: BTreeMap<ComputerKey, Arc<Copy<History>>>,
+    local_archives: Option<Arc<Archives>>,
+    archive_copies: BTreeMap<ComputerKey, Arc<Copy<Archives>>>,
     pub(crate) notices: Arc<History>,
     pub(crate) move_notices: Arc<crate::moves::Notices>,
     pub(crate) move_waiting: Arc<BTreeSet<String>>,
@@ -154,6 +171,44 @@ impl View {
             .and_then(|entry| entry.computer.as_ref())
             .map(|computer| computer.updates());
         (presence, facts)
+    }
+
+    pub fn archives(&self, now: Millis) -> Vec<RemoteArchives> {
+        self.roster
+            .members
+            .iter()
+            .filter_map(|peer| {
+                let copy = self.archive_copies.get(&peer.key)?;
+                Some(RemoteArchives {
+                    computer: Computer {
+                        id: encode(&peer.key),
+                        name: peer.name.clone(),
+                    },
+                    standing: self.copy_standing(peer.key, copy.seen, now),
+                    copy: Arc::new(copy.value.clone()),
+                })
+            })
+            .collect()
+    }
+
+    pub fn pending_archives(&self) -> Vec<Computer> {
+        self.pending(ARCHIVE_FEATURE, |key| self.archive_copies.contains_key(key))
+    }
+
+    pub fn archive_moved(&self, key: &str, session: &str) -> bool {
+        self.local
+            .ownership
+            .journal
+            .get(&(RecordScope::Session, session.into()))
+            .is_some_and(|owner| {
+                encode(
+                    self.local
+                        .ownership
+                        .replacements
+                        .get(&owner.key)
+                        .unwrap_or(&owner.key),
+                ) != key
+            })
     }
 
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
@@ -535,6 +590,7 @@ enum Change {
     Versions(LocalVersions, oneshot::Sender<()>),
     Local(Arc<Local>),
     Notices(Arc<History>),
+    Archives(Arc<Archives>),
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
     TransferWorker,
@@ -782,6 +838,10 @@ impl ResidentPeers {
         let _ = self.changes.send(Change::Local(Arc::new(local))).await;
     }
 
+    pub async fn archives(&self, copy: Archives) {
+        let _ = self.changes.send(Change::Archives(Arc::new(copy))).await;
+    }
+
     pub async fn notices(&self, notices: History) {
         let _ = self.changes.send(Change::Notices(Arc::new(notices))).await;
     }
@@ -812,6 +872,7 @@ struct Resident {
     view: View,
     list_parts: BTreeMap<ComputerKey, Parts>,
     notice_parts: BTreeMap<ComputerKey, Parts>,
+    archive_parts: BTreeMap<ComputerKey, Parts>,
     activity_parts: BTreeMap<ComputerKey, activity::Receiving>,
     move_parts: crate::moves::transfer::Receiving,
 }
@@ -825,6 +886,7 @@ impl Resident {
     ) -> Self {
         let lists = read_copies(&run, &roster, LIST_FILE);
         let notice_copies = read_copies(&run, &roster, NOTICE_FILE);
+        let archive_copies = read_copies(&run, &roster, ARCHIVE_FILE);
         let activities = roster
             .members
             .iter()
@@ -838,6 +900,8 @@ impl Resident {
             reach: Arc::new(Reach::load(&run)),
             lists,
             notice_copies,
+            local_archives: None,
+            archive_copies,
             activities,
             announced: Arc::new(kept::read(&run.join("peer-agents.json")).unwrap_or_default()),
             notices: Arc::new(notices::load(&run, telling)),
@@ -861,6 +925,7 @@ impl Resident {
             view,
             list_parts: BTreeMap::new(),
             notice_parts: BTreeMap::new(),
+            archive_parts: BTreeMap::new(),
             activity_parts: BTreeMap::new(),
             move_parts: crate::moves::transfer::Receiving::default(),
         }
@@ -925,6 +990,14 @@ impl Resident {
                         self.view.local = local;
                     }
                     Some(Change::Notices(notices)) => self.view.notices = notices,
+                    Some(Change::Archives(archives)) => {
+                        if self.view.local_archives.as_deref() != Some(&archives) {
+                            self.view.local_archives = Some(archives);
+                            if let Some(publisher) = &mut publisher {
+                                publisher.request(self.view.clone(), clock(), Refresh::None);
+                            }
+                        }
+                    },
                     Some(Change::Dispatch(dispatcher)) => dispatch = Some(dispatcher),
                     Some(Change::WorkCalls) => {
                         self.view.work_calls = true;
@@ -1168,6 +1241,15 @@ impl Resident {
                     now,
                     &mut self.notice_parts,
                     &mut self.view.notice_copies,
+                )?;
+                take_copy(
+                    &self.run,
+                    key,
+                    ARCHIVE_FILE,
+                    payload.remove("archiveCopy"),
+                    now,
+                    &mut self.archive_parts,
+                    &mut self.view.archive_copies,
                 )?;
                 if let Some(value) = payload.remove("activity") {
                     activity::take(
@@ -1586,6 +1668,23 @@ async fn publish_round(
                     now,
                     forced,
                     spacing: 15_000,
+                },
+                previous,
+            )
+            .await;
+        }
+        if known.supports(ARCHIVE_FEATURE)
+            && let Some(archives) = &view.local_archives
+        {
+            publish_copy(
+                relay,
+                &host,
+                Publication {
+                    field: "archiveCopy",
+                    content: serde_json::to_value(archives.as_ref()).expect("archives serialize"),
+                    now,
+                    forced,
+                    spacing: 0,
                 },
                 previous,
             )

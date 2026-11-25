@@ -119,6 +119,24 @@ impl LocalSessions {
             .collect()
     }
 
+    /// Only changes to the archived inventory need another owner-menu read.
+    pub fn archive_revision(&self) -> Option<ArchiveRevision> {
+        let snapshot = self.snapshot.borrow();
+        let snapshot = snapshot.as_deref()?;
+        let rows = snapshot
+            .archived
+            .iter()
+            .flat_map(|group| group["sessions"].as_array().into_iter().flatten())
+            .filter_map(|id| snapshot.sessions.get(id.as_str()?).map(|row| row.seq))
+            .collect();
+        Some(ArchiveRevision {
+            groups: snapshot.archived.clone(),
+            rows,
+            pending: snapshot.pending.clone(),
+            epoch: snapshot.epoch.clone(),
+        })
+    }
+
     /// The compatible on-disk representation, passed in memory to the peer publisher.
     pub fn latest_record(&self) -> Option<Value> {
         serde_json::to_value(self.snapshot.borrow().as_deref().as_ref()?).ok()
@@ -421,6 +439,14 @@ fn publish(updates: &watch::Sender<Option<Arc<Snapshot>>>, snapshot: &Snapshot) 
 async fn save(home: &Path, snapshot: Arc<Snapshot>) {
     let path = home.join("run/lists/sessions.json");
     let _ = tokio::task::spawn_blocking(move || crate::disk::write(&path, snapshot.as_ref())).await;
+}
+
+#[derive(PartialEq, Eq)]
+pub struct ArchiveRevision {
+    groups: Vec<Value>,
+    rows: Vec<u64>,
+    pending: Vec<String>,
+    epoch: String,
 }
 
 type Sessions = BTreeMap<String, Facts>;

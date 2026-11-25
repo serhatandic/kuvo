@@ -163,6 +163,24 @@ impl Account {
     fn shown(&self) -> Value {
         json!({ "id": self.id, "name": self.name() })
     }
+
+    fn sign_in_methods(&self) -> impl Iterator<Item = &MethodEntry> {
+        self.methods
+            .iter()
+            .filter(|method| match method.kind.as_str() {
+                "oauth" => {
+                    !(self.id == "openai" && method.id.starts_with("chatgpt")
+                        || self.id == "xai" && method.id == "device")
+                }
+                "key" | "external" => true,
+                _ => false,
+            })
+    }
+
+    fn needs_key(&self) -> bool {
+        self.sign_in_methods().next().is_some()
+            && self.sign_in_methods().all(|method| method.kind == "key")
+    }
 }
 
 #[derive(Deserialize)]
@@ -412,19 +430,8 @@ impl Catalog {
             .map(Listed::name)
             .or_else(|| names.get(&model))
             .unwrap_or(&model.id);
-        let methods: Vec<_> = account
-            .methods
-            .iter()
-            .filter(|method| match method.kind.as_str() {
-                "oauth" => {
-                    !(model.provider == "openai" && method.id.starts_with("chatgpt")
-                        || model.provider == "xai" && method.id == "device")
-                }
-                "key" | "external" => true,
-                _ => false,
-            })
-            .collect();
-        let key = !methods.is_empty() && methods.iter().all(|method| method.kind == "key");
+        let methods: Vec<_> = account.sign_in_methods().collect();
+        let key = account.needs_key();
         let connects = !key
             && methods.iter().any(|method| method.kind == "external")
             && !methods.iter().any(|method| method.kind == "oauth");
@@ -610,14 +617,60 @@ async fn picker_place(
 /// whether each place could say (`engine`, `agents`), where it runs.
 pub struct OfferedModels {
     pub models: Vec<Value>,
+    pub signed_out: BTreeSet<String>,
     pub engine: Option<bool>,
     pub agents: Option<bool>,
 }
 
+pub struct SettingsModel {
+    pub provider: String,
+    pub id: String,
+    pub name: String,
+}
+
 impl Engine {
+    /// The engine models used by its own Agents settings, from the shared catalog
+    /// of an existing engine. Reading Settings never starts it.
+    pub async fn settings_models(&self) -> Option<Vec<SettingsModel>> {
+        let lease = self.acquire(Demand::Passive).await?;
+        let catalog = self.catalogs.get(self, &lease, "", false).await;
+        Some(
+            catalog
+                .as_ref()
+                .map(|catalog| {
+                    catalog
+                        .models
+                        .iter()
+                        .filter(|model| {
+                            model.enabled != Some(false)
+                                && catalog
+                                    .providers
+                                    .iter()
+                                    .any(|provider| provider.id == model.identity.provider)
+                        })
+                        .map(|model| SettingsModel {
+                            provider: model.identity.provider.clone(),
+                            id: model.identity.id.clone(),
+                            name: model.name().to_owned(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        )
+    }
+
     /// What a lead may start sessions on here (list_models): the engine's only while it runs.
     pub async fn offered_models(&self) -> OfferedModels {
-        let lease = self.acquire(Demand::Existing).await;
+        self.offered_models_with(Demand::Existing).await
+    }
+
+    /// Settings uses the same catalog but does not prolong an idle engine.
+    pub async fn settings_offered_models(&self) -> OfferedModels {
+        self.offered_models_with(Demand::Passive).await
+    }
+
+    async fn offered_models_with(&self, demand: Demand) -> OfferedModels {
+        let lease = self.acquire(demand).await;
         let read_engine = async {
             let lease = lease.as_ref()?;
             self.catalogs.get(self, lease, "", false).await
@@ -629,11 +682,31 @@ impl Engine {
             .iter()
             .map(|model| model.picker_row())
             .collect();
+        let mut signed_out = BTreeSet::new();
+        if let Some(catalog) = &catalog {
+            signed_out.extend(
+                catalog
+                    .accounts
+                    .iter()
+                    .filter(|account| {
+                        !catalog.available(&account.id, false) && !account.needs_key()
+                    })
+                    .map(|account| account.id.clone()),
+            );
+        }
         if let Some(agents) = &agents {
             models.extend(agents.models());
+            signed_out.extend(
+                agents
+                    .accounts
+                    .iter()
+                    .filter(|account| account.installed && !account.signed_in)
+                    .map(|account| account.provider.clone()),
+            );
         }
         OfferedModels {
             models,
+            signed_out,
             engine: lease.is_some().then_some(catalog.is_some()),
             agents: self.agent_models.is_some().then_some(agents.is_some()),
         }

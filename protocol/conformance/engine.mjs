@@ -301,6 +301,9 @@ export async function standInEngine(root, env) {
         found.time.viewed = given.idle;
         return send({ data: found });
       }
+      if (route === "GET /api/agent" && engine.agents) return send({data:engine.agents});
+      if (route === "GET /api/mcp" && engine.mcpServers) return send({data:engine.mcpServers});
+      if (route === "GET /api/skill" && engine.skills) return send({data:engine.skills});
       if (["GET /api/model", "GET /api/model/default", "GET /api/provider", "GET /api/integration"].includes(route)) {
         const catalog = engine.catalogs?.get(path.normalize(folderOf(request))) ?? engine;
         if (route === "GET /api/model") return send({ data: catalog.models });

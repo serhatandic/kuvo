@@ -596,7 +596,21 @@ impl hyper::body::Body for ClientBody {
 #[derive(Clone)]
 pub struct Dispatcher(Arc<Registry>);
 
+/// Internal services can refer to the resident's routes without keeping it alive.
+#[derive(Clone)]
+pub struct WeakDispatcher(std::sync::Weak<Registry>);
+
+impl WeakDispatcher {
+    pub fn upgrade(&self) -> Option<Dispatcher> {
+        self.0.upgrade().map(Dispatcher)
+    }
+}
+
 impl Dispatcher {
+    pub fn downgrade(&self) -> WeakDispatcher {
+        WeakDispatcher(Arc::downgrade(&self.0))
+    }
+
     pub(crate) fn from_registry(inner: Arc<Registry>) -> Self {
         Self(inner)
     }
