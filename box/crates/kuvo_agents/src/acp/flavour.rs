@@ -5,7 +5,7 @@
 use std::{io, path::Path};
 
 use futures_util::future::BoxFuture;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::{
     account_check::{AccountStatus, CheckFailure},
@@ -150,6 +150,19 @@ pub(crate) trait Flavour: Send + Sync + 'static {
     }
     fn initialize_meta(&self) -> Option<Value> {
         None
+    }
+    /// What it's told Kuvo can do beyond files (`clientCapabilities`'s other fields).
+    fn client_capabilities(&self) -> Map<String, Value> {
+        Map::new()
+    }
+    /// How it names a model: its ID, by default.
+    fn model_value(&self, _provider: &str, id: &str) -> String {
+        id.to_owned()
+    }
+    /// Reads the computer's MCP servers from its own settings, as the box does: it's given only
+    /// Kuvo Code's tools, over HTTP.
+    fn reads_own_servers(&self) -> bool {
+        false
     }
     /// The way it signs in when asked to (`authenticate`).
     fn auth_method(&self, capabilities: &Capabilities) -> Option<String>;

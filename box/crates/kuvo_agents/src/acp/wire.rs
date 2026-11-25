@@ -7,11 +7,13 @@ use super::tools::Call;
 
 /// What Kuvo says first: the protocol it speaks and, with `files`, that it reads and writes files
 /// for the agent.
-pub(crate) fn initialize(files: bool, meta: Option<Value>) -> Value {
-    let fs = json!({"readTextFile": files, "writeTextFile": files});
+pub(crate) fn initialize(files: bool, meta: Option<Value>, more: Map<String, Value>) -> Value {
+    let mut capabilities = more;
+    capabilities.insert("fs".into(), json!({"readTextFile": files, "writeTextFile": files}));
+    capabilities.insert("terminal".into(), false.into());
     json!({
         "protocolVersion": 1,
-        "clientCapabilities": {"fs": fs, "terminal": false},
+        "clientCapabilities": capabilities,
         "clientInfo": {"name": "kuvo-code", "title": "Kuvo Code", "version": "1"},
         "_meta": meta,
     })

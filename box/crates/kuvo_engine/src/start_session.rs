@@ -501,7 +501,9 @@ async fn create_as(
                 )
             })?)
         }
-        _ => None,
+        // OpenCode's own providers: the OpenCode agent, where this box runs the coding agents.
+        Some(_) => engine.agent_sessions.clone(),
+        None => None,
     };
 
     let created_tree = if flag("worktree") {

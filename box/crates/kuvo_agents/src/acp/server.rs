@@ -415,7 +415,11 @@ impl Shared {
         if let Some(file) = sign_in_file {
             watch_sign_in(&process, file);
         }
-        let said = initialize(self.flavour.file_system(), self.flavour.initialize_meta());
+        let said = initialize(
+            self.flavour.file_system(),
+            self.flavour.initialize_meta(),
+            self.flavour.client_capabilities(),
+        );
         let initialize = process
             .rpc
             .request("initialize", Some(said), Some(INITIALIZE));

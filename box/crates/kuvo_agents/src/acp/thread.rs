@@ -528,6 +528,7 @@ impl Actor {
             return Ok((Vec::new(), String::new()));
         };
         let http = process.capabilities().http_servers;
+        let own = self.shared.flavour.reads_own_servers();
         let headers = |list: Vec<(String, String)>| -> Vec<Value> {
             list.into_iter()
                 .map(|(name, value)| json!({"name": name, "value": value}))
@@ -535,7 +536,11 @@ impl Actor {
         };
         let mut servers = Vec::new();
         let mut key = String::new();
-        if let Some(tools) = relay.agent_tools(&self.session, self.holder, false).await? {
+        let tools = match own {
+            true => relay.http_tools(&self.session, self.holder).await?,
+            false => relay.agent_tools(&self.session, self.holder, false).await?,
+        };
+        if let Some(tools) = tools {
             match tools {
                 AgentTools::Stdio {
                     key: tools,
@@ -567,7 +572,7 @@ impl Actor {
                 AgentTools::Http { .. } => {}
             }
         }
-        if http {
+        if http && !own {
             let found = relay.computer_servers(&self.directory).await;
             key.push('|');
             key.push_str(&relay.servers_key(&self.session, &found).await);
@@ -744,7 +749,8 @@ impl Actor {
         }
         self.own = None;
         let mode = Self::mode(&input);
-        if let Err(error) = self.ensure_open(&input.model.id, &mode).await {
+        let model = (self.shared.flavour).model_value(&input.model.provider, &input.model.id);
+        if let Err(error) = self.ensure_open(&model, &mode).await {
             return unsent(sink.as_ref(), error).await;
         }
         let process = self
@@ -758,7 +764,7 @@ impl Actor {
             .select_model(
                 &process.rpc,
                 &native,
-                &input.model.id,
+                &model,
                 input.model.variant.as_deref(),
                 &mut self.setup,
                 credential.as_deref(),

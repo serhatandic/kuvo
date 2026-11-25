@@ -306,6 +306,18 @@ impl ToolRelay {
         }))
     }
 
+    /// Kuvo Code's tools for a conversation straight from the relay, over HTTP (an agent with
+    /// one process for every conversation, where a program per conversation would be many).
+    pub async fn http_tools(&self, session: &str, holder: Holder) -> io::Result<Option<AgentTools>> {
+        let Some(Tools { key, .. }) = self.0.source.tools(session) else {
+            return Ok(None);
+        };
+        let Some(RelayedTools { url, authorization, timeout }) = self.relayed_tools(session, holder).await? else {
+            return Ok(None);
+        };
+        Ok(Some(AgentTools::Http { key, url, headers: vec![("Authorization".into(), authorization)], timeout }))
+    }
+
     /// The relay's port, listening from then on: the one it had before when
     /// that's free, with the keys it gave then.
     pub async fn port(&self) -> io::Result<u16> {

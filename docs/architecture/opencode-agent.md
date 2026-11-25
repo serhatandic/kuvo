@@ -57,7 +57,7 @@ differently (the message shows as waiting, then sent), so it doesn't justify the
 | Stop | `session/cancel` interrupts OpenCode's session; the prompt ends `cancelled` |
 | Steering | Not mid-turn: waits for the turn's end (above) |
 | Modes | Config option `mode` lists OpenCode's primary agents; the box never offers `plan` |
-| Sign-in | `providers/list`, `providers/set`, `providers/disable` and `logout` (unstable ACP methods) |
+| Sign-in | Not over ACP: 2.2.6 answers only `authenticate` (its terminal login). API keys, OAuth providers and OpenCode Go connect through OpenCode's own server, started for that sign-in only |
 | Sessions | `session/load`, `resume`, `list`, `fork`, `close`, `delete`; HTTP MCP servers only |
 
 ## 2. The app's `api/…` routes
