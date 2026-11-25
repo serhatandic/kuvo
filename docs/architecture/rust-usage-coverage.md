@@ -49,10 +49,10 @@ is in the thin app rather than kuvo_box). All have resident route specs.
 | History/Insights peers | `usage and Insights merge only admitted peer records, retain them across restart and filter by computer` | Both boxes, including mixed Rust/TS in each direction; Rust live delta without a request |
 | Insights summary | `Insights groups model aliases and ranks named sessions from indexed usage` | Both boxes; names, filtering, cache rate, prior period, highest-cost standout |
 
-| Cursor history | `Cursor keeps complete account-wide UTC days, reprices saved counts and refuses an incomplete page` | Rust maker fixture (Mac and Lokum verified; PC runs pending) |
-| Engine subscription history | `engine ChatGPT history uses read-only OAuth windows, not paid API calls or duplicate channels` | Rust read-only maker fixture; TS scratch bridge disables engine credentials (Mac and Lokum verified; PC runs pending) |
-| Claude grants | `Claude file-owned reset grants spend the maker’s named next grant once, with a saved request` | Rust maker fixture (Mac and Lokum verified; PC runs pending) |
-| Notice handoff | `a peer remembers a crossing even after its visible notice expires` | Rust correction (Mac and Lokum verified; PC runs pending) |
+| Cursor history | `Cursor keeps complete account-wide UTC days, reprices saved counts and refuses an incomplete page` | Rust maker fixture (Mac, Lokum, WSL and native Windows verified) |
+| Engine subscription history | `engine ChatGPT history uses read-only OAuth windows, not paid API calls or duplicate channels` | Rust read-only maker fixture; TS scratch bridge disables engine credentials (Mac, Lokum, WSL and native Windows verified) |
+| Claude grants | `Claude file-owned reset grants spend the maker’s named next grant once, with a saved request` | Rust maker fixture (Mac, Lokum, WSL and native Windows verified) |
+| Notice handoff | `a peer remembers a crossing even after its visible notice expires` | Rust correction (Mac, Lokum, WSL and native Windows verified) |
 
 ## Deliberate work-timing changes
 
@@ -334,11 +334,12 @@ failed on the prior binary and pass on the new one. The initial TS engine
 ChatGPT fixture did not produce a row because scratch bridges deliberately
 return empty engine credentials; that path is tested on the Rust read-only
 maker fixture instead. All eight seeded route differential answers match.
-Static musl on Lokum (one capped container) also passed 35/35, including
-the expanded Cursor repricing fixture. Its scratch and both cross target folders
-were removed. Engine-sessions 81/81; workspace check and Bun check pass, apart
-from the existing unused wake helper warning. Native Windows and WSL binaries
-are built; running them waits for the shared PC to be free.
+Static musl on Lokum (one capped container), WSL2 Ubuntu 24.04, and native
+Windows gnullvm with libunwind each passed 35/35, including the expanded
+Cursor repricing fixture. All platform scratch and cross target folders were
+removed. The shared PC was returned after confirming no test processes remained.
+Engine-sessions 81/81; workspace check and Bun check pass, apart from the
+existing unused wake helper warning.
 
 Cumulative non-test size: 437,241 new-module characters plus 34,202 added
 existing production characters (471,443 total, 0.686× the 687,546 TS characters).
