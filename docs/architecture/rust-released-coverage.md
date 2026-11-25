@@ -94,11 +94,33 @@ the 9.3 rehearsal's released-Mac visit to the Mac's own box.
 | beta.1 deleted-bots | `agents-bots`: a deleted bot is first in `bots/deleted.json`. |
 | beta.1 mac-moves | The live projection is not served by design (below). At that Mac's own switch: a finished move needs nothing taken in, as its original is gone and it lives only where it went. A move cut short after it switched (`movesUnderWay`, stage `switched`) is told to the user (`rehome`, "a released Mac move refuses unsafe inputs and can be tried again"), but the original it left isn't hidden: row 9.1, case "a beta.1 Mac whose move of `ses_x` from A to B had switched switches to Rust; `ses_x` is listed once, on B, and A's original is retired, not shown". |
 
+**Removing a released beta.1 Mac (R9), a deliberate difference.** In TypeScript a machine
+never removed a Mac (`DELETE` answered 409 "A Mac can't be removed from here.") and a legacy Mac
+that stopped writing aged out after 30 days of the box running. Rust doesn't age legacy Macs out
+(below), so that answer would be a dead end: a beta.1 Mac that never updates would stay listed
+for good. Rust shows it away once the relay finds it gone (or after 30 minutes unheard), offers
+Remove on its row (`removal: {choices: ["unlink"]}`, as the app opens it) and lets it go through
+`kuvo/computers/<key>/unlink` (and `DELETE`), with the computers it listed. A signed Mac and any
+computer in a setup keep the setup's removal. `compat`'s beta.1 roster case proves both boxes
+show it away, and that Rust removes it while TypeScript keeps its 409.
+
+**Only TypeScript betas after beta.1 sent these, not a live target.** Neither tagged release (0.7.2,
+beta.1) signs documents or mails time zones (`macSign`, `signDoc` and `"zone"` appear in neither
+tag's app or link sources). So the signed-Mac and zone-mail cases these maps give 7.3 come only from
+TypeScript betas after beta.1, which every computer leaves together:
+`documents.test.js` (two mains at one epoch, a phone staying with its signed Mac, an older Mac
+beside a newer Mac's setup, the original signed personalities kind), `setup-mac.test.js`'s old
+signed setup over SSH, `time-zone.test.ts`'s legacy count ties and `peers.test.js` 745 (zone mail),
+`peers.test.js` 875 (a legacy Mac with a saved signing key), 885 (the per-peer signed personality
+library) and 947/980's signed legacy authority. `setup-handover.test.js`'s older receiver of
+move evidence is an earlier TypeScript build, not a released Mac. The released Macs' paths are R1–R9 and Part C.
+
 **Not served by design** (the lead, 2026-11-25): beta.1's `kuvo-link.js setup` (its
 phone link sync; the phone app is dropped), `kuvo-link.js leave <key>` (removing a machine
 from a beta.1 Mac before it updates), `box bot-keys-refresh` (the TypeScript box refused it
-too), and the live projection of a beta.1 Mac's legacy `moved` list while it runs beside Rust
-computers. The delegate refuses each with exit 2: "Update Kuvo Code on this Mac to use this computer."
+too), the live projection of a beta.1 Mac's legacy `moved` list while it runs beside Rust
+computers, and ageing a legacy Mac out after 30 days of running (`peers.test.js` 77, 100): its
+phones go with the phone app, and Remove above takes the Mac off. The delegate refuses each with exit 2: "Update Kuvo Code on this Mac to use this computer."
 
 **The delegate goes with the TypeScript box**, 4 weeks after the last switch, with the
 `box read/change/key` markers.
