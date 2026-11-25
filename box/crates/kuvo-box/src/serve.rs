@@ -527,7 +527,7 @@ pub async fn run(
     } else {
         (None, None)
     };
-    kuvo_services::usage::settings::register(&mut routes, usage_settings);
+    kuvo_services::usage::settings::register(&mut routes, usage_settings.clone());
     kuvo_services::usage::limits::register(&mut routes, limits.clone());
     let insights = kuvo_services::usage::insights::Service::new(
         home.to_owned(),
@@ -541,25 +541,30 @@ pub async fn run(
             .map(|key| kuvo_wire::keys::encode(key))
             .unwrap_or_default(),
         &hostname::get()?.to_string_lossy(),
-    );
+    )
+    .with_history(usage_settings, limits.clone());
+    let price_watch = insights.follow_prices(&account);
     let usage_watch = kuvo_os::watch::WatchHub::default();
     let insights_watch = insights.follow(usage_watch.clone());
+    let engine_usage_watch = insights.follow_engine(usage_watch.clone());
     let native_usage_watch = insights.follow_native(usage_watch, limits.clone());
     kuvo_services::usage::insights::register(&mut routes, insights);
     let refresh_limits = limits.clone();
     let refresh_agents = agent_shutdown.clone();
     let refresh_engine = engine.clone();
+    let refresh_home = home.to_owned();
     let engine_reader = usage::engine_reader(home, &account);
     kuvo_services::usage::limits::register_refresh(
         &mut routes,
         limits.clone(),
         move |selected, explicit| {
-            let (limits, agents, engine, reader, standalone) = (
+            let (limits, agents, engine, reader, standalone, home) = (
                 refresh_limits.clone(),
                 refresh_agents.clone(),
                 refresh_engine.clone(),
                 engine_reader.clone(),
                 standalone_plans.clone(),
+                refresh_home.clone(),
             );
             async move {
                 let agents_failed = if let Some(agents) = agents {
@@ -575,7 +580,7 @@ pub async fn run(
                     false
                 };
                 let engine_failed = if let Some(reader) = reader {
-                    usage::refresh_engine(limits, engine, reader, selected).await
+                    usage::refresh_engine(limits, engine, reader, home, selected).await
                 } else {
                     false
                 };
@@ -767,6 +772,10 @@ pub async fn run(
     approvals_kept.abort();
     insights_watch.abort();
     native_usage_watch.abort();
+    engine_usage_watch.abort();
+    if let Some(task) = price_watch {
+        task.abort();
+    }
     if let Some(task) = limits_peers {
         task.abort();
     }
