@@ -44,6 +44,8 @@ the races that span removal, backup, moves, and an authority change.
 | C34 | [Ordinary installer and SSH enrollment leave a used independent setup intact](../../protocol/conformance/adding.test.mjs) | Both implementations give the deployed installer a valid code for a different setup, then exercise the SSH enrollment command. A saved session makes both attempts refuse. The original setup keys and session bytes stay intact, and the issuing computer's roster stays unchanged. Rust passed on Mac, WSL and native Windows. |
 | C35 | [SSH Add recovers a selected integration after the target saved its settings](../../protocol/conformance/ssh-adding.test.mjs) | A matching interrupted copy already has its own model, settings and key. Recovery applies the missing integration from the receiving computer's trusted catalog, preserves the existing key and settings, and sends no sign-ins. The reference's key-only retry case passes. |
 | C36 | [SSH Add keeps sessions written while the pinned engine is staged](../../protocol/conformance/ssh-adding.test.mjs) | The installer checks the legacy `session` and current `session_v2` tables, matching TypeScript. Rust tests exercise both database versions through the guarded copy and retry. A new session written during staging blocks enrollment and survives credential rollback. One live Windows OpenSSH Add enrolled a disposable WSL Ubuntu account with the pinned OpenCode 2.2.6 engine, persisted only the selected key and synthetic sign-in, and released its staging markers. |
+| C37 | [Each computer offers what can be done with it from here](../../protocol/conformance/two-boxes.test.mjs) | Both boxes offer Rename and Remove for the same rows, with the same words, removal choices and hand-over sentence. A lone main offers only Rename where its folder can't be wiped from here. |
+| C38 | [A rename on a beta.1 machine is handed to the Mac that keeps its records](../../protocol/conformance/compat.test.mjs) | A stand-in beta.1 Mac on the relay seals its mail with the release wire format. A rename of the Mac itself is refused, a Mac without `computers.manage` is asked to update, and once it announces the feature the rename travels to it and its answer comes back. Nothing is saved on the machine. |
 | U1 | [The main revokes an offline computer once and keeps the unlink receipt after restart](../../protocol/conformance/removal.test.mjs) | The accepted roster immediately excludes the peer and retains its tombstone. Replaying the operation returns the same signed receipt and leaves the membership revision alone. |
 | U2 | [A released computer enrolls again when its retained work is unchanged](../../protocol/conformance/removal.test.mjs) | A member starts a standalone setup with a retained database. Rust refuses new work and accepts a checkpoint and rebuild with identical rows. Both runs keep the old device revocation and retire the old signing key. Replaying the installer code keeps the new enrollment. The TypeScript run also observes the Usage scope rewrite. |
 | U3 | [A departing member clears credentials and keeps its work before acknowledging unlink](../../protocol/conformance/removal.test.mjs) | A machine retains sessions, clears local sign-ins and keys, and can re-enroll. A Rust machine persists the unlink fence when a SQLite sidecar blocks cleanup and retries after restart. |
@@ -97,6 +99,14 @@ the races that span removal, backup, moves, and an authority change.
   Relay backup, one-time exports, move verification, and release packaging stay open.
 
 ## Verification
+
+After merging main on 2026-11-26 (with the setup lease and maintenance now on
+demand), the five process areas pass on macOS: Rust 67 with no skips,
+TypeScript 54 with thirteen skips, plus the beta.1 compatibility cases (5 on
+each box) and the Rust engine sessions (81). The merge first left three
+removal cases red: the main re-offered only a plain removal when maintenance
+ran, so a removed member that came back never heard its wipe. The two Mac SSH
+Add cases seen failing under heavy load passed at a load near 8.
 
 At the branch tip after merging main on 2026-11-25, the five process areas
 (adding, removal, SSH adding, two boxes, setup judge) pass on macOS: Rust 65
