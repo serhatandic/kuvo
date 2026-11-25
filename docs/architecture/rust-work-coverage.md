@@ -834,6 +834,9 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   words; notify_user's limits.
 - Regressions: `tools` 10/10, `work` 15/15, `bots` 40/40, `agent-tools` 2/2, `agents-codex`,
   `engine-sessions` 81/81, both boxes.
+- Linux (WSL, static musl): `notices` 4/4 (one skipped, as on the Mac), `tools` 10/10, `work`
+  15/15, `agent-tools` 2/2, `agents-codex` 54/54. Native Windows: not run for this part (the PC
+  was another row's).
 - Size: about 50,800 characters of Rust for about 50,500 of TypeScript: 1.0×.
 
 ### TypeScript tests
