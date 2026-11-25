@@ -884,6 +884,7 @@ impl Service {
             .ok_or_else(|| {
                 io::Error::new(ErrorKind::NotFound, "That coding-agent session isn't here.")
             })?;
+        let cwd = directory.to_string_lossy().into_owned();
         policy.directory = directory;
         policy.own_folders.extend([
             self.settings.home.join("agents"),
@@ -924,7 +925,30 @@ impl Service {
         );
         let id = input.id.clone();
         let compacting = matches!(input.kind, TurnKind::Compact);
-        let turn = RunningTurn::launch(thread.clone(), input, sink, writes, writer);
+        // Stop on a command it waits on stops the turn, as Stop does.
+        let (commands, stopped) = (self.commands.clone(), session.to_owned());
+        let stop: crate::foreground::StopTurn = Arc::new(move || {
+            let (commands, session) = (commands.clone(), stopped.clone());
+            Box::pin(async move {
+                let Some(commands) = commands.upgrade() else {
+                    return;
+                };
+                let (reply, stopping) = oneshot::channel();
+                let request = line::Request::Interrupt {
+                    session,
+                    resume: false,
+                    reply,
+                };
+                if commands.send(Command::Line(request)).await.is_ok()
+                    && let Ok(Ok(line::Stopping::Turn(turn))) = stopping.await
+                {
+                    let _ = turn.interrupt().await;
+                }
+            })
+        });
+        let foreground =
+            crate::foreground::Foreground::new(session, &cwd, self.store.background().clone(), stop);
+        let turn = RunningTurn::launch(thread.clone(), input, sink, writes, writer, foreground);
         Ok(Live {
             turn,
             id,

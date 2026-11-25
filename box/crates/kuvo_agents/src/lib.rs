@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod claude;
 pub mod codex;
 pub mod file_change;
+mod foreground;
 pub mod hold;
 pub mod inbox;
 pub mod live_asks;

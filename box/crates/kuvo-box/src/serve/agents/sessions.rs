@@ -21,6 +21,7 @@ use std::io;
 use serde_json::{Map, Value};
 use kuvo_protocol::routes::{
     delete_kuvo_agents_api_session_id_background as stop_background,
+    delete_kuvo_agents_api_shell_id as stop_command,
     get_kuvo_agents_api_session_id_message as transcript,
     types::GetKuvoAgentsApiSessionIdMessageStatus200Cursor as Cursor,
 };
@@ -331,6 +332,18 @@ pub(crate) fn register(sessions: SessionStore, routes: &mut Registry) {
             Ok(RouteReply::json::<200>(stop_background::Status200 {}))
         }
     });
+    let commands = sessions.background().clone();
+    routes.register::<stop_command::Spec, _, _>(Access::DesktopOrPaired, move |call| {
+        let commands = commands.clone();
+        async move {
+            let given = call.param("id").unwrap_or_default();
+            let id = percent_decode_str(given).decode_utf8().map_err(|_| no_command())?;
+            if !commands.stop(&id).await {
+                return Err(no_command());
+            }
+            Ok(RouteReply::json::<200>(stop_command::Status200 {}))
+        }
+    });
     routes.register::<transcript::Spec, _, _>(Access::Any, move |call| {
         let sessions = sessions.clone();
         async move {
@@ -368,6 +381,10 @@ pub(crate) fn register(sessions: SessionStore, routes: &mut Registry) {
             }))
         }
     });
+}
+
+fn no_command() -> Refusal {
+    Refusal::new(StatusCode::NOT_FOUND, "No such command.")
 }
 
 pub(super) fn missing(id: &str) -> Refusal {

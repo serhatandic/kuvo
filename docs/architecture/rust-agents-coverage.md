@@ -816,7 +816,7 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 93–105 | 4.6 (your subagents as roles, spawned agents, writing to them). |
 | 106–108, 110, 111 | Ported. 106 reloads the thread in place; the reference starts its app-server again. |
 | 109 | Ported (Fast, Standard as null, nothing where none was picked). |
-| 112–113 | Open: foreground commands listed while they run (background model). |
+| 112–113 | Ported to agents-codex on both boxes. The commands a turn waits on are listed while they run, with what they printed, and Stop on one stops its turn: `foreground::Foreground` in the turn runtime, for every agent's `shell` step. One that ends leaves the list, and what it printed can still be read. `DELETE kuvo/agents/api/shell/:id` stops one listed command through `Background::stop`. |
 | 114 | Rust: a removed account (or the box stopping) ends the turn as stopped; the conformance case for removal is open (4.2). Signing out mid-turn is ported: Codex is told to sign out and the turn fails as "Codex stopped.", as the reference has it. |
 | 115–119 | Ported. |
 | 120 | Open (4.2): Stop during a summary. |
@@ -831,7 +831,7 @@ program updater; the live GPT-6-Luna run.
 
 | Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
 |---|---:|---:|---:|
-| macOS | 48/48 | 47/47, 1 skipped (Rust-only) | 6/6 |
+| macOS | 55/55 | 54/54, 1 skipped (Rust-only) | 6/6 |
 | Linux x86-64, lokum (musl) | 48/48 | — | 6/6 |
 | WSL2, Ubuntu 24.04 (musl) | 48/48 | — | 6/6 |
 | Native Windows x64 | 48/48 | — | 6/6 |

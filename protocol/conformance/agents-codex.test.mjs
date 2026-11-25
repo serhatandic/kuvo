@@ -664,6 +664,48 @@ describe("Commands Codex leaves running in a background terminal", { skip }, () 
     assert.equal(box.codex.sent("turn/start").filter((message) => message.params.threadId === thread).length, 1);
   });
 
+  test("a command it waits on in the foreground is listed while it runs, with what it printed, and its Stop stops the turn", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      command("fg1", "npm test"),
+      ["item/commandExecution/outputDelta", { itemId: "fg1", delta: "3 passing\n" }],
+      "stop",
+    ]);
+    const bar = await until(async () => {
+      const read = await box.codex.work(`/${id}`);
+      return read.commands?.length === 1 && read;
+    }, "The command it waits on was never listed.");
+    assertMatch(bar.commands[0], { command: "npm test", agents: true });
+    const output = `/${id}/commands/${bar.commands[0].id}/output`;
+    await until(async () => (await box.codex.work(output)).output === "3 passing", "What it printed never showed.");
+    // (Counted as at work while it runs, as the session is.)
+    assertMatch(await work(id), { commands: 1 });
+    const stopped = await request(box.codex.listener, "DELETE", `kuvo/agents/api/shell/${bar.commands[0].id}`, undefined, { "x-kuvo-from": "app" }, 20000);
+    assert.equal(stopped.status, 200, stopped.text);
+    const rows = await box.codex.idles(id);
+    assert.equal(idles(rows)[0].outcome, "interrupted");
+    const thread = box.codex.agentState(id).codexThread;
+    assert.equal(box.codex.sent("turn/interrupt").filter((message) => message.params.threadId === thread).length, 1);
+    await until(async () => (await box.codex.work(`/${id}`)).commands.length === 0, "It stayed listed.");
+  });
+
+  test("a foreground command that ends leaves the list, what it printed still there to read", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      command("fg2", "npm run build"),
+      ["item/commandExecution/outputDelta", { itemId: "fg2", delta: "built in 2s\n" }],
+      { until: "fg2-ends" },
+      item("item/completed", { type: "commandExecution", id: "fg2", command: "npm run build", status: "completed", exitCode: 0, aggregatedOutput: "built in 2s\n" }),
+      item("item/completed", { type: "agentMessage", id: "m-fg2", text: "Built." }),
+    ]);
+    const bar = await until(async () => {
+      const read = await box.codex.work(`/${id}`);
+      return read.commands?.length === 1 && read;
+    }, "The command it waits on was never listed.");
+    box.codex.go("fg2-ends");
+    await box.codex.idles(id);
+    await until(async () => (await box.codex.work(`/${id}`)).commands.length === 0, "It stayed listed.");
+    assertMatch(await box.codex.work(`/${id}/commands/${bar.commands[0].id}/output`), { output: "built in 2s", state: "ended" });
+  });
+
   test("a list that fails isn't taken for none: what it left running is still to be found, and it's listed again until it ends", { timeout: 120000 }, async () => {
     const { id } = await box.begin([
       command("bt2", "npm test"),
