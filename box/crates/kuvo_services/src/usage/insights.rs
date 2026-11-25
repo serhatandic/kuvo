@@ -221,6 +221,11 @@ impl Service {
         self.recount().await;
         self.refresh_cursor().await;
     }
+    pub(super) fn cursor_held(&self, account: &super::limits::Account, at: u64) -> bool {
+        self.history
+            .as_ref()
+            .is_some_and(|history| history.limits.held_cursor(account, at))
+    }
     pub async fn refresh_cursor(&self) {
         let Some(reader) = self.cursor_reader.as_ref() else {
             return;

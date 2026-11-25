@@ -344,6 +344,21 @@ fn given(v: &Value) -> bool {
     !v.is_null() && v.as_str().is_none_or(|s| !s.trim().is_empty())
 }
 impl Codex {
+    fn wants(&self, bytes: &[u8]) -> bool {
+        const TYPE: &[u8] = br#""type":""#;
+        bytes.windows(TYPE.len()).enumerate().any(|(at, prefix)| {
+            if prefix != TYPE {
+                return false;
+            }
+            let name = &bytes[at + TYPE.len()..];
+            name.starts_with(b"turn_context\"")
+                || name.starts_with(b"token_count\"")
+                || name.starts_with(b"thread_settings_applied\"")
+                || (!self.saw_meta && name.starts_with(b"session_meta\""))
+                || (self.gate.is_some() && name.starts_with(b"task_started\""))
+        })
+    }
+
     fn line(&mut self, value: &Value) -> Vec<Observation> {
         let p = &value["payload"];
         match value["type"].as_str() {
@@ -544,6 +559,8 @@ pub struct Cursor {
     tail: String,
     tail_length: usize,
     codex: Codex,
+    #[serde(default)]
+    codex_format: u8,
 }
 fn hash_part(file: &mut File, start: u64, length: usize) -> io::Result<String> {
     file.seek(SeekFrom::Start(start))?;
@@ -646,11 +663,15 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
         .ok()
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|at| at.as_nanos());
-    if previous.size == size && previous.modified == modified {
+    // An older checkpoint admitted noncompact records. Rebuild that file
+    // once, then resume its normal append-only cursor.
+    let current_format = kind != Kind::Codex || previous.codex_format == 1;
+    if current_format && previous.size == size && previous.modified == modified {
         return Ok(None);
     }
     let mut file = File::open(file)?;
-    let append = previous.offset <= previous.size
+    let append = current_format
+        && previous.offset <= previous.size
         && size > previous.size
         && previous.head_length as u64 <= size
         && hash_part(&mut file, 0, previous.head_length)? == previous.head
@@ -665,6 +686,9 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
     } else {
         Cursor::default()
     };
+    if kind == Kind::Codex {
+        cursor.codex_format = 1;
+    }
     file.seek(SeekFrom::Start(cursor.offset))?;
     let mut reader = BufReader::with_capacity(1 << 20, &mut file);
     let mut buf = Vec::new();
@@ -692,19 +716,20 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
         }
         if newline.is_some() {
             if !skipping && !buf.is_empty() {
+                // UsageKit only reads Codex's compact record markers; retain
+                // a separate match for quota snapshots, which have their own
+                // provider-reader contract and need not be compact.
+                let codex_usage = kind == Kind::Codex && cursor.codex.wants(&buf);
                 let keep = match kind {
                     Kind::Claude => buf.windows(7).any(|w| w == br#""usage""#),
                     Kind::Grok => buf.windows(14).any(|w| w == b"turn_completed"),
                     Kind::Antigravity => false,
-                    Kind::Codex => [
-                        b"token_count".as_slice(),
-                        b"turn_context",
-                        b"session_meta",
-                        b"task_started",
-                        b"thread_settings_applied",
-                    ]
-                    .iter()
-                    .any(|mark| buf.windows(mark.len()).any(|w| w == *mark)),
+                    Kind::Codex => {
+                        codex_usage
+                            || [b"rate_limits".as_slice(), b"rateLimits"]
+                                .iter()
+                                .any(|mark| buf.windows(mark.len()).any(|w| w == *mark))
+                    }
                 };
                 if keep {
                     if let Ok(row) = serde_json::from_slice::<Value>(&buf) {
@@ -715,7 +740,8 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
                             Kind::Claude => claude(&row),
                             Kind::Grok => grok(&row),
                             Kind::Antigravity => vec![],
-                            Kind::Codex => cursor.codex.line(&row),
+                            Kind::Codex if codex_usage => cursor.codex.line(&row),
+                            Kind::Codex => vec![],
                         };
                         let at = cursor.offset;
                         observed.extend(
