@@ -67,6 +67,16 @@ impl Judgement {
     }
 }
 
+/// An interrupted making can authorize recovery. Validate both records before
+/// deciding whether this installation needs either recovery path.
+pub fn check_attempts(home: &Home) -> Result<(), Error> {
+    let disk = Disk(home.root().into());
+    for marker in ["updates/install/making", "updates/rehome/new"] {
+        attempt_at(&disk.path(marker)?)?;
+    }
+    Ok(())
+}
+
 /// Inspect the folders without starting Kuvo. Helper readiness comes from
 /// the installer because the same home can be used by a demo copy.
 pub fn judge(

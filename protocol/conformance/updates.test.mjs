@@ -4669,6 +4669,64 @@ function macInstallerRequest({ binary, env, release }, bundle, verb) {
   return [run.status, JSON.parse(run.stdout)];
 }
 
+test("installer refuses future or unreadable making markers before acting", t => {
+  const fixture = box(t);
+  const { env, binary, release } = fixture;
+  const home = path.join(env.HOME, ".kuvo-code");
+  if (!binary.typescript) privateWindowsHome(home);
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.making-fixture") : undefined;
+  const ask = verb => {
+    if (bundle && verb !== "media-status") return macInstallerRequest(fixture, bundle, verb);
+    const install = ["install", `--${verb}`, "--root", ".kuvo-code"];
+    const args = binary.typescript
+      ? ["--config=/dev/null", "--no-env-file", binary.file, ...install]
+      : verb === "media-status" ? ["install", "--status", "--root", ".kuvo-code", "--media", release, ...(bundle ? ["--app", bundle] : [])]
+      : verb === "status" ? install : ["install-linux", verb === "shell-status" ? "status" : verb, release, ".kuvo-code"];
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
+      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+    });
+    assert.ifError(result.error);
+    assert.ok(result.stdout, result.stderr);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const inventory = () => fs.readdirSync(home, { recursive: true }).sort().map(relative => {
+    const file = path.join(home, relative);
+    return [relative, fs.statSync(file).isDirectory() ? null : digest(fs.readFileSync(file))];
+  });
+  const verbs = process.platform === "win32" ? ["status"] : ["status", "new", "move"];
+  if (!binary.typescript) verbs.push("media-status", ...(process.platform === "linux" ? ["shell-status"] : []));
+  for (const installed of [false, true]) {
+    if (installed) {
+      write(path.join(home, "box/kind"), "machine\n");
+      write(path.join(home, process.platform === "win32" ? "bin/kuvo-box.exe" : "bin/kuvo-start"), "existing launcher");
+      write(path.join(home, "workspace/notes"), "saved work");
+    }
+    for (const relative of ["updates/install/making", "updates/rehome/new"]) {
+      const marker = path.join(home, relative);
+      for (const bytes of ["1\n", '{"at":1}', '{"at":1,"formatVersion":0}', '{"at":1,"formatVersion":1}']) {
+        write(marker, bytes);
+        const [code, reply] = ask("status");
+        assert.equal(code, 0, JSON.stringify(reply));
+      }
+      for (const [bytes, message] of [
+        ['{"at":1,"formatVersion":2,"extra":{"keep":true}}', "Interrupted installation marker format version 2 is unsupported (this build writes 1)."],
+        ['{"at":', "Interrupted installation marker isn't a JSON object."],
+        ['{"formatVersion":1}', "The interrupted installation marker is unreadable."],
+      ]) {
+        write(marker, bytes);
+        const before = inventory();
+        for (const verb of verbs) {
+          const [code, reply] = ask(verb);
+          assert.equal(code, 1, `${relative} ${verb}: ${JSON.stringify(reply)}`);
+          assert.deepEqual(reply, { result: "refused", message });
+          assert.deepEqual(inventory(), before);
+        }
+      }
+      fs.unlinkSync(marker);
+    }
+  }
+});
+
 test("the Mac installer offers a move when the earlier app still has work", t => {
   if (process.platform !== "darwin") return t.skip("Uses the earlier Mac app's home.");
   const fixture = box(t);

@@ -674,6 +674,17 @@ fn rehome(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::E
     }
 }
 
+fn refused_install_attempt(home: &Home) -> bool {
+    if let Err(error) = kuvo_move::install::check_attempts(home) {
+        println!(
+            "{}",
+            serde_json::json!({"result":"refused","message":error.to_string()})
+        );
+        return true;
+    }
+    false
+}
+
 fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::error::Error>> {
     use std::{ffi::OsStr, path::Path};
 
@@ -749,6 +760,9 @@ fn install_status(args: &[std::ffi::OsString]) -> Result<ExitCode, Box<dyn std::
         let _ = bundle;
         None
     };
+    if refused_install_attempt(&home) {
+        return Ok(ExitCode::FAILURE);
+    }
     if let Some(media) = media {
         if !media.is_absolute() {
             return usage();
