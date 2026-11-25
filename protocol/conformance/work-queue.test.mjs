@@ -6,6 +6,7 @@ import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, 
 import * as fsPromises from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { boxBinary, boxCommand, isolatedEnv, localRelay, openLine, privateHome, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { recordRelayLease } from "../../box/bridge-tests/relay-lease-stand-in.js";
@@ -4299,4 +4300,899 @@ test("ordinary resident file writes do not make a saved queue attachment disappe
     finished = true;
     await residentWrites;
   }
+});
+
+test("reimporting old work returns an unaddressed number only when its former recipient is unambiguous", { timeout: 150000 }, async t => {
+  for (const ambiguous of [false, true, "unseen"]) {
+    const { computer, relay, leases } = await bench(t);
+    const studio = await computer("Studio");
+    const lab = await computer("Lab");
+    const spare = await computer("Spare");
+    const { main, member, spare: third } = seedPeerSetup(studio.home, relay.url, 1, 3);
+    seedPeerSetup(lab.home, relay.url, 2, 3);
+    seedPeerSetup(spare.home, relay.url, 3, 3);
+    const mainRun = path.join(studio.home, "run");
+    const setup = JSON.parse(readFileSync(path.join(mainRun, "link.json"))).setup;
+    const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign, [third.key]: third.sign }, 1000);
+    recordRelayLease(mainRun, setup, { high: 1000, floor: 0, relay: lease });
+    const session = { id: "ses_LegacyImport", title: "Importer", location: { directory: lab.home }, time: { created: 1, updated: 2 } };
+    lab.engine.sessions.push(session);
+    const root = computer => path.join(computer.home, "run", "work-queue");
+    const stamp = { at: Date.now(), by: { user: true } };
+    const id = "wqi_" + "A".repeat(20);
+    const row = (id, owner, number, title, more = {}) => ({ id, owner, number, title, status: "todo", order: 1, created: stamp, updated: stamp, ...more });
+    write(path.join(root(studio), "model.json"), '{"formatVersion":1,"model":2}');
+    write(path.join(root(studio), "numbers.json"), JSON.stringify({ formatVersion: 1, primary: "self", next: 599, leases: [],
+      granted: { [member.key]: [[1, 150], [201, 300]] }, given: { wqn_oldgrant12345678: { from: 151, to: 200, granted: [[1, 150]], at: stamp.at } } }));
+    write(path.join(root(lab), "model.json"), '{"formatVersion":1,"model":2}');
+    write(path.join(root(lab), "numbers.json"), JSON.stringify({ formatVersion: 1, primary: main.key, leases: [[549, 598]], used: [[348, 348]] }));
+    const file = path.join(root(lab), "queues", session.id + ".json");
+    write(file, JSON.stringify({ formatVersion: 1, owner: session.id, items: [row(id, session.id, 348, "Item 198", { importedAs: 198, notes: [{ ...stamp, text: "Imported as #198, a number that couldn't be kept, so it has a new one." }] })] }));
+    write(path.join(root(spare), "model.json"), '{"formatVersion":1,"model":2}');
+    if (ambiguous === true) {
+      write(path.join(root(spare), "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [row("wqi_" + "B".repeat(20), "usr_you", 175, "Other work")] }));
+    }
+    const holder = studio.start();
+    const mainRecord = await holder.ready();
+    await until(() => relay.has(Buffer.from(main.address, "base64url")), "The main did not reach the relay.");
+    const memberBox = lab.start();
+    const spareBox = ambiguous === "unseen" ? null : spare.start();
+    const [memberRecord] = await Promise.all([memberBox.ready(), spareBox?.ready()]);
+    const far = lab.connect(memberRecord), ask = studio.connect(mainRecord);
+    await until(() => {
+      try {
+        const said = key => JSON.parse(readFileSync(path.join(root(studio), "peers", key + ".json")));
+        return said(member.key).top >= 598 && (ambiguous === "unseen" || (ambiguous ? said(third.key).top >= 175 : said(third.key).top === 0 || said(third.key).top === undefined));
+      } catch { return false; }
+    }, "Both members did not tell their previous number use.", 60000);
+    const args = { items: [{ number: 198, title: "Item 198" }] };
+    const call = async () => {
+      lab.engine.messages.set(session.id, [{ id: "msg_reimport_legacy", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_queue_import", state: { status: "running", input: args } }] }]);
+      const answer = await far("POST", "kuvo/work-queue/tools", { name: "queue_import", arguments: args, session: session.id });
+      assert.equal(answer.status, 200, answer.text);
+      assert.equal(answer.json.isError, false, answer.text);
+      return answer.json.text;
+    };
+    const first = await call();
+    assert.match(first, /imported before ask for their own number back|imported before asks for its own number back/);
+    const settled = await until(() => {
+      const item = JSON.parse(readFileSync(file)).items[0];
+      return item.wanted === undefined && item.notes.length > 1 && item;
+    }, "The old number claim did not settle.", 45000);
+    assert.equal(settled.number, ambiguous ? 348 : 198);
+    assert.match(settled.notes.at(-1).text, ambiguous ? /couldn't be given back/ : /Has its own number, #198, again/);
+    assert.equal(JSON.parse(readFileSync(file)).items.length, 1);
+    const prior = readFileSync(file, "utf8");
+    await call();
+    assert.equal(readFileSync(file, "utf8"), prior);
+    assert.equal((await ask("GET", "kuvo/setup")).status, 200);
+    await memberBox.stop();
+    await spareBox?.stop();
+    await holder.stop();
+  }
+});
+
+test("a repeated client creation gets an unacknowledged snapshot retold after fifteen seconds", { timeout: 150000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const run = path.join(studio.home, "run");
+  const setup = JSON.parse(readFileSync(path.join(run, "link.json"))).setup;
+  const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign }, 1000);
+  recordRelayLease(run, setup, { high: 1000, floor: 0, relay: lease });
+  const queue = path.join(run, "work-queue");
+  write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(queue, "numbers.json"), JSON.stringify({ formatVersion: 1, primary: "self", next: 150, leases: [[100, 149]] }));
+  const target = lab.start();
+  await target.ready();
+  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The member did not reach the relay.");
+  const ask = studio.connect(await studio.start().ready());
+  const snapshotFile = path.join(lab.home, "run", "work-queue", "peers", main.key + ".json");
+  const snapshot = () => existsSync(snapshotFile) ? JSON.parse(readFileSync(snapshotFile)) : null;
+  await until(() => snapshot()?.items?.length === 0, "The initial empty snapshot did not arrive.", 30000);
+  await until(() => {
+    const agents = path.join(run, "peer-agents.json");
+    try { return JSON.parse(readFileSync(agents))[member.key]?.features?.includes("work-queue.elsewhere"); }
+    catch { return false; }
+  }, "Snapshot capability did not arrive.", 30000);
+  // Lose replies from this member while the first changed snapshot still reaches it.
+  const restoreMail = relay.intercept(Buffer.from(member.address, "base64url"), Buffer.from(main.address, "base64url"), () => true);
+  t.after(restoreMail);
+  const app = { "x-kuvo-from": "app" }, given = { title: "Repeat the same creation", operation: "retell-repeat-creation" };
+  const add = () => ask("POST", "kuvo/work-queue/items", given, app);
+  const created = await add();
+  assert.equal(created.status, 200, created.text);
+  const id = created.json.item.id;
+  const first = await until(() => {
+    const saved = snapshot();
+    return saved?.items?.some(row => row.id === id && row.number === 100) && saved;
+  }, "The first changed snapshot did not reach the member.", 30000);
+  const replay = await add();
+  assert.deepEqual(replay.json, created.json);
+  const repeated = await until(() => {
+    const saved = snapshot();
+    return saved?.id === first.id && saved.heard > first.heard && saved;
+  }, "The unacknowledged snapshot was not sent sooner after a repeated client creation.", 35000);
+  assert.ok(repeated.heard - first.heard >= 14000, "A repeat arrived before the minimum spacing.");
+  restoreMail();
+});
+
+test("a conversation move preserves the original mention and history across a reused number", { timeout: 200000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const session = "ses_SplitMentionMove";
+  const chats = path.join(studio.home, "chats");
+  mkdirSync(chats, { recursive: true });
+  studio.engine.sessions.push(sessionOf({ id: session, title: "Follow-up", directory: chats }));
+  const [original, moved, duplicate, future] = ["A", "B", "C", "D"].map(letter => "wqi_" + letter.repeat(20));
+  const stamp = { at: Date.now() - 60000, by: { user: true } };
+  const root = computer => path.join(computer.home, "run", "work-queue");
+  const row = (id, owner, number, title, more = {}) => ({ id, owner, number, title, order: number, status: "todo", created: stamp, updated: stamp, ...more });
+  const mention = { item: original, number: 42, start: 4, end: 7 };
+  for (const computer of [studio, lab]) write(path.join(root(computer), "model.json"), '{"formatVersion":1,"model":2}');
+  const save = (computer, owner, item) => write(path.join(root(computer), "queues", owner + ".json"), JSON.stringify({ formatVersion: 1, owner, items: Array.isArray(item) ? item : [item] }));
+  save(studio, "usr_you", row(original, "usr_you", 42, "Original #42"));
+  save(studio, session, [
+    row(moved, session, 43, "Follow-up", { body: "See #42", mentionIndex: { body: [mention], notes: [[]], targets: [original] }, notes: [{ ...stamp, text: "A saved decision" }], events: [{ ...stamp, kind: "started" }] }),
+    row(future, session, 44, "A future status", { status: "triage", labels: ["lbl_gone"] }),
+  ]);
+  save(lab, "usr_you", row(duplicate, "usr_you", 42, "Different #42"));
+  const a = studio.start(), b = lab.start();
+  const [ar, br] = await Promise.all([a.ready(), b.ready()]);
+  const ask = (method, route, body, headers) => request(ar, method, route, body, headers, 30000);
+  const far = (method, route, body, headers) => request(br, method, route, body, headers, 30000);
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.", 20000);
+  await until(async () => (await ask("GET", "kuvo/moves/places?kind=chat&id=" + session)).json?.places?.some(place => place.key === member.key && place.ok), "The destination did not appear.", 35000);
+  const route = "kuvo/work-queue/items/", app = { "x-kuvo-from": "app" };
+  const links = async (call, id) => {
+    const answer = await call("GET", route + id);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.item.itemRelations.map(({ kind, id }) => [kind, id]);
+  };
+  assert.deepEqual(await links(ask, original), [["mentioned-in", moved]]);
+  const manual = await ask("PATCH", route + moved, { itemRelation: { item: original, kind: "blocks" } }, app);
+  assert.equal(manual.status, 200, manual.text);
+  const begin = await ask("POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  assert.equal(begin.status, 202, begin.text);
+  const result = await until(async () => {
+    const answer = await ask("GET", "kuvo/moves/receipt?id=" + begin.json.move.id);
+    return ["done", "failed"].includes(answer.json?.state) && answer.json;
+  }, "The conversation move did not finish.", 65000);
+  assert.equal(result.state, "done", JSON.stringify(result));
+  const waitLinks = (call, id, expected, message) => until(async () => {
+    try { return JSON.stringify(await links(call, id)) === JSON.stringify(expected); }
+    catch (error) { if (error.name === "AbortError") return false; throw error; }
+  }, message, 65000, 1000);
+  await waitLinks(far, moved, [["mentions", original]], "The moved item did not keep its original mention.");
+  await waitLinks(ask, original, [["mentioned-in", moved]], "The source did not retain the far backlink.");
+  const edit = await far("PATCH", route + moved, { body: "Later edit. See #42." }, app);
+  assert.equal(edit.status, 200, edit.text);
+  const detail = await far("GET", route + moved);
+  assert.deepEqual(detail.json.item.bodyMentions.map(row => row.item), [original]);
+  assert.ok(detail.json.item.notes.some(note => note.text === "A saved decision"));
+  assert.ok(detail.json.item.events.some(event => event.kind === "started" && event.at === stamp.at));
+  assert.deepEqual(await links(far, duplicate), []);
+  const landed = (await far("GET", route + future)).json.item;
+  assert.deepEqual([landed.status, landed.labels], ["todo", []]);
+  assert.deepEqual([landed.events.at(-1).from, landed.events.at(-1).to, landed.events.at(-1).by], ["triage", "todo", { source: "kuvo", name: "Kuvo Code" }]);
+});
+
+test("a linked item from an older computer stays visible in the linked conversation", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const studio = await computer("Studio");
+  const { member } = seedPeerSetup(studio.home, relay.url);
+  const session = { id: "ses_OldPeerLink", title: "Linked worker", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(session);
+  const run = path.join(studio.home, "run");
+  const root = path.join(run, "work-queue");
+  const now = Date.now(), stamp = { at: now, by: { user: true } };
+  const row = (number, title, sessions = []) => ({ id: "wqi_" + String(number).padStart(20, "0"), owner: "ses_FarLead", number, title, status: "todo", priority: "normal", order: number, created: stamp, updated: stamp, labels: [], sessions, fileCount: 0, noteCount: 0, linkCount: 0 });
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "peers", member.key + ".json"), JSON.stringify({ formatVersion: 1, id: "wqt_oldpeer123456", at: now, heard: now, kind: "machine", items: [row(700, "Linked", [{ session: session.id, title: session.title, working: false }]), row(701, "Unlinked")], owners: [{ owner: "ses_FarLead", title: "Far away", kind: "session" }], labels: [] }));
+  write(path.join(run, "peer-agents.json"), JSON.stringify({ [member.key]: { at: now, heard: now, list: [], kind: "machine", features: ["work-queue.elsewhere"] } }));
+  write(path.join(run, "peer-reach.json"), JSON.stringify({ [member.key]: now }));
+  write(path.join(run, "peer-reach-checked.json"), JSON.stringify({ [member.key]: now }));
+  const ask = studio.connect(await studio.start().ready());
+  const listed = await ask("GET", "kuvo/work-queue?owner=" + session.id + "&glance=1");
+  assert.equal(listed.status, 200, listed.text);
+  assert.deepEqual(listed.json.items.map(row => row.number), [700]);
+  assert.equal(listed.json.items[0].computer.name, "Lab");
+  assert.equal(listed.json.owners.find(row => row.owner === "ses_FarLead").title, "Far away");
+  const call = async (name, args) => {
+    studio.engine.messages.set(session.id, [{ id: "msg_oldpeer", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_" + name, state: { status: "running", input: args } }] }]);
+    return ask("POST", "kuvo/work-queue/tools", { name, arguments: args, session: session.id });
+  };
+  const all = await call("queue_list", {});
+  assert.equal(all.status, 200, all.text);
+  assert.match(all.json.text, /#700 "Linked"/);
+  assert.match(all.json.text, /#701 "Unlinked"/);
+  const change = await call("queue_update", { item: 700, note: "Keep this note" });
+  assert.equal(change.json.isError, true, change.text);
+  const edited = await ask("PATCH", "kuvo/work-queue/items/700", { status: "backlog" }, { "x-kuvo-from": "app" });
+  assert.equal(edited.status, 409, edited.text);
+  assert.equal(edited.json.message, '#700 "Linked" is on Lab: change it there.');
+});
+
+test("a client restoring a duplicate issue names the conversation that already keeps it", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const owner = { id: "ses_ExistingIssue", title: "Sign-in", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(owner);
+  const root = path.join(studio.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const [live, deleted] = ["A", "B"].map(letter => "wqi_" + letter.repeat(20));
+  const ref = "gh:kuvo-test/app#12";
+  const row = (id, owner, more = {}) => ({ id, owner, title: "Issue 12", status: "todo", order: 1, created: stamp, updated: stamp, source: { kind: "github", ref, host: "github.com", id: "I_12", url: "https://github.com/kuvo-test/app/issues/12" }, ...more });
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  for (const item of [row(live, owner.id), row(deleted, "usr_you", { removed: stamp })]) {
+    write(path.join(root, "queues", item.owner + ".json"), JSON.stringify({ formatVersion: 1, owner: item.owner, items: [item] }));
+  }
+  const ask = studio.connect(await studio.start().ready());
+  await until(async () => (await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json?.owners?.some(row => row.owner === owner.id && row.title === owner.title), "The conversation title was not available.", 30000);
+  const refused = await ask("POST", "kuvo/work-queue/items/" + deleted + "/restore", {}, { "x-kuvo-from": "app" });
+  assert.equal(refused.status, 400, refused.text);
+  assert.equal(refused.json.message, `Another item is ${ref} now, in the queue of "Sign-in": one item for each issue, so this one stays deleted.`);
+});
+
+test("the first item on a new computer creates no migration copy and defaults to Todo", { timeout: 45000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const queue = path.join(studio.home, "run", "work-queue");
+  const ask = studio.connect(await studio.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "No number lease.");
+  assert.deepEqual((await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json.items, []);
+  const added = await ask("POST", "kuvo/work-queue/items", { title: "The first", operation: "new-queue" }, { "x-kuvo-from": "app" });
+  assert.equal(added.status, 200, added.text);
+  assert.equal(added.json.item.status, "todo");
+  assert.equal(added.json.item.priority, "normal");
+  const saved = await until(async () => {
+    const answer = await ask("GET", "kuvo/work-queue/items/" + added.json.item.id);
+    return answer.json?.item?.number && answer.json.item;
+  }, "The first item did not receive a number.", 30000);
+  assert.equal(saved.number, 1);
+  assert.equal(existsSync(path.join(queue, "before-statuses")), false);
+  assert.equal(JSON.parse(readFileSync(path.join(queue, "model.json"))).model, 2);
+});
+
+test("before and after reorders change only the named status or position", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const root = path.join(studio.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const rows = ["A", "B", "C"].map((title, index) => ({ id: "wqi_" + title.repeat(20), number: index + 1, owner: "usr_you", title, body: `About ${title}.`, status: "todo", order: index + 1, created: stamp, updated: stamp }));
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: rows }));
+  const ask = studio.connect(await studio.start().ready());
+  const app = { "x-kuvo-from": "app" }, route = "kuvo/work-queue/items/";
+  const patch = async (number, fields) => {
+    const answer = await ask("PATCH", route + number, fields, app);
+    assert.equal(answer.status, 200, answer.text);
+    return answer.json.item;
+  };
+  const titles = async () => (await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json.items.map(item => item.title);
+  await patch(3, { before: 1 });
+  assert.deepEqual(await titles(), ["C", "A", "B"]);
+  await patch(1, { after: "#2" });
+  assert.deepEqual(await titles(), ["C", "B", "A"]);
+  assert.equal((await patch(2, { status: "Backlog" })).status, "backlog");
+  assert.equal((await patch(2, { status: "in-progress" })).status, "in-progress");
+  assert.equal((await ask("PATCH", route + 2, { status: "Parked" }, app)).status, 400);
+  assert.equal((await ask("POST", route + "2/move", { status: "todo" }, app)).status, 404);
+  const item = (await ask("GET", route + 2)).json.item;
+  assert.deepEqual([item.title, item.body, item.status], ["B", "About B.", "in-progress"]);
+});
+
+test("a temporarily unreadable owner file remains in place without losing its work", { timeout: 45000 }, async t => {
+  if (process.platform === "win32" || process.getuid?.() === 0) return t.skip("POSIX permission denial requires an unprivileged Unix account.");
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const root = path.join(studio.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const row = { id: "wqi_" + "A".repeat(20), number: 1, owner: "usr_you", title: "Precious", status: "todo", order: 1, created: stamp, updated: stamp };
+  const file = path.join(root, "queues", "usr_you.json");
+  const original = JSON.stringify({ formatVersion: 1, owner: row.owner, items: [row] });
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(file, original);
+  const ask = studio.connect(await studio.start().ready());
+  chmodSync(file, 0o000);
+  try {
+    const refused = await ask("POST", "kuvo/work-queue/items", { operation: "temporarily-unreadable", title: "New" }, { "x-kuvo-from": "app" });
+    assert.notEqual(refused.status, 200, refused.text);
+    assert.match(refused.json.message, /can't be read just now, so nothing was changed: try again/);
+    assert.equal(existsSync(path.join(root, "queues", "aside")), false);
+    assert.equal(existsSync(file), true);
+  } finally {
+    chmodSync(file, 0o600);
+  }
+  assert.equal(readFileSync(file, "utf8"), original);
+  assert.deepEqual((await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json.items.map(item => item.title), ["Precious"]);
+});
+
+test("legacy peer summaries acquire a version but a future summary survives refresh and unlink", { timeout: 100000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const studio = await computer("Studio");
+  const lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const root = path.join(studio.home, "run", "work-queue");
+  const file = path.join(root, "peers", member.key + ".json");
+  const id = "wqi_" + "A".repeat(20);
+  const stamp = { at: Date.now() - 60000, by: { user: true } };
+  const row = { id, owner: "usr_you", number: 41, title: "Remembered peer", status: "todo", order: 1, priority: "normal", labels: [], sessions: [], fileCount: 0, noteCount: 0, linkCount: 0, created: stamp, updated: stamp };
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  const summary = { id: "wqt_abcdefgh", at: stamp.at, heard: stamp.at + 100, kind: "machine", items: [row], owners: [], labels: [] };
+  write(file, JSON.stringify(summary));
+  const ask = studio.connect(await studio.start().ready());
+  const route = "kuvo/work-queue?owner=all&glance=1";
+  const initial = await ask("GET", route);
+  assert.equal(initial.status, 200, initial.text);
+  assert.equal(initial.json.items.find(item => item.id === id).title, row.title);
+  const otherRoot = path.join(lab.home, "run", "work-queue");
+  write(path.join(otherRoot, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(otherRoot, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: row.owner, items: [{ ...row, title: "Refreshed peer" }] }));
+  await until(() => relay.has(Buffer.from(main.address, "base64url")), "The main did not reach the relay.");
+  const far = lab.connect(await lab.start().ready());
+  await until(() => {
+    const saved = JSON.parse(readFileSync(file));
+    return saved.formatVersion === 1 && saved.items.some(item => item.title === "Refreshed peer") && saved.latestAt >= summary.at;
+  }, "The legacy peer summary was not upgraded.", 60000);
+  const future = JSON.stringify({ ...summary, formatVersion: 2 });
+  write(file, future);
+  const view = await ask("GET", route);
+  assert.equal(view.status, 409, view.text);
+  assert.match(view.json.message, /Work Queue peer summary format version 2/);
+  const changed = await far("PATCH", "kuvo/work-queue/items/" + id, { title: "New word" }, { "x-kuvo-from": "app" });
+  assert.equal(changed.status, 200, changed.text);
+  await new Promise(resolve => setTimeout(resolve, 18000));
+  assert.equal(readFileSync(file, "utf8"), future);
+  const removed = await ask("DELETE", "kuvo/computers/" + member.key, { wipe: false }, { "x-kuvo-from": "mac" });
+  assert.equal(removed.status, 200, removed.text);
+  assert.equal(readFileSync(file, "utf8"), future);
+});
+
+test("an outside source never spends a number granted to a waiting import", { timeout: 65000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const run = path.join(studio.home, "run");
+  const setup = JSON.parse(readFileSync(path.join(run, "link.json"))).setup;
+  const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign }, 1000);
+  recordRelayLease(run, setup, { high: 1000, floor: 0, relay: lease });
+  const root = path.join(lab.home, "run", "work-queue");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const row = (id, title, wanted, more = {}) => ({ id, owner: "usr_you", title, wanted, status: "todo", order: wanted, created: stamp, updated: stamp, ...more });
+  const issue = row("wqi_" + "A".repeat(20), "An outside issue", 40, { source: { kind: "github", ref: "gh:kuvo-test/app#12", host: "github.com", url: "https://github.com/kuvo-test/app/issues/12" } });
+  const imported = row("wqi_" + "B".repeat(20), "Imported", 41);
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "numbers.json"), JSON.stringify({ formatVersion: 1, primary: main.key, leases: [], asking: { id: "wqn_waitingclaim1234", count: 50, since: stamp.at, claims: [[40, 41]] } }));
+  const file = path.join(root, "queues", "usr_you.json");
+  write(file, JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [issue, imported] }));
+  const source = studio.start();
+  await source.ready();
+  await until(() => relay.has(Buffer.from(main.address, "base64url")), "The main did not reach the relay.");
+  const ask = lab.connect(await lab.start().ready());
+  const settled = await until(async () => {
+    const answer = await ask("GET", "kuvo/work-queue?owner=all&glance=1");
+    const rows = answer.json?.items;
+    return rows?.find(row => row.id === imported.id)?.number && rows;
+  }, "The member did not settle its claimed numbers.", 45000);
+  assert.equal(settled.find(row => row.id === imported.id).number, 41);
+  assert.equal(settled.find(row => row.id === issue.id).number, undefined);
+  assert.equal(JSON.parse(readFileSync(file)).items.find(row => row.id === issue.id).number, undefined);
+});
+
+test("held backup review follows live peer claims and the current conversation keeper", { timeout: 65000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const session = { id: "ses_ReviewPeerOwner", title: "Current keeper", location: { directory: lab.home }, time: { created: 1, updated: 2 } };
+  lab.engine.sessions.push(session);
+  const point = "2026-11-19T000000.000Z-wipe-0123456789abcdef";
+  const backup = path.join(studio.home, "backup"), recovered = path.join(backup, "recovered", point);
+  const key = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("base64url");
+  const stamp = { at: Date.now(), by: { user: true } };
+  const ids = ["A", "B"].map(letter => "wqi_" + letter.repeat(20));
+  const row = (id, owner, title) => ({ id, owner, title, status: "todo", order: 1, created: stamp, updated: stamp });
+  write(path.join(backup, "restore.json"), JSON.stringify({ formatVersion: 1, state: "restored", id: point }));
+  const held = [row(ids[0], "usr_you", "A peer already holds this item"), row(ids[1], session.id, "Its owner lives on the peer")];
+  for (const item of held) write(path.join(recovered, "work-queue-items", key(item.id) + ".json"), JSON.stringify(item));
+  const queue = path.join(lab.home, "run", "work-queue");
+  write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(queue, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [held[0]] }));
+  const receiver = lab.start();
+  await receiver.ready();
+  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The peer did not reach the relay.");
+  const resident = await studio.start().ready(), ask = studio.connect(resident);
+  await until(async () => (await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json?.items.some(row => row.id === ids[0] && row.computer?.name === "Lab"), "The peer did not tell its live item.", 30000);
+  const line = await openLine(resident, "", "kuvo/setup/sessions/events");
+  t.after(() => line.close());
+  for await (const frame of line.frames()) {
+    if (JSON.stringify(frame).includes(session.id)) break;
+  }
+  line.close();
+  const app = { "x-kuvo-from": "app" }, route = "kuvo/box/backups/pending";
+  const pending = await until(async () => {
+    const reply = await ask("GET", route, undefined, app);
+    return reply.json?.queueItems?.length === 2 && reply.json.queueItems.every(item => !item.canKeep) && reply.json.queueItems;
+  }, "The held copies did not reflect their live peer claims.", 30000);
+  for (const item of pending) {
+    const refused = await ask("POST", route, { kind: "queueItem", id: item.id, operation: "keep-claimed-" + item.id, decision: "keep" }, app);
+    assert.notEqual(refused.status, 200, refused.text);
+    assert.match(refused.json.message, /owner or deletion conflicts/);
+  }
+  assert.equal((await ask("GET", route, undefined, app)).json.queueItems.length, 2);
+});
+
+test("moving a conversation refuses its unreadable Work Queue without setting it aside", { timeout: 100000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const session = "ses_UnreadableQueueMove";
+  const chats = path.join(studio.home, "chats");
+  mkdirSync(chats, { recursive: true });
+  studio.engine.sessions.push(sessionOf({ id: session, title: "Keep this conversation", directory: chats }));
+  const root = path.join(studio.home, "run", "work-queue");
+  const owner = path.join(root, "queues", session + ".json");
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  const a = studio.start(), b = lab.start();
+  const [ar] = await Promise.all([a.ready(), b.ready()]);
+  const ask = studio.connect(ar);
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.", 20000);
+  await until(async () => (await ask("GET", "kuvo/moves/places?kind=chat&id=" + session)).json?.places?.some(place => place.key === member.key && place.ok), "The destination did not appear.", 35000);
+  write(owner, "not json");
+  const begin = await ask("POST", "kuvo/moves", { kind: "chat", id: session, to: member.key, receipt: true });
+  let message;
+  if (begin.status === 202) {
+    const result = await until(async () => {
+      const answer = await ask("GET", "kuvo/moves/receipt?id=" + begin.json.move.id);
+      return ["done", "failed"].includes(answer.json?.state) && answer.json;
+    }, "The conversation move did not finish.", 65000);
+    assert.equal(result.state, "failed", JSON.stringify(result));
+    message = result.message;
+  } else {
+    assert.notEqual(begin.status, 200, begin.text);
+    message = begin.json.message;
+  }
+  assert.match(message, /Work Queue|queue|prepare the move/i);
+  assert.equal(readFileSync(owner, "utf8"), "not json");
+  assert.equal(existsSync(path.join(root, "queues", "aside")), false);
+  assert.ok(studio.engine.sessions.some(row => row.id === session));
+  assert.equal(lab.engine.sessions.some(row => row.id === session), false);
+});
+
+test("an uninstalled GitHub CLI explains how to add it and does not create a queue item", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio", undefined, folder => {
+    const empty = path.join(folder, "empty-programs");
+    mkdirSync(empty, { recursive: true });
+    return { PATH: empty };
+  });
+  const session = { id: "ses_NoGitHubCli", title: "Author", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(session);
+  const ask = studio.connect(await studio.start().ready());
+  const args = { issue: "gh:kuvo-test/app#12" };
+  studio.engine.messages.set(session.id, [{ id: "msg_missing_gh", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_queue_add", state: { status: "running", input: args } }] }]);
+  const answer = await ask("POST", "kuvo/work-queue/tools", { name: "queue_add", arguments: args, session: session.id });
+  assert.equal(answer.status, 200, answer.text);
+  assert.equal(answer.json.isError, true, answer.text);
+  assert.match(answer.json.text, /^Install GitHub CLI on .*then open Settings → Accounts → GitHub for Work Queue\.$/);
+  assert.deepEqual((await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json.items, []);
+});
+
+test("client-only queue changes are refused to ordinary local commands", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const root = path.join(studio.home, "run", "work-queue");
+  const id = "wqi_" + "A".repeat(20), stamp = { at: Date.now(), by: { user: true } };
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [{ id, owner: "usr_you", title: "Original", number: 1, status: "todo", order: 1, created: stamp, updated: stamp }] }));
+  const ask = studio.connect(await studio.start().ready());
+  const route = "kuvo/work-queue/items/" + id, app = { "x-kuvo-from": "app" };
+  for (const [method, path, body] of [["POST", "kuvo/work-queue/items", { title: "Other", operation: "ordinary-command" }], ["PATCH", route, { title: "Different" }], ["DELETE", route], ["POST", "kuvo/work-queue/labels", { add: "Unverified" }]]) {
+    const refused = await ask(method, path, body);
+    assert.equal(refused.status, 403, refused.text);
+  }
+  assert.equal((await ask("GET", route)).json.item.title, "Original");
+  assert.equal((await ask("DELETE", route, undefined, app)).status, 200);
+  assert.equal((await ask("POST", route + "/restore", {})).status, 403);
+  assert.ok((await ask("GET", route)).json.item.removed);
+  assert.equal((await ask("POST", route + "/restore", {}, app)).status, 200);
+});
+
+test("a surrounding project folder does not make the computer's bookkeeping an agent attachment", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const project = path.dirname(studio.home);
+  const session = { id: "ses_WideProject", title: "Wide project", location: { directory: project }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(session);
+  const bookkeeping = path.join(studio.home, "run", "fixture-bookkeeping.json");
+  write(bookkeeping, "{}");
+  const ask = studio.connect(await studio.start().ready());
+  const args = { title: "Keep project context", files: [bookkeeping] };
+  studio.engine.messages.set(session.id, [{ id: "msg_wide_project", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_queue_add", state: { status: "running", input: args } }] }]);
+  const answer = await ask("POST", "kuvo/work-queue/tools", { name: "queue_add", arguments: args, session: session.id });
+  assert.equal(answer.status, 200, answer.text);
+  assert.equal(answer.json.isError, true, answer.text);
+  assert.match(answer.json.text, /isn't in this conversation's folder/);
+  assert.deepEqual((await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json.items, []);
+});
+
+test("completing a GitHub device sign-in refreshes the located account connection", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  let fixture;
+  const studio = await computer("Studio", undefined, folder => {
+    fixture = path.join(folder, "box", "gh-fixture");
+    write(path.join(fixture, "gh.cjs"), `
+      const fs = require("node:fs"), path = require("node:path");
+      const root = process.env.KQ_GH_FIXTURE, args = process.argv.slice(2);
+      const signed = path.join(root, "signed-in"), finish = path.join(root, "complete");
+      if (args[0] === "auth" && args[1] === "status") process.exit(fs.existsSync(signed) ? 0 : 1);
+      if (args[0] !== "auth" || args[1] !== "login") process.exit(4);
+      process.stderr.write("One-time code: ABCD-1234\\nhttps://github.com/login/device\\n");
+      setInterval(() => { if (fs.existsSync(finish)) { fs.writeFileSync(signed, "yes"); process.exit(0); } }, 50);
+    `);
+    const windows = process.platform === "win32";
+    const program = path.join(fixture, windows ? "gh.cmd" : "gh");
+    write(program, windows
+      ? '@echo off\r\n"%KQ_GH_NODE%" "%KQ_GH_FIXTURE%\\gh.cjs" %*\r\n'
+      : '#!/bin/sh\nexec "$KQ_GH_NODE" "$KQ_GH_FIXTURE/gh.cjs" "$@"\n');
+    if (!windows) chmodSync(program, 0o700);
+    return { PATH: fixture + path.delimiter + (process.env.PATH ?? ""), KQ_GH_NODE: process.execPath, KQ_GH_FIXTURE: fixture,
+      GH_CONFIG_DIR: path.join(fixture, "account"), GH_TOKEN: "", GITHUB_TOKEN: "" };
+  });
+  const ask = studio.connect(await studio.start().ready());
+  const route = "api/integration/github-work-queue", oauth = route + "/connect/oauth";
+  const client = { "x-kuvo-from": "app", "x-kuvo-sign-in-client": "a".repeat(32) };
+  const before = await ask("GET", route, undefined, client);
+  assert.equal(before.status, 200, before.text);
+  assert.deepEqual(before.json.data.connections, []);
+  const started = await ask("POST", oauth, { methodID: "device" }, client);
+  assert.equal(started.status, 200, started.text);
+  const attempt = started.json.data.attemptID;
+  assert.equal(started.json.data.userCode, "ABCD-1234");
+  write(path.join(fixture, "complete"), "yes");
+  const finished = await until(async () => {
+    const reply = await ask("GET", oauth + "/" + attempt, undefined, client);
+    return reply.json?.data?.status === "complete" && reply.json;
+  }, "The stand-in GitHub sign-in did not complete.", 20000);
+  assert.deepEqual(finished.location, before.json.location);
+  const connected = await until(async () => {
+    const reply = await ask("GET", route, undefined, client);
+    return reply.json?.data?.connections?.some(connection => connection.status?.status === "connected") && reply.json;
+  }, "The connected account catalog did not refresh.", 20000);
+  assert.deepEqual(connected.location, before.json.location);
+  assert.equal(connected.data.connections[0].status.message, "Signed in to GitHub");
+});
+
+test("revision-aware queue edits merge large passages and require a fresh choice after a later rewrite", { timeout: 65000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const studio = await computer("Studio");
+  const ask = studio.connect(await studio.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
+  const app = { "x-kuvo-from": "app" };
+  const id = "wqi_" + "A".repeat(20), ref = { kind: "queueItems", id, queue: "usr_you", computer: setup.json.you.key };
+  const route = "kuvo/work-queue/items/" + id;
+  const submit = async edit => {
+    const response = await ask("POST", "kuvo/data/edits", { ref, ...edit }, app);
+    if (response.status === 202) {
+      return until(async () => {
+        const kept = await ask("GET", "kuvo/data/edits/" + edit.operation, undefined, app);
+        return kept.json?.receipt && kept.json.receipt.status !== "pending" && kept.json.receipt;
+      }, "The revision decision did not settle.", 20000);
+    }
+    assert.ok([200, 409].includes(response.status), response.text);
+    return response.json;
+  };
+  const words = Array.from({ length: 601 }, (_, index) => String(index));
+  const text = words.join(" ");
+  const original = await submit({ operation: "large-create", baseRevision: null, create: true, fields: { title: "Large description", body: text } });
+  assert.equal(original.status, "committed");
+  const left = words.with(0, "first").with(600, "last");
+  const middle = words.with(300, "middle");
+  const first = await submit({ operation: "large-left", baseRevision: original.revision, fields: { body: left.join(" ") } });
+  assert.equal(first.status, "committed");
+  const merged = await submit({ operation: "large-middle", baseRevision: original.revision, fields: { body: middle.join(" ") } });
+  assert.equal(merged.status, "committed");
+  const accepted = left.with(300, "middle");
+  assert.equal((await ask("GET", route)).json.item.body, accepted.join(" "));
+  const competing = { operation: "large-conflict", baseRevision: original.revision, fields: { body: middle.with(0, "different").join(" ") } };
+  const clash = await submit(competing);
+  assert.equal(clash.status, "choice");
+  assert.equal(clash.choices.length, 1);
+  const revisionView = () => ask("GET", "kuvo/data/edits?kind=queueItems&id=" + id + "&queue=usr_you&computer=" + setup.json.you.key, undefined, app);
+  const choices = (await revisionView()).json.choices;
+  assert.equal(choices.length, 1);
+  assert.equal(choices[0].accepted, accepted.join(" "));
+  assert.equal(choices[0].proposed, accepted.with(0, "different").join(" "));
+  assert.deepEqual(await submit(competing), clash);
+  const later = accepted.with(0, "newer").with(400, "another independent change");
+  const rewritten = await ask("PATCH", route, { body: later.join(" ") }, app);
+  assert.equal(rewritten.status, 200, rewritten.text);
+  const view = await revisionView();
+  assert.equal(view.status, 200, view.text);
+  assert.equal(view.json.choices.length, 1);
+  const stale = await submit({ operation: "old-choice", baseRevision: view.json.revision, resolve: { id: choices[0].id, use: "proposed" } });
+  assert.equal(stale.status, "refresh");
+  const chosen = await submit({ operation: "fresh-choice", baseRevision: view.json.revision, resolve: { id: view.json.choices[0].id, use: "proposed" } });
+  assert.equal(chosen.status, "committed");
+  assert.equal((await ask("GET", route)).json.item.body, later.with(0, "different").join(" "));
+});
+
+test("a local app saves its selected attachment and missing files do not replace it", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const selected = path.join(path.dirname(studio.home), "selected image.png");
+  write(selected, "First image bytes");
+  const ask = studio.connect(await studio.start().ready());
+  const app = { "x-kuvo-from": "app" };
+  const uri = pathToFileURL(selected).href;
+  const made = await ask("POST", "kuvo/work-queue/items", { title: "Pictures", operation: "selected-local-image", files: [{ uri, name: "first.png" }] }, app);
+  assert.equal(made.status, 200, made.text);
+  const route = "kuvo/work-queue/items/" + made.json.item.id;
+  rmSync(selected);
+  const missing = await ask("PATCH", route, { files: [{ uri, name: "gone.png" }] }, app);
+  assert.equal(missing.status, 400, missing.text);
+  assert.match(missing.json.message, /attach it again/);
+  assert.equal((await ask("GET", route + "/files/first.png")).text, "First image bytes");
+  const second = { uri: "data:image/png;base64," + Buffer.from("Second image bytes").toString("base64"), name: "second.png" };
+  const changed = await ask("PATCH", route, { body: "[Image 1] [Image 2]", files: [second] }, app);
+  assert.equal(changed.status, 200, changed.text);
+  const detail = await ask("GET", route);
+  assert.deepEqual(detail.json.item.files.map(file => file.name), ["first.png", "second.png"]);
+  assert.equal(detail.json.item.body, "[Image 1] [Image 2]");
+  assert.equal((await ask("GET", route + "/files/second.png")).text, "Second image bytes");
+  const refused = await ask("PATCH", route, { title: "", files: [{ ...second, name: "third.png" }] }, app);
+  assert.equal(refused.status, 400, refused.text);
+  assert.deepEqual((await ask("GET", route)).json.item.files.map(file => file.name), ["first.png", "second.png"]);
+});
+
+test("the destination refuses a duplicate issue that appeared before a handoff arrived", { timeout: 180000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const author = { id: "ses_IncomingTwinAuthor", title: "Author", location: { directory: studio.home }, time: { created: 1, updated: 2 } };
+  const recipient = { id: "ses_IncomingTwinTarget", title: "Recipient", location: { directory: lab.home }, time: { created: 1, updated: 2 } };
+  studio.engine.sessions.push(author); lab.engine.sessions.push(recipient);
+  const stamp = { at: Date.now(), by: { user: true } };
+  const [old, twin] = ["A", "B"].map(letter => "wqi_" + letter.repeat(20));
+  const row = (id, owner, repo, number) => ({ id, owner, title: "Same issue", status: "todo", order: 1, body: "", created: stamp, updated: stamp,
+    source: { kind: "github", ref: `gh:kuvo-test/${repo}#${number}`, host: "github.com", id: "I_moved", url: `https://github.com/kuvo-test/${repo}/issues/${number}` } });
+  const root = computer => path.join(computer.home, "run", "work-queue");
+  const save = (computer, item) => write(path.join(root(computer), "queues", item.owner + ".json"), JSON.stringify({ formatVersion: 1, owner: item.owner, items: [item] }));
+  write(path.join(root(studio), "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(root(lab), "model.json"), '{"formatVersion":1,"model":2}');
+  save(studio, row(old, author.id, "old", 12));
+  const target = lab.start();
+  const targetRecord = await target.ready();
+  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The destination did not reach the relay.");
+  const resident = await studio.start().ready();
+  const ask = studio.connect(resident), far = lab.connect(targetRecord);
+  const line = await openLine(resident, "", "kuvo/setup/sessions/events");
+  t.after(() => line.close());
+  for await (const frame of line.frames()) { if (JSON.stringify(frame).includes(recipient.id)) break; }
+  line.close();
+  // The destination learns a concurrent addition while its next telling is lost.
+  const release = relay.intercept(Buffer.from(member.address, "base64url"), Buffer.from(main.address, "base64url"), () => true);
+  t.after(release);
+  save(lab, row(twin, recipient.id, "moved", 3));
+  assert.ok((await far("GET", "kuvo/work-queue?owner=all&glance=1")).json.items.some(row => row.id === twin));
+  const args = { item: old, to: recipient.id };
+  studio.engine.messages.set(author.id, [{ id: "msg_incoming_twin", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_queue_hand", state: { status: "running", input: args } }] }]);
+  const sent = await ask("POST", "kuvo/work-queue/tools", { name: "queue_hand", arguments: args, session: author.id, operation: "incoming-twin" });
+  assert.equal(sent.status, 200, sent.text);
+  assert.equal(sent.json.isError, false, sent.text);
+  release();
+  const route = "kuvo/work-queue/items/" + old;
+  const back = await until(async () => {
+    const answer = await ask("GET", route);
+    const item = answer.json?.item;
+    return item && !item.handing && item.notes?.some(note => note.text.includes("one item for each issue")) && item;
+  }, "The destination did not refuse the duplicate handoff.", 110000);
+  assert.equal(back.owner, author.id);
+  assert.match(back.notes.at(-1).text, /one item for each issue/);
+  const destination = (await far("GET", "kuvo/work-queue?owner=" + recipient.id + "&glance=1")).json.items;
+  assert.deepEqual(destination.filter(row => !row.computer).map(row => row.id), [twin]);
+});
+
+test("a peer change with a lost answer says its outcome is unknown while the keeper saves it", { timeout: 65000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const queue = path.join(lab.home, "run", "work-queue");
+  const id = "wqi_" + "A".repeat(20), stamp = { at: Date.now(), by: { user: true } };
+  write(path.join(queue, "model.json"), '{"formatVersion":1,"model":2}');
+  write(path.join(queue, "queues", "usr_you.json"), JSON.stringify({ formatVersion: 1, owner: "usr_you", items: [{ id, owner: "usr_you", title: "Keep on Lab", number: 500, status: "todo", order: 1, created: stamp, updated: stamp }] }));
+  const target = lab.start();
+  const record = await target.ready();
+  await until(() => relay.has(Buffer.from(member.address, "base64url")), "The keeper did not reach the relay.");
+  const sourceRecord = await studio.start().ready();
+  const ask = (method, route, body, headers) => request(sourceRecord, method, route, body, headers, 35000);
+  const far = lab.connect(record);
+  await until(async () => (await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json?.items.some(row => row.id === id), "The kept item did not arrive.", 30000);
+  const announcements = path.join(studio.home, "run", "peer-agents.json");
+  await until(() => {
+    try { return JSON.parse(readFileSync(announcements))[member.key]?.features?.includes("work-queue.forward"); } catch { return false; }
+  }, "The keeper did not advertise forwarding.");
+  const release = relay.intercept(Buffer.from(member.address, "base64url"), Buffer.from(main.address, "base64url"), () => true);
+  t.after(release);
+  const route = "kuvo/work-queue/items/" + id;
+  const changed = ask("PATCH", route, { status: "backlog" }, { "x-kuvo-from": "app" });
+  await until(async () => (await far("GET", route)).json?.item?.status === "backlog", "The keeper did not save the forwarded change.", 15000);
+  const answer = await changed;
+  assert.equal(answer.status, 503, answer.text);
+  assert.match(answer.json.message, /didn't answer in time|stopped answering/);
+  assert.match(answer.json.message, /can't tell whether it was done there/);
+  assert.equal(answer.json.computer.name, "Lab");
+  release();
+  assert.equal((await far("GET", route)).json.item.status, "backlog");
+});
+
+test("a failed migration copy leaves the original queue readable and refuses edits until recovery", { timeout: 45000 }, async t => {
+  const { computer } = await bench(t);
+  const studio = await computer("Studio");
+  const root = path.join(studio.home, "run", "work-queue");
+  const file = path.join(root, "queues", "usr_you.json");
+  const original = JSON.stringify({owner: "usr_you", items: [{id: "wqi_" + "A".repeat(20), owner: "usr_you", number: 1, title: "Before migration", category: "parked", order: 1}]});
+  write(file, original);
+  const blocked = path.join(root, "before-statuses");
+  write(blocked, "not a migration copy");
+  try {
+    const ask = studio.connect(await studio.start().ready());
+    const route = "kuvo/work-queue?owner=all&glance=1";
+    const view = await ask("GET", route);
+    assert.equal(view.status, 200, view.text);
+    assert.deepEqual(view.json.items.map(item => [item.title, item.status]), [["Before migration", "backlog"]]);
+    const edited = await ask("PATCH", "kuvo/work-queue/items/1", {title: "Changed"}, {"x-kuvo-from": "app"});
+    assert.notEqual(edited.status, 200, edited.text);
+    assert.match(edited.json.message, /couldn't be moved over to statuses|can't be moved over to statuses/);
+    assert.equal(readFileSync(file, "utf8"), original);
+    assert.equal(existsSync(path.join(root, "model.json")), false);
+    rmSync(blocked);
+    await until(async () => (await ask("GET", route)).status === 200 && existsSync(path.join(root, "model.json")), "Migration did not recover.");
+    assert.equal(readFileSync(path.join(root, "before-statuses", "queues", "usr_you.json"), "utf8"), original);
+    assert.equal((await ask("PATCH", "kuvo/work-queue/items/1", {title: "Changed"}, {"x-kuvo-from": "app"})).status, 200);
+  } finally {
+    if (existsSync(blocked) && readFileSync(file, "utf8") === original) rmSync(blocked, { recursive: true, force: true });
+  }
+});
+
+test("two computers' retained copies of a moved item show only the newer one and its chip", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const studio = await computer("Studio");
+  const { member, spare } = seedPeerSetup(studio.home, relay.url, 1, 3);
+  const root = path.join(studio.home, "run", "work-queue");
+  const now = Date.now(), id = "wqi_" + "A".repeat(20), stamp = { at: now - 3000, by: { user: true } };
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  for (const [peer, title, at] of [[member, "Older copy", now - 2000], [spare, "Latest copy", now - 1000]]) {
+    const row = { id, number: 800, title, owner: "ses_FarLead", status: "todo", priority: "normal", order: 1, created: stamp, updated: {...stamp, at}, labels: [], sessions: [], fileCount: 0, noteCount: 0, linkCount: 0 };
+    write(path.join(root, "peers", peer.key + ".json"), JSON.stringify({ formatVersion: 1, id: "wqt_" + peer.key.slice(0, 15), kind: "machine", at, heard: now, items: [row], owners: [{ owner: row.owner, title: "Remote work", kind: "session" }], labels: [] }));
+  }
+  const ask = studio.connect(await studio.start().ready());
+  const view = await ask("GET", "kuvo/work-queue?owner=all&glance=1&counts=1");
+  assert.equal(view.status, 200, view.text);
+  assert.deepEqual(view.json.items.map(row => [row.id, row.title, row.computer.key]), [[id, "Latest copy", spare.key]]);
+  assert.equal(view.json.counts.statuses.todo, 1);
+  const refs = await ask("GET", "kuvo/work-queue/refs?refs=800");
+  assert.equal(refs.status, 200, refs.text);
+  assert.equal(refs.json.refs["800"].computer.key, spare.key);
+});
+
+test("previewing a restore from an older main asks for an update without sending a write", { timeout: 45000 }, async t => {
+  const { computer, relay } = await bench(t);
+  const lab = await computer("Lab");
+  const { main, save } = seedPeerSetup(lab.home, relay.url, 2);
+  const now = Date.now();
+  save("run/peer-agents.json", { [main.key]: { at: now, heard: now, kind: "machine", list: [], features: ["work-queue.labels.restore"] } });
+  save("run/peer-reach.json", { [main.key]: now });
+  save("run/peer-reach-checked.json", { [main.key]: now });
+  const ask = lab.connect(await lab.start().ready());
+  assert.equal((await ask("GET", "kuvo/work-queue/labels")).status, 200);
+  const file = path.join(lab.home, "restore-preview.json");
+  write(file, JSON.stringify([{id: "cat_tests", name: "Tests", color: "mint"}]));
+  const result = await until(async () => {
+    const reply = await lab.command(["box", "labels", "restore", file, "--dry-run"]);
+    return !reply.log.includes("The local Kuvo box didn't answer") && reply;
+  }, "The local label restoration command was not ready.", 15000);
+  assert.equal(result.code, 1, result.log);
+  assert.equal(result.text.trim(), "");
+  assert.match(result.log, /Update the box on the main computer before previewing a restore from another computer\./);
+});
+
+test("a label restore preview returns promptly when the relay cannot reach the main", { timeout: 65000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const run = path.join(studio.home, "run");
+  const setup = JSON.parse(readFileSync(path.join(run, "link.json"))).setup;
+  const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign }, 1000);
+  recordRelayLease(run, setup, { high: 1000, floor: 0, relay: lease });
+  const a = studio.start(), b = lab.start();
+  await Promise.all([a.ready(), b.ready()]);
+  await until(() => {
+    try { return JSON.parse(readFileSync(path.join(lab.home, "run", "peer-agents.json")))[main.key]?.features?.includes("work-queue.labels.restore.preview"); }
+    catch { return false; }
+  }, "The preview capability did not arrive.", 30000);
+  const file = path.join(lab.home, "labels-preview.json");
+  write(file, JSON.stringify([{id: "cat_tests", name: "Tests", color: "mint"}]));
+  await until(async () => (await lab.command(["box", "labels", "restore", file, "--dry-run"])).code === 0, "Initial preview did not answer.", 30000);
+  const back = relay.disconnect(Buffer.from(main.address, "base64url"));
+  t.after(back);
+  await until(() => !relay.has(Buffer.from(main.address, "base64url")), "The main did not leave the relay.");
+  const started = Date.now();
+  const reply = await lab.command(["box", "labels", "restore", file, "--dry-run"]);
+  assert.equal(reply.code, 1, reply.log);
+  assert.equal(reply.text.trim(), "");
+  assert.match(reply.log, /Studio isn't reachable\. Try again once it's back\./);
+  assert.ok(Date.now() - started < 10000, "The quiet preview waited for its full timeout.");
+  back();
+});
+
+test("a provisional label preview restores the saved definitions of 344 items on both computers", { timeout: 100000 }, async t => {
+  const { computer, relay, leases } = await bench(t);
+  const studio = await computer("Studio"), lab = await computer("Lab");
+  const { main, member } = seedPeerSetup(studio.home, relay.url);
+  seedPeerSetup(lab.home, relay.url, 2);
+  const run = path.join(studio.home, "run");
+  const setup = JSON.parse(readFileSync(path.join(run, "link.json"))).setup;
+  const lease = leases.seed(setup, { [main.key]: main.sign, [member.key]: member.sign }, 1000);
+  recordRelayLease(run, setup, { high: 1000, floor: 0, relay: lease });
+  const library = [
+    ["cat_architecture", "Architecture", "coral"], ["cat_tests-tooling", "Tests & tooling", "mint"],
+    ["cat_features", "Features", "indigo"], ["cat_edge-cases", "Edge cases", "coral"],
+    ["cat_correctness-sweep", "Correctness sweep", "mint"], ["lbl_parked", "Parked", "graphite"],
+    ["lbl_feedback", "Feedback", "amber"], ["lbl_migration", "Migration", "lime"],
+    ["cat_revision", "Revision", "orange"], ["lbl_follow-up", "Follow-up", "sky"],
+  ].map(([id,name,color]) => ({id,name,color}));
+  const root = path.join(run, "work-queue"), file = path.join(root, "queues", "usr_you.json");
+  const stamp = { at: Date.now(), by: {user:true} };
+  const items = Array.from({length:344}, (_, index) => ({id:"wqi_" + String(index + 1).padStart(20,"0"), owner:"usr_you", title:`Saved work ${index + 1}`, number:index + 1,status:"todo",order:index + 1,labels:[library[index % library.length].id],created:stamp,updated:stamp}));
+  write(path.join(root, "model.json"), '{"formatVersion":1,"model":2}');
+  write(file, JSON.stringify({formatVersion:1, owner:"usr_you",items}));
+  const a = studio.start(), b = lab.start();
+  const [ar, br] = await Promise.all([a.ready(), b.ready()]);
+  const ask = studio.connect(ar), far = lab.connect(br), route = "kuvo/work-queue?owner=all&glance=1";
+  const before = await ask("GET", route);
+  assert.equal(before.status, 200, before.text);
+  assert.equal(before.json.items.length, items.length);
+  assert.deepEqual(before.json.labels, []);
+  assert.ok(before.json.items.every(row => !row.labels.length));
+  const saved = readFileSync(file, "utf8");
+  const paths = [studio,lab].map(box => path.join(box.home,"restore-labels.json"));
+  for (const input of paths) write(input,JSON.stringify({labels:library,removed:[]}));
+  await until(() => {
+    try { return JSON.parse(readFileSync(path.join(lab.home,"run","peer-agents.json")))[main.key]?.features?.includes("work-queue.labels.restore.preview"); }
+    catch { return false; }
+  },"Preview capability did not arrive.",30000);
+  const command = (box,index,...flags) => box.command(["box","labels","restore",paths[index],...flags]);
+  const preview = await until(async () => { const reply=await command(lab,1,"--dry-run"); return reply.code===0 && reply; }, "The provisional preview did not answer.",30000);
+  assert.match(preview.text,/The shared label library is syncing/);
+  assert.match(preview.text,/Dry run: would restore 10, already present 0, conflicts 0\./);
+  assert.deepEqual((await ask("GET","kuvo/work-queue/labels")).json.labels,[]);
+  assert.equal(readFileSync(file,"utf8"),saved);
+  const applied = await command(lab,1);
+  assert.equal(applied.code,0,applied.log);
+  assert.match(applied.text,/Restored 10, already present 0, conflicts 0\./);
+  for (const call of [ask,far]) {
+    const view=await until(async () => { const result=await call("GET",route); return result.json?.labels?.length === 10 && result.json.items.length === items.length && result.json; }, "Recovered labels did not arrive.",30000);
+    assert.deepEqual(view.labels,library);
+    const byId=new Map(view.items.map(item=>[item.id,item.labels]));
+    for (const item of items) assert.deepEqual(byId.get(item.id),item.labels);
+  }
+  assert.equal(readFileSync(file,"utf8"),saved);
+  const repeated=await command(studio,0);
+  assert.equal(repeated.code,0,repeated.log);
+  assert.match(repeated.text,/Restored 0, already present 10, conflicts 0\./);
 });

@@ -87,7 +87,7 @@ impl Numbers {
                 && let Some(ceiling) = ledger.ceiling(scope.setup.as_ref(), scope.lease)
                 && ledger.claim_room(&claimed, 0, ceiling)
             {
-                let granted = ledger.grant_claims("self", &claimed, None, ceiling);
+                let granted = ledger.grant_claims("self", &claimed, false, &[], ceiling);
                 return Ok(Some(Grant { claimed, granted }));
             }
             let high = claimed.last().expect("nonempty claim")[1];
@@ -148,11 +148,66 @@ impl Ledger {
         false
     }
 
+    /// A grant from a pre-addressed ledger is returnable only if every other
+    /// possible recipient has told a lower number and the requester told the
+    /// whole block. Only previously renumbered imports may use this evidence.
+    pub(super) fn legacy_blocks(
+        &self,
+        by: &str,
+        restores: &[[u64; 2]],
+        peers: &LegacyPeers,
+    ) -> io::Result<Vec<[u64; 2]>> {
+        if restores.is_empty() {
+            return Ok(Vec::new());
+        }
+        let old: Vec<_> = self
+            .fields
+            .get("given")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|given| given.values())
+            .filter(|block| block.get("by").is_none())
+            .filter_map(|block| Some([integer(&block["from"])?, integer(&block["to"])?]))
+            .collect();
+        if old.is_empty() {
+            return Ok(Vec::new());
+        }
+        let tops = super::super::told::known_tops(&peers.store).map_err(io::Error::other)?;
+        let known = peers
+            .keys
+            .iter()
+            .map(String::as_str)
+            .chain(tops.keys().map(String::as_str))
+            .chain(
+                self.fields
+                    .get("granted")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|granted| granted.keys().map(String::as_str)),
+            )
+            .filter(|key| *key != by && *key != "self");
+        let mut others = 0;
+        for key in known {
+            let Some(top) = tops.get(key) else {
+                return Ok(Vec::new());
+            };
+            others = others.max(*top);
+        }
+        let theirs = tops.get(by).copied().unwrap_or(0);
+        let safe = joined(
+            old.into_iter()
+                .filter(|[first, last]| *first > others && *last <= theirs)
+                .collect(),
+        );
+        Ok(intersect(&safe, restores))
+    }
+
     pub(super) fn grant_claims(
         &mut self,
         by: &str,
         claims: &[[u64; 2]],
-        owned: Option<&[[u64; 2]]>,
+        own: bool,
+        legacy: &[[u64; 2]],
         ceiling: u64,
     ) -> Vec<[u64; 2]> {
         let next = self.next();
@@ -165,7 +220,7 @@ impl Ledger {
         let before = ranges(granted.get(by));
         let mut offered = intersect(claims, &[[next, (next + 10_000).min(ceiling)]]);
         offered.extend(intersect(claims, &before));
-        if let Some(_restores) = owned.filter(|_| by != "self") {
+        if own && by != "self" {
             let blocks: Vec<_> = self
                 .fields
                 .get("given")
@@ -176,6 +231,7 @@ impl Ledger {
                 .filter_map(|block| Some([integer(&block["from"])?, integer(&block["to"])?]))
                 .collect();
             offered.extend(intersect(claims, &blocks));
+            offered.extend(intersect(claims, legacy));
         }
         let offered = joined(offered);
         if let Some([_, last]) = offered.last() {

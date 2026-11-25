@@ -176,12 +176,23 @@ impl PeerReads {
     }
 
     fn detail(&self, item: &Item, all: &[Item]) -> Result<Value, super::store::Error> {
+        let sessions = Sessions::read(self.sessions.latest_record());
+        let far = told::items_elsewhere(
+            &self.store,
+            all,
+            &self.peers.view(),
+            "all",
+            &sessions,
+            &[],
+            self.peers.now(),
+        )?;
         Ok(view::detail(
             item,
             all,
+            &far.items,
             &self.refs,
             &Seen::read(&self.store)?,
-            &Sessions::read(self.sessions.latest_record()),
+            &sessions,
             &Assignees::read(&self.store),
         ))
     }

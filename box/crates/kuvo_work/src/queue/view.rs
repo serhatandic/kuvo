@@ -573,6 +573,7 @@ pub(super) fn mutation(item: &Item, assignees: &Assignees) -> Value {
 pub(super) fn detail(
     item: &Item,
     all: &[Item],
+    far: &[Value],
     references: &References,
     seen: &Seen,
     sessions: &Sessions,
@@ -603,7 +604,7 @@ pub(super) fn detail(
     row["files"] = json!(item.files);
     row["links"] = json!(item.links);
     row["handed"] = json!(item.handed);
-    row["itemRelations"] = json!(refs::relations(item, all));
+    row["itemRelations"] = json!(refs::relations(item, all, far));
     row["bodyMentions"] = json!(bound_mentions(&index["body"]));
     row["canLinkItems"] = (item.removed.is_none() && row.get("handing").is_none()).into();
     json!({"item": row})

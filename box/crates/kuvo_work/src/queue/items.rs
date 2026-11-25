@@ -95,6 +95,7 @@ struct Writer {
     reads: PeerReads,
     forward: Forward,
     revisions: Arc<offline::Revisions>,
+    retell: told::Retell,
 }
 
 pub(super) fn register(
@@ -104,6 +105,7 @@ pub(super) fn register(
     relay: Option<RelayHandle>,
     reads: PeerReads,
     owners: ownership::Handle,
+    retell: told::Retell,
 ) -> Runtime {
     let PeerReads {
         store,
@@ -113,6 +115,7 @@ pub(super) fn register(
         ..
     } = &reads;
     let writer = Writer {
+        retell,
         revisions: Arc::new(offline::Revisions::new()),
         numbers: Numbers::new(store, setup.clone(), peers.clone()),
         files: Arc::new(ClientFiles::new()),
@@ -312,6 +315,9 @@ impl Writer {
             {
                 send(relay, peer, json!({"ask":ask}), now).await;
             }
+            if self.retell.take() {
+                exchange.snapshots.again();
+            }
             exchange
                 .snapshots
                 .publish(&self.reads, relay, self.setup.queue_setup(), now)
@@ -327,6 +333,9 @@ impl Writer {
         envelope: &Value,
         exchange: &mut Exchange,
     ) -> Result<(), Error> {
+        if envelope["ask"] == "agents" && self.peers.view().roster.member(key).is_some() {
+            exchange.snapshots.reset(key);
+        }
         let queue = &envelope["workQueue"];
         if !queue.is_object()
             || queue["memory"].as_bool() == Some(true)
@@ -584,6 +593,7 @@ impl Writer {
             let Prepared::Replay(value) = prepared else {
                 unreachable!()
             };
+            self.retell.again();
             return Ok(value);
         };
         let assigned = self
@@ -614,6 +624,7 @@ impl Writer {
             document.save(&writer.store).map_err(storage_refusal)?;
             published.commit();
             compaction.finish(&writer, now)?;
+            writer.retell.again();
             Ok(answer)
         })
         .await
@@ -696,6 +707,7 @@ impl Writer {
     async fn change(&self, name: String, removal: Removal) -> Result<Value, Refusal> {
         self.change_as(name, removal, json!({"user":true}), None)
             .await
+            .inspect(|_| self.retell.again())
     }
 
     async fn change_as(
@@ -781,7 +793,12 @@ impl Writer {
                     if let Some(source) = item.source() {
                         let twin = all.iter().find(|other| other.id != item.id && other.removed.is_none()
                             && other.source().is_some_and(|other| writer.refs.same_source(source, other)))
-                            .map(|other| format!("in the queue of {}", other.owner))
+                            .map(|other| {
+                                let sessions = super::sessions::Sessions::read(writer.sessions.latest_record());
+                                let title = (!agent).then(|| sessions.known_title(&other.owner)).flatten();
+                                let queue = title.map_or_else(|| other.owner.clone(), |title| format!("\"{title}\""));
+                                format!("in the queue of {queue}")
+                            })
                             .or_else(|| far.items.iter().find(|other| other["id"] != item.id && writer.refs.same_source(source, &other["source"]))
                                 .map(|other| format!("on {}", other["computer"]["name"].as_str().unwrap_or_default())));
                         if let Some(where_) = twin {
