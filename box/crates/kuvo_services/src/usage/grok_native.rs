@@ -28,25 +28,6 @@ pub fn folder(managed: Option<PathBuf>, env: &Environment, personal: &Path) -> P
         None => personal.join(".grok"),
     }
 }
-/// Only the CLI's own saved sign-in, never browser or editor credentials.
-pub fn credential(home: &Path) -> io::Result<Option<(String, Option<String>)>> {
-    let Some(stored) = kuvo_store::files::read(&home.join("auth.json"))? else {
-        return Ok(None);
-    };
-    let parsed: Value = serde_json::from_slice(&stored)?;
-    Ok(parsed.as_object().and_then(|entries| {
-        entries.values().find_map(|entry| {
-            let key = entry["key"]
-                .as_str()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())?;
-            Some((
-                key.to_owned(),
-                entry["id_token"].as_str().map(str::to_owned),
-            ))
-        })
-    }))
-}
 struct Asking {
     input: std::io::PipeWriter,
     answers: mpsc::Receiver<Value>,
@@ -99,7 +80,7 @@ pub enum Answer {
     Expired,
     Failed,
 }
-pub async fn read(home: PathBuf, isolated: bool) -> io::Result<Answer> {
+pub async fn read(home: PathBuf, isolated: bool, api_key: bool) -> io::Result<Answer> {
     tokio::task::spawn_blocking(move|| {
         let mut env:Environment=std::env::vars_os().collect();
         let personal=OsAccount::current()?.home_folder(Platform::current(),&env)?;
@@ -109,7 +90,7 @@ pub async fn read(home: PathBuf, isolated: bool) -> io::Result<Answer> {
         env.insert("GROK_HOME".into(),home.as_os_str().to_owned());
         env.insert("GROK_DISABLE_AUTOUPDATER".into(),"1".into());
         let mut spawn=Spawn::new(executable.path(),env);
-        spawn.executable=executable;spawn.cwd=Some(home);
+        spawn.executable=executable;spawn.cwd=Some(if home.is_dir() { home } else { personal });
         spawn.args=["agent","--no-leader","stdio"].into_iter().map(Into::into).collect();
         spawn.stdin=Stdio::Pipe;spawn.stdout=Stdio::Pipe;spawn.stderr=Stdio::Null;
         let mut child=spawn.spawn()?;
@@ -129,7 +110,7 @@ pub async fn read(home: PathBuf, isolated: bool) -> io::Result<Answer> {
             }
             let mut billing=asking.call("_x.ai/billing",json!({}))?;
             if billing.as_ref().err().is_some_and(auth_error) {
-                match asking.call("authenticate",json!({"methodId":"cached_token"}))? {
+                match asking.call("authenticate",json!({"methodId":if api_key { "xai.api_key" } else { "cached_token" }}))? {
                     Ok(_)=>{},Err(error)=>return Ok(if auth_error(&error){Answer::Expired}else{Answer::Failed})
                 }
                 billing=asking.call("_x.ai/billing",json!({}))?;

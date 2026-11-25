@@ -36,6 +36,20 @@ impl Window {
     fn valid(&self) -> bool {
         !self.id.is_empty() && self.used.is_finite()
     }
+    /// Makers can name the same plan window differently (for example an
+    /// engine and its native CLI). Its semantic identity is what it counts
+    /// and how long it lasts; only nameless, spanless limits fall back to ID.
+    pub fn limit_key(&self) -> String {
+        if self.model.is_none() && self.name.is_none() && self.minutes.is_none() {
+            return format!("id:{}", self.id);
+        }
+        format!(
+            "{}|{}|{}",
+            self.model.as_deref().unwrap_or_default().to_lowercase(),
+            self.name.as_deref().unwrap_or_default(),
+            self.minutes.map(|m| m.to_string()).unwrap_or_default()
+        )
+    }
     pub fn expired(&self, now: u64) -> bool {
         self.resets_at.is_some_and(|at| at <= now)
     }
@@ -120,7 +134,71 @@ pub struct Trail {
     #[serde(default)]
     notice_pace: Option<Pace>,
 }
+/// Local and per-peer projections keep the maker's real window ID. Look up
+/// equivalent limits by meaning before accepting a new observation.
+pub(super) fn equivalent_trail(
+    trails: &BTreeMap<String, Trail>,
+    window: &Window,
+) -> Option<String> {
+    let key = window.limit_key();
+    if trails
+        .get(&window.id)
+        .is_some_and(|trail| trail.current.limit_key() == key)
+    {
+        return Some(window.id.clone());
+    }
+    trails
+        .iter()
+        .find(|(_, trail)| trail.current.limit_key() == key)
+        .map(|(id, _)| id.clone())
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardPrediction {
+    UsedUp,
+    RunsOut { at: u64 },
+    Lasts,
+}
 impl Trail {
+    /// A card's estimate uses the very same accepted, current-window samples as notices.
+    pub fn card_prediction(&self, now: u64) -> Option<CardPrediction> {
+        let w = &self.current;
+        if w.expired(now) {
+            return None;
+        }
+        if w.used >= 0.995 {
+            return Some(CardPrediction::UsedUp);
+        }
+        if now.saturating_sub(w.read) > 30 * MINUTE {
+            return None;
+        }
+        let reset = w.resets_at?;
+        let latest = self.samples.last()?;
+        if latest.at != w.read {
+            return None;
+        }
+        let stretch = self.lookback();
+        let recent = self
+            .samples
+            .iter()
+            .filter(|s| s.at >= latest.at.saturating_sub(stretch))
+            .collect::<Vec<_>>();
+        let first = recent.first()?;
+        if recent.len() < 3 || latest.at.saturating_sub(first.at) < (15 * MINUTE).max(stretch / 4) {
+            return None;
+        }
+        let rate = (latest.used - first.used) / (latest.at - first.at) as f64;
+        if !(rate > 0.) {
+            return Some(CardPrediction::Lasts);
+        }
+        let out = latest.at as f64 + (1. - latest.used) / rate;
+        if out >= reset.saturating_sub(MINUTE) as f64 {
+            return Some(CardPrediction::Lasts);
+        }
+        let rounded = (out / (5 * MINUTE) as f64).round() as u64 * (5 * MINUTE);
+        Some(CardPrediction::RunsOut {
+            at: rounded.max(now),
+        })
+    }
     pub fn new(mut first: Window) -> Option<Self> {
         if !first.valid() {
             return None;
@@ -152,7 +230,7 @@ impl Trail {
         toggles: &BTreeSet<Milestone>,
     ) -> Option<Vec<Milestone>> {
         let old = &self.current;
-        if !next.valid() || next.id != old.id || next.read <= old.read {
+        if !next.valid() || next.limit_key() != old.limit_key() || next.read <= old.read {
             return None;
         }
         next.used = next.used.clamp(0.0, 1.0);

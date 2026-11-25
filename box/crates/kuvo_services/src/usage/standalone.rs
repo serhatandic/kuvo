@@ -124,6 +124,7 @@ struct Google {
 enum Credential {
     Grok {
         home: PathBuf,
+        api_key: bool,
     },
     Cursor {
         key: String,
@@ -294,18 +295,31 @@ impl Readers {
         let provider = record.provider().to_string();
         let (service, sign_in, who, credential) = match record.kind {
             AgentKind::Grok => {
-                let home = grok_native::folder(managed, &self.env, &self.personal);
-                let Some((key, id_token)) = grok_native::credential(&home)? else {
+                use kuvo_agents::acp::{GrokSecret, grok_installed, grok_secret};
+                // Exactly the credential and installed check Accounts uses. The
+                // transcript index does not participate in sign-in admission.
+                let Some(secret) = grok_secret(managed.as_deref()) else {
                     return Ok(None);
                 };
-                let who = jwt_subject(&key)
-                    .or_else(|| id_token.as_deref().and_then(jwt_subject))
-                    .map(|id| identity("xai", &id));
+                if !grok_installed() {
+                    return Ok(None);
+                }
+                let mark = secret.credential();
+                let (who, api_key) = match secret {
+                    GrokSecret::ApiKey(_) => (None, true),
+                    GrokSecret::SignedIn { key, id_token } => (
+                        jwt_subject(&key)
+                            .or_else(|| id_token.as_deref().and_then(jwt_subject))
+                            .map(|id| identity("xai", &id)),
+                        false,
+                    ),
+                };
+                let home = grok_native::folder(managed, &self.env, &self.personal);
                 (
                     Provider::Grok,
-                    sign_mark(&key),
+                    mark,
                     who,
-                    Credential::Grok { home },
+                    Credential::Grok { home, api_key },
                 )
             }
             AgentKind::Cursor if !self.isolated || self.fixture.is_some() => {
@@ -527,11 +541,11 @@ impl Readers {
                 continue;
             }
             let result = match &source.credential {
-                Credential::Grok { home } => {
+                Credential::Grok { home, api_key } => {
                     if !explicit {
                         continue;
                     }
-                    match grok_native::read(home.clone(), self.isolated).await {
+                    match grok_native::read(home.clone(), self.isolated, *api_key).await {
                         Ok(grok_native::Answer::Billing(body)) => grok(&body, at),
                         Ok(grok_native::Answer::Expired) => Err(problem(
                             ProblemKind::Expired,
@@ -607,7 +621,7 @@ impl Readers {
             }
             let service = service.clone();
             let kept = tokio::task::spawn_blocking(move || {
-                service.observe_facts(source.account, windows, Some(facts), at)
+                service.observe_confirmed_facts(source.account, windows, facts, at)
             })
             .await;
             if !matches!(kept, Ok(Ok(()))) {
@@ -1269,19 +1283,23 @@ impl Readers {
                         "Antigravity's quota summary has no readable buckets.",
                     ));
                 }
-                let plan = match self
+                let (plan, waiting) = match self
                     .google_local_call(state, &client, &endpoint, "GetUserStatus", at)
                     .await
                 {
                     Ok((status, body, _)) if (200..300).contains(&status) => {
-                        local_google_plan(&body)
+                        (local_google_plan(&body), false)
                     }
-                    _ => None,
+                    Ok((429, _, _)) => (None, true),
+                    _ => (None, false),
                 };
+                let partial =
+                    waiting || windows.iter().filter(|w| w.id != "argon-weekly").count() < 4;
                 return Ok(Some((
                     windows,
                     Facts {
                         plan,
+                        partial,
                         ..Default::default()
                     },
                     who,
@@ -1332,6 +1350,7 @@ impl Readers {
                     windows,
                     Facts {
                         plan: local_google_plan(&status),
+                        partial: true,
                         ..Default::default()
                     },
                     who,
@@ -1520,16 +1539,22 @@ impl Readers {
             )
         })?;
         let mut plan = None;
-        if let Ok((status,value,_))=self.google_held_call(state,main,"v1internal:loadCodeAssist",&access,json!({"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}),at).await&& (200..300).contains(&status){
+        let mut partial =
+            held.is_some() || windows.iter().filter(|w| w.id != "argon-weekly").count() < 4;
+        if let Ok((status,value,_))=self.google_held_call(state,main,"v1internal:loadCodeAssist",&access,json!({"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}),at).await {
+            partial |= status == 429;
+            if (200..300).contains(&status) {
             plan=match value["paidTier"]["id"].as_str(){
                 Some("g1-pro-tier")=>Some("Pro".into()),Some("g1-ultra-tier")=>Some("Ultra".into()),Some("g1-ultra-lite-tier")=>Some("Ultra Lite".into()),
                 _=>str_at(&value["paidTier"]["name"]).or_else(||str_at(&value["currentTier"]["name"])).map(google_plan)
+            }
             }
         }
         Ok((
             windows,
             Facts {
                 plan,
+                partial,
                 ..Default::default()
             },
             credential.identity.clone(),

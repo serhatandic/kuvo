@@ -95,6 +95,9 @@ impl Problem {
 }
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct Facts {
+    /// A completed maker read that could not contain every pool.
+    #[serde(default, skip_serializing_if = "false_value")]
+    pub partial: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

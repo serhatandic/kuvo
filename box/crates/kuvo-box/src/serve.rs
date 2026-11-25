@@ -595,6 +595,7 @@ pub async fn run(
         &hostname::get()?.to_string_lossy(),
     )
     .with_history(usage_settings, limits.clone())
+    .with_directory(peers.reader())
     .with_cursor(standalone_plans.clone());
     let cursor_watch = insights.follow_cursor(routes.client_activity());
     let price_watch = insights.follow_prices(&account);

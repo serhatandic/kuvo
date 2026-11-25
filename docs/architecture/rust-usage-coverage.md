@@ -68,6 +68,19 @@ is in the thin app rather than kuvo_box). All have resident route specs.
 | Exact pricing | `usage_pricing.rs`, bundled rate fixture with exact f64 bits; native corpus differential | Exact catalog numbers; wire aggregation order; Mac, Lokum, WSL and native Windows verified |
 | Native Windows Antigravity | `native Windows finds only the listening language server of its own Antigravity ACP profile` | Actual native process tree and listening sockets, synthetic maker and wrong-profile sibling; Mac, Lokum, WSL and native Windows verified |
 
+| Limits admission | `old Grok transcripts are history, never proof of a current sign-in` | Both boxes, fixture history without a credential |
+| Limits admission | Extended standalone, native Codex/Claude and engine Go tests | Rust correction, credential withdrawal without another maker request; uses shared Grok Accounts credential and installation helper |
+| Antigravity partial | `Antigravity retains a missing reset-less pool only for its first partial reading, across restart` | Rust maker fixture, old Rust failed |
+| Antigravity rail | `Antigravity’s menu takes both rings from the same tightest quota pool` | Rust maker fixture and Helper menu, old Rust failed |
+| Upgrade | `an upgrade retains the old accepted reading only for the still-signed-in account` | Rust legacy cache fixture, identity-gated, no CLI launch |
+| Cards/rail | `accepted pace and the emptiest of three named accounts determine cards and rail, even after restart` | Rust deterministic accepted legacy windows/pace, plus reset card words in Codex reset scenario |
+| Insights lineage | `Insights groups bot chats, overseen starts and nested subagents without expanding their transcripts` | Both boxes; old Rust failed bot totals |
+| Insights kept | `a_completed_summary_survives_restart_and_does_not_wait_for_the_catch_up_gate` | Scoped real SQLite test, complete snapshot under same setup only |
+| Semantic limits | `different provider window names for the same account do not create a second or stale ring` | Rust correction, old Rust showed two windows |
+| Insights retained lineage | `a_manual_engine_header_refresh_repairs_retained_calls_without_recounting_their_origin` | Scoped real SQLite test; old draft failed to attach bot to retained calls |
+| Insights pages | `Insights pages share the whole filtered snapshot, list its bots, and refuse invalid pages` | Both boxes; old Rust had empty bot choices; expected destination from actual ownership |
+| Insights unowned | `Insights keeps every unowned session beyond the former ranked-list cap` | Both boxes; 201 compact engine fixture sessions |
+
 ## Deliberate work-timing changes
 
 The user's revised rule is to keep frequently viewed data ready, incrementally, and to
@@ -432,7 +445,12 @@ Grok limit row. A Rust-only regression extends the standalone fixture: after
 Grok, Cursor and Antigravity have supplied real fixture plan readings, removing
 all three credential files must remove the live rows and the retained readings,
 without waiting for another maker request. The old ninth Rust tip failed that
-regression (all three stale windows remained on the next GET).
+regression (all three stale windows remained on the next GET). After the 4.3
+merge, native Grok admission uses the actual Accounts `GrokSecret`,
+`grok_secret` and `grok_installed` functions, including the environment key
+precedence and installed check; explicit ACP billing uses the matching auth
+method. The fixture compares actual Accounts connections with Usage before
+and after credential/installation changes.
 
 Credential admission is separate from history: historical native and engine
 logs are indexed even after sign-out. Standalone credential file changes and
@@ -451,12 +469,74 @@ An away peer's last reported row is still explicitly last-told evidence, not a
 new local sign-in; an old TS peer cannot be made to send an updated account list
 by checking files on another computer.
 
+## Additional parity in the tenth slice
+
+- Antigravity keeps a reset-less missing pool for one partial round, persists that
+  evidence over restart, and selects both menu rings from the same tightest pool.
+- Account windows use the same semantic key as the old box (`limitOf`): name,
+  model and duration, otherwise provider ID. Accepted peer/local trails survive
+  provider-specific window ID changes; an older reset under another ID is not a
+  second window. Old Rust failed the same-account two-ID fixture. The rail,
+  card and Helper draw from the same accepted evidence, including grouped cards,
+  current-window pace, reset words, and display freshness/time labels. Legacy
+  TS window/pace records are imported only after the live maker identity agrees.
+- Complete (never loading) Insights summaries have a bounded durable snapshot
+  tied to the exact admitted setup/computer scope. A ready query still uses the
+  mutation-invalidated SQLite cache; an explicit refresh waits for recount and
+  never takes the old-answer path. Compact session headers give bot lineage,
+  starter chains, own chats and nested subagents; a manual recount repairs
+  retained calls' lineage even if the maker DB stamp did not change, without
+  decoding any maker message rows or replacing their counts/origin. The scoped
+  old-draft failure (`bot` was null) and fixed test cover this.
+- Overview choices, whole-snapshot page shares, known session destinations via
+  the existing owner authority, and precise invalid-period/page refusals have
+  a both-box fixture. A distinct 201-row engine fixture verifies that the first
+  summary list is not truncated at 200. Current local/peer bot looks use the
+  directory and the local bot records. Only completed skill tool metadata is
+  projected into the index (no tool output or skill file contents); the schema
+  upgrade reads compact older projections once, not on a timer.
+- Overview's local counted time is the actual incremental observation; a
+  connected peer with no changed logs is not marked stale just because that
+  observation is old. The peer remains current through authenticated updates,
+  with away coverage retaining its last reading. The expanded differential
+  before skills correction exposed an actual missing empty `skills` array in
+  detail and differing real scan timestamps; no floating-point tolerance or
+  comparator change is introduced.
+
+## Verification of the tenth port slice
+
+Mac Rust usage: 53/53 applicable (one native-Windows fixture skip); TypeScript:
+20/20 applicable (34 Rust-only/platform skips); engine-sessions: 81/81. Workspace
+and Bun checks pass. The shared Grok credential/API-key and skill projection
+regressions pass on the rebuilt box. The expanded 13-request seeded differential
+matches 12 answers exactly and differs on only `coverage[0].scanned` in the
+remaining overview answer (actual observation time, intentionally not normalized).
+The unmodified exact comparator reports no remaining skills or numeric differences.
+The native-log corpus’s UTC and Istanbul answers also match exactly (2/2).
+The full home inventories retain the earlier documented architecture/cache differences.
+The three scoped lineage repair/resolver/kept-summary tests pass. Lokum (one capped
+static-musl container), WSL and native Windows each pass 53/53 applicable cases;
+Windows skips the Unix-only synthetic discovery case and exercises the actual
+Windows process/socket fixture instead. All remote scratch and test processes
+were removed, as were the cross target directories.
+
+Cumulative non-test size: 549,884 new-module characters plus 40,276 added existing
+production characters (590,160 total, 0.858× the 687,546 TS characters).
+
+Remaining lightness opportunity: `kuvo_agents/src/claude/program.rs`'s
+`plan_sign_in` calls `local_status` (`:287`, `:344`); on macOS with a retained
+OAuth identity, checking the actual Keychain credential may invoke the existing
+`security` helper (`keychain_written`, `:561`) on a limits read. This avoids
+starting Claude itself and ensures a sign-out is not masked by cached metadata.
+Replacing the short subprocess with native credential metadata is a separate
+platform seam improvement; no change to sign-in truth is assumed here.
+
 ## Remaining implementation gaps
 
-- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity partial-read lifetime, local CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state edge cases.
+- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are local Antigravity CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state edge cases.
 - Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Engine ChatGPT reset inventory/spending, overlapping confirmations and prolonged unsettled-spend settlement now have focused scenarios. Revoked-member answers, prolonged remote settlement variants and full decision convergence remain open.
-- Reading preservation across TS-to-Rust upgrade, full mixed-version multi-computer account identity, extended notice-state handoff and forwarder election, all card/rail/detail presentation and notice visibility cases.
-- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, bot lineage/appearance, full summary and detail parity remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
+- Legacy reading/pace import, partial windows, semantic account windows, cards/rail/display and notice visibility are implemented with focused cases; remaining mixed-version multi-computer account identity, extended notice-state handoff/forwarder election, full card/display edge cases and delivery parity.
+- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, full historical lineage replay, remote bot appearance and remaining summary/detail edge states remain open. Bot lineage, kept summaries, page shares, choices and ownership destinations now have boundary cases; the overview/summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
 
 ## TypeScript case inventory
@@ -483,24 +563,24 @@ by checking files on another computer.
 ### `box/test/usage/insights-checkpoints.test.ts`
 
 - L11: Insights checkpoints local history and counts only changed transcripts after restart — partial — startup/file-change portable index, compact mutation cursor, native Claude append/rewrite/restart scenario; exact all-source case remains open.
-- L41: Insights adds engine updates without replaying the older calls in the same database — open.
+- L41: Insights adds engine updates without replaying the older calls in the same database — covered by changed native engine channel scenario with decoded-row count and retained checkpoint.
 - L74: learning the box's peer name leaves its unchanged local history checkpoint in place — open — related portable checkpoint scenario above; this exact case not yet ported.
 - L111: a large backfill keeps all usage as it releases batches and stays finished after a restart — open.
 
 ### `box/test/usage/insights-kept.test.ts`
 
-- L26: a period asked again is answered at once with the last summary, marked as of when, while it's read afresh — partial — bounded mutation-invalidated SQL cache; durable kept summaries open.
-- L62: a summary that says the box is still reading its usage is never kept — partial — cache admits only ready summaries; durable cache fixture open.
+- L26: a period asked again is answered at once with the last summary, marked as of when, while it's read afresh — covered by the scoped complete-summary/restart/gate test (explicit refresh bypasses kept answers).
+- L62: a summary that says the box is still reading its usage is never kept — partial — only complete summaries are persisted; scoped restart and changed setup refusal, exact repeated loading fixture open.
 
 ### `box/test/usage/insights-refresh.test.ts`
 
-- L36: a refresh counts again before it answers, and the summary says when the box last counted — open.
+- L36: a refresh counts again before it answers, and the summary says when the box last counted — partial — explicit route recount and scoped retained-header repair; explicit refresh while catch-up is busy remains open.
 
 ### `box/test/usage/insights-summary.test.ts`
 
-- L58: a bot's row is its own chat and every session it oversees, subagents and older starts included — open.
-- L123: Bots includes all unowned sessions after the old ranked-list limit — open.
-- L133: a refresh attributes retained calls through engine sessions without changing their usage or origin — open.
+- L58: a bot's row is its own chat and every session it oversees, subagents and older starts included — covered by both-box bot lineage route scenario and scoped resolver.
+- L123: Bots includes all unowned sessions after the old ranked-list limit — covered by 201-session native SQLite scenario on both boxes.
+- L133: a refresh attributes retained calls through engine sessions without changing their usage or origin — covered by scoped real SQLite retained-call repair test (zero decoded maker rows).
 - L188: each model has one name however its id was written, and narrows by it — covered by named model aliases and filter scenario.
 - L215: the cache rate is cached input over all input, at every level — partial — named summary fixture checks total cache rate; all ranked levels open.
 - L234: the change is against the period of the same length just before — covered by named summary fixture with a prior-period call.
@@ -516,7 +596,7 @@ by checking files on another computer.
 - L132: a newly available provider call replaces its saved placeholder across filters — open.
 - L142: day bounds use the viewer's time zone, including DST transitions — open.
 - L154: a cold yearly query and repricing both leave the bridge event loop responsive — open.
-- L186: a session page computes shares of the whole filtered snapshot after a scan — open.
+- L186: a session page computes shares of the whole filtered snapshot after a scan — covered by both-box 51-session two-page scenario, plus detail and exact invalid-page refusals.
 - L207: resume peer pages, reject vouched computers, and price incoming records locally — partial — peer live cursor/delta, mixed version and unadmitted-origin filter; per-peer pricing fixture and multiple-page malformed-record matrix open.
 - L231: rewind an in-range cursor, then reset again when the serving peer learns the retired origin — open.
 - L281: historical replay converges on complete counts and rejects a conflicting unrelated origin — open.
@@ -526,15 +606,15 @@ by checking files on another computer.
 
 ### `box/test/usage/limit-card.test.ts`
 
-- L67: a 5-hour window used at a steady pace says when it runs out, ahead of its reset, and the ring gets a warning dot — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L79: a window used slowly lasts until its reset, and says so with no dot — open — related accepted-window and notice tests above; this exact case not yet ported.
+- L67: a 5-hour window used at a steady pace says when it runs out, ahead of its reset, and the ring gets a warning dot — covered by accepted pace/card route, exact words and ETA.
+- L79: a window used slowly lasts until its reset, and says so with no dot — covered by the slow account in the accepted pace/card route.
 - L87: with too few readings nothing is predicted: what's left and when it resets, no more — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L95: what the readings said is kept through a restart of the box — open.
-- L103: each card shows only its own account, named among its agent's others — open.
-- L124: a reset is offered only where one can be used, naming the soonest to expire — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L139: an agent's many accounts share one ring, its card a strip of them emptiest first, fine ones counted — open.
+- L95: what the readings said is kept through a restart of the box — covered by accepted pace/card route with exact before/after card and rail.
+- L103: each card shows only its own account, named among its agent's others — covered by named three-account route.
+- L124: a reset is offered only where one can be used, naming the soonest to expire — partial — real Codex reset card words and action, inventory/confirm fixture; no-credit card edge case open.
+- L139: an agent's many accounts share one ring, its card a strip of them emptiest first, fine ones counted — covered by three-account accepted pace/card/rail route.
 - L158: each coding agent's last numbers stay on its card, as of when, once it can't be read any more — open.
-- L179: an account with no numbers read yet has no ring, rather than an empty one — open.
+- L179: an account with no numbers read yet has no ring, rather than an empty one — covered by legacy cache account-switch scenario.
 - L208: a weekly window read every minute still shows a forecast after eight hours — open.
 - L213: a busy weekly window keeps its forecast through a box restart — open.
 - L219: Codex keeps a weekly forecast when its reported reset time moves by a few minutes — open — related accepted-window and notice tests above; this exact case not yet ported.
@@ -544,7 +624,7 @@ by checking files on another computer.
 
 ### `box/test/usage/limit-display.test.ts`
 
-- L24: Usage names windows, supplies their used percentages and lists a shared source once — open.
+- L24: Usage names windows, supplies their used percentages and lists a shared source once — partial — accepted pace/card route verifies used meter and title; multi-source meter choice remains open.
 - L44: Usage dates each merged meter by its own reading and names the computer that supplied it — open.
 - L56: Usage marks an overdue reset and leaves the historical value intact independently of the sidebar — open.
 - L65: Usage ages readings by their own time and marks away or failed sources old immediately — open.
@@ -620,15 +700,15 @@ by checking files on another computer.
 
 ### `box/test/usage/limits-sign-ins.test.ts`
 
-- L113: signed out of Cursor in Accounts, its ring is gone at once, and what was read of it with it — open.
+- L113: signed out of Cursor in Accounts, its ring is gone at once, and what was read of it with it — partial — standalone fixture removes real credential file, watcher withdraws retained rows before a client reads; Accounts action route variant open.
 - L143: Accounts' word on Cursor is the rings': its own key turned down there, no ring, though the key still reads; the Cursor app's sign-in is never read — open.
-- L165: a Mac's Claude Code signed in has its ring before any turn told its limits, as Claude Code says them; signed out, none — open.
+- L165: a Mac's Claude Code signed in has its ring before any turn told its limits, as Claude Code says them; signed out, none — covered by native usage-control fixture and OAuth credential removal; explicit-only process start is deliberate work timing.
 - L186: a newly signed-in Mac Claude publishes its first reading before the next limits round — open.
-- L209: what was kept from before is never shown before the agents have said who's signed in, and one signed out since goes from the file — open.
-- L229: each ring has its own provider's windows only: Cursor's own Grok Bot week stays Cursor's, and Grok's row has Grok's — open.
+- L209: what was kept from before is never shown before the agents have said who's signed in, and one signed out since goes from the file — partial — identity-gated legacy upgrade and credential-removal cache withdrawal fixtures.
+- L229: each ring has its own provider's windows only: Cursor's own Grok Bot week stays Cursor's, and Grok's row has Grok's — covered by standalone maker fixture.
 - L244: a sign-in check that fails (offline) isn't a sign-out: the ring and its readings stay — open.
 - L256: an agent that never says how its sign-in stands holds up no reading: the others are read, and it's as it was — open.
-- L266: started again, the box lists what it last read of an account still signed in here until its agent says, so the ring doesn't blink out; one signed out meanwhile isn't — open.
+- L266: started again, the box lists what it last read of an account still signed in here until its agent says, so the ring doesn't blink out; one signed out meanwhile isn't — partial — legacy upgrade and named card restart, stale identity refused; provider probe timeout variants open.
 
 ### `box/test/usage/limits.test.ts`
 
@@ -728,7 +808,7 @@ by checking files on another computer.
 - L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — partial — refusal fixture proves refresh-only defaults; metadata combinations remain open.
 - L312: profile and predictable state symlinks cannot redirect refusal writes; signout prunes state — open.
 - L334: agy with no CSRF is retried after an authless endpoint 403 — open.
-- L347: missing windows without resets survive only one partial round across restart — open.
+- L347: missing windows without resets survive only one partial round across restart — covered by Antigravity partial-pool restart route.
 - L360: refused access refreshes once, valid refresh cache survives expired source expiry — open.
 - L380: malformed and unreadable sign-in retain known identity and windows — open.
 - L404: access refusal persists through failed refresh and restart without resending old bearer — covered by refusal/restart fixture.

@@ -130,10 +130,7 @@ impl ResidentAgents {
             .ok_or_else(over)?;
         if status == Status::Complete {
             entry.credentials_changed().await;
-            self.feed.emit(
-                "kuvo.agent.account.changed",
-                serde_json::json!({"provider":provider.to_string()}),
-            );
+            self.account_changed(provider);
         }
         Ok(status)
     }
@@ -160,10 +157,7 @@ impl ResidentAgents {
         let entry = lookup(&roster, provider)?;
         entry.agent.sign_in_with_key(key.trim().into()).await?;
         entry.credentials_changed().await;
-        self.feed.emit(
-            "kuvo.agent.account.changed",
-            serde_json::json!({"provider":provider.to_string()}),
-        );
+        self.account_changed(provider);
         Ok(())
     }
 
@@ -172,10 +166,7 @@ impl ResidentAgents {
         let entry = lookup(&roster, provider)?;
         entry.agent.sign_out().await?;
         entry.credentials_changed().await;
-        self.feed.emit(
-            "kuvo.agent.account.changed",
-            serde_json::json!({"provider":provider.to_string()}),
-        );
+        self.account_changed(provider);
         Ok(())
     }
 
@@ -195,18 +186,31 @@ impl ResidentAgents {
         .collect()
     }
 
+    fn account_changed(&self, provider: &Provider) {
+        self.feed.emit(
+            "kuvo.agent.account.changed",
+            serde_json::json!({"integrationID":provider.to_string()}),
+        );
+    }
+
     pub async fn add(&self, kind: AgentKind, label: Option<String>) -> io::Result<Account> {
-        self.ask(|reply| Command::Add(kind, label, reply)).await
+        let account = self.ask(|reply| Command::Add(kind, label, reply)).await?;
+        self.account_changed(&account.provider());
+        Ok(account)
     }
 
     pub async fn rename(&self, provider: Provider, label: Option<String>) -> io::Result<()> {
-        self.ask(|reply| Command::Rename(provider, label, reply))
-            .await
+        self.ask(|reply| Command::Rename(provider.clone(), label, reply))
+            .await?;
+        self.account_changed(&provider);
+        Ok(())
     }
 
     pub async fn remove(&self, provider: Provider, only_unsigned: bool) -> io::Result<()> {
-        self.ask(|reply| Command::Remove(provider, only_unsigned, reply))
-            .await
+        self.ask(|reply| Command::Remove(provider.clone(), only_unsigned, reply))
+            .await?;
+        self.account_changed(&provider);
+        Ok(())
     }
 
     async fn ask<T>(&self, command: impl FnOnce(Answer<T>) -> Command) -> io::Result<T> {

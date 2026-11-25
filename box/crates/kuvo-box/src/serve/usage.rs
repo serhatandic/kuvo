@@ -142,7 +142,7 @@ pub async fn refresh(
                     if only_resets {
                         service.observe_reset_facts(account, facts, at)
                     } else {
-                        service.observe_facts(account, windows, Some(facts), at)
+                        service.observe_confirmed_facts(account, windows, facts, at)
                     }
                 })
                 .await
