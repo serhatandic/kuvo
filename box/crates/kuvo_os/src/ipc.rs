@@ -20,6 +20,7 @@ pub type LocalStream = Box<dyn ByteStream>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Channel {
     Ssh,
+    Keeper,
     Holder(String),
 }
 
@@ -27,6 +28,7 @@ impl Channel {
     fn label(&self) -> io::Result<String> {
         match self {
             Self::Ssh => Ok("ssh".into()),
+            Self::Keeper => Ok("keeper-stop".into()),
             Self::Holder(id)
                 if id.len() == 12
                     && id

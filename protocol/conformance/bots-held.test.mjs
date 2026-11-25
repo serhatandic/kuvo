@@ -47,9 +47,9 @@ test("an edit to a bot whose computer is away is held, listed, and taken there o
   const studioAsk = studio.connect(await studioBox.ready());
   let main = asApp(studioAsk);
   const setup = await main("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await studioAsk("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   bot(lab, "bot_near1", "Near");

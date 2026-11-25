@@ -34,9 +34,17 @@ pub struct Sizes {
     pub parts: Vec<Part>,
     pub outside: Vec<Outside>,
 }
-#[derive(Default)]
 pub struct Measurement {
     state: Mutex<Standing>,
+    changes: tokio::sync::watch::Sender<u64>,
+}
+impl Default for Measurement {
+    fn default() -> Self {
+        Self {
+            state: Mutex::default(),
+            changes: tokio::sync::watch::channel(0).0,
+        }
+    }
 }
 #[derive(Default)]
 struct Standing {
@@ -53,6 +61,9 @@ fn kept(home: &Path) -> Option<Sizes> {
         .and_then(|v| serde_json::from_slice(&v).ok())
 }
 impl Measurement {
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
     pub fn read(
         self: &Arc<Self>,
         home: &Path,
@@ -86,6 +97,7 @@ impl Measurement {
                         state.failed_at = now();
                     }
                 }
+                measure.changes.send_modify(|revision| *revision += 1);
             });
         }
         (sizes, state.busy, state.problem.clone())

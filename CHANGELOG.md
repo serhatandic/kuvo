@@ -10,6 +10,13 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Usage history and Insights combine saved readings from your other computers, keep them when a computer is away, and group the same model under one name. Insights opens from compact indexed totals instead of re-reading each call.
 
+- A Rust computer on its own no longer contacts the relay to renew a setup lease or number its Work Queue; adding another computer establishes the shared number reservation first.
+
+- Rust computers keep sessions and followed Settings pages current from changes, and do less background work when no update, wake-up or peer letter is due.
+
+- Marketplace tools now follow changes to installations, settings and the vault instead of rechecking every few seconds.
+
+- Rust computers send changed Library and Outputs lists to one another without repeatedly sending unchanged lists.
 - Usage and Insights stay current while native agent databases are open, without starting the engine just to read its history or OpenCode Go account. Saved usage is repriced when its price catalog changes.
 
 - Opening the app on a Rust computer no longer starts unused coding agents to list their accounts and models. Agent update checks are daily or on demand, and unchanged programs are not run to read their versions.

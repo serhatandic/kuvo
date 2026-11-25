@@ -45,6 +45,22 @@ impl Owner {
                     self.publish_to(peer, tip).await?;
                 }
             }
+            Some("lease-changed")
+                if setup.position.primary == from
+                    || self
+                        .lease
+                        .seen
+                        .as_ref()
+                        .is_some_and(|seen| seen.holder == from) =>
+            {
+                let term = value["term"].as_u64().unwrap_or_default();
+                let expires = value["expires"].as_u64().unwrap_or_default();
+                if self.lease.seen.as_ref().is_none_or(|seen| {
+                    term > seen.term || term == seen.term && expires > seen.expires
+                }) {
+                    self.next = Some(Instant::now());
+                }
+            }
             Some("device-save") => self.receive_device_change(from, value).await?,
             Some("device-saved") => self.receive_device_result(from, value)?,
             Some("queue-label-save") => self.receive_queue_labels_save(from, value).await?,
@@ -307,11 +323,13 @@ impl Owner {
             )
             .await?;
         if result.is_some_and(|(lease, _)| lease.holder == target) {
-            self.next = Instant::now();
+            self.next = Some(Instant::now());
             self.refresh();
+            let epoch = setup.position.epoch + 1;
+            self.announce_lease().await;
             return Ok(Response {
                 status: 202,
-                value: json!({"primary": target, "epoch": setup.position.epoch + 1}),
+                value: json!({"primary": target, "epoch": epoch}),
             });
         }
         Err(Error::Fenced)

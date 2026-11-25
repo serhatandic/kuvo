@@ -201,6 +201,9 @@ pub async fn run(
     if let Some(readers) = &standalone_plans {
         readers.confirm(&limits).await;
     }
+    let agent_settings_feed = resident_agents
+        .as_ref()
+        .map(|(_, accounts)| accounts.feed().clone());
     let mut agent_handover = None;
     let mut routes = Registry::new();
     crate::box_app::register(
@@ -355,6 +358,7 @@ pub async fn run(
             peers.reader(),
             peers.relay_handle(),
             memory.clone(),
+            engine.clone(),
             &mut routes,
         )
         .await,
@@ -398,6 +402,8 @@ pub async fn run(
         vault.clone(),
         peers.reader(),
         engine.clone(),
+        sessions.clone(),
+        agent_settings_feed,
         work_queue.archive_forward(),
     );
     kuvo_services::files::register(
@@ -681,24 +687,54 @@ pub async fn run(
         let peers = peers.clone();
         let dispatcher = dispatcher.clone();
         let mut sessions = sessions.clone();
+        let mut setup = setup.handle();
+        let mut moves = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        moves.set_targets(Vec::new(), vec![(home.join("run/moves"), false)]);
         async move {
-            let mut timer = tokio::time::interval(std::time::Duration::from_secs(10));
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut previous = None;
+            let mut published_to = Vec::new();
+            let mut peer_changes = peers.reader();
+            let mut zone = None;
+            let mut first = true;
+            let mut held = None;
             loop {
-                let periodic = tokio::select! {
-                    _ = timer.tick() => true,
-                    changed = sessions.changed() => if changed { false } else { break },
-                };
-                if peers.reader().view().roster.members.is_empty() {
+                let mut forced = first;
+                if !first {
+                    tokio::select! {
+                        changed = sessions.changed() => if !changed { break },
+                        changed = peer_changes.changed() => if changed.is_err() { break },
+                        changed = setup.changed() => if !changed { break },
+                        _ = moves.changed() => forced = true,
+                    }
+                }
+                first = false;
+                let members = peer_changes
+                    .view()
+                    .roster
+                    .members
+                    .iter()
+                    .map(|member| member.key)
+                    .collect::<Vec<_>>();
+                if members.is_empty() {
+                    published_to.clear();
                     continue;
                 }
                 let revised = sessions.archive_revision();
-                if !periodic && revised == previous {
+                let next_zone = setup.time_zone();
+                let next_held = peer_changes.view().local.ownership.held.clone();
+                if !forced
+                    && revised == previous
+                    && members == published_to
+                    && zone == next_zone
+                    && held.as_ref() == Some(&next_held)
+                {
                     continue;
                 }
                 if let Some(copy) = archives.snapshot(dispatcher.clone()).await {
                     previous = revised;
+                    published_to = members;
+                    zone = next_zone;
+                    held = Some(next_held);
                     peers.archives(copy).await;
                 }
             }

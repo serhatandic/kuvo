@@ -103,7 +103,9 @@ test("a replacement verifies an old disk archive before placing portable data or
   const disk = path.join(path.dirname(box.home), "disk");
   oldPoint(disk);
   const ask = box.connect(await box.start().ready());
-  const existingApproval = '{"last":"auto"}';
+  // A current local record: a legacy row without `since` is normalized by the
+  // approval watcher as soon as it is read, independently of restore.
+  const existingApproval = '{"last":"auto","since":1234}';
   write(path.join(box.home, "box", "approval.json"), existingApproval);
   const input = { destination: { kind: "disk", path: disk }, source, id, confirm: true };
   const list = await ask("POST", prefix + "/points", input, app);
@@ -266,9 +268,9 @@ test("a relay point survives the source and restores through its replacement mem
     return reply.json;
   };
   const setup = await on(primary, "GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.setup), "Main computer did not claim its lease");
   const add = async box => {
     const invite = await on(primary, "POST", "kuvo/computers/add/code", {}, 201);
+    await until(() => leases.leaseFor(setup.setup), "Main computer did not claim its lease");
     const joined = await box.join(invite.code);
     assert.equal(joined.code, 0, joined.log);
     const proc = box.start();

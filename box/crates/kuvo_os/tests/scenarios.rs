@@ -347,6 +347,20 @@ fn child_only_receives_the_named_environment_and_its_pid_is_checked_with_start_i
     assert_eq!(known.state(), ProcessState::Stale);
 }
 
+#[tokio::test]
+async fn an_exit_watch_waits_for_the_exact_child_without_reaping_it() {
+    let mut child = child_spec("environment").spawn().unwrap();
+    let _ = read_field(&mut child, "RESULT=");
+    let identity = child.identity().clone();
+    let mut exited = identity.watch_exit().unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(100), &mut exited).await.is_err());
+    child.stdin.as_mut().unwrap().write_all(b"q").unwrap();
+    tokio::time::timeout(LIMIT, exited).await.unwrap().unwrap().unwrap();
+    assert!(child.wait().unwrap().success());
+    let stale = identity.watch_exit().unwrap();
+    tokio::time::timeout(LIMIT, stale).await.unwrap().unwrap().unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn process_group_gets_term_before_a_forced_stop() {
