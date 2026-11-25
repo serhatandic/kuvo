@@ -10,11 +10,11 @@
 //! same address with the same key. The next resident keeps only the keys of
 //! the conversations whose agents it took up.
 
-mod engine_servers;
+mod settings_servers;
 mod places;
 mod servers;
 
-pub use engine_servers::{EngineApi, EngineServers, Sandbox};
+pub use settings_servers::{EngineApi, Sandbox, SettingsServers};
 pub use places::{TOOL_SERVER_NAME, ToolPlaces};
 pub use servers::{
     ComputerServer, ComputerServers, Launch, RelayedServer, ServerHost, ServerKind,
