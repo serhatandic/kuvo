@@ -296,6 +296,33 @@ impl AgentSessionSource for Inventory {
         })
     }
 
+    fn synthetic<'a>(
+        &'a self,
+        id: &'a str,
+        text: String,
+        description: Option<String>,
+    ) -> AgentCall<'a, ()> {
+        Box::pin(async move {
+            let runs = self.runs()?;
+            let message = SessionStore::make_id("msg")?;
+            let mut input = Input::new(message, text, Vec::new(), Delivery::Steer);
+            input.synthetic = Some(kuvo_agents::inbox::Synthetic {
+                description,
+                metadata: None,
+            });
+            runs.prompt(id.to_owned(), input, None).await
+        })
+    }
+
+    fn set_instruction<'a>(
+        &'a self,
+        id: &'a str,
+        key: &'a str,
+        text: Option<String>,
+    ) -> AgentCall<'a, bool> {
+        Box::pin(async move { self.store.set_instruction(id, key, text).await })
+    }
+
     fn set_delivery<'a>(&'a self, id: &'a str, item: &'a str, queue: bool) -> AgentCall<'a, ()> {
         Box::pin(async move {
             let delivery = if queue {

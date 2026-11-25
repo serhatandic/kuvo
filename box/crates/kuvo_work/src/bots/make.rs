@@ -294,8 +294,10 @@ impl Bots {
         let agents = runs_with_agents(given_model.as_ref());
         // (The engine for the model it starts on and for its conversation; the coding agents' bridge
         // isn't in this box yet.)
+        // (The engine for a model of its own, and for its conversation; the coding agents', which
+        // run in this box, for one of theirs.)
         let engine = if agents {
-            None
+            Some(self.inner.engine.work_engine().await).filter(BotEngine::agents_here)
         } else {
             self.inner.engine.bot_engine().await
         };
@@ -335,7 +337,8 @@ impl Bots {
                 },
             );
         };
-        if let Some(refused) = reach::sign_in_refusal(&engine, &model, self.here()).await {
+        if !agents && let Some(refused) = reach::sign_in_refusal(&engine, &model, self.here()).await
+        {
             return no(422, &refused);
         }
 
@@ -362,20 +365,25 @@ impl Bots {
                         .as_ref()
                         .map(|each| (each.id.as_str(), each.instruction.as_str())),
                     setup,
+                    agents,
                 },
                 &mut session,
             )
             .await;
         if let Err(error) = made {
             if let Some(session) = &session {
-                let _ = engine
-                    .call(
-                        Method::DELETE,
-                        &format!("api/session/{}", segment(session)),
-                        None,
-                        BOT_STEP,
-                    )
-                    .await;
+                if agents {
+                    engine.agent_delete(session).await;
+                } else {
+                    let _ = engine
+                        .call(
+                            Method::DELETE,
+                            &format!("api/session/{}", segment(session)),
+                            None,
+                            BOT_STEP,
+                        )
+                        .await;
+                }
             }
             let _ = std::fs::remove_dir_all(&folder);
             return no(503, &format!("The bot couldn’t be made: {error}"));
@@ -398,7 +406,11 @@ impl Bots {
             })
             .filter(|message| !message.is_empty())
             .or(shared);
-        if first.is_none() && !made_for {
+        if first.is_none() && !made_for && agents {
+            engine
+                .agent_synthetic(&session, &kit.greeting, "A new bot's first message")
+                .await;
+        } else if first.is_none() && !made_for {
             let _ = engine
                 .call(
                     Method::POST,
@@ -431,6 +443,7 @@ impl Bots {
             look,
             personality,
             setup,
+            agents,
         } = making;
         let fail = |error: std::io::Error| error.to_string();
         std::fs::create_dir_all(folder.join("workspace")).map_err(fail)?;
@@ -456,21 +469,21 @@ impl Bots {
             "allow",
         );
         let rules = vec![own];
-        let made = engine
-            .call(
-                Method::POST,
-                "api/session",
-                Some(&json!({
-                    "title": name,
-                    "location": {"directory": directory},
-                    "model": model,
-                    "permissions": rules,
-                    "metadata": {"kuvo": {"bot": id}},
-                })),
-                BOT_STEP,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+        let body = json!({
+            "title": name,
+            "location": {"directory": directory},
+            "model": model,
+            "permissions": rules,
+            "metadata": {"kuvo": {"bot": id}},
+        });
+        let made = if agents {
+            engine.agent_create(body).await
+        } else {
+            engine
+                .call(Method::POST, "api/session", Some(&body), BOT_STEP)
+                .await
+        }
+        .map_err(|error| error.to_string())?;
         let made = made["id"]
             .as_str()
             .filter(|made| !made.is_empty())
@@ -482,21 +495,36 @@ impl Bots {
         let approvals = &self.inner.approvals;
         let kept = approvals.of_bot(&rules, None);
         let made_rules = approvals.rules(kept.effective, &rules, &[]);
-        engine
-            .rewrite(&made, |_| {
-                Some(NoteEdits {
-                    kuvo: [
-                        ("bot".to_owned(), Some(json!(id))),
-                        ("approval".to_owned(), Some(json!(kept.approval.word()))),
-                        ("applied".to_owned(), Some(json!(kept.effective.word()))),
-                    ]
-                    .into(),
-                    permissions: Some(made_rules.iter().map(permission).collect()),
-                    ..NoteEdits::default()
+        let notes = [
+            ("bot", json!(id)),
+            ("approval", json!(kept.approval.word())),
+            ("applied", json!(kept.effective.word())),
+        ];
+        if agents {
+            let permissions = json!(made_rules.iter().map(permission).collect::<Vec<_>>());
+            let notes = notes
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect();
+            engine
+                .agent_keep(&made, notes, permissions)
+                .await
+                .map_err(|error| error.to_string())?;
+        } else {
+            engine
+                .rewrite(&made, |_| {
+                    Some(NoteEdits {
+                        kuvo: notes
+                            .into_iter()
+                            .map(|(key, value)| (key.to_owned(), Some(value)))
+                            .collect(),
+                        permissions: Some(made_rules.iter().map(permission).collect()),
+                        ..NoteEdits::default()
+                    })
                 })
-            })
-            .await
-            .map_err(|_| "The conversation it made went.".to_owned())?;
+                .await
+                .map_err(|_| "The conversation it made went.".to_owned())?;
+        }
         let told = kit.instructions_for(
             name,
             &folder.display().to_string(),
@@ -509,7 +537,12 @@ impl Bots {
                 })
                 .as_ref(),
         );
-        if !reach::tell(engine, &made, &told).await {
+        let told_it = if agents {
+            engine.agent_tell(&made, "kuvo.bot", &told).await
+        } else {
+            reach::tell(engine, &made, &told).await
+        };
+        if !told_it {
             return Err("Its conversation wasn’t told what it is.".into());
         }
         std::fs::write(folder.join("session"), &made).map_err(fail)?;
@@ -522,6 +555,9 @@ impl Bots {
             ],
         );
         std::fs::write(folder.join("directory"), directory).map_err(fail)?;
+        if agents {
+            std::fs::write(folder.join("via"), "bridge").map_err(fail)?;
+        }
         // Its wake-ups go by your time zone.
         self.zone_files().write(folder).map_err(fail)?;
         let now = stamp();
@@ -560,6 +596,8 @@ struct Making<'a> {
     look: &'a Value,
     personality: Option<(&'a str, &'a str)>,
     setup: Option<Setup>,
+    /// It runs with the coding agents.
+    agents: bool,
 }
 
 /// Whether a value counts as given, as JavaScript tests it.
