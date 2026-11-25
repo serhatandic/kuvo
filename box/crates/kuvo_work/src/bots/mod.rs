@@ -1,6 +1,7 @@
 //! This box's bots (PROTOCOL.md, "Per area"): listed with what each is doing now, and followed.
 
 mod edit;
+pub mod elsewhere;
 pub mod here;
 pub mod job;
 pub mod kit;
@@ -32,8 +33,8 @@ use list::{FolderGoes, Place};
 use now::{Rest, Told};
 use setup::{Setup, ZoneFiles};
 
-/// What these routes answer whole (held edits and the bots elsewhere come with a later part).
-pub const FEATURES: &[&str] = &["bots.make", "bots.state"];
+/// What these routes answer whole (held edits come with a later part).
+pub const FEATURES: &[&str] = &["bots.elsewhere", "bots.make", "bots.state"];
 
 /// What's said while a bot runs with the coding agents, whose bridge isn't in this box yet.
 pub const AGENTS_DOWN: &str = "The coding agents are restarting. This takes a few seconds.";
@@ -303,11 +304,29 @@ impl Bots {
     /// What `kuvo/bots` says.
     pub fn said(&self) -> (Value, Option<i64>) {
         let (bots, turns) = self.with_now();
-        let pending = self.inner.peers.view().pending_bots();
-        (json!({ "pendingComputers": pending, "bots": bots }), turns)
+        let view = self.inner.peers.view();
+        let pending = view.pending_bots();
+        let mut said = json!({ "pendingComputers": pending, "bots": bots });
+        // (Not without a link of its own: it can't check what it holds for them, and a client
+        // keeps what it last heard.)
+        if view.roster.here.is_some() {
+            said["elsewhere"] = Value::Array(
+                elsewhere::bots_elsewhere(
+                    &view,
+                    &self.inner.run,
+                    &self.inner.bots,
+                    self.inner.peers.now(),
+                )
+                .iter()
+                .map(elsewhere::Elsewhere::said)
+                .collect(),
+            );
+        }
+        (said, turns)
     }
 
-    /// What this computer tells your other computers its bots are doing (`bots` in its lists).
+    /// What this computer tells your other computers its bots are doing (`bots` in its lists), with
+    /// each one's look and job for what it tells them its agents are.
     pub fn peer_activity(&self) -> BTreeMap<String, Value> {
         self.with_now()
             .0
@@ -315,7 +334,7 @@ impl Bots {
             .filter_map(|bot| {
                 let id = bot.get("id")?.as_str()?.to_owned();
                 let mut activity = Map::new();
-                for field in ["session", "now", "paused", "wakes"] {
+                for field in ["session", "now", "paused", "wakes", "look", "job"] {
                     if let Some(value) = bot.get(field) {
                         activity.insert(field.into(), value.clone());
                     }

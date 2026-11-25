@@ -70,6 +70,9 @@ pub struct SessionStore {
     root: PathBuf,
     /// What the agents keep going besides each conversation's turn, given to each thread.
     background: crate::background::Background,
+    /// The conversations an earlier resident may have left mid-turn, each repaired as its
+    /// messages are first needed (`repair_when_needed`), not before.
+    unrepaired: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
 
 impl SessionStore {
@@ -77,6 +80,27 @@ impl SessionStore {
         Self {
             root,
             background: crate::background::Background::default(),
+            unrepaired: Default::default(),
+        }
+    }
+
+    /// The conversations `ids`, each repaired (`repair`) and its Codex citations read when its
+    /// messages are first read or written: one nobody opens stays as it was.
+    pub fn repair_when_needed(&self, ids: impl IntoIterator<Item = String>) {
+        self.unrepaired.lock().expect("unrepaired").extend(ids);
+    }
+
+    /// The conversation `id`, if it's still waiting for that, repaired and its Codex citations
+    /// read (`codex::read_kept_citations`), before its messages are used.
+    async fn prepare(&self, id: &str) {
+        if !self.unrepaired.lock().expect("unrepaired").remove(id) {
+            return;
+        }
+        if let Err(error) = self.repair(id).await {
+            eprintln!("Kuvo could not close the unfinished turn in {id}: {error}");
+        }
+        if let Err(error) = crate::codex::read_kept_citations(self, id).await {
+            eprintln!("Kuvo could not read Codex's citations in {id}: {error}");
         }
     }
 
@@ -134,6 +158,7 @@ impl SessionStore {
     /// What a turn of `provider`'s agent opens the conversation with: its
     /// own slot of the saved state, beside the inbox and the other agents'.
     pub async fn context(&self, id: &str, provider: &str) -> io::Result<Option<SessionContext>> {
+        self.prepare(id).await;
         let Some(folder) = self.folder(id) else {
             return Ok(None);
         };
@@ -168,6 +193,7 @@ impl SessionStore {
         limit: u32,
         order: MessageOrder,
     ) -> io::Result<Option<MessagePage>> {
+        self.prepare(id).await;
         let Some(folder) = self.folder(id) else {
             return Ok(None);
         };
@@ -246,7 +272,13 @@ impl SessionStore {
         .await?
     }
 
-    pub async fn write_messages(&self, id: &str, mut rows: Vec<Value>) -> io::Result<bool> {
+    pub async fn write_messages(&self, id: &str, rows: Vec<Value>) -> io::Result<bool> {
+        self.prepare(id).await;
+        self.write_rows(id, rows).await
+    }
+
+    /// `write_messages`, as a repair writes them: without repairing first.
+    pub(crate) async fn write_rows(&self, id: &str, mut rows: Vec<Value>) -> io::Result<bool> {
         let attachments = self.attachments();
         let session = id.to_owned();
         self.mutate_existing(id, move |folder| {

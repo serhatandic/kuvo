@@ -340,6 +340,22 @@ impl View {
             agents = sessions
                 .into_iter()
                 .filter_map(|row| {
+                    // (A bot by its id and what this box has of it: its look and job.)
+                    let bot = (row.facts.kind == lists::Kind::Bot)
+                        .then(|| {
+                            self.local
+                                .bots
+                                .as_ref()?
+                                .iter()
+                                .find(|(_, bot)| bot.session == row.id)
+                        })
+                        .flatten();
+                    let id = row
+                        .facts
+                        .bot
+                        .clone()
+                        .or_else(|| bot.map(|(id, _)| id.clone()));
+                    let bot = bot.map(|(_, bot)| bot);
                     Some(AnnouncedAgent {
                         session: row.id.clone(),
                         name: row.facts.title.clone()?,
@@ -348,7 +364,16 @@ impl View {
                         } else {
                             AgentKind::Session
                         },
-                        id: row.facts.bot.clone(),
+                        id,
+                        look: bot
+                            .and_then(|bot| bot.look.as_ref())
+                            .and_then(crate::directory::Look::of),
+                        about: bot
+                            .and_then(|bot| bot.job.clone())
+                            .filter(|job| !job.is_empty()),
+                        project: None,
+                        machine: None,
+                        marketplace_agent: None,
                     })
                 })
                 .take(120)
@@ -1415,7 +1440,9 @@ async fn publish_round(
         .map_or_else(Vec::new, lists::LocalList::asking);
     let waiting = asking.len();
     asking.truncate(10);
-    let mut state = json!({"list": agents, "owns": owns, "features": features, "computer": {
+    // (And where a bot deleted here ends up: Kuvo Code's own trash folder, so a computer that lists
+    // this one's bots says what deleting one takes as this one would.)
+    let mut state = json!({"list": agents, "owns": owns, "features": features, "trash": "kuvo", "computer": {
         "working":working, "atWork":active, "waiting":waiting, "asking":asking,
     }});
     if let Some(system) = view.system.as_deref() {

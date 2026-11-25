@@ -238,6 +238,12 @@ impl SessionStore {
 
     /// Its rows whose saved words contain `words`, oldest first, read without the rest.
     pub async fn rows_saying(&self, id: &str, words: &str) -> io::Result<Vec<Value>> {
+        self.prepare(id).await;
+        self.rows_with(id, words).await
+    }
+
+    /// `rows_saying`, as preparing a conversation reads them: without preparing it first.
+    pub(crate) async fn rows_with(&self, id: &str, words: &str) -> io::Result<Vec<Value>> {
         let Some(folder) = self.folder(id) else {
             return Ok(Vec::new());
         };
@@ -270,6 +276,7 @@ impl SessionStore {
     }
 
     pub async fn has_message(&self, id: &str, message: &str) -> io::Result<bool> {
+        self.prepare(id).await;
         let Some(folder) = self.folder(id) else {
             return Ok(false);
         };
@@ -344,6 +351,7 @@ impl SessionStore {
     }
 
     pub(crate) async fn turn_messages(&self, id: &str, prefix: String) -> io::Result<Vec<Value>> {
+        self.prepare(id).await;
         let folder = self.folder(id).ok_or(ErrorKind::InvalidInput)?;
         let id = id.to_owned();
         tokio::task::spawn_blocking(move || {

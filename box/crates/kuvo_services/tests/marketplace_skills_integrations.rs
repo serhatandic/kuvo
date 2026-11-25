@@ -60,7 +60,23 @@ fn put_skill(folder: &Path, name: &str) {
     fs::write(folder.join("example.txt"), "Keep this file.").unwrap();
 }
 
+/// The coding agents' own folders, as the skill roots read them from the environment, pointed at a
+/// folder of these tests' own: never the runner's (its CLAUDE_CONFIG_DIR is real data). One folder
+/// for the whole process, set once before any test reads it, so tests running together agree.
+fn own_agent_folders() {
+    static SET: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let folder = tempfile::tempdir().unwrap();
+        for (var, name) in [("CLAUDE_CONFIG_DIR", ".claude"), ("CODEX_HOME", ".codex"), ("GROK_HOME", ".grok")] {
+            // SAFETY: set once, under the lock, before any of these tests reads the environment.
+            unsafe { std::env::set_var(var, folder.path().join(name)) };
+        }
+        folder
+    });
+}
+
 async fn make_marketplace_box(root: &Path) -> (Dispatcher, ResidentMarketplace, ResidentSkills, Arc<VaultResident>) {
+    own_agent_folders();
     let home = root.join("box");
     let account = root.join("home");
     fs::create_dir_all(home.join("box")).unwrap();

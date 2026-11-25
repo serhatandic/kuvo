@@ -18,7 +18,11 @@ mod wake_archive;
 mod wake_folder;
 pub mod work_queue;
 
-use std::{collections::BTreeSet, io, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    path::Path,
+};
 
 use kuvo_store::{files, format::ObjectFormat};
 use serde::{Deserialize, Serialize};
@@ -240,6 +244,20 @@ pub fn away_sessions(run: &Path) -> std::collections::BTreeSet<String> {
         .filter_map(Result::ok)
         .filter(Journal::away)
         .flat_map(|record| record.sessions)
+        .collect()
+}
+
+/// The bots moving away from here that have reached the computer they go to, by the key of the
+/// box each goes to: listed by that computer alone, whatever this or another still says.
+pub fn bots_gone_to(run: &Path) -> BTreeMap<String, String> {
+    journal_rows(run)
+        .filter_map(Result::ok)
+        .filter(|record| {
+            record.kind == Some(Kind::Bot)
+                && record.role == Role::From
+                && record.stage == Stage::Finishing
+        })
+        .filter_map(|record| Some((record.thing, record.to?)))
         .collect()
 }
 

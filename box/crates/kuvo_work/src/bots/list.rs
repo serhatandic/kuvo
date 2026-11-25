@@ -48,41 +48,65 @@ fn counted(count: usize, one: &str, many: &str) -> String {
     }
 }
 
-/// What deleting a bot takes with it, in the order deleting does it, then what stays.
+/// What deleting a bot here takes with it, in the order deleting does it, then what stays.
 pub fn what_delete_takes(
     computer: &str,
     goes: &FolderGoes,
     wakes: usize,
     watching: usize,
 ) -> Vec<Deletes> {
-    let line = |what, words: String| Deletes {
-        what,
-        words,
-        kept: None,
-    };
-    let mut lines = vec![line("conversation", "Its conversation is deleted.".into())];
     let place = goes
         .folder
         .as_ref()
         .map(|folder| format!(" ({folder})"))
         .unwrap_or_default();
-    lines.push(line(
-        "folder",
-        format!("Its folder, with its memory and what it made there, goes to Kuvo Code’s trash folder on {computer}{place}."),
-    ));
-    if wakes > 0 || watching > 0 {
-        let mut parts = Vec::new();
-        if wakes > 0 {
-            parts.push(counted(wakes, "wake-up", "wake-ups"));
-        }
-        if watching > 0 {
-            parts.push(counted(watching, "watch", "watches"));
-        }
-        let verb = if wakes + watching == 1 { "is" } else { "are" };
-        lines.push(line(
+    delete_lines(
+        computer,
+        format!("goes to Kuvo Code’s trash folder on {computer}{place}"),
+        Some((wakes, watching)),
+    )
+}
+
+/// The lines, in the order deleting does them, then what stays. `goes`: where its folder goes, as
+/// a sentence ends. `wakes`: how many wake-ups wait and how many things it watches, where the box
+/// asked knows (a bot of its own); none says so without a count.
+pub(crate) fn delete_lines(
+    computer: &str,
+    goes: String,
+    wakes: Option<(usize, usize)>,
+) -> Vec<Deletes> {
+    let line = |what, words: String| Deletes {
+        what,
+        words,
+        kept: None,
+    };
+    let mut lines = vec![
+        line("conversation", "Its conversation is deleted.".into()),
+        line(
+            "folder",
+            format!("Its folder, with its memory and what it made there, {goes}."),
+        ),
+    ];
+    match wakes {
+        None => lines.push(line(
             "wakes",
-            format!("Its {} {verb} cancelled.", parts.join(" and ")),
-        ));
+            "Its wake-ups and watches are cancelled.".into(),
+        )),
+        Some((wakes, watching)) if wakes > 0 || watching > 0 => {
+            let mut parts = Vec::new();
+            if wakes > 0 {
+                parts.push(counted(wakes, "wake-up", "wake-ups"));
+            }
+            if watching > 0 {
+                parts.push(counted(watching, "watch", "watches"));
+            }
+            let verb = if wakes + watching == 1 { "is" } else { "are" };
+            lines.push(line(
+                "wakes",
+                format!("Its {} {verb} cancelled.", parts.join(" and ")),
+            ));
+        }
+        Some(_) => {}
     }
     lines.push(line(
         "groups",
