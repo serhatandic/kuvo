@@ -216,6 +216,13 @@ impl AgentSessionSource for Inventory {
                 Some(runs) => runs.delete(id.to_owned()).await,
                 None => self.store.delete(id).await,
             }?;
+            // (Its agent's own process for it goes too: nothing of it keeps running, nor holds
+            // the folder it worked in.)
+            if let Some(agents) = &self.agents {
+                for entry in agents.roster().all() {
+                    let _ = entry.agent.close_thread(id).await;
+                }
+            }
             if deleted && let Some(feed) = self.feed() {
                 feed.emit_from(
                     "session.deleted",

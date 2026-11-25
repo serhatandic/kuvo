@@ -273,6 +273,23 @@ impl Agent for Claude {
             Ok(thread as Arc<dyn Thread>)
         })
     }
+
+    fn close_thread(&self, session: &str) -> AdapterCall<'_, ()> {
+        let session = session.to_owned();
+        Box::pin(async move {
+            let (open, held) = {
+                let mut threads = self.threads.lock().await;
+                (threads.open.remove(&session), threads.held.remove(&session))
+            };
+            if let Some(held) = held {
+                held.stop().await?;
+            }
+            match open {
+                Some(thread) => thread.stop(false).await,
+                None => Ok(()),
+            }
+        })
+    }
 }
 
 impl Adoption for Claude {

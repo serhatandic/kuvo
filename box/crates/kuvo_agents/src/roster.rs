@@ -27,6 +27,12 @@ pub trait Agent: Adoption {
         })
     }
 
+    /// The conversation's own process let go, the conversation deleted: nothing of it keeps
+    /// running, nor holds the folder it worked in.
+    fn close_thread(&self, _session: &str) -> AdapterCall<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Whether it summarizes its conversation when asked (not only by itself as it fills up).
     fn compacts(&self) -> bool {
         false

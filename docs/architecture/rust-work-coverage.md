@@ -1044,6 +1044,14 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   summary", failed once and passed on rerun). WSL2 (static musl): `agents-bots`,
   `marketplace-agents`, `wakes` 10/10, `bots` 40/40. Native Windows: in 5.1's Windows slot.
 
+### Deleting one on Windows, and its agent's process
+
+- Claude Code keeps a process for each conversation it runs; deleting the conversation now lets it
+  go (`Agent::close_thread`, from the agents' delete), so none is left running for a deleted
+  conversation on any system. On Windows that process holds the folder it works in: a bot whose
+  folder can't be moved for that has its conversation go first, then its folder (it went next
+  anyway). Found by `agents-bots.test.mjs` on native Windows (os error 5 on Delete).
+
 ### Gaps and owners
 
 - **An engine bot switched to a coding agent's model** still answers 503: carrying its conversation
