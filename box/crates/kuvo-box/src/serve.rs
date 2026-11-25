@@ -433,7 +433,11 @@ pub async fn run(
     work.notices.attach_told(Arc::new(move || {
         let (peers, run) = (told_peers.clone(), told_run.clone());
         let telling = kind == ComputerKind::Mac;
-        tokio::spawn(async move { peers.notices(kuvo_peers::notices::load(&run, telling)).await });
+        tokio::spawn(async move {
+            peers
+                .notices(kuvo_peers::notices::load(&run, telling))
+                .await
+        });
     }));
     work.register(&mut routes);
     let work_watch = work.watch();
