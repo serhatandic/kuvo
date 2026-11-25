@@ -159,6 +159,12 @@ pub trait AgentSessionSource: Send + Sync {
         None
     }
 
+    /// Stop what the conversation left running besides its turn: the commands its agent left
+    /// running. False for one not here.
+    fn stop_background<'a>(&'a self, _id: &'a str) -> AgentCall<'a, bool> {
+        Box::pin(async { Ok(false) })
+    }
+
     /// Stop a turn that waits on an approval or a question. True when one did.
     fn stop_if_waiting<'a>(&'a self, _id: &'a str) -> AgentCall<'a, bool> {
         Box::pin(async { Ok(false) })

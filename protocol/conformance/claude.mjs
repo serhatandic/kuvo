@@ -245,6 +245,11 @@ export async function scriptedClaude(fixture = {}) {
     async compact(id) {
       return request(listener, "POST", claude.route(id) + "/compact", {}, headers, 20000);
     },
+    /** Stop on what the session left running besides its turn. */
+    async stopBackground(id) {
+      const answer = await request(listener, "DELETE", claude.route(id) + "/background", undefined, headers, 20000);
+      assert.equal(answer.status, 200, answer.text);
+    },
     async interrupt(id) {
       const answer = await request(listener, "POST", claude.route(id) + "/interrupt", {}, headers, 20000);
       assert.equal(answer.status, 200, answer.text);

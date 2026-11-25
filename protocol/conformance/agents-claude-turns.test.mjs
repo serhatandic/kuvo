@@ -1095,6 +1095,18 @@ describe("Claude Code's background commands", { skip }, () => {
     }, "Its end never showed."), { command: { command: "npm run dev" }, state: "ended" });
   });
 
+  test("Stop on what it left running ends it, through Claude Code", async () => {
+    const { id } = box.next();
+    box.claude.script(`go ${id}`, [bash("tool_watch", "npm run watch"), started("t_watch", "tool_watch"), live(["t_watch"]), result(["$UUID"])]);
+    await box.claude.prompt(id, `go ${id}`);
+    await box.claude.idles(id, 1);
+    assertMatch(await listed(id), { commands: 1 });
+    await box.claude.stopBackground(id);
+    await gone(id);
+    assert.ok(box.claude.heard().some((line) => line.type === "control_request" && line.request?.subtype === "stop_task" && line.request.task_id === "t_watch"),
+      "Claude Code was never told to stop it.");
+  });
+
   test("a finished background command shows the final output file after Claude Code forgets its output", async () => {
     const { id } = box.next();
     const file = path.join(box.claude.home, `build-${id}.output`);

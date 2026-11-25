@@ -98,6 +98,13 @@ impl BotEngine {
             .await?)
     }
 
+    /// What a coding agents' conversation left running besides its turn, stopped through its
+    /// agent; `None` for the engine's own conversation, or agents that aren't answering.
+    pub async fn stop_agent_background(&self, session: &str) -> Option<bool> {
+        let (source, _) = self.engine.agent_session(session).await.ok()??;
+        source.stop_background(session).await.ok()
+    }
+
     /// Whether the engine has the conversation.
     pub async fn has_session(&self, session: &str) -> bool {
         sessions::valid_id(session)

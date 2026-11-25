@@ -85,6 +85,18 @@ impl SessionStore {
         &self.background
     }
 
+    /// What the conversation's agent left running besides its turn, stopped through that agent.
+    /// False for one not here.
+    pub async fn stop_background(&self, id: &str) -> io::Result<bool> {
+        if self.read(id).await?.is_none() {
+            return Ok(false);
+        }
+        for job in self.background.running(id, false) {
+            self.background.stop(&job.id).await;
+        }
+        Ok(true)
+    }
+
     pub async fn read(&self, id: &str) -> io::Result<Option<SessionHeader>> {
         let Some(folder) = self.folder(id) else {
             return Ok(None);

@@ -632,6 +632,22 @@ describe("Commands Codex leaves running in a background terminal", { skip }, () 
     assert.equal(box.codex.sent("turn/start").filter((message) => message.params.input[0].text.includes(id)).length, 1);
   });
 
+  test("Stop on what it left running ends it, through Codex", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      command("bt3", "npm run dev"),
+      { terminals: [{ processId: "p-bt3", itemId: "bt3", command: "npm run dev" }] },
+    ]);
+    await box.codex.idles(id);
+    assertMatch(await work(id), { commands: 1 });
+    await box.codex.stopBackground(id);
+    await until(async () => !(await work(id)), "What it left running stayed listed.", 20000, 100);
+    const thread = box.codex.agentState(id).codexThread;
+    // (The reference cleans its thread's terminals; Rust ends each command through Codex.)
+    const ended = [...box.codex.sent("thread/backgroundTerminals/terminate"), ...box.codex.sent("thread/backgroundTerminals/clean")];
+    assert.ok(ended.some((message) => message.params.threadId === thread), "Codex was never told to end it.");
+    assert.equal(box.codex.sent("turn/start").filter((message) => message.params.threadId === thread).length, 1);
+  });
+
   test("a list that fails isn't taken for none: what it left running is still to be found, and it's listed again until it ends", { timeout: 120000 }, async () => {
     const { id } = await box.begin([
       command("bt2", "npm test"),
