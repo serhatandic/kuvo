@@ -324,9 +324,9 @@ async fn held_moving_and_restoring_folders_wait() {
     .wakes()
     .await;
     assert!(engine.sent.lock().unwrap().is_empty());
-    assert!(!wanted(&home.roots, NOW));
+    assert!(!wanted_by(&home.roots, NOW).0);
     fs::remove_file(folder.join("paused")).unwrap();
-    assert!(wanted(&home.roots, NOW));
+    assert!(wanted_by(&home.roots, NOW).0);
     fs::create_dir_all(home.roots.run.parent().unwrap().join("backup")).unwrap();
     fs::write(
         home.roots.run.parent().unwrap().join("backup/restoring"),
