@@ -794,13 +794,13 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 2 | Unit test `a_model_at_its_own_limit_waits_alone`. |
 | 3 | 4.6 (spawned agents). |
 | 4–10 | `codex::terminals` keeps what Codex left running in the background model. It's listed as each turn ends, before the end is said, and again every 30 s while any runs. A terminal with a command shows in the bar with what it printed, a terminal without one is a task, and a failed first list is the task `unknown:<thread>`. The app-server stays busy for them, and its holder notes `backgroundSessions`. Ported to agents-codex on both boxes: 4 (in the bar with its output); 5–7 (a failed list isn't none, it's listed again until it ends, and it isn't woken). Unit tests: 6 (a failed later list keeps them), 8 (a reset forgets their times), 9 (a replacement item gets a fresh start), and a command's Stop through `thread/backgroundTerminals/terminate`. 10 is ported on both boxes: Stop on what it left running (`DELETE kuvo/agents/api/session/:id/background`) ends each command through Codex. The reference cleans the thread's terminals, `thread/backgroundTerminals/clean`; a terminal without a command (a task) isn't stopped by Rust, which stops commands only. Taking up the terminals of an idle app-server after an update is 7.2's, with Claude Code's. |
-| 11–12 | Ported to agents-codex on both boxes: a Codex that refuses `initialize` is stopped each time it's tried, and one stopped while it starts (its account signed out) is stopped at once, not after the 30 s it's given. A stop now cuts a start short (`Shared::halt`), and signing out halts a start before closing the threads that wait on it. |
+| 11–12 | Ported to agents-codex on both boxes: a Codex that refuses `initialize` is stopped each time it's tried, and one stopped while it starts (its account signed out) is stopped at once, not after the 30 s it's given. A stop now cuts a start short (`Shared::halt`), and signing out halts a start before closing the threads that wait on it. A start that fails or is halted waits (at most 10 s) for its holder to end (`Rpc::ended`). Shutdown waits for a start under way, so no holder is left starting as the resident goes: on Windows one outlived the resident by about 2 s with its journal open. An app-server's holder notes it `initialized` once it is (launched with `initialized: false`). A next resident stops one left uninitialized, its resident gone mid-start, rather than take it up: Codex would refuse a second `initialize`. That case is Rust-only, because the reference doesn't mark it. The fixture cleanup (`stopFixtureHolders`) stops holders whose records appear late and waits for those still starting. The case's cleanup waits for every stand-in Codex to end, and on a failure it shows the holders' records and lifecycle. On native Windows the case passed 10 runs in a row. |
 | 13–14 | Rust: a stop while the holder starts, or while its sign-in is read, fails that start once the holder answers, and stops it (the same `Shared::halt`); a holder is never dropped half-started. |
 | 15 | Not applicable: a conversation's actor handles one command at a time, so closing it waits for its start. The app-server it started is the account's, shared, and stops when idle. |
 | 16 | 6.1 (vault and the sandbox). |
-| 17–19 | Ported (both boxes). Making an image and failing to are open (4.2). |
+| 17–19 | Ported to agents-codex on both boxes, including an image it made (a picture) and one it couldn't make for a limit. |
 | 20–22 | Ported. |
-| 23 | Open (4.2): replies saved before citations were read, on reading. |
+| 23 | Ported to agents-codex on both boxes. As the resident starts, Codex's replies an older bridge saved with its directives as words are read as a reply is now (`codex::read_kept_citations`, through `SessionStore::rows_saying`), and so is a title with one. Another agent's words quoting one stay as they were. The reference also keeps a list of the files it found (`sessions.cited`), which nothing reads. |
 | 24–28 | Ported. |
 | 29–32, 34 | Open (4.2): answers turned down with words, the asking words, a refused steer with a card up. |
 | 33, 55 | Ported. |
@@ -816,11 +816,11 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 93–105 | 4.6 (your subagents as roles, spawned agents, writing to them). |
 | 106–108, 110, 111 | Ported. 106 reloads the thread in place; the reference starts its app-server again. |
 | 109 | Ported (Fast, Standard as null, nothing where none was picked). |
-| 112–113 | Open: foreground commands listed while they run (background model). |
+| 112–113 | Ported to agents-codex on both boxes. The commands a turn waits on are listed while they run, with what they printed, and Stop on one stops its turn: `foreground::Foreground` in the turn runtime, for every agent's `shell` step. One that ends leaves the list, and what it printed can still be read. `DELETE kuvo/agents/api/shell/:id` stops one listed command through `Background::stop`. |
 | 114 | Rust: a removed account (or the box stopping) ends the turn as stopped; the conformance case for removal is open (4.2). Signing out mid-turn is ported: Codex is told to sign out and the turn fails as "Codex stopped.", as the reference has it. |
 | 115–119 | Ported. |
-| 120 | Open (4.2): Stop during a summary. |
-| 121 | Open (4.2): the instructions note on a thread it goes on with. |
+| 120 | Ported to agents-codex on both boxes: Stop during a summary tells Codex to stop its own turn, and the summary row says it failed. |
+| 121 | Ported to agents-codex on both boxes: a thread it goes on with hears what changed in its instructions with your next message, once. |
 | `test.each`: a terminal's start relative to the lead's instruction (4) | Rust: a listed command keeps the start heard from its `item/started` (unit test). Holding the lead's finish on it is the work watcher's (5.1c-6b), which reads that start from the background file. |
 | `test.each`: thinking, a step or more words after asking (3) | Ported to agents-codex on both boxes. |
 
@@ -831,10 +831,12 @@ program updater; the live GPT-6-Luna run.
 
 | Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
 |---|---:|---:|---:|
-| macOS | 48/48 | 47/47, 1 skipped (Rust-only) | 6/6 |
-| Linux x86-64, lokum (musl) | 48/48 | — | 6/6 |
-| WSL2, Ubuntu 24.04 (musl) | 48/48 | — | 6/6 |
-| Native Windows x64 | 48/48 | — | 6/6 |
+| macOS | 60/60 | 58/58, 2 skipped (Rust-only) | 6/6 |
+| Linux x86-64, lokum (musl) | 48/48 at 04774ec91 | — | 6/6 |
+| WSL2, Ubuntu 24.04 (musl) | 60/60 | — | 6/6 |
+| Native Windows x64 | 60/60 | — | 6/6 |
+
+Seen once: one case of agents-codex failed against the reference on macOS after the merge of main at c8d59d9da and passed on two reruns (unnamed in that run's output).
 
 On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
 cases put that folder on the PATH.

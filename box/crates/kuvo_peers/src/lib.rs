@@ -7,6 +7,7 @@ pub mod conversation;
 pub mod devices;
 pub mod directory;
 mod kept;
+mod helper_menu;
 mod letters;
 pub mod lists;
 pub mod memory_read;

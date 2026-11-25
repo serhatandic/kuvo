@@ -337,6 +337,22 @@ describe("Codex, more of what it does", { skip }, () => {
     assertMatch(tools[2].state, { status: "completed", input: { detail: "new" }, content: [{ type: "text", text: "It worked." }] });
   });
 
+  test("an image it made shows as a picture, and one it couldn't make for a limit says so", { timeout: 60000 }, async () => {
+    const { id, folder } = box.next();
+    const saved = path.join(folder, "apple.png");
+    fs.writeFileSync(saved, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
+    await box.begin([
+      item("item/completed", { type: "imageGeneration", id: "g1", status: "completed", revisedPrompt: "an apple", savedPath: saved }),
+      item("item/completed", { type: "imageGeneration", id: "g2", status: "failed", failure: { type: "usageLimitExceeded", limitId: "images", resetsAt: 1900000000 } }),
+    ], undefined, { id, folder });
+    const rows = await box.codex.idles(id);
+    const [made, refused] = toolCalls(rows);
+    assertMatch(made, { name: "generate_image", state: { status: "completed", input: { prompt: "an apple" } } });
+    assert.ok(made.state.content.some((part) => part.type === "file" && part.mime === "image/png"), JSON.stringify(made.state.content));
+    assertMatch(refused, { name: "generate_image", state: { status: "error" } });
+    assert.ok(JSON.stringify(refused.state).includes("limit for making images"), JSON.stringify(refused.state));
+  });
+
   test("what Codex says for you to read, and a hook of yours, as notes and a step", { timeout: 60000 }, async () => {
     const { id } = await box.begin([
       ["warning", { message: "Your config has an unknown key." }],
@@ -617,6 +633,21 @@ describe("Codex's cards, modes, context and summaries", { skip }, () => {
     assert.equal(box.codex.sent("thread/compact/start").filter((message) => message.params.threadId === thread()).length, 1);
   });
 
+  test("Stop during a summary: its own turn is told to stop, and the row says it didn't", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m-sum", text: "Ready." })]);
+    await box.codex.idles(id);
+    const thread = box.codex.agentState(id).codexThread;
+    write(path.join(box.codex.root, `codex-compact-holds-${thread}`), "");
+    const answer = await box.codex.compact(id);
+    assert.equal(answer.status, 200, answer.text);
+    await until(() => box.codex.sent("thread/compact/start").some((message) => message.params.threadId === thread), "Codex was never asked to summarize.");
+    await box.codex.interrupt(id);
+    const rows = await box.codex.idles(id, 2);
+    assert.deepEqual(box.codex.sent("turn/interrupt").filter((message) => message.params.threadId === thread).map((message) => message.params.turnId), ["c1"]);
+    assertMatch(rows.find((row) => row.type === "compaction"), { status: "failed" });
+    assert.equal(idles(rows).at(-1).outcome, "interrupted");
+  });
+
   test("its reasoning as it streams starts a reasoning block, and the command after it ends it; a step whose start wasn't told still shows, with an MCP result's pictures and links", { timeout: 60000 }, async () => {
     const { id } = await box.begin([
       ["item/reasoning/summaryTextDelta", { itemId: "r1", delta: "Thinking." }],
@@ -671,6 +702,48 @@ describe("Commands Codex leaves running in a background terminal", { skip }, () 
     const ended = [...box.codex.sent("thread/backgroundTerminals/terminate"), ...box.codex.sent("thread/backgroundTerminals/clean")];
     assert.ok(ended.some((message) => message.params.threadId === thread), "Codex was never told to end it.");
     assert.equal(box.codex.sent("turn/start").filter((message) => message.params.threadId === thread).length, 1);
+  });
+
+  test("a command it waits on in the foreground is listed while it runs, with what it printed, and its Stop stops the turn", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      command("fg1", "npm test"),
+      ["item/commandExecution/outputDelta", { itemId: "fg1", delta: "3 passing\n" }],
+      "stop",
+    ]);
+    const bar = await until(async () => {
+      const read = await box.codex.work(`/${id}`);
+      return read.commands?.length === 1 && read;
+    }, "The command it waits on was never listed.");
+    assertMatch(bar.commands[0], { command: "npm test", agents: true });
+    const output = `/${id}/commands/${bar.commands[0].id}/output`;
+    await until(async () => (await box.codex.work(output)).output === "3 passing", "What it printed never showed.");
+    // (Counted as at work while it runs, as the session is.)
+    assertMatch(await work(id), { commands: 1 });
+    const stopped = await request(box.codex.listener, "DELETE", `kuvo/agents/api/shell/${bar.commands[0].id}`, undefined, { "x-kuvo-from": "app" }, 20000);
+    assert.equal(stopped.status, 200, stopped.text);
+    const rows = await box.codex.idles(id);
+    assert.equal(idles(rows)[0].outcome, "interrupted");
+    const thread = box.codex.agentState(id).codexThread;
+    assert.equal(box.codex.sent("turn/interrupt").filter((message) => message.params.threadId === thread).length, 1);
+    await until(async () => (await box.codex.work(`/${id}`)).commands.length === 0, "It stayed listed.");
+  });
+
+  test("a foreground command that ends leaves the list, what it printed still there to read", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      command("fg2", "npm run build"),
+      ["item/commandExecution/outputDelta", { itemId: "fg2", delta: "built in 2s\n" }],
+      { until: "fg2-ends" },
+      item("item/completed", { type: "commandExecution", id: "fg2", command: "npm run build", status: "completed", exitCode: 0, aggregatedOutput: "built in 2s\n" }),
+      item("item/completed", { type: "agentMessage", id: "m-fg2", text: "Built." }),
+    ]);
+    const bar = await until(async () => {
+      const read = await box.codex.work(`/${id}`);
+      return read.commands?.length === 1 && read;
+    }, "The command it waits on was never listed.");
+    box.codex.go("fg2-ends");
+    await box.codex.idles(id);
+    await until(async () => (await box.codex.work(`/${id}`)).commands.length === 0, "It stayed listed.");
+    assertMatch(await box.codex.work(`/${id}/commands/${bar.commands[0].id}/output`), { output: "built in 2s", state: "ended" });
   });
 
   // Someone's work at work, with a terminal left running: stopping it ends both, through Codex.
@@ -731,6 +804,70 @@ describe("Commands Codex leaves running in a background terminal", { skip }, () 
   });
 });
 
+test("a reply kept from before its citations were read shows as one does now: the file it made shown, and no directive", { timeout: 60000, skip }, async () => {
+  const id = "ses_codex_cited";
+  const pdf = "/w/output/moon.pdf";
+  const words = `Created the field note: one page.\n\n:codex-file-citation{path="${pdf}" purpose="output"}\n\nIt follows :codex-file-citation{path="/w/notes.md" purpose="source"}.`;
+  await withCodex({}, async (codex) => {
+    const rows = await codex.rows(id);
+    const reply = rows.find((row) => row.id === "msg_kept");
+    assert.deepEqual(reply.content.map((part) => (part.type === "text" ? part.text : `[${part.name} ${part.state.status} ${part.state.input.path}]`)), [
+      "Created the field note: one page.\n\n",
+      `[kuvo-browser_show_file completed ${pdf}]`,
+      "\n\nIt follows `/w/notes.md`.",
+    ]);
+    // Another agent's words quoting one (Auto went on with Claude Code): words, as they were.
+    assert.deepEqual(rows.find((row) => row.id === "msg_quoted").content, [{ type: "text", text: words }]);
+    assert.equal(codex.saved(id).title, "Notes on moon.pdf");
+  }, (codex) => {
+    codex.seed(id, { directory: codex.root });
+    const file = path.join(codex.home, "agents/sessions", id, "session.json");
+    write(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, "utf8")), title: `Notes on :codex-file-citation{path="${pdf}" purpose="output"}` }));
+    const model = (providerID, id) => ({ providerID, id });
+    write(path.join(codex.home, "agents/sessions", id, "messages.json"), JSON.stringify([
+      { type: "user", id: "msg_asked", time: { created: 1 }, agent: "build", model: model(provider, "gpt-test"), text: "Make the note.", files: [] },
+      { type: "assistant", id: "msg_kept", time: { created: 1, completed: 2 }, agent: "build", model: model(provider, "gpt-test"), content: [{ type: "text", text: words }] },
+      { type: "assistant", id: "msg_quoted", time: { created: 3, completed: 4 }, agent: "build", model: model("claude-code", "sonnet"), content: [{ type: "text", text: words }] },
+    ]));
+  });
+});
+
+test("its folder changed: the thread it goes on with is told what changed, once; unchanged, nothing extra", { timeout: 90000, skip }, async () => {
+  const id = "ses_codex_told";
+  await withCodex({}, async (codex) => {
+    const said = () => codex.sent("turn/start").map((message) => message.params.input[0].text.replace(/\n\n<from-phone>[\s\S]*<\/from-phone>$/, ""));
+    const instruct = async (entries) => {
+      await codex.stop();
+      const file = path.join(codex.home, "agents/sessions", id, "agent.json");
+      const agent = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+      agent.kuvoInstructions = { ...agent.kuvoInstructions, ...entries };
+      write(file, JSON.stringify(agent));
+      await codex.start();
+    };
+    const send = async (text, turns) => {
+      await codex.prompt(id, text);
+      await codex.idles(id, turns);
+    };
+    await instruct({ "kuvo.worktree": "You work in the worktree at /old/place/tree." });
+    await send("first", 1);
+    // A new thread has them as its developer instructions: no note.
+    assert.ok(codex.sent("thread/start")[0].params.developerInstructions.includes("/old/place/tree"));
+    assert.deepEqual(said(), ["first"]);
+    await instruct({ "kuvo.worktree": "You work in the worktree at /new/place/tree." });
+    await send("second", 2);
+    // The same thread, loaded again, keeps the ones it started with: what changed goes with the message.
+    assert.equal(codex.sent("thread/resume").length, 1);
+    const told = said()[1];
+    assert.ok(told.includes("You work in the worktree at /new/place/tree."), told);
+    assert.match(told, /Replaced or taken out:\s+You work in the worktree at \/old\/place\/tree\./);
+    assert.ok(told.endsWith("\n\nsecond"), told);
+    // Not its asking words, which didn't change.
+    assert.ok(!told.includes("request_user_input_async"), told);
+    await send("third", 3);
+    assert.equal(said()[2], "third");
+  }, (codex) => codex.seed(id, { directory: codex.root }));
+});
+
 test("signed out while it works: Codex is told to sign out, and the turn on it ends as Codex stopped", { timeout: 60000, skip }, async () => {
   const id = "ses_codex_signout";
   await withCodex({}, async (codex) => {
@@ -788,6 +925,26 @@ describe("Codex that won't start", { skip }, () => {
       codex.seed(id, { directory: codex.root });
       write(path.join(codex.root, "codex-never-initializes"), "");
     });
+  });
+});
+
+test("an app-server its resident left as it was starting, never initialized, is stopped by the next rather than taken up", { timeout: 60000, skip: boxBinary().typescript ? "The reference doesn't mark an app-server it hasn't initialized." : skip }, async () => {
+  const id = "ses_codex_orphan";
+  await withCodex({}, async (codex) => {
+    await codex.prompt(id, "Hello.");
+    const started = () => [...new Set(codex.heard().filter((line) => line.message?.method === "initialize").map((line) => line.pid))];
+    const [pid] = await until(() => started().length && started(), "Codex was never started.");
+    const alive = (each) => { try { process.kill(each, 0); return true; } catch { return false; } };
+    // The resident ends outright (as a crash, or Windows ending it), its start under way.
+    process.kill(codex.listener.pid, "SIGKILL");
+    await until(() => !alive(codex.listener.pid), "The resident didn't end.");
+    assert.ok(alive(pid), "Its holder didn't keep the app-server for a next resident.");
+    await codex.stop();
+    await codex.start();
+    await until(() => !alive(pid), "The next resident left the app-server it couldn't use running.", 15000);
+  }, (codex) => {
+    codex.seed(id, { directory: codex.root });
+    write(path.join(codex.root, "codex-never-initializes"), "");
   });
 });
 

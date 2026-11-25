@@ -344,6 +344,14 @@ impl Rpc {
         *self.seen.borrow()
     }
 
+    /// Waits, at most `within`, until the agent is gone. Whether it is.
+    pub async fn ended(&self, within: std::time::Duration) -> bool {
+        let mut gone = self.gone.clone();
+        tokio::time::timeout(within, gone.wait_for(|gone| *gone))
+            .await
+            .is_ok_and(|gone| gone.is_ok())
+    }
+
     /// Whether the agent is gone (or handed to another resident).
     pub fn is_closed(&self) -> bool {
         *self.gone.borrow()

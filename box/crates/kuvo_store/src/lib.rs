@@ -1,5 +1,6 @@
 //! The box's home, on-disk encodings and durable storage primitives.
 
+pub mod background;
 pub mod declarations;
 pub mod diff;
 pub mod files;

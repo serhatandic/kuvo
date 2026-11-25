@@ -6,6 +6,7 @@ use crate::{
         ActiveTurn, EventEnvelope, Outcome, Prompt, Steer, SteerReceipt, Thread, TurnEvent,
         TurnInput,
     },
+    foreground::Foreground,
     turn_sink::{EventWrite, ResidentSink},
 };
 use std::{
@@ -50,12 +51,13 @@ pub struct RunningTurn {
 }
 
 impl RunningTurn {
-    pub fn launch(
+    pub(crate) fn launch(
         thread: Arc<dyn Thread>,
         input: TurnInput,
         sink: Arc<ResidentSink>,
         writes: mpsc::Receiver<EventWrite>,
         writer: impl TurnWriter + 'static,
+        foreground: Foreground,
     ) -> Self {
         let (publish, state) = watch::channel(State::Starting);
         let stop = Arc::new(AtomicBool::new(false));
@@ -65,6 +67,7 @@ impl RunningTurn {
             sink,
             writes,
             writer,
+            foreground,
             publish,
             stop.clone(),
         ));
@@ -146,12 +149,14 @@ impl RunningTurn {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     thread: Arc<dyn Thread>,
     input: TurnInput,
     sink: Arc<ResidentSink>,
     mut writes: mpsc::Receiver<EventWrite>,
     mut writer: impl TurnWriter,
+    mut foreground: Foreground,
     publish: watch::Sender<State>,
     stop: Arc<AtomicBool>,
 ) {
@@ -198,6 +203,7 @@ async fn run(
                     TurnEvent::Finished(result) => Some(result.outcome.clone()),
                     _ => None,
                 };
+                foreground.heard(&update.event.event);
                 let result = writer.apply(&update.event).await;
                 let error = result.as_ref().err()
                     .map(|error| Arc::new(io::Error::new(error.kind(), error.to_string())));
@@ -213,6 +219,7 @@ async fn run(
     };
     // Stop accepting writes before finishing client-facing controls and asks.
     writes.close();
+    foreground.end_all();
     let _ = retirement.end().await;
     publish.send_replace(State::Done(outcome));
 }

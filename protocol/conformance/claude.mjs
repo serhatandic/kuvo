@@ -81,7 +81,27 @@ export function heldClaude(home, session) {
 
 // Stops the holders this case started and waits for them to exit, so the scratch home can go.
 export async function stopFixtureHolders(home) {
-  await stopPids(holderRecords(home).map(record => record.pid));
+  const folder = path.join(home, "run", "agents", "hold");
+  const journals = () => fs.existsSync(folder) ? fs.readdirSync(folder).filter(name => /^[a-f\d]{12}\.journal$/.test(name)) : [];
+  const stopped = new Set();
+  // (Stopped outright on Windows, a holder leaves its journal: one with a record is known gone.)
+  const known = new Set();
+  const stopNew = async () => {
+    const records = holderRecords(home).filter(record => !stopped.has(record.pid));
+    for (const record of records) {
+      stopped.add(record.pid);
+      known.add(`${record.id}.journal`);
+    }
+    await stopPids(records.map(record => record.pid));
+  };
+  await stopNew();
+  // A holder still starting as its resident went (on Windows, ended outright) has no record yet:
+  // it's stopped once it has one, or ends by itself, its journal with it.
+  const deadline = Date.now() + 10000;
+  while (journals().some(name => !known.has(name)) && Date.now() < deadline) {
+    await stopNew();
+    await new Promise(done => setTimeout(done, 50));
+  }
 }
 
 export async function stopPids(pids) {
