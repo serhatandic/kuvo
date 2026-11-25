@@ -43,6 +43,9 @@ const volatile = new Map([
 const reachFiles = ["run/peer-reach.json", "run/peer-reach-checked.json"];
 
 function normalise(value, name, home, enginePort, field = "") {
+  // (When each session was stopped, and when each bot's work last changed.)
+  if (["run/work/stopped.json", "run/work/changes.json"].includes(name) && /^[A-Za-z0-9_-]+$/.test(field) && typeof value === "number")
+    return "<number: stop or change time>";
   if (reachFiles.includes(name) && /^[A-Za-z0-9_-]{43}$/.test(field) && typeof value === "number")
     return "<number: relay observation timestamp>";
   if (name === "GET kuvo/models/offered" && /^generations\/[^/]+$/.test(field) && typeof value === "string")

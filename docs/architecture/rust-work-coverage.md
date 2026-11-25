@@ -484,3 +484,45 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   service yet, so a dev server left up holds its finish until its limit. 8.1.
 - **Autopilot's catch-up** (questions its conversations asked meanwhile going ahead first): 5.3.
 
+## 5.1c-7 — Stop on someone's work, and Stop All
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `watch::stopping`: `Work::stop_work` (noted stopped, its wake-ups and watches ended, its turn stopped, what it left running ended), `end_background`, `has_wake_ups`, `at_work_now`, `lead_waiting_on` | `work/background.ts` `stopWork`, `endBackground`, `endWakeUps`, `hasWakeUps`, `atWorkNow`; `work/stopping.ts` `leadWaitingOn` |
+| `Work::stop_conversation`, reached from Stop (`POST kuvo/sessions/:id/stop`) through `kuvo_engine::WorkStops` for a session someone started | `work/stopping.ts` `stopConversation`, from `areas/queue.ts` |
+| `Work::stop_bot_work`, `POST kuvo/bots/:id/stop-all` | `work/stop.ts` `stopBotWork`, `areas/work.ts` |
+| `kuvo_engine::Engine::stop_work` (paused first where it holds, as Stop), `pause_for_user`; `stop_for_starter` now goes through `stop_work` | `engine/queue.ts` `stopSession`, `pauseForUser` |
+
+### Proof
+
+- `work` scenarios (2 new, 15 in all): 15/15 against both boxes on macOS, and against the Rust
+  box on native Windows and Linux (WSL, static musl), where `bots` is also 40/40:
+  - Stop on a session someone started: the command it left running ends, and its lead hears the
+    user stopped it.
+  - Stop All: of a bot's work, the one in a turn is stopped and held, and the one only waiting on
+    a timer of its own is stopped without holding its queue; the one at rest is left alone; the
+    bot itself is held until you write to it; a bot that isn't here gets 404.
+- The stand-in engine reads and ends one command (`api/shell/:id`), and doesn't end a session's
+  background in one call, so the box ends its commands one by one.
+- `engine-sessions` 81/81 and `bots` 40/40 against the Rust box; the engine's
+  `starter_stop_leaves_summary_out_of_queue` passes.
+- Side by side (Stop All while the bot's own turn runs, Stop on a conversation no one started, a
+  bot that isn't here):
+  - `run/work/stopped.json`, `run/work/changes.json` and `run/queues.json` match. Stop and change
+    times are volatile in the comparer.
+  - The paths the watcher asks the engine are now encoded as `encodeURIComponent` encodes them.
+
+### Gaps and owners
+
+- **Stop All on your other computers** (`stopBotWorkElsewhere`, a `stop_work` call to each):
+  5.1f.
+- **The coding agents' sessions in Stop All**: those with work left running count from the
+  `bridge` place, and stop through the engine's Stop. Whether one is in a turn isn't asked of the
+  bridge: 4.6.
+- **Stop All past a usage-limit reset** (`bots-work.test.js` 802): `pause_for_user(own, true)` is
+  ported, but no scenario covers it. Its children need the agents' `start_session`, so it's 5.1e.
+- **A conversation that isn't anywhere**: Stop's refusal is worded differently in the two boxes
+  ("There's no such conversation here." against "That conversation isn't here."). This was so
+  before this change; the queue routes own it (4.x).
