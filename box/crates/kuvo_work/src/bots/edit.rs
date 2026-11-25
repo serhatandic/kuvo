@@ -132,8 +132,9 @@ async fn move_folder(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// `fields` of a bot (in `folder`) changed now, each unless it was changed later already.
-fn note_edited(folder: &Path, fields: &[&str]) {
+/// `fields` of a bot (in `folder`) changed now, or as of when each was given (`at`, never later
+/// than now), each unless it was changed later already.
+fn note_edited(folder: &Path, fields: &[&str], at: Option<&Map<String, Value>>) {
     if fields.is_empty() {
         return;
     }
@@ -158,15 +159,37 @@ fn note_edited(folder: &Path, fields: &[&str]) {
         .collect();
     for field in fields {
         let was = times.get(*field).and_then(Value::as_f64).unwrap_or(0.0);
-        times.insert((*field).into(), json!((was.max(now as f64)) as i64));
+        let given = at
+            .and_then(|at| at.get(*field))
+            .and_then(Value::as_f64)
+            .map_or(now as f64, |given| given.min(now as f64));
+        times.insert((*field).into(), json!((was.max(given)) as i64));
     }
     let text = serde_json::to_string(&Value::Object(times)).expect("JSON");
     let _ = kuvo_store::files::write_secret(&file, text.as_bytes());
 }
 
+/// A change made as of when each field was given (`times`, by this clock), where only a submitting
+/// device still allowed (`authorize`) may make it: an edit another computer held for a bot here.
+#[derive(Clone, Copy)]
+pub(crate) struct AsOf<'a> {
+    pub times: &'a Map<String, Value>,
+    pub authorize: Option<&'a (dyn Fn() -> bool + Send + Sync)>,
+}
+
+/// What's said while the submitting device is being confirmed.
+const CONFIRMING: &str = "Waiting to confirm the submitting device.";
+
 impl Bots {
     /// `PATCH kuvo/bots/<id>`: a bot here changed as Edit Bot changes it.
     pub(crate) async fn change(&self, id: &str, given: Value) -> Answer {
+        self.change_as_of(id, given, None).await
+    }
+
+    /// A bot here changed as Edit Bot changes it, now or `as_of` when it was given.
+    pub(crate) async fn change_as_of(&self, id: &str, given: Value, as_of: Option<AsOf<'_>>) -> Answer {
+        let authorize = as_of.and_then(|as_of| as_of.authorize);
+        let allowed = || authorize.is_none_or(|authorize| authorize());
         let Some(session) = BotHere::read(&self.inner.bots, id).map(|here| here.session) else {
             return no(404, GONE);
         };
@@ -256,6 +279,12 @@ impl Bots {
             };
             if !same_model(Some(&model), described.get("model")) {
                 if runs_with_agents(Some(&model)) {
+                    if !here.agents && authorize.is_some() {
+                        return no(
+                            422,
+                            "Open the bot on its current computer to change to a coding-agent model.",
+                        );
+                    }
                     if !here.agents {
                         // (Carrying a conversation to the coding agents is theirs, not in this box yet.)
                         return no(503, AGENTS_DOWN);
@@ -330,6 +359,9 @@ impl Bots {
             change_description(
                 &folder,
                 |now| {
+                    if !allowed() {
+                        return Err(std::io::Error::other(CONFIRMING));
+                    }
                     let next = keep_allowed(
                         onto(now.clone(), &described, changed),
                         now.as_ref(),
@@ -348,7 +380,7 @@ impl Bots {
                 return no(503, format!("The bot couldn’t be changed: {error}"));
             }
             self.changed();
-            note_edited(&here.folder, &["work"]);
+            note_edited(&here.folder, &["work"], as_of.map(|as_of| as_of.times));
             return Ok(json!({ "bot": self.listed_one(id) }));
         }
         if here.agents {
@@ -364,7 +396,7 @@ impl Bots {
             .settle_session(&engine, &here.session)
             .await;
         let renamed = changed.get("name") != described.get("name");
-        let was = job_of(&here, true);
+        let was = job_of(&here, authorize.is_none());
         if job_line.is_some() || job_details.is_some() {
             let mut whole = job.clone().unwrap_or_else(|| was.clone());
             if let Some(line) = job_line {
@@ -388,6 +420,9 @@ impl Bots {
         if retold || switched || looks || limits_changed {
             if renamed || switched || looks || personality_changed {
                 changed.insert("updated".into(), json!(stamp()));
+            }
+            if !allowed() {
+                return no(503, CONFIRMING);
             }
             if new_job {
                 let job = job.as_ref().expect("a new job");
@@ -434,7 +469,7 @@ impl Bots {
             .copied()
             .filter(|field| given.contains_key(*field))
             .collect();
-        note_edited(&here.folder, &fields);
+        note_edited(&here.folder, &fields, as_of.map(|as_of| as_of.times));
         Ok(json!({ "bot": self.listed_one(id) }))
     }
 
