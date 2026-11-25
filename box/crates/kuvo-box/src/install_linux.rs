@@ -141,7 +141,7 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
             judgement.verb
         };
         let mut reply = json!({"verdict":verdict, "verb":suggested, "status":judgement.status});
-        super::install_wipe_offer(&mut reply, &wipe);
+        super::install_wipe_offer(&mut reply, wipe.receipt());
         println!("{reply}");
         return Ok(0);
     }
