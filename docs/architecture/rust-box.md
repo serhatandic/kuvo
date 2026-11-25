@@ -598,6 +598,26 @@ is supplemental (there was no before-keeper sample). The separate optimized samp
 same final code in the build used for SSH Add and cross-platform checks, not a like-for-like
 comparison against the debug baseline.
 
+Eight-change checkpoint verification (Rust, applicable scenarios; OS-specific scenarios are
+skipped where their platform or optional fixture is absent):
+
+| Area | Mac | Linux musl | WSL | Native Windows |
+|---|---:|---:|---:|---:|
+| Engine sessions | 81 | 81 | 81 | 81 |
+| Library | 18 | 18 | 18 | 18 |
+| Settings / bots | 17 / 40 | 17 / 40 | 17 / 40 | 17 / 40 |
+| Adding / removal / setup judge / SSH adding | 7 / 7 / 2 / 1 | 7 / 7 / 2 / 1 | 7 / 7 / 2 / 1 | 7 / 5 / 2 / skipped |
+| Two computers / number allocation and failover | 2 / 14 | 2 / 14 | 2 / 14 | 2 / 14 |
+| Moves | 68 | 68 | 68 | 67 |
+| Updates | 84 | 65 | 65 | 51 |
+
+The repeatable Linux/WSL release-promote failure and the Linux terminal replay issue were
+corrected and passed focused reruns; the Windows root watcher and fixture corrections passed
+their affected areas. Mac conformance also ran the TypeScript reference, including engine
+sessions 81/81 and the number allocation/failover cases 14/14. Workspace test checking and the
+TypeScript check passed. The remaining 4.8 work inventories other idle timers and measures
+actual timer callbacks, rather than relying on the operating system's idle-wake estimate alone.
+
 ## 7. Release decisions
 
 1. **0.8.** Ship with the Rust box, including native Windows and WSL2.
