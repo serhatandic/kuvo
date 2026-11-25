@@ -114,7 +114,10 @@ fn backticked(title: &str) -> Option<&str> {
 fn command(call: &Call) -> Option<Value> {
     let raw = raw(call);
     if let Some(parts) = raw["command"].as_array() {
-        let words: Vec<_> = parts.iter().map(|part| part.as_str().unwrap_or("")).collect();
+        let words: Vec<_> = parts
+            .iter()
+            .map(|part| part.as_str().unwrap_or(""))
+            .collect();
         return Some(words.join(" ").into());
     }
     first(&[
@@ -139,13 +142,19 @@ fn with(raw: &Value, extra: impl IntoIterator<Item = (&'static str, Option<Value
 pub(crate) fn kuvo_tool(call: &Call, known: &KnownTools) -> (String, Value) {
     let title = title(call);
     if is_question(call) {
-        return ("question".into(), json!({"questions": [{"question": title}]}));
+        return (
+            "question".into(),
+            json!({"questions": [{"question": title}]}),
+        );
     }
     let raw = raw(call);
     let described = Some(Value::from(title)).filter(|_| call.contains_key("title"));
     // Grok looking through the tools it has (its SearchTool): the app's tool search.
     if raw["variant"] == "SearchTool" {
-        return ("tool_search".into(), with(&Value::Null, [("query", Some(raw["query"].clone()))]));
+        return (
+            "tool_search".into(),
+            with(&Value::Null, [("query", Some(raw["query"].clone()))]),
+        );
     }
     match kind(call) {
         "execute" => {
@@ -153,21 +162,53 @@ pub(crate) fn kuvo_tool(call: &Call, known: &KnownTools) -> (String, Value) {
                 .or_else(|| backticked(title).map(Value::from))
                 .or_else(|| described.clone());
             let description = Some(raw["description"].clone());
-            return ("shell".into(), with(&Value::Null, [("command", command), ("description", description)]));
+            return (
+                "shell".into(),
+                with(
+                    &Value::Null,
+                    [("command", command), ("description", description)],
+                ),
+            );
         }
-        "read" => return ("read".into(), with(raw, [("path", path(call)), ("description", described)])),
+        "read" => {
+            return (
+                "read".into(),
+                with(raw, [("path", path(call)), ("description", described)]),
+            );
+        }
         "edit" | "delete" | "move" => {
-            return ("edit".into(), with(raw, [("path", path(call)), ("description", described)]));
+            return (
+                "edit".into(),
+                with(raw, [("path", path(call)), ("description", described)]),
+            );
         }
         "search" => {
-            let pattern = first(&[&raw["pattern"], &raw["query"]]).cloned().or(described.clone());
-            let fields = [("pattern", pattern), ("path", path(call)), ("description", described)];
+            let pattern = first(&[&raw["pattern"], &raw["query"]])
+                .cloned()
+                .or(described.clone());
+            let fields = [
+                ("pattern", pattern),
+                ("path", path(call)),
+                ("description", described),
+            ];
             return ("grep".into(), with(raw, fields));
         }
         "fetch" => {
-            let name = if raw["url"].is_null() { "websearch" } else { "webfetch" };
-            let query = Some(raw["query"].clone()).filter(|query| !query.is_null()).or(described);
-            return (name.into(), with(&Value::Null, [("url", Some(raw["url"].clone())), ("query", query)]));
+            let name = if raw["url"].is_null() {
+                "websearch"
+            } else {
+                "webfetch"
+            };
+            let query = Some(raw["query"].clone())
+                .filter(|query| !query.is_null())
+                .or(described);
+            return (
+                name.into(),
+                with(
+                    &Value::Null,
+                    [("url", Some(raw["url"].clone())), ("query", query)],
+                ),
+            );
         }
         "think" => return ("think".into(), json!({})),
         _ => {}
@@ -176,16 +217,30 @@ pub(crate) fn kuvo_tool(call: &Call, known: &KnownTools) -> (String, Value) {
     // arguments where the agent wraps them in its call (Grok's `UseTool`).
     let server = first(&[&raw["server"], &raw["server_name"], &raw["serverName"]]);
     let tool = first(&[&raw["tool"], &raw["tool_name"], &raw["toolName"]]).and_then(Value::as_str);
-    let wrapped = first(&[&raw["arguments"], &raw["args"], &raw["input"], &raw["tool_input"], &raw["toolInput"]]);
-    let args = wrapped.filter(|value| value.is_object()).unwrap_or(raw).clone();
-    let plain = |name: &str| !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    let wrapped = first(&[
+        &raw["arguments"],
+        &raw["args"],
+        &raw["input"],
+        &raw["tool_input"],
+        &raw["toolInput"],
+    ]);
+    let args = wrapped
+        .filter(|value| value.is_object())
+        .unwrap_or(raw)
+        .clone();
+    let plain = |name: &str| {
+        !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    };
     if server.and_then(Value::as_str) == Some(TOOL_SERVER_NAME)
         && let Some(tool) = tool.filter(|tool| plain(tool))
         && known.has(tool) != Some(false)
     {
         return (format!("{TOOL_SERVER_NAME}_{tool}"), args);
     }
-    if let Some(name) = [Some(title), tool].into_iter().flatten().find_map(server_prefixed)
+    if let Some(name) = [Some(title), tool]
+        .into_iter()
+        .flatten()
+        .find_map(server_prefixed)
         && known.has(&name) != Some(false)
     {
         return (format!("{TOOL_SERVER_NAME}_{name}"), args);
@@ -201,7 +256,13 @@ pub(crate) fn kuvo_tool(call: &Call, known: &KnownTools) -> (String, Value) {
     let name = titled.unwrap_or(title).to_lowercase();
     let mut name: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     while name.contains("__") {
         name = name.replace("__", "_");
@@ -223,9 +284,12 @@ fn server_prefixed(text: &str) -> Option<String> {
         return None;
     }
     let rest = &lower[at + TOOL_SERVER_NAME.len()..];
-    let rest = ["__", "/", ".", ":", "_"].iter().find_map(|sep| rest.strip_prefix(sep))?;
+    let rest = ["__", "/", ".", ":", "_"]
+        .iter()
+        .find_map(|sep| rest.strip_prefix(sep))?;
     let name = rest.trim_end();
-    (!name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).then(|| name.into())
+    (!name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then(|| name.into())
 }
 
 /// A title that is only a tool's name, after "Running", "Tool:" or "Calling".
@@ -234,17 +298,33 @@ fn titled(title: &str) -> Option<&str> {
     let lower = title.to_ascii_lowercase();
     let rest = ["running ", "tool:", "calling "]
         .iter()
-        .find_map(|prefix| lower.starts_with(prefix).then(|| title[prefix.len()..].trim_start()))
+        .find_map(|prefix| {
+            lower
+                .starts_with(prefix)
+                .then(|| title[prefix.len()..].trim_start())
+        })
         .unwrap_or(title);
     let plain = !rest.is_empty()
-        && rest.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
     plain.then_some(rest)
 }
 
 /// The kinds of access Kuvo Code knows an ask by.
 const CLASSIFIED: [&str; 12] = [
-    "shell", "edit", "write", "patch", "webfetch", "websearch", "read", "grep", "glob", "list",
-    "external_directory", "think",
+    "shell",
+    "edit",
+    "write",
+    "patch",
+    "webfetch",
+    "websearch",
+    "read",
+    "grep",
+    "glob",
+    "list",
+    "external_directory",
+    "think",
 ];
 
 /// What an ask is for: by the call's kind, else by its tool.
@@ -313,7 +393,12 @@ pub(crate) fn refused_what(action: &str, resources: &[String]) -> String {
 /// A read Kuvo Code does for the agent (Antigravity's `client_view_file`), not its own
 /// `view_file`; one named only by what the model says it does could be either.
 pub(crate) fn client_read(call: &Call) -> bool {
-    let named = format!("{} {}", title(call), raw(call)["name"].as_str().unwrap_or("")).to_ascii_lowercase();
+    let named = format!(
+        "{} {}",
+        title(call),
+        raw(call)["name"].as_str().unwrap_or("")
+    )
+    .to_ascii_lowercase();
     named.contains("client_view_file") || !named.contains("view_file")
 }
 
@@ -329,9 +414,15 @@ pub(crate) fn read_path(call: &Call) -> Option<String> {
         .get("locations")
         .and_then(|locations| locations.get(0))
         .map_or(&Value::Null, |location| &location["path"]);
-    first(&[location, &raw["absolute_path"], &raw["path"], &raw["file_path"], &raw["filePath"]])
-        .and_then(text)
-        .map(str::to_owned)
+    first(&[
+        location,
+        &raw["absolute_path"],
+        &raw["path"],
+        &raw["file_path"],
+        &raw["filePath"],
+    ])
+    .and_then(text)
+    .map(str::to_owned)
 }
 
 /// What content says in words.
@@ -341,7 +432,9 @@ pub(crate) fn content_text(content: &Value) -> String {
     }
     let value = match content["type"].as_str() {
         Some("text") => &content["text"],
-        Some("resource_link") => first(&[&content["name"], &content["uri"]]).unwrap_or(&Value::Null),
+        Some("resource_link") => {
+            first(&[&content["name"], &content["uri"]]).unwrap_or(&Value::Null)
+        }
         Some("resource") => &content["resource"]["text"],
         _ => &Value::Null,
     };
@@ -364,7 +457,12 @@ pub(crate) fn content_picture(content: &Value) -> Option<ToolOutput> {
 pub(crate) fn tool_output(call: &Call) -> (String, Vec<ToolOutput>) {
     let mut parts: Vec<String> = Vec::new();
     let mut pictures = Vec::new();
-    for part in call.get("content").and_then(Value::as_array).into_iter().flatten() {
+    for part in call
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         if part["type"] != "content" {
             continue;
         }
@@ -372,7 +470,9 @@ pub(crate) fn tool_output(call: &Call) -> (String, Vec<ToolOutput>) {
         if let Some(picture) = content_picture(content) {
             pictures.push(picture);
         } else if content["type"] == "resource_link" {
-            let name = first(&[&content["name"], &content["title"]]).and_then(Value::as_str).unwrap_or("Link");
+            let name = first(&[&content["name"], &content["title"]])
+                .and_then(Value::as_str)
+                .unwrap_or("Link");
             parts.push(format!("{name}: {}", content["uri"].as_str().unwrap_or("")));
         } else {
             parts.push(content_text(content));
@@ -384,7 +484,14 @@ pub(crate) fn tool_output(call: &Call) -> (String, Vec<ToolOutput>) {
         if let Some(text) = raw.as_str() {
             parts.push(text.into());
         } else {
-            let keys = ["output_for_prompt", "combinedOutput", "combined_output", "output", "stdout", "content"];
+            let keys = [
+                "output_for_prompt",
+                "combinedOutput",
+                "combined_output",
+                "output",
+                "stdout",
+                "content",
+            ];
             if let Some(output) = keys.iter().find_map(|key| text(&raw[*key])) {
                 parts.push(output.into());
             }
@@ -400,7 +507,11 @@ pub(crate) fn tool_output(call: &Call) -> (String, Vec<ToolOutput>) {
             }
         }
     }
-    let text = parts.into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n");
+    let text = parts
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
     (tail(text, OUTPUT_LIMIT), pictures)
 }
 
@@ -418,7 +529,11 @@ fn tail(text: String, limit: usize) -> String {
 
 /// A text's first line, short.
 pub(crate) fn first_line(text: &str) -> String {
-    let line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("");
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
     if line.chars().count() > 80 {
         format!("{}…", line.chars().take(79).collect::<String>())
     } else {
@@ -437,16 +552,40 @@ mod tests {
     #[test]
     fn names_each_kind_as_the_app_does() {
         let none = KnownTools::default();
-        let shell = call(json!({"toolCallId":"1","kind":"execute","title":"Run `ls -la`","rawInput":{}}));
-        assert_eq!(kuvo_tool(&shell, &none), ("shell".into(), json!({"command":"ls -la"})));
-        let argv = call(json!({"kind":"execute","rawInput":{"command":["git","status"],"description":"d"}}));
-        assert_eq!(kuvo_tool(&argv, &none).1, json!({"command":"git status","description":"d"}));
-        let read = call(json!({"kind":"read","title":"Read a","locations":[{"path":"/a"}],"rawInput":{"limit":3}}));
-        assert_eq!(kuvo_tool(&read, &none), ("read".into(), json!({"limit":3,"path":"/a","description":"Read a"})));
+        let shell =
+            call(json!({"toolCallId":"1","kind":"execute","title":"Run `ls -la`","rawInput":{}}));
+        assert_eq!(
+            kuvo_tool(&shell, &none),
+            ("shell".into(), json!({"command":"ls -la"}))
+        );
+        let argv = call(
+            json!({"kind":"execute","rawInput":{"command":["git","status"],"description":"d"}}),
+        );
+        assert_eq!(
+            kuvo_tool(&argv, &none).1,
+            json!({"command":"git status","description":"d"})
+        );
+        let read = call(
+            json!({"kind":"read","title":"Read a","locations":[{"path":"/a"}],"rawInput":{"limit":3}}),
+        );
+        assert_eq!(
+            kuvo_tool(&read, &none),
+            (
+                "read".into(),
+                json!({"limit":3,"path":"/a","description":"Read a"})
+            )
+        );
         let fetch = call(json!({"kind":"fetch","title":"cats","rawInput":{}}));
-        assert_eq!(kuvo_tool(&fetch, &none), ("websearch".into(), json!({"query":"cats"})));
-        let search = call(json!({"kind":"other","rawInput":{"variant":"SearchTool","query":"widgets"}}));
-        assert_eq!(kuvo_tool(&search, &none), ("tool_search".into(), json!({"query":"widgets"})));
+        assert_eq!(
+            kuvo_tool(&fetch, &none),
+            ("websearch".into(), json!({"query":"cats"}))
+        );
+        let search =
+            call(json!({"kind":"other","rawInput":{"variant":"SearchTool","query":"widgets"}}));
+        assert_eq!(
+            kuvo_tool(&search, &none),
+            ("tool_search".into(), json!({"query":"widgets"}))
+        );
         let question = call(json!({"toolCallId":"interaction_1","title":"Which?"}));
         assert_eq!(kuvo_tool(&question, &none).0, "question");
     }
@@ -454,15 +593,27 @@ mod tests {
     #[test]
     fn kuvo_tools_go_by_the_apps_name_with_their_own_arguments() {
         let none = KnownTools::default();
-        let wrapped = call(json!({"kind":"other","title":"UseTool","rawInput":{"variant":"UseTool","server":"kuvo-browser","tool_name":"show_widget","tool_input":{"html":"<b>"}}}));
-        assert_eq!(kuvo_tool(&wrapped, &none), ("kuvo-browser_show_widget".into(), json!({"html":"<b>"})));
-        let prefixed = call(json!({"kind":"other","title":"mcp__kuvo-browser__notify_user","rawInput":{"text":"hi"}}));
-        assert_eq!(kuvo_tool(&prefixed, &none), ("kuvo-browser_notify_user".into(), json!({"text":"hi"})));
+        let wrapped = call(
+            json!({"kind":"other","title":"UseTool","rawInput":{"variant":"UseTool","server":"kuvo-browser","tool_name":"show_widget","tool_input":{"html":"<b>"}}}),
+        );
+        assert_eq!(
+            kuvo_tool(&wrapped, &none),
+            ("kuvo-browser_show_widget".into(), json!({"html":"<b>"}))
+        );
+        let prefixed = call(
+            json!({"kind":"other","title":"mcp__kuvo-browser__notify_user","rawInput":{"text":"hi"}}),
+        );
+        assert_eq!(
+            kuvo_tool(&prefixed, &none),
+            ("kuvo-browser_notify_user".into(), json!({"text":"hi"}))
+        );
         let known = KnownTools::of(&[("show_widget", &["html"])]);
-        let titled = call(json!({"kind":"other","title":"Running show_widget","rawInput":{"html":"x"}}));
+        let titled =
+            call(json!({"kind":"other","title":"Running show_widget","rawInput":{"html":"x"}}));
         assert_eq!(kuvo_tool(&titled, &known).0, "kuvo-browser_show_widget");
         // (An agent's own tool by the same name, with other arguments, stays its own.)
-        let own = call(json!({"kind":"other","title":"Running show_widget","rawInput":{"other":1}}));
+        let own =
+            call(json!({"kind":"other","title":"Running show_widget","rawInput":{"other":1}}));
         assert_eq!(kuvo_tool(&own, &known).0, "show_widget");
         let odd = call(json!({"kind":"other","title":"Do: Some Thing!"}));
         assert_eq!(kuvo_tool(&odd, &none).0, "do_some_thing");
@@ -501,6 +652,11 @@ mod tests {
         assert!(client_read(&call(json!({"title":"client_view_file"}))));
         assert!(!client_read(&call(json!({"title":"view_file"}))));
         assert!(client_read(&call(json!({"title":"Reading a.txt"}))));
-        assert_eq!(first_line(&format!("\n  {}\nmore", "x".repeat(90))).chars().count(), 80);
+        assert_eq!(
+            first_line(&format!("\n  {}\nmore", "x".repeat(90)))
+                .chars()
+                .count(),
+            80
+        );
     }
 }

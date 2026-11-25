@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers run Grok and Antigravity conversations, several sharing one agent process. Neither offers a plan mode, and a conversation saved in one goes on normally. An Antigravity account signed in before Google's agy says to install agy and sign in again instead of offering an update, and a sign-in that can't start says why.
+
 - Usage and Insights stay current while native agent databases are open, without starting the engine just to read its history or OpenCode Go account. Saved usage is repriced when its price catalog changes.
 
 - Opening the app on a Rust computer no longer starts unused coding agents to list their accounts and models. Agent update checks are daily or on demand, and unchanged programs are not run to read their versions.

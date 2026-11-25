@@ -19,6 +19,41 @@ pub struct SessionContext {
     /// Where its agent says what it keeps going besides its turn: commands it left running, and
     /// other tasks.
     pub background: crate::background::Background,
+    /// Where its agent offers a turn it began on its own, between prompts.
+    pub own_turns: OwnTurns,
+}
+
+/// A turn an agent began on its own (Grok after a task of its own ended), offered to the
+/// resident: `taken` says whether a turn there takes it (`TurnKind::AgentStarted`).
+pub struct OwnTurn {
+    pub session: String,
+    pub provider: String,
+    /// What the conversation shows for it.
+    pub text: String,
+    pub taken: tokio::sync::oneshot::Sender<bool>,
+}
+
+/// The resident's end for turns agents begin on their own: none takes them until it's set.
+#[derive(Clone, Default)]
+pub struct OwnTurns(Option<tokio::sync::mpsc::UnboundedSender<OwnTurn>>);
+
+impl OwnTurns {
+    pub fn new(sender: tokio::sync::mpsc::UnboundedSender<OwnTurn>) -> Self {
+        Self(Some(sender))
+    }
+
+    /// Offers one: whether it's taken (never, with no resident to take it).
+    pub async fn offer(&self, session: &str, provider: &str, text: String) -> bool {
+        let Some(sender) = &self.0 else { return false };
+        let (taken, answer) = tokio::sync::oneshot::channel();
+        let offer = OwnTurn {
+            session: session.into(),
+            provider: provider.into(),
+            text,
+            taken,
+        };
+        sender.send(offer).is_ok() && answer.await.unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -74,7 +74,11 @@ pub(super) struct Projection {
 
 impl Projection {
     pub fn new(started_ms: u64, compacting: bool) -> Self {
-        Self { started_ms, compacting, ..Self::default() }
+        Self {
+            started_ms,
+            compacting,
+            ..Self::default()
+        }
     }
 
     pub fn has_tools(&self) -> bool {
@@ -92,7 +96,10 @@ impl Projection {
 
     /// A step's usage, as the context gauge reads it: what the conversation fills.
     fn step_usage(&self) -> Option<Usage> {
-        self.used.map(|input| Usage { input, ..Usage::default() })
+        self.used.map(|input| Usage {
+            input,
+            ..Usage::default()
+        })
     }
 
     /// An update of the agent's own session.
@@ -110,11 +117,21 @@ impl Projection {
                     self.said_length += text.len();
                     self.said.push_str(&text);
                     let keep = self.said.len().saturating_sub(2_000);
-                    let keep = (keep..=self.said.len()).find(|at| self.said.is_char_boundary(*at)).unwrap_or(0);
+                    let keep = (keep..=self.said.len())
+                        .find(|at| self.said.is_char_boundary(*at))
+                        .unwrap_or(0);
                     self.said.drain(..keep);
                 }
                 self.words(&mut events, cx);
-                self.content(&mut events, content, if *thought { TextKind::Reasoning } else { TextKind::Text });
+                self.content(
+                    &mut events,
+                    content,
+                    if *thought {
+                        TextKind::Reasoning
+                    } else {
+                        TextKind::Text
+                    },
+                );
             }
             Update::Tool(update) => self.tool(&mut events, update, cx),
             Update::Usage { size, used, cost } => {
@@ -125,16 +142,25 @@ impl Projection {
                 if used.is_some() {
                     self.used = *used;
                 }
-                events.push(TurnEvent::Context { used: *used, window: self.window });
+                events.push(TurnEvent::Context {
+                    used: *used,
+                    window: self.window,
+                });
                 if let Some(total) = cost {
                     events.push(TurnEvent::Cost(self.cost_now(cx.native, *total)));
                 }
             }
-            Update::Mode(mode) => events.push(TurnEvent::Notice(format!("{} switched to its {mode} mode.", cx.flavour.name()))),
+            Update::Mode(mode) => events.push(TurnEvent::Notice(format!(
+                "{} switched to its {mode} mode.",
+                cx.flavour.name()
+            ))),
             Update::Notice(said) => events.push(TurnEvent::Notice(said.clone())),
             Update::Compacted => {
                 if !self.compacted && !self.compacting {
-                    events.extend([TurnEvent::ContextCleared, TurnEvent::CompactionEnded { succeeded: true }]);
+                    events.extend([
+                        TurnEvent::ContextCleared,
+                        TurnEvent::CompactionEnded { succeeded: true },
+                    ]);
                 }
                 self.compacted = true;
             }
@@ -143,14 +169,20 @@ impl Projection {
                     self.window = Some(*window);
                     cx.flavour.note_context(cx.model, *window);
                 }
-                events.push(TurnEvent::Context { used: *used, window: self.window });
+                events.push(TurnEvent::Context {
+                    used: *used,
+                    window: self.window,
+                });
                 if !self.compacting {
                     events.push(TurnEvent::CompactionStarted);
                 }
             }
             Update::AutoCompactCompleted { after } => {
                 events.push(match after {
-                    Some(after) => TurnEvent::Context { used: Some(*after), window: self.window },
+                    Some(after) => TurnEvent::Context {
+                        used: Some(*after),
+                        window: self.window,
+                    },
                     None => TurnEvent::ContextCleared,
                 });
                 if !self.compacting {
@@ -163,12 +195,22 @@ impl Projection {
                 }
             }
             Update::Plan(entries) => {
-                let todos: Vec<Value> = entries.iter().map(|todo| json!({"content": todo.content, "status": todo.status})).collect();
+                let todos: Vec<Value> = entries
+                    .iter()
+                    .map(|todo| json!({"content": todo.content, "status": todo.status}))
+                    .collect();
                 let id = match &self.plan {
                     Some((id, _)) => id.clone(),
                     None => self.synthetic_id("todowrite"),
                 };
-                events.push(tool_event(&id, "todowrite", ToolState::Running { input: json!({"todos": todos}) }, Map::new()));
+                events.push(tool_event(
+                    &id,
+                    "todowrite",
+                    ToolState::Running {
+                        input: json!({"todos": todos}),
+                    },
+                    Map::new(),
+                ));
                 self.shown.insert(id.clone());
                 self.plan = Some((id, todos));
             }
@@ -176,7 +218,10 @@ impl Projection {
                 if !words.is_empty() {
                     events.push(TurnEvent::Notice(words.clone()));
                 }
-                eprintln!("{} sent {kind}, which Kuvo Code doesn't know.", cx.flavour.name());
+                eprintln!(
+                    "{} sent {kind}, which Kuvo Code doesn't know.",
+                    cx.flavour.name()
+                );
             }
             Update::UserChunk(_) | Update::ConfigOptions(_) | Update::Ignored => {}
         }
@@ -190,7 +235,11 @@ impl Projection {
             _ => 0.0,
         };
         self.cost = Some((native.to_owned(), total));
-        if total >= before { total - before } else { total }
+        if total >= before {
+            total - before
+        } else {
+            total
+        }
     }
 
     /// What it said, with pictures shown as such, and links as links.
@@ -198,20 +247,40 @@ impl Projection {
         if let Some(picture) = tools::content_picture(content) {
             let id = self.synthetic_id("generate_image");
             self.tools_since_text = true;
-            events.push(tool_event(&id, "generate_image", ToolState::Running { input: json!({}) }, Map::new()));
-            events.push(tool_event(&id, "generate_image", ToolState::Completed { input: json!({}), content: vec![picture] }, Map::new()));
+            events.push(tool_event(
+                &id,
+                "generate_image",
+                ToolState::Running { input: json!({}) },
+                Map::new(),
+            ));
+            events.push(tool_event(
+                &id,
+                "generate_image",
+                ToolState::Completed {
+                    input: json!({}),
+                    content: vec![picture],
+                },
+                Map::new(),
+            ));
             return;
         }
         let text = match content["type"].as_str() {
             Some("resource_link") => {
-                let name = [&content["name"], &content["title"], &content["uri"]].into_iter().find_map(Value::as_str).unwrap_or("");
+                let name = [&content["name"], &content["title"], &content["uri"]]
+                    .into_iter()
+                    .find_map(Value::as_str)
+                    .unwrap_or("");
                 format!("[{name}]({})", content["uri"].as_str().unwrap_or(""))
             }
             Some("audio") => "(a sound clip)".into(),
             _ => tools::content_text(content),
         };
         if !text.is_empty() {
-            events.push(TurnEvent::TextDelta { kind, block: None, delta: text });
+            events.push(TurnEvent::TextDelta {
+                kind,
+                block: None,
+                delta: text,
+            });
         }
     }
 
@@ -222,7 +291,11 @@ impl Projection {
         }
         self.tools_since_text = false;
         self.settle_reads(events, false, cx);
-        events.push(TurnEvent::StepEnded { usage: self.step_usage(), finish: None, error: None });
+        events.push(TurnEvent::StepEnded {
+            usage: self.step_usage(),
+            finish: None,
+            error: None,
+        });
         events.push(TurnEvent::StepStarted { model: None });
     }
 
@@ -254,27 +327,50 @@ impl Projection {
             .into_iter()
             .flatten()
             .filter(|part| part["type"] == "diff" && part["path"].is_string())
-            .map(|part| file_change(part["path"].as_str().unwrap_or(""), part["oldText"].as_str(), Some(part["newText"].as_str().unwrap_or(""))))
+            .map(|part| {
+                file_change(
+                    part["path"].as_str().unwrap_or(""),
+                    part["oldText"].as_str(),
+                    Some(part["newText"].as_str().unwrap_or("")),
+                )
+            })
             .collect();
         if !files.is_empty() {
             metadata.insert("files".into(), files.into());
         }
         let raw_output = call.get("rawOutput").unwrap_or(&Value::Null);
-        if let Some(exit) = raw_output["exit_code"].as_i64().or_else(|| raw_output["exitCode"].as_i64()) {
+        if let Some(exit) = raw_output["exit_code"]
+            .as_i64()
+            .or_else(|| raw_output["exitCode"].as_i64())
+        {
             metadata.insert("exit".into(), exit.into());
         }
         if !output.is_empty() {
             metadata.insert("output".into(), output.clone().into());
         }
         let text = |content: Vec<ToolOutput>| -> Vec<ToolOutput> {
-            if output.is_empty() { content } else { [vec![ToolOutput::Text(output.clone())], content].concat() }
+            if output.is_empty() {
+                content
+            } else {
+                [vec![ToolOutput::Text(output.clone())], content].concat()
+            }
         };
         let state = match tools::status(&call) {
             "completed" => {
                 pictures.extend(cx.flavour.made_files(&call, cx.native, self.started_ms));
-                ToolState::Completed { input, content: text(pictures) }
+                ToolState::Completed {
+                    input,
+                    content: text(pictures),
+                }
             }
-            "failed" => failed(input, if output.is_empty() { "The tool failed." } else { &output }),
+            "failed" => failed(
+                input,
+                if output.is_empty() {
+                    "The tool failed."
+                } else {
+                    &output
+                },
+            ),
             "cancelled" => {
                 let why = self.declined.get(&id).map_or("Stopped.", String::as_str);
                 failed(input, if output.is_empty() { why } else { &output })
@@ -287,7 +383,8 @@ impl Projection {
             self.declined.remove(&id);
         }
         // A file Kuvo read for it before it said which call read it.
-        if tools::open_read(&call) && tools::client_read(&call)
+        if tools::open_read(&call)
+            && tools::client_read(&call)
             && let Some(path) = self.read_file(&call, cx)
             && let Some(served) = self.served.get_mut(&path).and_then(VecDeque::pop_front)
         {
@@ -309,7 +406,9 @@ impl Projection {
         let open: Vec<(String, Call)> = self
             .calls
             .iter()
-            .filter(|(id, call)| tools::open_read(call) && !self.settled.contains(*id) && self.shown.contains(*id))
+            .filter(|(id, call)| {
+                tools::open_read(call) && !self.settled.contains(*id) && self.shown.contains(*id)
+            })
             .map(|(id, call)| (id.clone(), call.clone()))
             .collect();
         for (id, call) in open {
@@ -335,7 +434,10 @@ impl Projection {
         let (name, input) = tools::kuvo_tool(&call, &KnownTools::default());
         let state = match served {
             Served::Error(why) => failed(input, &why),
-            Served::Text(text) => ToolState::Completed { input, content: vec![ToolOutput::Text(text)] },
+            Served::Text(text) => ToolState::Completed {
+                input,
+                content: vec![ToolOutput::Text(text)],
+            },
         };
         events.push(tool_event(id, &name, state, Map::new()));
     }
@@ -344,11 +446,18 @@ impl Projection {
     pub fn served(&mut self, path: &Path, served: Served, cx: &Context) -> Vec<TurnEvent> {
         let mut events = Vec::new();
         let open = self.calls.iter().find(|(id, call)| {
-            tools::open_read(call) && !self.settled.contains(*id) && tools::client_read(call) && self.read_file(call, cx).as_deref() == Some(path)
+            tools::open_read(call)
+                && !self.settled.contains(*id)
+                && tools::client_read(call)
+                && self.read_file(call, cx).as_deref() == Some(path)
         });
         match open.map(|(id, _)| id.clone()) {
             Some(id) => self.settle_read(&mut events, &id, served),
-            None => self.served.entry(path.to_owned()).or_default().push_back(served),
+            None => self
+                .served
+                .entry(path.to_owned())
+                .or_default()
+                .push_back(served),
         }
         events
     }
@@ -374,9 +483,18 @@ impl Projection {
                     _ => String::new(),
                 };
                 let row = format!("acp-subagent:{session}");
-                let title = Some(tools::first_line(&prompt)).filter(|line| !line.is_empty()).unwrap_or_else(|| "A subagent's task".into());
+                let title = Some(tools::first_line(&prompt))
+                    .filter(|line| !line.is_empty())
+                    .unwrap_or_else(|| "A subagent's task".into());
                 self.tools_since_text = true;
-                events.push(tool_event(&row, "subagent", ToolState::Running { input: json!({"description": title, "prompt": prompt}) }, Map::new()));
+                events.push(tool_event(
+                    &row,
+                    "subagent",
+                    ToolState::Running {
+                        input: json!({"description": title, "prompt": prompt}),
+                    },
+                    Map::new(),
+                ));
                 self.children.insert(session.to_owned(), Child::Row(row));
             }
         }
@@ -388,11 +506,27 @@ impl Projection {
     pub fn end(&mut self, cx: &Context) -> Vec<TurnEvent> {
         let mut events = Vec::new();
         if let Some((id, todos)) = self.plan.take() {
-            events.push(tool_event(&id, "todowrite", ToolState::Completed { input: json!({"todos": todos}), content: vec![] }, Map::new()));
+            events.push(tool_event(
+                &id,
+                "todowrite",
+                ToolState::Completed {
+                    input: json!({"todos": todos}),
+                    content: vec![],
+                },
+                Map::new(),
+            ));
         }
         for (_, child) in self.children.drain() {
             if let Child::Row(row) = child {
-                events.push(tool_event(&row, "subagent", ToolState::Completed { input: json!({}), content: vec![] }, Map::new()));
+                events.push(tool_event(
+                    &row,
+                    "subagent",
+                    ToolState::Completed {
+                        input: json!({}),
+                        content: vec![],
+                    },
+                    Map::new(),
+                ));
             }
         }
         let declined: Vec<_> = self.declined.drain().collect();
@@ -402,7 +536,11 @@ impl Projection {
             events.push(tool_event(&id, &name, failed(input, &why), Map::new()));
         }
         self.settle_reads(&mut events, true, cx);
-        events.push(TurnEvent::StepEnded { usage: self.step_usage(), finish: None, error: None });
+        events.push(TurnEvent::StepEnded {
+            usage: self.step_usage(),
+            finish: None,
+            error: None,
+        });
         events
     }
 }
@@ -411,12 +549,22 @@ fn failed(input: Value, why: &str) -> ToolState {
     ToolState::Failed {
         input,
         content: vec![ToolOutput::Text(why.into())],
-        error: TurnError { kind: "tool".into(), message: why.into(), status: None, limit: None },
+        error: TurnError {
+            kind: "tool".into(),
+            message: why.into(),
+            status: None,
+            limit: None,
+        },
     }
 }
 
 fn tool_event(id: &str, name: &str, state: ToolState, metadata: Map<String, Value>) -> TurnEvent {
-    TurnEvent::Tool { id: id.into(), name: name.into(), state, metadata }
+    TurnEvent::Tool {
+        id: id.into(),
+        name: name.into(),
+        state,
+        metadata,
+    }
 }
 
 #[cfg(test)]

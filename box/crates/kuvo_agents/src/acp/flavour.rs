@@ -24,11 +24,14 @@ use super::{
     wire::{Capabilities, Setup},
 };
 
-/// How a process is to run: what the turn needs of it.
+/// How a process is to run: what the turn needs of it. There's no plan mode for people (the
+/// user's decision, 11-25): a conversation saved in one goes on as it would otherwise.
+/// `read_only` is the box's own, for its read-only runs (reviews, side questions: 4.6), never a
+/// mode anyone picks.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Mode {
     pub approve_all: bool,
-    pub plan: bool,
+    pub read_only: bool,
 }
 
 /// A process ready for its holder to start, and what tells it apart.
@@ -46,12 +49,8 @@ pub(crate) struct Launch {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Line {
     Protocol,
-    /// Not ACP (a sign-in link printed): dropped.
-    Drop,
-    /// It wants a new sign-in.
+    /// It wants a new sign-in (not ACP: dropped).
     AsksSignIn,
-    /// It can't go on: why, in words.
-    Fatal(String),
 }
 
 /// Something the agent keeps going in the background, which wakes it as it ends.
@@ -70,9 +69,18 @@ pub(crate) struct Task {
 #[derive(Clone, Debug)]
 pub(crate) enum Extension {
     /// What it keeps going, listed whole at each change (`replayed`: a load's, from before).
-    Background { session: Option<String>, tasks: Vec<Task>, replayed: bool },
+    Background {
+        session: Option<String>,
+        tasks: Vec<Task>,
+        replayed: bool,
+    },
     /// A prompt is over (it can say so before answering): one of its own (`own`) or one sent.
-    PromptComplete { own: bool, stop: String, error: Option<String>, prompt: Option<String> },
+    PromptComplete {
+        own: bool,
+        stop: String,
+        error: Option<String>,
+        prompt: Option<String>,
+    },
 }
 
 /// A question of the agent's own.
@@ -88,7 +96,10 @@ pub(crate) struct Question {
 /// A request of the agent's own.
 #[derive(Clone, Debug)]
 pub(crate) enum OwnRequest {
-    Questions { tool_call: Option<String>, questions: Vec<Question> },
+    Questions {
+        tool_call: Option<String>,
+        questions: Vec<Question>,
+    },
     /// Its plan, done in plan mode.
     ExitPlan { plan: Option<String> },
 }
@@ -209,6 +220,23 @@ pub(crate) trait Flavour: Send + Sync + 'static {
     /// Files a finished call made that it doesn't hand back.
     fn made_files(&self, _call: &Call, _session: &str, _since_ms: u64) -> Vec<ToolOutput> {
         Vec::new()
+    }
+    /// Where the agent's own record of `session` stands as a prompt is sent (its last step), when
+    /// it keeps one: its prompts' ends are looked for there too.
+    fn record_mark(&self, _session: &str) -> Option<i64> {
+        None
+    }
+    /// The step of its own record that answers the prompt sent at `mark` (`sent_ms`) with the
+    /// words it said (their end and length), though ACP hasn't said so yet.
+    fn record_answer(
+        &self,
+        _session: &str,
+        _mark: i64,
+        _sent_ms: u64,
+        _said: &str,
+        _said_length: usize,
+    ) -> Option<i64> {
+        None
     }
     /// How much the model holds, as it said.
     fn note_context(&self, _model: &str, _size: u64) {}

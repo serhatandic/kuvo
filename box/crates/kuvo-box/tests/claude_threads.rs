@@ -520,6 +520,7 @@ fn context(root: &Path, state: VendorState) -> SessionContext {
         directory: root.to_owned(),
         state,
         background: Default::default(),
+        own_turns: Default::default(),
     }
 }
 

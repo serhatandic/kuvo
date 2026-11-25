@@ -427,7 +427,7 @@ async fn elicitation(
 }
 
 /// An MCP server's form field, as a card's.
-fn elicitation_field(key: &str, field: &Value, required: bool) -> Field {
+pub(crate) fn elicitation_field(key: &str, field: &Value, required: bool) -> Field {
     let title = Some(field["title"].as_str().unwrap_or(key).to_owned());
     let description = field["description"].as_str().map(str::to_owned);
     let option = |option: &Value| FormOption {

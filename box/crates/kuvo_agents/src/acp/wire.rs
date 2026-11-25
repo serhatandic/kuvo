@@ -14,8 +14,6 @@ pub(crate) struct SessionUpdate {
     pub session: Option<String>,
     pub replay: bool,
     pub update: Update,
-    /// As it came, for a turn the agent began on its own to replay once it's taken.
-    pub raw: Value,
 }
 
 impl SessionUpdate {
@@ -24,7 +22,6 @@ impl SessionUpdate {
             session: params["sessionId"].as_str().map(str::to_owned),
             replay: params["_meta"]["isReplay"] == true,
             update: Update::read(&params["update"]),
-            raw: params.clone(),
         }
     }
 }
@@ -39,28 +36,43 @@ pub(crate) struct Todo {
 #[derive(Clone, Debug)]
 pub(crate) enum Update {
     /// Its words, or thinking (`thought`), as content.
-    Chunk { thought: bool, content: Value },
+    Chunk {
+        thought: bool,
+        content: Value,
+    },
     /// Its words to a subagent's session, as the subagent's task.
     UserChunk(Value),
     /// A tool call, or more of one: its fields as they came.
     Tool(Call),
     /// How full its context is (`used`), how much its model holds (`size`), what it has cost the
     /// conversation so far in dollars.
-    Usage { size: Option<u64>, used: Option<u64>, cost: Option<f64> },
+    Usage {
+        size: Option<u64>,
+        used: Option<u64>,
+        cost: Option<f64>,
+    },
     Mode(String),
     ConfigOptions(Value),
     Notice(String),
     /// Summarized: said only once it's done.
     Compacted,
     /// Grok summarizing by itself, from its start to how it went.
-    AutoCompactStarted { window: Option<u64>, used: Option<u64> },
-    AutoCompactCompleted { after: Option<u64> },
+    AutoCompactStarted {
+        window: Option<u64>,
+        used: Option<u64>,
+    },
+    AutoCompactCompleted {
+        after: Option<u64>,
+    },
     AutoCompactEnded,
     Plan(Vec<Todo>),
     /// Nothing to show (its commands, the session's title).
     Ignored,
     /// A kind Kuvo doesn't know: its words, if any.
-    Unknown { kind: String, words: String },
+    Unknown {
+        kind: String,
+        words: String,
+    },
 }
 
 /// A count of tokens: a whole number, never negative.
@@ -85,7 +97,9 @@ impl Update {
             }
             "usage_update" => {
                 let cost = &update["cost"];
-                let dollars = cost["currency"].as_str().is_none_or(|currency| currency == "USD");
+                let dollars = cost["currency"]
+                    .as_str()
+                    .is_none_or(|currency| currency == "USD");
                 Self::Usage {
                     size: tokens(&update["size"]).filter(|size| *size > 0),
                     used: tokens(&update["used"]),
@@ -99,7 +113,9 @@ impl Update {
                 Self::ConfigOptions(update["configOptions"].clone())
             }
             "notice" => {
-                let said = update["message"].as_str().or_else(|| update["text"].as_str());
+                let said = update["message"]
+                    .as_str()
+                    .or_else(|| update["text"].as_str());
                 said.map_or(Self::Ignored, |said| Self::Notice(said.into()))
             }
             "compaction_update" | "compaction_summary_chunk" => Self::Compacted,
@@ -132,7 +148,10 @@ impl Update {
                 } else {
                     words
                 };
-                Self::Unknown { kind: kind.into(), words: words.trim().into() }
+                Self::Unknown {
+                    kind: kind.into(),
+                    words: words.trim().into(),
+                }
             }
         }
     }
@@ -233,27 +252,63 @@ mod tests {
     #[test]
     fn reads_each_kind_of_update() {
         let read = |value: Value| Update::read(&value);
-        assert!(matches!(read(json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"h"}})), Update::Chunk { thought: true, .. }));
-        let usage = read(json!({"sessionUpdate":"usage_update","size":200000,"used":1500.0,"cost":{"amount":0.5,"currency":"USD"}}));
-        assert!(matches!(usage, Update::Usage { size: Some(200000), used: Some(1500), cost: Some(c) } if c == 0.5));
-        let euros = read(json!({"sessionUpdate":"usage_update","used":-1,"cost":{"amount":1,"currency":"EUR"}}));
-        assert!(matches!(euros, Update::Usage { used: None, cost: None, .. }));
-        assert!(matches!(read(json!({"sessionUpdate":"available_commands_update"})), Update::Ignored));
+        assert!(matches!(
+            read(
+                json!({"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"h"}})
+            ),
+            Update::Chunk { thought: true, .. }
+        ));
+        let usage = read(
+            json!({"sessionUpdate":"usage_update","size":200000,"used":1500.0,"cost":{"amount":0.5,"currency":"USD"}}),
+        );
+        assert!(
+            matches!(usage, Update::Usage { size: Some(200000), used: Some(1500), cost: Some(c) } if c == 0.5)
+        );
+        let euros = read(
+            json!({"sessionUpdate":"usage_update","used":-1,"cost":{"amount":1,"currency":"EUR"}}),
+        );
+        assert!(matches!(
+            euros,
+            Update::Usage {
+                used: None,
+                cost: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            read(json!({"sessionUpdate":"available_commands_update"})),
+            Update::Ignored
+        ));
         let unknown = read(json!({"sessionUpdate":"weather","message":" sunny "}));
-        assert!(matches!(unknown, Update::Unknown { ref kind, ref words } if kind == "weather" && words == "sunny"));
+        assert!(
+            matches!(unknown, Update::Unknown { ref kind, ref words } if kind == "weather" && words == "sunny")
+        );
         assert!(read(json!({"sessionUpdate":"tool_call","toolCallId":"t"})).begins_work());
         assert!(!read(json!({"sessionUpdate":"tool_call_update","toolCallId":"t"})).begins_work());
     }
 
     #[test]
     fn a_setup_hands_on_only_what_the_agent_offered() {
-        let mut setup = Setup::read(&json!({"sessionId":"s","configOptions":[{"id":"mode","currentValue":"default"}]}));
+        let mut setup = Setup::read(
+            &json!({"sessionId":"s","configOptions":[{"id":"mode","currentValue":"default"}]}),
+        );
         setup.set("kuvoMode", "yolo");
-        assert_eq!(setup.option("mode", "mode").unwrap()["currentValue"], "default");
-        assert_eq!(setup.portable(), json!({"sessionId":"s","configOptions":[{"id":"mode","currentValue":"default"}]}));
+        assert_eq!(
+            setup.option("mode", "mode").unwrap()["currentValue"],
+            "default"
+        );
+        assert_eq!(
+            setup.portable(),
+            json!({"sessionId":"s","configOptions":[{"id":"mode","currentValue":"default"}]})
+        );
         let init = json!({"authMethods":[{"id":"oauth-personal"}],"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":{}},"mcpCapabilities":{"http":true}}});
         let capabilities = Capabilities::read(&init);
-        assert!(capabilities.load && capabilities.resume && !capabilities.close && capabilities.http_servers);
+        assert!(
+            capabilities.load
+                && capabilities.resume
+                && !capabilities.close
+                && capabilities.http_servers
+        );
         let again = Capabilities::read(&capabilities.to_value());
         assert_eq!(again.auth_methods, ["oauth-personal"]);
         assert!(again.resume && again.load);

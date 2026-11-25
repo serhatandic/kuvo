@@ -28,7 +28,7 @@ use crate::{
 };
 
 use super::{
-    flavour::{Extension, Flavour, Launch, Line, Mode},
+    flavour::{Extension, Flavour, Launch, Line},
     wire::{Capabilities, PROTOCOL_VERSION, SessionUpdate},
 };
 
@@ -51,7 +51,7 @@ pub(super) struct Exit {
     pub asks_sign_in: bool,
     /// Sooner than [`SIGN_IN_GRACE`] after it started.
     pub young: bool,
-    /// It ended by itself (not stopped here, nor by a fatal line, nor for a sign-in).
+    /// It ended by itself (not stopped here, nor for a sign-in).
     pub by_itself: bool,
 }
 
@@ -59,7 +59,6 @@ pub(super) struct Exit {
 #[derive(Default)]
 struct Stopping {
     asks_sign_in: bool,
-    fatal: Option<String>,
 }
 
 /// An agent process, as it runs now.
@@ -119,7 +118,12 @@ impl Process {
     /// Keeps `session`'s turn (none: it ended) in its holder's record, for a resident taking it up.
     pub async fn note_turn(&self, session: &str, note: Option<Value>) {
         let turns = change(&self.turns, session, note);
-        self.rpc.note(Metadata::from_iter([("turns".into(), Value::Object(turns))])).await;
+        self.rpc
+            .note(Metadata::from_iter([(
+                "turns".into(),
+                Value::Object(turns),
+            )]))
+            .await;
     }
 
     /// Keeps what `session` is in it (its conversation, what it offered, what it has going).
@@ -128,7 +132,12 @@ impl Process {
             return;
         }
         let sessions = change(&self.sessions, session, note);
-        self.rpc.note(Metadata::from_iter([("sessions".into(), Value::Object(sessions))])).await;
+        self.rpc
+            .note(Metadata::from_iter([(
+                "sessions".into(),
+                Value::Object(sessions),
+            )]))
+            .await;
     }
 
     pub fn session_note(&self, session: &str) -> Option<Value> {
@@ -141,7 +150,10 @@ impl Process {
 
     /// Where the earliest turn under way in it began: what the next resident replays from.
     pub fn earliest_turn(&self) -> Option<u64> {
-        lock(&self.turns).values().filter_map(|note| note["from"].as_u64()).min()
+        lock(&self.turns)
+            .values()
+            .filter_map(|note| note["from"].as_u64())
+            .min()
     }
 
     /// A turn taken up in it is ready for its lines (or let go): once all are, they come.
@@ -174,12 +186,29 @@ fn change(map: &Plain<Map<String, Value>>, key: &str, value: Option<Value>) -> M
 
 /// What a conversation hears from the process it's in.
 pub(super) enum Event {
-    Update { process: u64, update: SessionUpdate, sequence: u64 },
-    Extension { process: u64, extension: Extension },
-    Request { process: Arc<Process>, id: Value, method: String, params: Value },
+    Update {
+        process: u64,
+        update: SessionUpdate,
+    },
+    Extension {
+        extension: Extension,
+    },
+    Request {
+        process: Arc<Process>,
+        id: Value,
+        method: String,
+        params: Value,
+    },
     /// An answer to a request an earlier resident sent: a prompt it took up ends with it.
-    Answer { process: u64, id: Value, answer: Result<Value, RpcError> },
-    Stopped { process: u64, exit: Exit },
+    Answer {
+        process: u64,
+        id: Value,
+        answer: Result<Value, RpcError>,
+    },
+    Stopped {
+        process: u64,
+        exit: Exit,
+    },
 }
 
 /// A conversation, as what its processes say finds it.
@@ -213,7 +242,12 @@ pub(super) struct Shared {
 }
 
 impl Shared {
-    pub fn new(flavour: Arc<dyn Flavour>, home: Home, holder_binary: PathBuf, provider: String) -> Arc<Self> {
+    pub fn new(
+        flavour: Arc<dyn Flavour>,
+        home: Home,
+        holder_binary: PathBuf,
+        provider: String,
+    ) -> Arc<Self> {
         Arc::new(Self {
             flavour,
             home,
@@ -245,7 +279,13 @@ impl Shared {
 
     /// Its session `native` is known in `process` from now on, for `session`: what it said of it
     /// before it was known comes back (`keep`: as it came; otherwise, a load's replay, dropped).
-    pub fn opened(&self, process: &Process, session: &str, native: Option<&str>, keep: bool) -> Vec<(SessionUpdate, u64)> {
+    pub fn opened(
+        &self,
+        process: &Process,
+        session: &str,
+        native: Option<&str>,
+        keep: bool,
+    ) -> Vec<(SessionUpdate, u64)> {
         let mut routes = self.routes();
         if let Some(route) = routes.get_mut(session) {
             route.native = native.map(str::to_owned);
@@ -275,7 +315,11 @@ impl Shared {
 
     /// The process conversations started with this launch key share: a live one that takes
     /// sessions, or one started now.
-    pub async fn process(self: &Arc<Self>, key: &str, launch: impl FnOnce() -> io::Result<Launch> + Send + 'static) -> io::Result<Arc<Process>> {
+    pub async fn process(
+        self: &Arc<Self>,
+        key: &str,
+        launch: impl FnOnce() -> io::Result<Launch> + Send + 'static,
+    ) -> io::Result<Arc<Process>> {
         let shutdowns = *self.shutdowns.borrow();
         let _starting = self.starting.lock().await;
         if *self.shutdowns.borrow() != shutdowns {
@@ -284,13 +328,19 @@ impl Shared {
         {
             let mut slots = self.slots.lock().await;
             slots.processes.retain(|process| !process.closed());
-            if let Some(process) = slots.processes.iter().find(|process| process.key == key && !process.outdated()) {
+            if let Some(process) = slots
+                .processes
+                .iter()
+                .find(|process| process.key == key && !process.outdated())
+            {
                 process.touch();
                 return Ok(process.clone());
             }
         }
         self.watch_idle();
-        let launch = tokio::task::spawn_blocking(launch).await.map_err(io::Error::other)??;
+        let launch = tokio::task::spawn_blocking(launch)
+            .await
+            .map_err(io::Error::other)??;
         let process = self.start(key, launch, shutdowns).await?;
         let mut slots = self.slots.lock().await;
         if *self.shutdowns.borrow() != shutdowns {
@@ -305,12 +355,27 @@ impl Shared {
     /// The processes running now.
     pub async fn running(&self) -> Vec<Arc<Process>> {
         let slots = self.slots.lock().await;
-        slots.processes.iter().filter(|process| !process.closed()).cloned().collect()
+        slots
+            .processes
+            .iter()
+            .filter(|process| !process.closed())
+            .cloned()
+            .collect()
     }
 
-    async fn start(self: &Arc<Self>, key: &str, launch: Launch, shutdowns: u64) -> io::Result<Arc<Process>> {
+    async fn start(
+        self: &Arc<Self>,
+        key: &str,
+        launch: Launch,
+        shutdowns: u64,
+    ) -> io::Result<Arc<Process>> {
         let mut halted = self.shutdowns.subscribe();
-        let Launch { mut start, temporary, sign_in_file, credential } = launch;
+        let Launch {
+            mut start,
+            temporary,
+            sign_in_file,
+            credential,
+        } = launch;
         let mut meta = json!({
             "kind": self.flavour.kind().name(), "provider": self.provider, "key": key,
             "turns": {}, "sessions": {}, "initialized": false,
@@ -324,15 +389,29 @@ impl Shared {
         if let Some(credential) = &credential {
             meta["credential"] = credential.clone().into();
         }
-        start.meta.extend(meta.as_object().cloned().unwrap_or_default());
-        let controller = match Directory::for_home(&self.home).start(&self.holder_binary, start).await {
+        start
+            .meta
+            .extend(meta.as_object().cloned().unwrap_or_default());
+        let controller = match Directory::for_home(&self.home)
+            .start(&self.holder_binary, start)
+            .await
+        {
             Ok(controller) => controller,
             Err(error) => {
                 remove(temporary);
                 return Err(error);
             }
         };
-        let process = self.serve(controller, key.to_owned(), credential, temporary, None, 1 << 30, Map::new(), Map::new());
+        let process = self.serve(
+            controller,
+            key.to_owned(),
+            credential,
+            temporary,
+            None,
+            1 << 30,
+            Map::new(),
+            Map::new(),
+        );
         if let Some(file) = sign_in_file {
             watch_sign_in(&process, file);
         }
@@ -379,13 +458,33 @@ impl Shared {
     /// Asks it to sign in the way it does. Its refusal that says the sign-in is gone ends it here.
     pub async fn authenticate(&self, process: &Process) -> io::Result<()> {
         let Some(method) = self.flavour.auth_method(&process.capabilities()) else {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} isn't signed in. Sign in again in Settings › Accounts.", self.name())));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} isn't signed in. Sign in again in Settings › Accounts.",
+                    self.name()
+                ),
+            ));
         };
-        match process.rpc.request("authenticate", Some(json!({"methodId": method})), Some(AUTHENTICATE)).await {
+        match process
+            .rpc
+            .request(
+                "authenticate",
+                Some(json!({"methodId": method})),
+                Some(AUTHENTICATE),
+            )
+            .await
+        {
             Ok(_) => Ok(()),
             Err(crate::rpc::Failure::Refused(error)) if self.flavour.sign_in_refused(&error) => {
                 self.flavour.sign_in_ended();
-                Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} needs you to sign in again: Settings › Accounts.", self.name())))
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "{} needs you to sign in again: Settings › Accounts.",
+                        self.name()
+                    ),
+                ))
             }
             Err(failure) => Err(self.failed(process, failure)),
         }
@@ -395,10 +494,13 @@ impl Shared {
     pub fn failed(&self, process: &Process, failure: crate::rpc::Failure) -> io::Error {
         let stopping = lock(&process.stopping);
         if stopping.asks_sign_in {
-            return io::Error::new(io::ErrorKind::PermissionDenied, format!("{} needs you to sign in again: Settings › Accounts.", self.name()));
-        }
-        if let Some(fatal) = &stopping.fatal {
-            return io::Error::other(fatal.clone());
+            return io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} needs you to sign in again: Settings › Accounts.",
+                    self.name()
+                ),
+            );
         }
         failure.into()
     }
@@ -406,13 +508,41 @@ impl Shared {
     /// A process an earlier resident left held, this resident's own again as it is.
     pub async fn adopt(self: &Arc<Self>, controller: Controller) -> io::Result<Arc<Process>> {
         let meta = controller.welcome.meta.clone();
-        let first = controller.welcome.generation.saturating_mul(1 << 24).saturating_add(1 << 30);
-        let key = meta.get("key").and_then(Value::as_str).unwrap_or("").to_owned();
-        let credential = meta.get("credential").and_then(Value::as_str).map(str::to_owned);
+        let first = controller
+            .welcome
+            .generation
+            .saturating_mul(1 << 24)
+            .saturating_add(1 << 30);
+        let key = meta
+            .get("key")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        let credential = meta
+            .get("credential")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let capabilities = meta.get("capabilities").map(Capabilities::read);
-        let temporary = meta.get("temporary").and_then(Value::as_str).map(PathBuf::from);
-        let object = |name: &str| meta.get(name).and_then(Value::as_object).cloned().unwrap_or_default();
-        let process = self.serve(controller, key, credential, temporary, capabilities, first, object("turns"), object("sessions"));
+        let temporary = meta
+            .get("temporary")
+            .and_then(Value::as_str)
+            .map(PathBuf::from);
+        let object = |name: &str| {
+            meta.get(name)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let process = self.serve(
+            controller,
+            key,
+            credential,
+            temporary,
+            capabilities,
+            first,
+            object("turns"),
+            object("sessions"),
+        );
         self.slots.lock().await.processes.push(process.clone());
         self.watch_idle();
         Ok(process)
@@ -420,7 +550,14 @@ impl Shared {
 
     /// One an earlier resident left as it started, never initialized: of no use.
     pub async fn discard(&self, controller: Controller) {
-        let (rpc, _incoming) = Rpc::over(controller, Options { framing: Framing::JsonRpc2, first_id: 1, filter: None });
+        let (rpc, _incoming) = Rpc::over(
+            controller,
+            Options {
+                framing: Framing::JsonRpc2,
+                first_id: 1,
+                filter: None,
+            },
+        );
         rpc.stop().await;
         rpc.ended(ENDS).await;
     }
@@ -445,22 +582,27 @@ impl Shared {
             let stop = stop.clone();
             Box::new(move |line: &str| match flavour.line(line) {
                 Line::Protocol => true,
-                Line::Drop => false,
                 Line::AsksSignIn => {
                     lock(&stopping).asks_sign_in = true;
                     stop.notify_one();
                     false
                 }
-                Line::Fatal(why) => {
-                    lock(&stopping).fatal = Some(why);
-                    stop.notify_one();
-                    false
-                }
             })
         };
-        let (rpc, mut incoming) = Rpc::over(controller, Options { framing: Framing::JsonRpc2, first_id, filter: Some(filter) });
+        let (rpc, mut incoming) = Rpc::over(
+            controller,
+            Options {
+                framing: Framing::JsonRpc2,
+                first_id,
+                filter: Some(filter),
+            },
+        );
         let mut waiting: HashSet<String> = turns.keys().cloned().collect();
-        if sessions.values().any(|session| session["backgroundTasks"].as_array().is_some_and(|tasks| !tasks.is_empty())) {
+        if sessions.values().any(|session| {
+            session["backgroundTasks"]
+                .as_array()
+                .is_some_and(|tasks| !tasks.is_empty())
+        }) {
             waiting.insert("background".into());
         }
         let (gate, mut open) = watch::channel(waiting.is_empty());
@@ -468,7 +610,9 @@ impl Shared {
             id: self.next.fetch_add(1, Ordering::Relaxed) + 1,
             key,
             rpc,
-            capabilities: capabilities.map(std::sync::OnceLock::from).unwrap_or_default(),
+            capabilities: capabilities
+                .map(std::sync::OnceLock::from)
+                .unwrap_or_default(),
             credential,
             temporary,
             started: Instant::now(),
@@ -484,7 +628,8 @@ impl Shared {
         let shared = Arc::downgrade(self);
         let own = Arc::downgrade(&process);
         tokio::spawn(async move {
-            let _ = tokio::time::timeout(Duration::from_secs(60), open.wait_for(|open| *open)).await;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(60), open.wait_for(|open| *open)).await;
             loop {
                 let message = tokio::select! {
                     message = incoming.recv() => message,
@@ -495,7 +640,9 @@ impl Shared {
                         continue;
                     }
                 };
-                let (Some(message), Some(shared), Some(process)) = (message, shared.upgrade(), own.upgrade()) else {
+                let (Some(message), Some(shared), Some(process)) =
+                    (message, shared.upgrade(), own.upgrade())
+                else {
                     return;
                 };
                 shared.dispatch(&process, message).await;
@@ -505,20 +652,31 @@ impl Shared {
     }
 
     /// Where an update or request for `native` goes in `process`: its conversation's events.
-    fn route_to(&self, process: &Process, native: Option<&str>) -> Option<mpsc::UnboundedSender<Event>> {
+    fn route_to(
+        &self,
+        process: &Process,
+        native: Option<&str>,
+    ) -> Option<mpsc::UnboundedSender<Event>> {
         route_in(&self.routes(), process, native)
     }
 
     async fn dispatch(self: &Arc<Self>, process: &Arc<Process>, message: Incoming) {
         match message {
-            Incoming::Notification { method, params, sequence } if method == "session/update" => {
+            Incoming::Notification {
+                method,
+                params,
+                sequence,
+            } if method == "session/update" => {
                 let update = SessionUpdate::read(&params);
                 // (Under the routes' lock: a session being opened is known, or what's said of it
                 // waits for it.)
                 let routes = self.routes();
                 match route_in(&routes, process, update.session.as_deref()) {
                     Some(events) => {
-                        let _ = events.send(Event::Update { process: process.id, update, sequence });
+                        let _ = events.send(Event::Update {
+                            process: process.id,
+                            update,
+                        });
                     }
                     None => {
                         let mut staging = lock(&process.opening);
@@ -529,17 +687,28 @@ impl Shared {
                 }
             }
             Incoming::Notification { method, params, .. } => {
-                let Some(extension) = self.flavour.extension(&method, &params) else { return };
+                let Some(extension) = self.flavour.extension(&method, &params) else {
+                    return;
+                };
                 let native = params["sessionId"].as_str();
                 if let Some(events) = self.route_to(process, native) {
-                    let _ = events.send(Event::Extension { process: process.id, extension });
+                    let _ = events.send(Event::Extension { extension });
                 }
             }
-            Incoming::Request { id, method, params, .. } => {
-                let native = params["sessionId"].as_str().or_else(|| params["params"]["sessionId"].as_str());
+            Incoming::Request {
+                id, method, params, ..
+            } => {
+                let native = params["sessionId"]
+                    .as_str()
+                    .or_else(|| params["params"]["sessionId"].as_str());
                 let unsent = match self.route_to(process, native) {
                     Some(events) => events
-                        .send(Event::Request { process: process.clone(), id, method, params })
+                        .send(Event::Request {
+                            process: process.clone(),
+                            id,
+                            method,
+                            params,
+                        })
                         .err()
                         .and_then(|failed| match failed.0 {
                             Event::Request { id, method, .. } => Some((id, method)),
@@ -551,31 +720,64 @@ impl Shared {
                     process.rpc.respond(id, unrouted(&method)).await;
                 }
             }
+            Incoming::Answer { id, answer, .. } => {
+                for route in self
+                    .routes()
+                    .values()
+                    .filter(|route| route.process == Some(process.id))
+                {
+                    let _ = route.events.send(Event::Answer {
+                        process: process.id,
+                        id: id.into(),
+                        answer: answer.clone(),
+                    });
+                }
+            }
             Incoming::Stray { id, answer } => {
-                for route in self.routes().values().filter(|route| route.process == Some(process.id)) {
-                    let _ = route.events.send(Event::Answer { process: process.id, id: id.clone(), answer: answer.clone() });
+                for route in self
+                    .routes()
+                    .values()
+                    .filter(|route| route.process == Some(process.id))
+                {
+                    let _ = route.events.send(Event::Answer {
+                        process: process.id,
+                        id: id.clone(),
+                        answer: answer.clone(),
+                    });
                 }
             }
             Incoming::Exited { code, .. } => {
-                self.slots.lock().await.processes.retain(|running| running.id != process.id);
+                self.slots
+                    .lock()
+                    .await
+                    .processes
+                    .retain(|running| running.id != process.id);
                 let stopping = lock(&process.stopping);
-                let said = stopping.fatal.clone().unwrap_or_else(|| {
-                    let stderr = process.rpc.stderr();
-                    let lines: Vec<_> = stderr.trim().lines().collect();
-                    lines[lines.len().saturating_sub(3)..].join("\n")
-                });
+                let stderr = process.rpc.stderr();
+                let lines: Vec<_> = stderr.trim().lines().collect();
+                let said = lines[lines.len().saturating_sub(3)..].join("\n");
                 let exit = Exit {
-                    said: if stopping.asks_sign_in { format!("{} needs you to sign in again: Settings › Accounts.", self.name()) } else { said },
+                    said: if stopping.asks_sign_in {
+                        format!(
+                            "{} needs you to sign in again: Settings › Accounts.",
+                            self.name()
+                        )
+                    } else {
+                        said
+                    },
                     asks_sign_in: stopping.asks_sign_in,
                     young: process.young(),
-                    by_itself: code != -1 && !stopping.asks_sign_in && stopping.fatal.is_none(),
+                    by_itself: code != -1 && !stopping.asks_sign_in,
                 };
                 drop(stopping);
                 if exit.asks_sign_in && exit.young {
                     self.flavour.sign_in_ended();
                 }
                 for route in self.routes().values() {
-                    let _ = route.events.send(Event::Stopped { process: process.id, exit: exit.clone() });
+                    let _ = route.events.send(Event::Stopped {
+                        process: process.id,
+                        exit: exit.clone(),
+                    });
                 }
                 remove(process.temporary.clone());
             }
@@ -592,7 +794,9 @@ impl Shared {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                let Some(shared) = shared.upgrade() else { return };
+                let Some(shared) = shared.upgrade() else {
+                    return;
+                };
                 shared.stop_quiet(false).await;
             }
         });
@@ -610,10 +814,20 @@ impl Shared {
                 stopping.push(process.clone());
             }
         }
-        slots.processes.retain(|process| !stopping.iter().any(|stop| stop.id == process.id));
+        slots
+            .processes
+            .retain(|process| !stopping.iter().any(|stop| stop.id == process.id));
         drop(slots);
         for process in stopping {
-            eprintln!("Stopping {}: {}", self.name(), if process.outdated() { "outdated" } else { "idle" });
+            eprintln!(
+                "Stopping {}: {}",
+                self.name(),
+                if process.outdated() {
+                    "outdated"
+                } else {
+                    "idle"
+                }
+            );
             process.rpc.stop().await;
         }
     }
@@ -659,7 +873,10 @@ impl Shared {
                 .map(|(native, _)| native.clone());
             let Some(native) = native else { continue };
             process.note_turn(&native, None).await;
-            process.rpc.notify("session/cancel", Some(json!({"sessionId": native}))).await;
+            process
+                .rpc
+                .notify("session/cancel", Some(json!({"sessionId": native})))
+                .await;
             process.ready(&native);
         }
         Ok(())
@@ -681,7 +898,9 @@ fn watch_sign_in(process: &Arc<Process>, file: PathBuf) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let Some(process) = process.upgrade() else { return };
+            let Some(process) = process.upgrade() else {
+                return;
+            };
             if process.closed() {
                 return;
             }
@@ -695,10 +914,18 @@ fn watch_sign_in(process: &Arc<Process>, file: PathBuf) {
 }
 
 /// The conversation `native` is in `process`, or (unnamed) the one conversation in it.
-fn route_in(routes: &HashMap<String, Route>, process: &Process, native: Option<&str>) -> Option<mpsc::UnboundedSender<Event>> {
-    let mut in_it = routes.values().filter(|route| route.process == Some(process.id));
+fn route_in(
+    routes: &HashMap<String, Route>,
+    process: &Process,
+    native: Option<&str>,
+) -> Option<mpsc::UnboundedSender<Event>> {
+    let mut in_it = routes
+        .values()
+        .filter(|route| route.process == Some(process.id));
     match native {
-        Some(native) => in_it.find(|route| route.native.as_deref() == Some(native)).map(|route| route.events.clone()),
+        Some(native) => in_it
+            .find(|route| route.native.as_deref() == Some(native))
+            .map(|route| route.events.clone()),
         None => {
             let only = in_it.next()?;
             in_it.next().is_none().then(|| only.events.clone())

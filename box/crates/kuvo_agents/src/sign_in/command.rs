@@ -26,12 +26,14 @@ pub struct Options {
     pub code_prompt: Option<&'static str>,
     pub instructions: &'static str,
     pub code_instructions: &'static str,
+    /// The code its page asks for on another device, as the command prints it.
+    pub user_code: Option<fn(&str) -> Option<String>>,
     pub confirm: Box<dyn FnOnce() -> bool + Send>,
     pub completed: Box<dyn FnOnce() + Send>,
 }
 
 pub async fn start(options: Options) -> io::Result<Arc<dyn Attempt>> {
-    let initial = page(&options, "", options.printed_page);
+    let initial = page(&options, "", options.printed_page, "");
     let (status_tx, mut status_rx) = watch::channel(Status::Pending { page: initial });
     let (cancel_tx, cancel_rx) = watch::channel(false);
     let (code_tx, code_rx) = mpsc::channel(1);
@@ -125,27 +127,35 @@ impl Catcher {
         first_url(&text).map(str::to_owned)
     }
 
-    #[cfg(unix)]
     fn script(&self) -> io::Result<PathBuf> {
-        use std::os::unix::fs::PermissionsExt;
-        let script = self.0.join("browser");
-        files::write_new(
-            &script,
-            b"#!/bin/sh\numask 077\nprintf '%s\\n' \"$1\" >> \"$KUVO_URL_FILE\"\n",
-        )?;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
-        Ok(script)
+        catcher_script(&self.0)
     }
+}
 
-    #[cfg(windows)]
-    fn script(&self) -> io::Result<PathBuf> {
-        let script = self.0.join("browser.cmd");
-        files::write_new(
-            &script,
-            b"@echo off\r\nsetlocal DisableDelayedExpansion\r\n>>\"%KUVO_URL_FILE%\" echo(%1\r\n",
-        )?;
-        Ok(script)
-    }
+/// A `BROWSER` for an agent, in `folder`: the pages it opens are written down in
+/// `KUVO_URL_FILE` instead.
+#[cfg(unix)]
+pub fn catcher_script(folder: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let script = folder.join("browser");
+    files::write_new(
+        &script,
+        b"#!/bin/sh\numask 077\nprintf '%s\\n' \"$1\" >> \"$KUVO_URL_FILE\"\n",
+    )?;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
+    Ok(script)
+}
+
+/// A `BROWSER` for an agent, in `folder`: the pages it opens are written down in
+/// `KUVO_URL_FILE` instead.
+#[cfg(windows)]
+pub fn catcher_script(folder: &Path) -> io::Result<PathBuf> {
+    let script = folder.join("browser.cmd");
+    files::write_new(
+        &script,
+        b"@echo off\r\nsetlocal DisableDelayedExpansion\r\n>>\"%KUVO_URL_FILE%\" echo(%1\r\n",
+    )?;
+    Ok(script)
 }
 
 impl Drop for Catcher {
@@ -238,7 +248,7 @@ fn run(
                 .or_else(|| manual.map(|url| (url, true)))
             {
                 status.send_replace(Status::Pending {
-                    page: page(&options, url, manual),
+                    page: page(&options, url, manual, &text),
                 });
                 shown = true;
             }
@@ -319,7 +329,7 @@ fn first_url(text: &str) -> Option<&str> {
     (!host.is_empty() && !host.contains('@')).then_some(url)
 }
 
-fn page(options: &Options, url: &str, manual: bool) -> Page {
+fn page(options: &Options, url: &str, manual: bool, said: &str) -> Page {
     let code = manual && options.code_prompt.is_some();
     Page {
         url: url.into(),
@@ -331,7 +341,7 @@ fn page(options: &Options, url: &str, manual: bool) -> Page {
         .into(),
         mode: if code { Mode::Code } else { Mode::Auto },
         accepts_code: options.code_prompt.is_some(),
-        user_code: None,
+        user_code: options.user_code.and_then(|read| read(said)),
     }
 }
 
