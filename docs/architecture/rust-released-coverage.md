@@ -88,12 +88,13 @@ the 9.3 rehearsal's released-Mac visit to the Mac's own box.
 | 0.7 limits-own-numbers | Row 5.4: it sits on peer plan limits (`limits-peers.test.ts`, all open there). |
 | beta.1 box-read-change, peers-list | R1–R3, R6. |
 | beta.1 deleted-bots | `agents-bots`: a deleted bot is first in `bots/deleted.json`. |
-| beta.1 mac-moves | Open: Rust keeps a beta.1 Mac's legacy `moved` list but doesn't use it for where a conversation lives. |
+| beta.1 mac-moves | The live projection is not served by design (below). At that Mac's own switch: a finished move needs nothing taken in, as its original is gone and it lives only where it went. A move cut short after it switched (`movesUnderWay`, stage `switched`) is told to the user (`rehome`, "a released Mac move refuses unsafe inputs and can be tried again"), but the original it left isn't hidden: row 9.1, case "a beta.1 Mac whose move of `ses_x` from A to B had switched switches to Rust; `ses_x` is listed once, on B, and A's original is retired, not shown". |
 
 **Not served by design** (the lead, 2026-11-25): beta.1's `kuvo-link.js setup` (its
 phone link sync; the phone app is dropped), `kuvo-link.js leave <key>` (removing a machine
-from a beta.1 Mac before it updates) and `box bot-keys-refresh` (the TypeScript box refused it
-too). The delegate refuses each with exit 2: "Update Kuvo Code on this Mac to use this computer."
+from a beta.1 Mac before it updates), `box bot-keys-refresh` (the TypeScript box refused it
+too), and the live projection of a beta.1 Mac's legacy `moved` list while it runs beside Rust
+computers. The delegate refuses each with exit 2: "Update Kuvo Code on this Mac to use this computer."
 
 **The delegate goes with the TypeScript box**, 4 weeks after the last switch, with the
 `box read/change/key` markers.
