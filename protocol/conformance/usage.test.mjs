@@ -511,3 +511,151 @@ test('reset routes refuse missing or unknown accounts without creating a spend (
   assert.equal(invalid.status,400,invalid.text);
   assert.equal(invalid.json.message,'Say which account (row or provider), and always.');
 });
+
+test('standalone Grok, Cursor and Antigravity read their own fixture accounts (Rust reader)',async t=>{
+  if(boxBinary().typescript)return t.skip('The TypeScript scratch bridge disables live provider reads.');
+  const http=await import('node:http');
+  const fs=await import('node:fs');
+  const now=Date.now();
+  const end=now+7*86400000;
+  const access=['e30',Buffer.from(JSON.stringify({sub:'workos|cursor-fixture',exp:Math.floor(now/1000)+3600})).toString('base64url'),'fixture'].join('.');
+  const jwt=['e30',Buffer.from(JSON.stringify({sub:'google-fixture'})).toString('base64url'),'fixture'].join('.');
+  const requests=[];
+  const bucket=(bucketId,remainingFraction,resetAt=end)=>({bucketId,remainingFraction,resetTime:new Date(resetAt).toISOString()});
+  const replies={
+    '/cursor/exchange':{accessToken:access},
+    '/cursor/GetCurrentPeriodUsage':{enabled:true,billingCycleStart:now-10*86400000,billingCycleEnd:now+20*86400000,planUsage:{limit:10000,totalSpend:2000,totalPercentUsed:20,autoPercentUsed:12,apiPercentUsed:37},spendLimitUsage:{individualLimit:5000,individualUsed:1234}},
+    '/cursor/GetPlanInfo':{planInfo:{planName:'pro'}},
+    '/cursor/GetCreditGrantsBalance':{hasCreditGrants:true,totalCents:2000,usedCents:500},
+    '/cursor/auth/stripe':{customerBalance:-200},
+    '/cursor/GetSandUsageStatus':{usagePercent:8,currentPeriodStart:new Date(now).toISOString(),nextResetTimestampUtc:new Date(end).toISOString()},
+    '/antigravity/main/v1internal:retrieveUserQuotaSummary':{groups:[{displayName:'Gemini',buckets:[bucket('gemini-5h',0.2,now+7200000),bucket('gemini-weekly',0.7)]}]},
+    '/antigravity/daily/v1internal:retrieveUserQuotaSummary':{groups:[{displayName:'Claude and GPT',buckets:[bucket('3p-5h',0.4,now+7200000),bucket('3p-weekly',0.9)]}]},
+    '/antigravity/main/v1internal:loadCodeAssist':{paidTier:{id:'g1-pro-tier'}},
+  };
+  const provider=http.createServer((req,res)=>{
+    requests.push({url:req.url,auth:req.headers.authorization,cookie:req.headers.cookie});
+    const body=replies[req.url];
+    res.writeHead(body?200:404,{'Content-Type':'application/json'});res.end(JSON.stringify(body??{}));
+  });
+  await new Promise(resolve=>provider.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{provider.close(resolve);provider.closeAllConnections();}));
+  const {computer}=await bench(t);
+  const box=await computer('Standalone',undefined,folder=>{
+    const env=isolated(folder);
+    const bin=path.join(folder,'bin');fs.mkdirSync(bin,{recursive:true});
+    const program=String.raw`
+const fs=require('node:fs'),path=require('node:path'),readline=require('node:readline');
+const home=process.env.GROK_HOME;
+let authed=false;
+readline.createInterface({input:process.stdin}).on('line',line=>{
+  const request=JSON.parse(line);
+  fs.appendFileSync(path.join(home,'heard.jsonl'),JSON.stringify(request)+'\n');
+  const answer=result=>console.log(JSON.stringify({jsonrpc:'2.0',id:request.id,result}));
+  if(request.method==='initialize')answer({protocolVersion:1});
+  else if(request.method==='authenticate'){authed=request.params.methodId==='cached_token';answer({});}
+  else if(request.method==='_x.ai/billing'){
+    if(!authed)console.log(JSON.stringify({jsonrpc:'2.0',id:request.id,error:{code:-32000,message:'Authentication required'}}));
+    else answer(JSON.parse(fs.readFileSync(path.join(home,'billing.json'),'utf8')));
+  }
+});
+`;
+    if(process.platform==='win32'){
+      fs.writeFileSync(path.join(bin,'grok.cjs'),program);
+      fs.writeFileSync(path.join(bin,'grok.cmd'),`@"${process.execPath}" "%~dp0grok.cjs" %*\r\n`);
+    }else fs.writeFileSync(path.join(bin,'grok'),`#!${process.execPath}\n${program}`,{mode:0o755});
+    const grokJwt=['e30',Buffer.from(JSON.stringify({sub:'grok-fixture'})).toString('base64url'),'fixture'].join('.');
+    write(path.join(env.GROK_HOME,'auth.json'),JSON.stringify({fixture:{key:grokJwt}}));
+    write(path.join(env.GROK_HOME,'billing.json'),JSON.stringify({config:{currentPeriod:{start:new Date(now).toISOString(),end:new Date(end).toISOString()},creditUsagePercent:61}}));
+    return {...env,PATH:[bin,process.platform==='win32'?path.join(process.env.SystemRoot,'System32'):'/usr/bin:/bin'].join(path.delimiter), KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+provider.address().port+'/'};
+  });
+  write(path.join(box.home,'agents','cursor','auth.json'),JSON.stringify({apiKey:'fixture-cursor'}));
+  write(path.join(box.home,'agents','antigravity','profile','antigravity-acp','acp_token.json'),JSON.stringify({access_token:jwt,expires_at:Math.floor(now/1000)+3600}));
+  const call=box.connect(await box.start().ready());
+  assert.equal(requests.length,0);
+  const refresh=async()=>{
+    const reply=await call('POST','kuvo/agents/api/kuvo/limits/refresh',{});
+    assert.equal(reply.status,200,reply.text);
+    return until(async()=>{
+      const view=await call('GET','kuvo/agents/api/kuvo/limits');
+      return !view.json.data.refreshPending&&view.json.data;
+    },'Standalone plans did not settle');
+  };
+  const data=await refresh();
+  const accounts=Object.fromEntries(data.accounts.map(a=>[a.provider,a]));
+  assert.equal(accounts['grok-cli'].windows[0].used,0.61);
+  assert.equal(accounts.cursor.plan,'Pro');
+  assert.equal(accounts.cursor.windows.find(w=>w.id==='total').used,0.2);
+  assert.deepEqual(accounts.cursor.balance,{left:17,unit:'usd'});
+  assert.equal(accounts.cursor.windows.find(w=>w.id==='on_demand').amount.used,12.34);
+  assert.equal(accounts.cursor.windows.find(w=>w.id==='grok_bot').used,0.08);
+  assert.equal(accounts.antigravity.plan,'Pro');
+  assert.equal(accounts.antigravity.windows.length,4);
+  assert.equal(accounts.antigravity.windows.find(w=>w.id==='gemini-5h').used,0.8);
+  assert.equal(data.refreshFailed,false);
+  const heard=fs.readFileSync(path.join(box.env.GROK_HOME,'heard.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line));
+  assert.deepEqual(heard.map(m=>m.method),['initialize','_x.ai/billing','authenticate','_x.ai/billing']);
+  assert.equal(requests.find(r=>r.url==='/cursor/exchange').auth,'Bearer fixture-cursor');
+  // A single spurious reset and empty ring from Google cannot replace the accepted window.
+  replies['/antigravity/main/v1internal:retrieveUserQuotaSummary'].groups[0].buckets[0]=bucket('gemini-5h',1,now+10800000);
+  const next=await refresh();
+  assert.equal(next.accounts.find(a=>a.provider==='antigravity').windows.find(w=>w.id==='gemini-5h').used,0.8);
+});
+
+test('Insights decodes only changed SQLite transcript projections (Rust writer)',async t=>{
+  if(boxBinary().typescript)return t.skip('The Rust transcript writer adds a compatible revision index.');
+  const codex=await scriptedCodex();
+  t.after(()=>codex.close());
+  const id='ses_usagecursor';
+  codex.seed(id);
+  const listener=await codex.start();
+  codex.script('usage cursor',[
+    ['thread/tokenUsage/updated',{tokenUsage:{last:{totalTokens:5000,inputTokens:4000,cachedInputTokens:1000,outputTokens:1000,reasoningOutputTokens:200},modelContextWindow:272000}}],
+    ['item/completed',{type:'agentMessage',id:'m1',text:'Fixture answer.'}]
+  ]);
+  await codex.prompt(id,'usage cursor');
+  await codex.idles(id);
+  const {DatabaseSync}=await import('node:sqlite');
+  const index=path.join(codex.home,'agents','usage','insights.sqlite');
+  const transcript=path.join(codex.home,'agents','sessions',id,'messages-v1.sqlite');
+  const checkpoint=()=>{
+    let db;
+    try{
+      db=new DatabaseSync(index,{readOnly:true});
+      const row=db.prepare('SELECT body FROM state WHERE key=?').get('scan/rust-transcript-v1/'+id);
+      return row&&JSON.parse(row.body);
+    }catch{return null}finally{db?.close();}
+  };
+  const kept=await until(()=>{
+    const c=checkpoint();
+    if(!c?.cursor?.revision)return null;
+    let source,observed;
+    try{
+      source=new DatabaseSync(transcript,{readOnly:true});
+      observed=new DatabaseSync(index,{readOnly:true});
+      const revision=source.prepare('SELECT revision FROM insight_revision WHERE id=1').get().revision;
+      const tokens=observed.prepare('SELECT SUM(tokens) AS tokens FROM event WHERE session=? AND human=0').get(id).tokens;
+      return c.cursor.revision===revision&&tokens>0&&c;
+    }catch{return null}finally{source?.close();observed?.close();}
+  },'The completed turn did not reach the index');
+  const before=await request(listener,'GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');
+  assert.equal(before.status,200,before.text);
+  const db=new DatabaseSync(transcript);
+  let newRevision;
+  try{
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version,1);
+    const rows=db.prepare('SELECT position,insight FROM message WHERE insight IS NOT NULL').all();
+    assert.ok(rows.length>=2);
+    const row=rows.find(r=>JSON.parse(r.insight).type==='assistant'&&JSON.parse(r.insight).tokens?.input>0);
+    assert.ok(row);
+    const message=JSON.parse(row.insight);
+    message.tokens.input+=13;
+    db.prepare('UPDATE message SET insight=? WHERE position=?').run(JSON.stringify(message),row.position);
+    newRevision=db.prepare('SELECT revision FROM insight_revision WHERE id=1').get().revision;
+    assert.ok(newRevision>kept.cursor.revision);
+  }finally{db.close();}
+  const after=await until(()=>{const c=checkpoint();return c?.cursor?.revision===newRevision&&c;},'The changed projection did not reach the index');
+  assert.equal(after.decoded,1);
+  const view=await request(listener,'GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');
+  assert.equal(view.json.data.totals.tokens,before.json.data.totals.tokens+13);
+});

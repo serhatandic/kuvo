@@ -17,8 +17,8 @@ mod projection;
 mod repair;
 
 pub use line::Line;
-pub(crate) use repair::close_rows;
 pub use repair::OpenTurn;
+pub(crate) use repair::close_rows;
 
 pub use metadata::{NewSession, SessionPatch};
 
@@ -451,9 +451,7 @@ fn slots<'a>(
         }
         agent.insert("threads".into(), Value::Object(threads));
     }
-    let threads = agent
-        .get_mut("threads")
-        .expect("the slots were just made");
+    let threads = agent.get_mut("threads").expect("the slots were just made");
     if !threads.is_object() {
         *threads = Value::Object(Map::new());
     }
@@ -478,7 +476,12 @@ fn legacy_state(agent: &Map<String, Value>) -> VendorState {
 fn legacy_owner(folder: &Path, header: &SessionHeader) -> io::Result<Option<String>> {
     let replied = last_assistant_provider(folder)?;
     let owner = replied.or_else(|| {
-        header.fields.get("model")?.get("providerID")?.as_str().map(str::to_owned)
+        header
+            .fields
+            .get("model")?
+            .get("providerID")?
+            .as_str()
+            .map(str::to_owned)
     });
     Ok(owner.filter(|owner| !owner.is_empty() && owner != "auto"))
 }
@@ -551,7 +554,7 @@ fn query_messages(
 
 /// The transcript database, for writing.
 fn open_transcript(file: &Path) -> io::Result<rusqlite::Connection> {
-    sqlite::open_wal(
+    let mut db = sqlite::open_wal(
         file,
         Duration::from_secs(1),
         "Coding-agent transcript",
@@ -565,7 +568,36 @@ fn open_transcript(file: &Path) -> io::Result<rusqlite::Connection> {
             )
         }],
     )
-    .map_err(io::Error::other)
+    .map_err(io::Error::other)?;
+    // An additive index understood by newer readers. Keep the transcript format at v1:
+    // older Rust and TypeScript writers can still read/update message, and SQLite records
+    // their changes too. One current revision a position, not a growing write journal.
+    let indexed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='insight_revision')",[],|r|r.get(0)).map_err(io::Error::other)?;
+    if !indexed {
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(io::Error::other)?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS insight_revision(id INTEGER PRIMARY KEY CHECK(id=1), generation TEXT NOT NULL, revision INTEGER NOT NULL);
+             INSERT OR IGNORE INTO insight_revision VALUES(1,lower(hex(randomblob(16))),0);
+             CREATE TABLE IF NOT EXISTS insight_change(position INTEGER PRIMARY KEY, revision INTEGER NOT NULL);
+             CREATE INDEX IF NOT EXISTS insight_change_revision ON insight_change(revision);
+             CREATE TRIGGER IF NOT EXISTS insight_message_insert AFTER INSERT ON message WHEN NEW.insight IS NOT NULL BEGIN
+               UPDATE insight_revision SET revision=revision+1 WHERE id=1;
+               INSERT INTO insight_change VALUES(NEW.position,(SELECT revision FROM insight_revision WHERE id=1)) ON CONFLICT(position) DO UPDATE SET revision=excluded.revision;
+             END;
+             CREATE TRIGGER IF NOT EXISTS insight_message_update AFTER UPDATE OF insight ON message WHEN OLD.insight IS NOT NEW.insight BEGIN
+               UPDATE insight_revision SET revision=revision+1 WHERE id=1;
+               INSERT INTO insight_change VALUES(NEW.position,(SELECT revision FROM insight_revision WHERE id=1)) ON CONFLICT(position) DO UPDATE SET revision=excluded.revision;
+             END;
+             CREATE TRIGGER IF NOT EXISTS insight_message_delete AFTER DELETE ON message WHEN OLD.insight IS NOT NULL BEGIN
+               UPDATE insight_revision SET revision=revision+1 WHERE id=1;
+               INSERT INTO insight_change VALUES(OLD.position,(SELECT revision FROM insight_revision WHERE id=1)) ON CONFLICT(position) DO UPDATE SET revision=excluded.revision;
+             END;"
+        ).map_err(io::Error::other)?;
+        tx.commit().map_err(io::Error::other)?;
+    }
+    Ok(db)
 }
 
 fn write_messages(folder: &Path, rows: Vec<Value>) -> io::Result<()> {

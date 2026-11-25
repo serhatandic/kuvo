@@ -53,6 +53,34 @@ fn set(db: &Connection, key: &str, value: &Value) -> Result<()> {
     )?;
     Ok(())
 }
+type FileStamp = Option<(u64, Option<u128>)>;
+fn file_stamp(path: &std::path::Path) -> FileStamp {
+    std::fs::metadata(path).ok().map(|m| {
+        (
+            m.len(),
+            m.modified()
+                .ok()
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos()),
+        )
+    })
+}
+struct PriceBook {
+    stamp: [FileStamp; 3],
+    catalog: Arc<Pricing>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct TranscriptRevision {
+    generation: String,
+    revision: u64,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct TranscriptCheckpoint {
+    stamp: String,
+    header: String,
+    cursor: Option<TranscriptRevision>,
+    decoded: u64,
+}
 #[derive(Clone)]
 pub struct Service {
     home: PathBuf,
@@ -62,6 +90,7 @@ pub struct Service {
     hostname: String,
     gate: Arc<Mutex<()>>,
     caught_up: Arc<std::sync::atomic::AtomicBool>,
+    prices: Arc<Mutex<Option<PriceBook>>>,
 }
 impl Service {
     pub fn new(home: PathBuf, name: String, key: String, hostname: &str) -> Self {
@@ -73,6 +102,7 @@ impl Service {
             alias: Arc::default(),
             gate: Arc::default(),
             caught_up: Arc::default(),
+            prices: Arc::default(),
         }
     }
     fn alias(&self) -> &str {
@@ -111,6 +141,22 @@ impl Service {
             &[|db| db.execute_batch(SQL)],
         )?)
     }
+    fn pricing(&self) -> Result<Arc<Pricing>> {
+        let folder = self.home.join("agents/usage/pricing");
+        let stamp = ["litellm.json", "models_dev.json", "supplement.json"]
+            .map(|name| file_stamp(&folder.join(name)));
+        let mut book = self.prices.lock().expect("usage price book");
+        if let Some(kept) = book.as_ref().filter(|kept| kept.stamp == stamp) {
+            return Ok(kept.catalog.clone());
+        }
+        let catalog = Arc::new(Pricing::load(Some(&folder))?);
+        *book = Some(PriceBook {
+            stamp,
+            catalog: catalog.clone(),
+        });
+        Ok(catalog)
+    }
+
     /// Read only the compact usage projection of the new transcript format. Legacy JSON rows
     /// are consumed one conversation at a time. No prompt or reply words enter the index.
     pub fn scan(&self, db: &mut Connection, now: i64) -> Result<()> {
@@ -123,7 +169,7 @@ impl Service {
         changed: Option<&BTreeSet<String>>,
     ) -> Result<()> {
         let root = self.home.join("agents/sessions");
-        let pricing = Pricing::load(Some(&self.home.join("agents/usage/pricing")))?;
+        let pricing = self.pricing()?;
         let mut headers = BTreeMap::new();
         let mut wanted = changed
             .cloned()
@@ -164,30 +210,20 @@ impl Service {
             if changed.is_some_and(|selected| !selected.contains(id)) {
                 continue;
             }
-            let stamp: Vec<_> = [
-                "session.json",
-                "messages-v1.sqlite",
-                "messages-v1.sqlite-wal",
-                "messages.json",
-            ]
-            .into_iter()
-            .map(|name| {
-                std::fs::metadata(folder.join(name)).ok().map(|m| {
-                    (
-                        m.len(),
-                        m.modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_nanos().to_string()),
-                    )
-                })
-            })
-            .collect();
-            let stamp = hash(&json!(stamp));
+            let stamp = hash(&json!(
+                [
+                    "session.json",
+                    "agent.json",
+                    "messages-v1.sqlite",
+                    "messages-v1.sqlite-wal",
+                    "messages.json"
+                ]
+                .map(|name| file_stamp(&folder.join(name))
+                    .map(|(len, mtime)| (len, mtime.map(|n| n.to_string()))))
+            ));
             let checkpoint = format!("scan/rust-transcript-v1/{id}");
-            if get(&tx, &checkpoint)?.as_ref().and_then(Value::as_str) == Some(&stamp) {
-                continue;
-            }
+            let before = get(&tx, &checkpoint)?
+                .and_then(|v| serde_json::from_value::<TranscriptCheckpoint>(v).ok());
             let mut lineage = id.as_str();
             let mut seen = BTreeSet::new();
             while seen.insert(lineage) {
@@ -205,6 +241,24 @@ impl Service {
             let top = &headers[lineage].1;
             let bot = top["metadata"]["kuvo"]["by"]["bot"].as_str();
             let bot_name = top["metadata"]["kuvo"]["by"]["name"].as_str();
+            // A session's updated timestamp changes on each turn, but its attribution
+            // usually does not. Only that relevant header signature forces re-attribution.
+            let header = hash(&json!([
+                session["title"],
+                session["model"],
+                session["parentID"],
+                lineage,
+                bot,
+                bot_name
+            ]));
+            if before
+                .as_ref()
+                .is_some_and(|b| b.stamp == stamp && b.header == header)
+            {
+                continue;
+            }
+            let mut decoded = 0;
+            let mut cursor = None;
             let mut accept = |message: Value| -> Result<()> {
                 let role = message["type"].as_str().unwrap_or_default();
                 if !matches!(role, "user" | "assistant") {
@@ -319,24 +373,72 @@ impl Service {
                 Ok(())
             };
             if folder.join("messages-v1.sqlite").is_file() {
-                let transcript = kuvo_store::sqlite::open_index(
+                let mut transcript = kuvo_store::sqlite::open_index(
                     &folder.join("messages-v1.sqlite"),
                     kuvo_store::sqlite::INSIGHTS_BUSY,
                 )?;
-                let mut query = transcript.prepare(
-                    "SELECT insight FROM message WHERE insight IS NOT NULL ORDER BY position",
-                )?;
-                let mut rows = query.query([])?;
-                while let Some(row) = rows.next()? {
-                    let text: String = row.get(0)?;
-                    accept(serde_json::from_str(&text)?)?;
+                let read = transcript.transaction()?;
+                let indexed:bool=read.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='insight_revision')",[],|r|r.get(0))?;
+                if indexed {
+                    cursor = Some(read.query_row(
+                        "SELECT generation,revision FROM insight_revision WHERE id=1",
+                        [],
+                        |r| {
+                            Ok(TranscriptRevision {
+                                generation: r.get(0)?,
+                                revision: r.get(1)?,
+                            })
+                        },
+                    )?);
                 }
+                let from = before
+                    .as_ref()
+                    .filter(|b| b.header == header)
+                    .and_then(|b| b.cursor.as_ref())
+                    .filter(|old| {
+                        cursor.as_ref().is_some_and(|new| {
+                            old.generation == new.generation && old.revision <= new.revision
+                        })
+                    })
+                    .map(|r| r.revision);
+                if let Some(from) = from {
+                    let mut query=read.prepare("SELECT m.insight FROM insight_change c JOIN message m ON m.position=c.position WHERE c.revision>? AND m.insight IS NOT NULL ORDER BY c.revision")?;
+                    let mut rows = query.query([from])?;
+                    while let Some(row) = rows.next()? {
+                        let text: String = row.get(0)?;
+                        accept(serde_json::from_str(&text)?)?;
+                        decoded += 1;
+                    }
+                } else {
+                    // The initial catch-up, a legacy v1 writer which hasn't installed
+                    // the additive index, or a relevant ownership/header change.
+                    let mut query = read.prepare(
+                        "SELECT insight FROM message WHERE insight IS NOT NULL ORDER BY position",
+                    )?;
+                    let mut rows = query.query([])?;
+                    while let Some(row) = rows.next()? {
+                        let text: String = row.get(0)?;
+                        accept(serde_json::from_str(&text)?)?;
+                        decoded += 1;
+                    }
+                }
+                read.commit()?;
             } else if let Some(text) = kuvo_store::files::text_of(&folder.join("messages.json")) {
                 for message in serde_json::from_str::<Vec<Value>>(&text)? {
                     accept(message)?;
+                    decoded += 1;
                 }
             }
-            set(&tx, &checkpoint, &json!(stamp))?;
+            set(
+                &tx,
+                &checkpoint,
+                &serde_json::to_value(TranscriptCheckpoint {
+                    stamp,
+                    header,
+                    cursor,
+                    decoded,
+                })?,
+            )?;
         }
         set(&tx, "sequence", &json!(seq))?;
         // Native histories and engine observations have not been scanned by this reader yet.
@@ -1129,4 +1231,28 @@ async fn read_view(
     })
     .await
     .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+#[cfg(test)]
+mod price_cache {
+    use super::*;
+
+    #[test]
+    fn a_price_book_is_shared_until_a_catalog_file_changes() {
+        let scratch = tempfile::tempdir().unwrap();
+        let service = Service::new(
+            scratch.path().to_owned(),
+            "Fixture".into(),
+            "fixture".into(),
+            "fixture",
+        );
+        let first = service.pricing().unwrap();
+        assert!(Arc::ptr_eq(&first, &service.pricing().unwrap()));
+        let folder = scratch.path().join("agents/usage/pricing");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("litellm.json"), br#"{"models":{}}"#).unwrap();
+        let newer = service.pricing().unwrap();
+        assert!(!Arc::ptr_eq(&first, &newer));
+        assert!(Arc::ptr_eq(&newer, &service.pricing().unwrap()));
+    }
 }

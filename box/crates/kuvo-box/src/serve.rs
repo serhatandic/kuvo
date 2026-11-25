@@ -195,6 +195,10 @@ pub async fn run(
             .map(|key| kuvo_wire::keys::encode(key))
             .unwrap_or_default(),
     );
+    let standalone_plans = kuvo_services::usage::standalone::Readers::for_home(home, &account);
+    if let Some(readers) = &standalone_plans {
+        readers.confirm(&limits).await;
+    }
     let mut agent_handover = None;
     let mut routes = Registry::new();
     crate::box_app::register(
@@ -540,15 +544,23 @@ pub async fn run(
     let refresh_engine = engine.clone();
     let engine_reader = usage::engine_reader(home, &account);
     kuvo_services::usage::limits::register_refresh(&mut routes, limits.clone(), move |selected| {
-        let (limits, agents, engine, reader) = (
+        let (limits, agents, engine, reader, standalone) = (
             refresh_limits.clone(),
             refresh_agents.clone(),
             refresh_engine.clone(),
             engine_reader.clone(),
+            standalone_plans.clone(),
         );
         async move {
             let agents_failed = if let Some(agents) = agents {
                 usage::refresh(limits.clone(), agents, selected.clone()).await
+            } else {
+                false
+            };
+            let standalone_failed = if let Some(standalone) = standalone {
+                standalone
+                    .refresh(limits.clone(), selected.as_deref())
+                    .await
             } else {
                 false
             };
@@ -557,7 +569,7 @@ pub async fn run(
             } else {
                 false
             };
-            agents_failed || engine_failed
+            agents_failed || engine_failed || standalone_failed
         }
     });
     let _ = limits.answer(kuvo_services::usage::limits::now());
