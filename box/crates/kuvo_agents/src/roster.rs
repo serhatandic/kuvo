@@ -81,6 +81,17 @@ pub trait Agent: Adoption {
     /// Finish reading the current turn before returning from an intentional stop.
     /// Removal may call this again after a store operation is retried.
     fn shutdown(&self) -> AdapterCall<'_, ()>;
+
+    /// Its program, and how it's updated (`program_updates`); none when it isn't the box's to.
+    fn program(&self) -> Option<crate::program_updates::Definition> {
+        None
+    }
+
+    /// Its program was updated: what runs the old one starts again once nothing uses it, and its
+    /// models are asked anew.
+    fn program_updated(&self) -> AdapterCall<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// Implemented once per vendor by rows 4.2–4.5. Create an independent

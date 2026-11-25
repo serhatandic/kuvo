@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant, SystemTime},
@@ -39,6 +39,9 @@ pub(super) struct Program {
     /// Signed in with a key, paid by the token (not a Claude plan), as it last said: unknown
     /// until it's asked.
     uses_key: Arc<AtomicU8>,
+    /// Counts updates of Claude Code: a conversation's Claude Code started before the last one
+    /// starts again at its next message.
+    updates: Arc<AtomicU64>,
 }
 
 const UNKNOWN: u8 = 0;
@@ -75,7 +78,17 @@ impl Program {
             managed,
             turned_away: Arc::default(),
             uses_key: Arc::default(),
+            updates: Arc::default(),
         }
+    }
+
+    /// Updates of Claude Code so far.
+    pub fn updates(&self) -> u64 {
+        self.updates.load(Ordering::SeqCst)
+    }
+
+    pub fn updated(&self) {
+        self.updates.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Signed in with an API key: what Claude Code says a turn cost is what it costs. Asked

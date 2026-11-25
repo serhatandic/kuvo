@@ -34,6 +34,7 @@ use serde_json::json;
 
 pub(super) mod asks;
 pub(super) mod background;
+pub(super) mod rows;
 pub(super) mod sessions;
 pub(super) mod tools;
 pub(super) mod turns;
@@ -72,6 +73,7 @@ pub(super) async fn hand_over(
 pub(super) async fn factories(
     home: &std::path::Path,
     relay: &kuvo_agents::tool_relay::ToolRelay,
+    feed: &kuvo_agents::feed::Feed,
 ) -> HashMap<AgentKind, Arc<dyn Factory>> {
     #[cfg(feature = "agent-runtime-fixture")]
     if let Some(fixture) = fixture::for_home(home, relay.clone()) {
@@ -87,7 +89,9 @@ pub(super) async fn factories(
     let Ok(binary) = std::env::current_exe() else {
         return HashMap::new();
     };
-    let codex: Arc<dyn Factory> = Arc::new(CodexFactory::new(home.clone(), binary.clone(), Some(relay.clone())));
+    let codex: Arc<dyn Factory> = Arc::new(
+        CodexFactory::new(home.clone(), binary.clone(), Some(relay.clone())).with_feed(feed.clone()),
+    );
     let claude: Arc<dyn Factory> = Arc::new(ClaudeFactory::new(home, binary));
     HashMap::from([(AgentKind::Claude, claude), (AgentKind::Codex, codex)])
 }

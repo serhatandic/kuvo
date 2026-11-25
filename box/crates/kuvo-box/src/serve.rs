@@ -81,7 +81,8 @@ pub async fn run(
         bootstrap.devices
     };
     let tools = agents::tools::relay(home, engine.clone())?;
-    let factories = agents::factories(home, &tools).await;
+    let feed = kuvo_agents::feed::Feed::default();
+    let factories = agents::factories(home, &tools, &feed).await;
     let resident_agents = if factories.is_empty() {
         None
     } else {
@@ -89,6 +90,7 @@ pub async fn run(
         let runtime = kuvo_agents::runtime::Runtime::for_home(&agent_home);
         match kuvo_agents::resident::ResidentAgents::start(runtime.clone(), factories).await {
             Ok((agents, failures)) => {
+                let agents = agents.with_feed(feed);
                 for failure in failures {
                     eprintln!(
                         "Kuvo could not take up agent holder {}: {}",
@@ -218,13 +220,21 @@ pub async fn run(
         );
         agent_handover = Some((runs.clone(), runtime.clone()));
         agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
+        agents::asks::follow(runs.clone(), sessions.clone(), accounts.feed().clone());
         let inventory = agents::sessions::Inventory {
             store: sessions.clone(),
             running: Some(runs.clone()),
             home: home.to_owned(),
             agents: Some(accounts.clone()),
         };
-        agents::turns::register(runs, &mut routes);
+        let rows = kuvo_agents::account_rows::AccountRows::new(
+            home.to_owned(),
+            accounts.clone(),
+            Some(Arc::new(runs.clone())),
+        );
+        agents::rows::register(rows, Some(runs.clone()), sessions.clone(), &mut routes);
+        agents::sessions::register_reads(inventory.clone(), &mut routes);
+        agents::turns::register(runs, accounts.feed().clone(), &mut routes);
         engine
             .with_agent_model_source(Arc::new(agents::Models {
                 runtime,

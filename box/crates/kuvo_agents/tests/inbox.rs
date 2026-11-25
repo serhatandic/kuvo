@@ -57,6 +57,8 @@ struct Script {
     fails_to_open: bool,
     runs: Vec<String>,
     steered: Vec<String>,
+    /// Steers asked for, answered or not yet.
+    asked: usize,
     release: Vec<oneshot::Sender<Outcome>>,
 }
 
@@ -72,6 +74,7 @@ fn script() -> Shared {
         fails_to_open: false,
         runs: Vec::new(),
         steered: Vec::new(),
+        asked: 0,
         release: Vec::new(),
     }))
 }
@@ -236,7 +239,11 @@ impl ActiveTurn for StandTurn {
 
     fn steer(&self, prompt: Prompt) -> AdapterCall<'_, Steer> {
         Box::pin(async move {
-            let gate = self.script.lock().unwrap().gate.clone();
+            let gate = {
+                let mut script = self.script.lock().unwrap();
+                script.asked += 1;
+                script.gate.clone()
+            };
             if let Some(gate) = gate {
                 gate.notified().await;
             }
@@ -533,6 +540,83 @@ async fn after_an_error_nothing_more_starts_on_its_own() {
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(case.runs().len(), 1);
     assert_eq!(case.idles(&id).await[0]["error"]["message"], "broke");
+}
+
+// "an expired program drain releases queued work and leaves the admitted turn running"
+#[tokio::test]
+async fn an_expired_program_drain_releases_queued_work_and_leaves_the_admitted_turn_running() {
+    let mut case = Case::new().await;
+    case.with(|script| script.mode = Mode::Works);
+    let active = case.create("ses_drained");
+    let waiting = case.create("ses_drainwait");
+    case.send(&active, "before the drain", Delivery::Steer)
+        .await;
+    until("the first turn", || case.runs().len() == 1).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let holding = case.runs.clone();
+    let drain = holding.hold_program("codex", now + 200);
+    tokio::pin!(drain);
+    // (Held from its first step.)
+    assert!(futures_util::poll!(&mut drain).is_pending());
+    let next = case
+        .send(&waiting, "after the deadline", Delivery::Steer)
+        .await;
+    let ids: Vec<_> = case
+        .inbox(&waiting)
+        .await
+        .into_iter()
+        .map(|input| input.id)
+        .collect();
+    assert_eq!(ids, [next]);
+    case.with(|script| script.mode = Mode::Replies);
+    let Err(error) = drain.await else {
+        panic!("The drain didn't expire.");
+    };
+    assert!(error.to_string().contains("update wait expired"), "{error}");
+    case.settled(&waiting, 1).await;
+    assert!(case.runs.running().contains(&active));
+    assert_eq!(case.runs(), ["before the drain", "after the deadline"]);
+    case.runs.interrupt(active).await.unwrap();
+}
+
+// A program's update waits for its turns under way; what's sent meanwhile, steered into one too,
+// waits in line, kept, and goes once it's let go.
+#[tokio::test]
+async fn a_program_update_waits_for_its_turns_and_what_waited_goes_after_it() {
+    let mut case = Case::new().await;
+    case.with(|script| {
+        script.mode = Mode::Works;
+        script.steering = Steering::Takes;
+    });
+    let id = case.create("ses_update");
+    case.send(&id, "working", Delivery::Steer).await;
+    until("the first turn", || case.runs().len() == 1).await;
+    let far = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 60_000;
+    let holding = case.runs.clone();
+    let drain = holding.hold_program("codex", far);
+    tokio::pin!(drain);
+    assert!(futures_util::poll!(&mut drain).is_pending());
+    // Not into the turn under way: its program is about to change.
+    case.send(&id, "after the update", Delivery::Steer).await;
+    assert!(case.with(|script| script.steered.is_empty()));
+    case.with(|script| script.mode = Mode::Replies);
+    case.release(Outcome::Succeeded);
+    let release = drain.await.unwrap();
+    case.settled(&id, 1).await;
+    let line = case.inbox(&id).await;
+    assert_eq!(line.len(), 1);
+    assert!(line[0].held);
+    assert_eq!(case.runs(), ["working"]);
+    release();
+    case.settled(&id, 2).await;
+    assert_eq!(case.runs(), ["working", "after the update"]);
 }
 
 // "an agent that couldn't start fails the message, and the next starts it again"
@@ -924,6 +1008,186 @@ async fn one_it_turns_away_waits_for_the_turn_to_end() {
     case.release(Outcome::Succeeded);
     case.settled(&id, 2).await;
     assert_eq!(case.runs(), ["first", "after"]);
+}
+
+/// Until what waits for `id` is as `wanted` says.
+async fn line_until(case: &Case, id: &str, what: &str, wanted: impl Fn(&[Input]) -> bool) {
+    for _ in 0..500 {
+        if wanted(&case.inbox(id).await) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out: {what}");
+}
+
+/// A turn that waits to be released, `first` under way, and a message being handed to it that
+/// waits at `gate` for its answer.
+async fn handing(
+    case: &mut Case,
+    id: &str,
+    steering: Steering,
+    text: &str,
+) -> (Arc<Notify>, String) {
+    let gate = Arc::new(Notify::new());
+    case.with(|script| {
+        script.mode = Mode::Ignores;
+        script.steering = steering;
+        script.gate = Some(gate.clone());
+    });
+    case.send(id, "first", Delivery::Steer).await;
+    until("the first turn", || case.runs().len() == 1).await;
+    let handed = case.send(id, text, Delivery::Steer).await;
+    until("the handoff", || case.with(|script| script.asked) == 1).await;
+    (gate, handed)
+}
+
+// "one taken just as its turn ends goes once, not again as a turn of its own"
+#[tokio::test]
+async fn one_taken_just_as_its_turn_ends_goes_once() {
+    let mut case = Case::new().await;
+    let id = case.create("ses_lastsec");
+    let (gate, late) = handing(&mut case, &id, Steering::Takes, "one more thing").await;
+    case.with(|script| script.mode = Mode::Replies);
+    case.release(Outcome::Succeeded);
+    case.settled(&id, 1).await;
+    gate.notify_one();
+    line_until(&case, &id, "the handoff settled", |line| line.is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let rows = case.rows(&id).await;
+    assert_eq!(
+        rows.iter().filter(|row| row["id"] == late.as_str()).count(),
+        1
+    );
+    assert_eq!(case.runs(), ["first"]);
+}
+
+// "Stop and resume while a message is being handed to the turn: one the agent
+// turns away goes next"
+#[tokio::test]
+async fn stop_and_resume_while_handing_one_turned_away_after_goes_next() {
+    let mut case = Case::new().await;
+    let id = case.create("ses_resume1");
+    let (gate, _) = handing(&mut case, &id, Steering::TurnsAway, "do this instead").await;
+    let runs = case.runs.clone();
+    let stopping = tokio::spawn({
+        let id = id.clone();
+        async move { runs.interrupt_and(id, true).await }
+    });
+    case.with(|script| {
+        script.mode = Mode::Replies;
+        script.gate = None;
+    });
+    case.release(Outcome::Interrupted);
+    assert!(stopping.await.unwrap().unwrap());
+    case.settled(&id, 1).await;
+    assert_eq!(case.runs(), ["first"]);
+    gate.notify_one();
+    case.settled(&id, 2).await;
+    assert_eq!(case.runs(), ["first", "do this instead"]);
+    assert!(case.inbox(&id).await.is_empty());
+}
+
+// "Stop and resume while a message is being handed to the turn: one the agent
+// turns away as the turn stops goes next"
+#[tokio::test]
+async fn stop_and_resume_while_handing_one_turned_away_as_it_stops_goes_next() {
+    let mut case = Case::new().await;
+    let id = case.create("ses_resume2");
+    let (gate, _) = handing(&mut case, &id, Steering::TurnsAway, "do this instead").await;
+    let runs = case.runs.clone();
+    let stopping = tokio::spawn({
+        let id = id.clone();
+        async move { runs.interrupt_and(id, true).await }
+    });
+    case.with(|script| {
+        script.mode = Mode::Replies;
+        script.gate = None;
+    });
+    gate.notify_one();
+    line_until(&case, &id, "turned away", |line| line.len() == 1).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(case.runs(), ["first"]);
+    case.release(Outcome::Interrupted);
+    assert!(stopping.await.unwrap().unwrap());
+    case.settled(&id, 2).await;
+    assert_eq!(case.runs(), ["first", "do this instead"]);
+    assert!(case.inbox(&id).await.is_empty());
+}
+
+// "Stop while a message is being handed to the turn: one the agent turns away
+// waits, and Send Now on another starts that one"
+#[tokio::test]
+async fn stop_while_handing_one_turned_away_waits_and_send_now_starts_another() {
+    let mut case = Case::new().await;
+    let id = case.create("ses_stophand");
+    let (gate, _) = handing(&mut case, &id, Steering::TurnsAway, "turned away").await;
+    let runs = case.runs.clone();
+    let stopping = tokio::spawn({
+        let id = id.clone();
+        async move { runs.interrupt(id).await }
+    });
+    case.with(|script| {
+        script.mode = Mode::Replies;
+        script.gate = None;
+    });
+    gate.notify_one();
+    case.release(Outcome::Interrupted);
+    assert!(stopping.await.unwrap().unwrap());
+    case.settled(&id, 1).await;
+    line_until(&case, &id, "turned away, queued", |line| {
+        line.len() == 1 && line[0].delivery == Delivery::Queue
+    })
+    .await;
+    case.with(|script| script.mode = Mode::Works);
+    let picked = case.send(&id, "picked", Delivery::Queue).await;
+    case.runs
+        .set_delivery(id.clone(), picked, Delivery::Steer, false)
+        .await
+        .unwrap();
+    until("the picked one", || case.runs().len() == 2).await;
+    assert_eq!(case.runs(), ["first", "picked"]);
+    let line = case.inbox(&id).await;
+    assert_eq!(line.len(), 1);
+    assert_eq!(line[0].text, "turned away");
+    // (Then, after a turn that ends on its own, what waited goes.)
+    case.with(|script| script.mode = Mode::Replies);
+    case.release(Outcome::Succeeded);
+    case.settled(&id, 3).await;
+    assert_eq!(case.runs(), ["first", "picked", "turned away"]);
+}
+
+// "Send Now for a message you then cancel as it's handed starts nothing later"
+// (its first half: the agent carrying on by itself after it is Claude Code's
+// and the ACP agents', 4.4 and 4.5)
+#[tokio::test]
+async fn send_now_for_one_cancelled_as_its_handed_starts_nothing_later() {
+    let mut case = Case::new().await;
+    let id = case.create("ses_nevermind");
+    let (gate, handed) = handing(&mut case, &id, Steering::TurnsAway, "never mind").await;
+    let runs = case.runs.clone();
+    let stopping = tokio::spawn({
+        let id = id.clone();
+        async move { runs.interrupt_and(id, true).await }
+    });
+    case.with(|script| {
+        script.mode = Mode::Replies;
+        script.gate = None;
+    });
+    case.release(Outcome::Interrupted);
+    assert!(stopping.await.unwrap().unwrap());
+    case.settled(&id, 1).await;
+    assert_eq!(
+        case.runs
+            .cancel_input(id.clone(), handed, true)
+            .await
+            .unwrap(),
+        Cancelled::Busy
+    );
+    gate.notify_one();
+    line_until(&case, &id, "cancelled", |line| line.is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(case.runs(), ["first"]);
 }
 
 // Codex's uncertain handoff: its receipt is saved before it's sent, nothing

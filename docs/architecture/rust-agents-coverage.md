@@ -271,11 +271,22 @@ scratch folder, the generated account ID, and an empty Undo record
 Carried to the rows that bring them:
 
 - Production vendor factory registration, as each adapter lands (4.2–4.5). Codex's is in (4.2).
-- `sessions.test.ts` 9 (a program update's drain) and 12 (a model whose
-  account is signed out): 4.2, with the first program updater and production
-  account status.
-- 59–60 and 127–139 (turns an agent starts on its own, and Stop or Send Now
-  while one is handed over): 4.2 and 4.4, whose agents start them.
+- `sessions.test.ts` 9 (a program update's drain) is ported to
+  `kuvo_agents/tests/inbox.rs` (4.2), with a second case: a message sent while
+  its program updates, even one steered into a turn under way, waits in line,
+  kept, and goes once the update lets it go. `SessionRuns::hold_program` holds
+  the program's turns for every account with it until those under way finish
+  (here, or in an agent kept running across residents), or fails at its
+  deadline and lets them go. An installer an earlier resident left running
+  (`agents/program-installing`) holds them too. 12 (a model whose account is signed out) is ported to agents-codex on
+  both boxes. Before a turn its agent is asked (not one taken up), an agent
+  installed and signed out, as last known and asked anew (at most 10 s each),
+  turns it away at once as failed (`signin`, naming the computer). This is
+  shared, for every agent (`SessionRuns::signed_out`).
+- 59–60 and 127–139: see the sessions row above. The handing cases are ported
+  (4.2); turns an agent begins on its own go with the agents that begin them
+  (Claude Code's with 4.6, the ACP agents' with 4.3), and kept files and the
+  handover with 4.6.
 - Moves and wake-ups into a coding agent's conversation: 4.6, with carry and
   handover.
 
@@ -441,11 +452,11 @@ Case numbers use the order in the cited source file.
 |---|---|
 | [accounts-check](../../box/test/agents/accounts-check.test.ts), 20, [account-refresh](../../box/test/agents/account-refresh.test.ts), 8, [added-account-route](../../box/test/agents/added-account-route.test.ts), 3, [own-homes](../../box/test/agents/own-homes.test.ts), 4, and [signin-mode](../../box/test/agents/signin-mode.test.ts), 3 | 4.1b owns account index, home selection, checks, catalog cache and sign-in state. Vendor sign-in commands and authentication messages → 4.2–4.5. Accounts-check 18 covers Work Queue GitHub authorization in 5.2. |
 | [sign-in.test.js](../../box/bridge-tests/sign-in.test.js), 11 | Agent route cases 2–4, 8 and 10–11 → 4.1b. OpenCode methods and status → 3.2. Setup and remote transport assertions use the resident dispatcher. |
-| [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. |
+| [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. The program updater, its drain, its routes, the Accounts rows' versions and update notices are 4.2's (program-updates and update-notices). Grok's and Antigravity's `Agent::program` → 4.3. |
 | [toolrelay](../../box/test/agents/toolrelay.test.ts), 9 | 1 → `kuvo_agents/tests/tool_forwarder.rs`; 2–6 and `relay-live` 1 → `kuvo_agents/tests/tool_relay.rs`, with the relay's parts of four `acp` cases (re-checks and the idle stop). 7 and 8 not ported: no caller since the Swift app was dropped. 9 with 6.1. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
 | [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 6.4: the browser keeper owns the `kuvo-browser` tools program the engine starts with. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
-| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 and 12 (program drains, signed-out models) → 4.2; 59–60 and 127–139 (turns an agent starts itself, Stop and Send Now while a message is handed) → 4.2 and 4.4. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
+| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 to `inbox.rs`, 12 to agents-codex (4.2). 59 and 133–136 to `inbox.rs` (4.2): a message taken as its turn ends goes once; Stop, with or without resume, and Send Now while one is being handed; a handed one cancelled after Send Now starts nothing later. 60 (a message its agent never got to goes with the next) is the handover's seen cursor → 4.6; Codex never reports one. Turns an agent begins on its own come from Claude Code and the ACP agents only (the reference's `onOwnTurn`): Claude Code's (127–129, 132, 137, 139's own half and 136's second half) → 4.6, and the ACP agents' → 4.3; those waiting on kept files (130, 131, 138) → 4.6. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
 | [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 136, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |
 | [agent-tools.test.js](../../box/bridge-tests/agent-tools.test.js), [artifacts](../../box/test/artifacts.test.ts), [subagents](../../box/test/agents/subagents.test.ts), [carry-agents](../../box/test/agents/carry-agents.test.ts), [to-agents](../../box/bridge-tests/to-agents.test.js) and [agents-handover](../../box/bridge-tests/agents-handover.test.js) | Agent registration and tools dispatch share 4.1b/c. Tool handler semantics span 2.4 ownership and messages, 4.6 subagents and transfers, 5.1 starts and bot work, 5.5 artifacts, and 6.1 permissions. |
 | Agent account imports in [usage tests](../../box/test/usage), and [settings-agents-live](../../box/bridge-tests/settings-agents-live.test.js) | 5.4 owns usage and limits. 6.1 owns the engine Agents settings file and the live engine settings page. Both consume 4.1b account state. |
@@ -790,7 +801,7 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 
 | Cases | Coverage and remaining owner |
 |---|---|
-| 1 | Rust adapter: receipts before the steer, `thread/read` by client ID. Conformance case open (4.2). |
+| 1 | Ported to agents-codex on both boxes, with and without the resident starting again: a steer whose acknowledgement is lost is found in the thread's history by its client ID, shown once, never sent again, and not carried into the next message. |
 | 2 | Unit test `a_model_at_its_own_limit_waits_alone`. |
 | 3 | 4.6 (spawned agents). |
 | 4–10 | `codex::terminals` keeps what Codex left running in the background model. It's listed as each turn ends, before the end is said, and again every 30 s while any runs. A terminal with a command shows in the bar with what it printed, a terminal without one is a task, and a failed first list is the task `unknown:<thread>`. The app-server stays busy for them, and its holder notes `backgroundSessions`. Ported to agents-codex on both boxes: 4 (in the bar with its output); 5–7 (a failed list isn't none, it's listed again until it ends, and it isn't woken). Unit tests: 6 (a failed later list keeps them), 8 (a reset forgets their times), 9 (a replacement item gets a fresh start), and a command's Stop through `thread/backgroundTerminals/terminate`. 10 is ported on both boxes: Stop on what it left running (`DELETE kuvo/agents/api/session/:id/background`) ends each command through Codex. The reference cleans the thread's terminals, `thread/backgroundTerminals/clean`; a terminal without a command (a task) isn't stopped by Rust, which stops commands only. 7.2 U90 covers taking up the terminals of an idle app-server after a keeper update: same holder and app-server PIDs, same command identity, start, output and Stop, no new turn. |
@@ -802,41 +813,143 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 20–22 | Ported. |
 | 23 | Ported to agents-codex on both boxes. As the resident starts, Codex's replies an older bridge saved with its directives as words are read as a reply is now (`codex::read_kept_citations`, through `SessionStore::rows_saying`), and so is a title with one. Another agent's words quoting one stay as they were. The reference also keeps a list of the files it found (`sessions.cited`), which nothing reads. |
 | 24–28 | Ported. |
-| 29–32, 34 | Open (4.2): answers turned down with words, the asking words, a refused steer with a card up. |
+| 29–32, 34 | Ported to agents-codex on both boxes: answers turned down with words (in a turn, again and again, in Plan), the asking words, and a refused steer with a card up. |
 | 33, 55 | Ported. |
-| 35–49, 57 | Open (4.2): telling a sleeping Codex its answer, trying again into a sleep. |
+| 35–49 | Ported to agents-codex on both boxes. An answer goes into the turn and ends the sleep it's in. A sleep that starts after its answer went in is told again once. Turned down while it sleeps, it's tried again into that sleep, after 1 s and then double each time up to 64 s, or into one that started in its place. One it heard and worked on isn't retold. Ported from the reference into `codex/thread.rs` (`steer_answer`, `answers_on_item`, `retry`). The stand-in sleeps and turns steers down as the reference's own fake does. |
+| 57 | Ported to agents-codex on both boxes. |
 | 50 | Ported. |
-| 51–54, 56, 58–60, 62, 64 | Open (4.2): answers at a turn's edge, two cards, counting refusals. |
+| 51–54, 56, 58–60, 62 | Ported to agents-codex on both boxes: answers at a turn's edge, two cards, a message answering both, and counting refusals (stopped as finished with no work between, never with work). |
+| 64 | Rust: a message from the app (synthetic) doesn't answer an open card (`Turn::steer`). No client route sends one in either box (the reference's `synthetic` is the bridge's own). Its proof goes with app notes into a coding agent's conversation (4.6). |
 | 61, 63, 65 | Ported. |
 | 66, 72, 73 | Ported (the policies Codex starts with; Plan declines an edit itself). |
 | 67–71 | Ported: Approve All answers Codex's own asks and MCP tool asks with no card; Ask First asks for another server's tool and not for Kuvo Code's; in Plan another server's tool is its yes-or-no form; an MCP server's form comes back typed. |
 | 74–89 | 6.1 (Codex run whole in the sandbox, bots' memory with 5.1, attachments copied in). |
 | 90 | Ported (Computer Use plugins off at launch). |
-| 91–92 | Rust passes the relay's servers into the thread; conformance with the engine's servers open (4.2). |
+| 91–92 | Rust gives each server the relay finds as `mcp_servers.<name>`: its relay URL, the conversation's own `Authorization`, never the server's keys. A changed set (a sign-in renewed) loads the thread again (`Loaded::servers`). The servers, their keys and a refused sign-in are the relay's, proven in `tool_sources.rs` (4.1c). A both-box case needs the engine's settings under the Rust box, which no agent case runs yet. Claude Code's equivalent isn't in conformance either, so it goes with the relay (4.1c). |
 | 93–105 | 4.6 (your subagents as roles, spawned agents, writing to them). |
 | 106–108, 110, 111 | Ported. 106 reloads the thread in place; the reference starts its app-server again. |
 | 109 | Ported (Fast, Standard as null, nothing where none was picked). |
 | 112–113 | Ported to agents-codex on both boxes. The commands a turn waits on are listed while they run, with what they printed, and Stop on one stops its turn: `foreground::Foreground` in the turn runtime, for every agent's `shell` step. One that ends leaves the list, and what it printed can still be read. `DELETE kuvo/agents/api/shell/:id` stops one listed command through `Background::stop`. |
-| 114 | Rust: a removed account (or the box stopping) ends the turn as stopped; the conformance case for removal is open (4.2). Signing out mid-turn is ported: Codex is told to sign out and the turn fails as "Codex stopped.", as the reference has it. |
+| 114 | Ported to agents-codex on both boxes: an added account removed while its Codex works ends the turn as stopped, without Stop. Signing out mid-turn is ported as well: Codex is told to sign out and the turn fails as "Codex stopped." |
 | 115–119 | Ported. |
 | 120 | Ported to agents-codex on both boxes: Stop during a summary tells Codex to stop its own turn, and the summary row says it failed. |
 | 121 | Ported to agents-codex on both boxes: a thread it goes on with hears what changed in its instructions with your next message, once. |
 | `test.each`: a terminal's start relative to the lead's instruction (4) | Rust: a listed command keeps the start heard from its `item/started` (unit test). Holding the lead's finish on it is the work watcher's (5.1c-6b), which reads that start from the background file. |
 | `test.each`: thinking, a step or more words after asking (3) | Ported to agents-codex on both boxes. |
 
-Also still open for 4.2: `sessions.test.ts` 9 and 12, 59–60 and 127–139; the
-program updater; the live GPT-6-Luna run.
+The program updater is shared, in `kuvo_agents::program_updates`: which version
+you have, the newest, the installer that owns it (its own updater, an npm
+global, a Homebrew keg or cask), and the update. Its outcome is kept for every
+client. Its records (`agents/program-draining`, `agents/program-installing`)
+are the reference's, so mixed versions see each other's, and a next resident
+takes one up. An agent says how its program is updated (`Agent::program`).
+Codex's own installer updates it with `codex update`; otherwise npm's
+`@openai/codex`. After an update, each account with the program runs it
+(`Agent::program_updated`): Codex's app-server starts again once nothing uses
+it. Unit tests cover the versions, the owners and a real program's update, a
+failed one, a timed-out hold and one a next resident takes up. Claude Code
+updates the same way (`claude update` on its settings' channel, else npm's
+`@anthropic-ai/claude-code`), and each conversation's Claude Code starts again
+at its next message.
+
+### Accounts rows, updates and the agents' feed (4.2)
+
+The reference's `box/src/shared/routes/index.ts` declares all of `kuvo/agents/`
+as pass-through to its bridge, so the bridge's routes had no specs. The Rust box
+serves each `kuvo/agents/` route the app uses from its own spec. These came
+with this row, each 1:1 and for every agent:
+
+- `GET kuvo/agents/api/integration` and `…/:provider`: Settings › Accounts'
+  rows (`account_rows`). Each agent's facts are kept by kind, for all five
+  agents: its sign-in methods, its installer, and how signing out goes. An
+  account shows them whatever adapter runs it here. Grok's and Antigravity's
+  `Agent::program` → 4.3; Cursor reads no program, as in the reference.
+- `POST kuvo/agents/api/integration/:provider/install`, the maker's installer.
+- `POST kuvo/agents/api/kuvo/updates[/:provider]`,
+  `DELETE kuvo/agents/api/kuvo/updates/:provider?at=`, and the update notices
+  (`program_updates::notices`, `agents/update-notices.json`).
+- `GET kuvo/agents/api/session/active`, `GET kuvo/agents/api/session/:id` and
+  `POST kuvo/agents/api/session/:id/model`. The reference takes a model whose
+  provider is no agent's as an engine model its bridge follows (`engineTurns`).
+  The Rust box refuses it: a coding-agent conversation carried to the engine is
+  4.6's.
+- `GET kuvo/agents/api/event`, the agents' feed, which the app follows on the
+  line for Accounts. It's one agent-neutral broadcast (`feed::Feed`) on the
+  resident's agents.
+
+Proven on both boxes by `agents-updates` (program-updates.test.ts's cases and
+update-notices.test.ts's, with Codex and a stand-in npm registry,
+`KUVO_TEST_NPM_REGISTRY`) and `agents-session-reads`. Both areas follow the feed
+through the line. The reference's case that an update throwing as it's asked
+ends failed has no Codex equivalent; Rust's `update` can't throw, and a program
+that can't start ends as failed with what it printed.
+
+The reference's feed sends these. Rust sends them now:
+`server.connected`, `server.heartbeat`, `integration.updated`, `model.updated`,
+`kuvo.updates.notice`, `kuvo.updates.notices.updated`,
+`kuvo.agent.account.changed` (Codex), `session.created`, `session.renamed`,
+`session.metadata.updated`, `session.deleted`, `session.model.selected`,
+`session.agent.selected`, `session.background.updated`, `permission.asked`,
+`permission.replied`, `form.created`, `form.replied`, `form.cancelled`,
+`session.inbox.enqueued`, `session.inbox.delivered`, `session.inbox.cancelled`,
+`session.inbox.delivery.changed`, `session.execution.started`,
+`session.execution.succeeded`, `session.execution.failed`,
+`session.execution.interrupted` and `session.idle`. Each conversation's event
+names its folder (`location`).
+
+The rest go with the open rows that bring their sources:
+
+- A turn's steps as they stream (`session.step.started`, `session.step.ended`,
+  `session.tool.*`, `session.usage.updated`, `session.synthetic`,
+  `session.compaction.started`, `.ended` and `.failed`, `session.shell.started`
+  and `.ended`, `shell.created`, `shell.exited`): Rust writes them to the
+  transcript as they come, and the app reads conversations on the engine side.
+  The feed's copy goes with transcripts, 4.6.
+- `session.updated` (a conversation carried in), `session.viewed`,
+  `session.revert.*`, `kuvo.review.updated`, `kuvo.btw.*` and `kuvo.handoff`:
+  4.6.
+- `kuvo.group.*`: 5.3. `kuvo.limits.updated`: 5.4. `kuvo.auto.updated` (Custom
+  Auto's lists): 6.1.
+
+The live case (`agents-codex-live`) ran once on macOS with Codex CLI 0.171.0 on
+GPT-6-Luna, picked from the box's own model list. Its turn ran a command for 25
+seconds across a release switch. The next resident took up the same app-server
+(the same holder and child) and finished the turn, and the command's file was
+there. Codex asked no approval for it. The case used a scratch HOME,
+CODEX_HOME and PATH, and dropped every inherited variable. The sign-in was a
+read-only copy in the scratch Codex home, made minutes after its last refresh,
+so Codex had no reason to refresh it. It went with the scratch folder.
+
+By non-whitespace characters, the adapter (`codex` and its modules, without
+tests) is 1.10× `codex.ts` and `codex-citations.ts`. The updater is 1.51×
+`updates.ts` and `maintenance.ts`. That count includes the session hold,
+whose reference is in `sessions.ts`, and leaves out the reference's
+installer, which isn't ported here. It's to be looked at again in 9.0.
 
 ### Verification
 
-| Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
-|---|---:|---:|---:|
-| macOS | 60/60 | 58/58, 2 skipped (Rust-only) | 6/6 |
-| Linux x86-64, lokum (musl) | 48/48 at 04774ec91 | — | 6/6 |
-| WSL2, Ubuntu 24.04 (musl) | 60/60 | — | 6/6 |
-| Native Windows x64 | 60/60 | — | 6/6 |
+| Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture | Live GPT-6-Luna keeper switch |
+|---|---:|---:|---:|---|
+| macOS | 94/94 | 78/78, 2 skipped (Rust-only) | 6/6 | Passed |
+| Linux x86-64, lokum (musl) | 94/94 | — | 6/6 | — |
+| WSL2, Ubuntu 24.04 (musl) | 94/94 | — | 6/6 | — |
+| Native Windows x64 | 94/94 | — | 6/6 | — |
+
+| Platform | agents-updates, Rust | agents-updates, TypeScript | agents-session-reads, Rust | agents-session-reads, TypeScript |
+|---|---:|---:|---:|---:|
+| macOS | 9/9 | 9/9 | 4/4 | 4/4 |
+| Linux x86-64, lokum (musl) | 9/9 | — | 4/4 | — |
+| WSL2, Ubuntu 24.04 (musl) | 9/9 | — | 4/4 | — |
+| Native Windows x64 | 8/8, 1 skipped (links to programs are Unix's) | — | 4/4 | — |
+
+On Windows the PATH finds `codex.CMD`; the command shown to update it by hand is still
+"codex update", as people type it.
+
+"Two asked in one turn" answered before Codex began the sleep it asked from, on WSL, and that answer was told again as the sleep began, as the reference does. The case now waits for the sleep, as the next case does.
 
 Seen once: one case of agents-codex failed against the reference on macOS after the merge of main at c8d59d9da and passed on two reruns (unnamed in that run's output).
+
+The reference's answer to the sleep that replaces one that turned it down (case 47) is the answer as it was or as retold, depending on which reaches it first. The case accepts either.
 
 On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
 cases put that folder on the PATH.

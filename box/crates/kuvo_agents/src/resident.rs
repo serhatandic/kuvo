@@ -8,6 +8,7 @@ use tokio::{
 
 use crate::{
     accounts::{Account, AgentKind, Provider},
+    feed::Feed,
     roster::{Factory, Roster},
     runtime::{AdoptedTurn, RecoveryFailure, Runtime},
     sign_in::{Request, SignIns, Started, Status, Time},
@@ -27,6 +28,7 @@ pub struct ResidentAgents {
     roster: watch::Receiver<Arc<Roster>>,
     sign_ins: Arc<Mutex<SignIns>>,
     adopted: Arc<[AdoptedTurn]>,
+    feed: Feed,
 }
 
 impl ResidentAgents {
@@ -56,6 +58,7 @@ impl ResidentAgents {
                 roster: updates,
                 sign_ins,
                 adopted: adopted.into(),
+                feed: Feed::default(),
             },
             failures,
         ))
@@ -67,6 +70,17 @@ impl ResidentAgents {
 
     pub fn adopted_turns(&self) -> &[AdoptedTurn] {
         &self.adopted
+    }
+
+    /// Tell clients on `feed` (the one the agents' adapters tell on).
+    pub fn with_feed(mut self, feed: Feed) -> Self {
+        self.feed = feed;
+        self
+    }
+
+    /// What the agents tell their clients.
+    pub fn feed(&self) -> &Feed {
+        &self.feed
     }
 
     pub async fn start_sign_in(
