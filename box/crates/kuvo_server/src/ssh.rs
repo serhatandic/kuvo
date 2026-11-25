@@ -1,7 +1,7 @@
 //! The SSH commands relay byte packets to the already selected resident. The resident
 //! authenticates addressed connections and hands both verbs to the same dispatcher.
 
-use std::{fs, io, path::Path, sync::Arc, time::Duration};
+use std::{fs, future::Future, io, path::Path, sync::Arc, time::Duration};
 
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::AeadInPlace};
 use base64::{
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     time::{self, Instant},
 };
 use tokio_util::sync::CancellationToken;
@@ -344,11 +344,10 @@ impl From<io::Error> for OpeningError {
 }
 
 async fn addressed(
-    input: &mut Input<impl AsyncRead + Unpin>,
-    output: &mut (impl AsyncWrite + Unpin),
+    opening: Value,
     pairings: Arc<dyn Pairings>,
+    exchange: impl AsyncFnOnce(Value, bool) -> io::Result<Value>,
 ) -> Result<(String, Value, Pairing), OpeningError> {
-    let opening = input.line(PACKET).await?;
     let computer = opening["computer"].as_str().filter(|key| {
         key.len() == 43
             && key
@@ -417,9 +416,9 @@ async fn addressed(
             &mut reply,
         )
         .map_err(|_| invalid())?;
-    say(
-        output,
+    let message = exchange(
         json!({"hello": URL_SAFE_NO_PAD.encode(&reply[..len])}),
+        grant.is_some(),
     )
     .await?;
     let Some(grant) = grant else {
@@ -430,7 +429,6 @@ async fn addressed(
         .into());
     };
 
-    let message = input.line(usize::MAX).await?;
     let Some(sealed) = message["request"].as_str() else {
         return Err(Denied(400, "Send the authenticated SSH request.").into());
     };
@@ -484,7 +482,20 @@ pub(crate) async fn answer(
     let command = serde_json::from_slice::<PipeHello>(&hello)?.accept(&key)?;
     packet(&mut output, ACCEPTED).await?;
     let (computer, caller, given, internal_path) = match command {
-        Command::RouteTo => match addressed(&mut input, &mut output, pairings).await {
+        Command::RouteTo => match addressed(
+            input.line(PACKET).await?,
+            pairings,
+            async |hello, allowed| {
+                say(&mut output, hello).await?;
+                if allowed {
+                    input.line(usize::MAX).await
+                } else {
+                    Ok(Value::Null)
+                }
+            },
+        )
+        .await
+        {
             Ok((computer, given, pairing)) => (
                 Some(computer),
                 Caller::Paired {
@@ -742,8 +753,20 @@ impl Answer {
 pub async fn pipe(
     home: &Path,
     command: Command,
+    stdin: impl AsyncRead + Unpin,
+    stdout: impl AsyncWrite + Unpin,
+) -> io::Result<()> {
+    pipe_with_transient_add(home, command, stdin, stdout, std::future::ready(None)).await
+}
+
+/// Only after the ordinary resident wait expires, a read-only pairing source
+/// can authenticate and refuse an Add that has no resident to own it.
+pub async fn pipe_with_transient_add(
+    home: &Path,
+    command: Command,
     mut stdin: impl AsyncRead + Unpin,
     mut stdout: impl AsyncWrite + Unpin,
+    pairings: impl Future<Output = Option<Arc<dyn Pairings>>>,
 ) -> io::Result<()> {
     let buffered = match &command {
         Command::Route {
@@ -764,6 +787,18 @@ pub async fn pipe(
     let mut pending = None;
     loop {
         let Some(socket) = open_pipe(&run, &command, deadline).await? else {
+            if matches!(command, Command::RouteTo) && Instant::now() >= deadline {
+                let handled = time::timeout(Duration::from_secs(5), async {
+                    match pairings.await {
+                        Some(pairings) => transient_add(&mut stdin, &mut stdout, pairings).await,
+                        None => Ok(false),
+                    }
+                })
+                .await;
+                if handled.unwrap_or(Ok(false))? {
+                    return Ok(());
+                }
+            }
             let answer = pending.unwrap_or_else(|| {
                 json_line(
                     &Denied(
@@ -834,6 +869,105 @@ pub async fn pipe(
         }
         time::sleep_until((Instant::now() + RETRY).min(deadline)).await;
     }
+}
+
+async fn read_stdio_line(
+    input: &mut BufReader<impl AsyncRead + Unpin>,
+    max: usize,
+) -> io::Result<Value> {
+    let mut bytes = Vec::new();
+    input
+        .take(max as u64 + 1)
+        .read_until(b'\n', &mut bytes)
+        .await?;
+    if bytes.last() != Some(&b'\n') {
+        return Ok(Value::Null);
+    }
+    Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+async fn transient_add(
+    stdin: &mut (impl AsyncRead + Unpin),
+    stdout: &mut (impl AsyncWrite + Unpin),
+    pairings: Arc<dyn Pairings>,
+) -> io::Result<bool> {
+    let mut input = BufReader::new(stdin);
+    let opening = read_stdio_line(&mut input, PACKET).await?;
+    let opened = addressed(opening, pairings, async |hello, allowed| {
+        if !allowed {
+            return Ok(Value::Null);
+        }
+        stdout.write_all(&json_line(&hello)).await?;
+        stdout.flush().await?;
+        read_stdio_line(&mut input, 1024 * 1024).await
+    })
+    .await;
+    let (computer, given, pairing) = match opened {
+        Ok(opened) => opened,
+        Err(OpeningError::Refused(_)) => return Ok(false),
+        Err(OpeningError::Broken(error)) => return Err(error),
+    };
+    if !pairing.is_current() {
+        return Ok(false);
+    }
+    let Ok(request) = request(
+        &given,
+        Caller::Paired {
+            transport: Transport::AddressedSsh,
+            pairing,
+        },
+    ) else {
+        return Ok(false);
+    };
+    if !is_add_mutation(&request.method, &request.path) {
+        return Ok(false);
+    }
+    let denied = Denied(
+        409,
+        "Ask this through Kuvo running on this computer: a single request can’t stay to do it.",
+    );
+    let mut head = denied.json();
+    head["computer"] = json!(computer);
+    head["type"] = json!("application/json");
+    if given["stream"] == true {
+        let body = head
+            .as_object_mut()
+            .and_then(|head| head.remove("body"))
+            .unwrap_or_default();
+        stdout.write_all(&json_line(&head)).await?;
+        stdout
+            .write_all(body.as_str().unwrap_or_default().as_bytes())
+            .await?;
+    } else {
+        stdout.write_all(&json_line(&head)).await?;
+    }
+    stdout.flush().await?;
+    Ok(true)
+}
+
+fn is_add_mutation(method: &Method, path: &str) -> bool {
+    const BASE: &str = "kuvo/computers/add";
+    let path = path.split('?').next().unwrap_or_default();
+    if path == BASE {
+        return method == Method::POST;
+    }
+    let Some(item) = path
+        .strip_prefix(BASE)
+        .and_then(|path| path.strip_prefix("/add_"))
+    else {
+        return false;
+    };
+    let id = match *method {
+        Method::POST => item.strip_suffix("/answer"),
+        Method::DELETE => Some(item),
+        _ => None,
+    };
+    id.is_some_and(|id| {
+        (1..=40).contains(&id.len())
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    })
 }
 
 async fn open_pipe(

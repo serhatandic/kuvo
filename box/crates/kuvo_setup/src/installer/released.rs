@@ -2,6 +2,8 @@
 
 mod sqlite;
 
+pub(super) use sqlite::staged_database_has_no_sessions;
+
 use std::{
     fs::{self, File},
     io,
@@ -157,11 +159,11 @@ pub(crate) fn keep_baseline(files: &Files, link: &mut Link) {
 }
 
 fn work_stamp(files: &Files, omit_usage: bool) -> io::Result<(String, Option<String>)> {
-    let before = inventory(files, omit_usage)?;
+    let before = inventory(files, omit_usage, Index::Left)?;
     let Some(logical) = before.logical()? else {
         return Ok((before.physical, None));
     };
-    let after = inventory(files, omit_usage)?;
+    let after = inventory(files, omit_usage, Index::Left)?;
     if after.stability != before.stability {
         return Err(io::Error::other("retained work changed during the scan"));
     }
@@ -240,15 +242,29 @@ fn inventory_matches(
     physical: &str,
     logical: Option<&str>,
 ) -> io::Result<bool> {
-    let before = inventory(files, omit_usage)?;
-    if before.physical == physical {
-        return Ok(true);
+    for index in [Index::Left, Index::Stamped] {
+        let before = inventory(files, omit_usage, index)?;
+        if before.physical == physical {
+            return Ok(true);
+        }
+        let Some(expected) = logical else {
+            continue;
+        };
+        if before.logical()?.as_deref() == Some(expected)
+            && inventory(files, omit_usage, index)?.stability == before.stability
+        {
+            return Ok(true);
+        }
     }
-    let Some(expected) = logical else {
-        return Ok(false);
-    };
-    Ok(before.logical()?.as_deref() == Some(expected)
-        && inventory(files, omit_usage)?.stability == before.stability)
+    Ok(false)
+}
+
+/// The artifact index is disposable and rewritten while its store is open, so
+/// baselines leave it out. Those kept before that still stamp it.
+#[derive(Clone, Copy, PartialEq)]
+enum Index {
+    Left,
+    Stamped,
 }
 
 struct Inventory {
@@ -273,7 +289,7 @@ impl Inventory {
     }
 }
 
-fn inventory(files: &Files, omit_usage: bool) -> io::Result<Inventory> {
+fn inventory(files: &Files, omit_usage: bool, index: Index) -> io::Result<Inventory> {
     // A machine opened with relocated TypeScript data needs the move reader.
     // Do not check a substitute path for that data.
     for key in [
@@ -291,7 +307,10 @@ fn inventory(files: &Files, omit_usage: bool) -> io::Result<Inventory> {
             return Err(io::Error::other("relocated retained work"));
         }
     }
-    let bots = files.path("bots");
+    let skip = Skip {
+        bots: files.path("bots"),
+        artifacts: (index == Index::Left).then(|| files.path("artifacts")),
+    };
     let mut hash = Sha256::new();
     // Same traversal order as existing-work.ts. Headers and usage scope files
     // are handled independently of the inventory.
@@ -316,7 +335,7 @@ fn inventory(files: &Files, omit_usage: bool) -> io::Result<Inventory> {
         "run/work/notes",
     ] {
         if !omit_usage || name != "agents/usage/settings.json" {
-            stamp(&files.path(name), &bots, &mut hash)?;
+            stamp(&files.path(name), &skip, &mut hash)?;
         }
     }
     let content = hash.clone();
@@ -383,7 +402,13 @@ fn names(folder: &Path) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-fn stamp(path: &Path, bots: &Path, hash: &mut Sha256) -> io::Result<()> {
+/// Folders whose entries the inventory leaves out: bots' workspaces and the artifact index.
+struct Skip {
+    bots: std::path::PathBuf,
+    artifacts: Option<std::path::PathBuf>,
+}
+
+fn stamp(path: &Path, skip: &Skip, hash: &mut Sha256) -> io::Result<()> {
     let info = match path.symlink_metadata() {
         Ok(info) => info,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -391,8 +416,13 @@ fn stamp(path: &Path, bots: &Path, hash: &mut Sha256) -> io::Result<()> {
     };
     if info.is_dir() {
         for name in names(path)? {
-            if name != ".DS_Store" && !(name == "workspace" && path.parent() == Some(bots)) {
-                stamp(&path.join(name), bots, hash)?;
+            let index = name.starts_with("index-v1.sqlite")
+                && skip.artifacts.as_deref() == Some(path);
+            if name != ".DS_Store"
+                && !(name == "workspace" && path.parent() == Some(skip.bots.as_path()))
+                && !index
+            {
+                stamp(&path.join(name), skip, hash)?;
             }
         }
         return Ok(());
@@ -419,7 +449,7 @@ fn file_entry(path: &Path) -> io::Result<Option<(String, u64)>> {
             text,
             file.file.to_string(),
             file.size.to_string(),
-            file.changed_ns.to_string()
+            file.retained_change_ns().to_string()
         ])),
         file.size,
     )))

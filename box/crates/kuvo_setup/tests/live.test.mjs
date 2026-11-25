@@ -318,7 +318,7 @@ test("a stale preference choice refreshes before a current choice can commit", {
   assert.deepEqual(view.choices, []);
 });
 
-test("a member misses two handovers and receives every page of the latest archive", { timeout: 65000 }, async t => {
+test("a member misses two handovers and sees the former primary unlinked", { timeout: 65000 }, async t => {
   const { a, b, c, aKey, bKey } = await paired(t, { handover: true, third: true, startupTimeout: 40000 });
   await b.stop();
   const link = readJSON(linkPath(b));
@@ -357,6 +357,24 @@ test("a member misses two handovers and receives every page of the latest archiv
   for (const [operation, outcome] of Object.entries(link.sharedOutcomes)) {
     assert.deepEqual(after.sharedOutcomes[operation], outcome);
   }
+
+  const removed = await post(a, `kuvo/computers/${bKey}/unlink`, {});
+  assert.equal(removed.status, 200, removed.text);
+  assert.deepEqual(removed.json.removal, {
+    operation: removed.json.operation, state: "unlinked", accessRemoved: true,
+  });
+  const receipt = proof(removed.json.proof, after.setup.sign);
+  assert.equal(receipt.body.epoch, 3);
+  await until(() => {
+    const local = readJSON(linkPath(b));
+    const settled = [a, c].every(box => entry(box, "membershipAndAccess").value.removals?.[bKey]?.delivered);
+    return local.setup?.id !== caught.setup && local.setup?.role === "primary" && settled;
+  }, "The former primary did not leave and acknowledge its unlink.", 13000);
+  const carried = (await get(c)).json;
+  assert.equal(carried.setup, caught.setup);
+  assert.equal(carried.epoch, 3);
+  assert.equal(carried.primary.key, aKey);
+  assert.equal(carried.computers.some(peer => peer.key === bKey), false);
 });
 
 test("a member forwards the main's signed documents to a third computer while the main is away", { timeout: 25000 }, async t => {
@@ -817,6 +835,9 @@ test("a main with incoming devices off still revokes a device and delivers a mac
   await studio.stop();
   configuration(false);
   await studio.start();
+  await until(async () => (await get(studio)).json.leadershipWarning
+    === "The main computer also runs Kuvo's relay. If this computer goes offline, another computer can't take over.",
+    "Studio did not resume its relay lease.");
   const refused = await post(studio, "kuvo/devices/pair", { key: Buffer.alloc(32, 80).toString("base64url"), kind: "desktop", name: "Another desktop" });
   assert.equal(refused.status, 409, refused.text);
   const release = relay.pause(Buffer.from(main.address, "base64url"), Buffer.from(member.address, "base64url"));

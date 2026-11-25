@@ -28,6 +28,7 @@ struct Outgoing {
     body: Option<Value>,
     id: Option<String>,
     agent: Option<records::Agent>,
+    released: bool,
 }
 
 pub(super) struct CallAgent {
@@ -80,6 +81,7 @@ impl Forward {
                 body,
                 id: None,
                 agent: None,
+                released: false,
             },
         )
         .await
@@ -103,6 +105,7 @@ impl Forward {
                 body: Some(body),
                 id: None,
                 agent: None,
+                released: false,
             },
         )
         .await
@@ -140,6 +143,7 @@ impl Forward {
                 body: Some(json!({"value":value})),
                 id: None,
                 agent: None,
+                released: false,
             },
         )
         .await
@@ -178,9 +182,70 @@ impl Forward {
                 body: Some(body),
                 id,
                 agent: Some(agent),
+                released: false,
             },
         )
         .await
+    }
+
+    /// Renames one of the machines a released Mac keeps, there.
+    pub async fn released_rename(
+        &self,
+        mac: ComputerKey,
+        computer: Value,
+        renamed: (String, String, String),
+        paired: bool,
+    ) -> Result<Value, Refusal> {
+        let (named, key, name) = renamed;
+        let display = computer["name"].as_str().unwrap_or_default().to_owned();
+        let takes = self
+            .owners
+            .released_destination(mac)
+            .is_ok_and(|(view, _)| view.advertises(&mac, "computers.manage"));
+        if !takes {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                format!("{display} needs a newer Kuvo Code to rename your machines. Update it, then try again."),
+            ));
+        }
+        // A released Mac takes no scoped grants, so a paired device's change waits for its update.
+        if paired {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                format!("Update {display} before forwarding this operation from a paired device."),
+            ));
+        }
+        self.request(
+            mac,
+            computer,
+            Outgoing {
+                item: key,
+                named: Some(named),
+                method: Method::Patch,
+                action: None,
+                area: Some("computers".into()),
+                body: Some(json!({"name":name})),
+                id: None,
+                agent: None,
+                released: true,
+            },
+        )
+        .await
+    }
+
+    /// Where an action goes: a member of the accepted setup (with that
+    /// setup's id) or, outside any setup, a released Mac.
+    fn destination(
+        &self,
+        peer: ComputerKey,
+        released: bool,
+    ) -> Result<(std::sync::Arc<kuvo_peers::setup_lists::View>, Option<String>, kuvo_wire::keys::Host), ownership::Error> {
+        if released {
+            let (view, host) = self.owners.released_destination(peer)?;
+            return Ok((view, None, host));
+        }
+        let (view, setup, host) = self.owners.work_queue_destination(peer)?;
+        Ok((view, Some(setup), host))
     }
 
     pub fn pairing_state(&self, key: &ComputerKey, pairing: &str) -> ownership::PairingState {
@@ -202,19 +267,24 @@ impl Forward {
             body,
             id,
             agent,
+            released,
         } = outgoing;
         let display = computer["name"].as_str().unwrap_or_default();
         let named = named.as_deref().unwrap_or(&item);
         let failed = |status, reason: String| {
             Refusal::json(status, json!({"message":reason,"computer":computer}))
         };
-        let (view, setup, host) = self.owners.work_queue_destination(peer).map_err(|_| {
+        let (view, setup, host) = self.destination(peer, released).map_err(|_| {
             failed(
                 StatusCode::CONFLICT,
                 format!("{named} is on {display}: change it there."),
             )
         })?;
-        if !view.advertises(&peer, "work-queue.forward") {
+        let feature = match area.as_deref() {
+            Some("computers") => "computers.manage",
+            _ => "work-queue.forward",
+        };
+        if !view.advertises(&peer, feature) {
             return Err(failed(
                 StatusCode::CONFLICT,
                 format!("{named} is on {display}: change it there."),
@@ -294,7 +364,7 @@ impl Forward {
                     return Err(failed(StatusCode::SERVICE_UNAVAILABLE, format!("{display} didn't answer in time, so {here} can't tell whether it was done there. Look again in a moment.")));
                 }
                 _ = retry.tick() => {
-                    if self.owners.work_queue_destination(peer).is_err() { return Err(away()); }
+                    if self.destination(peer, released).is_err() { return Err(away()); }
                     for mail in &mails { if relay.sender.mail(host.clone(), mail.clone()).await.is_err() { break; } }
                 }
                 event = events.recv() => match event {
@@ -306,7 +376,7 @@ impl Forward {
                         RelayEvent::Mail { key, envelope, .. } if key == &peer => {
                             let Some(value) = envelope.0.get("workQueue").and_then(|value| value.get("acted")) else { continue; };
                             if value["id"] != id { continue; }
-                            if self.owners.work_queue_destination(peer).ok().is_none_or(|(_, current, _)| current != setup) { return Err(away()); }
+                            if self.destination(peer, released).ok().is_none_or(|(_, current, _)| current != setup) { return Err(away()); }
                             let Ok(reply) = serde_json::from_value::<Reply>(value.clone()) else { continue; };
                             let store = self.store.clone(); let sender = kuvo_wire::keys::encode(&peer); let value = value.clone();
                             tokio::task::spawn_blocking(move || records::keep_answer(&store, &sender, &value)).await.map_err(internal)?.map_err(storage_refusal)?;

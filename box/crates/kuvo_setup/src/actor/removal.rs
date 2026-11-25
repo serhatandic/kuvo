@@ -7,9 +7,13 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
+use kuvo_protocol::routes::types::{
+    GetKuvoComputersStatus200WipePendingItem as PendingWipe,
+    GetKuvoComputersStatus200WipePendingItemNextAction4 as NextWipeAction,
+};
 use kuvo_wire::{
     documents::{self, Kind},
-    keys::{Host, decode_exact, encode},
+    keys::{Address, Host, decode_exact, encode},
     mail::Envelope,
 };
 use serde::{Deserialize, Serialize};
@@ -17,28 +21,108 @@ use serde_json::{Map, Value, json};
 
 use super::{Owner, Response, with_receipt};
 use crate::{
-    Error,
+    Error, checkpoint,
     edits::Submitter,
     installer,
     model::{
-        ComputerKind, Link, Membership, Peer, Position, Role, Setup, SharedKind, receipt,
+        ComputerKind, Identity, Link, Membership, Peer, Position, Role, Setup, SharedKind, receipt,
         safe_token,
     },
     object, random, wipe,
 };
 
+const LAYOUT_REVIEW: &str = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.";
+const EXPORT_REQUIRED: &str = "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer.";
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum WipeReview {
+    UnsupportedLayout,
+    ChooseExport,
+}
+
+impl WipeReview {
+    fn read(value: Option<&Value>) -> Option<Self> {
+        serde_json::from_value(value?.clone()).ok()
+    }
+
+    fn record(self, extra: &mut Map<String, Value>) -> bool {
+        match self {
+            Self::UnsupportedLayout if !extra.contains_key("error") => {
+                extra.insert("error".into(), json!(LAYOUT_REVIEW));
+            }
+            Self::ChooseExport if extra.get("needsExport") != Some(&Value::Bool(true)) => {
+                extra.insert("needsExport".into(), json!(true));
+                extra.insert("error".into(), json!(EXPORT_REQUIRED));
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn for_source(home: &std::path::Path, prior: Option<Self>) -> Result<Option<Self>, Error> {
+        if prior == Some(Self::ChooseExport) {
+            return Ok(prior);
+        }
+        let supported =
+            wipe::supports_member(home).map_err(|error| Error::Installer(error.to_string()))?;
+        if !supported {
+            return Ok(Some(Self::UnsupportedLayout));
+        }
+        let relay = crate::backup::uses_automatic_relay_backup(home)
+            .map_err(|error| Error::Installer(error.to_string()))?;
+        Ok(if relay {
+            Some(Self::ChooseExport)
+        } else {
+            prior
+        })
+    }
+}
+
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Unlink {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kuvo_protocol::json::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     operation: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "kuvo_protocol::json::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     wipe: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "kuvo_protocol::json::present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    resolve: Option<ResolveWipe>,
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
 
+#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ResolveWipe {
+    Cancel,
+    Lost,
+}
+
+impl ResolveWipe {
+    fn state(self) -> &'static str {
+        match self {
+            Self::Cancel => "cancelled",
+            Self::Lost => "lost",
+        }
+    }
+}
+
 impl Unlink {
+    pub(crate) const LOCAL_APP_ONLY: &str = "Prepare the wipe from Kuvo Code.";
+
     pub(super) fn operation(&self) -> Option<&str> {
         self.operation.as_deref()
     }
@@ -49,21 +133,27 @@ impl Unlink {
         }
     }
 
-    pub(super) fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         self.operation
             .as_deref()
             .is_none_or(|op| safe_token(op, 22, 43))
             && !self.extra.contains_key("save")
+            && self
+                .extra
+                .get("retryPreparation")
+                .is_none_or(Value::is_boolean)
+            && (!self.prepares_wipe() || self.operation.is_some())
+            && (self.resolve.is_none() || self.operation.is_some() && !self.prepares_wipe())
     }
 
-    pub(super) fn requests_wipe(&self) -> bool {
-        self.wipe == Some(true) || self.prepares_wipe()
+    pub(crate) fn requires_local_app(&self) -> bool {
+        self.resolve.is_some() || self.prepares_wipe()
     }
 
     fn prepares_wipe(&self) -> bool {
-        ["prepare", "retryPreparation", "resolve", "supersedes"]
-            .iter()
-            .any(|field| self.extra.contains_key(*field))
+        self.extra.contains_key("prepare")
+            || self.extra.contains_key("supersedes")
+            || self.extra.get("retryPreparation") == Some(&Value::Bool(true))
     }
 
     pub(super) fn bind_operation(&mut self) -> Result<String, Error> {
@@ -106,6 +196,81 @@ impl Removal {
     fn host(&self) -> Option<Host> {
         Host::from_text(&self.peer.key, &self.peer.address)
     }
+
+    fn exchanges_mail(&self) -> bool {
+        self.plain()
+            || self.wipe
+                && self.resolution() != Some("lost")
+                && self.extra.get("local").is_none()
+                && self.extra.get("generation").is_none()
+                && self.extra.get("plan").is_none()
+                && self.extra.get("requiresPreparation").is_none()
+    }
+
+    fn asks_erase(&self) -> bool {
+        self.wipe && self.resolution().is_none()
+    }
+
+    fn resolution(&self) -> Option<&str> {
+        self.extra
+            .get("resolution")
+            .and_then(Value::as_str)
+            .filter(|resolution| matches!(*resolution, "cancelled" | "lost"))
+    }
+
+    fn plan(&self) -> Option<&Value> {
+        self.extra.get("plan").filter(|plan| {
+            plan["choiceHash"]
+                .as_str()
+                .is_some_and(|hash| safe_token(hash, 43, 43))
+                && plan
+                    .get("moveTo")
+                    .is_none_or(|key| key.as_str().is_some_and(|key| safe_token(key, 43, 43)))
+        })
+    }
+
+    fn wipe_row(&self) -> PendingWipe {
+        const EXPORT_DISK: &str =
+            "Choose an export on a separate disk or another computer over SSH.";
+
+        let error = self
+            .extra
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|error| !error.is_empty())
+            .map(|error| error.chars().take(500).collect::<String>());
+        let has_plan = self.plan().is_some();
+        let needs_export = self.extra.get("needsExport").and_then(Value::as_bool) == Some(true);
+        let next_action = if !has_plan && needs_export {
+            Some(NextWipeAction::ChooseExport)
+        } else {
+            match error.as_deref() {
+                Some(LAYOUT_REVIEW) => Some(NextWipeAction::CancelWipe),
+                Some(EXPORT_REQUIRED | EXPORT_DISK) if has_plan => {
+                    Some(NextWipeAction::ReviseExport)
+                }
+                _ => None,
+            }
+        };
+        let unresolved: Vec<_> = self
+            .extra
+            .get("unresolved")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .take(100)
+            .map(str::to_owned)
+            .collect();
+        PendingWipe {
+            key: self.peer.key.clone(),
+            name: self.peer.name.clone(),
+            operation: self.operation.clone(),
+            error,
+            next_action,
+            unresolved: (!unresolved.is_empty()).then_some(unresolved),
+        }
+    }
 }
 
 pub(super) struct Challenge {
@@ -140,6 +305,9 @@ impl Owner {
         if !by.current(&self.link) {
             return Ok(answer(403, "The submitting device no longer has access."));
         }
+        if request.requires_local_app() && !matches!(by, Submitter::Computer) {
+            return Ok(answer(403, Unlink::LOCAL_APP_ONLY));
+        }
         let setup = self.link.setup()?.clone();
         if setup.role != Role::Primary {
             return Ok(answer(409, "Only the main computer can remove a computer."));
@@ -151,15 +319,21 @@ impl Owner {
         let mut roster = self.roster()?;
         if key == setup.position.primary {
             if roster.boxes.len() == 1 {
+                if request.resolve.is_some() {
+                    let (status, message) = if removal_for(&roster, &key).is_some() {
+                        (409, "The removal has already advanced past this change.")
+                    } else {
+                        (404, "That removal operation is unknown.")
+                    };
+                    return Ok(answer(status, message));
+                }
                 return self.wipe_last(setup, roster, request).await;
             }
             return Ok(answer(409, "Change the main computer before unlinking it."));
         }
-        if request.requests_wipe() {
-            return Ok(answer(409, "Wipe preparation is unavailable."));
-        }
         if let Some(record) = removal_for(&roster, &key) {
-            if !record.plain()
+            if (!record.plain() && !record.wipe)
+                || request.wipe.is_some_and(|wipe| wipe != record.wipe)
                 || request
                     .operation
                     .as_ref()
@@ -187,7 +361,16 @@ impl Owner {
                     )
                 })
                 .transpose()?;
-            return Ok(unlinked(&record.operation, saved));
+            if let Some(resolution) = request.resolve {
+                return self.resolve_wipe(roster, record, resolution, saved).await;
+            }
+            if let Err(error) = self.clean_saved_ssh_address(&key).await {
+                eprintln!("Removal machines-list cleanup failed: {error}");
+            }
+            return Ok(removal_reply(&record, saved));
+        }
+        if request.resolve.is_some() {
+            return Ok(answer(404, "That removal operation is unknown."));
         }
         let Some(at) = roster.boxes.iter().position(|peer| peer.key == key) else {
             return Ok(answer(404, "That isn't one of your computers."));
@@ -211,6 +394,21 @@ impl Owner {
             ));
         }
         let mut next = self.link.clone();
+        if let Some(destination) = crate::ssh::saved_machines(&self.files)
+            .and_then(|saved| {
+                crate::ssh::saved_ssh_destination(
+                    &self.files,
+                    &saved,
+                    &self.link,
+                    &roster.boxes[at],
+                )
+            })
+            .ok()
+            .flatten()
+        {
+            next.pending_machine_cleanup
+                .insert(key.clone(), destination);
+        }
         let mut recoveries = installer::recoveries(&next, &roster);
         if recoveries.shift_remove(&key).is_some() {
             installer::keep_recoveries(&mut next, &mut roster, recoveries)?;
@@ -232,7 +430,7 @@ impl Owner {
         let record = Removal {
             peer,
             operation: operation.clone(),
-            wipe: false,
+            wipe: request.wipe == Some(true),
             delivered: false,
             extra: Default::default(),
         };
@@ -251,7 +449,78 @@ impl Owner {
         if let Err(error) = self.publish(false).await {
             eprintln!("publishing accepted removal: {error}");
         }
-        Ok(unlinked(&operation, Some(proof)))
+        let mut reply = removal_reply(&record, Some(proof));
+        if let Err(error) = self.clean_saved_ssh_address(&key).await {
+            eprintln!("Removal machines-list cleanup failed: {error}");
+            reply.status = 503;
+            reply.value["message"] = json!(
+                "The computer’s access was removed, but the saved machines list couldn’t be updated."
+            );
+        }
+        Ok(reply)
+    }
+
+    async fn clean_saved_ssh_address(&mut self, key: &str) -> Result<(), Error> {
+        let Some(destination) = self.link.pending_machine_cleanup.get(key) else {
+            return Ok(());
+        };
+        crate::ssh::forget_ssh_destination(&self.files, &self.link, destination)?;
+        let mut next = self.link.clone();
+        next.pending_machine_cleanup.remove(key);
+        self.commit(next).await
+    }
+
+    async fn resolve_wipe(
+        &mut self,
+        mut roster: Membership,
+        mut record: Removal,
+        resolution: ResolveWipe,
+        saved: Option<crate::Receipt>,
+    ) -> Result<Response, Error> {
+        if record.resolution() == Some(resolution.state()) {
+            return Ok(removal_reply(&record, saved));
+        }
+        let held = record.plan().is_some()
+            || record.extra.get("needsExport") == Some(&Value::Bool(true))
+            || record.extra.get("error").and_then(Value::as_str) == Some(LAYOUT_REVIEW);
+        let can_cancel = held
+            && record.extra.get("generation").is_none()
+            && record.extra.get("withdrawnGeneration").is_none();
+        if !record.asks_erase()
+            || record.delivered
+            || (resolution == ResolveWipe::Cancel && !can_cancel)
+        {
+            return Ok(answer(
+                409,
+                "The removal has already advanced past this change.",
+            ));
+        }
+        self.can_write()?;
+        record
+            .extra
+            .insert("resolution".into(), json!(resolution.state()));
+        for detail in ["error", "needsExport", "unresolved"] {
+            record.extra.shift_remove(detail);
+        }
+        insert_removal(&mut roster, &record)?;
+        let mut next = self.link.clone();
+        next.put(
+            self.own()?,
+            SharedKind::MembershipAndAccess,
+            serde_json::to_value(roster).expect("membership serializes"),
+            None,
+            None,
+        )?;
+        self.commit(next).await?;
+        if let Err(error) = self.publish(false).await {
+            eprintln!("publishing resolved removal: {error}");
+        }
+        if resolution == ResolveWipe::Cancel
+            && let Err(error) = self.offer_unlinks().await
+        {
+            eprintln!("publishing cancellation offer: {error}");
+        }
+        Ok(removal_reply(&record, saved))
     }
 
     async fn wipe_last(
@@ -329,6 +598,7 @@ impl Owner {
         Ok(local_wipe_reply(&operation, proof))
     }
 
+    /// Removals still offered to their computer, as `offer_unlinks` sends them (a wipe too).
     pub(super) fn pending_unlinks(&self) -> bool {
         self.roster().is_ok_and(|roster| {
             roster
@@ -338,7 +608,7 @@ impl Owner {
                 .is_some_and(|rows| {
                     rows.iter().any(|(key, value)| {
                         read_removal(key, value)
-                            .is_some_and(|record| record.plain() && !record.delivered)
+                            .is_some_and(|record| record.exchanges_mail() && !record.delivered)
                     })
                 })
         })
@@ -353,8 +623,8 @@ impl Owner {
         let roster = self.roster()?;
         let removals = roster.extra.get("removals").and_then(Value::as_object);
         for (key, value) in removals.into_iter().flatten() {
-            let Some(record) =
-                read_removal(key, value).filter(|record| record.plain() && !record.delivered)
+            let Some(record) = read_removal(key, value)
+                .filter(|record| record.exchanges_mail() && !record.delivered)
             else {
                 continue;
             };
@@ -376,6 +646,7 @@ impl Owner {
     pub(super) async fn receive_unlink(
         &mut self,
         sender: [u8; 32],
+        from: Address,
         envelope: &Envelope,
     ) -> Result<(), Error> {
         if self.link.extra.contains_key("localUnlink")
@@ -384,7 +655,7 @@ impl Owner {
                 .setup()
                 .is_ok_and(|setup| setup.role == Role::Member)
         {
-            return self.take_member_unlink(sender, envelope).await;
+            return self.take_member_unlink(sender, from, envelope).await;
         }
         if self.can_write().is_err() {
             return Ok(());
@@ -392,7 +663,7 @@ impl Owner {
         let setup = self.link.setup()?.position.clone();
         let key = encode(&sender);
         let mut roster = self.roster()?;
-        let Some(mut record) = removal_for(&roster, &key).filter(Removal::plain) else {
+        let Some(mut record) = removal_for(&roster, &key).filter(Removal::exchanges_mail) else {
             return Ok(());
         };
         let Some(peer) = record.host() else {
@@ -402,17 +673,30 @@ impl Owner {
         if message.get("setup").and_then(Value::as_str) != Some(&setup.id) {
             return Ok(());
         }
-        if message.get("done").and_then(Value::as_str) == Some(&record.operation)
-            && !message.contains_key("generation")
+        if !record.delivered
+            && let Some(epoch) = message.get("sync").and_then(Value::as_u64)
+            && (1..setup.epoch).contains(&epoch)
+            && let Some(signed) = self.link.leadership.get(&(epoch + 1))
         {
-            if !record.delivered {
-                record.delivered = true;
+            for doc in checkpoint::packet(&self.files, signed)? {
+                if doc.d.len() + doc.s.len() + 16 > 48_000 {
+                    for part in documents::split(&doc)? {
+                        self.send_removal(&peer, json!({"authorityPart": part}))
+                            .await;
+                    }
+                } else {
+                    self.send_removal(&peer, json!({"authority": doc})).await;
+                }
+            }
+        } else if record.asks_erase()
+            && !record.delivered
+            && let Some(review) = WipeReview::read(message.get("review"))
+            && message.get("operation").and_then(Value::as_str) == Some(&record.operation)
+            && message.get("epoch").and_then(Value::as_u64) == Some(setup.epoch)
+        {
+            if review.record(&mut record.extra) {
                 insert_removal(&mut roster, &record)?;
                 let mut next = self.link.clone();
-                let acks = next.extra.entry("removalAcks").or_insert_with(|| json!({}));
-                acks.as_object_mut()
-                    .ok_or(Error::Invalid("removal acknowledgments"))?
-                    .insert(key.clone(), json!(record.operation));
                 next.put(
                     self.own()?,
                     SharedKind::MembershipAndAccess,
@@ -423,8 +707,39 @@ impl Owner {
                 self.commit(next).await?;
                 self.publish(false).await?;
             }
+        } else if message.get("done").and_then(Value::as_str) == Some(&record.operation)
+            && !message.contains_key("generation")
+        {
+            let erase = record.asks_erase();
+            if !record.delivered {
+                record.delivered = true;
+                record.extra.shift_remove("error");
+                record.extra.shift_remove("unresolved");
+                insert_removal(&mut roster, &record)?;
+                let mut next = self.link.clone();
+                if !erase {
+                    let acks = next.extra.entry("removalAcks").or_insert_with(|| json!({}));
+                    acks.as_object_mut()
+                        .ok_or(Error::Invalid("removal acknowledgments"))?
+                        .insert(key.clone(), json!(record.operation));
+                }
+                next.put(
+                    self.own()?,
+                    SharedKind::MembershipAndAccess,
+                    serde_json::to_value(roster).expect("membership serializes"),
+                    None,
+                    None,
+                )?;
+                self.commit(next).await?;
+                self.publish(false).await?;
+            }
+            let reply = message
+                .get("receipt")
+                .and_then(Value::as_str)
+                .and_then(decode_exact)
+                .map_or(peer, |key| Host { key, address: from });
             self.send_removal(
-                &peer,
+                &reply,
                 json!({"recorded": record.operation, "setup": setup.id}),
             )
             .await;
@@ -441,7 +756,7 @@ impl Owner {
                 setup.epoch,
                 object(json!({
                     "removal": "instruction", "setup": setup.id, "primary": setup.primary,
-                    "key": key, "operation": record.operation, "wipe": false, "nonce": nonce,
+                    "key": key, "operation": record.operation, "wipe": record.asks_erase(), "nonce": nonce,
                 })),
             )?;
             self.send_removal(&peer, json!({"instruction": doc})).await;
@@ -452,11 +767,9 @@ impl Owner {
     async fn take_member_unlink(
         &mut self,
         sender: [u8; 32],
+        from: Address,
         envelope: &Envelope,
     ) -> Result<(), Error> {
-        if self.kind != ComputerKind::Machine {
-            return Ok(());
-        }
         let message = &envelope.0;
         let source = encode(&sender);
         if let Some(pending) = self.local_unlink()? {
@@ -474,20 +787,35 @@ impl Owner {
         }
         let setup = self.link.setup()?.clone();
         if setup.role != Role::Member
-            || setup.position.primary != source
-            || ["localWipe", "removalSource", "setupMerge"]
+            || ["localWipe", "setupMerge"]
                 .iter()
                 .any(|field| self.link.extra.contains_key(*field))
         {
             return Ok(());
         }
-        let roster = self.roster()?;
-        let Some(primary) = roster.boxes.into_iter().find(|peer| peer.key == source) else {
-            return Ok(());
-        };
-        let Some(host) = Host::from_text(&primary.key, &primary.address) else {
-            return Ok(());
-        };
+        if self
+            .lease
+            .seen
+            .as_ref()
+            .is_some_and(|lease| lease.holder == source)
+        {
+            let authority = if let Some(part) = message.get("authorityPart") {
+                serde_json::from_value(part.clone())
+                    .ok()
+                    .and_then(|part| self.parts.receive(sender, part).ok().flatten())
+            } else {
+                message
+                    .get("authority")
+                    .and_then(|doc| serde_json::from_value(doc.clone()).ok())
+                    .and_then(|doc| documents::verify(doc).ok())
+            };
+            if let Some(doc) =
+                authority.filter(|doc| matches!(doc.kind, Kind::SetupCheckpoint | Kind::Leadership))
+            {
+                self.take_doc(&source, doc).await?;
+                return Ok(());
+            }
+        }
         let key = self.own()?.public.clone();
         let Some((kind, signed)) = message
             .get("offer")
@@ -509,11 +837,10 @@ impl Owner {
         let position = &setup.position;
         let body = &doc.body;
         if doc.kind != Kind::SetupShared
-            || encode(&doc.origin) != setup.sign
-            || doc.n != position.epoch
+            || doc.n < position.epoch
             || body.get("removal").and_then(Value::as_str) != Some(kind)
             || body.get("setup").and_then(Value::as_str) != Some(&position.id)
-            || body.get("primary").and_then(Value::as_str) != Some(&position.primary)
+            || body.get("primary").and_then(Value::as_str) != Some(&source)
             || body.get("key").and_then(Value::as_str) != Some(&key)
         {
             return Ok(());
@@ -524,6 +851,43 @@ impl Owner {
             .filter(|op| safe_token(op, 22, 43))
         else {
             return Ok(());
+        };
+        if kind == "offer" && doc.n > position.epoch {
+            self.next = Some(Instant::now());
+            let host = self.host(&source).unwrap_or(Host {
+                key: sender,
+                address: from,
+            });
+            self.send_removal(&host, json!({"sync": position.epoch, "setup": position.id}))
+                .await;
+            return Ok(());
+        }
+        if source != position.primary
+            || doc.n != position.epoch
+            || encode(&doc.origin) != setup.sign
+        {
+            return Ok(());
+        }
+        let Some(primary) = self
+            .roster()?
+            .boxes
+            .into_iter()
+            .find(|peer| peer.key == source)
+        else {
+            return Ok(());
+        };
+        let Some(host) = Host::from_text(&primary.key, &primary.address) else {
+            return Ok(());
+        };
+        let prior = match self.link.extra.get("removalSource") {
+            Some(held) if held["setup"] == position.id && held["operation"] == operation => {
+                let Some(review) = WipeReview::read(held.get("review")) else {
+                    return Ok(());
+                };
+                Some(review)
+            }
+            Some(_) => return Ok(()),
+            None => None,
         };
         let now = Instant::now();
         let matches = |challenge: &Challenge| {
@@ -549,11 +913,49 @@ impl Owner {
         } else if self.unlink_challenge.as_ref().is_some_and(|challenge| {
             matches(challenge)
                 && body.get("nonce").and_then(Value::as_str) == Some(&challenge.nonce)
-        }) && body.get("wipe") == Some(&Value::Bool(false))
+        }) && body.get("wipe").and_then(Value::as_bool).is_some()
             && !["plan", "generation", "requiresPreparation"]
                 .iter()
                 .any(|field| body.contains_key(*field))
         {
+            if body["wipe"] == true {
+                let review = WipeReview::for_source(self.files.root(), prior)?;
+                if prior.is_none() || prior != review {
+                    let mut next = self.link.clone();
+                    if let Some(review) = review {
+                        next.extra.insert(
+                            "removalSource".into(),
+                            json!({
+                                "setup": position.id, "operation": operation, "review": review,
+                            }),
+                        );
+                    } else {
+                        let approved = wipe::member::MemberWipe {
+                            setup: position.id.clone(),
+                            operation: operation.into(),
+                            primary,
+                            source: key,
+                        };
+                        next.extra.insert("localWipe".into(), json!(approved));
+                    }
+                    next.extra.insert("phones".into(), json!([]));
+                    next.extra.shift_remove("pairing");
+                    next.extra.shift_remove("appPairing");
+                    self.commit(next).await?;
+                }
+                self.unlink_challenge = None;
+                if let Some(review) = review {
+                    self.send_removal(&host, json!({
+                        "setup": position.id, "operation": operation, "epoch": position.epoch, "review": review,
+                    })).await;
+                } else {
+                    self.next = Some(Instant::now());
+                }
+                return Ok(());
+            }
+            if self.kind != ComputerKind::Machine {
+                return Ok(());
+            }
             let pending = LocalUnlink {
                 setup: position.id.clone(),
                 operation: operation.into(),
@@ -561,6 +963,7 @@ impl Owner {
                 completed: false,
             };
             let mut next = self.link.clone();
+            next.extra.shift_remove("removalSource");
             next.extra.insert("localUnlink".into(), json!(pending));
             next.extra.insert("phones".into(), json!([]));
             next.extra.shift_remove("pairing");
@@ -783,6 +1186,70 @@ fn removal_for(roster: &Membership, key: &str) -> Option<Removal> {
     read_removal(key, roster.extra.get("removals")?.get(key)?)
 }
 
+pub(super) fn retired_member(roster: &Membership, identity: &Identity) -> bool {
+    roster.left.contains(&identity.public)
+        && removal_for(roster, &identity.public).is_some_and(|record| {
+            record.exchanges_mail() && record.peer.sign.as_deref() == Some(&identity.sign)
+        })
+}
+
+pub(crate) enum WipeProgress {
+    Pending,
+    Delivered,
+    Closed,
+    Review(String),
+}
+
+pub(crate) fn wipe_progress(link: &Link, key: &str, operation: &str) -> WipeProgress {
+    let Ok(roster) = link.member_list() else {
+        return WipeProgress::Pending;
+    };
+    let Some(record) =
+        removal_for(&roster, key).filter(|record| record.wipe && record.operation == operation)
+    else {
+        return WipeProgress::Pending;
+    };
+    if record.delivered && record.resolution().is_none() {
+        WipeProgress::Delivered
+    } else if let Some(error) = record.wipe_row().error {
+        WipeProgress::Review(error)
+    } else if record.resolution().is_some() {
+        WipeProgress::Closed
+    } else {
+        WipeProgress::Pending
+    }
+}
+
+pub(super) fn pending_wipes(link: &Link) -> Vec<PendingWipe> {
+    let Ok(roster) = link.member_list() else {
+        return Vec::new();
+    };
+    roster
+        .extra
+        .get("removals")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, value)| {
+            let record = read_removal(key, value)?;
+            let current = roster.boxes.iter().any(|peer| peer.key == *key);
+            let local = record.extra.get("local").and_then(Value::as_bool) == Some(true)
+                && current
+                && roster.boxes.len() == 1;
+            let removed = !current && roster.left.contains(key);
+            if !record.wipe
+                || record.delivered
+                || (!local && !removed)
+                || record.resolution().is_some()
+            {
+                return None;
+            }
+            record.host()?;
+            Some(record.wipe_row())
+        })
+        .collect()
+}
+
 fn insert_removal(roster: &mut Membership, record: &Removal) -> Result<(), Error> {
     let records = roster.extra.entry("removals").or_insert_with(|| json!({}));
     records
@@ -801,12 +1268,58 @@ fn unlinked(operation: &str, save: Option<crate::Receipt>) -> Response {
     Response::ok(value)
 }
 
+fn removal_reply(record: &Removal, save: Option<crate::Receipt>) -> Response {
+    if !record.wipe {
+        return unlinked(&record.operation, save);
+    }
+    let row = record.wipe_row();
+    let plan = record.plan();
+    let prepared = record
+        .extra
+        .get("generation")
+        .and_then(Value::as_str)
+        .is_some_and(|generation| safe_token(generation, 43, 43));
+    let state = match record.resolution() {
+        Some(resolution) => resolution,
+        _ if record.delivered => "wiped",
+        _ if row.error.is_some() => "review",
+        _ if !prepared && plan.is_some_and(|plan| plan.get("moveTo").is_some()) => "moving",
+        _ if !prepared && plan.is_some_and(|plan| plan["archive"] == true) => "exporting",
+        _ => "wipe-pending",
+    };
+    let mut value = json!({"removal": {
+        "operation": record.operation, "state": state, "accessRemoved": true,
+    }});
+    if let Some(error) = row.error {
+        value["message"] = json!(error);
+    }
+    if state == "review"
+        && let Some(action) = row.next_action
+    {
+        value["removal"]["nextAction"] = json!(action);
+    }
+    if let Some(unresolved) = row.unresolved {
+        value["unresolved"] = json!(unresolved);
+    }
+    if let Some(point) = record.extra.get("export")
+        && point["source"].is_string()
+        && point["id"].is_string()
+        && point["at"].is_number()
+    {
+        value["export"] = json!({"source": point["source"], "id": point["id"], "at": point["at"]});
+    }
+    if let Some(save) = save {
+        value = with_receipt(value, save);
+    }
+    Response::ok(value)
+}
+
 fn local_wipe_reply(operation: &str, save: crate::Receipt) -> Response {
-    Response::ok(with_receipt(
-        json!({"removal": {"operation": operation, "state": "wipe-pending", "accessRemoved": true},
-        "offer": "reinstall-local"}),
-        save,
-    ))
+    let mut value = json!({"removal": {"operation": operation, "state": "wipe-pending", "accessRemoved": true}});
+    if std::env::var_os("KUVO_BOX").is_none_or(|kind| kind != "mac") {
+        value["offer"] = json!("reinstall-local");
+    }
+    Response::ok(with_receipt(value, save))
 }
 
 fn answer(status: u16, message: &str) -> Response {

@@ -229,24 +229,7 @@ impl Owner {
     }
 
     pub(super) fn provisional(&self, key: &str) -> bool {
-        [
-            SharedKind::OwnershipAssignments,
-            SharedKind::OwnershipRecovery,
-        ]
-        .iter()
-        .any(|kind| {
-            self.link
-                .value(*kind)
-                .and_then(|value| value.get("installer recovery"))
-                .and_then(|rows| rows.get(key))
-                .is_some()
-        }) || self.roster().is_ok_and(|members| {
-            members
-                .extra
-                .get("installerRecoveries")
-                .and_then(|rows| rows.get(key))
-                .is_some()
-        })
+        provisional_in(&self.link, key)
     }
 
     async fn promote(&mut self) -> Result<(), Error> {
@@ -317,11 +300,11 @@ impl Owner {
         let mut next = self.link.clone();
         if next.setup()?.position != cert.setup {
             let roster = membership(&shared, &cert.setup, &sign)?;
-            if !roster
+            let current = roster
                 .boxes
                 .iter()
-                .any(|peer| peer.key == own.public && peer.sign.as_deref() == Some(&own.sign))
-            {
+                .any(|peer| peer.key == own.public && peer.sign.as_deref() == Some(&own.sign));
+            if !current && !super::removal::retired_member(&roster, own) {
                 return Err(Error::Conflict);
             }
             let role = if cert.setup.primary == own.public {
@@ -365,11 +348,11 @@ impl Owner {
                 self.receive_installer(*from, *key, payload).await?;
             }
             relay::RelayEvent::Removal {
+                from,
                 hinted_key,
                 envelope,
-                ..
             } => {
-                self.receive_unlink(*hinted_key, envelope).await?;
+                self.receive_unlink(*hinted_key, *from, envelope).await?;
             }
             relay::RelayEvent::Connected(_) => {
                 self.next = Some(Instant::now());
@@ -591,7 +574,7 @@ impl Owner {
         Ok(())
     }
 
-    async fn take_doc(&mut self, from: &str, doc: Document) -> Result<(), Error> {
+    pub(super) async fn take_doc(&mut self, from: &str, doc: Document) -> Result<(), Error> {
         match doc.kind {
             Kind::SetupShared => self.take_replica(doc).await,
             Kind::SetupCheckpoint => {
@@ -842,4 +825,25 @@ impl Owner {
         )
         .await
     }
+}
+
+/// A computer enrolled by an installer code whose recovery is still open.
+pub(super) fn provisional_in(link: &crate::model::Link, key: &str) -> bool {
+    [
+        SharedKind::OwnershipAssignments,
+        SharedKind::OwnershipRecovery,
+    ]
+    .iter()
+    .any(|kind| {
+        link.value(*kind)
+            .and_then(|value| value.get("installer recovery"))
+            .and_then(|rows| rows.get(key))
+            .is_some()
+    }) || link.member_list().is_ok_and(|members| {
+        members
+            .extra
+            .get("installerRecoveries")
+            .and_then(|rows| rows.get(key))
+            .is_some()
+    })
 }

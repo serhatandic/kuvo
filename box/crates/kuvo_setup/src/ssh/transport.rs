@@ -1,7 +1,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fs,
-    io::{self, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::ExitStatus,
     sync::atomic::{AtomicBool, Ordering},
@@ -50,6 +50,29 @@ pub(super) struct Ran {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
     pub stderr: String,
+    pub refused_input: Option<String>,
+}
+
+pub(super) struct SeedTransfer {
+    pub settings: Vec<u8>,
+    pub sign_ins: Vec<u8>,
+    pub before_sign_ins: Box<dyn FnOnce() -> Result<(), String> + Send>,
+}
+
+pub(super) enum Input {
+    Bytes(Vec<u8>),
+    Seed(SeedTransfer),
+}
+
+impl Input {
+    pub fn prepend(&mut self, mut prefix: Vec<u8>) {
+        let first = match self {
+            Self::Bytes(bytes) => bytes,
+            Self::Seed(seed) => &mut seed.settings,
+        };
+        prefix.append(first);
+        *first = prefix;
+    }
 }
 
 #[derive(Clone)]
@@ -57,6 +80,11 @@ pub(super) struct HostKey {
     pub kind: String,
     pub fingerprint: String,
     line: String,
+}
+
+pub(super) struct ChangedKey {
+    line: usize,
+    previous: String,
 }
 
 impl Connection {
@@ -130,7 +158,7 @@ impl Connection {
                 "IdentityAgent=none".into(),
             ],
             "true",
-            Vec::new(),
+            Input::Bytes(Vec::new()),
             Duration::from_secs(60),
             stop,
         );
@@ -140,7 +168,25 @@ impl Connection {
         Ok(text.lines().filter_map(host_key).take(8).collect())
     }
 
-    pub(super) fn trust(&self, keys: &[HostKey]) -> io::Result<()> {
+    pub(super) fn changed_key(&self, diagnostic: &str) -> Option<ChangedKey> {
+        let place = diagnostic.lines().find_map(|line| {
+            let (_, place) = line.strip_prefix("Offending ")?.split_once("key in ")?;
+            Some(place)
+        })?;
+        let (file, line) = place.rsplit_once(':')?;
+        if Path::new(file) != self.known() {
+            return None;
+        }
+        let line = line.trim_end().parse::<usize>().ok()?.checked_sub(1)?;
+        let previous = fs::read_to_string(self.known())
+            .ok()?
+            .lines()
+            .nth(line)?
+            .to_owned();
+        Some(ChangedKey { line, previous })
+    }
+
+    pub(super) fn trust(&self, keys: &[HostKey], changed: Option<&ChangedKey>) -> io::Result<()> {
         let path = self.known();
         let _lock = OwnedLock::acquire(
             &self.home.join("ssh/.known_hosts.lock"),
@@ -153,10 +199,28 @@ impl Connection {
                 Err(error)
             }
         })?;
+        if let Some(changed) = changed
+            && kept.lines().nth(changed.line) != Some(changed.previous.as_str())
+        {
+            return Err(io::Error::other(
+                "The known host key changed while awaiting confirmation.",
+            ));
+        }
         let mut lines: Vec<_> = kept
             .lines()
             .map(str::trim)
-            .filter(|line| !line.is_empty())
+            .enumerate()
+            .filter_map(|(index, text)| {
+                let same_host = || {
+                    keys.iter().any(|key| {
+                        key.line.split_ascii_whitespace().next()
+                            == text.split_ascii_whitespace().next()
+                    })
+                };
+                (!text.is_empty()
+                    && !changed.is_some_and(|changed| changed.line == index || same_host()))
+                .then_some(text)
+            })
             .collect();
         for key in keys {
             if !lines.contains(&key.line.as_str()) {
@@ -170,6 +234,16 @@ impl Connection {
         &self,
         command: &str,
         input: Vec<u8>,
+        limit: Duration,
+        stop: &AtomicBool,
+    ) -> io::Result<Ran> {
+        self.run_input(command, Input::Bytes(input), limit, stop)
+    }
+
+    pub(super) fn run_input(
+        &self,
+        command: &str,
+        input: Input,
         limit: Duration,
         stop: &AtomicBool,
     ) -> io::Result<Ran> {
@@ -217,14 +291,14 @@ impl Connection {
             Path::new(".").join(name).into_os_string(),
             format!("{}:{remote}", self.address.as_str()).into(),
         ]);
-        execute(spawn, Vec::new(), limit, stop)
+        execute(spawn, Input::Bytes(Vec::new()), limit, stop)
     }
 
     fn call(
         &self,
         options: impl IntoIterator<Item = String>,
         command: &str,
-        input: Vec<u8>,
+        input: Input,
         limit: Duration,
         stop: &AtomicBool,
     ) -> io::Result<Ran> {
@@ -249,12 +323,7 @@ impl Connection {
     }
 }
 
-fn execute(
-    mut spawn: Spawn,
-    input: Vec<u8>,
-    limit: Duration,
-    stop: &AtomicBool,
-) -> io::Result<Ran> {
+fn execute(mut spawn: Spawn, input: Input, limit: Duration, stop: &AtomicBool) -> io::Result<Ran> {
     if stop.load(Ordering::Acquire) {
         return Err(io::ErrorKind::Interrupted.into());
     }
@@ -266,12 +335,17 @@ fn execute(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     std::thread::scope(move |scope| {
-        let send = scope.spawn(move || {
-            if let Some(mut stdin) = stdin {
-                let _ = stdin.write_all(&input);
-            }
+        let out = scope.spawn(move || match input {
+            Input::Bytes(input) => std::thread::scope(|pipes| {
+                pipes.spawn(move || {
+                    if let Some(mut stdin) = stdin {
+                        let _ = stdin.write_all(&input);
+                    }
+                });
+                read(stdout).map(|bytes| (bytes, None))
+            }),
+            Input::Seed(seed) => exchange_seed(stdin, stdout, seed),
         });
-        let out = scope.spawn(move || read(stdout));
         let err = scope.spawn(move || read(stderr));
         let deadline = Instant::now() + limit;
         let status = loop {
@@ -289,9 +363,7 @@ fn execute(
             }
             std::thread::sleep(Duration::from_millis(40));
         };
-        send.join()
-            .map_err(|_| io::Error::other("SSH input worker stopped"))?;
-        let stdout = out
+        let (stdout, refused_input) = out
             .join()
             .map_err(|_| io::Error::other("SSH output worker stopped"))??;
         let stderr = err
@@ -301,8 +373,43 @@ fn execute(
             status,
             stdout,
             stderr: String::from_utf8_lossy(&stderr).into(),
+            refused_input,
         })
     })
+}
+
+fn exchange_seed(
+    stdin: Option<impl Write>,
+    stdout: Option<impl Read>,
+    seed: SeedTransfer,
+) -> io::Result<(Vec<u8>, Option<String>)> {
+    let mut stdin = stdin.ok_or_else(|| io::Error::other("SSH input did not open."))?;
+    let mut stdout =
+        BufReader::new(stdout.ok_or_else(|| io::Error::other("SSH output did not open."))?);
+    // A remote worker can refuse early and close stdin. Still read its exit and reply.
+    let sent = stdin
+        .write_all(&seed.settings)
+        .and_then(|_| stdin.write_all(b"\n"))
+        .is_ok();
+    let mut first = Vec::new();
+    let mut refused = None;
+    if sent {
+        stdout.by_ref().take(16_384).read_until(b'\n', &mut first)?;
+        if first == b"{\"ready\":true}\n" {
+            first.clear();
+            match (seed.before_sign_ins)() {
+                Ok(()) => {
+                    let _ = stdin
+                        .write_all(&seed.sign_ins)
+                        .and_then(|_| stdin.write_all(b"\n"));
+                }
+                Err(error) => refused = Some(error),
+            }
+        }
+    }
+    drop(stdin);
+    first.extend(read(Some(stdout))?);
+    Ok((first, refused))
 }
 
 pub(super) fn sh(script: &str) -> String {

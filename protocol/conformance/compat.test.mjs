@@ -127,6 +127,34 @@ for (const tag of tags) {
     });
 }
 
+test("the current TypeScript beta's setup records survive opening at layout 23", { timeout: 30000 }, async () => {
+  const root = scratch();
+  const relay = await localRelay();
+  let proc;
+  try {
+    const binary = boxBinary();
+    const { home, env } = generateCurrent(root, binary.typescript ? binary : undefined);
+    const linkFile = path.join(home, "run/link.json");
+    const original = readJSON(linkFile);
+    proc = startBox({ binary, home, env, relay });
+    const reply = await request(await proc.ready(), "GET", "kuvo/setup");
+    assert.equal(reply.status, 200, reply.text);
+    assert.equal(reply.json.setup, "set_8gOLfHXdUhmcVfSh9NOsAQ");
+    assert.deepEqual(reply.json.computers.map(({ name, role }) => [name, role]), [["Golden Computer", "primary"]]);
+    await proc.stop();
+    assert.equal(layout(home), 23);
+    const link = readJSON(linkFile);
+    for (const key of ["key", "computerHistory", "memberRemovals", "releasedSetup", "releasedWork",
+      "releasedDatabaseWork", "releasedScopedWork"]) {
+      assert.deepEqual(link[key], original[key], key);
+    }
+  } finally {
+    await proc?.stop();
+    await relay.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the beta.1 Mac alone replaces its peer list, even before its address is known", { timeout: 60000 }, async () => {
   const root = scratch();
   const relay = await localRelay();
@@ -229,6 +257,67 @@ test("the beta.1 Mac alone replaces its peer list, even before its address is kn
     mac.leave(); second.leave();
     await proc?.stop();
     await engine?.close();
+    await relay.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The beta.1 Mac keeps its machines' records: a rename asked on one of them is made there, never saved here.
+test("a rename on a beta.1 machine is handed to the Mac that keeps its records", { timeout: 60000 }, async () => {
+  const root = scratch();
+  const relay = await localRelay();
+  let proc;
+  const mac = relay.device(fixed(3));
+  try {
+    const wire = await import(new URL("../../box/dist/kuvo-link.js", import.meta.url).href);
+    const seed = path.join(root, "release");
+    await generateRelease(tags[1], seed, { app: false });
+    const home = path.join(seed, "machine"), env = isolatedEnv(root);
+    privateHome(home);
+    const file = path.join(home, "run/link.json");
+    const before = readJSON(file), { setup, mail, roster } = readJSON(path.join(seed, "vectors.json"));
+    const key = JSON.parse(setup.input).mac;
+    const at = JSON.parse(mail.plaintext).at;
+    write(file, JSON.stringify({ ...before, relay: relay.url }));
+    const recipient = relayAddress(Buffer.from(before.secret, "base64url"));
+    // The Mac signs with fixed(2) and the machine's static key is fixed(6), as in the release's vectors.
+    const seal = value => wire.frame(wire.Frame.mail, 0, wire.sealOneWay(Buffer.from(JSON.stringify(value)), fixed(2),
+      wire.publicOf(fixed(6)), wire.MAIL_PROLOGUE).message);
+    const open = bytes => {
+      try { return JSON.parse(wire.openOneWay(wire.readFrame(bytes.subarray(17)).body, fixed(2), wire.publicOf(fixed(6))).payload); }
+      catch { return {}; }
+    };
+    proc = startBox({ binary: boxBinary(), home, env, relay });
+    const server = await proc.ready();
+    await until(() => relay.has(recipient), "machine connects");
+    mac.send(recipient, Buffer.from(roster.added, "hex"));
+    await until(async () => (await request(server, "GET", "kuvo/computers")).json?.computers?.some(row => row.key === roster.second.key),
+      "the Mac's peer list did not arrive");
+    const rename = (computer, name) => request(server, "PATCH", `kuvo/computers/${computer}`, { name }, { "x-kuvo-from": "mac" }, 30000);
+    const isMac = await rename(key, "Studio");
+    assert.equal(isMac.status, 409, isMac.text);
+    assert.match(isMac.json.message, /is a Mac: it goes by the name it has there\./);
+    const older = await rename(roster.second.key, "Bench");
+    assert.equal(older.status, 409, older.text);
+    assert.match(older.json.message, /needs a newer Kuvo Code to rename your machines\./);
+    mac.send(recipient, seal({ at: at + 20, agents: { at: at + 20, list: [], features: ["computers.manage"] } }));
+    await until(() => {
+      const told = path.join(home, "run/peer-agents.json");
+      return existsSync(told) && readJSON(told)[key]?.features?.includes("computers.manage");
+    }, "the Mac's features did not arrive");
+    const renamed = rename(roster.second.key, "  Bench  ");
+    let act;
+    while (!act) act = open(await mac.next(20000)).workQueue?.act;
+    assert.deepEqual({ area: act.area, item: act.item, method: act.method, body: act.body },
+      { area: "computers", item: roster.second.key, method: "PATCH", body: { name: "Bench" } });
+    mac.send(recipient, seal({ at: at + 21, workQueue: { acted: { id: act.id, status: 200, value: { name: "Bench" } } } }));
+    const answer = await renamed;
+    assert.equal(answer.status, 200, answer.text);
+    assert.deepEqual(answer.json, { name: "Bench" });
+    assert.ok(!readFileSync(file, "utf8").includes("Bench"), "the name stays the Mac's to keep");
+  } finally {
+    mac.leave();
+    await proc?.stop();
     await relay.close();
     rmSync(root, { recursive: true, force: true });
   }

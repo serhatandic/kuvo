@@ -6,7 +6,7 @@ use std::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{Found, Legacy, Ours, Verdict, card, describe, key, name, time, verdict};
+use super::{Found, Legacy, OWN_BOX_RAN, Ours, Verdict, card, describe, key, name, time, verdict};
 use crate::model::Role;
 
 #[derive(Clone, Copy, PartialEq, Serialize)]
@@ -118,8 +118,7 @@ fn moving(machine: &Path) -> bool {
 }
 
 fn app_ran(app: &Path, engine_data: Option<&Path>) -> bool {
-    const MARKERS: &[&str] = &["setup-card.json", "link.json", "serve.json", "keeper.json"];
-    MARKERS
+    OWN_BOX_RAN
         .iter()
         .any(|marker| app.join("run").join(marker).exists())
         || engine_data

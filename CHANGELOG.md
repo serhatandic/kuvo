@@ -14,6 +14,16 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Rust computers no longer show a signed-out account’s old plan limits as a live sign-in. Its previous usage remains in history.
 
+- A computer that has run Kuvo Code on its own, with nothing made yet, can join another setup with an installer code.
+- A pending wipe stays visible after the main computer restarts. You can record a lost disk or cancel a wipe that can’t erase the computer’s data layout.
+- A removed computer can finish its wipe when it reconnects and retry its completion after a relay disconnect.
+- A pending wipe can finish after another computer takes over as the main computer.
+- A computer with a configured disk backup waits for a verified copy before it erases its work.
+- Uninstalling a running member removes its desktop’s access before stopping it and keeps its saved work.
+- Add over SSH keeps an active change in place and lets you recover an interrupted one.
+- Add over SSH copies the settings, keys and sign-ins you choose before enrolling the computer. If enrollment fails after the copy, it removes the copied keys and sign-ins.
+- Uninstalling a computer added over SSH keeps its wipe pending until that computer confirms its data was erased.
+- Removing a computer still revokes its access if its SSH address can’t be cleared. Retrying clears the address when the list is writable again.
 - Rust computers offer ChatGPT reset credits through the engine’s saved sign-in, settle an older uncertain reset before a later one, and read native Windows Antigravity quotas from the computer’s own running profile. Codex history uses the live log’s tier before archived copies and uses the previous box’s cost arithmetic.
 - A Mac still on Kuvo Code 0.8.0-beta.1 that has gone away can be removed from a Rust computer's list with Remove. Such a Mac sees that computer's conversations with their project, and untitled ones as New session.
 
@@ -197,10 +207,22 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - An older machine can carry its saved settings, letters and browser pages into the Rust box when it first starts.
 - The Rust box can use an installer code to add a new computer to its setup and share computer name changes over the relay. Its main computer can revoke another computer’s access and keep the unlink receipt.
 - A Rust computer can add a fresh account over SSH when it has the compatible release to copy.
+- Adding over SSH explains changed host keys and refused sign-ins, and preserves an unreadable saved list of computers.
+- Add over SSH asks you to confirm a changed key you previously trusted in Kuvo. An old answer cannot replace a newer saved key.
+- Adding a second SSH address for a known Mac preserves older Kuvo work stored beside its current installation.
+- Adding a Mac over SSH tells you when its older Kuvo Code data needs an update and leaves that data in place.
+- Adding over SSH explains how to clear a reservation left by an older Kuvo Code after restarting the other computer.
+- An SSH Add stops before copying Kuvo Code if the desktop that started it loses access during the check.
 - Adding a computer over SSH accepts the engine when its verified download runs successfully.
+- If a computer cannot join over SSH, Add reports the last enrollment diagnostic from that computer.
+- A removed computer can clear its wipe receipt after the main computer receives its first completion message.
 - An installer code can carry the sign-ins and keys you select from a Rust computer. Retry the same code if the new computer’s engine could not save them.
+- If work appears on a computer after it starts joining, the installer keeps that work and cancels its unfinished enrollment.
 - Uninstall on a stopped, standalone Rust computer can clear its desktop identity and local credentials while retaining its saved work.
+- Uninstall tells a running main computer with members to hand over its role before it can be removed.
+- If uninstall cannot remove the desktop identity, it reports that failure first and can be retried after the folder permissions are repaired.
 - Wiping the last standalone Rust computer stops its Unix resident and erases its installation when it has no keeper or configured backup.
+- The installer resumes an authorized wipe and offers reinstall after erasing the previous installation.
 
 - The Rust box offers the same time zones as the TypeScript box and keeps older clock settings until you choose a time zone.
 - The Rust server moves OpenCode chats with their wake-ups, waiting messages and attached files, and keeps letters going to the computer that owns the chat.

@@ -38,13 +38,14 @@ pub(crate) mod computer_requests;
 mod device_access;
 mod edit_delivery;
 mod handover;
+mod manage_facts;
 mod marketplace;
 mod model_stars;
 mod predecessor;
 mod removal;
 mod replication;
 mod work_queue;
-pub(crate) use removal::Unlink;
+pub(crate) use removal::{Unlink, WipeProgress, wipe_progress};
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
 use handover::{Handover, HandoverReply};
@@ -73,6 +74,7 @@ pub struct SetupHandle {
     pub(crate) ssh_routes: watch::Sender<Option<std::sync::Weak<crate::ssh::Adding>>>,
     rosters: watch::Receiver<Option<Arc<Roster>>>,
     activity: activity::Sender,
+    pub(crate) files: Files,
     /// A machine outside a setup: the released beta.1 Macs that enrolled it can be let go here.
     pub(crate) legacy: Option<kuvo_peers::devices::Devices>,
 }
@@ -164,6 +166,16 @@ impl SetupHandle {
         self.views.borrow().ownership.clone()
     }
 
+    /// What the computers list needs from the setup: its pending wipes, and who keeps the
+    /// machines' records.
+    pub fn computers_listing(&self) -> kuvo_peers::manage::Listing {
+        let view = self.views.borrow();
+        kuvo_peers::manage::Listing {
+            wipe_pending: view.pending_wipes.clone(),
+            manage: view.manage.clone(),
+        }
+    }
+
     pub async fn phone_activity(&self) {
         activity::record(&self.activity, activity::Activity::Seen).await;
     }
@@ -187,26 +199,97 @@ struct PairedAccess {
     public: Option<String>,
     disabled: bool,
     permits_pairing: bool,
+    aside_main: Option<String>,
     devices: Arc<kuvo_peers::devices::DeviceRoster>,
     grants: HashMap<[u8; 32], Grant>,
 }
 
 impl Pairings for SetupHandle {
     fn identity(&self, computer: &str) -> Result<[u8; 32], IdentityRefusal> {
-        let view = self.views.borrow();
-        let access = &view.access;
-        if access.public.as_deref() != Some(computer) {
-            return Err(IdentityRefusal::WrongComputer);
-        }
-        if access.disabled {
-            return Err(IdentityRefusal::Disabled);
-        }
-        access.key.ok_or(IdentityRefusal::Unavailable)
+        self.views.borrow().access.identity(computer)
     }
 
     fn paired(&self, key: &[u8; 32]) -> Option<Grant> {
-        self.views.borrow().access.grants.get(key).cloned()
+        self.views.borrow().access.paired(key)
     }
+}
+
+impl Pairings for PairedAccess {
+    fn identity(&self, computer: &str) -> Result<[u8; 32], IdentityRefusal> {
+        if self.public.as_deref() != Some(computer) {
+            return Err(IdentityRefusal::WrongComputer);
+        }
+        if self.disabled {
+            return Err(IdentityRefusal::Disabled);
+        }
+        self.key.ok_or(IdentityRefusal::Unavailable)
+    }
+
+    fn paired(&self, key: &[u8; 32]) -> Option<Grant> {
+        self.grants.get(key).cloned()
+    }
+}
+
+struct SavedPairings {
+    files: Files,
+    home: kuvo_store::home::Home,
+    overlay: mac_host::Overlay,
+}
+
+impl SavedPairings {
+    fn accepted(&self) -> Result<PairedAccess, Error> {
+        if kuvo_store::layout::inspect(&self.home)? != kuvo_store::layout::Layout::Current {
+            return Err(Error::SetupUnavailable);
+        }
+        validate_disk(&self.files)?;
+        let mut link = self
+            .files
+            .read::<Link>(LINK)?
+            .ok_or(Error::SetupUnavailable)?;
+        self.overlay.apply(&mut link);
+        link.devices_disabled = mac_host::device_connections_disabled(&self.files)?;
+        let identity = established_identity(&self.files, &link, ComputerKind::Mac, true)?;
+        paired_access(&link, identity.as_ref())
+    }
+}
+
+impl Pairings for SavedPairings {
+    fn identity(&self, computer: &str) -> Result<[u8; 32], IdentityRefusal> {
+        self.accepted()
+            .map_err(|_| IdentityRefusal::Unavailable)?
+            .identity(computer)
+    }
+
+    fn paired(&self, key: &[u8; 32]) -> Option<Grant> {
+        self.accepted().ok()?.paired(key)
+    }
+}
+
+pub fn is_mac_home(home: &Path) -> std::io::Result<bool> {
+    match std::fs::read_to_string(home.join("box/kind")) {
+        Ok(kind) => Ok(kind.trim() == "mac"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Read the Mac's established setup without starting an actor or changing its home.
+pub async fn transient_ssh_pairings(home: &Path) -> Option<Arc<dyn Pairings>> {
+    if !is_mac_home(home).ok()? {
+        return None;
+    }
+    let checked = kuvo_store::home::Home::new(home.to_owned()).ok()?;
+    if kuvo_store::layout::inspect(&checked).ok()? != kuvo_store::layout::Layout::Current {
+        return None;
+    }
+    let files = Files::new(home.to_owned());
+    validate_disk(&files).ok()?;
+    let overlay = mac_host::read(&files, "", None).await.ok()??;
+    Some(Arc::new(SavedPairings {
+        files,
+        home: checked,
+        overlay,
+    }))
 }
 
 #[derive(Clone)]
@@ -222,6 +305,8 @@ pub(crate) struct View {
     access: PairedAccess,
     ownership: kuvo_peers::ownership::SetupState,
     local_wipe: bool,
+    pending_wipes: Vec<kuvo_protocol::routes::types::GetKuvoComputersStatus200WipePendingItem>,
+    manage: kuvo_peers::manage::ManageFacts,
     insight_origins: std::collections::BTreeMap<String, String>,
 }
 
@@ -237,10 +322,17 @@ pub(crate) enum Command {
     InstallerCode(Option<crate::seed::source::Prepared>, edits::Submitter),
     InstallerCancellation(installer::Cancellation),
     SshAdmission(edits::Submitter),
+    SshUninstall {
+        key: String,
+        position: Position,
+        by: edits::Submitter,
+    },
     SshAlias {
         identity: String,
         key: Option<String>,
         destination: String,
+        name: String,
+        revisions: crate::ssh::RemovalRevisions,
         by: edits::Submitter,
     },
     SshAddress {
@@ -383,6 +475,10 @@ impl PreparedSetup {
         self.kind == ComputerKind::Mac && self.identity.is_some()
     }
 
+    pub fn is_set_aside(&self) -> bool {
+        self.link.setup.as_ref().is_some_and(|setup| setup.aside)
+    }
+
     /// The native keeper checks this resident build identifier, including the foreground Mac.
     pub fn record_build(&self, build: &str) -> Result<(), Error> {
         self.files.write_bytes("run/link.version", build.as_bytes())
@@ -437,7 +533,17 @@ impl PreparedSetup {
         }
         let (activity, activity_rx) = mpsc::channel(16);
         let activity_task = tokio::spawn(activity::track(files.clone(), activity_rx));
+        let handle = SetupHandle {
+            inbox: tx,
+            views: view_rx,
+            rosters: roster_rx,
+            ssh_routes,
+            activity: activity.clone(),
+            files: files.clone(),
+            legacy: None,
+        };
         let actor = Owner {
+            handle: handle.clone(),
             files,
             link,
             identity,
@@ -470,14 +576,7 @@ impl PreparedSetup {
         actor.write_card()?;
         let task = tokio::spawn(actor.run());
         Ok(SetupRuntime {
-            handle: SetupHandle {
-                inbox: tx,
-                views: view_rx,
-                rosters: roster_rx,
-                ssh_routes,
-                activity,
-                legacy: None,
-            },
+            handle,
             task,
             activity_task,
         })
@@ -515,6 +614,62 @@ pub(crate) fn validate_disk(files: &Files) -> Result<(), Error> {
     Ok(())
 }
 
+fn established_identity(
+    files: &Files,
+    link: &Link,
+    kind: ComputerKind,
+    native: bool,
+) -> Result<Option<Identity>, Error> {
+    let Some(setup) = &link.setup else {
+        return Ok(None);
+    };
+    validate_position(&setup.position)?;
+    if kind == ComputerKind::Mac && !native {
+        return Ok(None);
+    }
+    let identity = Identity::read(link)?;
+    if !setup.aside {
+        validate_shared(&link.shared)?;
+        let members = link.member_list()?;
+        let current = members.boxes.iter().any(|peer| {
+            peer.key == identity.public && peer.sign.as_deref() == Some(&identity.sign)
+        });
+        let retired =
+            !current && setup.role == Role::Member && removal::retired_member(&members, &identity);
+        if (!current && !retired)
+            || (setup.role == Role::Primary) != (setup.position.primary == identity.public)
+        {
+            return Err(Error::Invalid("local setup membership"));
+        }
+        if let Some(envelope) = link.leadership.get(&setup.position.epoch) {
+            let doc = documents::verify(envelope.clone())?;
+            let cert = checkpoint::certificate(&doc)?;
+            if cert.setup != setup.position || encode(&doc.origin) != setup.sign {
+                return Err(Error::Invalid("stored leadership"));
+            }
+            let (shared, _) = checkpoint::resolve(files, &doc, &cert)?;
+            if retired
+                && !removal::retired_member(
+                    &crate::model::membership(&shared, &cert.setup, &setup.sign)?,
+                    &identity,
+                )
+            {
+                return Err(Error::Invalid("stored leadership has no local removal"));
+            }
+        } else if retired
+            || setup.role == Role::Primary
+            || !setup
+                .extra
+                .get("leadershipHash")
+                .and_then(Value::as_str)
+                .is_some_and(|h| safe_token(h, 11, 11))
+        {
+            return Err(Error::Invalid("missing stored leadership"));
+        }
+    }
+    Ok(Some(identity))
+}
+
 fn open(
     home: &Path,
     files: &Files,
@@ -541,42 +696,14 @@ fn open(
                 value
             });
     }
-    if let Some(setup) = &link.setup {
-        validate_position(&setup.position)?;
-        if kind == ComputerKind::Mac && !native {
-            return Ok((link, None));
-        }
-        let identity = Identity::read(&link)?;
-        if !setup.aside {
-            validate_shared(&link.shared)?;
-            let members = link.member_list()?;
-            if !members.boxes.iter().any(|peer| {
-                peer.key == identity.public && peer.sign.as_deref() == Some(&identity.sign)
-            }) || (setup.role == Role::Primary) != (setup.position.primary == identity.public)
-            {
-                return Err(Error::Invalid("local setup membership"));
-            }
-            if let Some(envelope) = link.leadership.get(&setup.position.epoch) {
-                let doc = documents::verify(envelope.clone())?;
-                let cert = checkpoint::certificate(&doc)?;
-                if cert.setup != setup.position || encode(&doc.origin) != setup.sign {
-                    return Err(Error::Invalid("stored leadership"));
-                }
-                checkpoint::resolve(files, &doc, &cert)?;
-            } else if setup.role == Role::Primary
-                || !setup
-                    .extra
-                    .get("leadershipHash")
-                    .and_then(Value::as_str)
-                    .is_some_and(|h| safe_token(h, 11, 11))
-            {
-                return Err(Error::Invalid("missing stored leadership"));
-            }
-        }
-        if remember_link_key(&mut link, &identity, kind) {
+    if link.setup.is_some() {
+        let identity = established_identity(files, &link, kind, native)?;
+        if let Some(identity) = &identity
+            && remember_link_key(&mut link, identity, kind)
+        {
             write_link(files, &link, kind)?;
         }
-        return Ok((link, Some(identity)));
+        return Ok((link, identity));
     }
 
     if (kind == ComputerKind::Mac && !native)
@@ -617,7 +744,7 @@ fn open(
     Ok((link, Some(own)))
 }
 
-fn bootstrap(
+pub(crate) fn bootstrap(
     files: &Files,
     link: &mut Link,
     own: &Identity,
@@ -645,7 +772,7 @@ fn bootstrap(
             offline_edits: None,
         },
     );
-    let cert = checkpoint::build(files, own, position.clone(), None, 1, &link)?;
+    let cert = checkpoint::build(files, own, position.clone(), None, 1, link)?;
     link.leadership.insert(1, cert.envelope);
     link.setup = Some(new_setup(position, own.sign.clone(), Role::Primary));
     link.format_version = 1;
@@ -723,10 +850,11 @@ fn peer_roster(link: &Link, identity: Option<&Identity>) -> Option<Roster> {
     let own = identity?;
     let setup = link.setup().ok()?;
     let roster = link.member_list().ok()?;
+    let listed = roster.boxes.iter().any(|peer| peer.key == own.public);
     let named = link.value(SharedKind::SetupNames);
     let mut name = link.name.clone().unwrap_or_default();
     let mut members = Vec::new();
-    for peer in roster.boxes {
+    for peer in roster.boxes.into_iter().filter(|_| listed) {
         let title = named
             .and_then(|names| names.get(&peer.key))
             .and_then(Value::as_str)
@@ -763,6 +891,7 @@ fn relay_config(
     kind: ComputerKind,
 ) -> Result<relay::Config, Error> {
     let roster = link.member_list()?;
+    let listed = roster.boxes.iter().any(|peer| peer.key == identity.public);
     let grants = if link.devices_disabled {
         HashMap::new()
     } else {
@@ -772,7 +901,7 @@ fn relay_config(
         url: url.into(),
         secret: identity.secret,
         key: identity.key,
-        peers: roster.hosts(&identity.public).collect(),
+        peers: roster.hosts(&identity.public).filter(|_| listed).collect(),
         legacy_enrollers: vec![],
         grants: grants
             .into_iter()
@@ -819,6 +948,49 @@ fn installer_pending(link: &Link) -> bool {
                 && claim.get("setup").and_then(Value::as_str) == Some(&setup.position.id)
         });
         active && !adopted && !already_member
+    })
+}
+
+fn paired_access(link: &Link, own: Option<&Identity>) -> Result<PairedAccess, Error> {
+    Ok(match (link.setup().ok(), own) {
+        (Some(_), Some(own)) => {
+            let roster = link.member_list()?;
+            let disabled = link.devices_disabled || link.disabled(&roster, &own.public);
+            PairedAccess {
+                key: Some(own.key),
+                public: Some(own.public.clone()),
+                disabled,
+                permits_pairing: !disabled && link.relay.is_some(),
+                aside_main: None,
+                devices: Arc::new(device_access::device_roster(link, &roster, &own.public)),
+                grants: if link.devices_disabled {
+                    HashMap::new()
+                } else {
+                    link.grants(&roster, &own.public)
+                },
+            }
+        }
+        _ => PairedAccess {
+            key: None,
+            public: None,
+            disabled: true,
+            permits_pairing: false,
+            aside_main: link
+                .setup
+                .as_ref()
+                .filter(|setup| setup.aside && setup.role == Role::Member && !link.devices_disabled)
+                .map(|setup| {
+                    let saved = link
+                        .extra
+                        .get("macNames")
+                        .and_then(|names| names.get(setup.position.primary.as_str()))
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.is_empty());
+                    preferences::truncate(saved.unwrap_or("your main computer"), 100)
+                }),
+            devices: Arc::default(),
+            grants: HashMap::new(),
+        },
     })
 }
 
@@ -894,32 +1066,7 @@ fn make_view(
             }
         }
     }
-    let access = match (setup, own) {
-        (Some(_), Some(own)) => {
-            let roster = link.member_list()?;
-            let disabled = link.devices_disabled || link.disabled(&roster, &own.public);
-            PairedAccess {
-                key: Some(own.key),
-                public: Some(own.public.clone()),
-                disabled,
-                permits_pairing: !disabled && link.relay.is_some(),
-                devices: Arc::new(device_access::device_roster(link, &roster, &own.public)),
-                grants: if link.devices_disabled {
-                    HashMap::new()
-                } else {
-                    link.grants(&roster, &own.public)
-                },
-            }
-        }
-        _ => PairedAccess {
-            key: None,
-            public: None,
-            disabled: true,
-            permits_pairing: false,
-            devices: Arc::default(),
-            grants: HashMap::new(),
-        },
-    };
+    let access = paired_access(link, own)?;
     let ownership = if let Some(setup) = setup {
         let roster = link.member_list()?;
         let mut replacements = std::collections::BTreeMap::new();
@@ -960,7 +1107,9 @@ fn make_view(
         model_stars: link
             .value(SharedKind::SetupStarredModels)
             .map(|value| model_stars::list(Some(value))),
-        local_wipe: crate::wipe::LocalWipe::from(link).is_some(),
+        local_wipe: crate::wipe::ready_for_shutdown(files.root(), link),
+        pending_wipes: removal::pending_wipes(link),
+        manage: manage_facts::manage_facts(files, link, own, kind),
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
             Err(Error::PersonalityVersion(version)) => Err(version),
@@ -980,6 +1129,7 @@ fn make_view(
 }
 
 struct Owner {
+    handle: SetupHandle,
     files: Files,
     link: Link,
     identity: Option<Identity>,
@@ -1011,8 +1161,30 @@ struct Owner {
 }
 
 impl Owner {
+    /// A removal approved for this computer prepares its wipe until the resident can stop.
+    async fn prepare_wipe(&mut self) {
+        #[cfg(target_os = "macos")]
+        if self.kind == ComputerKind::Mac
+            && let Err(error) =
+                crate::wipe::prepare_app_wipe(self.files.root(), &mut self.link, self.handle.clone()).await
+        {
+            crate::uninstall::log_cleanup(&self.files, &error);
+            eprintln!("preparing app-owned wipe: {error}");
+        }
+        if self.kind == ComputerKind::Machine
+            && let Err(error) =
+                crate::wipe::prepare_headless(self.files.root(), &mut self.link, self.handle.clone()).await
+        {
+            crate::uninstall::log_cleanup(&self.files, &error);
+            eprintln!("preparing wipe: {error}");
+        }
+    }
+
     fn pending_maintenance(&self) -> bool {
-        self.link.extra.contains_key("localUnlink")
+        ["localWipe", "removalSource"]
+            .iter()
+            .any(|field| self.link.extra.get(*field).is_some_and(|value| !value.is_null()))
+            || self.link.extra.contains_key("localUnlink")
             || self.pending_unlinks()
             || self.pending_handover.is_some()
             || self.forwarded_handover.is_some()
@@ -1091,6 +1263,7 @@ impl Owner {
                         self.next_edits = edits::rows(&self.files).ok().filter(|rows| rows.iter().any(|row| row.queued_edit.is_some())).map(|_| Instant::now() + Duration::from_secs(5));
                     }
                     if maintenance.is_some_and(|at| at <= Instant::now()) {
+                        self.prepare_wipe().await;
                         if let Err(error) = self.resume_local_unlink().await { eprintln!("setup unlink cleanup: {error}"); }
                         if let Err(error) = self.offer_unlinks().await { eprintln!("setup removal delivery: {error}"); }
                         self.expire_handover().await;
@@ -1140,6 +1313,9 @@ impl Owner {
                     && old.work_queue == view.work_queue
                     && old.marketplace == view.marketplace
                     && old.access == view.access
+                    && old.pending_wipes == view.pending_wipes
+                    && old.manage == view.manage
+                    && old.local_wipe == view.local_wipe
                     && old.model_stars == view.model_stars
                     && old.ownership.id == view.ownership.id
                     && old.ownership.replacements == view.ownership.replacements
@@ -1415,12 +1591,34 @@ impl Owner {
             }
             Command::InstallerCancellation(receipt) => self.cancel_installer(receipt).await,
             Command::SshAdmission(by) => self.ssh_admission(&by),
+            Command::SshUninstall { key, position, by } => {
+                if !self.link.setup().is_ok_and(|setup| {
+                    setup.role == Role::Primary && setup.checkpointed && setup.position == position
+                }) {
+                    return Ok(Response {
+                        status: 409,
+                        value: json!({"message": "The setup changed. Refresh it and try again."}),
+                    });
+                }
+                let mut request = Unlink::default();
+                request.on_route(Some(true));
+                self.unlink_computer(key, request, by).await
+            }
             Command::SshAlias {
                 identity,
                 key,
                 destination,
+                name,
+                revisions,
                 by,
-            } => self.keep_ssh_alias(&identity, key.as_deref(), &destination, &by),
+            } => self.keep_ssh_alias(
+                &identity,
+                key.as_deref(),
+                &destination,
+                &name,
+                &revisions,
+                &by,
+            ),
             Command::SshAddress {
                 key,
                 invite,

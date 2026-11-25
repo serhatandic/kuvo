@@ -9,7 +9,7 @@ function identity(seed, prefix) {
   return { key, pub };
 }
 
-export function seedPeerSetup(home, relay, own = 1, count = 2, retired, additional = {}) {
+export function seedPeerSetup(home, relay, own = 1, count = 2, retired, additional = {}, adjustMembership = () => {}) {
   const bytes = (value, size = 32) => Buffer.alloc(size, value);
   const computers = Array.from({ length: count }, (_, index) => index + 1).map(number => {
     const seed = bytes(number);
@@ -32,6 +32,7 @@ export function seedPeerSetup(home, relay, own = 1, count = 2, retired, addition
   const shared = { ...additional, membershipAndAccess: { sequence: 1, value: {
     boxes: computers.map(({ row }) => row), left: retired ? [retired] : [], moved: [], devices: { phones: [], removed: [] }, removalRevisions: {},
   } } };
+  adjustMembership(shared.membershipAndAccess.value);
   const checkpoint = main.signed("setup-checkpoint", { id, shared, archives: [] });
   const hash = createHash("sha256").update(checkpoint.d).digest("base64url");
   const save = (file, value) => write(path.join(home, file), JSON.stringify(value));

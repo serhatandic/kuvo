@@ -6,12 +6,12 @@ import { relayLeaseStandIn } from "../../box/bridge-tests/relay-lease-stand-in.j
 import { boxBinary, boxCommand, isolatedEnv, localRelay, privateHome, readJSON, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { standInEngine } from "./engine.mjs";
 
-export async function bench(t, { orderedMessages = false, presenceEvents = false } = {}) {
+export async function bench(t, { handover = false, orderedMessages = false, presenceEvents = false } = {}) {
   const binary = boxBinary();
   const root = fs.realpathSync(scratch());
   const children = [];
   const engines = [];
-  const leases = relayLeaseStandIn();
+  const leases = relayLeaseStandIn({ transferStartsNow: handover });
   const relay = await localRelay({ request: leases.request, presenceEvents });
   t.after(async () => {
     for (const child of children.reverse()) await child.stop();
@@ -20,10 +20,10 @@ export async function bench(t, { orderedMessages = false, presenceEvents = false
   });
   return {
     relay, leases,
-    async computer(name, implementation = binary, configure = () => ({})) {
+    async computer(name, implementation = binary, configure = () => ({}), { canonical = false } = {}) {
       const folder = path.join(root, name);
-      const home = path.join(folder, "box");
       const env = { ...isolatedEnv(folder), KUVO_SANDBOX: "off", ...configure(folder) };
+      const home = canonical ? path.join(env.HOME, ".kuvo-code") : path.join(folder, "box");
       const engine = await standInEngine(folder, env);
       engine.orderedMessages = orderedMessages;
       engines.push(engine);
@@ -68,7 +68,7 @@ export async function bench(t, { orderedMessages = false, presenceEvents = false
           await legacy?.stop();
         }
       };
-      const connect = record => (method, route, body, headers) => request(record, method, route, body, headers);
+      const connect = record => (method, route, body, headers, timeout) => request(record, method, route, body, headers, timeout);
       const command = async (args, input) => {
         const child = boxCommand(implementation, home, env, relay, args, {}, "pipe");
         children.push(child);

@@ -26,10 +26,18 @@ use crate::{
     storage::Files,
 };
 
+#[cfg(unix)]
+mod resident;
+#[cfg(unix)]
+pub use resident::{stop_live, wait_for_stop};
+
 const STOPPED: &str = "Kuvo Code is stopped on this computer and won't start again. Its folder stays, with your sessions and settings.";
 const DESKTOP: &str = "Kuvo Code couldn’t delete this desktop’s local identity.";
 const CREDENTIALS: &str =
     "Kuvo Code couldn’t clear all its keys and sign-ins. Run uninstall again.";
+const MAIN_UNINSTALL: &str = "Choose another main computer first.";
+const DESKTOP_NOT_REVOKED: &str =
+    "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.";
 
 const PROCESSES: &[(&str, &str)] = &[
     ("run/box.pid", "keeper"),
@@ -60,13 +68,7 @@ pub fn run(
     check: bool,
     startup: impl FnOnce(bool) -> io::Result<StartupEntries>,
 ) -> Outcome {
-    let root = home.root();
-    let retired_app = root
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(|part| part.to_str())
-        .is_some_and(|name| name.to_ascii_lowercase().starts_with("run.kuvo.code"));
-    if retired_app {
+    if app_owned(home.root()) {
         return refusal(
             "Kuvo on this Mac runs in Kuvo Code's own folder: remove Kuvo Code itself (its background work goes with it).",
         );
@@ -74,6 +76,32 @@ pub fn run(
     match stopped_machine(home, check, startup) {
         Ok(outcome) => outcome,
         Err(error) => refusal(&error.to_string()),
+    }
+}
+
+fn app_owned(root: &Path) -> bool {
+    root.parent()
+        .and_then(Path::file_name)
+        .and_then(|part| part.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().starts_with("run.kuvo.code"))
+}
+
+pub(crate) fn log_cleanup(files: &Files, detail: impl std::fmt::Display) {
+    use std::io::Write as _;
+    let path = files.path("run/uninstall.log");
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    if let Ok(mut log) = options.open(path)
+        && log.metadata().is_ok_and(|metadata| metadata.is_file())
+    {
+        let _ = writeln!(log, "{detail}");
     }
 }
 
@@ -103,6 +131,12 @@ fn stopped_machine(
             note: None,
         });
     }
+    validate_disk(&files)?;
+    if let Some(link) = files.read::<Link>(LINK)?
+        && needs_handover(&link)?
+    {
+        return Ok(refusal(MAIN_UNINSTALL));
+    }
     let owner = files.path("run/.client-owner");
     let Ok(_owner) = OwnedLock::acquire(&owner, Duration::ZERO) else {
         return Ok(refusal(
@@ -125,31 +159,14 @@ fn stopped_machine(
     let mac = fs::read_to_string(files.path("box/kind")).is_ok_and(|kind| kind.trim() == "mac");
     let link: Option<Link> = files.read(LINK)?;
     if let Some(link) = link {
-        if let Ok(setup) = link.setup() {
-            let shared = link.member_list()?;
-            if setup.role == Role::Primary
-                && shared
-                    .boxes
-                    .iter()
-                    .any(|peer| peer.key != setup.position.primary)
-            {
-                return Ok(refusal("Choose another main computer first."));
-            }
-            if setup.role == Role::Member || shared.devices().next().is_some() {
-                return Ok(refusal(
-                    "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.",
-                ));
-            }
+        // A member may have joined since the read before we obtained the lock.
+        if needs_handover(&link)? {
+            return Ok(refusal(MAIN_UNINSTALL));
         }
-        if link
-            .extra
-            .get("phones")
-            .and_then(Value::as_array)
-            .is_some_and(|phones| !phones.is_empty())
-            || ["localWipe", "localUnlink", "removalSource"]
-                .iter()
-                .any(|field| link.extra.get(*field).is_some_and(|value| !value.is_null()))
-        {
+        if desktop_key(&files).is_some_and(|key| desktop_granted(&link, &key)) {
+            return Ok(refusal(DESKTOP_NOT_REVOKED));
+        }
+        if removal_in_progress(&link) {
             return Ok(refusal(
                 "Kuvo Code couldn’t confirm this computer’s removal had finished.",
             ));
@@ -201,21 +218,73 @@ fn stopped_machine(
         remove_file_synced(&files.path("run/launch.env"))?;
         remove_file_synced(&files.path("run/launch.notes"))
     });
-    let mut note = STOPPED.to_owned();
-    for (failure, message) in [(desktop, DESKTOP), (credentials, CREDENTIALS)] {
-        if let Err(error) = failure {
-            eprintln!("uninstall cleanup: {error}");
-            note.push(' ');
-            note.push_str(message);
-        }
+    for error in [&desktop, &credentials]
+        .into_iter()
+        .filter_map(|result| result.as_ref().err())
+    {
+        eprintln!("uninstall cleanup: {error}");
     }
-    let complete = note == STOPPED;
+    let problem = match (desktop, credentials) {
+        (Err(_), _) => Some(DESKTOP),
+        (_, Err(_)) => Some(CREDENTIALS),
+        (Ok(()), Ok(())) => None,
+    };
+    let note = problem.map_or_else(
+        || STOPPED.to_owned(),
+        |problem| format!("{STOPPED} {problem}"),
+    );
+    let complete = problem.is_none();
     Ok(Outcome {
         status: u8::from(!complete),
         value: json!({"result": if complete { "uninstalled" } else { "unfinished" }, "stopped": true,
             "launchAgent": entries.launch_agent.unwrap_or(false), "crontab": entries.crontab.unwrap_or(false), "startsAgain": [], "left": [root], "message": note}),
         note: Some(note),
     })
+}
+
+fn removal_in_progress(link: &Link) -> bool {
+    ["localWipe", "localUnlink", "removalSource"]
+        .iter()
+        .any(|field| link.extra.get(*field).is_some_and(|value| !value.is_null()))
+}
+
+fn desktop_key(files: &Files) -> Option<String> {
+    use kuvo_wire::keys::{Identity, decode_exact, encode};
+
+    if !fs::symlink_metadata(files.path("desktop")).is_ok_and(|meta| meta.is_dir()) {
+        return None;
+    }
+    let key = kuvo_store::files::text_of(&files.path("desktop/identity"))
+        .and_then(|identity| Identity::from_kept(&identity))
+        .map(|identity| encode(&identity.public()));
+    key.or_else(|| {
+        let kept = files.read::<Value>("desktop/boxes.json").ok().flatten()?;
+        let key = kept["paired"].as_str()?;
+        decode_exact::<32>(key).map(|_| key.into())
+    })
+}
+
+fn desktop_granted(link: &Link, key: &str) -> bool {
+    let names = |entry: &Value| entry["key"] == key;
+    if let Ok(roster) = link.member_list() {
+        return roster.devices().any(names);
+    }
+    link.extra
+        .get("phones")
+        .and_then(Value::as_array)
+        .is_some_and(|devices| devices.iter().any(names))
+}
+
+fn needs_handover(link: &Link) -> Result<bool, Error> {
+    let Ok(setup) = link.setup() else {
+        return Ok(false);
+    };
+    Ok(setup.role == Role::Primary
+        && link
+            .member_list()?
+            .boxes
+            .iter()
+            .any(|peer| peer.key != setup.position.primary))
 }
 
 fn run_check(files: &Files, home: &Path, entries: StartupEntries) -> Result<Value, Error> {

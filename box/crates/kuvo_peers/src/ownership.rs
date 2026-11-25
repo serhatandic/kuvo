@@ -456,6 +456,23 @@ impl Handle {
         let (_, host) = self.address(peer, &setup)?;
         Ok((self.reader.view(), setup, host))
     }
+
+    /// A released Mac outside any setup, as this computer lists it.
+    pub fn released_destination(
+        &self,
+        peer: ComputerKey,
+    ) -> Result<(Arc<View>, kuvo_wire::keys::Host), Error> {
+        if (self.accepted)().id.is_some() {
+            return Err(Error::SetupChanged);
+        }
+        let view = self.reader.view();
+        let host = view
+            .roster
+            .member(&peer)
+            .and_then(|member| member.host())
+            .ok_or(Error::UnknownPeer)?;
+        Ok((view, host))
+    }
 }
 
 impl IncomingRequests {

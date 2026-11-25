@@ -10,6 +10,7 @@ mod kept;
 mod helper_menu;
 mod letters;
 pub mod lists;
+pub mod manage;
 pub mod memory_read;
 pub mod moves;
 pub mod notices;

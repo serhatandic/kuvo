@@ -426,6 +426,7 @@ for (const [destination, heldScript, step, expected] of [
     fs.mkdirSync(folder);
     write(path.join(fake, `home-${destination}`), folder);
     for (const tool of ["pkill", "caffeinate"]) write(path.join(folder, ".kuvo-code", "bin", tool), "#!/bin/sh\nexit 0\n", 0o755);
+    fs.mkdirSync(path.dirname(link.KNOWN_HOSTS), { recursive: true });
     fs.appendFileSync(link.KNOWN_HOSTS, `${destination} ${fs.readFileSync(path.join(fake, "hostkey"), "utf8").trim()}\n`);
     const key = link.publicOf(link.newKey());
     link.updateLink(state => { link.pairPhone(state, { key: k(key), name: "Add caller", from: "pair", pairing: "caller" }); return state; });

@@ -337,6 +337,19 @@ pub struct FileStamp {
     pub size: u64,
 }
 
+impl FileStamp {
+    /// When the file last changed in a way a retained-work stamp tracks. Unix keeps
+    /// the inode change time. Windows moves its change time for metadata the box
+    /// itself touches on every start, so there the last write time stands for it.
+    pub fn retained_change_ns(&self) -> i128 {
+        if cfg!(windows) {
+            self.modified_ns
+        } else {
+            self.changed_ns
+        }
+    }
+}
+
 pub fn file_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
     match platform::file_stamp(path) {
         Ok(stamp) => Ok(Some(stamp)),

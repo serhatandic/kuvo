@@ -15,7 +15,9 @@ export function scratch() {
   // processes it owns after the run, even if a child was reparented.
   const prefix = process.env.KUVO_CONFORMANCE_SCRATCH_PREFIX ?? "kc-";
   assert.match(prefix, /^[a-z0-9-]{1,12}$/i, "Use a short scratch-folder prefix");
-  return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", prefix));
+  const folder = process.env.KUVO_CONFORMANCE_TMP
+    ?? (process.platform === "win32" ? os.tmpdir() : "/tmp");
+  return fs.mkdtempSync(path.join(folder, prefix));
 }
 
 /** A box's home made private before anything's written in it: on Windows the Rust box takes only a
@@ -82,6 +84,21 @@ export function launch(command, args, env, cwd, stdout = "ignore") {
   return { child, exited, stop, log: () => log };
 }
 
+/** Allow reads while refusing delete or replacement until the fixture releases the file. */
+export async function holdWindowsFile(t, file, ready, env) {
+  const holder = launch("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `
+$ErrorActionPreference = 'Stop'
+$held = [IO.File]::Open($env:KUVO_TEST_LOCK_FILE, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+  [IO.File]::WriteAllText($env:KUVO_TEST_LOCK_READY, 'held')
+  [Console]::ReadLine() | Out-Null
+} finally { $held.Dispose() }
+`], { ...env, KUVO_TEST_LOCK_FILE: file, KUVO_TEST_LOCK_READY: ready }, path.dirname(file));
+  t.after(() => holder.stop());
+  await until(() => fs.existsSync(ready), () => `Windows did not hold the fixture file: ${holder.log()}`);
+  return async () => { holder.child.stdin.end(); await holder.exited; };
+}
+
 export async function until(check, why, timeout = 10000, interval = 15) {
   const deadline = performance.now() + timeout;
   for (;;) {
@@ -110,8 +127,34 @@ export function typescriptRuntime() {
     || (fs.existsSync(installed) ? installed : process.env.KUVO_CONFORMANCE_ENGINE || "bun");
 }
 
+function prepareWindowsFixtureHome(home, env) {
+  if (!fs.existsSync(home)) return;
+  const fixture = path.dirname(env.HOME);
+  assert.equal(path.dirname(env.TMPDIR), fixture, "An isolated fixture owns the home and temporary folder.");
+  assert.ok(!fs.lstatSync(home).isSymbolicLink(), "The fixture home cannot be a link.");
+  const relative = path.relative(fs.realpathSync(fixture), fs.realpathSync(home));
+  assert.ok(!path.isAbsolute(relative) && relative.split(path.sep)[0] !== "..", "The Windows home must be in the fixture.");
+  // Tests seed files before the resident starts. Give their homes the same
+  // protected, inheritable ACL as a home created by the native installer.
+  const script = `
+$ErrorActionPreference = 'Stop'
+$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = [Security.AccessControl.DirectorySecurity]::new()
+$acl.SetSecurityDescriptorSddlForm("O:$($sid.Value)D:P(A;OICI;FA;;;$($sid.Value))")
+[IO.Directory]::SetAccessControl($env:KUVO_FIXTURE_HOME, $acl)
+`;
+  const powershell = path.join(env.SystemRoot ?? env.WINDIR, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  execFileSync(powershell,
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    { env: { ...env, KUVO_FIXTURE_HOME: home }, windowsHide: true, timeout: 10000 });
+}
+
 export function boxCommand(binary, home, env, relay, args, extra = {}, stdout = "ignore") {
   const ts = binary.typescript;
+  if (process.platform === "win32" && !ts && args[0] !== "here"
+      && !(args[0] === "install" && args.includes("--status"))) {
+    prepareWindowsFixtureHome(extra.KUVO_HOME ?? home, env);
+  }
   return launch(ts ? typescriptRuntime() : binary.file,
     ts ? [`--config=${os.devNull}`, "--no-env-file", binary.file, ...args] : args,
     { ...env, ...(ts ? { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } : {}),

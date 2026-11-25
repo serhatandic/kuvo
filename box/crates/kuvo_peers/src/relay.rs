@@ -146,6 +146,21 @@ impl RelayHandle {
     pub fn subscribe(&self) -> Option<broadcast::Receiver<Arc<RelayEvent>>> {
         self.events.upgrade().map(|events| events.subscribe())
     }
+
+    /// Send a removal completion that the old identity sealed before erasure.
+    /// This unpaired relay connection receives the acknowledgment for the fresh identity.
+    pub async fn send_removal_completion(&self, to: Address, sealed: Vec<u8>) -> Result<(), Error> {
+        const REMOVAL: &[u8] = b"kuvo-removal-v1\0";
+        let valid = sealed.len() <= kuvo_wire::mail::MAX_FRAME
+            && matches!(frames::read_frame(&sealed), Some((Kind::Mail, 0, body))
+                if body.strip_prefix(REMOVAL).is_some_and(|body| body.len() > 32 + 32 + 16));
+        if !valid {
+            return Err(kuvo_wire::mail::Error::Shape.into());
+        }
+        self.sender
+            .request(|reply| Command::RemovalCompletion(to, sealed, reply))
+            .await
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -182,6 +197,7 @@ enum MailRoute {
 }
 
 enum Command {
+    RemovalCompletion(Address, Vec<u8>, Reply<()>),
     Mail(Host, Envelope, MailRoute, Reply<()>),
     MemoryMail(Host, Vec<Envelope>, Option<oneshot::Sender<()>>, Reply<()>),
     Installer(Host, Vec<u8>, Reply<()>),
@@ -199,6 +215,7 @@ impl Command {
     fn offline(self, config: &mut Config) {
         match self {
             Self::Mail(_, _, _, reply)
+            | Self::RemovalCompletion(_, _, reply)
             | Self::MemoryMail(_, _, _, reply)
             | Self::Installer(_, _, reply)
             | Self::Send(_, _, reply)
@@ -603,6 +620,14 @@ impl Owner {
 
     async fn command(&mut self, socket: &mut Socket, command: Command) -> Result<(), Error> {
         match command {
+            Command::RemovalCompletion(to, frame, reply) => {
+                if !self.config.grants.is_empty() || !self.config.peers.is_empty() {
+                    let _ = reply.send(Err(kuvo_wire::mail::Error::Shape.into()));
+                    return Ok(());
+                }
+                write(socket, relay_send(&to, &frame)).await?;
+                let _ = reply.send(Ok(()));
+            }
             Command::Mail(host, envelope, route, reply) => {
                 let sealed = match route {
                     MailRoute::Member => envelope.seal(&self.config.key, &host.key),
