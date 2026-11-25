@@ -118,14 +118,13 @@ impl Program for Stand {
 }
 
 fn updates(home: &tempfile::TempDir, account: Arc<Stand>) -> (ProgramUpdates, Arc<AtomicUsize>) {
-    let home = Home::new(home.path().to_owned()).unwrap();
     let changes = Arc::new(AtomicUsize::new(0));
     let counted = changes.clone();
     let accounts: Accounts = Arc::new(move || vec![account.clone() as Arc<dyn Program>]);
     let changed = Arc::new(move |_: &str| {
         counted.fetch_add(1, Ordering::SeqCst);
     });
-    (ProgramUpdates::new(&home, accounts, changed), changes)
+    (ProgramUpdates::at(home.path(), accounts, changed), changes)
 }
 
 struct Refuses;
@@ -151,7 +150,7 @@ async fn one_its_installer_cant_update_says_so_and_holds_nothing() {
     let result = updates.update(account.clone(), None).await;
     assert_eq!(
         result.message.as_deref(),
-        Some("Update Stand the way you installed it.")
+        Some("Stand isn't installed.")
     );
     assert!(matches!(
         updates.update_of("stand", None),
@@ -250,7 +249,7 @@ mod programs {
             npm_package: None,
             native: Some(Native {
                 args: vec!["update".into()],
-                marker: "/.codex/".into(),
+                markers: vec!["/.codex/".into()],
                 dist_tag: None,
             }),
         }

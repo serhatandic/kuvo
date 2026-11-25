@@ -205,7 +205,7 @@ impl Agent for Codex {
             npm_package: Some("@openai/codex".into()),
             native: Some(Native {
                 args: vec!["update".into()],
-                marker: "/.codex/".into(),
+                markers: vec!["/.codex/".into()],
                 dist_tag: None,
             }),
         })

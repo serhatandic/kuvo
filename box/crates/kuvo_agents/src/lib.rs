@@ -1,9 +1,11 @@
 //! Agent holders, accounts, sign-in, tools and handover.
 
 pub mod account_check;
+pub mod account_rows;
 pub mod accounts;
 pub mod background;
 pub mod catalog;
+pub mod feed;
 pub mod claude;
 pub mod codex;
 pub mod file_change;

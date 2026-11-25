@@ -6,7 +6,7 @@
 // (`kuvo/sign-in/return`), and the ways to sign in to an account and how a sign-in is going, in the
 // box's words (`kuvo/sign-in/methods`, `kuvo/sign-in/status`).
 
-import { any, bool, type Infer, list, literal, nullable, number, object, type RouteShape, string, words } from "../shape";
+import { any, bool, BYTES, type Infer, list, literal, nullable, number, object, type RouteShape, string, words } from "../shape";
 
 /** The folders in one of this box's folders: its path, the home folder, the one it's in (null for
  * the top), and the folders in it, ordered as Finder orders names (`repository`: a git
@@ -189,6 +189,23 @@ export const MISC_ROUTES: RouteShape[] = [
   { route: "DELETE kuvo/agents/api/integration/:provider/connect/oauth/:attempt", feature: "agents.accounts", answers: { 200: object({}), 404: object({ message: string }), 503: object({ message: string }) } },
   { route: "POST kuvo/agents/api/integration/:provider/connect/key", feature: "agents.accounts", body: object({ key: string }), answers: { 200: object({}), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
   { route: "POST kuvo/agents/api/integration/:provider/disconnect", feature: "agents.accounts", answers: { 200: object({}), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
+  // Settings › Accounts' rows: every coding-agent account here (`fresh=1`: asked anew), or one, each
+  // with its sign-in, its program's version and update, and its ways in (agent-accounts.md).
+  { route: "GET kuvo/agents/api/integration", feature: "agents.accounts", answers: { 200: object({ data: list(any), location: object({ directory: string }) }), 503: object({ message: string }) } },
+  { route: "GET kuvo/agents/api/integration/:provider", feature: "agents.accounts", answers: { 200: object({ data: any, location: object({ directory: string }) }), 404: object({ message: string }), 503: object({ message: string }) } },
+  // Its program installed with its maker's installer (`metadata.install`), as you'd run it in Terminal.
+  { route: "POST kuvo/agents/api/integration/:provider/install", feature: "agents.accounts", answers: { 200: object({ data: object({ installed: bool, "version?": string, "message?": string }) }), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
+  // The coding agents' events (`text/event-stream`): their accounts, programs and updates, and their
+  // conversations' turns.
+  { route: "GET kuvo/agents/api/event", feature: "agents.accounts", answers: { 200: BYTES, 503: object({ message: string }) } },
+  // Updating the agents' programs, answered as it starts (`metadata.programUpdate` says how it goes):
+  // Update All, or one account's program; and how one went, seen (`at`), for every client.
+  { route: "POST kuvo/agents/api/kuvo/updates", feature: "agents.updates", answers: { 200: object({ data: object({ updating: list(string) }) }), 503: object({ message: string }) } },
+  { route: "POST kuvo/agents/api/kuvo/updates/:provider", feature: "agents.updates", answers: { 200: object({ data: object({ updating: list(string) }) }), 400: object({ message: string }), 404: object({ message: string }), 503: object({ message: string }) } },
+  { route: "DELETE kuvo/agents/api/kuvo/updates/:provider", feature: "agents.updates", answers: { 200: object({}), 404: object({ message: string }), 503: object({ message: string }) } },
+  // The update notices served now, newest first, and one seen, for every client.
+  { route: "GET kuvo/agents/api/kuvo/updates/notices", feature: "agents.updates.notices", answers: { 200: object({ data: object({ notices: list(any) }) }), 503: object({ message: string }) } },
+  { route: "DELETE kuvo/agents/api/kuvo/updates/notices/:id", feature: "agents.updates.notices", answers: { 200: object({}), 503: object({ message: string }) } },
   // Searches reachable computers when asked and names computers whose search could not run.
   { route: "GET kuvo/setup/search", feature: "search.setup", answers: { 200: SEARCH_FOUND } },
   // Sessions whose conversation has the words searched for, the latest first.

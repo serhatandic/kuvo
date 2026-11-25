@@ -22,9 +22,11 @@ use std::{
 
 use futures_util::future::{BoxFuture, FutureExt, Shared};
 use kuvo_os::process::{Spawn, Stdio};
-use kuvo_store::{files, home::Home};
+use kuvo_store::files;
 use serde::{Deserialize, Serialize};
 pub use versions::{compare_versions, homebrew_keg, npm_global_prefix, version_in};
+
+pub mod notices;
 
 /// How often what you have is read again, unless asked anew.
 const CHECKED_FOR: Duration = Duration::from_secs(10 * 60);
@@ -52,15 +54,16 @@ pub struct Definition {
 #[derive(Clone, Debug)]
 pub struct Native {
     pub args: Vec<String>,
-    /// Paths of its own installer's: `/.codex/`.
-    pub marker: String,
+    /// What paths of its own installer's have: `/.codex/`.
+    pub markers: Vec<String>,
     /// The npm dist-tag its updater follows, when not `latest`.
     pub dist_tag: Option<String>,
 }
 
 impl Native {
     fn is_native(&self, path: &Path) -> bool {
-        path.to_string_lossy().contains(&self.marker)
+        let path = path.to_string_lossy();
+        self.markers.iter().any(|marker| path.contains(marker.as_str()))
     }
 }
 
@@ -181,8 +184,14 @@ async fn npm_latest(package: &str, fresh: bool, tag: Option<&str>) -> Option<Str
     {
         return value.clone();
     }
+    // (Tests name a registry of their own.)
+    let registry = std::env::var("KUVO_TEST_NPM_REGISTRY")
+        .ok()
+        .filter(|registry| !registry.is_empty())
+        .unwrap_or_else(|| "https://registry.npmjs.org".into());
     let url = format!(
-        "https://registry.npmjs.org/{}/{tag}",
+        "{}/{}/{tag}",
+        registry.trim_end_matches('/'),
         package.replace('/', "%2F")
     );
     let read = async {
@@ -565,6 +574,63 @@ pub async fn update(
     }
 }
 
+/// How an install went.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct InstallResult {
+    pub installed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// What went wrong, in the installer's words (its last lines).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Installs an agent's program with its maker's own installer (`curl … | sh`), run as you'd run
+/// it in Terminal: it goes where that installer puts it. Once at a time per program, and not while
+/// it updates; then whether `found` finds it. One that's there already isn't installed again.
+pub async fn install(
+    name: &str,
+    command: &str,
+    temporary: &Path,
+    found: impl Fn() -> Option<PathBuf>,
+) -> InstallResult {
+    let one = one_at_a_time(name);
+    let _one = one.lock().await;
+    if let Some(there) = found() {
+        return InstallResult {
+            installed: true,
+            version: installed_version(&there).await,
+            message: None,
+        };
+    }
+    let _ = files::private_folder(temporary);
+    let ran = run(
+        Path::new("/bin/sh"),
+        &["-c".into(), command.into()],
+        &[],
+        Some(temporary),
+        INSTALL_TIMEOUT,
+    )
+    .await;
+    if let Some(executable) = found() {
+        return InstallResult {
+            installed: true,
+            version: installed_version(&executable).await,
+            message: None,
+        };
+    }
+    let output = ran.as_ref().map(last_lines).unwrap_or_default();
+    let mut message = format!("{name} isn't installed after “{command}”.");
+    if !output.is_empty() {
+        message.push_str(&format!("\n\n{output}"));
+    }
+    InstallResult {
+        installed: false,
+        version: None,
+        message: Some(message),
+    }
+}
+
 /// How a program's update stands, by when it last changed (`at`, its id for a client's "seen").
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
@@ -687,10 +753,11 @@ pub struct ProgramUpdates {
 }
 
 impl ProgramUpdates {
-    pub fn new(home: &Home, accounts: Accounts, changed: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
+    /// The updates for a box at `root`.
+    pub fn at(root: &Path, accounts: Accounts, changed: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
         Self {
-            agents: home.root().join("agents"),
-            temporary: home.root().join("tmp"),
+            agents: root.join("agents"),
+            temporary: root.join("tmp"),
             kept: Arc::default(),
             running: Arc::default(),
             hold: None,
@@ -804,10 +871,7 @@ impl ProgramUpdates {
                     }
                     result
                 }
-                None => UpdateResult::failed(format!(
-                    "Update {} the way you installed it.",
-                    agent.name()
-                )),
+                None => UpdateResult::failed(format!("{} isn't installed.", agent.name())),
             };
             this.finish(&name, &attempt, &result, release);
             result

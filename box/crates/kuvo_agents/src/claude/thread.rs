@@ -66,6 +66,8 @@ struct Pipe {
     /// The sign-in it started under, as a fingerprint: what it hears of the plan's limits counts
     /// for that one alone. None when it wasn't known (or no one was signed in that way).
     sign_in: Option<String>,
+    /// The update of Claude Code it started after (one taken up: none known).
+    program: Option<u64>,
 }
 
 impl Pipe {
@@ -109,6 +111,7 @@ impl Pipe {
                 .get("claudeSignIn")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            program: None,
         }
     }
 
@@ -702,7 +705,10 @@ impl Actor {
         // again, going on with its conversation.
         let sign_in = self.program.sign_in_mark().await;
         if self.pipe.as_ref().is_some_and(|pipe| {
-            pipe.compact_at != compact_at || instructions_changed || pipe.sign_in != sign_in
+            pipe.compact_at != compact_at
+                || instructions_changed
+                || pipe.sign_in != sign_in
+                || pipe.program != Some(self.program.updates())
         }) && !self.tasks.keeps_working()
             && let Some(pipe) = self.pipe.take()
         {
@@ -833,6 +839,7 @@ impl Actor {
         compact_at: Option<u64>,
         plan: bool,
     ) -> io::Result<Pipe> {
+        let updates = self.program.updates();
         let program = self.program.clone();
         let session = self.session.clone();
         let directory = self.directory.clone();
@@ -864,6 +871,7 @@ impl Actor {
             .await?;
         let mut pipe = Pipe::new(controller, false);
         pipe.sign_in = sign_in;
+        pipe.program = Some(updates);
         match pipe.call(initialize(instructions)).await {
             Ok(wire::ReplyBody::Success {
                 pending_permission_requests,
