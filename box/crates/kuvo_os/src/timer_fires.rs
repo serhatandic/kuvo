@@ -56,6 +56,7 @@ timers! {
     ApprovalRetry => "approval.retry",
     PeerCopyHeartbeat => "peers.copy-heartbeat",
     PeerMoveExpiry => "peers.move-expiry",
+    PeerMoveAnnounce => "peers.move-announce",
     PeerWaiting => "peers.waiting",
     RelayReconnect => "relay.reconnect",
     RelayHeartbeat => "relay.heartbeat",

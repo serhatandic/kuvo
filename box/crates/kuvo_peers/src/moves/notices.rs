@@ -225,11 +225,11 @@ fn short(text: &str, most: usize) -> String {
         .collect()
 }
 
-/// Announce on the resident round. An agents refresh request asks for the move
-/// snapshot anew on that next round, including when there are no active moves.
+/// Announce on a journal/stage change or an explicit peer request. Active copies
+/// keep their own one-minute wire deadline; an empty acknowledged list has none.
 #[derive(Default)]
 pub(crate) struct Announcer {
-    sent: Option<([u8; 32], Millis)>,
+    sent: Option<([u8; 32], tokio::time::Instant)>,
 }
 
 impl Announcer {
@@ -244,14 +244,18 @@ impl Announcer {
         waiting: &BTreeSet<String>,
         relay: &crate::relay::Sender,
         now: Millis,
-    ) {
+    ) -> Option<tokio::time::Instant> {
+        use std::time::Duration;
+        use tokio::time::Instant;
         let Some(current) = announcement(run, waiting) else {
-            return;
+            return None;
         };
-        if self.sent.is_some_and(|(digest, at)| {
-            digest == current.digest && (!current.active || now.saturating_sub(at) < 60_000)
-        }) {
-            return;
+        let ticks = Instant::now();
+        let every = Duration::from_secs(60);
+        if let Some((_, at)) = self.sent.filter(|(digest, _)| *digest == current.digest) {
+            if !current.active { return None; }
+            let due = at + every;
+            if ticks < due { return Some(due); }
         }
         let mut sent = roster.members.is_empty();
         let message = kuvo_wire::mail::Envelope(serde_json::Map::from_iter([
@@ -266,7 +270,13 @@ impl Announcer {
             sent |= relay.mail(host, message.clone()).await.is_ok();
         }
         if sent {
-            self.sent = Some((current.digest, now));
+            self.sent = Some((current.digest, ticks));
+            current.active.then(|| ticks + every)
+        } else if roster.members.iter().any(|member| member.host().is_some()) {
+            // Retry only the actual snapshot that failed to get to the relay.
+            Some(ticks + Duration::from_secs(1))
+        } else {
+            None
         }
     }
 }

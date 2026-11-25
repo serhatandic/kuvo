@@ -219,6 +219,8 @@ impl Index {
         self.advance(&root)
     }
 
+    pub(super) fn is_warming(&self) -> bool { self.warming }
+
     fn advance(&mut self, root: &Path) -> io::Result<()> {
         self.warming = false;
         let cache = root.join(INDEX_FILE);

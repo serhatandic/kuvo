@@ -1018,7 +1018,7 @@ impl Resident {
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
-            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents));
+            .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents, clock.clone()));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
         let mut legacy = devices.as_ref().map(Devices::legacy_watch);
         if let Some(legacy) = &legacy {
@@ -1036,7 +1036,7 @@ impl Resident {
                 Ok(()) = waiting_updates.changed() => {
                     self.view.move_waiting = waiting_updates.borrow_and_update().clone();
                     if let Some(publisher) = &mut publisher {
-                        publisher.request(self.view.clone(), clock(), Refresh::None);
+                        publisher.request(self.view.clone(), clock(), Refresh::Moves);
                     }
                 }
                 change = changes.recv() => match change {
@@ -1214,7 +1214,10 @@ impl Resident {
                         }
                         continue;
                     }
-                    Some(relay::Event::Disconnected(_)) => self.view.relay_connected = false,
+                    Some(relay::Event::Disconnected(_)) => {
+                        self.view.relay_connected = false;
+                        if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
+                    },
                     Some(_) => continue,
                     None => {
                         self.view.relay_connected = false;
@@ -1226,7 +1229,7 @@ impl Resident {
                     if let Err(error) = self.refresh_move_ownership().await {
                         eprintln!("Refreshing move ownership: {error}");
                     }
-                    if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
+                    if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::Moves); }
                 },
                 _ = async { match expiry { Some(delay) => timer_fires::sleep(Timer::PeerMoveExpiry, delay).await, None => std::future::pending().await } } => {
                     if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, clock()) {
@@ -1524,6 +1527,7 @@ struct Received {
 
 enum Refresh {
     None,
+    Moves,
     All,
     Peer { key: ComputerKey, ask: bool },
 }
@@ -1540,41 +1544,72 @@ impl Drop for Publisher {
 }
 
 impl Publisher {
-    fn start(relay: relay::Sender, run: PathBuf, sent_agents: watch::Sender<AgentMail>) -> Self {
+    fn start(relay: relay::Sender, run: PathBuf, sent_agents: watch::Sender<AgentMail>, clock: Clock) -> Self {
         let (tx, mut rx) = mpsc::channel::<(View, Millis, Refresh)>(16);
         let task = tokio::spawn(async move {
             let mut previous = BTreeMap::new();
             let mut announcements = BTreeMap::new();
             let mut moves = crate::moves::Announcer::default();
-            while let Some((view, now, refresh)) = rx.recv().await {
-                match refresh {
-                    Refresh::None => {
-                        moves
-                            .announce(&run, &view.roster, &view.move_waiting, &relay, now)
-                            .await
+            let mut latest = None::<View>;
+            let mut next = None;
+            loop {
+                tokio::select! {
+                    request = rx.recv() => {
+                        let Some((view, now, refresh)) = request else { break; };
+                        if !view.relay_connected || view.roster.members.is_empty() {
+                            next = None;
+                        } else {
+                            let new_recipients = latest.as_ref().is_none_or(|before| !before.relay_connected
+                                || before.roster.members.iter().map(|peer| (peer.key, peer.address))
+                                    .ne(view.roster.members.iter().map(|peer| (peer.key, peer.address))));
+                            let announce = if new_recipients {
+                                // The first connected projection may arrive through a local
+                                // event before the explicit refresh gets into this mailbox.
+                                moves.repeat();
+                                true
+                            } else { match &refresh {
+                                Refresh::Peer { ask: true, .. } => {
+                                    moves.repeat();
+                                    true
+                                }
+                                Refresh::Moves => true,
+                                _ => false,
+                            } };
+                            let before = !new_recipients && matches!(&refresh, Refresh::Moves);
+                            if announce && before {
+                                next = moves.announce(&run, &view.roster, &view.move_waiting, &relay, now).await;
+                            }
+                            publish_round(
+                                &relay,
+                                view.clone(),
+                                now,
+                                refresh,
+                                &mut previous,
+                                &mut announcements,
+                                &sent_agents,
+                            ).await;
+                            if announce && !before {
+                                // A fresh/asked peer must hear the agent announcement first.
+                                next = moves.announce(&run, &view.roster, &view.move_waiting, &relay, now).await;
+                            }
+                        }
+                        latest = Some(view);
                     }
-                    Refresh::Peer { ask: true, .. } => moves.repeat(),
-                    _ => {}
+                    _ = async { match next {
+                        Some(at) => timer_fires::sleep_until(Timer::PeerMoveAnnounce, at).await,
+                        None => std::future::pending().await,
+                    } } => {
+                        if let Some(view) = latest.as_ref() {
+                            next = moves.announce(&run, &view.roster, &view.move_waiting, &relay, clock()).await;
+                        } else { next = None; }
+                    }
                 }
-                publish_round(
-                    &relay,
-                    view,
-                    now,
-                    refresh,
-                    &mut previous,
-                    &mut announcements,
-                    &sent_agents,
-                )
-                .await;
             }
         });
         Self { tx, task }
     }
 
     fn request(&mut self, view: View, now: Millis, refresh: Refresh) {
-        if view.roster.members.is_empty() {
-            return;
-        }
         let _ = self.tx.try_send((view, now, refresh));
     }
 }

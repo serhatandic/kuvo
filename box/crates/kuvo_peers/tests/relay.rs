@@ -1526,7 +1526,7 @@ async fn move_snapshots_refresh_on_a_minute_and_on_request() {
         atomic::{AtomicI64, Ordering},
     };
 
-    tokio::time::timeout(Duration::from_secs(55), async {
+    tokio::time::timeout(Duration::from_secs(180), async {
         let home = tempfile::tempdir().unwrap();
         let (relay, mut wire, _, listener) = TestRelay::reconnecting(|_| {}).await;
         let here = public(RUST_KEY);
@@ -1579,7 +1579,13 @@ async fn move_snapshots_refresh_on_a_minute_and_on_request() {
             "More bytes alone do not publish a move"
         );
         clock.store(1_060_000, Ordering::Relaxed);
+        // The active publication is now a real elapsed-time deadline, not a
+        // periodic round that notices a manually changed wall clock.
+        wire.send(vec![0]).await;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(60)).await;
         assert_eq!(wire.moving().await[0]["sent"], 50);
+        tokio::time::resume();
 
         let ask = json!({"at":1_060_001, "ask":"agents"});
         let bytes = Envelope(ask.as_object().unwrap().clone())
@@ -1844,7 +1850,9 @@ async fn incomplete_and_complete_copies_wait_on_different_deadlines() {
 
     tokio::time::timeout(Duration::from_secs(300), async {
         let home = tempfile::tempdir().unwrap();
-        let (relay, mut wire) = TestRelay::connect().await;
+        // Leave Connected in the queue for the resident: a connected peer's
+        // real announcement now starts from that event, not a periodic scan.
+        let (relay, mut wire, _) = TestRelay::welcome(|_| {}).await;
         let here = public(RUST_KEY);
         let peer = public(PEER_KEY);
         let clock = Arc::new(AtomicI64::new(1_000_000));
@@ -2469,12 +2477,14 @@ async fn source_deadline(deadline: SourceDeadline) {
         resident.attach_moves(engine, owner).await.unwrap();
         tokio::time::pause();
         clock.store(1_000_000 + 29 * 60_000, Ordering::Relaxed);
+        tokio::time::advance(Duration::from_secs(29 * 60)).await;
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert!(journal.exists(), "The move was retired before half an hour");
         assert!(!outcome.exists());
         assert!(!wake.join("paused").exists());
 
         clock.store(1_000_000 + 31 * 60_000, Ordering::Relaxed);
+        tokio::time::advance(Duration::from_secs(2 * 60)).await;
         tokio::time::timeout(Duration::from_secs(5), async {
             while !outcome.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;

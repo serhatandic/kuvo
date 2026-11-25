@@ -695,6 +695,41 @@ now has 92 callbacks without a client (1.41/s, 49,392 KiB) and 193 with hot-page
 (2.97/s, 56,160 KiB), down from 235 and 336 respectively. Both remote-work counters are zero,
 there is one resident process, and no agent process starts.
 
+**Move driver (follow-up).** One recovery pass on startup, then transfer commands, move mail,
+local journal/decision changes, engine state and relevant peer routing changes wake the driver.
+The source's check, offer, switch, cleanup and drop retries; destination recovery/held-copy
+expiry; waiting badge thresholds; missing part window; orphan staging and retained backup expiry
+are individual deadlines only when such work exists. A destination that is known away is not
+asked for its retained backup's run proof until it returns. A part or its acknowledgement
+advances the current window immediately, not a full scan of unrelated transfers. Native journal
+watch notifications trigger recovery on external writes or missed notifications. The evidence
+index advances in bounded batches only while an actual requested index is incomplete. The new
+debug case tests an empty transfer journal directory and the deadline unit cases test the
+missing-part retry and one waiting badge transition. The old binary fired three round callbacks
+in 3.5 seconds; the replacement fired none. The 65-second measurement dropped from 92 to 27
+callbacks without a client (0.42/s, 50,080 KiB) and from 193 to 128 with hot-page follows
+(1.97/s, 57,296 KiB); the move round counter was zero in both, one resident and no agent starts.
+The two deadline cases pass, as do the lost transfer window, restart, held-copy, switch and
+cleanup cases. Mac moves: Rust 68 passed, one conditional skip, one inherited failure; TypeScript
+65 passed/four conditional skips. The inherited receipt-page boundary case returns 409 from
+`backups/match`, before any transfer journal exists; the instrumented `4d245022b` baseline
+already fails identically, and the original checkpoint passes. An exact `dab93b674` build
+also fails: while its setup lease is fresh, the setup actor panics in historical Insights
+origin projection (`model.rs`, indexing an absent `removals` field). The 5.4 owner is fixing
+the optional field lookup; this case is not a move-driver regression. The fixture now includes
+its process log and lease expiry in the failure diagnostic.
+
+The peer move notice publication also has its own monotonic one-minute deadline only while
+there are active moves. Progress bytes alone still do not announce a new stage. An explicit
+agents refresh sends the current move copy immediately, even if it is empty; a reconnect
+retells once, and an unchanged cleared list has no deadline. Unrelated agent/copy heartbeats
+no longer reopen the move journals. The relay conformance case advances elapsed virtual time
+as well as its injected wall clock, and verifies minute progress, immediate request, clear and
+reconnect behavior (it previously waited for a removed periodic round). The undriven transfer
+fixture also advances elapsed time, and the incomplete-copy fixture now delivers the relay's
+connection event to the resident rather than consuming it itself. All fourteen selected move
+relay cases pass.
+
 ## 7. Release decisions
 
 1. **0.8.** Ship with the Rust box, including native Windows and WSL2.
