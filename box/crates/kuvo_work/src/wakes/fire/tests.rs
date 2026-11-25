@@ -19,6 +19,9 @@ struct Stand {
 }
 
 impl Reach for Stand {
+    fn reaches(&self, agents: bool) -> bool {
+        !agents
+    }
     async fn session(&self, id: &str) -> Result<Option<Value>, Unreachable> {
         if self.down {
             return Err(Unreachable("down".into()));

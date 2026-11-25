@@ -126,13 +126,23 @@ impl Wakes {
         watching: &mut Option<JoinHandle<()>>,
     ) {
         let roots = self.inner.roots.clone();
-        let wanted = tokio::task::spawn_blocking(move || fire::wanted(&roots, now))
-            .await
-            .unwrap_or(false);
-        if !wanted {
-            return;
-        }
-        let Some(engine) = self.inner.engine.wake_engine(true).await else {
+        let (engine, agents) = tokio::task::spawn_blocking(move || {
+            (fire::wanted(&roots, now), fire::agents_wanted(&roots, now))
+        })
+        .await
+        .unwrap_or_default();
+        // The engine started for its own conversations; the coding agents, in this box, reached
+        // with it or alone.
+        let engine = match engine {
+            true => self.inner.engine.wake_engine(true).await,
+            false => None,
+        };
+        let engine = engine.or_else(|| {
+            agents
+                .then(|| self.inner.engine.agents_wake_engine())
+                .flatten()
+        });
+        let Some(engine) = engine else {
             return;
         };
         let engine = Arc::new(engine);

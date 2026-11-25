@@ -22,6 +22,8 @@ use super::{
 
 /// What a round needs of the engine; `WakeEngine` in the resident, a stand-in in tests.
 pub(crate) trait Reach: Sync {
+    /// Whether this round reaches the coding agents' conversations (`agents`), or the engine's.
+    fn reaches(&self, agents: bool) -> bool;
     async fn session(&self, id: &str) -> Result<Option<Value>, Unreachable>;
     async fn wait_for_tools(&self, directory: &str);
     async fn stopped(&self, session: &str) -> bool;
@@ -36,6 +38,9 @@ pub(crate) trait Reach: Sync {
 }
 
 impl Reach for WakeEngine {
+    fn reaches(&self, agents: bool) -> bool {
+        WakeEngine::reaches(self, agents)
+    }
     async fn session(&self, id: &str) -> Result<Option<Value>, Unreachable> {
         WakeEngine::session(self, id).await
     }
@@ -122,6 +127,15 @@ fn retry_at(folder: &Path) -> Option<i64> {
 /// Whether a round now has anything for the engine: a wake-up due, or a watch, in a folder that's
 /// neither held nor waiting to try again, of a conversation the engine runs.
 pub fn wanted(roots: &Roots, now: i64) -> bool {
+    wanted_by(roots, now, false)
+}
+
+/// As `wanted`, for the coding agents' conversations.
+pub fn agents_wanted(roots: &Roots, now: i64) -> bool {
+    wanted_by(roots, now, true)
+}
+
+fn wanted_by(roots: &Roots, now: i64, agents: bool) -> bool {
     roots.folders().any(|(_, folder)| {
         if folder.join("paused").exists() || !folder.join("session").exists() {
             return false;
@@ -134,7 +148,7 @@ pub fn wanted(roots: &Roots, now: i64) -> bool {
                 .iter()
                 .filter_map(|name| WakeName::parse(name))
                 .any(|wake| wake.due <= now as f64);
-        due && !via_agents(&folder)
+        due && via_agents(&folder) == agents
     })
 }
 
@@ -199,7 +213,7 @@ impl<R: Reach> Round<'_, R> {
         let session = text(&folder.join("session"));
         if let Some(hold) = folder::hold(folder) {
             let moving = folder::moving(folder) || hold.trim() == "moving";
-            if !moving && !session.is_empty() && !via_agents(folder) {
+            if !moving && !session.is_empty() && self.reach.reaches(via_agents(folder)) {
                 self.settle(folder, kind, &session, true).await;
             }
             if folder.join("paused").exists() || !folder.is_dir() {
@@ -213,7 +227,7 @@ impl<R: Reach> Round<'_, R> {
         if names(&folder.join("wakes")).is_empty() && names(&folder.join("watches")).is_empty() {
             return;
         }
-        if session.is_empty() || via_agents(folder) {
+        if session.is_empty() || !self.reach.reaches(via_agents(folder)) {
             return;
         }
         if matches!(
@@ -223,7 +237,8 @@ impl<R: Reach> Round<'_, R> {
             return;
         }
         let stopped = self.reach.stopped(&session).await;
-        let mut tools = false;
+        // (A coding agent's tools are its own, not the engine's to wait for.)
+        let mut tools = via_agents(folder);
         let mut failed = false;
         for name in names(&folder.join("wakes")) {
             let path = folder.join("wakes").join(&name);
@@ -403,7 +418,7 @@ impl<R: Reach> Round<'_, R> {
                     continue;
                 }
                 let session = text(&folder.join("session"));
-                if session.is_empty() || via_agents(&folder) {
+                if session.is_empty() || !self.reach.reaches(via_agents(&folder)) {
                     continue;
                 }
                 if kind == Kind::Session

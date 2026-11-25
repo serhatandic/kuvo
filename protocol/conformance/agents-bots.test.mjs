@@ -1,6 +1,6 @@
 // Bots on a coding agent's model (PROTOCOL.md, `kuvo/bots`): made with that agent, its conversation
 // kept as a bot's (its rules, its notes), told what it is, and greeting you; changed, brought here,
-// told again and deleted through it; and Add Agent in the Marketplace makes one the same way.
+// told again, woken and deleted through it; and Add Agent in the Marketplace makes one the same way.
 // Claude Code and Codex, each with its stand-in.
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -20,10 +20,11 @@ const agents = [
 ];
 
 for (const [name, providerID, id, scripted] of agents) {
-  test(`a bot on ${name}'s model is made, changed, told again and deleted with it; Add Agent makes one too`, { timeout: 120000, skip }, async () => {
+  test(`a bot on ${name}'s model is made, changed, told again, woken and deleted with it; Add Agent makes one too`, { timeout: 120000, skip }, async () => {
     const harness = await scripted({});
     try {
       write(path.join(harness.home, "bin", "bot-words.json"), fs.readFileSync(words));
+      write(path.join(harness.home, "bin", "kuvo-wake"), fs.readFileSync(new URL("../../box/src/keeper/kuvo-wake", import.meta.url)), { mode: 0o755 });
       const listener = await harness.start();
       const ask = (method, route, body) => request(listener, method, route, body, headers, 45000);
       const model = { providerID, id };
@@ -80,6 +81,20 @@ for (const [name, providerID, id, scripted] of agents) {
       write(path.join(harness.home, "bin", "bot-words.json"), JSON.stringify(kit));
       assert.equal((await ask("POST", "kuvo/bots/retell", {})).status, 200);
       await until(() => /Words from an update/.test(told()), "It wasn't told again what it is.", 15000, 100);
+
+      // Its wake-ups reach its agent: one sent now (Wake Up Now), and one due, by the box's round.
+      const agentHeard = () => JSON.stringify(providerID === codex ? harness.sent("turn/start") : harness.heard());
+      const wakes = `kuvo/wakes/${encodeURIComponent(session)}`;
+      const kept = await ask("POST", wakes, { due: Math.floor(Date.now() / 1000) + 3600, note: "Check the build" });
+      assert.equal(kept.status, 200, kept.text);
+      const wake = kept.json.wakes.find(each => each.note === "Check the build");
+      const sent = await ask("POST", `${wakes}/now`, { wake: wake.id });
+      assert.equal(sent.status, 200, sent.text);
+      await until(() => agentHeard().includes("[Wake-up] Check the build"), "Wake Up Now never reached its agent.", 30000, 100);
+      assert.deepEqual((await ask("GET", wakes)).json.wakes, [], "one that doesn't repeat goes once sent");
+      write(path.join(folder, "wakes", `${Math.floor(Date.now() / 1000) + 2}-a1b2c3d4e5f60718`), "Look at the logs\n");
+      await until(() => agentHeard().includes("[Wake-up] Look at the logs"), "Its due wake-up never reached its agent.", 45000, 250);
+      await until(() => fs.readdirSync(path.join(folder, "wakes")).length === 0, "Its due wake-up stayed.", 15000, 100);
 
       // Add Agent in the Marketplace, on the same model.
       const details = await ask("GET", "kuvo/marketplace/agents/coding-reviewer");

@@ -524,18 +524,22 @@ impl Wakes {
         let Some(note) = kuvo_store::files::text_of(&folder.join("wakes").join(&wake.id)) else {
             return Err(empty(StatusCode::NOT_FOUND));
         };
-        if text(&folder.join("via")).trim() == "bridge" {
-            return Err(refused(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The coding agents are starting again. Try again in a moment.",
-            ));
-        }
-        let engine =
+        let agents = text(&folder.join("via")).trim() == "bridge";
+        let engine = if agents {
+            self.inner.engine.agents_wake_engine().ok_or_else(|| {
+                refused(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The coding agents are starting again. Try again in a moment.",
+                )
+            })?
+        } else {
             self.inner.engine.wake_engine(true).await.ok_or_else(|| {
                 refused(StatusCode::SERVICE_UNAVAILABLE, "The engine isn’t running.")
-            })?;
+            })?
+        };
         if let Some(directory) = kuvo_store::files::text_of(&folder.join("directory"))
             && !directory.is_empty()
+            && !agents
         {
             engine.wait_for_tools(&directory).await;
         }
@@ -598,19 +602,17 @@ fn restore_refusal() -> Refusal {
 
 /// Whether a watch's interval reads: 5m or more, 2h, 1d.
 pub(crate) fn period(every: &str) -> bool {
-    every.is_ascii()
-        && every.len() > 1
-        && {
-            let (count, unit) = every.split_at(every.len() - 1);
-            !count.starts_with('0')
-                && count.len() <= 6
-                && count.bytes().all(|b| b.is_ascii_digit())
-                && match (unit, count.parse::<u32>()) {
-                    ("m", Ok(count)) => count >= 5,
-                    ("h" | "d", Ok(count)) => count >= 1,
-                    _ => false,
-                }
-        }
+    every.is_ascii() && every.len() > 1 && {
+        let (count, unit) = every.split_at(every.len() - 1);
+        !count.starts_with('0')
+            && count.len() <= 6
+            && count.bytes().all(|b| b.is_ascii_digit())
+            && match (unit, count.parse::<u32>()) {
+                ("m", Ok(count)) => count >= 5,
+                ("h" | "d", Ok(count)) => count >= 1,
+                _ => false,
+            }
+    }
 }
 
 /// Whether a client's repeat reads as one (`kuvo-wake` checks it further).
