@@ -186,7 +186,7 @@ impl PeerReads {
             &[],
             self.peers.now(),
         )?;
-        Ok(view::detail(
+        let mut answer = view::detail(
             item,
             all,
             &far.items,
@@ -194,7 +194,21 @@ impl PeerReads {
             &Seen::read(&self.store)?,
             &sessions,
             &Assignees::read(&self.store),
-        ))
+        );
+        if self.store.move_fences().map_or_else(
+            |_| {
+                self.peers
+                    .view()
+                    .local
+                    .ownership
+                    .frozen
+                    .contains(&item.owner)
+            },
+            |fences| !fences.permits(&item.owner, |_| true),
+        ) {
+            view::held(&mut answer["item"]);
+        }
+        Ok(answer)
     }
 
     pub(super) async fn item(&self, name: String, client: bool) -> Result<Value, Refusal> {

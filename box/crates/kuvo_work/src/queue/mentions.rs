@@ -355,6 +355,70 @@ fn live_ranges(text: &str, ranges: &[Mention]) -> bool {
     })
 }
 
+/// A valid, already-bound range is never rebound by an unrelated write.
+/// Missing indexes and as-yet-unbound ranges can gain their item when a number
+/// arrives or an older queue is recovered.
+pub(super) fn needs_sync(item: &Item) -> bool {
+    Index::read(item).is_none_or(|index| {
+        std::iter::once(&index.body)
+            .chain(&index.notes)
+            .flatten()
+            .any(|range| range.item.is_none())
+    })
+}
+
+pub(super) fn before_numbering(items: &[Item]) -> Option<HashMap<String, u32>> {
+    items.iter().any(needs_sync).then(|| {
+        items
+            .iter()
+            .filter(|item| item.removed.is_none())
+            .filter_map(|item| {
+                Some((
+                    item.id.clone(),
+                    item.number.filter(|number| *number < 1_000_000.0)? as u32,
+                ))
+            })
+            .collect()
+    })
+}
+
+pub(super) fn sync_indexes(
+    parser: &Mentions,
+    items: &[Item],
+    before: &HashMap<String, u32>,
+) -> Vec<(usize, Index)> {
+    let mut by_number = HashMap::<u32, &str>::new();
+    for item in items.iter().filter(|item| item.removed.is_none()) {
+        if let Some(number) = item.number.filter(|number| *number < 1_000_000.0) {
+            by_number.entry(number as u32).or_insert(&item.id);
+        }
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(at, item)| {
+            let Some(mut index) = Index::read(item) else {
+                return Some((at, Index::rebuild(parser, item, items, None)));
+            };
+            let mut changed = false;
+            for range in std::iter::once(&mut index.body)
+                .chain(&mut index.notes)
+                .flatten()
+            {
+                if range.item.is_none()
+                    && let Some(id) = by_number
+                        .get(&range.number)
+                        .filter(|id| **id != item.id && before.get(**id) != Some(&range.number))
+                {
+                    range.item = Some((*id).to_owned());
+                    changed = true;
+                }
+            }
+            changed.then(|| (at, Index::from_ranges(index.body, index.notes)))
+        })
+        .collect()
+}
+
 /// A recovered owner file may be missing an index. Rebuild it in memory until
 /// the next write without touching a saved, valid binding.
 pub(super) fn recover(parser: &Mentions, items: &mut [Item]) {

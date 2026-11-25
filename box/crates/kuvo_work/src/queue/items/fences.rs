@@ -30,6 +30,7 @@ impl Fence {
 pub(super) struct Compaction {
     expired: HashSet<String>,
     owners: Vec<String>,
+    sync_mentions: Option<std::collections::HashMap<String, u32>>,
 }
 
 impl Writer {
@@ -99,14 +100,62 @@ impl Writer {
                 true
             });
         }
-        Ok((items, Compaction { expired, owners }))
+        let sync_mentions = crate::queue::mentions::before_numbering(&items);
+        Ok((
+            items,
+            Compaction {
+                expired,
+                owners,
+                sync_mentions,
+            },
+        ))
+    }
+    /// Only the rows whose missing or unbound index changed need writing. This
+    /// runs on the disk worker, under the caller's existing queue lock.
+    pub(super) fn sync_mentions(
+        &self,
+        now: i64,
+        before: &std::collections::HashMap<String, u32>,
+    ) -> Result<(), Refusal> {
+        let all = self.store.items().map_err(storage_refusal)?;
+        let updates = crate::queue::mentions::sync_indexes(&self.refs.mentions, &all, before);
+        let mut documents = std::collections::BTreeMap::new();
+        let mut refused = HashSet::new();
+        for (at, index) in updates {
+            let item = &all[at];
+            if refused.contains(&item.owner) {
+                continue;
+            }
+            if !documents.contains_key(&item.owner) && self.admit(&item.owner).is_err() {
+                refused.insert(item.owner.clone());
+                continue;
+            }
+            let document = self.document(&mut documents, &item.owner, now)?;
+            if let Some(row) = document
+                .items
+                .iter_mut()
+                .find(|row| row["id"] == item.id)
+                .and_then(Value::as_object_mut)
+            {
+                row.insert("mentionIndex".into(), json!(index));
+                row.remove("mentionLinks");
+            }
+        }
+        for document in documents.into_values() {
+            document.save(&self.store).map_err(storage_refusal)?;
+        }
+        Ok(())
     }
 }
 
 impl Compaction {
     pub(super) fn finish(self, writer: &Writer, now: i64) -> Result<(), Refusal> {
         if self.expired.is_empty() {
-            return Ok(());
+            return if let Some(before) = self.sync_mentions {
+                writer.sync_mentions(now, &before)
+            } else {
+                Ok(())
+            };
         }
         for owner in &self.owners {
             let mut document = writer.read_owner(owner, now)?;
@@ -141,6 +190,9 @@ impl Compaction {
                 };
                 result.map_err(Error::from).map_err(storage_refusal)?;
             }
+        }
+        if let Some(before) = self.sync_mentions {
+            writer.sync_mentions(now, &before)?;
         }
         Ok(())
     }
