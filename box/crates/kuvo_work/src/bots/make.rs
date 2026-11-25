@@ -22,7 +22,7 @@ use super::{
     AGENTS_DOWN, Bots,
     here::{DESCRIPTION, js_string, plain_name_of},
     job::{first_message_of, stamp},
-    kit::{NO_KIT, runs_with_agents},
+    kit::{JobText, NO_KIT, runs_with_agents},
     reach::{self, BOT_STEP, segment},
     tell::{digest, note_told, permission},
 };
@@ -147,8 +147,19 @@ impl Bots {
 
     /// `POST kuvo/bots`.
     pub(super) async fn make(&self, given: Value) -> Made {
+        self.make_with(given, None).await
+    }
+
+    /// A bot made, with what another part of this box gives it (`setup`); the same `request`
+    /// gets the same answer for an hour (one with a setup, its own).
+    pub async fn make_with(&self, given: Value, setup: Option<Setup>) -> Made {
         let Some(request) = request_id(&given) else {
-            return self.make_once(given).await;
+            return self.make_once(given, setup).await;
+        };
+        let request = if setup.is_some() {
+            format!("marketplace:{request}")
+        } else {
+            request
         };
         let (answer, mut waiting) = watch::channel(None);
         {
@@ -165,7 +176,7 @@ impl Bots {
                 // (Made whatever becomes of the request that asked.)
                 let bots = self.clone();
                 tokio::spawn(async move {
-                    let made = bots.make_once(given).await;
+                    let made = bots.make_once(given, setup).await;
                     let mut requests = bots.inner.requests.lock().await;
                     if made.is_ok() {
                         if let Some(kept) = requests.answers.get_mut(&request) {
@@ -184,7 +195,7 @@ impl Bots {
         }
     }
 
-    async fn make_once(&self, given: Value) -> Made {
+    async fn make_once(&self, given: Value, setup: Option<Setup>) -> Made {
         let no = |status: u16, message: &str| Err((status, message.to_owned()));
         let Some(kit) = self.kit() else {
             return no(409, NO_KIT);
@@ -334,6 +345,7 @@ impl Bots {
             .clone()
             .unwrap_or_else(|| folder.join("workspace").display().to_string());
         let mut session: Option<String> = None;
+        let made_for = setup.is_some();
         let made = self
             .make_folder(
                 &engine,
@@ -349,6 +361,7 @@ impl Bots {
                     personality: personality
                         .as_ref()
                         .map(|each| (each.id.as_str(), each.instruction.as_str())),
+                    setup,
                 },
                 &mut session,
             )
@@ -385,7 +398,7 @@ impl Bots {
             })
             .filter(|message| !message.is_empty())
             .or(shared);
-        if first.is_none() {
+        if first.is_none() && !made_for {
             let _ = engine
                 .call(
                     Method::POST,
@@ -417,6 +430,7 @@ impl Bots {
             model,
             look,
             personality,
+            setup,
         } = making;
         let fail = |error: std::io::Error| error.to_string();
         std::fs::create_dir_all(folder.join("workspace")).map_err(fail)?;
@@ -427,6 +441,15 @@ impl Bots {
             std::fs::create_dir_all(folder.join("memory")).map_err(fail)?;
         }
         std::fs::write(folder.join("MEMORY.md"), kit.memory_for(name)).map_err(fail)?;
+        let job = match setup {
+            Some(Setup { job, prepare }) => {
+                self.zone_files().write(folder).map_err(fail)?;
+                prepare(folder, Path::new(directory)).map_err(fail)?;
+                super::job::project_job(folder, &job).map_err(fail)?;
+                Some(job)
+            }
+            None => None,
+        };
         let own = Rule::new(
             "external_directory",
             &folder.join("*").display().to_string(),
@@ -479,7 +502,12 @@ impl Bots {
             &folder.display().to_string(),
             personality.map(|(_, instruction)| instruction),
             project,
-            None,
+            job.as_ref()
+                .map(|job| JobText {
+                    line: job.line.clone(),
+                    section: job.details.clone(),
+                })
+                .as_ref(),
         );
         if !reach::tell(engine, &made, &told).await {
             return Err("Its conversation wasn’t told what it is.".into());
@@ -500,7 +528,10 @@ impl Bots {
         let mut described = Map::new();
         described.insert("created".into(), json!(now));
         described.insert("id".into(), json!(id));
-        described.insert("job".into(), json!(""));
+        described.insert(
+            "job".into(),
+            json!(job.as_ref().map_or("", |job| job.line.as_str())),
+        );
         described.insert("kuvo".into(), json!(DESCRIPTION));
         described.insert("look".into(), look.clone());
         described.insert("model".into(), model.clone());
@@ -528,6 +559,7 @@ struct Making<'a> {
     model: &'a Value,
     look: &'a Value,
     personality: Option<(&'a str, &'a str)>,
+    setup: Option<Setup>,
 }
 
 /// Whether a value counts as given, as JavaScript tests it.
@@ -539,6 +571,14 @@ pub fn truthy(value: &Value) -> bool {
         Value::String(text) => !text.is_empty(),
         _ => true,
     }
+}
+
+/// What a bot made for another part of this box comes with (the Marketplace's Add Agent): its job,
+/// and what's put in its folder before its conversation is made (`folder`, then the folder it
+/// works in).
+pub struct Setup {
+    pub job: super::job::Job,
+    pub prepare: kuvo_services::marketplace::bots::Prepare,
 }
 
 /// Requests' answers, shared by every copy of the bots.

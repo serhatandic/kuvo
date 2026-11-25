@@ -10,7 +10,6 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::config::sorted_json;
 
 use super::{
     catalog::{CatalogAgent, CatalogStore},
@@ -121,32 +120,88 @@ pub fn local_agent_bots(bots_dir: &Path, here_key: &str) -> HashMap<String, Vec<
     by_agent
 }
 
-pub fn bot_options(
-    agent: &CatalogAgent,
-    catalog: &CatalogStore,
-    installations: &InstallationsStore,
-    connections: &Connections,
-) -> Value {
+/// How this computer's bots are reached from here (its box's bots, given as the box starts): the
+/// models it offers, a bot as it's listed, and a bot made with an agent's job and what goes in its
+/// folder first.
+pub trait AgentBots: Send + Sync {
+    /// What the model picker offers here, starting on `wanted` where it runs; the engine started
+    /// for it (`start`), else its models only while it runs. None where nothing can say.
+    fn offered<'a>(&'a self, wanted: Option<&'a Value>, start: bool) -> futures_util::future::BoxFuture<'a, Option<Value>>;
+    /// A bot here, as `kuvo/bots` lists it.
+    fn listed(&self, id: &str) -> Option<Value>;
+    /// Whether a bot on `model` runs with the coding agents (not the engine).
+    fn runs_with_agents(&self, model: &Value) -> bool;
+    /// `POST kuvo/bots` with `given`, and `setup`: its status and answer.
+    fn make(&self, given: Value, setup: AgentSetup) -> futures_util::future::BoxFuture<'_, (u16, Value)>;
+}
+
+/// What's put in a bot's folder before its conversation is made: its folder, then the folder it
+/// works in.
+pub type Prepare = Box<dyn FnOnce(&Path, &Path) -> std::io::Result<()> + Send>;
+
+/// What an agent's bot is made with besides what `POST kuvo/bots` takes: its job, and what's put
+/// in its folder before its conversation is made (its folder, then the folder it works in).
+pub struct AgentSetup {
+    pub line: String,
+    pub details: String,
+    pub prepare: Prepare,
+}
+
+/// The apps an agent needs that aren't connected here, by their catalog titles.
+pub fn missing_apps(agent: &CatalogAgent, catalog: &CatalogStore, installations: &InstallationsStore, connections: &Connections) -> Vec<Value> {
     let apps = installations.read().map(|s| s.apps).unwrap_or_default();
     let cat_apps = catalog.catalog().apps;
-    let missing: Vec<Value> = agent.apps.iter().filter_map(|id| {
+    agent.apps.iter().filter_map(|id| {
         let ready = apps.iter().find(|a| a.id == *id).is_some_and(|a| connections.connection_state(a) == "ready");
         if ready { return None; }
         let title = cat_apps.iter().find(|a| a.id == *id).map_or(id.as_str(), |a| a.title.as_str());
         Some(json!({ "id": id, "title": title }))
-    }).collect();
+    }).collect()
+}
+
+/// What adding `agent` offers here: the models the picker offers that a bot can start on (not a
+/// Custom Auto list, nor one retiring or kept out of its agent's picker), starting on its
+/// suggested one where it runs; the apps still to connect; and its routines, each off.
+pub async fn bot_options(agent: &CatalogAgent, bots: Option<&dyn AgentBots>, missing: Vec<Value>) -> Value {
+    let wanted = json!({ "providerID": agent.suggested_model.provider_id, "id": agent.suggested_model.id });
+    let offered = match bots {
+        Some(bots) => bots.offered(Some(&wanted), false).await,
+        None => None,
+    };
+    let mut answer = offered.unwrap_or_else(|| json!({ "models": [], "providers": [], "starred": [], "known": { "engine": false, "agents": false } }));
+    if let Some(models) = answer["models"].as_array_mut() {
+        models.retain(|model| model["providerID"] != "auto" && model["retiring"] != true && model["hidden"] != true);
+    }
     let routines: Vec<Value> = agent.routines.iter().map(|r| {
         let mut obj = serde_json::to_value(r).unwrap_or_default();
         if let Some(m) = obj.as_object_mut() { m.insert("enabled".into(), Value::Bool(false)); }
         obj
     }).collect();
-    let _ = sorted_json(&Value::Null);
-    json!({
-        "models": [],
-        "suggested": agent.suggested_model,
-        "missing": missing,
-        "routines": routines,
-    })
+    answer["missing"] = json!(missing);
+    answer["routines"] = json!(routines);
+    answer
+}
+
+/// Whether `model` is one the picker offers here (by its id, or another it's known by).
+pub fn offered_includes(offered: &Value, model: &Value) -> bool {
+    offered["models"].as_array().is_some_and(|models| models.iter().any(|each| {
+        each["providerID"] == model["providerID"]
+            && (each["id"] == model["id"] || each["aliases"].as_array().is_some_and(|aliases| aliases.contains(&model["id"])))
+    }))
+}
+
+/// A routine of an agent's, as a wake-up of its bot's: its title as its summary, due a day or a
+/// week from now, and again as often.
+pub fn seed_routine(folder: &Path, routine: &super::catalog::Routine, now_seconds: i64) -> std::io::Result<()> {
+    let due = now_seconds + if routine.every == "1w" { 7 } else { 1 } * 86_400;
+    let mut random = [0u8; 8];
+    getrandom::fill(&mut random).map_err(std::io::Error::other)?;
+    let letters = hex::encode(random);
+    let summaries = folder.join("summaries");
+    fs::create_dir_all(&summaries)?;
+    fs::write(summaries.join(&letters), &routine.title)?;
+    fs::create_dir_all(folder.join("wakes"))?;
+    fs::write(folder.join("wakes").join(format!("{due}-{letters}-{}", routine.every)), &routine.note)
 }
 
 pub fn valid_request_id(s: &str) -> bool {

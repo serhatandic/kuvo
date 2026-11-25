@@ -25,7 +25,11 @@ use crate::{
 };
 
 use super::{
-    bots::{AgentBotRef, bot_options, bots_dir_for, local_agent_bots, project_bot_scopes, valid_request_id},
+    bots::{
+        AgentBotRef, AgentBots, AgentSetup, MARKETPLACE_SCOPE, MarketplaceScope, bot_options, bots_dir_for,
+        local_agent_bots, marketplace_scope, missing_apps, offered_includes, project_bot_scope, project_bot_scopes,
+        seed_routine, valid_request_id,
+    },
     catalog::{CatalogAgent, CatalogSkill, CatalogStore, is_endpoint},
     connections::{ConnectionError, Connections},
     installations::{
@@ -92,6 +96,8 @@ pub struct MarketplaceService {
     pub config: ConfigPaths,
     pub peers: Arc<dyn MarketplacePeers>,
     previews: Mutex<HashMap<String, PreviewEntry>>,
+    /// This computer's bots, for Add Agent: given once its box has them.
+    agent_bots: std::sync::OnceLock<Arc<dyn AgentBots>>,
 }
 
 impl MarketplaceService {
@@ -105,8 +111,18 @@ impl MarketplaceService {
         Self {
             home: home.to_owned(), account_home: account_home.to_owned(), is_mac, computer_name,
             bots_dir: bots_dir_for(home), catalog, installations, connections, skills, skill_library,
-            config, peers, previews: Mutex::new(HashMap::new()),
+            config, peers, previews: Mutex::new(HashMap::new()), agent_bots: std::sync::OnceLock::new(),
         }
+    }
+
+    /// This computer's bots, for Add Agent.
+    pub fn give_agent_bots(&self, bots: Arc<dyn AgentBots>) {
+        let _ = self.agent_bots.set(bots);
+    }
+
+    async fn agent_options(&self, agent: &CatalogAgent) -> Value {
+        let missing = missing_apps(agent, &self.catalog, &self.installations, &self.connections);
+        bot_options(agent, self.agent_bots.get().map(AsRef::as_ref), missing).await
     }
 
     pub fn reconcile(&self, state: Option<&Installations>, discovered: &[PathBuf]) -> Vec<String> {
@@ -489,12 +505,15 @@ impl MarketplaceService {
             return self.shared_mutation(&act.item, &act.body).await;
         }
         if let Some(id) = act.item.strip_prefix("options/") && act.method == "GET" {
-            return self.catalog.offered_agents().into_iter().find(|a| a.id == id)
-                .map_or_else(|| no(404, MISSING), |a| (200, bot_options(&a, &self.catalog, &self.installations, &self.connections)));
+            let found = self.catalog.offered_agents().into_iter().find(|a| a.id == id)
+                .map(|a| async move { (200, self.agent_options(&a).await) });
+            return match found { Some(options) => options.await, None => no(404, MISSING) };
         }
         if let Some(id) = act.item.strip_prefix("add-agent/") && act.method == "POST" {
-            return self.catalog.offered_agents().into_iter().find(|a| a.id == id)
-                .map_or_else(|| no(404, MISSING), |a| self.add_agent_local(&a, &act.body));
+            return match self.catalog.offered_agents().into_iter().find(|a| a.id == id) {
+                Some(a) => self.add_agent_local(&a, &act.body).await,
+                None => no(404, MISSING),
+            };
         }
         no(404, MISSING)
     }
@@ -514,16 +533,33 @@ impl MarketplaceService {
         self.previews.lock().ok()?.get(id).filter(|e| e.expires > Instant::now()).map(|e| e.skill.clone())
     }
 
-    fn add_agent_local(&self, agent: &CatalogAgent, body: &Value) -> (u16, Value) {
+    async fn add_agent_local(&self, agent: &CatalogAgent, body: &Value) -> (u16, Value) {
         let problems = self.reconcile(None, &[]);
         if !problems.is_empty() { return no(409, &problems[0]); }
-        let model_ok = body.get("model").is_some_and(|m| !str_at(m, "id").is_empty() && !matches!(str_at(m, "providerID"), "" | "auto"));
+        let model = body.get("model").filter(|m| m.get("id").is_some_and(Value::is_string) && m.get("providerID").is_some_and(Value::is_string));
+        let model_ok = model.is_some_and(|m| str_at(m, "providerID") != "auto");
         let routines_ok = body.get("routines").is_none_or(|v| v.as_array().is_some_and(|a| a.iter().all(|id| id.as_str().is_some_and(|s| agent.routines.iter().any(|r| r.id == s)))));
-        if !valid_request_id(str_at(body, "request")) || !model_ok || !body.get("routine").is_none_or(Value::is_boolean) || !routines_ok {
+        let request = str_at(body, "request");
+        if !valid_request_id(request) || !model_ok || !body.get("routine").is_none_or(Value::is_boolean) || !routines_ok {
             return no(400, "Choose a model and account, and send the original Add request ID.");
         }
         if opt(body, "version") != Some(agent.version.as_str()) {
             return no(409, "This agent changed. Open its details and review the new version.");
+        }
+        let Some(bots) = self.agent_bots.get() else {
+            return no(503, "This computer’s bots aren’t ready yet. Try again in a moment.");
+        };
+        // The same request again: the bot it made, once.
+        let made = std::fs::read_dir(&self.bots_dir).into_iter().flatten().flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|id| id.starts_with("bot_"))
+            .find_map(|id| marketplace_scope(&self.bots_dir.join(&id).join("workspace")).filter(|scope| scope.request == request).map(|scope| (id, scope)));
+        if let Some((id, scope)) = made {
+            if scope.agent != agent.id { return no(409, "Use a new request ID for another agent."); }
+            return match bots.listed(&id) {
+                Some(bot) => (201, json!({ "bot": bot, "firstMessage": null })),
+                None => no(409, "Use a new request ID for another agent."),
+            };
         }
         let state = match self.read_state() { Ok(s) => s, Err(e) => return e };
         let here = if self.is_mac { "this Mac" } else { "this machine" };
@@ -533,7 +569,37 @@ impl MarketplaceService {
         if agent.skills.iter().any(|id| !state.skills.iter().any(|s| s.name == *id)) {
             return no(409, "This computer is still receiving the required skills. Try again shortly.");
         }
-        no(422, "Choose a model and account available on this computer.")
+        let model = model.cloned().unwrap_or_default();
+        // (The engine started for one of its models; a coding agent's runs without it.)
+        let start = !bots.runs_with_agents(&model);
+        let runs = bots.offered(Some(&model), start).await.is_some_and(|offered| offered_includes(&offered, &model));
+        if !runs { return no(422, "Choose a model and account available on this computer."); }
+        let scope = MarketplaceScope {
+            agent: agent.id.clone(), version: agent.version.clone(), request: request.to_owned(),
+            apps: agent.apps.clone(), skills: agent.skills.clone(),
+        };
+        let (routines, chosen) = (agent.routines.clone(), body.get("routines").and_then(Value::as_array).cloned());
+        let turned_on = body.get("routine") == Some(&Value::Bool(true));
+        let prepare = move |folder: &Path, directory: &Path| -> std::io::Result<()> {
+            let text = serde_json::to_vec(&scope).map_err(std::io::Error::other)?;
+            kuvo_store::files::write_atomic(&directory.join(MARKETPLACE_SCOPE), &text)?;
+            project_bot_scope(directory, &scope, &state).map_err(std::io::Error::other)?;
+            if routines.is_empty() { return Ok(()); }
+            let now = jiff::Timestamp::now().as_second();
+            // `routines`: the ones turned on, scheduled and running; none on, every one
+            // scheduled, paused (unless `routine` turns them all on).
+            let picked: Vec<_> = routines.iter().filter(|routine| chosen.as_ref().is_some_and(|chosen| chosen.contains(&json!(routine.id)))).collect();
+            if !picked.is_empty() {
+                return picked.into_iter().try_for_each(|routine| seed_routine(folder, routine, now));
+            }
+            std::fs::write(folder.join("paused"), "paused")?;
+            routines.iter().try_for_each(|routine| seed_routine(folder, routine, now))?;
+            if turned_on { std::fs::remove_file(folder.join("paused"))?; }
+            Ok(())
+        };
+        let name = body.get("name").filter(|name| !name.is_null()).cloned().unwrap_or_else(|| json!(agent.title));
+        let given = json!({ "request": request, "name": name, "model": model });
+        bots.make(given, AgentSetup { line: agent.summary.clone(), details: agent.instructions.clone(), prepare: Box::new(prepare) }).await
     }
 
     fn require_app(&self, id: &str) -> Result<InstalledApp, (u16, Value)> {
@@ -921,7 +987,7 @@ pub fn register(routes: &mut Registry, svc: Arc<MarketplaceService>) {
         Some(agent) => {
             let comps = s.peers.computers(&s.computer_name);
             let Some(comp) = comps.iter().find(|c| c.key == q.get("computer").map(String::as_str).unwrap_or("")) else { return reply(no(400, "Choose a computer in your setup.")); };
-            let (st, mut val) = if comp.here { (200, bot_options(&agent, &s.catalog, &s.installations, &s.connections)) }
+            let (st, mut val) = if comp.here { (200, s.agent_options(&agent).await) }
                 else { s.peers.forward(&comp.key, PeerAct { method: "GET".into(), item: format!("options/{id}"), body: json!({}) }).await };
             if st == 200 && let Some(missing) = val.get_mut("missing").and_then(Value::as_array_mut) {
                 let n = missing.len();
@@ -946,7 +1012,7 @@ pub fn register(routes: &mut Registry, svc: Arc<MarketplaceService>) {
                 if opt(&b, "version") != Some(agent.version.as_str()) { return Err(pair_refusal(no(409, "Review the current version before adding this agent."))); }
                 let saved = s.save("agent-skills", json!({ "id": id, "version": agent.version }), &[]).await;
                 if saved.0 != 200 { return Err(pair_refusal(saved)); }
-                let (st, val) = if comp.here { s.add_agent_local(&agent, &b) } else { s.peers.forward(&comp.key, PeerAct { method: "POST".into(), item: format!("add-agent/{id}"), body: b }).await };
+                let (st, val) = if comp.here { s.add_agent_local(&agent, &b).await } else { s.peers.forward(&comp.key, PeerAct { method: "POST".into(), item: format!("add-agent/{id}"), body: b }).await };
                 if st == 201 { Ok(RouteReply::json_as_kept::<201>(val)) } else { Err(pair_refusal((st, val))) }
             }
         });

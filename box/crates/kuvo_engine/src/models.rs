@@ -645,13 +645,64 @@ async fn picker(
     list: &LocalSessions,
     path: &str,
 ) -> Result<RouteReply<offered::Spec>, Refusal> {
+    let (answer, providers) = offer(engine, list, path, Demand::Start).await?;
+    // Existing clients read the account detail carried beside a provider's base wire fields.
+    RouteReply::json_with::<200>(sessions::typed(answer)?, [("providers", providers)]).map_err(
+        |_| {
+            Refusal::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The model picker could not be read.",
+            )
+        },
+    )
+}
+
+impl Engine {
+    /// What the model picker offers here (`kuvo/models/offered`), starting on `wanted` where it
+    /// runs: the engine started for it (`start`), else its models only while it runs. None where
+    /// neither it nor the coding agents can say.
+    pub async fn offered_here(
+        &self,
+        list: &LocalSessions,
+        wanted: Option<&Value>,
+        start: bool,
+    ) -> Option<Value> {
+        let mut path = "kuvo/models/offered".to_owned();
+        if let Some(wanted) = wanted
+            && let (Some(provider), Some(id)) =
+                (wanted["providerID"].as_str(), wanted["id"].as_str())
+        {
+            path = format!(
+                "{path}?provider={}&model={}",
+                crate::api::segment(provider),
+                crate::api::segment(id)
+            );
+        }
+        let demand = if start {
+            Demand::Start
+        } else {
+            Demand::Existing
+        };
+        let (mut answer, providers) = offer(self, list, &path, demand).await.ok()?;
+        answer["providers"] = providers;
+        Some(answer)
+    }
+}
+
+/// The picker's answer, and its providers apart (as the route carries them).
+async fn offer(
+    engine: &Engine,
+    list: &LocalSessions,
+    path: &str,
+    demand: Demand,
+) -> Result<(Value, Value), Refusal> {
     let query = |key| {
         crate::query(path, key)
             .map(|text| text.trim().to_owned())
             .filter(|text| !text.is_empty())
     };
     let refresh = query("refresh").as_deref() == Some("1");
-    let lease = engine.acquire(Demand::Start).await;
+    let lease = engine.acquire(demand).await;
     if lease.is_none() && engine.agent_models.is_none() {
         return Err(Refusal::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -786,14 +837,7 @@ async fn picker(
         };
         answer["note"] = json!(note);
     }
-    // Existing clients read the account detail carried beside a provider's base wire fields.
-    RouteReply::json_with::<200>(sessions::typed(answer)?, [("providers", json!(providers))])
-        .map_err(|_| {
-            Refusal::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "The model picker could not be read.",
-            )
-        })
+    Ok((answer, json!(providers)))
 }
 
 fn article(word: &str) -> &'static str {

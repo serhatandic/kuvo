@@ -398,6 +398,10 @@ pub async fn run(
         Arc::new(super::bot_setup::BotSetup(setup.handle())),
     );
     bots.register(&mut routes);
+    // (Add Agent in the Marketplace makes its bots here.)
+    resident_marketplace
+        .service
+        .give_agent_bots(Arc::new(bots.clone()));
     let bots_follow_engine = bots.follow_engine();
     // Bots' old keys of their own taken away, with no client there.
     let _own_keys = kuvo_work::bots::own_keys::keep_bots_own_keys_gone(
