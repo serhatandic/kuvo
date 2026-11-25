@@ -98,6 +98,18 @@ the races that span removal, backup, moves, and an authority change.
 
 ## Verification
 
+At the branch tip after merging main on 2026-11-25, the five process areas
+(adding, removal, SSH adding, two boxes, setup judge) pass on macOS: Rust 65
+with no skips; TypeScript 52 with thirteen skips. Rust SSH cases need a copied
+release under 128 MiB, so they run with a build at `opt-level=1`, without debug
+information and stripped. The static x86-64 musl build in WSL 2 passes 60 with
+five skips; TypeScript there passes 47 with eighteen skips. Native Windows passes
+29 with 34 platform skips. Its two re-enrollment cases failed until the
+disposable artifact index was left out of retained work, and are rerun below.
+The TypeScript box does not run natively (it cannot fsync there). Seen once:
+TypeScript's offline wipe case timed out waiting for the member to learn the
+main's removal capability, and passed on the next run.
+
 In the five selected process areas through U23 and C25, Rust passes 46 tests
 on macOS and TypeScript passes 42 with four Rust-specific skips. An earlier
 Rust workspace compile check also passes. The static x86-64 musl build passes
