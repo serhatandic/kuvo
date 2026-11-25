@@ -363,6 +363,24 @@ pub fn hold(folder: &Path) -> Option<String> {
         .map(|raw| String::from_utf8_lossy(&raw).into_owned())
 }
 
+/// A conversation archived (or brought back): its own wake-ups wait while it's archived and come
+/// back with it. A hold of your own stays; a move's becomes archiving's.
+pub fn hold_archived(sessions: &Path, session: &str, archived: bool) {
+    if !session_id(session) {
+        return;
+    }
+    let folder = sessions.join(session);
+    let file = folder.join("paused");
+    let held = hold(&folder);
+    if archived {
+        if folder.exists() && held.as_deref().is_none_or(|held| held == "moving") {
+            let _ = std::fs::write(&file, "archived");
+        }
+    } else if matches!(held.as_deref(), Some("archived" | "")) {
+        let _ = std::fs::remove_file(&file);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
