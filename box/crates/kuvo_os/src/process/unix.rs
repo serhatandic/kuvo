@@ -7,6 +7,105 @@ use std::{
     time::Instant,
 };
 
+#[cfg(target_os = "linux")]
+pub(super) fn exit_wait(
+    identity: &ProcessIdentity,
+) -> io::Result<Box<dyn FnOnce() -> io::Result<()> + Send>> {
+    use std::os::fd::AsRawFd;
+    if identity.state() == ProcessState::Stale {
+        return Ok(Box::new(|| Ok(())));
+    }
+    let pid = Pid::from_raw(identity.pid as i32).ok_or(io::ErrorKind::InvalidInput)?;
+    let fd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty())?;
+    if identity.state() == ProcessState::Stale {
+        return Ok(Box::new(|| Ok(())));
+    }
+    Ok(Box::new(move || {
+        let mut poll = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        loop {
+            // SAFETY: the owned pidfd and writable single poll record live for the call.
+            if unsafe { libc::poll(&mut poll, 1, -1) } > 0 {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }))
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn exit_wait(
+    identity: &ProcessIdentity,
+) -> io::Result<Box<dyn FnOnce() -> io::Result<()> + Send>> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    if identity.state() == ProcessState::Stale {
+        return Ok(Box::new(|| Ok(())));
+    }
+    // SAFETY: kqueue returns a new owned descriptor or an error.
+    let fd = unsafe { libc::kqueue() };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let event = libc::kevent {
+        ident: identity.pid as usize,
+        filter: libc::EVFILT_PROC,
+        flags: libc::EV_ADD | libc::EV_ONESHOT,
+        fflags: libc::NOTE_EXIT,
+        data: 0,
+        udata: std::ptr::null_mut(),
+    };
+    // SAFETY: a single live event registers notification of that PID, without signalling it.
+    if unsafe {
+        libc::kevent(
+            fd.as_raw_fd(),
+            &event,
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+        )
+    } < 0
+    {
+        if identity.state() == ProcessState::Stale {
+            return Ok(Box::new(|| Ok(())));
+        }
+        return Err(io::Error::last_os_error());
+    }
+    if identity.state() == ProcessState::Stale {
+        return Ok(Box::new(|| Ok(())));
+    }
+    Ok(Box::new(move || {
+        loop {
+            // SAFETY: the live descriptor and initialized writable event wait for NOTE_EXIT.
+            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
+            if unsafe {
+                libc::kevent(
+                    fd.as_raw_fd(),
+                    std::ptr::null(),
+                    0,
+                    &mut event,
+                    1,
+                    std::ptr::null(),
+                )
+            } > 0
+            {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }))
+}
+
 pub(super) struct Owner {
     child: Child,
     status: Option<ExitStatus>,

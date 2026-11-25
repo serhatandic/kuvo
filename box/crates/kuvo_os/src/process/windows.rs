@@ -29,6 +29,32 @@ use windows_sys::Win32::{
     },
 };
 
+pub(super) fn exit_wait(
+    identity: &ProcessIdentity,
+) -> io::Result<Box<dyn FnOnce() -> io::Result<()> + Send>> {
+    if identity.state() == ProcessState::Stale {
+        return Ok(Box::new(|| Ok(())));
+    }
+    // SAFETY: OpenProcess returns an owned handle pinned to the exact process.
+    let process = owned(unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            identity.pid,
+        )
+    })?;
+    if start_time(process.as_raw_handle())? != identity.start_identity {
+        return Ok(Box::new(|| Ok(())));
+    }
+    Ok(Box::new(move || {
+        // SAFETY: the owned process handle has synchronization access.
+        match unsafe { WaitForSingleObject(process.as_raw_handle(), INFINITE) } {
+            WAIT_OBJECT_0 => Ok(()),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }))
+}
+
 pub(super) struct Owner {
     process: OwnedHandle,
     job: OwnedHandle,

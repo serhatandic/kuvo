@@ -459,16 +459,25 @@ fn network_filesystem(path: &Path) -> bool {
 pub struct FileSet {
     hub: WatchHub,
     paths: Vec<PathBuf>,
-    watches: BTreeMap<PathBuf, (BTreeSet<PathBuf>, JoinHandle<()>)>,
+    folders: Vec<(PathBuf, bool)>,
+    watches: BTreeMap<PathBuf, (Targets, JoinHandle<()>)>,
     tx: mpsc::UnboundedSender<()>,
     rx: mpsc::UnboundedReceiver<()>,
 }
+#[derive(Default, PartialEq, Eq, Clone)]
+struct Targets {
+    names: BTreeSet<PathBuf>,
+    all: bool,
+    recursive: bool,
+}
+
 impl FileSet {
     pub fn new(hub: WatchHub) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             hub,
             paths: Vec::new(),
+            folders: Vec::new(),
             watches: BTreeMap::new(),
             tx,
             rx,
@@ -476,6 +485,7 @@ impl FileSet {
     }
     pub fn clear(&mut self) {
         self.paths.clear();
+        self.folders.clear();
         for (_, (_, task)) in std::mem::take(&mut self.watches) {
             task.abort();
         }
@@ -486,27 +496,48 @@ impl FileSet {
         self.bind();
     }
     pub fn set_files(&mut self, paths: Vec<PathBuf>) {
+        self.set_targets(paths, Vec::new());
+    }
+    /// Watch named files and directory contents. A folder receives its own shallow or recursive
+    /// watch when present; until then, it is watched as a name in its nearest existing ancestor.
+    pub fn set_targets(&mut self, paths: Vec<PathBuf>, folders: Vec<(PathBuf, bool)>) {
         self.paths = paths;
+        self.folders = folders;
         self.bind();
     }
     fn bind(&mut self) {
-        let mut wanted = BTreeMap::<PathBuf, BTreeSet<PathBuf>>::new();
-        let mut watch = |mut path: PathBuf| {
+        let mut wanted = BTreeMap::<PathBuf, Targets>::new();
+        fn named(wanted: &mut BTreeMap<PathBuf, Targets>, mut path: PathBuf) {
             while let Some(parent) = path.parent() {
                 if parent.is_dir() {
                     if let Some(name) = path.file_name() {
                         wanted
                             .entry(parent.to_owned())
                             .or_default()
+                            .names
                             .insert(name.into());
                     }
                     break;
                 }
                 path = parent.to_owned();
             }
-        };
+        }
         for path in &self.paths {
-            watch(path.clone());
+            named(&mut wanted, path.clone());
+            if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+                if let Ok(target) = path.canonicalize() {
+                    named(&mut wanted, target);
+                }
+            }
+        }
+        for (folder, recursive) in &self.folders {
+            // Watch both its name (for replacement/removal) and its contents while it exists.
+            named(&mut wanted, folder.clone());
+            if folder.is_dir() {
+                let target = wanted.entry(folder.clone()).or_default();
+                target.all = true;
+                target.recursive |= *recursive;
+            }
         }
         self.watches.retain(|folder, (names, task)| {
             let same = wanted.get(folder) == Some(names) && !task.is_finished();
@@ -526,14 +557,27 @@ impl FileSet {
                 names.clone(),
             );
             let task = tokio::spawn(async move {
-                let Ok(mut sub) = hub.subscribe(target, Options::default()).await else {
+                let Ok(mut sub) = hub
+                    .subscribe(
+                        target,
+                        Options {
+                            recursive: names_for_task.recursive,
+                            create: false,
+                        },
+                    )
+                    .await
+                else {
                     return;
                 };
+                // Re-read once the actual watch is armed, closing the registration/read race.
+                let _ = tx.send(());
                 while let Some(notice) = sub.recv().await {
                     match notice {
                         Notice::Changed { paths }
                             if !paths.iter().any(|path| {
-                                path.as_os_str().is_empty() || names_for_task.contains(path)
+                                names_for_task.all
+                                    || path.as_os_str().is_empty()
+                                    || names_for_task.names.contains(path)
                             }) =>
                         {
                             continue;

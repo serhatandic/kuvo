@@ -216,11 +216,34 @@ pub fn start(
         pack_server,
     };
     let task = tokio::spawn(async move {
-        let mut ticks = tokio::time::interval(Duration::from_secs(2));
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut peers = fleet.peers.reader();
+        let mut setup = fleet.setup.clone();
+        let mut engine = fleet.engine.states();
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        let home = &fleet.home;
+        files.set_files(vec![
+            home.root().join(kuvo_keeper::SELECTOR),
+            home.root().join("machines.json"),
+            home.updates().join("release/boxes.json"),
+            home.run().join("off"),
+            home.run().join("paused"),
+            home.run().join("stopped"),
+            home.run().join("previous"),
+            home.run().join("fleet-ready.json"),
+            home.run().join("fleet-check.json"),
+            home.run().join("engine.json"),
+        ]);
         loop {
+            if let Err(error) = fleet.round().await {
+                eprintln!("Kuvo updates: {error}");
+            }
+            let deadline = fleet.next_round();
             tokio::select! {
-                _ = ticks.tick() => {},
+                _ = async { match deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => {},
+                changed = peers.changed() => if changed.is_err() { return },
+                changed = setup.changed() => if !changed { return },
+                changed = engine.changed() => if changed.is_err() { return },
+                _ = files.changed() => {},
                 request = requests.recv() => match request {
                     Some(Check::Local(answer)) => { let _ = answer.send(fleet.request_check(true)); }
                     Some(Check::Peer) => { let _ = fleet.request_check(false); }
@@ -229,9 +252,6 @@ pub fn start(
                     Some(Check::PeerRetry(release)) => { let _ = fleet.retry_local(&release.version, Some(&release.sha256)); }
                     None => return,
                 }
-            }
-            if let Err(error) = fleet.round().await {
-                eprintln!("Kuvo updates: {error}");
             }
         }
     });
@@ -475,6 +495,45 @@ impl Drop for Fleet {
 }
 
 impl Fleet {
+    /// An idle fleet waits for its next check. An actual release in flight still needs a
+    /// short deadline for progress, waiting for the engine to drain and the switch barrier.
+    fn next_round(&self) -> Option<Instant> {
+        let view = self.peers.reader().view();
+        let primary = view.roster.main.is_none() && view.roster.members.is_empty()
+            || view.roster.main.is_some() && view.roster.main == view.roster.here;
+        let active = self.checking.is_some()
+            || self.bridge_fetch.is_some()
+            || self.pending.is_some()
+            || self
+                .last_sent
+                .as_ref()
+                .is_some_and(|sent| sent.facts.candidate.is_some())
+            || self.home.run().join("previous").exists();
+        let now = Instant::now();
+        if active {
+            return Some(now + Duration::from_secs(2));
+        }
+        let check = primary.then(|| self.next_check.max(now + Duration::from_secs(30)));
+        let installed_release = self
+            .last_sent
+            .as_ref()
+            .is_some_and(|sent| sent.facts.running_manifest.is_some());
+        let machines =
+            (primary && installed_release && self.home.root().join("machines.json").is_file())
+                .then(|| self.released_machines.deadline());
+        let bridge = self
+            .last_sent
+            .as_ref()
+            .and_then(|sent| sent.bridge.as_ref())
+            .filter(|bridge| bridge.facts.kuvo.is_none())
+            .map(|_| self.next_bridge);
+        [check, machines, bridge]
+            .into_iter()
+            .flatten()
+            .map(|at| at.max(now + Duration::from_secs(2)))
+            .min()
+    }
+
     fn request_check(&mut self, local: bool) -> io::Result<CheckReply> {
         let reader = self.peers.reader();
         let view = reader.view();

@@ -98,10 +98,12 @@ pub(crate) fn watch(
             }
             // Retain no sender while the feed is open; the list owns its lifetime.
             drop(keep);
+            // Subscribe before looking: a parked engine needs no retry timer. A state change
+            // tells us when it can have events again.
+            states.borrow_and_update();
             let Some(lease) = engine.acquire(crate::lifetime::Demand::Passive).await else {
-                tokio::select! {
-                    _ = states.changed() => {},
-                    _ = sleep(Duration::from_secs(2)) => {},
+                if states.changed().await.is_err() {
+                    break;
                 }
                 continue;
             };
@@ -133,6 +135,14 @@ pub(crate) fn watch(
                 && response.status().is_success()
             {
                 engine.catalogs.invalidate(false);
+                // A reconnected feed could have missed an inventory event. The first connection
+                // already has the engine-state change to seed the list; recovery needs a reread.
+                if !new_generation {
+                    inventory_changed.send_modify(|revision| *revision = revision.wrapping_add(1));
+                    if let Some(list) = refresh.upgrade() {
+                        let _ = list.try_send(());
+                    }
+                }
                 if new_generation {
                     generation = Some(pin);
                     if let Some(previous) = scan.take() {
@@ -177,7 +187,6 @@ pub(crate) fn watch(
                             continue;
                         },
                         _ = states.changed() => break,
-                        _ = sleep(Duration::from_secs(60)) => break,
                     };
                     let Some(Ok(chunk)) = next else {
                         break;

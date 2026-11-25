@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers keep sessions and followed Settings pages current from changes, and do less background work when no update, wake-up or peer letter is due.
+
 - Marketplace tools now follow changes to installations, settings and the vault instead of rechecking every few seconds.
 
 - Rust computers send changed Library and Outputs lists to one another without repeatedly sending unchanged lists.

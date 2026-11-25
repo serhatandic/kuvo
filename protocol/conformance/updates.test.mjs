@@ -823,6 +823,18 @@ test("a member asks its main to check the release feed now or when it returns", 
     const memberLink = readJSON(path.join(run, "link.json"));
     const memberAddress = relayAddress(Buffer.from(memberLink.secret, "base64url"));
     const resume = relay.pause(mainAddress, memberAddress);
+    // The pause prevents new traffic but cannot recall messages already on the socket.
+    // Append one authenticated fixture announcement, and wait until the member has
+    // filed it. Its actor processes the previous mail before this precise marker.
+    const codec = await referenceMailCodec(t);
+    const announcements = path.join(run, "peer-agents.json");
+    const previous = await until(() => fs.existsSync(announcements) && readJSON(announcements)[mainKey], "the member must have the main's announcement");
+    const at = Math.max(Date.now(), previous.at + 1);
+    const mainLink = readJSON(path.join(main.env.HOME, ".kuvo-code/run/link.json"));
+    const marker = codec.frame(codec.Frame.mail, 0, codec.sealOneWay(encode({ at, agents: { ...previous, at } }),
+      Buffer.from(mainLink.key, "base64url"), Buffer.from((await request(second, "GET", "kuvo/setup")).json.you.key, "base64url")).message);
+    relay.replay({ from: mainAddress, to: memberAddress, payload: marker });
+    await until(() => readJSON(announcements)[mainKey]?.at === at, "the member must file the ordered relay marker");
     const beforeReach = fs.existsSync(reach) ? readJSON(reach) : {};
     try {
       // Preserve the interval after the peer receiver writes the observation
@@ -1566,7 +1578,10 @@ test("the returning bridge stays out of work placement during its Rust trial", {
       said.installedSha256 === bridgePack.sha256 && said.switching?.sha256 === pack.sha256;
   }, "the Rust resident should announce its trial while the bridge remains current");
   const row = async () => (await runsOn(observer)).computers.find(item => item.computer.id === peerKey);
-  const waiting = await until(row, "the returning computer should have a placement row");
+  const waiting = await until(async () => {
+    const current = await row();
+    return current?.away === true && current?.updating === true && current;
+  }, "the returning computer should have a placement row held for its trial");
   assert.deepEqual([waiting.away, waiting.updating], [true, true]);
   const mainKey = (await request(observer, "GET", "kuvo/setup")).json.you.key;
   await until(() => {
@@ -1863,7 +1878,12 @@ test("a quiet member keeps preparing or shows its staged release switching", { t
 
   await until(() => downloaded() >= 2 && facts()?.kuvo === installed,
     "the main must have heard from its member while both pack downloads are held");
-  const preparing = await rowIn(first, "getting-ready");
+  // The event-driven worker may publish a preparing row before the peer has sent its
+  // target. Compare settled signed facts rather than the intermediate no-digest row.
+  const preparing = await until(async () => {
+    const row = await rowIn(first, "getting-ready");
+    return row.targetSha256 === hash && row;
+  }, "the member's preparing row must name the signed target");
   assert.deepEqual(await rowIn(await quiet(5_000), "getting-ready"), preparing);
 
   // Resume with the normal preparation receipt already written, before any trial.

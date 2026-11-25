@@ -434,7 +434,7 @@ parallel.
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.7 | OpenCode as one more coding agent, on 4.3's ACP client ([design](opencode-agent.md)). 4.7a: parity spike, ACP or HTTP (2 h). 4.7b: adapter, one held process per computer, catalog cache, sign-in paths, MCP config read by the box, bots and wake-ups pointed at it (6 ×2). 4.7c: the box's own terminals, `kuvo_os::pty` and `api/pty` in `kuvo_services`, lane D, any time after 1.3 and before 4.7d (5 h). 4.7d: existing conversations listed, read and continued, then the engine place removed: every `Place::Engine` branch and the engine's start triggers (5 h). | agents | 4.3, 3.2 | 24 | B |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4, 4.7 | 4 ×2 | B |
-| 4.8 | **In progress.** [Idle work](#48-idle-work): agent discovery and version checks made lazy; peer Library copies and Marketplace projections follow changes; session and settings follows, keeper, work and peer timers, and setup lease remain. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
+| 4.8 | **In progress.** [Idle work](#48-idle-work): agent discovery and version checks made lazy; Library, Marketplace, session and Settings follow changes; keeper, work and peer idle rounds are event-driven. Setup lease and cross-platform gates remain. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
 | 5.1 | 5.1a done: wake-ups and watches fired by the resident and the bot list; 5.1b done: making, changing, deleting and telling bots, on macOS, Windows and Linux; 5.1c-1 done: approval routes and the round that keeps conversations' rules; 5.1c-2 done: work settings, Keep This Mac Awake, oversight, work changes and the asks list; 5.1c-3 done: a bot's work (`kuvo/work?bot=`) from the session list; 5.1c-4 done: `kuvo/projects/new` and answering what's asked; 5.1c-5 done: models that can't answer now; 5.1c-6a and 6b done: the work watcher (live, catch-up, held finishes, late answers) and the engine's place in the background model; 5.1c-7 done: Stop on someone's work and Stop All; 5.1f-1 done: a lead's sessions here listed, stopped, summarized and answered from another computer, and their rows told it; 5.1f-2 done: work started here for a lead on another computer, its models and projects read, and its Stop All; 5.1e-1 done: the agents' work tools and letters (`kuvo/agent-tools`: sessions here and on your other computers, starts with a bot's limits, the start rate and 5.2's Work Queue link, models, projects, make_project, Stop All elsewhere, list_agents, send_message, read_conversation). Open: 5.1e-2 (the wake tools, set_job), the rest of 5.1c (notices and their holds) and 5.1d (held edits, bots elsewhere, bots' old keys). [Coverage](rust-work-coverage.md)<br>Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |
 | 5.2 | **Done for the resident contract.** Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Verified on Mac (both boxes), native Windows and static Linux musl under WSL. [Coverage and integration dependencies](rust-workqueue-coverage.md) Queue cases from `setup-shared.test.ts`, `setup-merge.test.ts`, `work-queue-numbering.test.ts`, `offline-merge.test.ts`, `setup-two-boxes.test.js`, `documents.test.js`, `owner-mutations.test.js`, and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`.<br>Reuse 3.2's `kuvo_peers::memory_read` transport for authenticated read-only requests without a disk spool.<br>2.3 cannot close until setup merge reserves Work Queue numbers on the current relay lease with a durable source-bound approval, then connects the queue import, retained aliases and Markdown reference rewrite. | work | 2.2 | 5 ×2 | C |
 | 5.3 | Group chats and seats, autopilot. Group clock consumer in `time-zone.test.ts`.<br>Also covers `mac-peers.test.js`. | work | 4.6, 2.2 | 4 ×2 | B |
@@ -499,6 +499,33 @@ work happens, not which computer owns it or the route shapes:
   vault scan. A previous installation may still need cleanup of projected tools or credentials when
   unlocked. `library` tests an installed MCP server following an external config edit, without a
   second route read or a maintenance round. The `vault` conformance cases still use the same routes.
+
+- **Resident inventory and Settings:** the complete session inventory has no minute refresh; a
+  missed file-watch notification or an actual engine event-feed reconnection triggers recovery.
+  A parked engine waits for a state change, not a two-second retry. The `idle_inventory` scenario
+  advances the clock by a minute, checks that a silent fixture edit has not read the engine, then
+  sends an inventory event and sees the changed list. Followed Settings pages listen to their
+  specific files, setup/peer views, sessions, engine/catalog/agent events, vault and measurements.
+  The Git settings case edits the config file outside a route; Permissions and Archived Sessions
+  cases follow local and remote mutations. Peer archives are rebuilt on archive revision, roster,
+  time zone or move ownership changes, not every ten seconds.
+- **Keeper, work and peers:** the keeper follows selection and stop/handover files and a native
+  exact-process exit notification (Darwin kqueue, Linux pidfd, Windows process handle). A kernel
+  without the exit facility uses the old fallback; real release trials and restart backoff still
+  have deadlines. A supervised Windows resident receives a private local socket notification and
+  verifies its durable stop identity; a file watch accepts the older keeper's request. Native
+  process and keeper scenarios exercise the exit notification and matching stop identity. Update
+  rounds follow setup, peers, files and engine, and sleep until the next check when there is no
+  release to prepare; active release progress and switch barriers still have a short deadline.
+  Wake-ups sleep until their next due time and watch their folders, with a minute deadline only
+  for active watches or blocked work. Approval changes use live channels/file watches with a
+  one-shot grace for initial conversation writes. Peer lists follow local and ownership changes;
+  the old copy-standing heartbeat remains only with connected peers. Letters follow the outbox,
+  replies and peer changes; retries only run while work is kept. A release admission announcement
+  is sent before the newly admitted peer work. The Library uses the resident's existing engine
+  event feed instead of opening another one. Existing `bots`, `engine-sessions`, `library`,
+  `peers`, `moves`, `work-elsewhere`, and `updates` cases exercise these paths; the quiet member
+  release case compares the signed preparing row after the peer's target is known.
 
 Mac baseline (debug binary, isolated home with a signed-in scripted Codex, one computer, local
 relay stand-in). For each sample: three seconds to settle, then eleven `top -l` samples a second

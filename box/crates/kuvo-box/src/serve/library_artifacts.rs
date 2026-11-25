@@ -40,7 +40,7 @@ use kuvo_wire::{
 };
 use serde_json::{Map, Value, json};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::watch,
     task::JoinHandle,
@@ -66,6 +66,7 @@ impl ResidentLibraryArtifacts {
         peers: Reader,
         relay: Option<RelayHandle>,
         reads: MemoryReads,
+        engine: kuvo_engine::Engine,
         routes: &mut Registry,
     ) -> Self {
         let (artifacts_root, library_root, bots_dir, sessions_dir, run_dir) = (
@@ -124,7 +125,7 @@ impl ResidentLibraryArtifacts {
                     let hub = WatchHub::default();
                     folders.start(Some(&hub)).await;
                 }
-                tasks.push(tokio::spawn(follow_engine_events(run_dir.clone(), recorder)));
+                tasks.push(tokio::spawn(follow_engine_events(run_dir.clone(), engine.events(), recorder)));
                 (ArtifactHandle::Ready(store), library_handle, folders)
             }
             Err(StoreError::UnsupportedFormat(msg)) => {
@@ -594,37 +595,18 @@ async fn http_get_json(record: &EngineRecord, path: &str) -> Option<Value> {
         .flatten()
 }
 
-async fn follow_engine_events(run: PathBuf, recorder: Recorder) {
+async fn follow_engine_events(run: PathBuf, mut events: tokio::sync::broadcast::Receiver<Arc<kuvo_engine::EngineEvent>>, recorder: Recorder) {
     let source = LoopbackEngineSource { run };
     loop {
-        if let Some(record) = source.read_record() {
-            let _ = read_sse_stream(&record, &source, &recorder).await;
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-}
-
-async fn read_sse_stream(record: &EngineRecord, source: &LoopbackEngineSource, recorder: &Recorder) -> Option<()> {
-    let mut reader = BufReader::new(connect_engine(record, "/api/event?passive=1", "Accept: text/event-stream\r\n").await?);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.ok()?;
-    if !line.contains(" 200") { return None; }
-    loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await.ok()?;
-        if n == 0 || line == "\r\n" || line == "\n" { break; }
-    }
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).await.ok()? == 0 { break; }
-        let Some(payload) = line.trim().strip_prefix("data:") else { continue };
-        let Ok(val) = serde_json::from_str::<Value>(payload.trim()) else { continue };
-        let Some(event_type) = val.get("type").and_then(Value::as_str) else { continue };
-        recorder.heard(source, Event {
-            event_type: event_type.to_owned(),
-            data: val.get("data").cloned().unwrap_or_else(|| json!({})),
-            directory: val.pointer("/location/directory").and_then(Value::as_str).map(str::to_owned),
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        };
+        recorder.heard(&source, Event {
+            event_type: event.kind.clone(),
+            data: event.data.clone(),
+            directory: event.location.get("directory").and_then(Value::as_str).map(str::to_owned),
         }).await;
     }
-    Some(())
 }

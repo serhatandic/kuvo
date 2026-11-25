@@ -82,6 +82,14 @@ impl Notices {
         self.persist(run, next)
     }
 
+    pub(crate) fn next_expiry(&self) -> Option<Millis> {
+        self.0
+            .values()
+            .filter(|said| !said.moves.is_empty())
+            .map(|said| said.at.saturating_add(KEEP_NOTICES))
+            .min()
+    }
+
     pub(crate) fn expire(&mut self, run: &Path, now: Millis) -> std::io::Result<()> {
         if !self
             .0

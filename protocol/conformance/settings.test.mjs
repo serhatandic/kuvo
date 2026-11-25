@@ -84,6 +84,10 @@ test("Git settings retain independent revisions, clean text, and follow external
     await ask("PATCH","kuvo/config",{changes:[{path:["branch_prefix"],value:""}]});
     next = await iter.next();
     assert.equal(row(next.value,"branch-prefix").value,"");
+    // The box must also follow a settings change made outside all its routes.
+    write(path.join(box.home,"box","opencode.json"),JSON.stringify({unrelated:true,branch_prefix:"external/",commit_instructions:"Keep it short."}));
+    next = await iter.next();
+    assert.equal(row(next.value,"branch-prefix").value,"external/");
   } finally { events.close(); }
 });
 

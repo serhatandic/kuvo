@@ -126,6 +126,7 @@ fn retry_at(folder: &Path) -> Option<i64> {
 
 /// Whether a round now has anything for the engine: a wake-up due, or a watch, in a folder that's
 /// neither held nor waiting to try again, of a conversation the engine runs.
+#[cfg(test)]
 pub fn wanted(roots: &Roots, now: i64) -> bool {
     wanted_by(roots, now).0
 }

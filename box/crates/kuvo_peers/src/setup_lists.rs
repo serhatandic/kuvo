@@ -59,7 +59,7 @@ pub struct RemoteArchives {
     pub standing: Standing,
     pub copy: Arc<Archives>,
 }
-const PEER_ROUND: Duration = Duration::from_secs(3);
+const COPY_HEARTBEAT: Duration = Duration::from_secs(60);
 const HEARD_EVERY: Millis = 300_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -328,7 +328,12 @@ impl View {
         features.push("data.queued-device-authority");
         // Peer-only capability: this computer keeps Library and Outputs copies until a change,
         // and marks them away from reach, not from the age of their content.
-        features.extend(["library", "line.merged-library", "line.merged-outputs", "data.library-change-copy"]);
+        features.extend([
+            "library",
+            "line.merged-library",
+            "line.merged-outputs",
+            "data.library-change-copy",
+        ]);
         if self.backup_receiver {
             features.push("box.backups.relay");
         }
@@ -568,6 +573,18 @@ impl Reader {
         self.views.changed().await
     }
 
+    /// The release announcement must be queued before we send work admitted by it.
+    /// Otherwise the remote box may still be fencing the returning bridge.
+    pub(crate) fn work_announced_to(&self, peer: &ComputerKey) -> bool {
+        let view = self.view();
+        view.bridge.is_none()
+            || self
+                .agent_mail
+                .borrow()
+                .get(peer)
+                .is_some_and(|sent| sent.work_ready)
+    }
+
     /// Whether this computer's agent publication named the sender to this peer.
     pub(crate) fn agent_sent_to(&self, peer: &ComputerKey, session: &str) -> Option<bool> {
         let sent = self.agent_mail.borrow();
@@ -586,6 +603,7 @@ type AgentMail = BTreeMap<ComputerKey, SentAgents>;
 struct SentAgents {
     sessions: Arc<BTreeSet<String>>,
     complete: bool,
+    work_ready: bool,
 }
 
 enum Change {
@@ -949,8 +967,13 @@ impl Resident {
         } = publication;
         let mut paired = relay_routes::Routes::default();
         let mut dispatch = None;
-        let mut round = tokio::time::interval(PEER_ROUND);
-        round.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut move_files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        move_files.set_targets(Vec::new(), vec![(self.run.join("moves"), false)]);
+        if let Err(error) = self.refresh_move_ownership().await {
+            eprintln!("Refreshing move ownership: {error}");
+        }
+        let mut heartbeat = tokio::time::interval(COPY_HEARTBEAT);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
             .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents));
@@ -958,6 +981,11 @@ impl Resident {
         let mut pending_trust = None;
         let mut setup_rosters = None;
         loop {
+            let expiry = self
+                .view
+                .move_notices
+                .next_expiry()
+                .map(|at| Duration::from_millis(at.saturating_sub(clock()).max(0) as u64));
             tokio::select! {
                 Ok(()) = waiting_updates.changed() => {
                     self.view.move_waiting = waiting_updates.borrow_and_update().clone();
@@ -991,8 +1019,16 @@ impl Resident {
                         incoming.ownership.journal.clone_from(&self.view.local.ownership.journal);
                         self.view.local_lists = local.publication().map(Arc::new);
                         self.view.local = local;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::None);
+                        }
                     }
-                    Some(Change::Notices(notices)) => self.view.notices = notices,
+                    Some(Change::Notices(notices)) => {
+                        self.view.notices = notices;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::None);
+                        }
+                    },
                     Some(Change::Archives(archives)) => {
                         if self.view.local_archives.as_deref() != Some(&archives) {
                             self.view.local_archives = Some(archives);
@@ -1126,17 +1162,22 @@ impl Resident {
                         publisher = None;
                     }
                 },
-                _ = round.tick() => {
-                    let now = clock();
+                _ = move_files.changed() => {
                     if let Err(error) = self.refresh_move_ownership().await {
                         eprintln!("Refreshing move ownership: {error}");
                     }
-                    if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, now) {
+                    if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
+                },
+                _ = async { match expiry { Some(delay) => tokio::time::sleep(delay).await, None => std::future::pending().await } } => {
+                    if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, clock()) {
                         eprintln!("Keeping moves on other computers: {error}");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
-                    if let Some(publisher) = &mut publisher {
-                        publisher.request(self.view.clone(), now, Refresh::None);
-                    }
+                },
+                _ = heartbeat.tick(), if self.view.relay_connected && !self.view.roster.members.is_empty() => {
+                    // Existing peers age out their copies; retain the wire heartbeat, never a
+                    // three-second scan. Local changes and move files publish immediately.
+                    if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
                 },
             }
             publish.send_replace(Arc::new(self.view.clone()));
@@ -1458,6 +1499,9 @@ impl Publisher {
     }
 
     fn request(&mut self, view: View, now: Millis, refresh: Refresh) {
+        if view.roster.members.is_empty() {
+            return;
+        }
         let _ = self.tx.try_send((view, now, refresh));
     }
 }
@@ -1613,6 +1657,7 @@ async fn publish_round(
             let sent = SentAgents {
                 sessions: sessions.clone(),
                 complete: lists.is_some(),
+                work_ready: view.local_work_admitted(),
             };
             sent_agents.send_if_modified(|known| {
                 if known.get(&peer.key) == Some(&sent) {
@@ -1670,7 +1715,7 @@ async fn publish_round(
                     content,
                     now,
                     forced,
-                    spacing: 15_000,
+                    spacing: 0,
                 },
                 previous,
             )

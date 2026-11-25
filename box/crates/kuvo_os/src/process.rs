@@ -46,6 +46,19 @@ impl ProcessIdentity {
         }))
     }
 
+    /// A one-shot notification of this exact process exiting. The wait belongs to a detached
+    /// OS thread (not the runtime's blocking pool, so keeper handover need not wait for it).
+    pub fn watch_exit(&self) -> io::Result<tokio::sync::oneshot::Receiver<io::Result<()>>> {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let wait = sys::exit_wait(self)?;
+        std::thread::Builder::new()
+            .name("process-exit".into())
+            .spawn(move || {
+                let _ = send.send(wait());
+            })?;
+        Ok(receive)
+    }
+
     pub fn state(&self) -> ProcessState {
         if self.start_identity.is_empty() {
             return ProcessState::Unknown;
