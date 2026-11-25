@@ -271,9 +271,12 @@ scratch folder, the generated account ID, and an empty Undo record
 Carried to the rows that bring them:
 
 - Production vendor factory registration, as each adapter lands (4.2–4.5). Codex's is in (4.2).
-- `sessions.test.ts` 9 (a program update's drain) and 12 (a model whose
-  account is signed out): 4.2, with the first program updater and production
-  account status.
+- `sessions.test.ts` 9 (a program update's drain): 4.2, with the first program
+  updater. 12 (a model whose account is signed out) is ported to agents-codex on
+  both boxes. Before a turn its agent is asked (not one taken up), an agent
+  installed and signed out, as last known and asked anew (at most 10 s each),
+  turns it away at once as failed (`signin`, naming the computer). This is
+  shared, for every agent (`SessionRuns::signed_out`).
 - 59–60 and 127–139 (turns an agent starts on its own, and Stop or Send Now
   while one is handed over): 4.2 and 4.4, whose agents start them.
 - Moves and wake-ups into a coding agent's conversation: 4.6, with carry and

@@ -915,6 +915,16 @@ test("its account removed while it works (Settings › Accounts): the turn ends 
   });
 });
 
+test("a model whose account you signed out of says so, and keeps nothing waiting", { timeout: 60000, skip }, async () => {
+  const id = "ses_codex_signedout";
+  await withCodex({ signedIn: false }, async (codex) => {
+    await codex.prompt(id, `go ${id}`);
+    const rows = await codex.idles(id);
+    assertMatch(idles(rows)[0], { outcome: "failed", error: { type: "signin", message: "Codex isn't signed in on this machine, where this conversation runs: each machine signs in on its own." } });
+    assert.equal(codex.sent("turn/start").length, 0);
+  }, (codex) => codex.seed(id, { directory: codex.root }));
+});
+
 test("signed out while it works: Codex is told to sign out, and the turn on it ends as Codex stopped", { timeout: 60000, skip }, async () => {
   const id = "ses_codex_signout";
   await withCodex({}, async (codex) => {

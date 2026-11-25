@@ -830,6 +830,23 @@ impl Service {
         self.identities.send_replace(Arc::new(running));
     }
 
+    /// The agent's name, when its account is installed and signed out of: as it was last known,
+    /// and asked anew (signed in a moment ago, in Terminal say, it goes). At most 10 s each.
+    async fn signed_out(&self, provider: &str) -> Option<&'static str> {
+        let parsed = Provider::parse(provider)?;
+        let roster = self.agents.roster();
+        let entry = roster.find(&parsed)?.clone();
+        let out = |status: Option<Result<crate::account_check::AccountStatus, _>>| {
+            matches!(status, Some(Ok(status)) if status.installed && !status.signed_in && !status.unchecked)
+        };
+        let within = Duration::from_secs(10);
+        if !out(tokio::time::timeout(within, entry.status(false)).await.ok()) {
+            return None;
+        }
+        out(tokio::time::timeout(within, entry.status(true)).await.ok())
+            .then(|| parsed.kind.display_name())
+    }
+
     async fn thread(&self, session: &str, provider: &str) -> io::Result<Arc<dyn Thread>> {
         let parsed = Provider::parse(provider).ok_or_else(|| {
             io::Error::new(ErrorKind::InvalidInput, "Choose a coding-agent model.")
@@ -858,6 +875,39 @@ impl Service {
         shown: Option<Prompt>,
     ) -> io::Result<Live> {
         let agent = if input.plan { "plan" } else { "build" };
+        // Its account signed out of: said at once, rather than fail only after its agent started
+        // and tried. (A turn taken up goes on where it is.)
+        if !matches!(input.kind, TurnKind::Recover { .. })
+            && let Some(name) = self.signed_out(&input.model.provider).await
+        {
+            // (Each computer signs in on its own: the one it runs on is named.)
+            let computer = std::env::var("KUVO_MACHINE_NAME")
+                .ok()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "this machine".into());
+            let message = format!(
+                "{name} isn't signed in on {computer}, where this conversation runs: each machine signs in on its own."
+            );
+            if shown.is_some() {
+                let error = crate::session::TurnError {
+                    kind: "signin".into(),
+                    message: message.clone(),
+                    status: None,
+                    limit: None,
+                };
+                let _ = crate::turn_projection::record_turned_away(
+                    self.store.clone(),
+                    session.into(),
+                    agent.into(),
+                    &input,
+                    shown.as_ref(),
+                    note,
+                    error,
+                )
+                .await;
+            }
+            return Err(io::Error::new(ErrorKind::PermissionDenied, message));
+        }
         let thread = match self.thread(session, &input.model.provider).await {
             Ok(thread) => thread,
             Err(error) => {

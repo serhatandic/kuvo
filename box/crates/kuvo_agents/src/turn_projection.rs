@@ -452,6 +452,31 @@ pub(crate) async fn record_failed_start(
     projection.abandon(error).await
 }
 
+/// A turn turned away before its agent was asked: written as failed with `error`.
+pub(crate) async fn record_turned_away(
+    store: SessionStore,
+    session: String,
+    agent: String,
+    input: &TurnInput,
+    shown: Option<&Prompt>,
+    note: Option<Map<String, Value>>,
+    error: TurnError,
+) -> io::Result<()> {
+    let mut projection = Projection::start(store, session, agent, input, shown, note).await?;
+    projection.close_prior().await?;
+    projection
+        .apply(&EventEnvelope {
+            position: None,
+            delivery: crate::session::Delivery::Live,
+            event: TurnEvent::Finished(TurnResult {
+                outcome: Outcome::Failed(error),
+                took_prompt: false,
+                missed: Vec::new(),
+            }),
+        })
+        .await
+}
+
 /// A turn's end as failed with `error`, as one whose agent broke.
 fn failed(error: &io::Error) -> EventEnvelope {
     let message = error.to_string();
