@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Work waiting for a computer’s first Rust update is sent only after that computer confirms the update.
+
 - Rust computers preserve Work Queue mentions when a conversation moves, return recoverable old import numbers, and retry unacknowledged queue updates promptly. Label restore previews identify an unreachable main computer.
 
 - When one computer cannot download an update, another can send the right build even if they use different systems.

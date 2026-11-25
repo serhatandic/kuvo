@@ -334,7 +334,7 @@ test("a failed fleet download can be retried for the same signed target", { time
 });
 
 async function pairedUpdateComputers(t) {
-  const { computer, leases } = await bench(t);
+  const { computer, leases, relay } = await bench(t);
   const make = name => computer(name, undefined, folder => {
     privateWindowsHome(path.join(folder, "box"));
     return {};
@@ -349,7 +349,7 @@ async function pairedUpdateComputers(t) {
   const joined = await member.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   await old.stop();
-  return { main, member };
+  return { main, member, relay };
 }
 
 async function runsOn(record) {
@@ -366,7 +366,7 @@ async function runsOn(record) {
 test("the returning bridge stays out of work placement during its Rust trial", { timeout: 60000 }, async t => {
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust resident's trial announcement.");
-  const { main, member } = await pairedUpdateComputers(t);
+  const { main, member, relay } = await pairedUpdateComputers(t);
   const { body, key } = box(t);
   const feed = createServer((_request, response) => response.writeHead(404).end());
   feed.listen(0, "127.0.0.1");
@@ -388,10 +388,14 @@ test("the returning bridge stays out of work placement during its Rust trial", {
   write(path.join(member.home, previous, "boxes.json"), bridge);
   write(trial, previous + "/bin");
   const sender = "ses_confirmedWork", recipient = "ses_returningWork";
-  for (const [computer, id] of [[main, sender], [member, recipient]]) {
+  const mainChild = "ses_childOfReturning", memberChild = "ses_childOfConfirmed";
+  for (const [computer, id, child, lead] of [[main, sender, mainChild, recipient], [member, recipient, memberChild, sender]]) {
     const directory = path.join(computer.home, "chats");
     fs.mkdirSync(directory, { recursive: true });
     computer.engine.sessions.push(sessionOf({ id, title: id, directory }));
+    computer.engine.sessions.push({ ...sessionOf({ id: child, title: child, directory }), metadata: {
+      kuvo: { startedBy: lead, line: [lead], wake: ["finished"], depth: 1 },
+    } });
   }
   const updateEnv = { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
   const [observer, returning] = await Promise.all([main.start(binary, updateEnv).ready(), member.start(binary, updateEnv).ready()]);
@@ -411,6 +415,33 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     try { return readJSON(path.join(member.home, "run/peer-agents.json"))[mainKey]?.features?.includes("moves.two-computers"); }
     catch { return false; }
   }, "the returning resident should know the confirmed main");
+  const codec = await referenceMailCodec(t);
+  const mail = (from, to, peer, fields) => {
+    const source = readJSON(path.join(from.home, "run/link.json"));
+    const destination = readJSON(path.join(to.home, "run/link.json"));
+    const secret = Buffer.from(source.key, "base64url"), key = Buffer.from(peer, "base64url");
+    const payload = codec.frame(codec.Frame.mail, 0, codec.sealOneWay(encode({ at: Date.now(), ...fields }), secret, key).message);
+    const packet = { from: relayAddress(Buffer.from(source.secret, "base64url")),
+      to: relayAddress(Buffer.from(destination.secret, "base64url")), payload };
+    relay.replay(packet);
+    return { packet, secret, key };
+  };
+  const calls = [];
+  for (const [from, to, lead, child, peer, callerKey] of [
+    [main, member, sender, memberChild, peerKey, mainKey],
+    [member, main, recipient, mainChild, mainKey, peerKey],
+  ]) {
+    write(path.join(to.home, "run/work/homes.json"), encode({ [lead]: { key: callerKey, at: Date.now() } }));
+    const id = from === main ? "cal_trialStopWorkMain0001" : "cal_trialStopWorkMember0001";
+    const file = path.join(from.home, "run/outbox/sending", id + ".json");
+    const at = Date.now();
+    const call = { tool: "stop_session", args: { session: child }, as: { name: "Lead", free: true, rules: [] } };
+    const saved = { call, from: lead, to: "", peer, at, wait: false, quiet: true };
+    write(file, encode(saved));
+    // An already in-flight authenticated request must be ignored during the trial too.
+    const inFlight = mail(from, to, peer, { call: { id, from: lead, made: at, at, ...call } });
+    calls.push({ id, file, to, child, inFlight, result: path.join(to.home, "run/work/call-results", id + ".json") });
+  }
   const pending = [];
   for (const [computer, local, remote, here, there] of [
     [main, sender, recipient, mainKey, peerKey], [member, recipient, sender, peerKey, mainKey],
@@ -436,6 +467,14 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     assert.equal(places.json.places.find(place => place.key === to)?.ok, false);
   }
 
+  // Four half-second remote-work rounds: a held call cannot be used as the normal away probe.
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  for (const { file, to, child, result } of calls) {
+    assert.equal(readJSON(file).sentTo, undefined, "the held call must not be marked sent");
+    assert.equal(fs.existsSync(result), false, "an in-flight call must not be accepted on trial");
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 0);
+  }
+
   // The keeper owns confirmation. Publish its saved result and let the resident observe it.
   fs.unlinkSync(trial);
   await until(() => facts()?.kuvo === body.version && !facts()?.switching, "the main should hear the confirmed Rust release");
@@ -448,6 +487,22 @@ test("the returning bridge stays out of work placement during its Rust trial", {
     await until(() => computer.engine.messages.get(session)?.some(message => message.text?.includes("Work after confirmation")),
       "the remote work should arrive in the conversation");
     assert.equal(computer.engine.messages.get(session).filter(message => message.text?.includes("Work after confirmation")).length, 1);
+  }
+  await until(() => calls.every(({ result }) => fs.existsSync(result)),
+    "the saved work calls should reach the actual resident adapter after confirmation", 20000);
+  for (const { id, to, child, inFlight } of calls) {
+    // The exact packet held on trial is valid, not just an unrecognized wire shape.
+    const before = relay.delivered.length;
+    relay.replay(inFlight.packet);
+    await until(() => relay.delivered.slice(before).some(({ from, to, payload }) => {
+      if (!from.equals(inFlight.packet.to) || !to.equals(inFlight.packet.from)) return false;
+      const packet = codec.readFrame(payload);
+      if (packet?.kind !== codec.Frame.mail) return false;
+      const value = JSON.parse(codec.openOneWay(packet.body, inFlight.secret, inFlight.key).payload);
+      return value.delivered?.id === id && value.delivered.ok === true;
+    }), "the receiver should acknowledge a replay of the previously held call");
+    assert.equal(to.engine.interrupted.filter(each => each.session === child).length, 1,
+      "the real stop call must take effect once, only after confirmation");
   }
   const direct = await request(observer, "POST", "kuvo/moves", { kind: "chat", id: sender, to: peerKey, receipt: true });
   assert.equal(direct.status, 202, direct.text);
@@ -1472,7 +1527,7 @@ test("Rust prepares its target without changing the selected release and its kee
 
 test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
 test("a new main finishes a prepared release after the old main goes away", { timeout: failoverTestMs }, t => fleetRun(t, { failover: true }));
-async function releaseMailPeer(t, relay, observer, seed) {
+async function referenceMailCodec(t) {
   const root = scratch();
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
   const isolated = { ...isolatedEnv(root), KUVO_HOME: path.join(root, "box") };
@@ -1487,7 +1542,11 @@ async function releaseMailPeer(t, relay, observer, seed) {
       else process.env[key] = value;
     }
   }
-  const { sealOneWay, openOneWay, readFrame, frame, Frame } = wireAPI;
+  return wireAPI;
+}
+
+async function releaseMailPeer(t, relay, observer, seed) {
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = await referenceMailCodec(t);
   const wire = relay.device(Buffer.alloc(32, 50 + seed));
   t.after(() => wire.leave());
   const address = Buffer.from(observer.address, "base64url");

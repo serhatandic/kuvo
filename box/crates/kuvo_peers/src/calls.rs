@@ -613,7 +613,7 @@ impl Calls {
                 }
                 continue;
             }
-            if state == PeerState::Unknown
+            if matches!(state, PeerState::Unknown | PeerState::Held)
                 || (state == PeerState::Away && !away.insert(key))
                 || !online
                 || self.tries.get(id.as_str()).is_some_and(|at| {
@@ -1123,6 +1123,8 @@ impl Failure {
 pub enum PeerState {
     Online,
     Away,
+    /// Known peer on a release handoff: do not send even an away probe.
+    Held,
     Unknown,
     Removed,
 }
