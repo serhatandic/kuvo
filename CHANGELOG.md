@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Send Now, Steer and Resume still arrange waiting messages during an engine update, and attached files wait with them.
+
 - A saved message whose conversation is no longer in the engine stays saved without holding up the computer’s next engine update.
 
 - When a Rust computer needs a different engine for an update, current work finishes first and new messages wait. They go in order once the new release is ready or the previous one is restored.

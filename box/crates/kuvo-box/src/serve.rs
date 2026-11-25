@@ -409,10 +409,22 @@ pub async fn run(
     };
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
     let update_profile = account.clone();
+    let update_engine = engine.clone();
     routes.register::<kuvo_protocol::routes::get_kuvo_update::Spec, _, _>(Access::Any, move |_| {
         let answer = kuvo_keeper::update_status::read(&update_home, &update_profile);
+        let engine = update_engine.clone();
         async move {
-            let result = answer.and_then(|body| Ok(serde_json::from_value(body)?));
+            let result: io::Result<_> = async {
+                let mut body = answer?;
+                if let Some((change, installing)) = engine.release_change().await? {
+                    body["engineChange"] = change;
+                    if installing {
+                        body["updating"] = json!("installing");
+                    }
+                }
+                Ok(serde_json::from_value(body)?)
+            }
+            .await;
             result.map(RouteReply::json::<200>).map_err(|error| {
                 Refusal::new(http::StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
             })
