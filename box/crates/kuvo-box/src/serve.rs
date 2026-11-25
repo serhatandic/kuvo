@@ -81,7 +81,8 @@ pub async fn run(
         bootstrap.devices
     };
     let tools = agents::tools::relay(home, engine.clone())?;
-    let factories = agents::factories(home, &tools).await;
+    let feed = kuvo_agents::feed::Feed::default();
+    let factories = agents::factories(home, &tools, &feed).await;
     let resident_agents = if factories.is_empty() {
         None
     } else {
@@ -89,6 +90,7 @@ pub async fn run(
         let runtime = kuvo_agents::runtime::Runtime::for_home(&agent_home);
         match kuvo_agents::resident::ResidentAgents::start(runtime.clone(), factories).await {
             Ok((agents, failures)) => {
+                let agents = agents.with_feed(feed);
                 for failure in failures {
                     eprintln!(
                         "Kuvo could not take up agent holder {}: {}",

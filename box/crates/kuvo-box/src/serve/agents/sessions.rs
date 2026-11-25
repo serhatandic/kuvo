@@ -219,7 +219,8 @@ impl AgentSessionSource for Inventory {
                 permissions,
                 metadata,
             } = new;
-            self.store
+            let session = self
+                .store
                 .begin(NewSession {
                     id,
                     directory,
@@ -230,7 +231,20 @@ impl AgentSessionSource for Inventory {
                     permissions,
                     metadata,
                 })
-                .await
+                .await?;
+            if let Some(feed) = self.feed() {
+                let directory = session
+                    .get("location")
+                    .and_then(|location| location["directory"].as_str())
+                    .map(str::to_owned);
+                let id = session.get("id").cloned().unwrap_or_default();
+                feed.emit_from(
+                    "session.created",
+                    serde_json::json!({ "sessionID": id, "session": session }),
+                    directory,
+                );
+            }
+            Ok(session)
         })
     }
 

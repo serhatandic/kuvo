@@ -47,6 +47,8 @@ pub(super) struct Account {
     prefix: String,
     /// How much each model holds, as Codex said in a turn.
     windows: Plain<HashMap<String, u64>>,
+    /// Where it says its sign-in changed, and of which account.
+    told: std::sync::OnceLock<(crate::feed::Feed, String)>,
 }
 
 impl Account {
@@ -57,6 +59,20 @@ impl Account {
             prefix: hex::encode(bytes),
             ..Self::default()
         })
+    }
+
+    /// Says its sign-in changed (who, or the plan) on `feed`, as account `provider`.
+    pub fn tell_on(&self, feed: crate::feed::Feed, provider: String) {
+        let _ = self.told.set((feed, provider));
+    }
+
+    fn changed(&self) {
+        if let Some((feed, provider)) = self.told.get() {
+            feed.emit(
+                "kuvo.agent.account.changed",
+                serde_json::json!({ "integrationID": provider }),
+            );
+        }
     }
 
     pub fn signing_in(&self) -> bool {
@@ -99,12 +115,15 @@ impl Account {
             }
             "account/updated" => {
                 let identity = shared.program.identity().await;
-                if let Some(plan) = params["planType"]
+                // (A new plan for the same sign-in says so itself; anything else is said here.)
+                let noted = params["planType"]
                     .as_str()
                     .filter(|plan| *plan != "unknown")
-                    && *lock(&server.signed_in_as) == identity
-                {
-                    self.note_plan(plan, identity);
+                    .is_some_and(|plan| {
+                        *lock(&server.signed_in_as) == identity && self.note_plan(plan, identity)
+                    });
+                if !noted {
+                    self.changed();
                 }
                 Heard::Taken
             }
@@ -140,8 +159,17 @@ impl Account {
         }
     }
 
-    fn note_plan(&self, plan: &str, identity: Option<String>) {
-        *lock(&self.plan_read) = Some((identity, plan.to_owned()));
+    /// The plan Codex said: whether it's news (and if so, said).
+    fn note_plan(&self, plan: &str, identity: Option<String>) -> bool {
+        let read = Some((identity, plan.to_owned()));
+        let mut kept = lock(&self.plan_read);
+        if *kept == read {
+            return false;
+        }
+        *kept = read;
+        drop(kept);
+        self.changed();
+        true
     }
 
     /// Signed in on `server`: what Codex said of the last sign-in goes, and the app-server reads the

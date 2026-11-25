@@ -847,9 +847,69 @@ Codex's own installer updates it with `codex update`; otherwise npm's
 `@openai/codex`. After an update, each account with the program runs it
 (`Agent::program_updated`): Codex's app-server starts again once nothing uses
 it. Unit tests cover the versions, the owners and a real program's update, a
-failed one, a timed-out hold and one a next resident takes up. The routes
-(`kuvo/agents/api/kuvo/updates`) and the rows' `programUpdate` go with the
-Accounts rows that list versions, which the Rust box doesn't have yet (4.1b).
+failed one, a timed-out hold and one a next resident takes up. Claude Code
+updates the same way (`claude update` on its settings' channel, else npm's
+`@anthropic-ai/claude-code`), and each conversation's Claude Code starts again
+at its next message.
+
+### Accounts rows, updates and the agents' feed (4.2)
+
+The reference's `box/src/shared/routes/index.ts` declares all of `kuvo/agents/`
+as pass-through to its bridge, so the bridge's routes had no specs. The Rust box
+serves each `kuvo/agents/` route the app uses from its own spec. These came
+with this row, each 1:1 and for every agent:
+
+- `GET kuvo/agents/api/integration` and `…/:provider`: Settings › Accounts'
+  rows (`account_rows`). Each agent's facts are kept by kind, for all five
+  agents: its sign-in methods, its installer, and how signing out goes. An
+  account shows them whatever adapter runs it here. Grok's and Antigravity's
+  `Agent::program` → 4.3; Cursor reads no program, as in the reference.
+- `POST kuvo/agents/api/integration/:provider/install`, the maker's installer.
+- `POST kuvo/agents/api/kuvo/updates[/:provider]`,
+  `DELETE kuvo/agents/api/kuvo/updates/:provider?at=`, and the update notices
+  (`program_updates::notices`, `agents/update-notices.json`).
+- `GET kuvo/agents/api/session/active`, `GET kuvo/agents/api/session/:id` and
+  `POST kuvo/agents/api/session/:id/model`. The reference takes a model whose
+  provider is no agent's as an engine model its bridge follows (`engineTurns`).
+  The Rust box refuses it: a coding-agent conversation carried to the engine is
+  4.6's.
+- `GET kuvo/agents/api/event`, the agents' feed, which the app follows on the
+  line for Accounts. It's one agent-neutral broadcast (`feed::Feed`) on the
+  resident's agents.
+
+Proven on both boxes by `agents-updates` (program-updates.test.ts's cases and
+update-notices.test.ts's, with Codex and a stand-in npm registry,
+`KUVO_TEST_NPM_REGISTRY`) and `agents-session-reads`. Both areas follow the feed
+through the line. The reference's case that an update throwing as it's asked
+ends failed has no Codex equivalent; Rust's `update` can't throw, and a program
+that can't start ends as failed with what it printed.
+
+The reference's feed sends these. Rust sends them now:
+`server.connected`, `server.heartbeat`, `integration.updated`, `model.updated`,
+`kuvo.updates.notice`, `kuvo.updates.notices.updated`,
+`kuvo.agent.account.changed` (Codex), `session.created`, `session.renamed`,
+`session.metadata.updated`, `session.deleted`, `session.model.selected`,
+`session.agent.selected`, `session.background.updated`, `permission.asked`,
+`permission.replied`, `form.created`, `form.replied`, `form.cancelled`,
+`session.inbox.enqueued`, `session.inbox.delivered`, `session.inbox.cancelled`,
+`session.inbox.delivery.changed`, `session.execution.started`,
+`session.execution.succeeded`, `session.execution.failed`,
+`session.execution.interrupted` and `session.idle`. Each conversation's event
+names its folder (`location`).
+
+The rest go with the open rows that bring their sources:
+
+- A turn's steps as they stream (`session.step.started`, `session.step.ended`,
+  `session.tool.*`, `session.usage.updated`, `session.synthetic`,
+  `session.compaction.started`, `.ended` and `.failed`, `session.shell.started`
+  and `.ended`, `shell.created`, `shell.exited`): Rust writes them to the
+  transcript as they come, and the app reads conversations on the engine side.
+  The feed's copy goes with transcripts, 4.6.
+- `session.updated` (a conversation carried in), `session.viewed`,
+  `session.revert.*`, `kuvo.review.updated`, `kuvo.btw.*` and `kuvo.handoff`:
+  4.6.
+- `kuvo.group.*`: 5.3. `kuvo.limits.updated`: 5.4. `kuvo.auto.updated` (Custom
+  Auto's lists): 6.1.
 
 The live case (`agents-codex-live`) ran once on macOS with Codex CLI 0.171.0 on
 GPT-6-Luna, picked from the box's own model list. Its turn ran a command for 25

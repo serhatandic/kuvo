@@ -83,6 +83,7 @@ pub struct CodexFactory {
     home: Home,
     holder_binary: PathBuf,
     relay: Option<ToolRelay>,
+    feed: Option<crate::feed::Feed>,
 }
 
 impl CodexFactory {
@@ -92,7 +93,14 @@ impl CodexFactory {
             home,
             holder_binary,
             relay,
+            feed: None,
         }
+    }
+
+    /// Where its accounts say their sign-in changed.
+    pub fn with_feed(mut self, feed: crate::feed::Feed) -> Self {
+        self.feed = Some(feed);
+        self
     }
 }
 
@@ -104,8 +112,14 @@ impl Factory for CodexFactory {
             account.provider().to_string(),
             home,
         );
+        let shared = Shared::new(program)?;
+        if let Some(feed) = &self.feed {
+            shared
+                .account
+                .tell_on(feed.clone(), account.provider().to_string());
+        }
         Ok(Arc::new(Codex {
-            shared: Shared::new(program)?,
+            shared,
             relay: self.relay.clone(),
             threads: Mutex::default(),
         }))

@@ -72,6 +72,12 @@ impl ResidentAgents {
         &self.adopted
     }
 
+    /// Tell clients on `feed` (the one the agents' adapters tell on).
+    pub fn with_feed(mut self, feed: Feed) -> Self {
+        self.feed = feed;
+        self
+    }
+
     /// What the agents tell their clients.
     pub fn feed(&self) -> &Feed {
         &self.feed
