@@ -95,12 +95,13 @@ impl WslTask {
 
     /// Registers the task (again) and starts it; its record says the keeper is the task's.
     pub async fn register(&self, home: &Home) -> io::Result<()> {
+        self.put(home, true).await
+    }
+
+    async fn put(&self, home: &Home, start: bool) -> io::Result<()> {
         keep_linux_path(home)?;
         files::create_private_dirs(&home.run())?;
-        files::write_secret(
-            &home.run().join(RECORD),
-            format!("{}\n", self.name).as_bytes(),
-        )?;
+        files::write_secret(&home.run().join(RECORD), format!("{}\n", self.name).as_bytes())?;
         let action = self.action(&crate::shell_keeper(&home.bin()));
         windows(&self.powershell, &format!(r#"
 $user = {user}
@@ -119,42 +120,32 @@ $acl = [Security.AccessControl.RawSecurityDescriptor]::new($task.GetSecurityDesc
 $ace = [Security.AccessControl.CommonAce]::new('None', 'AccessAllowed', 0x1f01ff, [Security.Principal.SecurityIdentifier]::new($user), $false, $null)
 $acl.DiscretionaryAcl.InsertAce(0, $ace)
 $task.SetSecurityDescriptor($acl.GetSddlForm('Access'), 0)
-Start-ScheduledTask -TaskName $name"#,
+{start}"#,
             user = literal(&self.sid),
             name = literal(&self.name),
             action = literal(&action),
+            start = if start { "Start-ScheduledTask -TaskName $name" } else { "" },
         ))
         .await
         .map(drop)
     }
 
     /// A task an earlier release registered starts the ordinary keeper, which a released Mac
-    /// can replace: pointed at the saved one, keeping its account, trigger and settings.
+    /// can replace: registered again for the saved one, without starting a second keeper.
     pub async fn repair(&self, home: &Home) -> io::Result<()> {
         let saved = crate::shell_keeper(&home.bin());
-        if saved.file_name().is_none_or(|name| name != ".kuvo-start-keeper")
-            || files::text_of(&home.run().join(RECORD)).as_deref().map(str::trim)
-                != Some(self.name.as_str())
-        {
+        if files::text_of(&home.run().join(RECORD)).as_deref().map(str::trim) != Some(&self.name) {
             return Ok(());
         }
-        windows(&self.powershell, &format!(r#"
-$name = {name}
-$task = Get-ScheduledTask -TaskName $name -TaskPath '\'
-$program = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$user = $task.Principal.UserId
-if ($user -notlike 'S-*') {{ $user = ([Security.Principal.NTAccount]::new($user)).Translate([Security.Principal.SecurityIdentifier]).Value }}
-if ($user -ne {sid} -or $task.Actions.Count -ne 1 -or $task.Actions[0].Execute -ne $program) {{ throw 'Not this installation''s task.' }}
-if ($task.Actions[0].Arguments -ceq {new}) {{ exit 0 }}
-if ($task.Actions[0].Arguments -cne {old}) {{ throw 'The WSL task has an unknown launcher.' }}
-Set-ScheduledTask -TaskName $name -TaskPath '\' -Action (New-ScheduledTaskAction -Execute $program -Argument {new}) | Out-Null"#,
-            name = literal(&self.name),
-            sid = literal(&self.sid),
-            new = literal(&self.action(&saved)),
-            old = literal(&self.action(&home.bin().join("kuvo-start"))),
+        let current = windows(&self.powershell, &format!(
+            "(Get-ScheduledTask -TaskName {} -TaskPath '\\').Actions[0].Arguments",
+            literal(&self.name)
         ))
-        .await
-        .map(drop)
+        .await?;
+        if current.trim() == self.action(&saved) {
+            return Ok(());
+        }
+        self.put(home, false).await
     }
 
     /// Removes only this installation's task, leaving its distribution and account alone. The
@@ -172,7 +163,9 @@ if ($task) {{
   $task | Unregister-ScheduledTask -Confirm:$false
 }} elseif ($lookup | Where-Object {{ $_.CategoryInfo.Category -ne 'ObjectNotFound' }}) {{
   throw $lookup[0]
-}}"#,
+}}
+# One already gone is gone: the lookup's error isn't the exit code.
+exit 0"#,
             name = literal(&self.name),
         ))
         .await?;
@@ -238,7 +231,9 @@ fn encode(value: &str) -> String {
 }
 
 async fn windows(program: &Path, script: &str) -> io::Result<String> {
-    let encoded = encode(&format!("$ErrorActionPreference = 'Stop';\n{script}"));
+    let encoded = encode(&format!(
+        "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';\n{script}"
+    ));
     let mut args = FLAGS.to_vec();
     args.push(&encoded);
     output(program, &args).await

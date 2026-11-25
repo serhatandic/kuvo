@@ -225,8 +225,8 @@ function windowsSide(distro, home) {
   const literal = text => "'" + text.replaceAll("'", "''") + "'";
   const encode = text => Buffer.from(text, "utf16le").toString("base64");
   const flags = "-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand";
-  const windows = script => execFileSync(ps, [...flags.split(" "), encode("$ErrorActionPreference = 'Stop';\n" + script)],
-    { encoding: "utf8", timeout: 15000 }).trim();
+  const windows = script => execFileSync(ps, [...flags.split(" "), encode("$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';\n" + script)],
+    { encoding: "utf8", timeout: 15000, stdio: ["ignore", "pipe", "pipe"] }).trim();
   const user = windows("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value");
   const task = "KuvoCode-WSL-" + digest(JSON.stringify([user, distro, home])).slice(0, 32);
   const action = keeper => flags + " " + encode(`& "$env:SystemRoot\\System32\\wsl.exe" -d ${literal(distro)} --cd ~ --exec /usr/bin/setsid --wait /usr/bin/env ${literal("HOME=" + path.dirname(home))} /bin/sh ${literal(path.join(home, "bin", keeper))} wsl-keep\nexit $LASTEXITCODE`);
@@ -234,7 +234,8 @@ function windowsSide(distro, home) {
   const details = () => JSON.parse(windows(`$task=Get-ScheduledTask -TaskName ${name} -ErrorAction SilentlyContinue
 if (!$task) { 'null' } else { [pscustomobject]@{action=$task.Actions[0].Arguments;user=$task.Principal.UserId;trigger=$task.Triggers[0].UserId;hidden=$task.Settings.Hidden} | ConvertTo-Json -Compress }`));
   const remove = () => windows(`$task=Get-ScheduledTask -TaskName ${name} -ErrorAction SilentlyContinue
-if ($task) { $task | Unregister-ScheduledTask -Confirm:$false }`);
+if ($task) { $task | Unregister-ScheduledTask -Confirm:$false }
+exit 0`);
   return { windows, user, task, name, literal, action, details, remove };
 }
 
@@ -279,6 +280,11 @@ test("WSL 2 starts at Windows sign-in by its own task, which uninstall takes awa
   assert.equal(side.details(), null);
   t.after(side.remove);
   write(path.join(home, "run/launch.env"), "PATH=/usr/bin:/mnt/c/Windows/System32:/bin\nOPENCODE_CLIENT=desktop\n");
+  // Uninstall confirms the crontab too: a scratch account's stand-in.
+  const tools = path.join(launchEnv.HOME, "tools");
+  launchEnv.KUVO_TEST_UNINSTALL_TOOLS = tools;
+  write(path.join(launchEnv.HOME, "crontab.fixture"), "0 1 * * * echo another-job\n");
+  write(path.join(tools, "crontab"), '#!/bin/sh\ncase "$1" in -l) cat "$HOME/crontab.fixture";; -) cat > "$HOME/crontab.fixture";; esac\n', { mode: 0o700 });
   const run = (...args) => spawnSync(command, runArgs(args), { cwd: home, env: launchEnv, encoding: "utf8", timeout: 45000 });
   const other = run("box", "wsl-startup", "Another-Distro");
   assert.equal(other.status, 1, other.stdout + other.stderr);
