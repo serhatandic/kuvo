@@ -1,4 +1,6 @@
 {
   "peerTransferMs": 300000,
-  "keeperTrialMs": 120000
+  "keeperTrialMs": 120000,
+  "releaseDrainMs": 300000,
+  "releaseDrainRetryMs": 60000
 }

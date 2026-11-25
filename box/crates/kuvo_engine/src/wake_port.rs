@@ -248,7 +248,7 @@ impl WakeEngine {
                 Some(words),
                 Some(from.to_owned()),
                 None,
-                &[],
+                true,
             )
             .await
             .map_err(|error| Unreachable(error.to_string()))?;

@@ -644,7 +644,11 @@ takes over between turns. The release check makes sure the previous engine can o
 wrote (`downgradeSafe`). The swap waits for a quiet half minute. Failing that, it holds new turns
 during the night window or after a day, and stops holding after half an hour. While it holds, sends
 to the engine wait on the box and are never dropped. A new engine that fails goes back where that's
-safe. (Unverified: whether versioned installs still swap engines in place, `link/updates/engine-swap.ts`.)
+safe. For a versioned release with a different engine, new engine turns wait while existing turns
+and background commands finish, for at most five minutes. If not quiet, the waiting work goes to
+the current engine and the release tries again no sooner than a minute later. Once switched, the
+saved inbox and waiting work go in order after the keeper confirms the release or restores the
+previous one. A compatible engine stays running across the release switch.
 
 ## Notifications
 

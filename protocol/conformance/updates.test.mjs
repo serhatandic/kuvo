@@ -17,7 +17,7 @@ import { bench } from "./bench.mjs";
 import { sessionOf } from "./engine.mjs";
 import "./update-helper.mjs";
 
-const { peerTransferMs, keeperTrialMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
+const { peerTransferMs, keeperTrialMs, releaseDrainMs, releaseDrainRetryMs } = readJSON(new URL("../../box/src/shared/fleet-timing.json", import.meta.url));
 const releaseReturnMs = peerTransferMs + keeperTrialMs;
 const firstPreparationMs = 90_000;
 const leaseElectionMs = 30_000;
@@ -275,7 +275,7 @@ test("a discarded release signature does not stop the next signed feed check", a
   assert.equal(fs.existsSync(path.join(here.home, "run/fleet-ready.json")), false);
 });
 
-async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {} } = {}) {
+async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}, engineVersion = "2.2.6" } = {}) {
   const key = keypair();
   const version = "0.8.0";
   const hash = digest(packBytes ?? "signed target");
@@ -293,7 +293,7 @@ async function fixtureReleaseFeed(t, packBytes, { holdPack = false, engines = {}
   await once(feed, "listening");
   t.after(() => { feed.close(); feed.closeAllConnections(); });
   const pack = { url: `http://127.0.0.1:${feed.address().port}/target.tar.gz`, sha256: hash };
-  signed = encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true,
+  signed = encode(envelope({ kuvo: "box/1", version, engine: engineVersion, spreads: true,
     launch: "rust", pack, packs: { [target]: pack }, ...engines }, key));
   const updateEnv = {
     KUVO_TEST_RELEASE_FEED: `http://127.0.0.1:${feed.address().port}/boxes.json`,
@@ -861,6 +861,231 @@ async function engineFeed(t, release, fixture, { damageFirst = !fixture } = {}) 
     },
   };
 }
+
+for (const rollback of [false, true]) test(rollback
+  ? "a differing engine restores waiting work after a failed release trial"
+  : "a differing engine finishes its turn and carries waiting work through a release switch",
+  { timeout: firstPreparationMs + releaseReturnMs + releaseDrainRetryMs }, async t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("Uses the Rust keeper and engine supervisor.");
+  const { computer } = await bench(t);
+  const here = await computer("engine-release-drain", undefined, folder => {
+    privateWindowsHome(path.join(folder, "box"));
+    return {};
+  });
+  const { home, engine } = here;
+  const workspace = path.join(home, "workspace");
+  const oldVersion = rollback ? "2.2.6" : "2.2.5", newVersion = rollback ? "2.2.7" : "2.2.6";
+  const exe = process.platform === "win32" ? "opencode.exe" : "opencode";
+  const oldEngine = path.join(home, "engine", oldVersion, exe);
+  const runtime = typescriptRuntime();
+  const fixture = process.platform === "darwin" && !path.isAbsolute(runtime)
+    ? process.env.PATH.split(path.delimiter).map(folder => path.join(folder, runtime)).find(file => fs.existsSync(file))
+    : process.platform === "darwin" ? runtime : process.execPath;
+  assert.ok(fixture, "The Mac engine fixture needs a self-contained Bun executable");
+  const engineBytes = fs.readFileSync(fixture);
+  write(oldEngine, engineBytes, { mode: 0o700 });
+  // The stand-in's durable session data stays in the test harness, like the
+  // engine's database. Each verified engine process has its own listening address.
+  write(path.join(workspace, "serve"), `const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const portArg = process.argv.indexOf("--port");
+// The failed trial is a signed fixture that passes the release probe but
+// exits rather than answering as a resident. Engine workers get --port.
+if (portArg < 0) process.exit(1);
+const port = Number(process.argv[portArg + 1]);
+const server = http.createServer((request, response) => {
+  const forward = http.request({ host: "127.0.0.1", port: ${engine.record.port}, path: request.url,
+    method: request.method, headers: request.headers }, reply => {
+    response.writeHead(reply.statusCode, reply.headers); reply.pipe(response);
+  });
+  forward.on("error", () => response.destroy());
+  response.on("close", () => forward.destroy());
+  request.pipe(forward);
+});
+server.listen(port, "127.0.0.1", () => console.log(server.address().port));
+process.on("exit", () => fs.writeFileSync(path.join(__dirname, "exit-" + process.pid), ""));
+process.on("SIGTERM", () => process.exit(0));
+setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) process.exit(0); }, 50).unref();
+`);
+  if (rollback) write(path.join(home, "selftest"), `process.exit(process.argv.slice(2).join(" ") === "--engine ${newVersion}" ? 0 : 1);`);
+  const worker = launch(oldEngine, ["serve", "--port", "0", "--hostname", "127.0.0.1"], here.env, workspace, "pipe");
+  let port = "";
+  worker.child.stdout.on("data", chunk => { port += chunk; });
+  const program = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
+  const previous = "versions/0.8.0-beta.1-000000000000";
+  const current = "0.8.0-beta.1";
+  const targetVersion = "0.8.0";
+  const release = path.join(here.env.HOME, "release");
+  let keeper;
+  let keeperEnv;
+  const keep = (...args) => {
+    const result = spawnSync(binary.file, ["keep", ...args], { env: keeperEnv, cwd: home, encoding: "utf8", timeout: 15000 });
+    assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  };
+  try {
+    await until(() => /^\d+\s*$/.test(port), () => "the earlier engine did not listen\n" + worker.log());
+    const oldRecord = { ...engine.record, version: oldVersion, pid: worker.child.pid, port: Number(port) };
+    write(path.join(home, "run/engine.json"), encode(oldRecord));
+    const session = "ses_engineDrain";
+    engine.sessions.push(sessionOf({ id: session, title: "Engine drain", directory: workspace }));
+    engine.runAfterPrompt = "msg_originalEngine";
+    for (const [id, text] of [["msg_originalEngine", "original turn"], ["msg_inboxEngine", "earlier inbox"]]) {
+      const response = await fetch(`http://127.0.0.1:${oldRecord.port}/api/session/${session}/prompt`, {
+        method: "POST", body: JSON.stringify({ id, text, delivery: "queue" }) });
+      assert.equal(response.status, 200);
+    }
+    assert.ok(engine.running.has(session));
+    const tree = path.join(release, "tree");
+    const oldBinary = fs.readFileSync(binary.file);
+    const members = { [`bin/${program}`]: rollback ? engineBytes : oldBinary, "bin/box-version": Buffer.from(targetVersion + "\n") };
+    for (const [file, bytes] of Object.entries(members)) write(path.join(tree, file), bytes, { mode: 0o700 });
+    write(path.join(tree, "box.json"), encode({ kuvo: "box/1", launch: "rust", version: targetVersion, engine: newVersion,
+      downgradeSafe: true, engines: [oldVersion, newVersion],
+      files: Object.fromEntries(Object.entries(members).map(([file, bytes]) => [file, digest(bytes)])) }));
+    const tar = path.join(release, "box.tar");
+    assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 90000 }).status, 0);
+    const assets = await engineFeed(t, path.join(release, "engine"), engineBytes, { damageFirst: false });
+    const system = process.platform === "win32" ? "windows" : process.platform;
+    const architecture = process.arch === "arm64" ? "aarch64" : "x86_64";
+    const { hash, updateEnv } = await fixtureReleaseFeed(t, gzipSync(fs.readFileSync(tar), { level: 1 }), { engineVersion: newVersion, engines: { [system]: { [architecture]: assets.build } } });
+    write(path.join(home, previous, "box.json"), encode({ kuvo: "box/1", version: current, launch: "rust", engine: oldVersion }));
+    write(path.join(home, previous, "bin", program), oldBinary, { mode: 0o700 });
+    write(path.join(home, previous, "bin/box-version"), current + "\n");
+    keeperEnv = { ...here.env, KUVO_HOME: home, ...updateEnv };
+    keep("select", `${previous}/bin`);
+    keeper = launch(binary.file, ["keep"], keeperEnv, home);
+    const serve = path.join(home, "run/serve.json");
+    const before = await until(async () => {
+      try { const record = readJSON(serve); return (await request(record, "GET", "kuvo/info")).status === 200 && record; } catch { return false; }
+    }, () => "the earlier resident did not answer\n" + keeper.log(), 25000);
+    await until(() => {
+      const failed = path.join(home, "run/fleet-cannot.json");
+      if (fs.existsSync(failed)) assert.fail(fs.readFileSync(failed, "utf8"));
+      return fs.existsSync(path.join(home, "run/fleet-ready.json"));
+    }, () => `the signed target should be prepared\n${fs.readFileSync(path.join(home, "run/serve.log"), "utf8").slice(-4000)}\n${keeper.log()}`, 120000);
+    const hold = path.join(home, "run/fleet-engine-hold.json");
+    await until(() => fs.existsSync(hold), "the updater should hold new engine work while the old turn finishes", 15000);
+    assert.equal(fs.readFileSync(path.join(home, "active-release"), "utf8"), `${previous}/bin`);
+    assert.equal(readJSON(path.join(home, "run/engine.json")).pid, oldRecord.pid);
+    assert.ok(engine.running.has(session));
+    const app = { "x-kuvo-from": "app" };
+    if (!rollback) {
+      // Exercise the persisted deadline instead of sleeping five minutes.
+      const deferred = await request(before, "POST", `api/session/${session}/prompt`, { id: "msg_deferredEngine", text: "wait then retry", delivery: "queue" }, app);
+      assert.equal(deferred.status, 200, deferred.text);
+      assert.deepEqual(deferred.json, { waits: true });
+      const changeHold = fields => {
+        write(hold + ".test", encode({ ...readJSON(hold), ...fields }));
+        fs.renameSync(hold + ".test", hold);
+      };
+      changeHold({ since: Date.now() - releaseDrainMs - 1000 });
+      await until(() => readJSON(hold).stage === "deferred", "an expired drain should release the queue and defer the update", releaseDrainRetryMs);
+      assert.ok(readJSON(hold).retryAt > Date.now());
+      assert.equal(readJSON(path.join(home, "run/engine.json")).pid, oldRecord.pid);
+      assert.deepEqual(engine.inboxes.get(session).map(item => item.id), ["msg_inboxEngine", "msg_deferredEngine"]);
+      changeHold({ retryAt: Date.now() - 1 });
+      await until(() => fs.existsSync(hold) && readJSON(hold).stage === "holding", "the signed release should retry after the defer time", releaseDrainRetryMs);
+    }
+    const queued = await request(before, "POST", `kuvo/sessions/${session}/send`, { id: "msg_afterEngine", words: "after the switch" }, { "x-kuvo-from": "app" });
+    assert.equal(queued.status, 200, queued.text);
+    assert.deepEqual(queued.json, { waits: true });
+    const raw = { id: "msg_rawEngine", text: "a raw prompt behind the held send", delivery: "queue" };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await request(before, "POST", `api/session/${session}/prompt`, raw, app);
+      assert.equal(response.status, 200, response.text);
+      assert.deepEqual(response.json, { waits: true });
+    }
+    const blocked = await request(before, "POST", `api/session/${session}/command`, { command: "test" }, app);
+    assert.equal(blocked.status, 503, blocked.text);
+    assert.equal(blocked.json.engineChanging, true);
+    const ask = { id: "per_drain", sessionID: session, action: "edit", resources: ["notes.txt"] };
+    engine.permissions.set(session, [ask]);
+    const answered = await request(before, "POST", `api/session/${session}/permission/${ask.id}/reply`, { decision: "once" }, app);
+    assert.equal(answered.status, 200, answered.text);
+    assert.deepEqual(engine.permissions.get(session), []);
+    const made = await request(before, "POST", "kuvo/sessions", { title: "Made during drain", task: "Start when the engine is ready", chat: true, approval: "askFirst" }, app);
+    assert.equal(made.status, 200, made.text);
+    const madeSession = made.json.session;
+    assert.ok(madeSession);
+    assert.equal(engine.messages.get(madeSession)?.length ?? 0, 0, "a new conversation's first task must also wait");
+    const earlier = rollback ? ["msg_inboxEngine"] : ["msg_inboxEngine", "msg_deferredEngine"];
+    assert.deepEqual(engine.inboxes.get(session).map(item => item.id), earlier);
+    const earlierReads = engine.asked.length;
+    engine.open.add(workspace);
+    engine.shells = [{ id: "shell_drain", status: "running", folder: workspace }];
+    engine.running.delete(session);
+    engine.emit({ type: "session.execution.succeeded", data: { sessionID: session } });
+    await until(() => engine.asked.slice(earlierReads).filter(row => row.path === "/api/shell").length >= 2, "the updater must check commands left running after a turn");
+    assert.equal(fs.readFileSync(path.join(home, "active-release"), "utf8"), `${previous}/bin`);
+    assert.equal(readJSON(path.join(home, "run/engine.json")).pid, oldRecord.pid);
+    assert.ok(fs.existsSync(hold));
+    engine.shells = [];
+    const selected = `versions/${targetVersion}-${hash.slice(0, 12)}/bin`;
+    if (rollback) {
+      await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === selected && fs.existsSync(path.join(home, "run/previous")), "the keeper should try the signed target", keeperTrialMs);
+      assert.ok(fs.existsSync(hold), "the queue stays held during the failed health trial");
+      assert.equal(fs.existsSync(path.join(home, "run/engine.json")), false, "no engine starts before the keeper verdict");
+      assert.deepEqual(engine.messages.get(session).map(message => message.id), ["msg_originalEngine"]);
+      await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === `${previous}/bin` && fs.existsSync(path.join(home, "run/update-cannot")) && !fs.existsSync(path.join(home, "run/previous")),
+        () => "the keeper did not restore the previous release\n" + keeper.log(), keeperTrialMs + 15000);
+    } else {
+      await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === selected && !fs.existsSync(path.join(home, "run/previous")),
+        () => "the keeper did not confirm the new release\n" + keeper.log(), keeperTrialMs);
+    }
+    await until(() => {
+      try { const record = readJSON(path.join(home, "run/engine.json")); return record.version === (rollback ? oldVersion : newVersion) && record.pid !== oldRecord.pid; } catch { return false; }
+    }, "the selected release's engine should start after the trial", 30000);
+    await worker.exited;
+    await until(() => !fs.existsSync(hold) && engine.messages.get(session)?.some(message => message.id === "msg_rawEngine"),
+      "the waiting work should reach the new engine", 30000);
+    assert.deepEqual(engine.messages.get(session).filter(message => message.type === "user").map(message => message.id),
+      ["msg_originalEngine", ...earlier, "msg_afterEngine", "msg_rawEngine"]);
+    assert.deepEqual(engine.messages.get(madeSession).filter(message => message.type === "user").map(message => message.text), ["Start when the engine is ready"]);
+  } finally {
+    let currentEngine;
+    try { currentEngine = readJSON(path.join(home, "run/engine.json")); } catch {}
+    if (keeper) {
+      try { keep("off"); await until(() => keeper.child.exitCode !== null, () => keeper.log(), 15000); }
+      finally { await keeper.stop(); }
+    }
+    write(path.join(workspace, "fixture-stop"), "");
+    if (currentEngine && currentEngine.pid !== worker.child.pid) {
+      await until(() => {
+        if (fs.existsSync(path.join(workspace, `exit-${currentEngine.pid}`))) return true;
+        try { process.kill(currentEngine.pid, 0); return false; }
+        catch (error) { return error.code === "ESRCH"; }
+      }, "the replacement fixture engine should exit");
+    }
+    await worker.stop();
+  }
+});
+
+test("a signed release without rollback compatibility leaves the earlier engine in place", t => {
+  const binary = boxBinary();
+  if (binary.typescript) return t.skip("The Rust preparation guard runs before the engine download.");
+  const { home, release, key, body, update } = box(t);
+  const before = { pid: process.pid, version: "2.2.5", password: "fixture", port: 12345 };
+  write(path.join(home, "run/engine.json"), encode(before));
+  const tree = path.join(release, "tree");
+  const program = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
+  const members = { [`bin/${program}`]: Buffer.from("fixture never runs"), "bin/box-version": Buffer.from(body.version + "\n") };
+  for (const [file, bytes] of Object.entries(members)) write(path.join(tree, file), bytes, { mode: 0o700 });
+  write(path.join(tree, "box.json"), encode({ kuvo: "box/1", launch: "rust", version: body.version, engine: body.engine,
+    downgradeSafe: true, engines: [body.engine], files: Object.fromEntries(Object.entries(members).map(([file, bytes]) => [file, digest(bytes)])) }));
+  const tar = path.join(release, "box.tar");
+  assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 15000 }).status, 0);
+  const pack = gzipSync(fs.readFileSync(tar));
+  const descriptor = { ...body.pack, sha256: digest(pack) };
+  const answer = update(envelope({ ...body, launch: "rust", pack: descriptor, packs: { [target]: descriptor } }, key), pack);
+  assert.deepEqual(answer, { result: "failed", version: body.version,
+    message: "The new engine hasn't been checked for going back to the engine running here." });
+  assert.deepEqual(readJSON(path.join(home, "run/engine.json")), before);
+  assert.equal(fs.readFileSync(path.join(home, "bin/box-version"), "utf8"), "0.8.0-beta.1\n");
+  assert.equal(fs.existsSync(path.join(home, "run/fleet-ready.json")), false);
+  assert.equal(fs.existsSync(path.join(home, "run/fleet-engine-hold.json")), false);
+});
 
 test("a failed engine download can retry preparation for the same signed release", { timeout: 180000 }, async t => {
   const binary = boxBinary();

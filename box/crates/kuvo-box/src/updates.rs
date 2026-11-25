@@ -117,6 +117,7 @@ pub fn start(
     profile: &Path,
     peers: Arc<ResidentPeers>,
     setup: SetupHandle,
+    engine: kuvo_engine::Engine,
 ) -> Option<Worker> {
     let (url, key, scratch) = feed(&home, profile)?;
     let delay = if scratch {
@@ -136,6 +137,7 @@ pub fn start(
         home,
         peers,
         setup,
+        engine,
         key,
         url,
         test_feed: scratch,
@@ -260,6 +262,7 @@ struct Fleet {
     home: Home,
     peers: Arc<ResidentPeers>,
     setup: SetupHandle,
+    engine: kuvo_engine::Engine,
     key: String,
     url: String,
     test_feed: bool,
@@ -385,6 +388,7 @@ impl Fleet {
     }
 
     async fn round(&mut self) -> io::Result<()> {
+        self.engine.recover_release_drain().await?;
         if self.pending.as_ref().is_some_and(JoinHandle::is_finished)
             && let Some(pending) = self.pending.take()
             && let Err(error) = pending.await.map_err(io::Error::other)?
@@ -642,26 +646,75 @@ impl Fleet {
         }
 
         if let Some(candidate) = candidate {
-            if standalone || local_main {
+            let authorized = if standalone || local_main {
                 let (ready, reachable) = barrier(&view, now, &candidate);
-                if candidate.primary_may_switch(&self.home, now, ready, reachable)?
+                candidate.primary_may_switch(&self.home, now, ready, reachable)?
                     && prepared
                     && (standalone || self.setup.may_switch_fleet().await)
-                {
-                    candidate.activate(&self.home).await?;
-                }
-            } else if prepared
-                && committed
-                && self
-                    .setup
-                    .rosters()
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|roster| roster.main == main)
+            } else {
+                prepared
+                    && committed
+                    && self
+                        .setup
+                        .rosters()
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|roster| roster.main == main)
+            };
+            if authorized
+                && !fleet::stopped(&self.home)
+                && !self.home.run().join("previous").exists()
             {
-                candidate.activate(&self.home).await?;
+                let local = candidate.local()?;
+                let release = format!("{}:{}", local.version, local.sha256);
+                if self
+                    .engine
+                    .drain_for_release(&release, candidate.engine())
+                    .await?
+                {
+                    let fresh = reader.view();
+                    let now = reader.now();
+                    let still_authorized = if fresh.roster.main != main {
+                        false
+                    } else if standalone || local_main {
+                        let (ready, reachable) = barrier(&fresh, now, &candidate);
+                        candidate.primary_may_switch(&self.home, now, ready, reachable)?
+                            && if standalone {
+                                fresh.roster.members.is_empty()
+                            } else {
+                                self.setup.may_switch_fleet().await
+                            }
+                    } else if let Some(main) = main {
+                        let (away, facts) = fresh.peer_updates(&main, now);
+                        !away
+                            && facts.kuvo.as_deref() == Some(candidate.version())
+                            && peer_installed(
+                                &candidate,
+                                &facts.release_target,
+                                &facts.installed_sha256,
+                            )
+                            && self
+                                .setup
+                                .rosters()
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|roster| roster.main == Some(main))
+                    } else {
+                        false
+                    };
+                    if still_authorized && !fleet::stopped(&self.home) {
+                        if let Err(error) = candidate.activate(&self.home).await {
+                            self.engine.cancel_release_drain().await?;
+                            return Err(error);
+                        }
+                        return Ok(());
+                    }
+                    self.engine.cancel_release_drain().await?;
+                }
+                return Ok(());
             }
         }
+        self.engine.cancel_release_drain().await?;
         Ok(())
     }
 
