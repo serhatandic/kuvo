@@ -33,13 +33,14 @@ async function joined(t, seed) {
   assert.equal(joinedLab.code, 0, joinedLab.log);
   const studioKey = setup.json.you.key;
   seed({ lab, studioKey });
-  await lab.start().ready();
+  const labBox = lab.start();
+  await labBox.ready();
   const tool = async (name, args = {}) => {
     const answer = await main("POST", "kuvo/agent-tools", { name, arguments: args, session: "ses_lead" });
     assert.equal(answer.status, 200, answer.text);
     return answer.json;
   };
-  return { studio, lab, main, tool, studioKey };
+  return { studio, lab, labBox, main, tool, studioKey };
 }
 
 test("a lead on another computer lists, stops, summarizes and answers its sessions here, and hears their rows", { timeout: 120000, skip }, async t => {
@@ -172,4 +173,54 @@ test("a lead on another computer starts a session here as if it lived here, then
   const stopAll = await main("POST", "kuvo/bots/bot_lead1/stop-all");
   assert.equal(stopAll.status, 200, stopAll.text);
   await until(() => lab.engine.interrupted.some(each => each.session === working.id), "Stop All never reached Lab.", 30000, 250);
+});
+
+test("a stop given while the computer its session is on is away is kept, done once it's back, and its lead hears how it went", { timeout: 180000, skip }, async t => {
+  const { studio, lab, labBox, tool } = await joined(t, ({ lab, studioKey }) => {
+    const work = { startedBy: "ses_lead", line: ["ses_lead"], depth: 1 };
+    lab.engine.sessions.push({ ...sessionOf({ id: "ses_build", title: "Build", directory: path.join(lab.home, "..", "app") }), metadata: { kuvo: work } });
+    write(path.join(lab.home, "run", "work", "homes.json"), JSON.stringify({ ses_lead: { key: studioKey, at: Date.now() } }));
+  });
+  // Once the lead's computer knows the session is on Lab.
+  let last;
+  await until(async () => {
+    last = await tool("list_sessions");
+    return /On Lab/.test(last.text);
+  }, () => `The lead never listed its sessions on Lab: ${JSON.stringify(last)}`, 60000, 500);
+  await labBox.stop();
+  const kept = await until(async () => {
+    last = await tool("stop_session", { session: "ses_build" });
+    return /kept/.test(last.text) && last;
+  }, () => `The stop was never kept: ${JSON.stringify(last)}`, 60000, 1000);
+  assert.deepEqual(kept, { text: "Lab isn't answering (it may be asleep, off or offline). Your stop is kept and done when it's back: you'll hear how it went as a message.", isError: false });
+  lab.engine.running.add("ses_build");
+  await lab.start().ready();
+  await until(() => lab.engine.interrupted.some(each => each.session === "ses_build"), "The kept stop never reached Lab.", 60000, 250);
+  const told = await until(() => studio.engine.asked.find(each => each.method === "POST" && each.path === "/api/session/ses_lead/prompt" && /Stopped "Build"\./.test(each.json?.text ?? "")),
+    "The lead never heard how its stop went.", 60000, 250);
+  assert.match(told.json.text, /Stopped "Build"\./);
+});
+
+test("a conversation writes to one on another computer and reads its conversation there", { timeout: 180000, skip }, async t => {
+  const { lab, tool } = await joined(t, ({ lab }) => {
+    lab.engine.sessions.push(sessionOf({ id: "ses_docs", title: "Docs", directory: path.join(lab.home, "..", "app"), updated: 5 }));
+    lab.engine.messages.set("ses_docs", [
+      { id: "msg_1", type: "user", text: "Write the release notes.", time: { created: 1 } },
+      { id: "msg_2", type: "assistant", content: [{ type: "text", text: "The notes are in NOTES.md." }], time: { created: 2 } },
+    ]);
+  });
+  // Once Lab has told the lead's computer who's there.
+  let last;
+  await until(async () => {
+    last = await tool("list_agents");
+    return /- Docs \(session, on Lab[^)]*\) address: ses_docs/.test(last.text);
+  }, () => `Lab's agents never came: ${JSON.stringify(last)}`, 60000, 500);
+  const sent = await tool("send_message", { to: "Docs", text: "Add the new flag." });
+  assert.deepEqual(sent, { text: "On its way to Docs on Lab. Its answer, if it writes one, comes to you as a message.", isError: false });
+  const told = await until(() => lab.engine.asked.find(each => each.method === "POST" && each.path === "/api/session/ses_docs/prompt"), "The message never reached Docs.", 60000, 250);
+  assert.match(told.json.text, /^\[Message from Lead[^\]]* · ses_lead\] \(To answer, use send_message to ses_lead\.\)\n\nAdd the new flag\.$/);
+  const read = await tool("read_conversation", { of: "Docs" });
+  assert.equal(read.isError, false, read.text);
+  assert.match(read.text, /^Docs's conversation \(session, on Lab[^)]*, address ses_docs\), oldest first\./);
+  assert.match(read.text, /The notes are in NOTES\.md\./);
 });

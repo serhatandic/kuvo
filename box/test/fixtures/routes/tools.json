@@ -558,6 +558,581 @@
      }
     }
    ]
+  },
+  {
+   "name": "Agents write to each other and read each other's conversations, a subagent as its conversation",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_other",
+       "title": "Other",
+       "directory": "/tmp/api"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_sub",
+       "title": "Look around",
+       "parent": "ses_lead"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_agents",
+      "arguments": {},
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": {
+        "<contains>": "- Other (session, here, in api) address: ses_other"
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "&Other",
+       "text": "Hello there."
+      },
+      "session": "ses_sub"
+     },
+     "why": "A subagent writes as its conversation.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "Sent to Other. Its answer, if it writes one, comes to you as a message."
+      }
+     }
+    },
+    {
+     "engineGot": {
+      "method": "POST",
+      "path": "/api/session/ses_other/prompt",
+      "json": {
+       "text": "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nHello there."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "Nobody",
+       "text": "Hi."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "There's no agent called Nobody. Use list_agents to see who there is."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_lead",
+       "text": "Hi."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "That's you."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "Other"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Say what to write (text)."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_sub",
+       "text": "Hi."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Couldn't write to ses_sub: It's a subagent's conversation."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "read_conversation",
+      "arguments": {
+       "of": "Other"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": {
+        "<contains>": "Other's conversation (session, here, in api, address ses_other), oldest first."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "read_conversation",
+      "arguments": {
+       "of": "Lead"
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "That's this conversation: you have it already."
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "A conversation sends twenty messages in ten minutes at most",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_lead",
+       "title": "Lead"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_other",
+       "title": "Other"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 1."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 2."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 3."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 4."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 5."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 6."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 7."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 8."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 9."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 10."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 11."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 12."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 13."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 14."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 15."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 16."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 17."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 18."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 19."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 20."
+      },
+      "session": "ses_lead"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "send_message",
+      "arguments": {
+       "to": "ses_other",
+       "text": "Note 21."
+      },
+      "session": "ses_lead"
+     },
+     "why": "Two agents shouldn't keep writing to each other unattended.",
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "You've sent a lot of messages in the last few minutes. Wait a while, or ask the user how to go on."
+      }
+     }
+    }
+   ]
   }
  ]
 }

@@ -92,6 +92,11 @@ pub async fn all_work(engine: &BotEngine) -> Option<Vec<Value>> {
     work_sessions(engine).await
 }
 
+/// As `all_work`, those put away too.
+pub async fn all_work_archived(engine: &BotEngine) -> Option<Vec<Value>> {
+    super::catchup::work_sessions_as(engine, true).await
+}
+
 /// The sessions at work in the engine now.
 pub async fn working_now(engine: &BotEngine) -> HashSet<String> {
     let active = engine

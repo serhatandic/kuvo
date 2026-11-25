@@ -556,7 +556,8 @@ fn take(text: &str, count: usize) -> String {
     String::from_utf16_lossy(&text.encode_utf16().take(count).collect::<Vec<_>>())
 }
 
-fn folded(text: &str) -> String {
+/// Text as names and queries are compared: accents and case aside.
+pub fn folded(text: &str) -> String {
     text.nfd()
         .filter(|ch| !is_combining_mark(*ch))
         .collect::<String>()

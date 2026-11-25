@@ -4,6 +4,8 @@
 //! on your other computers (PROTOCOL.md, "Work"), as a subagent does as its conversation.
 
 mod calls;
+mod letters;
+mod limits;
 mod sessions;
 mod start;
 
@@ -292,6 +294,21 @@ impl Work {
                     },
                     Ok(None) => self.start_here(caller.as_ref(), args, item).await,
                 }
+            }
+            "list_agents" => {
+                let (agents, _) = self.everyone(engine.as_ref()).await;
+                said(self.describe_agents(
+                    &agents,
+                    caller.as_ref().map(|caller| caller.session.as_str()),
+                ))
+            }
+            "send_message" => {
+                self.send_message_tool(engine.as_ref(), caller.as_ref(), args)
+                    .await
+            }
+            "read_conversation" => {
+                self.read_conversation_tool(engine.as_ref(), caller.as_ref(), args)
+                    .await
             }
             "make_project" => match &caller {
                 None => refused("Only a conversation on this computer makes projects here."),

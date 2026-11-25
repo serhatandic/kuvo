@@ -10,6 +10,7 @@ pub mod elsewhere;
 pub mod policy;
 pub mod projects;
 pub mod records;
+pub mod sent;
 pub mod settings;
 pub mod starts;
 pub mod unanswering;

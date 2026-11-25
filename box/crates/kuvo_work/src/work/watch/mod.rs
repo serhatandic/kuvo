@@ -783,7 +783,21 @@ impl Watcher {
             }
             return;
         }
-        self.tell(starter, line, false);
+        // What its reply says came to its starter already, in a message it sent it in this turn
+        // (its report, by send_message): not told again (#768).
+        let serving = still
+            .as_ref()
+            .is_some_and(|still| !still.services_words().is_empty());
+        let quiet = last.as_ref().is_some_and(|last| {
+            let since = last.began.at.or(was.at).unwrap_or(0) as i64;
+            !yours
+                && !serving
+                && !last.text.is_empty()
+                && self.work().said_already(id, starter, &last.text, since)
+        });
+        if !quiet {
+            self.tell(starter, line, false);
+        }
         // One of a bot's sessions done: for clients to show it seeing that, once, as it's told.
         if let Some(bot) = works_for(session) {
             self.work().records.note_oversight(bot, id, "finished");

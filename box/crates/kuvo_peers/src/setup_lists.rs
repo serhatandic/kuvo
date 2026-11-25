@@ -152,6 +152,14 @@ impl View {
             .pending(&self.reach, &self.announced, feature, kept)
     }
 
+    /// The agents a computer last told this one of.
+    pub fn told_agents(&self, key: &ComputerKey) -> Vec<AnnouncedAgent> {
+        self.announced
+            .get(&encode(key))
+            .map(|copy| copy.list.clone())
+            .unwrap_or_default()
+    }
+
     /// Whether the relay says a computer isn't there now.
     pub fn away(&self, key: &ComputerKey) -> bool {
         self.reach.away_since(&encode(key)).is_some()

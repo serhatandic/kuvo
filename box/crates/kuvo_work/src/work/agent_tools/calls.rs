@@ -201,8 +201,12 @@ impl Work {
             Ok(Outcome::Failed(why)) => Went::Failed(why),
             Ok(Outcome::Older) => Went::Older,
             Ok(Outcome::Offline { kept }) => Went::Offline { kept },
-            Ok(Outcome::Away { kept, sent }) => {
-                let away = self.peers.view().away(&peer.key);
+            Ok(Outcome::Away {
+                kept,
+                sent,
+                unreachable,
+            }) => {
+                let away = unreachable || self.peers.view().away(&peer.key);
                 let why = if away {
                     AWAY_WORDS
                 } else {
@@ -220,7 +224,7 @@ impl Work {
 
     /// The computer a session not here lives on, as this one knows it: where its rows came from
     /// or where it went, else a computer that lists it.
-    fn box_of(&self, session: &str) -> Option<Member> {
+    pub(super) fn box_of(&self, session: &str) -> Option<Member> {
         let view = self.peers.view();
         let own = view.roster.here;
         let known = known_home(&self.home.join("run"), session).filter(|key| Some(*key) != own);
@@ -235,9 +239,7 @@ impl Work {
     /// list_models or list_projects on another of your computers.
     pub async fn read_elsewhere(&self, tool: &str, peer: Member, caller: &Caller) -> Said {
         let name = name_of(&peer);
-        let older = format!(
-            "{name} runs an older Kuvo Code that can't take work from other computers. Updating Kuvo Code on {name} lets it: ask the user."
-        );
+        let older = older_words(&name);
         if !self.peers.view().advertises(&peer.key, STARTS) {
             return refused(older);
         }
@@ -389,16 +391,27 @@ impl Work {
         }
     }
 
-    /// The computers `lead` started work on lately, by key.
-    pub fn started_on(&self, lead: &str) -> Vec<String> {
+    /// The computers each lead started work on lately (`run/work/started-elsewhere.json`, the
+    /// TypeScript box's too), by key, those older left out.
+    fn started_kept(&self) -> (std::path::PathBuf, BTreeMap<String, BTreeMap<String, i64>>) {
         let file = self.home.join("run/work/started-elsewhere.json");
-        let kept: BTreeMap<String, BTreeMap<String, i64>> = std::fs::read(&file)
+        let mut kept: BTreeMap<String, BTreeMap<String, i64>> = std::fs::read(&file)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
         let now = jiff::Timestamp::now().as_millisecond();
-        let keys = kept.get(lead).into_iter().flatten();
-        keys.filter(|(_, at)| now - **at <= STARTED_FOR)
+        kept.values_mut()
+            .for_each(|keys| keys.retain(|_, at| now - *at <= STARTED_FOR));
+        kept.retain(|_, keys| !keys.is_empty());
+        (file, kept)
+    }
+
+    /// The computers `lead` started work on lately, by key.
+    pub fn started_on(&self, lead: &str) -> Vec<String> {
+        let (_, kept) = self.started_kept();
+        kept.get(lead)
+            .into_iter()
+            .flatten()
             .map(|(key, _)| key.clone())
             .collect()
     }
@@ -406,16 +419,8 @@ impl Work {
     /// Notes that `lead` started work on the computer `key`, so its sessions there are asked for
     /// before their first rows come.
     pub fn note_started_on(&self, lead: &str, key: &ComputerKey) {
-        let file = self.home.join("run/work/started-elsewhere.json");
-        let mut kept: BTreeMap<String, BTreeMap<String, i64>> = std::fs::read(&file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let (file, mut kept) = self.started_kept();
         let now = jiff::Timestamp::now().as_millisecond();
-        for keys in kept.values_mut() {
-            keys.retain(|_, at| now - *at <= STARTED_FOR);
-        }
-        kept.retain(|_, keys| !keys.is_empty());
         kept.entry(lead.to_owned())
             .or_default()
             .insert(encode(key), now);
@@ -499,6 +504,12 @@ pub struct RowsThere {
     pub rows: Vec<Value>,
     pub as_of: Option<i64>,
     pub away: Option<String>,
+}
+
+pub fn older_words(name: &str) -> String {
+    format!(
+        "{name} runs an older Kuvo Code that can't take work from other computers. Updating Kuvo Code on {name} lets it: ask the user."
+    )
 }
 
 pub fn asleep(name: &str, doing: &str) -> String {

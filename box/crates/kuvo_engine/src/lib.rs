@@ -93,7 +93,7 @@ pub use session_move::{LetterDelivery, LetterPrompt, LetterText, MoveEngineError
 pub use start_session::{
     ParentLead, Permission as SessionPermission, RemoteLead, StartSteps, session_note,
 };
-pub use transcript::{TranscriptError, TranscriptScope};
+pub use transcript::{TranscriptError, TranscriptScope, folded};
 pub use waiting::PeerWaiting;
 pub use bot_port::BotEngine;
 pub use wake_port::{BoxMessage, Delivered as WakeDelivered, Unreachable, WAKE_FROM, WAKE_MARKER, WakeEngine};
