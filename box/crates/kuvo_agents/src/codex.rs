@@ -21,6 +21,7 @@ use std::{
 
 use futures_util::future::{BoxFuture, join_all};
 use kuvo_store::home::Home;
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::{
@@ -57,7 +58,7 @@ pub async fn read_kept_citations(
     let Some(header) = store.read(id).await? else {
         return Ok(changed);
     };
-    let fields = header.into_fields();
+    let fields = Value::Object(header.into_fields());
     let codex = fields["model"]["providerID"]
         .as_str()
         .and_then(crate::accounts::Provider::parse)
