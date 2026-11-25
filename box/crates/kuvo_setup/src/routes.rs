@@ -310,6 +310,30 @@ impl SetupHandle {
         });
     }
 
+    /// Save the usage settings through the same main-computer authority as the legacy bridge.
+    pub async fn save_usage(
+        &self,
+        id: String,
+        epoch: u64,
+        sequence: u64,
+        value: Value,
+    ) -> Result<Value, Refusal> {
+        let answer = self
+            .request(Command::Usage {
+                id,
+                epoch,
+                sequence,
+                operation: None,
+                value,
+            })
+            .await?;
+        if answer.status == 200 {
+            Ok(answer.value)
+        } else {
+            Err(response_refusal(answer))
+        }
+    }
+
     pub(crate) async fn request(&self, command: Command) -> Result<Response, Refusal> {
         self.request_command(command).await.map_err(refusal)
     }

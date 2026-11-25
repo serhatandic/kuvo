@@ -347,7 +347,7 @@ impl Projection {
                     .collect()
             }
             TurnEvent::PlanLimit(reading) => {
-                self.limits.heard(&self.agent, reading);
+                self.limits.heard(&self.model.provider, reading);
                 Vec::new()
             }
             TurnEvent::Cost(cost) => {
@@ -915,7 +915,7 @@ mod tests {
         let mut projection = Projection::start(
             store,
             "ses_limits".into(),
-            "claude-code@a1".into(),
+            "build".into(),
             &input,
             None,
             None,

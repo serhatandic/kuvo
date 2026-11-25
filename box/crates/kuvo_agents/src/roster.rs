@@ -13,6 +13,18 @@ use std::{collections::HashMap, io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
 pub trait Agent: Adoption {
+    /// The current plan sign-in's fingerprint and its stable, maker-specific account identity.
+    /// A read-only local check, never a credential refresh.
+    fn plan_sign_in(&self) -> BoxFuture<'_, Option<(String, String)>> {
+        Box::pin(async { None })
+    }
+
+    /// A maker's current plan windows, on demand. Adapters without a direct reader
+    /// can still report the readings heard by a turn.
+    fn read_plan_limits(&self) -> AdapterCall<'_, Option<crate::session::PlanLimitReading>> {
+        Box::pin(async { Ok(None) })
+    }
+
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>>;
     fn models(&self, refresh: bool) -> AdapterCall<'_, Models>;
 

@@ -1,6 +1,7 @@
 mod agents;
 mod library_artifacts;
 mod marketplace;
+mod usage;
 
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -177,6 +178,16 @@ pub async fn run(
         .with_peer_waiting(waiting_source)
         .with_external_asks(Arc::new(super::vault_asks::VaultAsks::new(vault.clone())));
     let agent_shutdown = resident_agents.as_ref().map(|(_, agents)| agents.clone());
+    let menu_limits = kuvo_services::limits_menu::MenuLimits::default();
+    let usage_settings =
+        kuvo_services::usage::settings::Service::new(home.to_owned(), setup.handle());
+    let limits = kuvo_services::usage::limits::Service::new(
+        home.to_owned(),
+        usage_settings.clone(),
+        menu_limits.clone(),
+        peers.reader().view().roster.local().name,
+        setup.handle().link_id().unwrap_or_default(),
+    );
     let mut agent_handover = None;
     let mut routes = Registry::new();
     crate::box_app::register(
@@ -209,7 +220,9 @@ pub async fn run(
                 eprintln!("Kuvo could not read the coding agents' handover: {error}");
                 None
             });
-        let runs = kuvo_agents::session_runs::SessionRuns::start_after(
+        usage::confirm(&limits, &accounts).await;
+        tokio::spawn(usage::Turns::follow(limits.clone(), accounts.clone()));
+        let runs = kuvo_agents::session_runs::SessionRuns::start_with_limits(
             accounts.clone(),
             sessions.clone(),
             home.to_owned(),
@@ -218,6 +231,7 @@ pub async fn run(
                 adopted: accounts.adopted_turns().to_vec(),
                 handover,
             },
+            usage::Turns::start(limits.clone(), accounts.clone()),
         );
         agent_handover = Some((runs.clone(), runtime.clone()));
         agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
@@ -441,7 +455,8 @@ pub async fn run(
         peers.reader(),
         Arc::new(super::bot_setup::BotSetup(setup.handle())),
         bots.clone(),
-    );
+    )
+    .with_limits(limits.clone());
     work.attach_start_link(work_queue.start_link());
     // (What it tells, read again for the clients that follow it.)
     let (told_peers, told_run) = (peers.clone(), home.join("run"));
@@ -454,6 +469,7 @@ pub async fn run(
                 .await
         });
     }));
+    usage::notices(&limits, work.notices.clone());
     work.register(&mut routes);
     let work_watch = work.watch();
     let work_rows = work_calls.map(|calls| elsewhere.serve(work.clone(), calls));
@@ -470,9 +486,37 @@ pub async fn run(
     } else {
         (None, None)
     };
-    // 5.4 publishes its plan-limit account rows into this source. The Helper's
-    // route and events consume the same current rows without another account read.
-    let menu_limits = kuvo_services::limits_menu::MenuLimits::default();
+    kuvo_services::usage::settings::register(&mut routes, usage_settings);
+    kuvo_services::usage::limits::register(&mut routes, limits.clone());
+    kuvo_services::usage::insights::register(
+        &mut routes,
+        kuvo_services::usage::insights::Service::new(
+            home.to_owned(),
+            peers.reader().view().roster.local().name,
+            peers
+                .reader()
+                .view()
+                .roster
+                .here
+                .as_ref()
+                .map(|key| kuvo_wire::keys::encode(key))
+                .unwrap_or_default(),
+            &hostname::get()?.to_string_lossy(),
+        ),
+    );
+    let refresh_limits = limits.clone();
+    let refresh_agents = agent_shutdown.clone();
+    kuvo_services::usage::limits::register_refresh(&mut routes, limits.clone(), move |selected| {
+        let (limits, agents) = (refresh_limits.clone(), refresh_agents.clone());
+        async move {
+            if let Some(agents) = agents {
+                usage::refresh(limits, agents, selected).await
+            } else {
+                false
+            }
+        }
+    });
+    let _ = limits.answer(kuvo_services::usage::limits::now());
     crate::box_at_work::register(
         &mut routes,
         home,
@@ -749,6 +793,7 @@ fn info(
     features.extend_from_slice(kuvo_work::wakes::FEATURES);
     features.extend_from_slice(kuvo_work::asks::FEATURES);
     features.push("shell.stop");
+    features.push("usage.settings");
     if permits_pairing {
         features.push("devices.pair");
     }

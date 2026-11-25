@@ -74,6 +74,7 @@ pub struct Work {
     links: std::sync::Arc<std::sync::OnceLock<crate::queue::StartLink>>,
     /// What this box told you lately (`run/notices/told.json`).
     pub notices: crate::notices::Notices,
+    limits: Option<kuvo_services::usage::limits::Service>,
     names: kuvo_services::git::ProjectNames,
 }
 
@@ -93,6 +94,7 @@ impl Work {
             calls: std::sync::Arc::default(),
             links: std::sync::Arc::default(),
             notices: crate::notices::Notices::new(home),
+            limits: None,
             names: kuvo_services::git::ProjectNames::default(),
             settings,
             records: Records::new(&home.join("run")),
@@ -104,6 +106,11 @@ impl Work {
             peers,
             setup,
         }
+    }
+
+    pub fn with_limits(mut self, limits: kuvo_services::usage::limits::Service) -> Self {
+        self.limits = Some(limits);
+        self
     }
 
     /// Follows the engine's events for what they change here: which models can't answer, and what

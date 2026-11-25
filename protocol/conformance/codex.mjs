@@ -156,6 +156,9 @@ process.stdin.on("data", (chunk) => {
       else if (!fs.existsSync(path.join(root, "codex-never-initializes"))) answer({ userAgent: "codex-stand-in/1" });
     }
     else if (method === "initialized") {}
+    else if (method === "account/rateLimits/read") {
+      answer(read("codex-limits.json", {}));
+    }
     else if (method === "account/read") {
       const saved = fs.existsSync(auth) ? JSON.parse(fs.readFileSync(auth, "utf8")) : null;
       answer({ account: saved, requiresOpenaiAuth: true });
@@ -349,7 +352,7 @@ export async function scriptedCodex(fixture = {}) {
   const base = isolatedEnv(root);
   const bin = standInCodex(base.HOME, fixture);
   const system = process.platform === "win32" ? path.join(base.SystemRoot, "System32") : "/usr/bin:/bin";
-  const env = { ...base, KUVO_TEST_PATH_ONLY: "1", KUVO_SANDBOX: "off", KUVO_CODEX_ROOT: base.HOME, PATH: [bin, system].join(path.delimiter) };
+  const env = { ...base, CODEX_HOME: path.join(base.HOME, ".codex"), GROK_HOME: path.join(base.HOME, ".grok"), CLAUDE_CONFIG_DIR: path.join(base.HOME, ".claude"), KUVO_TEST_PRICE_FEEDS: "off", KUVO_TEST_PATH_ONLY: "1", KUVO_SANDBOX: "off", KUVO_CODEX_ROOT: base.HOME, PATH: [bin, system].join(path.delimiter) };
   write(path.join(home, "folder-version.json"), '{"version":23}\n');
   write(path.join(home, "box", "opencode.json"), "{}\n");
   const engine = binary.typescript ? await settingsEngine(home) : undefined;

@@ -30,6 +30,7 @@ mod told;
 pub mod tool_forwarder;
 pub mod tool_relay;
 mod turn_projection;
+pub use turn_projection::PlanLimits;
 pub mod turn_runtime;
 pub mod turn_setup;
 pub mod turn_sink;

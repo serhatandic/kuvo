@@ -232,6 +232,11 @@ impl Program {
     /// Its sign-in, as a fingerprint of who it is: the same through Claude Code's renewals, which
     /// Kuvo never sees, and nothing of the account in it. None when no one's signed in that way.
     pub async fn sign_in_mark(&self) -> Option<String> {
+        let (mark, _) = self.plan_sign_in().await?;
+        Some(mark)
+    }
+
+    pub async fn plan_sign_in(&self) -> Option<(String, String)> {
         let file = self.record_home()?.join(".claude.json");
         let record: serde_json::Value =
             serde_json::from_slice(&tokio::fs::read(file).await.ok()?).ok()?;
@@ -244,13 +249,12 @@ impl Program {
             .as_str()
             .map(|id| id.trim().to_lowercase())
             .unwrap_or_default();
-        let digest = Sha256::digest(format!("anthropic:{uuid}|{organization}"));
-        Some(
-            digest[..8]
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect(),
-        )
+        let raw = format!("anthropic:{uuid}|{organization}");
+        let mark = Sha256::digest(&raw);
+        Some((
+            mark[..8].iter().map(|byte| format!("{byte:02x}")).collect(),
+            raw,
+        ))
     }
 
     pub fn scratch(&self) -> PathBuf {

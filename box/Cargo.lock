@@ -1513,6 +1513,7 @@ dependencies = [
  "p384",
  "p521",
  "percent-encoding",
+ "regex",
  "reqwest",
  "rsa 0.10.0",
  "rusqlite",
