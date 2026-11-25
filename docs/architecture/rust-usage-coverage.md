@@ -637,6 +637,64 @@ Cumulative non-test size: 566,133 new-module characters plus 39,805 added
 existing production characters (605,938 total, 0.881× the 687,546 TS
 characters; independent repairs in other rows excluded).
 
+## Thirteenth slice: native history corpora and Cursor holds
+
+The shared Claude corpus now exercises the resident's real usage route:
+canonical replies, subagent replay, advisor attribution, fast usage, malformed
+records and price resolution, with the original test's compact catalogs. The
+resident merges the fixture catalog with its bundled one, so the exact Sonnet
+price, rather than a fuzzy OpenRouter price, wins on both boxes. Another route
+scenario reads a partial appended line only once complete, keeps the counts
+through restart, replaces a rewritten shorter file, and limits the display to
+the current UTC day and the previous 30. Account removal is exercised via the
+Rust route and via the resulting persisted roster on the reference scratch
+resident (which does not have its account-mutation bridge running).
+
+The Codex corpus retains its raw JSONL byte forms, moving only timestamps
+(including fork/task-start times) into the visible history period. The archive
+now falls after the date auto-review became free; all other rates, total and
+per-model arithmetic are exact. The prior Rust parser counted a noncompact
+record ignored by the reference scanner, adding 19,998 tokens to the fallback
+model estimate. Matching the reference's compact `type` markers before
+decoding fixes the discrepancy and avoids repeatedly searching whole records
+for broad substrings; quota snapshots have a separate match. A native Codex
+checkpoint's parser generation invalidates just the old file's derived rows
+once, after which its offset resumes normally. The fixture also
+checks a saved fallback choice across restart, refusal of an invalid choice,
+and clearing the estimate. A three-computer fixture groups one actual fixture
+Codex sign-in, adds distinct folders' totals, ignores a duplicate physical
+folder and retains another account as its own row.
+
+Cursor's request-based plan, access-token reuse/renewal and a maker's explicit
+429 are exercised through its actual routes. A plan's persisted hold/refusal
+must also suppress manual refresh and account-wide history after restart (the
+old Rust implementation called the maker again). The unchanged credential
+uses the retained problem; a replacement sign-in is admitted normally. As in
+TS, a hold first met only by history is in-memory until the plan records it.
+No actual maker receives any request in these tests.
+
+Both reported Clippy collapsible-if branches in the peer route and the
+additional endpoint-lookup branch in the OS seam are flattened without
+changing routing or results. A wider Clippy `-D warnings` run stops on
+pre-existing lint diagnostics across other modules and Usage's older
+implementation; it is not claimed green. The three non-Usage OS diagnostics
+were reported to the lead. The final `kuvo-box --no-deps --tests` lint run
+reports only the unrelated `serve/library_artifacts.rs:506` argument-count
+diagnostic, with no remaining usage-peer warning.
+
+Usage conformance: Rust 69/69 applicable on Mac, Lokum (musl, capped
+container), WSL and native Windows; TS 24/24 applicable on Mac. The Unix
+synthetic process fixture and native Windows process-ownership fixture skip
+on their respective other platforms. Engine-sessions 81/81, workspace test
+check, Bun type check, and historical Codex price unit 1/1 pass. The exact
+expanded seeded differential matches 12 of 13 answers (only the actual
+`coverage[0].scanned` time differs); the native usage corpus matches both
+answers. No numeric tolerance was introduced. Cross targets and remote
+test scratch removed, no test processes remained.
+Cumulative non-test size: 568,146 new-module characters plus 39,805 added
+existing production characters (607,951 total, 0.884× the 687,546 TS
+characters).
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are local Antigravity CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
@@ -940,16 +998,16 @@ characters; independent repairs in other rows excluded).
 
 ### `box/test/usage/usage-codex.test.ts`
 
-- L62: Codex's logs: turns from running totals, replays and repeats left out, tiers and model switches, priced by Codex's rules (UsageKit's CodexLogUsageScanner) — partial — native JSONL parser running-total/tier test; pricing and full fixture integration open.
-- L67: with a fallback model chosen, a model with no price is estimated at its rates, and the day says so; still an unknown model — open.
+- L62: Codex's logs: turns from running totals, replays and repeats left out, tiers and model switches, priced by Codex's rules (UsageKit's CodexLogUsageScanner) — covered by shared Codex corpus through both routes, with archive date moved into the display window; see slice 13.
+- L67: with a fallback model chosen, a model with no price is estimated at its rates, and the day says so; still an unknown model — covered by shared Codex corpus and actual fallback choice route, exact arithmetic.
 - L77: the engine's rows: only those priced at nothing, a message copied between databases once, priced as Codex's (UsageKit's OpenCodeCodexUsageScanner) — partial — engine OAuth history route fixture; full UsageKit corpus open.
-- L83: auto-review is priced by its date: the model it ran on then, free from 2026-10-06 (UTC); a snapshot date comes off a model's name — open.
+- L83: auto-review is priced by its date: the model it ran on then, free from 2026-10-06 (UTC); a snapshot date comes off a model's name — covered by the production pricing component's historical boundary test, plus the shared native corpus's free auto-review and snapshot-name prices.
 - L159: an account's sessions and archived sessions: a log in both counted once, as its sessions copy; a row by the account, Codex's total — covered by live priority versus archived copy and exact native corpus differential.
 - L183: a log as it grows is read on with its running total, through a restart; one rewritten is read again whole — partial — native JSONL append/saved cursor test; integration and rewritten Codex fixture open.
 - L213: on a Mac an added account's history is your own Codex's (its sessions link there): counted once, with yours — covered by linked native root fixture on Mac/Unix.
 - L230: two accounts that link to a folder neither is in (your ~/.codex while CODEX_HOME names another): it's the first's, and each keeps its own — open.
 - L252: your own Codex reads each home a comma-separated CODEX_HOME names, as UsageKit did; a home with neither sessions nor archived sessions is read itself — covered by the multiple-home live/archive fixture (including flat-home file).
-- L277: the fallback model is the box's (and your other computers'): chosen through the route, kept through a restart, a model with no price estimated at its rates; one that isn't a choice is refused — open.
+- L277: the fallback model is the box's (and your other computers'): chosen through the route, kept through a restart, a model with no price estimated at its rates; one that isn't a choice is refused — partial — shared corpus validates local choice, restart, refusal and clearing; peer convergence open.
 - L339: only a ChatGPT sign-in's rows, priced at nothing, from openai; opencode 2's only from when it signed in; a compaction counts — partial — v1/v2, zero-price and sign-in cutoff verified; compaction fixture open.
 - L371: a database that can't be read, and none that could: not known now (never none); one the engine left without its -wal and -shm is read as it is — open.
 - L386: an API key's sign-in, or none: nothing of it; before opencode 2 took its sign-ins in, the auth.json beside it says — partial — sign-out verified; API-key credential and legacy auth-file scenario open.
@@ -962,11 +1020,11 @@ characters; independent repairs in other rows excluded).
 - L91: usage events: each page's events, its total and those it couldn't read; by the day, priced without long-context rates, by family (UsageKit's CursorUsageEvents and appendSpendLines) — open.
 - L109: a page that isn't one, or an event that isn't, as UsageKit takes them — open.
 - L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — partial — standalone Cursor key/plan/meters/credits fixture; exact identity and full mapper variants open.
-- L166: its token is kept while it lasts, and exchanged again once when Cursor turns it away — open.
-- L178: a key Cursor turns away is a sign-in to renew; a 429 holds off as long as it says; no sign-in, no row — open.
+- L166: its token is kept while it lasts, and exchanged again once when Cursor turns it away — covered by Cursor route renewal and exact request-count fixture.
+- L178: a key Cursor turns away is a sign-in to renew; a 429 holds off as long as it says; no sign-in, no row — covered by Cursor refusal, persisted 429 hold, sign-out and replacement credential route scenario.
 - L193: an on-demand spend with no cap: no window, but what the plan has beyond them (′extras′), on its row across your computers — open.
 - L209: a sign-in file that can't be read just now keeps the plan's numbers (tried again soon), not a sign-out — open.
-- L222: a request-based plan: its requests as its total, said once; the summary's on-demand — open.
+- L222: a request-based plan: its requests as its total, said once; the summary's on-demand — covered by the Enterprise request-based plan fixture with exact request cap and on-demand dollars.
 - L238: a test's box never asks Cursor itself, whatever sign-in its folder holds — open.
 - L265: filled in a UTC day at a time, page after page; then only today and yesterday asked again, and a day Cursor didn't answer whole — covered by Cursor 32-day initial and two-day restart fixture.
 - L294: a day whose later page fails, or whose total moved, keeps what was known of it; one never known can't be had, so the read fails rather than say nothing was used — partial — incomplete second page preserves the previous complete day; changed total and never-known day tests open.
@@ -983,7 +1041,7 @@ characters; independent repairs in other rows excluded).
 - L571: a box whose reads keep failing (today's events, while older days are known) doesn't say it read the account, so another of your computers takes over — open.
 - L587: a 429 that doesn't say for how long: the plan's own wait doubles, as for other makers — open.
 - L597: an unknown computer does not affect which peer reads Cursor — open.
-- L604: a key Cursor turned away isn't sent again, nor anything while Cursor holds reads off (the exchange's 429, the events' 429), whatever asks — open.
+- L604: a key Cursor turned away isn't sent again, nor anything while Cursor holds reads off (the exchange's 429, the events' 429), whatever asks — partial — actual plan rejection/429 shared with account-wide history across restart, including explicit refresh; history-only exchange/events hold variants remain open.
 - L647: a token turned away midway whose exchange is then held off (429): no page more is sent with it; nor any once the plan's read is held off meanwhile — open.
 - L672: a 429 from one of the plan's optional reads holds the rest of them, and the history, off; what was read last stays whole — open.
 - L694: a token turned away midway whose key Cursor then turns away too: no page more is sent, and its plan isn't asked again with it — open.
@@ -1077,20 +1135,20 @@ characters; independent repairs in other rows excluded).
 
 ### `box/test/usage/usage.test.ts`
 
-- L36: Claude's logs: the lines that count, deduplicated, priced, by the day (UsageKit's ClaudeLogUsageScanner) — open.
+- L36: Claude's logs: the lines that count, deduplicated, priced, by the day (UsageKit's ClaudeLogUsageScanner) — covered by shared Claude corpus through both routes, exact costs with resident's merged catalogs.
 - L58: the bundled prices name each model's rates as UsageKit's do: aliases, fast variants, fuzzy keys, models.dev, none — covered by the shared pricing-expected.json corpus at exact f64 bits.
 - L106: an account's logs as days in the zone a client asks for: late evening in UTC is the next day in Istanbul — covered by native usage history timezone scenario.
-- L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — partial — native JSONL complete-line/append/rewrite test and native Claude Insights append/rewrite/restart. Usage history totals route open.
-- L170: a subagent's log replaying its parent's reply counts once; an account removed goes; one with no identity yet is its box's own row — open.
-- L189: a client's days are today and the 30 before it, in its zone — open.
+- L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — covered by native Claude usage route partial append, rewrite and restart (and the Insights boundary scenario).
+- L170: a subagent's log replaying its parent's reply counts once; an account removed goes; one with no identity yet is its box's own row — covered by shared corpus and account lifecycle scenarios; reference scratch account removal uses the resulting roster rather than its unavailable mutation bridge.
+- L189: a client's days are today and the 30 before it, in its zone — covered by 31-day cutoff fixture and existing Istanbul zone case.
 - L201: fetched hourly with what it was last sent, used from the next scan on, kept for the next start; a feed that fails or says nonsense changes nothing — partial — ETag, changed feed, invalid feed and restart fixture; elapsed-hour timing open.
 - L235: only a real box's bridge fetches them, a Mac app's or a machine's: never one a test started in a folder of its own — partial — scratch homes disable feed requests except explicit loopback fixtures; exact real-home path matrix open.
 - L246: new prices price the next round: a model that was unknown gets its dollars — covered by changed price feed reprice scenario.
-- L398: one account used on two computers is one row, its usage added up from both; another account is a row of its own; each box lists them all — partial — distinct billed engine sources merge across peers; same-identity account rows still need a fixture.
+- L398: one account used on two computers is one row, its usage added up from both; another account is a row of its own; each box lists them all — partial — native Codex three-computer same-identity and separate-account scenario; exact Claude identity, idle/away timing and removal variants open.
 - L477: Codex's use estimated with a fallback model goes to the others saying so; a box from before, which keeps none of that, finds the same digest and asks nothing again — partial — fallback flags excluded from digest and full retell on change implemented; exact older reader scenario open.
 - L544: an account too big for a mail is cut from its oldest uses and says so; a long name; what changes after costs no more than its last two days — partial — bounded full/recent slots traffic implemented, live delta case; size-cut test open.
 - L574: what the engine's hosted models cost on a machine shows on your Mac as billed, not estimated, in OpenCode's total — covered by local engine billed and peer merged cost scenarios.
-- L607: two boxes on one computer reading one folder count it once; a reply written again for each of its parts is kept once — open.
+- L607: two boxes on one computer reading one folder count it once; a reply written again for each of its parts is kept once — covered by native Codex shared-folder peer scenario and Claude duplicate corpus.
 - L634: two computers with one name reading the same path (two Raspberry Pis' /home/pi) are two computers: both count — open.
 - L670: refresh asks peers to read now and a restart restores their cached usage — covered by peer merge refresh, live delta and away restart scenario.
 - L715: old directory and usage records do not add an unknown computer to the totals — partial — unadmitted Insight origin fixture and authenticated current usage roster; exact kept usage-cache refusal open.

@@ -181,3 +181,46 @@ pub fn price(
         fallback: estimated.map(|(name, _)| name.into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_review_spend_follows_its_historical_model_and_free_boundary() {
+        let pricing = Pricing::load(None).expect("bundled prices");
+        let counts = Counts {
+            input: 1000,
+            output: 100,
+            ..Default::default()
+        };
+        let at = |raw: &str| raw.parse::<jiff::Timestamp>().unwrap().as_millisecond();
+        for (date, model) in [
+            ("2026-10-05T23:59:59Z", "gpt-5.6-luna"),
+            ("2026-04-23T00:00:00Z", "gpt-5.5"),
+            ("2026-04-22T23:59:59Z", "gpt-5.4"),
+            ("2025-09-15T00:00:00Z", "gpt-5-codex"),
+            ("2025-01-01T00:00:00Z", "gpt-5"),
+        ] {
+            let at = at(date);
+            let review = price(&pricing, "codex-auto-review", at, &counts, None);
+            let model = price(&pricing, model, at, &counts, None);
+            assert!(model.cost.is_some_and(|cost| cost > 0.));
+            assert_eq!(review.cost, model.cost, "{date}");
+            assert!(!review.unknown);
+        }
+        let free = price(
+            &pricing,
+            "codex-auto-review",
+            at("2026-10-06T00:00:00Z"),
+            &counts,
+            None,
+        );
+        assert_eq!(free.cost, Some(0.));
+        assert!(!free.unknown);
+        assert_eq!(date_base("gpt-5.4-pro-2026-03-05"), "gpt-5.4-pro");
+        assert_eq!(date_base("gpt-5.5-20260423"), "gpt-5.5");
+        assert_eq!(date_base("-20260423"), "-20260423");
+        assert_eq!(date_base("gpt-5.5"), "gpt-5.5");
+    }
+}

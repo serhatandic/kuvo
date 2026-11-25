@@ -60,14 +60,13 @@ fn endpoints(args: &[String], ports: BTreeSet<u16>) -> Vec<Endpoint> {
     if let Some(port) = flag(args, "--extension_server_port")
         .and_then(|s| s.parse::<u16>().ok())
         .filter(|p| ports.contains(p))
+        && !out.iter().any(|e| e.port == port && !e.tls)
     {
-        if !out.iter().any(|e| e.port == port && !e.tls) {
-            out.push(Endpoint {
-                port,
-                tls: false,
-                csrf: csrf.into(),
-            });
-        }
+        out.push(Endpoint {
+            port,
+            tls: false,
+            csrf: csrf.into(),
+        });
     }
     out
 }
