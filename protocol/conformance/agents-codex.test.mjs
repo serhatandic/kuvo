@@ -608,6 +608,21 @@ describe("Codex's cards, modes, context and summaries", { skip }, () => {
     assert.equal(box.codex.sent("thread/compact/start").filter((message) => message.params.threadId === thread()).length, 1);
   });
 
+  test("Stop during a summary: its own turn is told to stop, and the row says it didn't", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m-sum", text: "Ready." })]);
+    await box.codex.idles(id);
+    const thread = box.codex.agentState(id).codexThread;
+    write(path.join(box.codex.root, `codex-compact-holds-${thread}`), "");
+    const answer = await box.codex.compact(id);
+    assert.equal(answer.status, 200, answer.text);
+    await until(() => box.codex.sent("thread/compact/start").some((message) => message.params.threadId === thread), "Codex was never asked to summarize.");
+    await box.codex.interrupt(id);
+    const rows = await box.codex.idles(id, 2);
+    assert.deepEqual(box.codex.sent("turn/interrupt").filter((message) => message.params.threadId === thread).map((message) => message.params.turnId), ["c1"]);
+    assertMatch(rows.find((row) => row.type === "compaction"), { status: "failed" });
+    assert.equal(idles(rows).at(-1).outcome, "interrupted");
+  });
+
   test("its reasoning as it streams starts a reasoning block, and the command after it ends it; a step whose start wasn't told still shows, with an MCP result's pictures and links", { timeout: 60000 }, async () => {
     const { id } = await box.begin([
       ["item/reasoning/summaryTextDelta", { itemId: "r1", delta: "Thinking." }],
@@ -756,6 +771,42 @@ test("a reply kept from before its citations were read shows as one does now: th
       { type: "assistant", id: "msg_quoted", time: { created: 3, completed: 4 }, agent: "build", model: model("claude-code", "sonnet"), content: [{ type: "text", text: words }] },
     ]));
   });
+});
+
+test("its folder changed: the thread it goes on with is told what changed, once; unchanged, nothing extra", { timeout: 90000, skip }, async () => {
+  const id = "ses_codex_told";
+  await withCodex({}, async (codex) => {
+    const said = () => codex.sent("turn/start").map((message) => message.params.input[0].text.replace(/\n\n<from-phone>[\s\S]*<\/from-phone>$/, ""));
+    const instruct = async (entries) => {
+      await codex.stop();
+      const file = path.join(codex.home, "agents/sessions", id, "agent.json");
+      const agent = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+      agent.kuvoInstructions = { ...agent.kuvoInstructions, ...entries };
+      write(file, JSON.stringify(agent));
+      await codex.start();
+    };
+    const send = async (text, turns) => {
+      await codex.prompt(id, text);
+      await codex.idles(id, turns);
+    };
+    await instruct({ "kuvo.worktree": "You work in the worktree at /old/place/tree." });
+    await send("first", 1);
+    // A new thread has them as its developer instructions: no note.
+    assert.ok(codex.sent("thread/start")[0].params.developerInstructions.includes("/old/place/tree"));
+    assert.deepEqual(said(), ["first"]);
+    await instruct({ "kuvo.worktree": "You work in the worktree at /new/place/tree." });
+    await send("second", 2);
+    // The same thread, loaded again, keeps the ones it started with: what changed goes with the message.
+    assert.equal(codex.sent("thread/resume").length, 1);
+    const told = said()[1];
+    assert.ok(told.includes("You work in the worktree at /new/place/tree."), told);
+    assert.match(told, /Replaced or taken out:\s+You work in the worktree at \/old\/place\/tree\./);
+    assert.ok(told.endsWith("\n\nsecond"), told);
+    // Not its asking words, which didn't change.
+    assert.ok(!told.includes("request_user_input_async"), told);
+    await send("third", 3);
+    assert.equal(said()[2], "third");
+  }, (codex) => codex.seed(id, { directory: codex.root }));
 });
 
 test("signed out while it works: Codex is told to sign out, and the turn on it ends as Codex stopped", { timeout: 60000, skip }, async () => {

@@ -819,8 +819,8 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 112–113 | Ported to agents-codex on both boxes. The commands a turn waits on are listed while they run, with what they printed, and Stop on one stops its turn: `foreground::Foreground` in the turn runtime, for every agent's `shell` step. One that ends leaves the list, and what it printed can still be read. `DELETE kuvo/agents/api/shell/:id` stops one listed command through `Background::stop`. |
 | 114 | Rust: a removed account (or the box stopping) ends the turn as stopped; the conformance case for removal is open (4.2). Signing out mid-turn is ported: Codex is told to sign out and the turn fails as "Codex stopped.", as the reference has it. |
 | 115–119 | Ported. |
-| 120 | Open (4.2): Stop during a summary. |
-| 121 | Open (4.2): the instructions note on a thread it goes on with. |
+| 120 | Ported to agents-codex on both boxes: Stop during a summary tells Codex to stop its own turn, and the summary row says it failed. |
+| 121 | Ported to agents-codex on both boxes: a thread it goes on with hears what changed in its instructions with your next message, once. |
 | `test.each`: a terminal's start relative to the lead's instruction (4) | Rust: a listed command keeps the start heard from its `item/started` (unit test). Holding the lead's finish on it is the work watcher's (5.1c-6b), which reads that start from the background file. |
 | `test.each`: thinking, a step or more words after asking (3) | Ported to agents-codex on both boxes. |
 

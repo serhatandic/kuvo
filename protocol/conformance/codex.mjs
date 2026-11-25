@@ -148,6 +148,8 @@ process.stdin.on("data", (chunk) => {
       const thread = params.threadId;
       send({ method: "turn/started", params: { threadId: thread, turn: { id: "c1" } } });
       send({ method: "item/started", params: { threadId: thread, turnId: "c1", item: { type: "contextCompaction", id: "cc1" } } });
+      // (Held until stopped, for a thread the test names.)
+      if (fs.existsSync(path.join(root, "codex-compact-holds-" + thread))) { running = { threadId: thread, turnId: "c1" }; continue; }
       send({ method: "item/completed", params: { threadId: thread, turnId: "c1", item: { type: "contextCompaction", id: "cc1" } } });
       send({ method: "turn/completed", params: { threadId: thread, turn: { id: "c1", status: "completed" } } });
     } else if (method === "thread/backgroundTerminals/list") {
