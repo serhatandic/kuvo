@@ -37,6 +37,15 @@ fn folded(name: &str) -> String {
     name.trim().trim_start_matches('&').to_lowercase()
 }
 
+/// Whether a call that can't be answered now is kept for when its computer is back: not, or kept
+/// (telling the caller if it fails there, unless `Quietly`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    No,
+    Yes,
+    Quietly,
+}
+
 /// How a call went, as the caller's side tells it.
 pub enum Went {
     Answer(Said),
@@ -162,8 +171,7 @@ impl Work {
         tool: &str,
         args: Map<String, Value>,
         caller: &Caller,
-        keep: bool,
-        quiet: bool,
+        keep: Keep,
         start: Option<Value>,
     ) -> Went {
         let (Some(calls), Some(tool_is)) = (self.calls.get(), tool_of(tool)) else {
@@ -177,7 +185,13 @@ impl Work {
             lead,
         };
         let outcome = calls
-            .call(peer.key, caller.session.clone(), request, keep, quiet)
+            .call(
+                peer.key,
+                caller.session.clone(),
+                request,
+                keep != Keep::No,
+                keep == Keep::Quietly,
+            )
             .await;
         match outcome {
             Ok(Outcome::Answer(answer)) => Went::Answer(Said {
@@ -228,7 +242,7 @@ impl Work {
             return refused(older);
         }
         match self
-            .call_peer(&peer, tool, Map::new(), caller, false, false, None)
+            .call_peer(&peer, tool, Map::new(), caller, Keep::No, None)
             .await
         {
             Went::Answer(answer) => answer,
@@ -278,7 +292,7 @@ impl Work {
         if let Some(peer) = self.box_of(session) {
             let name = name_of(&peer);
             return match self
-                .call_peer(&peer, tool, args, caller, true, false, None)
+                .call_peer(&peer, tool, args, caller, Keep::Yes, None)
                 .await
             {
                 Went::Answer(answer) => answer,
@@ -308,7 +322,7 @@ impl Work {
         }
         let asked = peers
             .iter()
-            .map(|peer| self.call_peer(peer, tool, args.clone(), caller, true, true, None));
+            .map(|peer| self.call_peer(peer, tool, args.clone(), caller, Keep::Quietly, None));
         let outcomes = futures_util::future::join_all(asked).await;
         let mut away = Vec::new();
         let mut offline_any = false;
@@ -337,6 +351,42 @@ impl Work {
         refused(format!(
             "There's no session {session} here or on your other computers. Use list_sessions to see yours."
         ))
+    }
+
+    /// A bot's Stop All reaching your other computers: each that takes it is told to stop the
+    /// work under the bot's conversation there, kept for one that's away until it's back (only
+    /// what was started before now: work the bot starts after it's back is its own).
+    pub fn stop_work_elsewhere(&self, lead: &str, name: &str) {
+        let Some(calls) = self.calls.get().cloned() else {
+            return;
+        };
+        let view = self.peers.view();
+        let before = jiff::Timestamp::now().as_millisecond();
+        let name = plain(name, 100);
+        let name = if name.is_empty() {
+            "a bot".to_owned()
+        } else {
+            name
+        };
+        for peer in self
+            .members()
+            .into_iter()
+            .filter(|peer| view.advertises(&peer.key, STARTS))
+        {
+            let request = Request {
+                tool: Tool::StopWork,
+                args: [("before".to_owned(), json!(before))].into_iter().collect(),
+                lead: kuvo_peers::calls::Lead {
+                    name: name.clone(),
+                    free: false,
+                    rules: Vec::new(),
+                    bot: None,
+                    start: None,
+                },
+            };
+            let (calls, lead) = (calls.clone(), lead.to_owned());
+            tokio::spawn(async move { calls.call(peer.key, lead, request, true, true).await });
+        }
     }
 
     /// The computers `lead` started work on lately, by key.
@@ -392,17 +442,9 @@ impl Work {
                     && view.advertises(&peer.key, CALLS)
             })
             .collect();
-        let calls = asked.iter().map(|peer| {
-            self.call_peer(
-                peer,
-                "list_sessions",
-                Map::new(),
-                caller,
-                false,
-                false,
-                None,
-            )
-        });
+        let calls = asked
+            .iter()
+            .map(|peer| self.call_peer(peer, "list_sessions", Map::new(), caller, Keep::No, None));
         let outcomes = futures_util::future::join_all(calls).await;
         let mut there = Vec::new();
         for (peer, went) in asked.iter().zip(outcomes) {

@@ -399,6 +399,7 @@ pub async fn run(
         Arc::new(super::bot_setup::BotSetup(setup.handle())),
         bots.clone(),
     );
+    work.attach_start_link(work_queue.start_link());
     work.register(&mut routes);
     let work_watch = work.watch();
     let work_rows = work_calls.map(|calls| elsewhere.serve(work.clone(), calls));

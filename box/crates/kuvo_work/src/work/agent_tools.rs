@@ -5,6 +5,7 @@
 
 mod calls;
 mod sessions;
+mod start;
 
 use std::time::Duration;
 
@@ -269,6 +270,29 @@ impl Work {
                 Ok(None) if name == "list_projects" => self.list_projects_tool(&here).await,
                 Ok(None) => self.list_models_tool(&here).await,
             },
+            "start_session" => {
+                // Only a real call of its agent's may link the Work Queue item it names.
+                let verified = match session {
+                    Some(session) => self
+                        .list
+                        .engine()
+                        .active_tool(session, name, &Value::Object(args.clone()))
+                        .await
+                        .is_some(),
+                    None => false,
+                };
+                let item = verified.then(|| args.get("item").cloned().unwrap_or(Value::Null));
+                match self.computer_of(args.get("computer")) {
+                    Err(why) => refused(why),
+                    Ok(Some(peer)) => match &caller {
+                        None => refused(
+                            "Only a conversation on this computer can start work on another.",
+                        ),
+                        Some(caller) => self.start_elsewhere(peer, caller, args, item).await,
+                    },
+                    Ok(None) => self.start_here(caller.as_ref(), args, item).await,
+                }
+            }
             "make_project" => match &caller {
                 None => refused("Only a conversation on this computer makes projects here."),
                 Some(caller) => self.make_project_tool(caller, args).await,

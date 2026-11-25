@@ -59,7 +59,7 @@ const EVENTS: &[&str] = &[
 static ADDRESS: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\(address (\S+?)\)").expect("a pattern"));
 
-fn address_in(line: &str) -> Option<&str> {
+pub(crate) fn address_in(line: &str) -> Option<&str> {
     Some(ADDRESS.captures(line)?.get(1)?.as_str())
 }
 

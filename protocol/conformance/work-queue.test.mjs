@@ -1209,6 +1209,61 @@ test("an expired deletion retains its fence and prunes the old item links", { ti
   assert.equal(JSON.parse(readFileSync(file, "utf8")).items.some(item => item.id === dead), false);
 });
 
+test("a session an agent starts is linked to the item it names before it sees its task, only from a real call", { timeout: 45000 }, async t => {
+  const { computer, leases } = await bench(t);
+  const lab = await computer("Lab");
+  const scout = { id: "ses_scout", title: "Scout", location: { directory: path.join(lab.home, "..", "project") }, time: { created: 1, updated: 2 } };
+  mkdirSync(scout.location.directory, { recursive: true });
+  lab.engine.sessions.push(scout);
+  const ask = lab.connect(await lab.start().ready());
+  const setup = await ask("GET", "kuvo/setup");
+  assert.equal(setup.status, 200, setup.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The resident never received its number lease.");
+  const app = { "x-kuvo-from": "app" };
+  const warm = await ask("POST", "kuvo/work-queue/items", { operation: "start-link-lease-fixture", title: "Number lease fixture" }, app);
+  assert.equal(warm.status, 200, warm.text);
+  const warmRoute = "kuvo/work-queue/items/" + warm.json.item.id;
+  await until(async () => (await ask("GET", warmRoute)).json?.item?.number, "The resident did not begin spending its lease.", 25000);
+  assert.equal((await ask("DELETE", warmRoute, undefined, app)).status, 200);
+  const queues = path.join(lab.home, "run", "work-queue", "queues");
+  const linksOf = id => readdirSync(queues).flatMap(name => JSON.parse(readFileSync(path.join(queues, name), "utf8")).items ?? [])
+    .find(item => item.id === id)?.sessions?.map(link => link.session) ?? [];
+  const call = (route, name, args, verified = true) => {
+    lab.engine.messages.set(scout.id, verified ? [{ id: "msg_1", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_" + name, state: { status: "running", input: args } }] }] : []);
+    return ask("POST", route, { name, arguments: args, session: scout.id });
+  };
+  const added = await call("kuvo/work-queue/tools", "queue_add", { title: "Ship the build", body: "Build notes" });
+  assert.equal(added.json.isError, false, added.text);
+  const number = /^Added #(\d+)/.exec(added.json.text)?.[1];
+  assert.ok(number, added.text);
+  const item = readdirSync(queues).flatMap(name => JSON.parse(readFileSync(path.join(queues, name), "utf8")).items ?? []).find(each => each.title === "Ship the build").id;
+  // What the item is linked to as each new session is given its task.
+  const atPrompt = new Map();
+  lab.engine.afterPromptAccepted = session => atPrompt.set(session, linksOf(item).includes(session));
+  const started = async (args, verified = true) => {
+    const answer = await call("kuvo/agent-tools", "start_session", { chat: true, ...args }, verified);
+    assert.equal(answer.json.isError, false, answer.text);
+    const session = /address (ses_[A-Za-z0-9]+)/.exec(answer.json.text)?.[1];
+    assert.ok(session, answer.text);
+    await until(() => atPrompt.has(session), "The new session never got its task.", 20000, 100);
+    return session;
+  };
+  const byTask = await started({ task: `Work on #${number} in the API` });
+  assert.equal(atPrompt.get(byTask), true, "linked by the task's mention before its task");
+  const byField = await started({ task: "Coordinate the release", item: `#${number}` });
+  assert.equal(atPrompt.get(byField), true, "linked by the item named before its task");
+  const read = await (async () => {
+    lab.engine.messages.set(byField, [{ id: "msg_1", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_queue_show", state: { status: "running", input: { item: Number(number) } } }] }]);
+    return ask("POST", "kuvo/work-queue/tools", { name: "queue_show", arguments: { item: Number(number) }, session: byField });
+  })();
+  assert.match(read.json.text, /Build notes/, read.text);
+  const unrelated = await started({ task: "Read the notes" });
+  assert.equal(atPrompt.get(unrelated), false);
+  const forged = await started({ task: `Work on #${number}` }, false);
+  assert.equal(atPrompt.get(forged), false, "a call its agent didn't make links nothing");
+  assert.equal(lab.engine.sessions.find(each => each.id === byTask).metadata.kuvo.startedBy, scout.id);
+});
+
 test("a running agent adds, lists and reads its numbered work with an attachment", { timeout: 45000 }, async t => {
   const { computer, leases } = await bench(t);
   const lab = await computer("Lab");

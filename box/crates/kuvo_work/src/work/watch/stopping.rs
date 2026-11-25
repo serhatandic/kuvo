@@ -95,7 +95,7 @@ impl Work {
     }
 
     /// The sessions at work now: in a turn, or with something they left running.
-    pub(super) async fn at_work_now(
+    pub(crate) async fn at_work_now(
         &self,
         engine: &BotEngine,
     ) -> (HashSet<String>, HashSet<String>) {
@@ -289,6 +289,13 @@ impl Work {
         let marked = self.kept().stopped();
         told.retain(|(starter, _)| starter == own || !marked.contains_key(starter));
         self.tell_starters(&told);
+        // Its work on your other computers too: each is told, now or once it's back.
+        let name = here
+            .described
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        self.stop_work_elsewhere(own, name);
         self.records.note_changed(bot);
         Ok(stopped)
     }

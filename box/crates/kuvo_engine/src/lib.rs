@@ -90,7 +90,9 @@ pub use search::{
 };
 pub use session_list::{Activity, ActivityState, LocalSessions};
 pub use session_move::{LetterDelivery, LetterPrompt, LetterText, MoveEngineError, SessionMove};
-pub use start_session::{Permission as SessionPermission, RemoteLead, StartSteps, session_note};
+pub use start_session::{
+    ParentLead, Permission as SessionPermission, RemoteLead, StartSteps, session_note,
+};
 pub use transcript::{TranscriptError, TranscriptScope};
 pub use waiting::PeerWaiting;
 pub use bot_port::BotEngine;

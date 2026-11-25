@@ -69,6 +69,8 @@ pub struct Work {
     added: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
     /// Calls to the computers this one's leads have sessions on, once the peers run.
     calls: std::sync::Arc<std::sync::OnceLock<kuvo_peers::remote_work::WorkHandle>>,
+    /// The Work Queue's link for the sessions its tools start, once the queue runs.
+    links: std::sync::Arc<std::sync::OnceLock<crate::queue::StartLink>>,
 }
 
 impl Work {
@@ -85,6 +87,7 @@ impl Work {
             wakes,
             added: std::sync::Arc::new(std::sync::Mutex::new(Some(added))),
             calls: std::sync::Arc::default(),
+            links: std::sync::Arc::default(),
             settings,
             records: Records::new(&home.join("run")),
             unanswering: Unanswerings::new(&home.join("run")),
@@ -176,6 +179,11 @@ impl Work {
                 }
             }
         }
+    }
+
+    /// The Work Queue's link for the sessions the agents' tools start (5.2's hook).
+    pub fn attach_start_link(&self, link: crate::queue::StartLink) {
+        let _ = self.links.set(link);
     }
 
     pub fn register(&self, routes: &mut Registry) {
