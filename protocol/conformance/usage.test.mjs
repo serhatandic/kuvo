@@ -215,26 +215,28 @@ test('Insights catches up before first open and folds changed transcripts withou
   assert.equal(updated.json.data.totals.processed,1304);
 });
 
-test('a subscribed rail asks for a current reading without an idle polling loop (Rust reader)',async t=>{
+test('a subscribed rail reads Codex logs without starting an app-server (Rust reader)',async t=>{
   if(boxBinary().typescript)return t.skip('The demand-driven reader is Rust-only.');
   const codex=await scriptedCodex();
   t.after(()=>codex.close());
   const jwt=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'fixture',chatgpt_user_id:'fixture-user'}})).toString('base64url'),'fixture'].join('.');
   write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:jwt,account_id:'fixture'}}));
   const reset=Math.floor(Date.now()/1000)+7200;
-  write(path.join(codex.root,'codex-limits.json'),JSON.stringify({rateLimits:{primary:{usedPercent:31,windowDurationMins:300,resetsAt:reset}}}));
+  const log=path.join(codex.root,'.codex','sessions','rate-limits.jsonl');
   const listener=await codex.start();
   const {openLine}=await import('./adapter.mjs');
   const line=await openLine(listener,'','kuvo/agents/api/kuvo/limits/events');
   try {
     assert.equal(line.status,200);
+    write(log,JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'token_count',rate_limits:{primary:{used_percent:31,window_minutes:300,resets_at:reset}}}})+'\n');
     for await(const frame of line.frames()){
-      if(frame.changed&&codex.sent('account/rateLimits/read').length){
+      if(frame.changed){
         const answer=await request(listener,'GET','kuvo/agents/api/kuvo/limits');
         if(answer.json.data.rows.find(r=>r.provider==='codex-cli')?.rings.short?.used===0.31)break;
       }
     }
-    assert.equal(codex.sent('account/rateLimits/read').length,1);
+    assert.equal(codex.sent('account/rateLimits/read').length,0);
+    assert.equal(codex.sent('initialize').length,0);
   } finally {line.close();}
 });
 
@@ -473,26 +475,28 @@ test('an agent has to ask before spending a reset, and Always Allow is account-s
   assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,1);
 });
 
-test('a connected Helper menu requests fresh rings and the same accepted reading reaches its feed (Rust reader)',async t=>{
+test('a connected Helper menu displays fresh log rings without launching Codex (Rust reader)',async t=>{
   if(boxBinary().typescript)return t.skip('This case supplies the Rust native demand reader.');
   const codex=await scriptedCodex();
   t.after(()=>codex.close());
   const jwt=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'fixture',chatgpt_user_id:'fixture-user'}})).toString('base64url'),'fixture'].join('.');
   write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:jwt,account_id:'fixture'}}));
   const reset=Math.floor(Date.now()/1000)+7200;
-  write(path.join(codex.root,'codex-limits.json'),JSON.stringify({rateLimits:{primary:{usedPercent:43,windowDurationMins:300,resetsAt:reset}}}));
+  const log=path.join(codex.root,'.codex','sessions','rate-limits.jsonl');
   const listener=await codex.start();
   assert.equal(codex.sent('account/rateLimits/read').length,0);
   const {openLine}=await import('./adapter.mjs');
   const line=await openLine(listener,'','kuvo/box/at-work/events');
   try {
     assert.equal(line.status,200);
+    write(log,JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'token_count',rate_limits:{primary:{used_percent:43,window_minutes:300,resets_at:reset}}}})+'\n');
     for await(const frame of line.frames()) {
       if(frame.rings?.find(r=>r.service==='codex')?.short?.used===0.43)break;
     }
     const now=await request(listener,'GET','kuvo/agents/api/kuvo/limits');
     assert.equal(now.json.data.rows.find(r=>r.provider==='codex-cli').rings.short.used,0.43);
-    assert.equal(codex.sent('account/rateLimits/read').length,1);
+    assert.equal(codex.sent('account/rateLimits/read').length,0);
+    assert.equal(codex.sent('initialize').length,0);
   } finally {line.close();}
 });
 
@@ -658,4 +662,98 @@ test('Insights decodes only changed SQLite transcript projections (Rust writer)'
   assert.equal(after.decoded,1);
   const view=await request(listener,'GET','kuvo/agents/api/kuvo/insights?period=7&zone=UTC');
   assert.equal(view.json.data.totals.tokens,before.json.data.totals.tokens+13);
+});
+
+test('native Claude calls replace portable estimates without counting private logs or replays', async t => {
+  const fs=await import('node:fs');
+  const {computer}=await bench(t);
+  const box=await computer('NativeUsage',undefined,isolated);
+  const id='ses_native_usage';
+  const provider='claude-code@fixture';
+  const model={providerID:provider,id:'claude-opus-4-6'};
+  const at=Date.now()-5000;
+  const entry=(call,input,session='native-thread')=>({timestamp:new Date(at).toISOString(),sessionId:session,requestId:'req-'+call,message:{id:call,model:model.id,usage:{input_tokens:input,output_tokens:10,cache_read_input_tokens:20}}});
+  const home=path.join(box.home,'agents','claude','accounts','fixture');
+  const log=path.join(home,'projects','project','native.jsonl');
+  const row=JSON.stringify(entry('first',100));
+  write(path.join(box.home,'agents','accounts.json'),JSON.stringify([{formatVersion:1},{kind:'claude',id:'fixture',label:'Fixture'}]));
+  write(path.join(box.home,'agents','sessions',id,'session.json'),JSON.stringify({id,title:'Native fixture',model,agent:'build',projectID:'fixture',time:{created:at-1000,updated:at+1000},location:{directory:box.home}}));
+  write(path.join(box.home,'agents','sessions',id,'agent.json'),JSON.stringify({threads:{[provider]:{state:{claudeSession:'native-thread'}}}}));
+  write(path.join(box.home,'agents','sessions',id,'messages.json'),JSON.stringify([{id:'step_fixture',type:'assistant',time:{created:at-1000,completed:at+1000},model,agent:'build',tokens:{input:200,output:10,cache:{read:0,write:0}},content:[]}]));
+  write(log,row+'\n'+row+'\n'+JSON.stringify(entry('unrelated',999,'another-thread'))+'\n');
+  write(path.join(box.env.CLAUDE_CONFIG_DIR,'projects','private.jsonl'),JSON.stringify(entry('private',9999))+'\n');
+  let resident=box.start();
+  let call=box.connect(await resident.ready());
+  const tokens=async()=>{
+    const answer=await call('GET','kuvo/agents/api/kuvo/insights/summary?period=7&zone=UTC'+(boxBinary().typescript?'&refresh=1':''));
+    assert.equal(answer.status,200,answer.text);
+    return answer.json.data.totals.tokens;
+  };
+  await until(async()=>await tokens()===130,'The native calls did not replace the portable estimate');
+  if(boxBinary().typescript)return;
+  fs.appendFileSync(log,JSON.stringify(entry('second',30))+'\n');
+  await until(async()=>await tokens()===190,'Appended native calls did not reach Insights');
+  await resident.stop();
+  resident=box.start();
+  call=box.connect(await resident.ready());
+  await until(async()=>await tokens()===190,'Native calls changed across restart');
+  write(log,row+'\n');
+  await until(async()=>await tokens()===130,'Rewritten native log left stale calls in Insights');
+});
+
+test('two computers keep one account ring and never replace it with a peer’s older reset',{timeout:120000},async t=>{
+  if(boxBinary().typescript)return t.skip('The fixture exercises the Rust direct provider reader and correction.');
+  const http=await import('node:http');
+  const now=Date.now();
+  const reset=Math.floor(now/1000)+7200;
+  let first=17;
+  const provider=http.createServer((req,res)=>{
+    const isFirst=req.headers.authorization==='Bearer fixture-first';
+    const body={plan_type:'plus',rate_limit:{primary_window:{used_percent:isFirst?first:99,limit_window_seconds:18000,reset_at:isFirst?reset:reset-3600}}};
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(body));
+  });
+  await new Promise(resolve=>provider.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{provider.close(resolve);provider.closeAllConnections();}));
+  const {computer,leases}=await bench(t);
+  const env=folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+provider.address().port+'/'});
+  const studio=await computer('UsageStudio',undefined,env);
+  const lab=await computer('UsageLab',undefined,env);
+  const sign=access=>[{integrationID:'openai',active:true,value:{type:'oauth',access,expires:now+3600000,metadata:{accountID:'same-fixture-account'}}}];
+  studio.engine.credentials=sign('fixture-first');
+  lab.engine.credentials=sign('fixture-second');
+  const base='kuvo/agents/api/kuvo/limits';
+  const main=studio.connect(await studio.start().ready());
+  const refresh=async call=>{
+    const response=await call('POST',base+'/refresh',{});
+    assert.equal(response.status,200,response.text);
+    return until(async()=>{const reply=await call('GET',base);return !reply.json.data.refreshPending&&reply.json.data.accounts.some(a=>a.provider==='openai'&&a.windows.length)&&reply.json.data;},'Provider limits did not settle',20000,100);
+  };
+  const original=(await refresh(main)).rows.find(row=>row.provider==='openai');
+  assert.equal(original.rings.short.used,0.17);
+  const setup=await main('GET','kuvo/setup');
+  await until(()=>leases.leaseFor(setup.json.setup),'The main did not claim its relay lease');
+  const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
+  assert.equal(invite.status,201,invite.text);
+  const joined=await lab.join(invite.json.code);
+  assert.equal(joined.code,0,joined.log);
+  let resident=lab.start();
+  let call=lab.connect(await resident.ready());
+  const view=async call=>(await call('GET',base)).json.data;
+  await until(async()=>{const data=await view(call);return data.rows.find(r=>r.id===original.id)?.rings.short?.used===0.17;},'Lab did not receive Studio’s limit reading',30000,250);
+  await refresh(call);
+  let last;
+  const agrees=async call=>{
+    const data=last=await view(call);
+    const rows=data.rows.filter(r=>r.id===original.id);
+    return rows.length===1&&rows[0].boxes.length===2&&rows[0].rings.short?.used===0.17&&rows[0].rings.short.resetsAt===reset*1000&&rows[0];
+  };
+  assert.ok(await until(()=>agrees(main),()=> 'Studio did not keep one accepted window: '+JSON.stringify(last),10000,250));
+  assert.ok(await until(()=>agrees(call),()=> 'Lab did not merge the account consistently: '+JSON.stringify(last),10000,250));
+  first=18;
+  await refresh(main);
+  await until(async()=>{const data=await view(call);return data.rows.find(r=>r.id===original.id)?.rings.short?.used===0.18;},'Fresh peer reading did not reach Lab',30000,250);
+  await resident.stop();
+  resident=lab.start();
+  call=lab.connect(await resident.ready());
+  await until(async()=>{const data=await view(call);return data.rows.find(r=>r.id===original.id)?.rings.short?.used===0.18;},'Peer reading did not survive restart',30000,250);
 });

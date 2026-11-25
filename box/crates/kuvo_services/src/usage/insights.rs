@@ -1,6 +1,9 @@
 //! Insights' portable transcript index. The SQLite schema is the same as the old service;
 //! only changed transcripts are decoded, on demand, never in an idle background process.
-use super::pricing::{Pricing, Tokens};
+use super::{
+    native_index,
+    pricing::{Pricing, Tokens},
+};
 use http::StatusCode;
 use jiff::{Span, Timestamp, tz::TimeZone};
 use kuvo_protocol::{
@@ -134,12 +137,14 @@ impl Service {
     fn open(&self) -> Result<Connection> {
         let folder = self.home.join("agents/usage");
         kuvo_store::files::create_private_dirs(&folder)?;
-        Ok(kuvo_store::sqlite::open_wal(
+        let db = kuvo_store::sqlite::open_wal(
             &folder.join("insights.sqlite"),
             kuvo_store::sqlite::INSIGHTS_BUSY,
             "Insights database",
             &[|db| db.execute_batch(SQL)],
-        )?)
+        )?;
+        native_index::schema(&db)?;
+        Ok(db)
     }
     fn pricing(&self) -> Result<Arc<Pricing>> {
         let folder = self.home.join("agents/usage/pricing");
@@ -243,13 +248,18 @@ impl Service {
             let bot_name = top["metadata"]["kuvo"]["by"]["name"].as_str();
             // A session's updated timestamp changes on each turn, but its attribution
             // usually does not. Only that relevant header signature forces re-attribution.
+            let agent = kuvo_store::files::text_of(&folder.join("agent.json"))
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .unwrap_or_default();
+            let threads = native_index::threads(&tx, id, &agent)?;
             let header = hash(&json!([
                 session["title"],
                 session["model"],
                 session["parentID"],
                 lineage,
                 bot,
-                bot_name
+                bot_name,
+                threads
             ]));
             if before
                 .as_ref()
@@ -358,18 +368,32 @@ impl Service {
                 if message["time"]["usageAccount"].is_string() {
                     body["accountObserved"] = json!(true);
                 }
-                let body = serde_json::to_string(&body)?;
-                let previous: Option<String> = tx
-                    .query_row("SELECT body FROM event WHERE key=?", [&key], |r| r.get(0))
-                    .optional()?;
-                if previous.as_deref() == Some(&body) {
-                    return Ok(());
+                if !human {
+                    let created = message["time"]["created"].as_i64().unwrap_or(at);
+                    let thread = threads.get(account_provider).map(String::as_str);
+                    if let Some(thread) = thread {
+                        tx.execute(
+                            "INSERT OR REPLACE INTO native_step VALUES(?,?,?,?,?)",
+                            params![key, id, account_provider, thread, created],
+                        )?;
+                    } else {
+                        tx.execute("DELETE FROM native_step WHERE key=?", [&key])?;
+                    }
+                    reconcile_native_step(
+                        &tx,
+                        &mut seq,
+                        now,
+                        &pricing,
+                        &body,
+                        account_provider,
+                        thread,
+                        created,
+                    )?;
                 }
-                seq += 1;
-                tx.execute("INSERT INTO event VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,'[]',?22,NULL,?23)
-                    ON CONFLICT(key) DO UPDATE SET seq=excluded.seq,at=excluded.at,session=excluded.session,computer=excluded.computer,bot=excluded.bot,bot_name=excluded.bot_name,title=excluded.title,provider=excluded.provider,model=excluded.model,agent=excluded.agent,human=excluded.human,partial=excluded.partial,cost=excluded.cost,tokens=excluded.tokens,input=excluded.input,cache_read=excluded.cache_read,cache_write=excluded.cache_write,output=excluded.output,body=excluded.body,processed=excluded.processed
-                    WHERE event.sender IS NULL AND event.computer=excluded.computer AND (event.partial=1 OR excluded.partial=0)",
-                    params![key,seq,now,at,id,computer,bot,bot_name,session["title"].as_str(),provider,account,model_id,message["agent"].as_str(),human,partial,cost,count,input,cached,creation,output,body,processed])?;
+                save_event(
+                    &tx, &mut seq, now, body, cost, count, processed, input, cached, creation,
+                    output,
+                )?;
                 Ok(())
             };
             if folder.join("messages-v1.sqlite").is_file() {
@@ -460,6 +484,114 @@ impl Service {
         }
         Ok(())
     }
+    pub fn follow_native(
+        &self,
+        hub: kuvo_os::watch::WatchHub,
+        limits: super::limits::Service,
+    ) -> tokio::task::JoinHandle<()> {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let (send, mut changes) = tokio::sync::mpsc::channel(32);
+            let registry =
+                tokio::spawn(native_index::follow_roots(service.home.clone(), hub, send));
+            struct Stop(tokio::task::JoinHandle<()>);
+            impl Drop for Stop {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+            let _registry = Stop(registry);
+            while let Some(change) = changes.recv().await {
+                let service = service.clone();
+                let limits = limits.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    service
+                        .fold_native(change, &limits)
+                        .map_err(|e| e.to_string())
+                })
+                .await;
+                if !matches!(result, Ok(Ok(()))) {
+                    eprintln!("Couldn't fold native usage: {result:?}");
+                }
+            }
+        })
+    }
+    fn fold_native(
+        &self,
+        change: native_index::Change,
+        limits: &super::limits::Service,
+    ) -> Result<()> {
+        let now = Timestamp::now().as_millisecond();
+        // Enumerate only on startup/new root or after event loss, outside the query gate.
+        let (root, files) = match change {
+            native_index::Change::Scan(root) => {
+                let paths = native_index::files(&root.folder, now - native_index::KEEP);
+                (root, Some(paths))
+            }
+            native_index::Change::Files(root, changed) => {
+                let paths =
+                    native_index::changed_files(&root.folder, &changed, now - native_index::KEEP);
+                (root, Some(paths))
+            }
+            native_index::Change::Removed(root) => (root, None),
+        };
+        let mut affected = BTreeSet::new();
+        if let Some(files) = files {
+            let mut db = self.open()?;
+            for path in files {
+                let _gate = self.gate.lock().expect("insights gate");
+                match native_index::fold_file(&mut db, &self.home, &root, &path, now) {
+                    Ok(sessions) => affected.extend(sessions),
+                    Err(error) => eprintln!("Couldn't fold usage file {}: {error}", path.display()),
+                }
+            }
+            let logged = native_index::recent_limits(&db, &root, now.max(0) as u64)?;
+            if !logged.is_empty() {
+                limits.observe_logged(&root.provider, logged, now.max(0) as u64);
+            }
+        } else {
+            let _gate = self.gate.lock().expect("insights gate");
+            let mut db = self.open()?;
+            affected = native_index::remove_root(&mut db, &root)?;
+        }
+        if !affected.is_empty() {
+            let _gate = self.gate.lock().expect("insights gate");
+            let mut db = self.open()?;
+            let pricing = self.pricing()?;
+            let tx = db.transaction()?;
+            let mut seq = get(&tx, "sequence")?.and_then(|v| v.as_u64()).unwrap_or(0);
+            for session in affected {
+                let steps = {
+                    let mut query = tx.prepare_cached("SELECT n.provider,n.thread,n.created,e.body FROM native_step n JOIN event e ON n.key=e.key WHERE n.session=? ORDER BY n.created")?;
+                    query
+                        .query_map([session], |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, i64>(2)?,
+                                r.get::<_, String>(3)?,
+                            ))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                for (provider, thread, created, body) in steps {
+                    reconcile_native_step(
+                        &tx,
+                        &mut seq,
+                        now,
+                        &pricing,
+                        &serde_json::from_str(&body)?,
+                        &provider,
+                        Some(&thread),
+                        created,
+                    )?;
+                }
+            }
+            set(&tx, "sequence", &json!(seq))?;
+            tx.commit()?;
+        }
+        Ok(())
+    }
     pub fn follow(&self, hub: kuvo_os::watch::WatchHub) -> tokio::task::JoinHandle<()> {
         use kuvo_os::watch::{Notice, Options};
         let service = self.clone();
@@ -533,6 +665,150 @@ impl Service {
             }
         })
     }
+}
+/// Reconcile independently of the source transcript. A file notification can
+/// refine a completed portable step using only the saved metadata, not its words.
+fn reconcile_native_step(
+    db: &Connection,
+    seq: &mut u64,
+    now: i64,
+    pricing: &Pricing,
+    body: &Value,
+    account_provider: &str,
+    thread: Option<&str>,
+    created: i64,
+) -> Result<()> {
+    let key = body["key"].as_str().ok_or("missing portable usage key")?;
+    let provider = body["provider"].as_str().ok_or("missing usage provider")?;
+    let at = body["at"].as_i64().ok_or("missing usage time")?;
+    let mut active = BTreeSet::new();
+    if let Some(thread) = thread {
+        for (dedup, native) in native_index::candidates(
+            db,
+            account_provider,
+            thread,
+            created.saturating_sub(1000),
+            at.saturating_add(1000),
+        )? {
+            let native_call = if provider == "claude" {
+                native
+                    .message
+                    .as_deref()
+                    .or(native.request.as_deref())
+                    .unwrap_or(&dedup)
+            } else {
+                &dedup
+            };
+            let native_key = hash(&json!([provider, thread, native_call]));
+            // A native observation may land in overlapping portable turns; the
+            // first claimant owns it, including after a restart.
+            let owner: Option<Option<String>> = db
+                .query_row(
+                    "SELECT supersedes FROM event WHERE key=?",
+                    [&native_key],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if owner.is_some_and(|owner| owner.as_deref() != Some(key)) {
+                continue;
+            }
+            active.insert(native_key.clone());
+            let mut actual = body.clone();
+            actual["key"] = json!(native_key);
+            actual["call"] = json!(native_call);
+            actual["supersedes"] = json!(key);
+            actual["nativeSession"] = json!(thread);
+            actual["at"] = json!(native.at);
+            actual.as_object_mut().expect("object").remove("partial");
+            if let Some(model) = &native.model {
+                actual["model"] = json!(model);
+            }
+            if let Some(pricing_model) = &native.pricing_model {
+                actual["pricingModels"] = json!([pricing_model]);
+            }
+            let t = native.counts.price_tokens();
+            actual["tokens"] = json!({"input":t.input,"output":t.output,"cacheRead":t.cache_read,"cacheWrite5m":t.cache_write_5m,"cacheWrite1h":t.cache_write_1h,"fast":t.fast});
+            if let Some(total) = native.counts.total {
+                actual["reportedTotal"] = json!(total);
+            }
+            let cost = native.billed.or_else(|| {
+                pricing
+                    .resolve(
+                        native
+                            .pricing_model
+                            .as_deref()
+                            .or(native.model.as_deref())?,
+                    )
+                    .map(|r| r.cost(&t, true))
+            });
+            let count = t
+                .input
+                .saturating_add(t.output)
+                .saturating_add(t.cache_write_5m)
+                .saturating_add(t.cache_write_1h);
+            save_event(
+                db,
+                seq,
+                now,
+                actual,
+                cost,
+                Some(count),
+                Some(
+                    native
+                        .counts
+                        .total
+                        .unwrap_or(count.saturating_add(t.cache_read)),
+                ),
+                Some(t.input),
+                Some(t.cache_read),
+                Some(t.cache_write_5m.saturating_add(t.cache_write_1h)),
+                Some(t.output),
+            )?;
+        }
+    }
+    let old = {
+        let mut query =
+            db.prepare_cached("SELECT key FROM event WHERE supersedes=? AND sender IS NULL")?;
+        query
+            .query_map([key], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for stale in old.into_iter().filter(|key| !active.contains(key)) {
+        db.execute("DELETE FROM event WHERE key=? AND sender IS NULL", [&stale])?;
+    }
+    Ok(())
+}
+
+/// Keep the wire-compatible compact record and its SQL projection together.
+#[allow(clippy::too_many_arguments)]
+fn save_event(
+    db: &Connection,
+    seq: &mut u64,
+    now: i64,
+    body: Value,
+    cost: Option<f64>,
+    count: Option<u64>,
+    processed: Option<u64>,
+    input: Option<u64>,
+    cached: Option<u64>,
+    creation: Option<u64>,
+    output: Option<u64>,
+) -> Result<()> {
+    let field = |name: &str| body[name].as_str();
+    let key = field("key").ok_or("missing usage event key")?;
+    let encoded = serde_json::to_string(&body)?;
+    let previous: Option<String> = db
+        .query_row("SELECT body FROM event WHERE key=?", [key], |r| r.get(0))
+        .optional()?;
+    if previous.as_deref() == Some(&encoded) {
+        return Ok(());
+    }
+    *seq += 1;
+    db.execute("INSERT INTO event VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,'[]',?22,?23,?24)
+        ON CONFLICT(key) DO UPDATE SET seq=excluded.seq,at=excluded.at,session=excluded.session,computer=excluded.computer,bot=excluded.bot,bot_name=excluded.bot_name,title=excluded.title,provider=excluded.provider,account=excluded.account,model=excluded.model,agent=excluded.agent,human=excluded.human,partial=excluded.partial,cost=excluded.cost,tokens=excluded.tokens,input=excluded.input,cache_read=excluded.cache_read,cache_write=excluded.cache_write,output=excluded.output,body=excluded.body,supersedes=excluded.supersedes,processed=excluded.processed
+        WHERE event.sender IS NULL AND event.computer=excluded.computer AND (event.partial=1 OR excluded.partial=0)",
+        params![key,*seq,now,body["at"].as_i64(),field("session"),field("computer"),field("bot"),field("botName"),field("title"),field("provider"),field("account"),field("model"),field("agent"),body["human"].as_bool().unwrap_or(false),body["partial"].as_bool().unwrap_or(false),cost,count,input,cached,creation,output,encoded,field("supersedes"),processed])?;
+    Ok(())
 }
 fn provider_name(provider: &str) -> &str {
     match provider.split('@').next().unwrap_or(provider) {

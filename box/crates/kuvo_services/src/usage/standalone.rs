@@ -302,7 +302,7 @@ impl Readers {
             );
         }
     }
-    pub async fn refresh(&self, service: Service, selected: Option<&str>) -> bool {
+    pub async fn refresh(&self, service: Service, selected: Option<&str>, explicit: bool) -> bool {
         let at = now();
         let (found, unreadable) = match self.candidates(at).await {
             Ok(c) => c,
@@ -324,6 +324,9 @@ impl Readers {
             }
             let result = match &source.credential {
                 Credential::Grok { home } => {
+                    if !explicit {
+                        continue;
+                    }
                     match grok_native::read(home.clone(), self.isolated).await {
                         Ok(grok_native::Answer::Billing(body)) => grok(&body, at),
                         Ok(grok_native::Answer::Expired) => Err(problem(

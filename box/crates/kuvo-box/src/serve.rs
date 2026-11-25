@@ -2,6 +2,7 @@ mod agents;
 mod library_artifacts;
 mod marketplace;
 mod usage;
+mod usage_peers;
 
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -541,40 +542,54 @@ pub async fn run(
             .unwrap_or_default(),
         &hostname::get()?.to_string_lossy(),
     );
-    let insights_watch = insights.follow(kuvo_os::watch::WatchHub::default());
+    let usage_watch = kuvo_os::watch::WatchHub::default();
+    let insights_watch = insights.follow(usage_watch.clone());
+    let native_usage_watch = insights.follow_native(usage_watch, limits.clone());
     kuvo_services::usage::insights::register(&mut routes, insights);
     let refresh_limits = limits.clone();
     let refresh_agents = agent_shutdown.clone();
     let refresh_engine = engine.clone();
     let engine_reader = usage::engine_reader(home, &account);
-    kuvo_services::usage::limits::register_refresh(&mut routes, limits.clone(), move |selected| {
-        let (limits, agents, engine, reader, standalone) = (
-            refresh_limits.clone(),
-            refresh_agents.clone(),
-            refresh_engine.clone(),
-            engine_reader.clone(),
-            standalone_plans.clone(),
-        );
-        async move {
-            let agents_failed = if let Some(agents) = agents {
-                usage::refresh(limits.clone(), agents, selected.clone()).await
-            } else {
-                false
-            };
-            let standalone_failed = if let Some(standalone) = standalone {
-                standalone
-                    .refresh(limits.clone(), selected.as_deref())
-                    .await
-            } else {
-                false
-            };
-            let engine_failed = if let Some(reader) = reader {
-                usage::refresh_engine(limits, engine, reader, selected).await
-            } else {
-                false
-            };
-            agents_failed || engine_failed || standalone_failed
-        }
+    kuvo_services::usage::limits::register_refresh(
+        &mut routes,
+        limits.clone(),
+        move |selected, explicit| {
+            let (limits, agents, engine, reader, standalone) = (
+                refresh_limits.clone(),
+                refresh_agents.clone(),
+                refresh_engine.clone(),
+                engine_reader.clone(),
+                standalone_plans.clone(),
+            );
+            async move {
+                let agents_failed = if let Some(agents) = agents {
+                    usage::refresh(limits.clone(), agents, selected.clone(), explicit).await
+                } else {
+                    false
+                };
+                let standalone_failed = if let Some(standalone) = standalone {
+                    standalone
+                        .refresh(limits.clone(), selected.as_deref(), explicit)
+                        .await
+                } else {
+                    false
+                };
+                let engine_failed = if let Some(reader) = reader {
+                    usage::refresh_engine(limits, engine, reader, selected).await
+                } else {
+                    false
+                };
+                agents_failed || engine_failed || standalone_failed
+            }
+        },
+    );
+    let limits_peers = peers.relay_handle().map(|relay| {
+        tokio::spawn(usage_peers::follow_limits(
+            limits.clone(),
+            peers.reader(),
+            relay,
+            setup.handle(),
+        ))
     });
     let _ = limits.answer(kuvo_services::usage::limits::now());
     crate::box_at_work::register(
@@ -658,9 +673,13 @@ pub async fn run(
                     _ = timer.tick() => true,
                     changed = sessions.changed() => if changed { false } else { break },
                 };
-                if peers.reader().view().roster.members.is_empty() { continue; }
+                if peers.reader().view().roster.members.is_empty() {
+                    continue;
+                }
                 let revised = sessions.archive_revision();
-                if !periodic && revised == previous { continue; }
+                if !periodic && revised == previous {
+                    continue;
+                }
                 if let Some(copy) = archives.snapshot(dispatcher.clone()).await {
                     previous = revised;
                     peers.archives(copy).await;
@@ -747,6 +766,10 @@ pub async fn run(
     bots_held.inspect(tokio::task::JoinHandle::abort);
     approvals_kept.abort();
     insights_watch.abort();
+    native_usage_watch.abort();
+    if let Some(task) = limits_peers {
+        task.abort();
+    }
     work_watch.abort();
     work_rows.inspect(tokio::task::JoinHandle::abort);
     if let Some(kept_awake) = kept_awake {
