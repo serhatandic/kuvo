@@ -278,6 +278,15 @@ describe("Codex, more of what it does", { skip }, () => {
   const box = resident();
   const begun = (id) => until(() => box.codex.sent("turn/start").some((message) => message.params.input[0].text.includes(`go ${id}`)), "Codex never started.");
 
+  test("its reply to you is news, said in its first sentence", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "## Done\nFixed the **login** page. Tests pass too." })]);
+    await box.codex.idles(id);
+    const told = () => request(box.codex.listener, "GET", "kuvo/notices", undefined, headers, 20000)
+      .then((answer) => answer.json?.notices?.find((entry) => entry.notice.thread === id));
+    const entry = await until(told, "Its reply was never news.", 20000, 100);
+    assertMatch(entry.notice, { title: "Codex fixture", body: "Fixed the login page.", category: "finished", data: { session: id } });
+  });
+
   test("summarizing when you ask: Codex is asked with its own request, no turn of words, and the row shows it with no reply", { timeout: 60000 }, async () => {
     const { id } = await box.begin([item("item/completed", { type: "agentMessage", id: "m1", text: "Hello." })]);
     await box.codex.idles(id);
