@@ -234,7 +234,27 @@ export async function scriptedCodex(fixture = {}) {
       await stopFixtureHolders(home);
       await relay.close();
       await engine?.close();
-      fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+      // Every Codex the boxes started has ended (each is gone with its holder): a folder one still
+      // runs in can't be deleted on Windows.
+      const alive = (pid) => {
+        try { process.kill(pid, 0); return true; } catch { return false; }
+      };
+      const started = [...new Set(codex.heard().map((line) => line.pid))];
+      const deadline = Date.now() + 10000;
+      while (started.some(alive) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 50));
+      const left = started.filter(alive);
+      if (left.length) {
+        const records = codex.heard().filter((line) => left.includes(line.pid));
+        throw new Error(`A Codex the box started was left running after it stopped: ${JSON.stringify(records.slice(0, 6))}`);
+      }
+      const hold = path.join(home, "run", "agents", "hold");
+      const lifecycle = fs.existsSync(path.join(hold, "lifecycle.log")) ? fs.readFileSync(path.join(hold, "lifecycle.log"), "utf8") : "";
+      const records = fs.existsSync(hold) ? fs.readdirSync(hold) : [];
+      try {
+        fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+      } catch (error) {
+        throw new Error(`${error.message}\nheld: ${records.join(" ")}\nlifecycle:\n${lifecycle}\nleft: ${fs.existsSync(hold) ? fs.readdirSync(hold).join(" ") : "-"}`, { cause: error });
+      }
     },
     log: () => [resident?.log(), bridge?.log()].filter(Boolean).join("\n"),
     script(text, steps) {
