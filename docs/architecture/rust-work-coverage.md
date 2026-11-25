@@ -558,8 +558,6 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Gaps and owners
 
-- **answer_ask from another computer**: Lab refuses it as something it can't do yet. Answering
-  needs the allow policy (`policy.ts` `allowRefusal`), the sandbox state and the ask's call: 5.1f-1b.
 - **start_session, list_models, list_projects and stop_work from another computer**: these go under
   `work.elsewhere.start`, which isn't advertised yet. A lead's homes come from a start's call; the
   case seeds `run/work/homes.json` meanwhile. 5.1f-2.
@@ -570,3 +568,38 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **Native Windows** for the two-computer case: it needs a Rust lead, 5.1e.
 - **Calls while work isn't admitted**: no case puts two computers mid-handover. The check is the
   one the letters and moves use. The switch-over cases (7.x) own handover.
+
+## 5.1f-1b — answering what a lead's sessions here ask, from another computer
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `watch::tools`: `ask_to_answer`, `ask_first_refusal`, `allow_checks`, `answer_ask_tool`, `call_input` | `work/tools.ts` `answerAskTool`; `work/answers.ts` `pendingAsk`, `callOf`, `keepAnswer` |
+| `Elsewhere::admit_answer`: what its own tool would refuse is refused with TS's words. For an allow, the checks are handed to the peers (`calls::Permission`), which judge them against the lead's rules and this computer's Settings › Permissions, each on its own. | `takeCall` → `answerAskTool`'s allow judgement |
+| `work::policy`: `parts_of` (a command line read as a shell would run it), `resolved`, `real_of`, `within` | `work/policy.ts` `readLine`, `partsOf`, `realOf`, `within` |
+| `asks_in` tags each ask with the session that asked it | `answers.ts` `asksIn`'s `asker` |
+
+### Proof
+
+- `work-elsewhere.test.mjs` now answers too:
+  - a deny goes with the lead's reason;
+  - a question in one field is answered in words;
+  - an allow on a session that asks first for now is the user's, word for word (the reason is
+    that computer's);
+  - a session that isn't the lead's is refused;
+  - what was answered is kept on the session.
+
+  It passes with Lab as either box on macOS, and as the Rust box on Linux (WSL). It's skipped on
+  native Windows until the Rust box has a lead (5.1e).
+- `work::policy` unit test: a line's parts, and the lines read whole (something the shell fills
+  in, a background job, another user's folder, a comment, an unclosed quote).
+
+### Gaps and owners
+
+- **The sandbox**: nothing here counts as run in the sandbox yet (`sandboxed: false`). A command is
+  allowed from another computer only for a lead whose own commands run free, which is stricter than
+  TS where the sandbox runs. 6.1.
+- **An allow given in a mode that lets it through**: no case gives a session such a mode; the
+  checks are judged by the peers' `Permission::refusal`, which has its own tests. Open, with 5.1e's
+  local answer_ask cases.
