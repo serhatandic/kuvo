@@ -281,7 +281,11 @@ test("the beta.1 Mac reads, adopts and changes machine settings over SSH", { tim
   }
 });
 
-test("the current TypeScript beta's durable records survive opening at layout 23", { timeout: 30000 }, async () => {
+// (The TypeScript box syncs folders as it writes, which native Windows refuses, so no computer there
+// has this home; WSL 2 does.)
+test("the current TypeScript beta's durable records survive opening at layout 23", {
+  timeout: 30000, skip: process.platform === "win32" && "The TypeScript box can't make or keep this home on native Windows.",
+}, async () => {
   const root = scratch();
   const relay = await localRelay();
   let proc;
