@@ -56,6 +56,7 @@ impl Elsewhere {
     /// The box's work is there: calls are taken from now on, and the rows of what it does for
     /// leads elsewhere told through `peers`.
     pub fn serve(&self, work: Work, peers: WorkHandle) -> tokio::task::JoinHandle<()> {
+        let _ = work.calls.set(peers.clone());
         let _ = self.work.set(work.clone());
         tokio::spawn(work.tell_rows(peers))
     }
@@ -122,7 +123,9 @@ impl RemoteWork for Elsewhere {
                 )));
             }
             if tool == Tool::AnswerAsk {
-                return Ok(work.admit_answer(&engine, call).await);
+                return Ok(work
+                    .admit_answer(&engine, &call.from, &call.request.args)
+                    .await);
             }
             if tool == Tool::StartSession && !super::starts::start_call(call) {
                 return Ok(Admission::Reject("That isn't a call.".into()));
@@ -190,15 +193,46 @@ impl RemoteWork for Elsewhere {
         answer: &'a Answer,
     ) -> WorkFuture<'a, ()> {
         Box::pin(async move {
-            // (This computer's own leads call others with the agents' tools, 5.1e: until then no
-            // call of its own is answered.)
-            let _ = (session, answer);
-            Err(not_now("This computer makes no calls of its own yet."))
+            let work = self
+                .work
+                .get()
+                .ok_or_else(|| not_now("The box's work isn't ready."))?;
+            work.tell_lead(session, &answer.text).await
         })
     }
 }
 
 impl Work {
+    /// `text` for the conversation `session` here, as the box's own word from your other
+    /// computers: the answer to a call of its that came after its tool stopped waiting.
+    async fn tell_lead(&self, session: &str, text: &str) -> io::Result<()> {
+        let engine = self
+            .list
+            .engine()
+            .wake_engine(true)
+            .await
+            .ok_or_else(|| not_now("The engine isn't running."))?;
+        if !matches!(engine.session(session).await, Ok(Some(_))) {
+            // (One that moved to another computer since hears it there: 5.1e-2, with the letters.)
+            return Err(not_now("That conversation isn't here."));
+        }
+        let message = kuvo_engine::BoxMessage {
+            id: engine
+                .message_id()
+                .map_err(|error| not_now(error.to_string()))?,
+            text: text.to_owned(),
+            metadata: None,
+            from: "Your other computers",
+            words: text,
+            steer: false,
+        };
+        engine
+            .tell(session, message)
+            .await
+            .map(drop)
+            .map_err(|error| not_now(error.to_string()))
+    }
+
     /// This computer, by its name, as the other computers know it.
     pub fn own_name(&self) -> String {
         let name = self.peers.view().roster.name.clone();
@@ -213,10 +247,14 @@ impl Work {
     /// What an answer from a lead elsewhere may give: refused here as its own tool would refuse
     /// it, or, for an allow, what the peers judge it by (the lead's own rules where it lives and
     /// this computer's, each on its own).
-    async fn admit_answer(&self, engine: &kuvo_engine::BotEngine, call: &MailedCall) -> Admission {
+    pub(super) async fn admit_answer(
+        &self,
+        engine: &kuvo_engine::BotEngine,
+        lead: &str,
+        args: &serde_json::Map<String, Value>,
+    ) -> Admission {
         let refused = |text: String| Admission::Refused(Answer::refused(text));
-        let args = &call.request.args;
-        let (data, permission) = match self.ask_to_answer(engine, &call.from, args).await {
+        let (data, permission) = match self.ask_to_answer(engine, lead, args).await {
             Err(said) => return refused(said.text),
             Ok((_, Ask::Question(_))) => return Admission::Ready,
             Ok((data, Ask::Permission(permission))) => (data, permission),

@@ -9,6 +9,7 @@ mod offline;
 mod peer_actions;
 mod review;
 mod session_links;
+pub use session_links::StartLink;
 mod started;
 mod tools;
 
@@ -221,6 +222,7 @@ pub(super) fn register(
 
 pub struct Runtime {
     task: tokio::task::JoinHandle<()>,
+    pub(super) link: session_links::StartLink,
     pub(super) edits: Arc<dyn kuvo_setup::RecordEdits>,
     pub(super) review: Arc<dyn kuvo_setup::backup::QueueReview>,
 }
@@ -247,6 +249,7 @@ impl Writer {
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let edits = Arc::new(offline::Routes(self.clone()));
         let review = Arc::new(self.clone());
+        let link = session_links::StartLink(self.clone());
         let task = tokio::spawn(async move {
             let mut exchange = Exchange::default();
             loop {
@@ -268,6 +271,7 @@ impl Writer {
         });
         Runtime {
             task,
+            link,
             edits,
             review,
         }

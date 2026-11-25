@@ -94,3 +94,62 @@ pub(in crate::queue::items) fn unlink_session(
     append_event(row, stop);
     true
 }
+
+/// The item a session started with a tool is for, linked before the session sees its task: the one
+/// the call names (`item`), else the first its task mentions. Nothing where it's closed, gone, or
+/// can't be changed here.
+#[derive(Clone)]
+pub struct StartLink(pub(super) Writer);
+
+impl StartLink {
+    pub async fn link(&self, item: Option<&Value>, task: &str, starter: Value, session: &str) {
+        let writer = self.0.clone();
+        let reference = match item.filter(|item| !item.is_null()) {
+            Some(Value::String(text)) => text.clone(),
+            Some(Value::Number(number)) => number.to_string(),
+            Some(_) => return,
+            None => match writer.refs.mentions.find_in_task(task).first() {
+                Some(mention) => mention.number.to_string(),
+                None => return,
+            },
+        };
+        let Ok(guard) = writer.lock().await else {
+            return;
+        };
+        let session = session.to_owned();
+        let _ = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            let now = Timestamp::now().as_millisecond();
+            let (all, compaction) = writer.changes(now)?;
+            let found = writer.refs.parse(&reference).and_then(|parsed| {
+                let open = |item: &&Item| item.removed.is_none() && !status::closed(&item.status);
+                writer.refs.named(&all, &parsed).find(open).cloned()
+            });
+            if let Some(item) = found
+                && writer.admit(&item.owner).is_ok()
+                && edit::refuse_handing(&item).is_ok()
+                && !item
+                    .sessions
+                    .iter()
+                    .any(|link| link["session"] == session.as_str())
+            {
+                let mut docs = BTreeMap::new();
+                let mut row = Value::Object(item.saved.clone());
+                writer.link_session(&all, &mut docs, &mut row, &session, &starter, now)?;
+                append_event(
+                    &mut row,
+                    json!({"at":now,"by":starter,"kind":"linked","to":session}),
+                );
+                row["updated"] = json!({"at":now,"by":starter});
+                let document = writer.document(&mut docs, &item.owner, now)?;
+                document.items.retain(|each| each["id"] != item.id);
+                document.items.push(row);
+                for document in docs.into_values() {
+                    document.save(&writer.store).map_err(storage_refusal)?;
+                }
+            }
+            compaction.finish(&writer, now)
+        })
+        .await;
+    }
+}

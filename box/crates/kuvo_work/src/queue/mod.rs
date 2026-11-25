@@ -22,4 +22,5 @@ mod told;
 mod view;
 
 pub use moves::transfer as move_transfer;
+pub use items::StartLink;
 pub use routes::{Network, Runtime, register};

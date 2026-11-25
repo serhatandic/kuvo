@@ -92,6 +92,11 @@ pub async fn all_work(engine: &BotEngine) -> Option<Vec<Value>> {
     work_sessions(engine).await
 }
 
+/// As `all_work`, those put away too.
+pub async fn all_work_archived(engine: &BotEngine) -> Option<Vec<Value>> {
+    super::catchup::work_sessions_as(engine, true).await
+}
+
 /// The sessions at work in the engine now.
 pub async fn working_now(engine: &BotEngine) -> HashSet<String> {
     let active = engine
@@ -157,7 +162,7 @@ fn reply_of_last_turn(page: &[Value]) -> Option<String> {
 
 impl Work {
     /// The bot a conversation is, by its session.
-    fn bot_of_conversation(&self, session: &str) -> Option<BotHere> {
+    pub(crate) fn bot_of_conversation(&self, session: &str) -> Option<BotHere> {
         let names = crate::wakes::folder::names(&self.bots).into_iter();
         names
             .filter_map(|id| BotHere::read(&self.bots, &id))

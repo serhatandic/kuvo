@@ -92,8 +92,10 @@ async function run(t, scenario, kind) {
       let answer = await ask();
       // These reads show projections updated by the engine stream and filesystem watches.
       // Wait for the expected projection once it can answer, without replaying mutations.
-      if (method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering", "kuvo/work/background"].includes(route.split("?")[0])
-        && answer.status === expect.status && mismatch(expect.json, answer.json)) {
+      // (An agent's tool that only reads, too.)
+      const projection = method === "GET" && ["kuvo/named", "kuvo/groups/joinable", "kuvo/worktrees", "kuvo/work/unanswering", "kuvo/work/background"].includes(route.split("?")[0])
+        || route === "kuvo/agent-tools" && ["list_sessions", "list_projects", "list_models", "list_agents", "read_conversation", "list_wake_ups"].includes(step.body?.name);
+      if (projection && answer.status === expect.status && mismatch(expect.json, answer.json)) {
         await until(async () => {
           answer = await ask();
           return answer.status !== expect.status || mismatch(expect.json, answer.json) === null;

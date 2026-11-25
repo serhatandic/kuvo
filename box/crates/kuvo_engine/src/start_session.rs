@@ -134,13 +134,14 @@ fn bad(message: impl Into<String>) -> Refusal {
 }
 
 async fn create(engine: &Engine, given: &Map<String, Value>) -> Result<Value, Refusal> {
-    create_as(engine, given, None, None).await
+    create_as(engine, given, None, None, None).await
 }
 
 async fn create_as(
     engine: &Engine,
     given: &Map<String, Value>,
     remote: Option<&RemoteLead>,
+    local: Option<&ParentLead>,
     steps: Option<&dyn StartSteps>,
 ) -> Result<Value, Refusal> {
     let string = |field| {
@@ -438,41 +439,46 @@ async fn create_as(
 
     let mut model_note = None;
     let mut picked: Vec<String> = Vec::new();
-    let model = match remote {
-        // A lead on another computer: the model it names, by the one rule every client's picker
-        // offers by; else its own where it runs here, else this computer's default.
-        Some(lead) => {
-            let named = given
-                .get("model")
-                .filter(|model| !model.is_null() && *model != "");
-            let effort = given
-                .get("effort")
-                .filter(|effort| !effort.is_null() && *effort != "");
-            // (The engine starts for it, as a start here does: its models are read once it runs.)
-            let _running = engine.acquire(crate::lifetime::Demand::Start).await;
-            let offered = engine.offered_models().await;
-            if named.is_some() || effort.is_some() {
-                let own = named.or(lead.model.as_ref());
-                let (chosen, variant, shown) =
-                    pick_model(own, effort, &offered.models, here).map_err(bad)?;
-                picked.push(shown);
-                picked.extend(variant.clone());
-                let mut chosen = chosen;
-                if let Some(variant) = variant {
-                    chosen["variant"] = json!(variant);
-                }
-                Some(chosen)
-            } else {
-                let (kept, note) = lead_model(lead.model.as_ref(), &offered.models, here)?;
-                model_note = note;
-                kept
-            }
+    let named = given
+        .get("model")
+        .filter(|model| !model.is_null() && *model != "");
+    let effort = given
+        .get("effort")
+        .filter(|effort| !effort.is_null() && *effort != "");
+    let own_model = match remote {
+        Some(lead) => lead.model.clone(),
+        None => parent
+            .as_ref()
+            .and_then(|parent| parent.extra.get("model").cloned()),
+    };
+    // A starter's model by name or effort, by the one rule every client's picker offers by;
+    // else, a lead on another computer's own where it runs here, else this computer's default.
+    let model = if (remote.is_some() || local.is_some()) && (named.is_some() || effort.is_some()) {
+        // (The engine starts for it, as a start here does: its models are read once it runs.)
+        let _running = engine.acquire(crate::lifetime::Demand::Start).await;
+        let offered = engine.offered_models().await;
+        let own = named.or(own_model.as_ref());
+        let (chosen, variant, shown) =
+            pick_model(own, effort, &offered.models, here).map_err(bad)?;
+        picked.push(shown);
+        picked.extend(variant.clone());
+        let mut chosen = chosen;
+        if let Some(variant) = variant {
+            chosen["variant"] = json!(variant);
         }
-        None => given
+        Some(chosen)
+    } else if let Some(lead) = remote {
+        let _running = engine.acquire(crate::lifetime::Demand::Start).await;
+        let offered = engine.offered_models().await;
+        let (kept, note) = lead_model(lead.model.as_ref(), &offered.models, here)?;
+        model_note = note;
+        kept
+    } else {
+        given
             .get("model")
-            .filter(|model| !model.is_null())
+            .filter(|model| !model.is_null() && local.is_none())
             .cloned()
-            .or_else(|| parent.as_ref()?.extra.get("model").cloned()),
+            .or(own_model)
     };
     if let Some(model) = &model {
         let model: ModelRef = serde_json::from_value(model.clone())
@@ -683,7 +689,10 @@ async fn create_as(
             }
             (None, Some(parent)) => wakes(
                 given_wake,
-                Path::new(parent.directory()).starts_with(engine.home.join("bots")),
+                local.map_or_else(
+                    || Path::new(parent.directory()).starts_with(engine.home.join("bots")),
+                    |lead| lead.own,
+                ),
                 wait,
             ),
             (None, None) => Vec::new(),
@@ -697,9 +706,13 @@ async fn create_as(
                         .chain(
                             remote
                                 .and_then(|lead| lead.works.clone())
+                                .or_else(|| local.and_then(|lead| lead.works.clone()))
                                 .into_iter()
                                 .flat_map(|works| {
-                                    let depth = remote.map_or(1, |lead| lead.depth.max(1));
+                                    let depth = remote
+                                        .map(|lead| lead.depth)
+                                        .or(local.map(|lead| lead.depth))
+                                        .map_or(1, |depth| depth.max(1));
                                     [
                                         ("by".to_owned(), Some(works)),
                                         ("depth".to_owned(), Some(json!(depth))),
@@ -736,10 +749,10 @@ async fn create_as(
             None => parent.as_ref().map_or_else(
             || task.to_owned(),
             |parent| {
-                let title = if parent.title.is_empty() {
-                    "another agent"
-                } else {
-                    &parent.title
+                let title = match local {
+                    Some(lead) => &lead.name,
+                    None if parent.title.is_empty() => "another agent",
+                    None => &parent.title,
                 };
                 let note = if wait {
                     "They're waiting for your reply: just answer, in your words.".to_owned()
@@ -748,7 +761,14 @@ async fn create_as(
                 } else {
                     format!("To answer, use send_message to {}.", parent.id)
                 };
-                format!("[Message from {title} · {}] ({note})\n\n{task}", parent.id)
+                let text = format!("[Message from {title} · {}] ({note})\n\n{task}", parent.id);
+                match local.and_then(|lead| lead.works.as_ref()?["name"].as_str()) {
+                    Some(bot) => {
+                        let review = given.get("review") != Some(&Value::Bool(false));
+                        format!("{text}\n\n{}", session_note(bot, heard, review))
+                    }
+                    None => text,
+                }
             },
         ),
         };
@@ -756,6 +776,9 @@ async fn create_as(
         let message = send::new_id(engine)?;
         if let Some(steps) = steps {
             steps.making(&json!({ "session": id, "prompt": { "id": message, "text": text }, "started": answer }));
+        }
+        if let Some(steps) = steps {
+            steps.prompting(id).await;
         }
         let prompt = Prompt {
             id: message,
@@ -883,7 +906,25 @@ pub trait StartSteps: Send + Sync {
     /// About to be made: its marks (`kuvo`) and its task's message (`prompt`: `id`, `text`).
     fn making(&self, _making: &Value) {}
     fn made(&self, _session: &str) {}
+    /// Just before the new session (`session`) is given its task: what's to be ready by then.
+    fn prompting<'a>(
+        &'a self,
+        _session: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
     fn prompted(&self) {}
+}
+
+/// A conversation here starting a session with its agent's tool, as the box knows it: its name as
+/// the others know it, the bot its work is for (`works`, `{bot, name}`; `own`, it's that bot), and
+/// the new session's depth under that bot.
+#[derive(Clone, Debug, Default)]
+pub struct ParentLead {
+    pub name: String,
+    pub works: Option<Value>,
+    pub own: bool,
+    pub depth: u64,
 }
 
 /// What a session a bot started is told with its task: its half of the playbook. `heard`: its
@@ -913,7 +954,17 @@ impl Engine {
         lead: &RemoteLead,
         steps: &dyn StartSteps,
     ) -> Result<Value, Refusal> {
-        create_as(self, given, Some(lead), Some(steps)).await
+        create_as(self, given, Some(lead), None, Some(steps)).await
+    }
+
+    /// A session started by the conversation `given.startedBy` here, with its agent's tool.
+    pub async fn start_for_parent(
+        &self,
+        given: &Map<String, Value>,
+        lead: &ParentLead,
+        steps: &dyn StartSteps,
+    ) -> Result<Value, Refusal> {
+        create_as(self, given, None, Some(lead), Some(steps)).await
     }
 }
 

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 import { boxBinary, isolatedEnv, localRelay, readJSON, request, scratch, startBox, until, write } from "../adapter.mjs";
-import { standInEngine } from "../engine.mjs";
+import { sessionOf, standInEngine } from "../engine.mjs";
 import { claudeEnvironment, seedSession, startClaudeBridge, stopFixtureHolders } from "../claude.mjs";
 
 // These are individual fields, scoped to a route or home file. A missing field,
@@ -252,8 +252,14 @@ async function run(binary, home, sequence, relay, peerSeed, claude) {
     const mac = fs.existsSync(path.join(home, "box", "kind")) && fs.readFileSync(path.join(home, "box", "kind"), "utf8").trim() === "mac";
     box = startBox({ binary, home, env: { ...env, KUVO_SANDBOX: "off" }, relay, mac });
     let record = await box.ready();
-    for (const { method, path: route, body, headers, engineRunning, restartAfterAcceptance, peerReach, idles } of sequence) {
+    for (const { method, path: route, body, headers, engineRunning, engineSessions, restartAfterAcceptance, peerReach, idles } of sequence) {
       if (engineRunning) engine.running = new Set(engineRunning);
+      // (Sessions the engine has from then on, as it lists them.)
+      for (const given of engineSessions ?? []) {
+        engine.sessions.push({ ...sessionOf(given), ...(given.metadata ? { metadata: given.metadata } : {}) });
+        engine.emit({ type: "session.created", data: { sessionID: given.id } });
+      }
+      if (engineSessions) await new Promise(resolve => setTimeout(resolve, 1500));
       const dispatch = () => request(record, method, route.replaceAll("{{home}}", encodeURIComponent(home)), substitute(body, home), headers);
       if (restartAfterAcceptance) {
         const accepted = new Promise(resolve => { engine.holdPrompt = { id: body.id, accepted: resolve }; });

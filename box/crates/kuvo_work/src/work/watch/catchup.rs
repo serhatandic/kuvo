@@ -375,6 +375,11 @@ pub(super) fn question_text(form: &Value) -> String {
 /// Every session here that's someone's work (started by another conversation), whole: none when a
 /// page can't be read.
 pub(super) async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
+    work_sessions_as(engine, false).await
+}
+
+/// As `work_sessions`, those put away too where `archived`.
+pub(super) async fn work_sessions_as(engine: &BotEngine, archived: bool) -> Option<Vec<Value>> {
     let mut found = Vec::new();
     let mut query = Some("limit=200&order=desc&parentID=null".to_owned());
     for _ in 0..15 {
@@ -393,7 +398,7 @@ pub(super) async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
         let theirs = |data: &Value| {
             data["id"].is_string()
                 && data["parentID"].is_null()
-                && !is_archived(data)
+                && (archived || !is_archived(data))
                 && started_by(data).is_some()
         };
         found.extend(listed.into_iter().filter(theirs));

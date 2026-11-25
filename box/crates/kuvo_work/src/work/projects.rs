@@ -85,7 +85,7 @@ pub fn shown_path(folder: &str, home: &Path) -> String {
     }
 }
 
-fn is_empty_folder(folder: &Path) -> bool {
+pub(super) fn is_empty_folder(folder: &Path) -> bool {
     let finders = |entry: std::io::Result<std::fs::DirEntry>| {
         entry.is_ok_and(|entry| entry.file_name() == ".DS_Store")
     };
@@ -94,7 +94,7 @@ fn is_empty_folder(folder: &Path) -> bool {
 
 /// The folder you named for a project (written with `~` or in full), as a full path, or why it
 /// can't be one.
-fn named_place(given: Option<&str>, home: &Path) -> Result<PathBuf, Refused> {
+pub(super) fn named_place(given: Option<&str>, home: &Path) -> Result<PathBuf, Refused> {
     let given = given.map(str::trim).unwrap_or_default();
     let written = match given.strip_prefix('~') {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => {

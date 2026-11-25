@@ -34,8 +34,15 @@ const ROUND: Duration = Duration::from_millis(500);
 pub enum Outcome {
     Answer(Answer),
     Failed(String),
-    Away { kept: bool, sent: bool },
-    Offline { kept: bool },
+    /// `unreachable`: the relay said that computer isn't there (else it didn't answer in time).
+    Away {
+        kept: bool,
+        sent: bool,
+        unreachable: bool,
+    },
+    Offline {
+        kept: bool,
+    },
     Older,
 }
 
@@ -182,10 +189,11 @@ impl Owner {
         }
         let wait = view.relay_connected && status == PeerState::Online;
         let keep = offer.keep && !offer.request.tool.waits();
+        let away = status == PeerState::Away;
         if !wait && !keep {
             let _ = offer
                 .reply
-                .send(Ok(unavailable(view.relay_connected, false)));
+                .send(Ok(unavailable(view.relay_connected, false, away)));
             return Ok(());
         }
         let id =
@@ -213,7 +221,7 @@ impl Owner {
         } else {
             let _ = offer
                 .reply
-                .send(Ok(unavailable(view.relay_connected, true)));
+                .send(Ok(unavailable(view.relay_connected, true, away)));
         }
         Ok(())
     }
@@ -226,7 +234,7 @@ impl Owner {
             .map(|call| call.id.clone())
             .collect();
         for id in expired {
-            self.stop_waiting(&id, now)?;
+            self.stop_waiting(&id, now, false)?;
         }
         let sends = self.calls.round(
             now,
@@ -255,12 +263,16 @@ impl Owner {
         Ok(())
     }
 
-    fn stop_waiting(&mut self, id: &Id, now: Millis) -> io::Result<()> {
+    fn stop_waiting(&mut self, id: &Id, now: Millis, unreachable: bool) -> io::Result<()> {
         if let Some(waiting) = self.waiting.remove(id.as_str()) {
             let sent = self.calls.sent(id);
             let kept = waiting.keep && !waiting.reply.is_closed();
             self.calls.cancel_wait(id, kept, now)?;
-            let _ = waiting.reply.send(Ok(Outcome::Away { kept, sent }));
+            let _ = waiting.reply.send(Ok(Outcome::Away {
+                kept,
+                sent,
+                unreachable,
+            }));
         }
         Ok(())
     }
@@ -277,7 +289,7 @@ impl Owner {
                         .map(|call| call.id.clone())
                         .collect();
                     for id in waiting {
-                        self.stop_waiting(&id, now)?;
+                        self.stop_waiting(&id, now, true)?;
                     }
                 }
             }
@@ -408,9 +420,13 @@ fn decode<T: serde::de::DeserializeOwned>(envelope: &Envelope, field: &str) -> O
     serde_json::from_value(envelope.0.get(field)?.clone()).ok()
 }
 
-fn unavailable(online: bool, kept: bool) -> Outcome {
+fn unavailable(online: bool, kept: bool, unreachable: bool) -> Outcome {
     if online {
-        Outcome::Away { kept, sent: false }
+        Outcome::Away {
+            kept,
+            sent: false,
+            unreachable,
+        }
     } else {
         Outcome::Offline { kept }
     }
