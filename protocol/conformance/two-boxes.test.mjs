@@ -113,8 +113,8 @@ test("solo numbers stay unique when another computer joins", { timeout: 90000 },
   }
 });
 
-test("each computer offers what can be done with it from here", { timeout: 90000 }, async t => {
-  const { computer, leases } = await bench(t);
+test("each computer offers what can be done with it from here", { timeout: 120000 }, async t => {
+  const { computer, leases } = await bench(t, { presenceEvents: true });
   const main = await computer("Studio");
   const other = await computer("Lab");
   const primary = main.connect(await main.start().ready());
@@ -128,7 +128,8 @@ test("each computer offers what can be done with it from here", { timeout: 90000
   await until(() => leases.leaseFor(setup.setup), "The main computer did not claim a relay lease.");
   const joined = await other.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
-  const member = other.connect(await other.start().ready());
+  const labRun = other.start();
+  const member = other.connect(await labRun.ready());
   const offered = async (ask, expected) => {
     let last;
     return until(async () => {
@@ -151,4 +152,20 @@ test("each computer offers what can be done with it from here", { timeout: 90000
   assert.equal(onMember.Lab[1].label, "Unlink");
   assert.deepEqual(onMember.Studio[0], { id: "rename", label: "Rename" });
   assert.equal(onMember.Studio[1].removal.handOver, handOver);
+  // Connect, on a computer that's away: asked once, it's being reached until it answers.
+  const labKey = (await member("GET", "kuvo/setup")).json.you.key;
+  await labRun.stop();
+  const away = await offered(primary, { Studio: ["rename", "remove"], Lab: ["rename", "connect", "remove"] });
+  assert.deepEqual(away.Lab[1], { id: "connect", label: "Connect" });
+  const connect = () => primary("POST", `kuvo/computers/${labKey}/connect`, {}, { "x-kuvo-from": "mac" });
+  const asked = await connect();
+  assert.equal(asked.status, 202, asked.text);
+  const listed = await primary("GET", "kuvo/computers");
+  assert.equal(listed.json.computers.find(row => row.name === "Lab").reach, "connecting");
+  const again = await connect();
+  assert.equal(again.status, 409, again.text);
+  assert.equal(again.json.message, "Studio is reaching Lab now.");
+  const self = await primary("POST", `kuvo/computers/${setup.you.key}/connect`, {}, { "x-kuvo-from": "mac" });
+  assert.equal(self.status, 409, self.text);
+  assert.equal(self.json.message, "Studio is the computer you're asking.");
 });

@@ -55,6 +55,7 @@ pub fn register(
     registry: &mut Registry,
     peers: Reader,
     devices: Devices,
+    reach_again: crate::setup_lists::ReachAgain,
     listing: impl Fn() -> crate::manage::Listing
     + Clone
     + Send
@@ -118,6 +119,14 @@ pub fn register(
         None,
     );
     read::<get_kuvo_notices::Spec>(registry, &peers, |view, now| Some(view.notices(now)));
+    let state = peers.clone();
+    registry.register::<post_kuvo_computers_key_connect::Spec, _, _>(
+        Access::DesktopOrPaired,
+        move |call| {
+            let key = call.param("key").unwrap_or_default();
+            std::future::ready(connect(&state.view(), state.now(), key, &reach_again))
+        },
+    );
     read::<get_kuvo_computers::Spec>(registry, &peers, move |view, now| {
         Some(computers(view, now, listing()))
     });
@@ -467,6 +476,70 @@ fn tools(
     }
 }
 
+/// How a peer stands, and whether it's being reached again: Connect asked a moment ago, and
+/// not heard from since.
+fn peer_reach(
+    view: &View,
+    key: &crate::directory::ComputerKey,
+    now: Millis,
+) -> (GetKuvoComputersStatus200ComputersItemReach4, bool) {
+    use GetKuvoComputersStatus200ComputersItemReach4 as Reach;
+    let id = encode(key);
+    let heard = view.announced.get(&id).and_then(|said| said.heard);
+    let trying = view
+        .reaching
+        .get(key)
+        .filter(|at| (0..crate::manage::TRY_FOR).contains(&now.saturating_sub(**at)))
+        .is_some_and(|at| heard.is_none_or(|heard| heard < *at));
+    let reach = if trying {
+        Reach::Connecting
+    } else if view.reach.peer_is_away(&id, heard, now) {
+        Reach::Away
+    } else if heard.is_none() {
+        Reach::Connecting
+    } else {
+        Reach::Connected
+    };
+    (reach, trying)
+}
+
+/// Connect: reach a computer that's away again now.
+fn connect(
+    view: &View,
+    now: Millis,
+    key: &str,
+    reach_again: &crate::setup_lists::ReachAgain,
+) -> Result<RouteReply<post_kuvo_computers_key_connect::Spec>, Refusal> {
+    use GetKuvoComputersStatus200ComputersItemReach4 as Reach;
+    let here = &view.roster.name;
+    let conflict = |message: String| Refusal::new(StatusCode::CONFLICT, message);
+    let unavailable = |message: String| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, message);
+    let target = kuvo_wire::keys::decode_exact::<32>(key);
+    if target.is_some() && target == view.roster.here {
+        return Err(conflict(format!("{here} is the computer you're asking.")));
+    }
+    let peer = target
+        .and_then(|target| view.roster.member(&target))
+        .ok_or_else(|| Refusal::new(StatusCode::NOT_FOUND, "That isn't one of your computers."))?;
+    let name = &peer.name;
+    match peer_reach(view, &peer.key, now).0 {
+        Reach::Connecting => return Err(conflict(format!("{here} is reaching {name} now."))),
+        Reach::Connected => return Err(conflict(format!("{name} is connected."))),
+        Reach::Away => {}
+    }
+    if !view.relay_connected {
+        return Err(unavailable(format!(
+            "{here} isn't connected to your other computers now, so it can't reach {name}. Try again in a moment."
+        )));
+    }
+    if !reach_again.ask(peer.key) {
+        return Err(unavailable(format!("{here} couldn't try now. Try again in a moment.")));
+    }
+    Ok(RouteReply::json::<202>(
+        serde_json::from_value(json!({})).expect("an empty answer fits the route"),
+    ))
+}
+
 fn computers(
     view: &View,
     now: Millis,
@@ -514,17 +587,15 @@ fn computers(
     let mut rows = vec![local];
     // Away released beta.1 Macs: let go from here, as they never update to leave by themselves.
     let mut released = std::collections::BTreeSet::new();
+    let mut reaching = std::collections::BTreeSet::new();
     for peer in view.roster.members_by_name() {
         let id = encode(&peer.key);
         let said = view.announced.get(&id);
         let heard = said.and_then(|said| said.heard);
-        let reach = if view.reach.peer_is_away(&id, heard, now) {
-            Reach::Away
-        } else if heard.is_none() {
-            Reach::Connecting
-        } else {
-            Reach::Connected
-        };
+        let (reach, trying) = peer_reach(view, &peer.key, now);
+        if trying {
+            reaching.insert(id.clone());
+        }
         let mut row = computer_row(id, peer.name.clone(), reach, Via::Relay, false, &here.name);
         row.fleet_update = view.peer_update_row(&peer.key).cloned();
         row.address = peer.address.as_ref().map(|address| encode(address));
@@ -581,7 +652,7 @@ fn computers(
                 relay: row.via == Via::Relay,
                 away: row.reach == Reach::Away,
             },
-            false,
+            reaching.contains(&row.key),
         );
         if released.contains(&row.key) {
             row.actions = vec![legacy_removal(&row.name)];

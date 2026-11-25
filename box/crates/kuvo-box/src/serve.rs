@@ -676,7 +676,7 @@ pub async fn run(
         Some(work_queue.queue_review()),
     );
     let removal = setup.handle();
-    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), move || {
+    kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), peers.reach_again(), move || {
         removal.computers_listing()
     });
     peers.register_moves(&mut routes, engine.clone());

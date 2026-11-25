@@ -98,6 +98,8 @@ pub struct View {
     pub(crate) versions: LocalVersions,
     /// The released beta.1 Macs that enrolled this machine (none in a setup).
     pub(crate) legacy_macs: Arc<Vec<ComputerKey>>,
+    /// Computers a client asked to reach again (Connect), by key, and when.
+    pub(crate) reaching: Arc<BTreeMap<ComputerKey, Millis>>,
 }
 
 impl View {
@@ -626,6 +628,18 @@ enum Change {
     ConversationSearch,
     BackupReceiver,
     SetupRosters(watch::Receiver<Option<Arc<Roster>>>),
+    ReachAgain(ComputerKey),
+}
+
+/// Asks the resident to reach a computer that's away again (Connect).
+#[derive(Clone)]
+pub struct ReachAgain(mpsc::Sender<Change>);
+
+impl ReachAgain {
+    /// False when the ask couldn't be left.
+    pub fn ask(&self, key: ComputerKey) -> bool {
+        self.0.try_send(Change::ReachAgain(key)).is_ok()
+    }
 }
 
 struct PublishedViews {
@@ -778,6 +792,10 @@ impl ResidentPeers {
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "Peer resident stopped"))?;
         Ok(handle)
+    }
+
+    pub fn reach_again(&self) -> ReachAgain {
+        ReachAgain(self.changes.clone())
     }
 
     pub async fn advertise_backup_receiver(&self) {
@@ -947,6 +965,7 @@ impl Resident {
             system: system_name(),
             versions: LocalVersions::default(),
             legacy_macs: Arc::default(),
+            reaching: Arc::default(),
         };
         Self {
             run,
@@ -1050,6 +1069,17 @@ impl Resident {
                         }
                     },
                     Some(Change::Dispatch(dispatcher)) => dispatch = Some(dispatcher),
+                    Some(Change::ReachAgain(key)) => {
+                        // It tells that peer its agents now and asks for theirs: an answer marks
+                        // it back at once, and none leaves it away once the try is over.
+                        let now = clock();
+                        let reaching = Arc::make_mut(&mut self.view.reaching);
+                        reaching.retain(|_, at| now.saturating_sub(*at) < crate::manage::TRY_FOR);
+                        reaching.insert(key, now);
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), now, Refresh::Reach { key });
+                        }
+                    }
                     Some(Change::WorkCalls) => {
                         self.view.work_calls = true;
                         if let Some(publisher) = &mut publisher {
@@ -1492,6 +1522,8 @@ enum Refresh {
     None,
     All,
     Peer { key: ComputerKey, ask: bool },
+    /// Connect: tell this peer alone, and ask for its agents.
+    Reach { key: ComputerKey },
 }
 
 struct Publisher {
@@ -1665,7 +1697,7 @@ async fn publish_round(
             continue;
         };
         let forced = matches!(refresh, Refresh::All)
-            || matches!(refresh, Refresh::Peer { key, .. } if key == peer.key);
+            || matches!(refresh, Refresh::Peer { key, .. } | Refresh::Reach { key } if key == peer.key);
         let known = view.announced.get(&encode(&peer.key));
         let (state, announcement_digest) = bridge
             .as_ref()
@@ -1681,6 +1713,7 @@ async fn publish_round(
             let mut fields = json!({"at": now, "agents": state});
             fields["agents"]["at"] = json!(at);
             if matches!(refresh, Refresh::All)
+                || matches!(refresh, Refresh::Reach { key } if key == peer.key)
                 || (known.is_none() && matches!(refresh, Refresh::None))
             {
                 fields["ask"] = json!("agents");

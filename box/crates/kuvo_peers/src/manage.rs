@@ -9,6 +9,9 @@ use serde_json::{Value, json};
 use crate::setup_lists::View;
 use kuvo_protocol::routes::types::GetKuvoComputersStatus200ComputersItemActionsItem as Action;
 
+/// How long a try to reach a computer again lasts before it counts as away again.
+pub const TRY_FOR: crate::reach::Millis = 20_000;
+
 pub const MANAGE_FEATURE: &str = "computers.manage";
 pub const RELAY_LEASE_FEATURE: &str = "setup.relay-lease";
 const PRIMARY_UNLINK: &str = "Add another computer to this setup before unlinking its main computer.";
