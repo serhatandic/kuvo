@@ -65,6 +65,8 @@ async function play(threadId, turnId, steps) {
     // {refuses}: what's steered is turned down from here on; {refusesNext}: the next one only;
     // {refusesAsItSleeps}: the next one, saying a sleep's started in the same breath.
     if (step.refuses) { q.refusing = true; continue; }
+    // {losesSteerAck}: takes the next thing steered without saying so (it's in its history).
+    if (step.losesSteerAck) { q.losingAck = true; continue; }
     if (step.refusesNext) { q.refusingNext = true; continue; }
     if (step.refusesAsItSleeps) { q.refusingAsItSleeps = true; continue; }
     // {endsAsTold}: takes what's steered and says its turn is over in the same breath;
@@ -173,7 +175,7 @@ process.stdin.on("data", (chunk) => {
       const turnId = "u" + ++turns + "-" + process.pid;
       const text = params.input?.[0]?.text ?? "";
       threads.get(params.threadId)?.push({ id: turnId, status: "inProgress", items: [{ type: "userMessage", id: "m" + turnId, clientId: params.clientUserMessageId, content: params.input }] });
-      running = { threadId: params.threadId, turnId };
+      running = { threadId: params.threadId, turnId, input: params.input, client: params.clientUserMessageId };
       quirk(params.threadId).steers = 0;
       answer({ turn: { id: turnId, status: "inProgress" } });
       const script = read("codex-script.json", {});
@@ -187,6 +189,19 @@ process.stdin.on("data", (chunk) => {
         refuse(-32600, "no active turn to steer");
         q.refusedOne?.();
         q.refusedOne = undefined;
+        continue;
+      }
+      if (q.losingAck) {
+        q.losingAck = false;
+        // (Kept on disk: a next app-server's history has it too.)
+        fs.writeFileSync(path.join(root, "codex-steered-" + params.threadId + ".json"), JSON.stringify({
+          id: running.turnId, status: "completed",
+          items: [{ type: "userMessage", id: "first", clientId: running.client, content: running.input },
+            { type: "userMessage", id: "steer", clientId: params.clientUserMessageId, content: params.input }],
+        }));
+        q.steers++;
+        q.wake?.();
+        q.wake = undefined;
         continue;
       }
       if (q.endsAsTold) {
@@ -268,7 +283,10 @@ process.stdin.on("data", (chunk) => {
       answer({});
     } else if (method === "thread/read") {
       const kept = threads.get(params.threadId);
-      if (!kept) refuse(-32603, "history unavailable");
+      const steered = path.join(root, "codex-steered-" + params.threadId + ".json");
+      if (fs.existsSync(path.join(root, "codex-withhold-history"))) refuse(-32603, "history unavailable");
+      else if (fs.existsSync(steered)) answer({ thread: { id: params.threadId, turns: [JSON.parse(fs.readFileSync(steered, "utf8"))] } });
+      else if (!kept) refuse(-32603, "history unavailable");
       else answer({ thread: { id: params.threadId, turns: kept.map((turn) => ({ ...turn, status: running?.turnId === turn.id ? "inProgress" : "completed" })) } });
     } else if (id !== undefined) answer({});
   }

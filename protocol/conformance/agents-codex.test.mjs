@@ -859,6 +859,41 @@ test("its folder changed: the thread it goes on with is told what changed, once;
   }, (codex) => codex.seed(id, { directory: codex.root }));
 });
 
+for (const restart of [false, true]) {
+  test(`a Codex steer with a lost acknowledgement is reconciled${restart ? " after the resident starts again" : " without another turn"}`, { timeout: 120000, skip }, async () => {
+    const id = restart ? "ses_codex_lostack_r" : "ses_codex_lostack";
+    await withCodex({}, async (codex) => {
+      const ready = "Ready for a steer.";
+      const thread = () => codex.agentState(id)?.codexThread;
+      const starts = () => codex.sent("turn/start").filter((message) => message.params.threadId === thread());
+      codex.script(`go ${id}`, [{ losesSteerAck: true }, ["item/agentMessage/delta", { itemId: "ready-l", delta: ready }], { untilTold: true }]);
+      write(path.join(codex.root, "codex-withhold-history"), "");
+      await codex.prompt(id, `go ${id}`);
+      await until(async () => texts(await codex.rows(id)).some((text) => text.includes(ready)), "It never got ready.");
+      const message = `msg_${id.replace(/^ses_/, "")}_lost`;
+      const sent = await request(codex.listener, "POST", codex.route(id) + "/prompt", { id: message, text: "Hold the same course", delivery: "steer" }, headers, 45000);
+      assert.equal(sent.status, 200, sent.text);
+      await until(() => fs.existsSync(path.join(codex.root, `codex-steered-${thread()}.json`)), "Codex never took it.");
+      assert.ok(!(await codex.rows(id)).some((row) => row.id === message), "It shows as sent before it's known.");
+      if (restart) {
+        await codex.stop();
+        await codex.start();
+      } else {
+        await until(() => codex.sent("thread/read").length, "It was never looked for.", 60000, 200);
+        assert.equal(starts().length, 1);
+      }
+      fs.rmSync(path.join(codex.root, "codex-withhold-history"));
+      await until(async () => (await codex.rows(id)).some((row) => row.id === message), "It never showed as taken.", 90000, 200);
+      assert.equal((await codex.rows(id)).filter((row) => row.id === message).length, 1);
+      assert.equal(codex.sent("turn/steer").length, 1);
+      assert.equal(starts().length, 1);
+      await codex.prompt(id, "Check the last result");
+      await until(() => starts().length === 2, "The next message never started a turn.", 60000);
+      assert.ok(!starts()[1].params.input[0].text.includes("Hold the same course"), starts()[1].params.input[0].text);
+    }, (codex) => codex.seed(id, { directory: codex.root }));
+  });
+}
+
 test("signed out while it works: Codex is told to sign out, and the turn on it ends as Codex stopped", { timeout: 60000, skip }, async () => {
   const id = "ses_codex_signout";
   await withCodex({}, async (codex) => {
