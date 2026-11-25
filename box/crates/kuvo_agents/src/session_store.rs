@@ -70,6 +70,8 @@ pub struct SessionStore {
     root: PathBuf,
     /// What the agents keep going besides each conversation's turn, given to each thread.
     background: crate::background::Background,
+    /// Where agents offer turns they began on its own, given to each thread.
+    own_turns: crate::session::OwnTurns,
     /// The conversations an earlier resident may have left mid-turn, each repaired as its
     /// messages are first needed (`repair_when_needed`), not before.
     unrepaired: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
@@ -80,8 +82,15 @@ impl SessionStore {
         Self {
             root,
             background: crate::background::Background::default(),
+            own_turns: Default::default(),
             unrepaired: Default::default(),
         }
+    }
+
+    /// Turns agents begin on their own go to `own_turns` (the resident's).
+    pub fn with_own_turns(mut self, own_turns: crate::session::OwnTurns) -> Self {
+        self.own_turns = own_turns;
+        self
     }
 
     /// The conversations `ids`, each repaired (`repair`) and its Codex citations read when its
@@ -165,6 +174,7 @@ impl SessionStore {
         let id = id.to_owned();
         let provider = provider.to_owned();
         let background = self.background.clone();
+        let own_turns = self.own_turns.clone();
         tokio::task::spawn_blocking(move || {
             let Some(header) = read_header(&folder, &id)? else {
                 return Ok(None);
@@ -181,6 +191,7 @@ impl SessionStore {
                 directory: PathBuf::from(directory),
                 state,
                 background,
+                own_turns,
             }))
         })
         .await?
