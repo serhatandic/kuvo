@@ -74,10 +74,7 @@ impl Writer {
             if let Some(twin) = far.items.iter().find(|twin| {
                 twin["id"] != item.id
                     && twin["computer"]["key"] == peer_key
-                    && source["ref"]
-                        .as_str()
-                        .zip(twin["source"]["ref"].as_str())
-                        .is_some_and(|(same, other)| same.eq_ignore_ascii_case(other))
+                    && self.refs.same_source(source, &twin["source"])
             }) {
                 let queue = twin["owner"].as_str().unwrap_or_default();
                 return Err(bad(format!(
