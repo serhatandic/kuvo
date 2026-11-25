@@ -11,6 +11,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Rust computers no longer show a signed-out account’s old plan limits as a live sign-in. Its previous usage remains in history.
 
 - Rust computers offer ChatGPT reset credits through the engine’s saved sign-in, settle an older uncertain reset before a later one, and read native Windows Antigravity quotas from the computer’s own running profile. Codex history uses the live log’s tier before archived copies and uses the previous box’s cost arithmetic.
+- A Mac still on Kuvo Code 0.8.0-beta.1 that has gone away can be removed from a Rust computer's list with Remove. Such a Mac sees that computer's conversations with their project, and untitled ones as New session.
 
 - Rust computers can ask the computer holding a plan sign-in to spend a reset, share Always Allow decisions, and retry without spending twice. Antigravity can read its own running profile’s local quotas; copied billed history is counted once.
 
