@@ -16,7 +16,7 @@ const lead = fs.existsSync(leadFile) ? boxBinary(leadFile) : null;
 // its tools.)
 const skip = !lead ? "no lead box (KUVO_LEAD_BIN)" : lead.typescript && process.platform === "win32" ? "the TypeScript box doesn't run on native Windows" : false;
 
-test("a lead on another computer lists, stops and summarizes its sessions here, and hears their rows", { timeout: 120000, skip }, async t => {
+test("a lead on another computer lists, stops, summarizes and answers its sessions here, and hears their rows", { timeout: 120000, skip }, async t => {
   const { computer, leases } = await bench(t);
   const studio = await computer("Studio", lead);
   const lab = await computer("Lab");
@@ -71,4 +71,31 @@ test("a lead on another computer lists, stops and summarizes its sessions here, 
   assert.equal(compacted.isError, false, compacted.text);
   assert.match(compacted.text, /Summarizing "Docs" now\./);
   assert.ok(lab.engine.asked.some(each => each.method === "POST" && each.path === "/api/session/ses_docs/compact"), "summarized on Lab");
+
+  // What its sessions there ask, answered from here: within what the lead could do itself.
+  lab.engine.permissions.set("ses_docs", [
+    { id: "per_push", sessionID: "ses_docs", action: "shell", resources: ["git push"] },
+    { id: "per_status", sessionID: "ses_docs", action: "shell", resources: ["git status"] },
+  ]);
+  lab.engine.forms.set("ses_docs", [{ id: "frm_color", sessionID: "ses_docs", title: "Colors", fields: [{ key: "color", type: "string", title: "Which color?" }] }]);
+  lab.engine.permissions.set("ses_mine", [{ id: "per_mine", sessionID: "ses_mine", action: "shell", resources: ["ls"] }]);
+  const replied = path => lab.engine.asked.findLast(each => each.method === "POST" && each.path === path)?.json;
+  assert.deepEqual(await tool("answer_ask", { session: "ses_docs", ask: "per_push", decision: "deny", reason: "Not now." }),
+    { text: "Denied: git push. \"Docs\" is told why.", isError: false });
+  assert.equal(replied("/api/session/ses_docs/permission/per_push/reply")?.decision, "reject");
+  assert.match(replied("/api/session/ses_docs/permission/per_push/reply")?.message ?? "", /: Not now\.$/);
+  // (On Auto with no sandbox running there, it asks first for now: the user's to allow, not the lead's.)
+  const allowed = await tool("answer_ask", { session: "ses_docs", ask: "per_status", decision: "allow", reason: "Just looks." });
+  assert.equal(allowed.isError, true);
+  // (Why Auto can't be had there is that computer's: no sandbox running, or not yet on Windows.)
+  assert.match(allowed.text, /^You can't allow that: "Docs" asks first for now \([^)]+\), so the user answers every ask it makes, whatever mode you're in\. The user sees the ask on "Docs" and answers it there\. Tell them in a line why it's needed if it matters, and carry on with the rest\. You can still deny it\.$/);
+  assert.equal(replied("/api/session/ses_docs/permission/per_status/reply"), undefined, "nothing answered");
+  assert.deepEqual(await tool("answer_ask", { session: "ses_docs", ask: "frm_color", answer: "Blue", reason: "The brand's." }),
+    { text: "Answered \"Docs\".", isError: false });
+  assert.deepEqual(replied("/api/session/ses_docs/form/frm_color/reply"), { answer: { color: "Blue" } });
+  const kept = lab.engine.sessions.find(each => each.id === "ses_docs").metadata.kuvo.answers;
+  assert.deepEqual(kept.map(each => [each.ask, each.decision]), [["per_push", "deny"], ["frm_color", "answer"]]);
+  const notMine = await tool("answer_ask", { session: "ses_mine", ask: "per_mine", decision: "allow", reason: "Fine." });
+  assert.equal(notMine.isError, true);
+  assert.match(notMine.text, /"Mine" isn't one of your sessions: only the user answers what it asks\./);
 });
