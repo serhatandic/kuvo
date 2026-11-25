@@ -1502,6 +1502,7 @@ dependencies = [
  "hyper-util",
  "icu_collator",
  "jiff",
+ "kuvo_agents",
  "kuvo_os",
  "kuvo_protocol",
  "kuvo_server",

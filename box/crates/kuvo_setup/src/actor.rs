@@ -47,10 +47,13 @@ mod work_queue;
 pub(crate) use removal::Unlink;
 
 pub use device_access::{ManagedDeviceChange, ManagedDeviceGrant, ManagedDeviceSave};
-pub use work_queue::{AcceptedQueueLabels, QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease, QueueSetup};
 use handover::{Handover, HandoverReply};
 pub use marketplace::MarketplaceSetup;
 pub use model_stars::ModelStar;
+pub use work_queue::{
+    AcceptedQueueLabels, QueueLabel, QueueLabelLibrary, QueueNumberAllocation, QueueNumberLease,
+    QueueSetup,
+};
 
 pub(crate) const LINK: &str = "run/link.json";
 const CARD: &str = "run/setup-card.json";
@@ -93,6 +96,27 @@ impl SetupHandle {
 
     pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
         self.rosters.clone()
+    }
+
+    /// The current accepted setup position for a local settings change receipt.
+    pub fn config_receipt_scope(&self) -> Option<(String, u64)> {
+        let view = self.views.borrow();
+        let setup = &view.setup;
+        let key = setup["you"]["key"].as_str()?;
+        if view.local_wipe
+            || view.ownership.grants_disabled
+            || setup.get("conflict").is_some()
+            || !setup["computers"]
+                .as_array()?
+                .iter()
+                .any(|computer| computer["key"] == key)
+        {
+            return None;
+        }
+        Some((
+            setup["setup"].as_str()?.to_owned(),
+            setup["epoch"].as_u64()?,
+        ))
     }
 
     /// Your time zone, with its rules (TZif) where they were given with it; none where you set none.

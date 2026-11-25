@@ -11,9 +11,9 @@ use std::{
 };
 
 /// The turn `turn` of the conversation whose saved header is `header`, run
-/// in `folder`. `home` is the box's home, where the sandbox switch lives.
+/// in `folder`.
 pub fn turn_setup(
-    home: &Path,
+    _home: &Path,
     folder: PathBuf,
     header: &Map<String, Value>,
     turn: &str,
@@ -42,7 +42,7 @@ pub fn turn_setup(
         .and_then(|meta| meta.get("kuvo"))
         .unwrap_or(&Value::Null);
     let applied = settings["applied"].as_str();
-    let permissions = if matches!(applied, Some("auto" | "fullAccess")) {
+    let permissions = if applied == Some("fullAccess") {
         PermissionMode::ApproveAll
     } else {
         PermissionMode::AskFirst
@@ -59,7 +59,7 @@ pub fn turn_setup(
         .flatten()
         .filter_map(|rule| serde_json::from_value::<Rule>(rule.clone()).ok())
         .collect();
-    policy.auto_without_sandbox = applied == Some("auto") && !home.join("run/fence/on").exists();
+    policy.auto_without_sandbox = applied == Some("auto");
     Ok((
         TurnInput {
             id: turn.to_owned(),

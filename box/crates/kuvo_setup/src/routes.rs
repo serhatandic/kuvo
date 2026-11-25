@@ -274,7 +274,6 @@ impl SetupHandle {
         self.register_unlink::<post_kuvo_computers_key_unlink_and_wipe::Spec>(routes, Some(true));
         self.register_edits(routes, records);
         self.register_personalities(routes);
-        self.register_clock(routes);
     }
 
     fn register_unlink<R>(&self, routes: &mut Registry, wipe: Option<bool>)
@@ -424,52 +423,23 @@ impl SetupHandle {
             .map_err(|version| refusal(Error::PersonalityVersion(version)))
     }
 
-    fn register_clock(&self, routes: &mut Registry) {
-        routes.register::<get_kuvo_settings::Spec, _, _>(Access::Any, |_| {
-            std::future::ready(typed::<get_kuvo_settings::Spec, 200>(json!({"sections": [{
-                "id": "clock", "title": "Clock", "group": "General", "icon": "clock",
-                "line": "Your time zone, which bots' wake-ups and times of day go by on all your computers.", "keywords": ["time zone", "timezone", "clock", "wake-ups", "schedule", "travel"],
-            }]})))
-        });
+    /// The clock page is setup-owned; the settings framework serves it with other pages.
+    pub fn clock_page(&self) -> Value {
+        self.views.borrow().clock.clone()
+    }
 
-        let setup = self.clone();
-        routes.register::<get_kuvo_settings_section::Spec, _, _>(Access::Any, move |call| {
-            std::future::ready(clock_section(call.param("section")).and_then(|()| {
-                typed::<get_kuvo_settings_section::Spec, 200>(setup.views.borrow().clock.clone())
-            }))
-        });
-
-        let setup = self.clone();
-        routes.register::<get_kuvo_settings_section_events::Spec, _, _>(Access::Any, move |call| {
-            std::future::ready(
-                clock_section(call.param("section"))
-                    .map(|()| events(setup.views.clone(), |view| Some(view.clock.clone()))),
-            )
-        });
-
-        let setup = self.clone();
-        routes.register::<patch_kuvo_settings_section::Spec, _, _>(Access::Any, move |call| {
-            let setup = setup.clone();
-            async move {
-                clock_section(call.param("section"))?;
-                let given: SettingChange = read(&call.request.body)?;
-                if given.row != "time-zone" {
-                    return Err(Refusal::new(
-                        StatusCode::NOT_FOUND,
-                        "That isn't on this page now.",
-                    ));
-                }
-                let revision = Some(given.was);
-                let zone = given
-                    .value
-                    .as_str()
-                    .ok_or_else(|| {
-                        Refusal::new(StatusCode::BAD_REQUEST, "Pick one of its choices.")
-                    })?
-                    .to_owned();
-                respond(setup.request(Command::Zone { zone, revision }).await?)
-            }
-        });
+    pub async fn change_clock(&self, zone: String, revision: String) -> Result<Value, Refusal> {
+        let answer = self
+            .request(Command::Zone {
+                zone,
+                revision: Some(revision),
+            })
+            .await?;
+        if answer.status == 200 {
+            Ok(answer.value)
+        } else {
+            Err(response_refusal(answer))
+        }
     }
 
     fn require_primary(&self, setting: &str) -> Result<(), Refusal> {
@@ -493,13 +463,6 @@ struct Handover {
     primary: String,
     epoch: Option<u64>,
     unlink: Option<Value>,
-}
-
-#[derive(Deserialize)]
-struct SettingChange {
-    row: String,
-    value: Value,
-    was: String,
 }
 
 /// The holder's local save lane is internal and does not appear in the public route export.
@@ -620,17 +583,6 @@ fn refusal(error: Error) -> Refusal {
         }
     };
     Refusal::new(status, message)
-}
-
-fn clock_section(section: Option<&str>) -> Result<(), Refusal> {
-    if section == Some("clock") {
-        Ok(())
-    } else {
-        Err(Refusal::new(
-            StatusCode::NOT_FOUND,
-            "That isn't a settings section.",
-        ))
-    }
 }
 
 fn decoded_id(given: Option<&str>) -> Result<String, Refusal> {
