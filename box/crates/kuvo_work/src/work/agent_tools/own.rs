@@ -2,12 +2,12 @@
 //! (schedule_wake_up, watch_for_change, list_wake_ups, cancel_wake_up), through this computer's
 //! `kuvo-wake` as an agent's own command would run it, and a bot's job (set_job).
 
-use std::{path::Path, time::Duration};
+use std::{future::Future, path::Path, pin::Pin, time::Duration};
 
 use serde_json::{Map, Value, json};
 
-use super::{Caller, Said, refused, said};
-use crate::{bots::here::MOVING, work::Work};
+use super::{Caller, Said, receipts::Operation, refused, said};
+use crate::{bots::here::MOVING, wakes::verbs::Verb, work::Work};
 
 /// What an agent hears instead of a watch made without asking, in a conversation that asks before
 /// commands: the same watch as a command, which asks the user with the check written out.
@@ -36,6 +36,37 @@ fn watch_went_unasked(rules: &Value) -> bool {
             .any(|rule| is(rule, "kuvo-browser_watch_for_change", "ask"))
 }
 
+/// What kuvo-wake said, in its words; why it couldn't run where it didn't.
+fn ran_words(
+    ran: Result<std::io::Result<std::process::Output>, tokio::time::error::Elapsed>,
+    program: &Path,
+) -> Said {
+    match ran {
+        Ok(Ok(output)) => {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let failed = !output.status.success();
+            let text = match text.trim() {
+                "" if failed => "That didn't work.",
+                "" => "Done.",
+                text => text,
+            };
+            Said {
+                text: text.to_owned(),
+                refused: failed,
+            }
+        }
+        Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => refused(format!(
+            "Couldn't run kuvo-wake here: there's none at {}.",
+            program.display()
+        )),
+        _ => refused("That didn't work."),
+    }
+}
+
 impl Work {
     /// A wake-up tool's call, for the conversation `caller` is part of (a subagent's, the one that
     /// started it; a bot's, its folder), run from the folder it works in. Never from a group chat's
@@ -47,6 +78,7 @@ impl Work {
         session: Option<&str>,
         own: Option<&Value>,
         caller: Option<&Caller>,
+        operation: Option<&Operation>,
     ) -> Said {
         let Some(session) = session else {
             return refused("This needs a conversation of its own.");
@@ -70,7 +102,8 @@ impl Work {
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
         };
-        let verb: Vec<&str> = match name {
+        let owned = |text: &str| text.to_owned();
+        let (verb, native): (Vec<&str>, Verb) = match name {
             "schedule_wake_up" => {
                 let Some(when) = given("when") else {
                     return refused(
@@ -88,7 +121,13 @@ impl Work {
                     verb.extend(["--summary", summary]);
                 }
                 verb.push(note);
-                verb
+                let native = Verb::Add {
+                    when: owned(when),
+                    every: given("every").map(owned),
+                    summary: given("summary").map(owned),
+                    note: owned(note),
+                };
+                (verb, native)
             }
             "watch_for_change" => {
                 // A watch runs a command whenever it's due: in Ask First, only once the user was asked.
@@ -110,14 +149,20 @@ impl Work {
                     verb.extend(["--summary", summary]);
                 }
                 verb.push(note);
-                verb
+                let native = Verb::Watch {
+                    every: owned(every),
+                    check: owned(check),
+                    summary: given("summary").map(owned),
+                    note: owned(note),
+                };
+                (verb, native)
             }
-            "list_wake_ups" => vec!["list"],
+            "list_wake_ups" => (vec!["list"], Verb::List),
             _ => {
                 let Some(id) = given("id") else {
                     return refused("Say which one (id), from list_wake_ups.");
                 };
-                vec!["cancel", id]
+                (vec!["cancel", id], Verb::Cancel { id: owned(id) })
             }
         };
         // Its folder: a bot's own, or the session's in the wake-ups folder, which kuvo-wake makes
@@ -147,55 +192,120 @@ impl Work {
             .map(Path::new)
             .filter(|folder| folder.is_dir())
             .map_or_else(|| self.settings.account().to_owned(), Path::to_path_buf);
-        let program = std::env::var_os("KUVO_WAKE_COMMAND")
-            .map_or_else(|| self.home.join("bin/kuvo-wake"), Into::into);
-        let target = bot.as_ref().map_or(owner.to_owned(), |bot| {
-            bot.folder.to_string_lossy().into_owned()
-        });
-        let mut command = tokio::process::Command::new(&program);
-        command
-            .arg(&target)
-            .args(&verb)
-            .current_dir(&cwd)
-            .env("PWD", &cwd)
-            .env("KUVO_BOTS", &self.bots)
-            .env("KUVO_WAKES", self.home.join("wakes"))
-            .env("KUVO_WAKE_TOOL", "1")
-            // (Never as the box's own conversation, nor in a sandbox's folder: it's named.)
-            .env_remove("KUVO_WAKE_VIA")
-            .env_remove("OPENCODE_SESSION_ID")
-            .env_remove("KUVO_WAKE_FOLDER")
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-        let ran = tokio::time::timeout(Duration::from_secs(30), command.output()).await;
-        if name != "list_wake_ups" {
-            self.list.wakes().changed();
-        }
-        match ran {
-            Ok(Ok(output)) => {
-                let text = format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                let text = text.trim();
-                let failed = !output.status.success();
-                let text = if text.is_empty() {
-                    if failed { "That didn't work." } else { "Done." }
-                } else {
-                    text
-                };
-                Said {
-                    text: text.to_owned(),
-                    refused: failed,
+        let (wakes, tells) = (self.list.wakes().clone(), name != "list_wake_ups");
+        // Native Windows has no shell for kuvo-wake: its verbs, done here.
+        let run: Pin<Box<dyn Future<Output = Said> + Send>> = if cfg!(windows) {
+            let (bot, owner) = (bot.map(|bot| bot.folder), owner.to_owned());
+            Box::pin(async move {
+                match wakes.run_verb(bot.as_deref(), &owner, native).await {
+                    Ok(text) => said(text),
+                    Err(why) => refused(why),
                 }
-            }
-            Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => refused(format!(
-                "Couldn't run kuvo-wake here: there's none at {}.",
-                program.display()
-            )),
-            _ => refused("That didn't work."),
+            })
+        } else {
+            let program = std::env::var_os("KUVO_WAKE_COMMAND")
+                .map_or_else(|| self.home.join("bin/kuvo-wake"), Into::into);
+            let target = bot.as_ref().map_or(owner.to_owned(), |bot| {
+                bot.folder.to_string_lossy().into_owned()
+            });
+            let mut command = tokio::process::Command::new(&program);
+            command
+                .arg(&target)
+                .args(&verb)
+                .current_dir(&cwd)
+                .env("PWD", &cwd)
+                .env("KUVO_BOTS", &self.bots)
+                .env("KUVO_WAKES", self.home.join("wakes"))
+                .env("KUVO_WAKE_TOOL", "1")
+                // (Never as the box's own conversation, nor in a sandbox's folder: it's named.)
+                .env_remove("KUVO_WAKE_VIA")
+                .env_remove("OPENCODE_SESSION_ID")
+                .env_remove("KUVO_WAKE_FOLDER")
+                .stdin(std::process::Stdio::null())
+                .kill_on_drop(true);
+            Box::pin(async move {
+                let ran = tokio::time::timeout(Duration::from_secs(30), command.output()).await;
+                if tells {
+                    wakes.changed();
+                }
+                ran_words(ran, &program)
+            })
+        };
+        // One that changes something runs once for its operation, however often it's sent.
+        match operation.filter(|_| tells) {
+            Some(operation) => self.once(&operation.key, run).await,
+            None => run.await,
         }
+    }
+
+    /// A tool's command for an operation, run once: claimed in `run/tool-commands/<key>.json`
+    /// before it runs and its result kept there (as the TypeScript box keeps them), in a task of
+    /// its own so a call cut short doesn't stop it. Sent again, it's that result; while it runs,
+    /// what it comes to; one whose run the box stopping cut off says so, never runs again.
+    async fn once(&self, key: &str, run: Pin<Box<dyn Future<Output = Said> + Send>>) -> Said {
+        let folder = self.home.join("run/tool-commands");
+        let file = folder.join(format!("{key}.json"));
+        let kept = |file: &Path| {
+            let text = kuvo_store::files::text_of(file)?;
+            serde_json::from_str::<Value>(&text).ok()
+        };
+        let answer = |kept: &Value| {
+            let result = kept.get("result")?;
+            let output = result["output"].as_str().unwrap_or_default().trim();
+            let failed = result["code"] != 0 || result["timedOut"] == true;
+            let text = match output {
+                "" if failed => "That didn't work.",
+                "" => "Done.",
+                output => output,
+            };
+            Some(Said {
+                text: text.to_owned(),
+                refused: failed,
+            })
+        };
+        let _ = kuvo_store::files::create_private_dirs(&folder);
+        let claim = json!({ "pid": std::process::id() });
+        let claimed = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file);
+        let Ok(mut claimed) = claimed else {
+            for _ in 0..350 {
+                let Some(kept) = kept(&file) else {
+                    break;
+                };
+                if let Some(said) = answer(&kept) {
+                    return said;
+                }
+                // (Still running here, or in a worker of the TypeScript box's: waited for.)
+                let pid = kept["pid"]
+                    .as_u64()
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .unwrap_or(0);
+                let runs = pid == std::process::id()
+                    || kuvo_os::process::legacy_process_runs(pid, "tool-command-worker");
+                if !runs {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            return refused("The command worker was interrupted after accepting the command.");
+        };
+        let written = std::io::Write::write_all(&mut claimed, claim.to_string().as_bytes());
+        drop(claimed);
+        if written.is_err() {
+            let _ = std::fs::remove_file(&file);
+            return refused("That didn't work.");
+        }
+        let (done, said) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let ran = run.await;
+            let code = i32::from(ran.refused);
+            let result = json!({ "pid": std::process::id(), "result": { "output": ran.text, "code": code, "timedOut": false } });
+            let _ = kuvo_store::files::write_secret(&file, result.to_string().as_bytes());
+            let _ = done.send(ran);
+        });
+        said.await.unwrap_or_else(|_| refused("That didn't work."))
     }
 
     /// notify_user: `caller` telling you its sentence on purpose, unless it's past its limit or
