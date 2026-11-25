@@ -13,6 +13,9 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 
 const CONFIRM_FOR: u64 = 600_000;
+const UNSETTLED_FOR: u64 = 86_400_000;
+const KEEP_FOR: u64 = 30 * UNSETTLED_FOR;
+const KEEP: usize = 200;
 type Answer<T> = Result<T, Refusal>;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +49,31 @@ impl Outcome {
         })
     }
 }
+/// A maker reply is distinguished from a local stop before anything was sent.
+pub struct Completion {
+    pub outcome: Outcome,
+    pub already: bool,
+    pub until: Option<u64>,
+    pub reached: bool,
+}
+impl From<Outcome> for Completion {
+    fn from(outcome: Outcome) -> Self {
+        Self {
+            outcome,
+            already: false,
+            until: None,
+            reached: false,
+        }
+    }
+}
+impl Completion {
+    pub fn maker(outcome: Outcome) -> Self {
+        Self {
+            reached: true,
+            ..outcome.into()
+        }
+    }
+}
 pub trait Port: Send + Sync {
     /// Check the live sign-in and choose its soonest available grant. No spend.
     fn choose<'a>(
@@ -58,7 +86,7 @@ pub trait Port: Send + Sync {
         account: &'a Account,
         request: &'a str,
         target: &'a str,
-    ) -> futures_util::future::BoxFuture<'a, Outcome>;
+    ) -> futures_util::future::BoxFuture<'a, Completion>;
     fn refresh<'a>(&'a self, provider: &'a str) -> futures_util::future::BoxFuture<'a, ()>;
 }
 
@@ -95,6 +123,10 @@ pub struct RemoteAnswer {
     pub outcome: Outcome,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub open: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
@@ -193,6 +225,12 @@ struct Spend {
     state: State,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     outcome: Option<Outcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    until: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    already: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finished: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Decision {
@@ -249,6 +287,63 @@ fn random<const N: usize>() -> Answer<String> {
     let mut bytes = [0; N];
     getrandom::fill(&mut bytes).map_err(failure)?;
     Ok(hex::encode(bytes))
+}
+fn remote_spend(row: &str, confirm: &str, by: Option<&str>, unasked: bool, via: &str) -> Spend {
+    Spend {
+        id: confirm.into(),
+        row: row.into(),
+        provider: String::new(),
+        via: Some(via.into()),
+        request: confirm.into(),
+        target: None,
+        also: vec![],
+        by: by.map(|s| s.chars().take(200).collect()),
+        unasked,
+        at: now(),
+        state: State::Sending,
+        outcome: None,
+        until: None,
+        already: false,
+        finished: None,
+    }
+}
+fn remote_ask(spend: &Spend) -> RemoteAsk {
+    RemoteAsk {
+        id: spend.id.clone(),
+        row: spend.row.clone(),
+        by: spend.by.clone(),
+        unasked: spend.unasked,
+    }
+}
+fn overlap(journal: &Journal, row: &str, via: Option<&str>, entered: u64) -> Option<usize> {
+    journal.spends.iter().rposition(|s| {
+        s.row == row
+            && s.via.as_deref() == via
+            && matches!(s.state, State::Done)
+            && s.finished.is_some_and(|at| at >= entered)
+    })
+}
+fn attach_alias(spend: &mut Spend, confirm: &str) {
+    if !spend.also.iter().any(|id| id == confirm) {
+        spend.also.push(confirm.into());
+        if spend.also.len() > 20 {
+            spend.also.remove(0);
+        }
+    }
+}
+fn prune_spends(journal: &mut Journal) {
+    let at = now();
+    journal
+        .spends
+        .retain(|s| at.saturating_sub(s.at) < KEEP_FOR);
+    while journal.spends.len() >= KEEP {
+        let Some(i) = journal.spends.iter().position(|s| {
+            matches!(s.state, State::Done) || at.saturating_sub(s.at) >= UNSETTLED_FOR
+        }) else {
+            break;
+        };
+        journal.spends.remove(i);
+    }
 }
 impl Resets {
     pub fn new(home: &std::path::Path, limits: Service, port: Arc<dyn Port>) -> Self {
@@ -460,7 +555,13 @@ impl Resets {
         Ok(offer)
     }
     fn done(&self, row: &str, outcome: Outcome, open: bool) -> Value {
+        self.done_with(row, outcome, open, None)
+    }
+    fn done_with(&self, row: &str, outcome: Outcome, open: bool, until: Option<u64>) -> Value {
         let mut done = json!({"outcome":outcome});
+        if let Some(until) = until {
+            done["until"] = json!(until);
+        }
         if let Some(message) = if open && !outcome.open() {
             Some(
                 "It can't be asked of its maker from here right now. An earlier try may have gone through: asking again later won't use another.",
@@ -482,6 +583,7 @@ impl Resets {
         by: Option<&str>,
         unasked: bool,
     ) -> Answer<Value> {
+        let entered = now();
         let remote = {
             let inner = self.inner.lock().await;
             let journal = inner.journal.as_ref().map_err(failure)?;
@@ -501,7 +603,9 @@ impl Resets {
                 })
         };
         if let Some(via) = remote {
-            return self.spend_remote(row, confirm, by, unasked, &via).await;
+            return self
+                .spend_remote(row, confirm, by, unasked, &via, entered)
+                .await;
         }
         // Serialize spending, not the rest of usage, so two clients never choose the same credit
         // concurrently. No cancellation window exists between the journal and the maker's call.
@@ -517,36 +621,48 @@ impl Resets {
             .iter()
             .position(|s| s.row == row && (s.id == confirm || s.also.iter().any(|a| a == confirm)));
         if let Some(i) = existing {
-            if matches!(journal.spends[i].state, State::Done) {
-                return Ok(self.done(
+            let kept = &journal.spends[i];
+            if matches!(kept.state, State::Done) {
+                return Ok(self.done_with(
                     row,
-                    journal.spends[i].outcome.unwrap_or(Outcome::Unknown),
+                    kept.outcome.unwrap_or(Outcome::Unknown),
                     false,
+                    kept.until,
                 ));
             }
         } else if ticket.is_none() {
-            return Err(conflict(
-                "That confirmation has expired: ask for the reset again.",
-            ));
+            return Err(missing("That confirmation has expired: ask again."));
+        }
+        if existing.is_none() && (!unasked || Self::allowed(journal, row)) {
+            if let Some(i) = overlap(journal, row, None, entered) {
+                let mut changed = journal.clone();
+                let kept = &mut changed.spends[i];
+                attach_alias(kept, confirm);
+                let outcome = kept.outcome.unwrap_or(Outcome::Unknown);
+                let until = kept.until;
+                self.save(&changed)?;
+                *journal = changed;
+                return Ok(self.done_with(row, outcome, false, until));
+            }
         }
         let open = existing.or_else(|| {
-            journal
-                .spends
-                .iter()
-                .position(|s| s.row == row && s.via.is_none() && matches!(s.state, State::Sending))
+            journal.spends.iter().rposition(|s| {
+                s.row == row
+                    && s.via.is_none()
+                    && matches!(s.state, State::Sending)
+                    && now().saturating_sub(s.at) < UNSETTLED_FOR
+            })
         });
         let account = if let Some(i) = open {
             self.limits
                 .reset_account(Some(row), Some(&journal.spends[i].provider))
                 .map(|(a, _)| a)
         } else {
-            ticket.and_then(|c| c.account)
+            ticket.as_ref().and_then(|c| c.account.clone())
         };
         let Some(account) = account else {
             return Ok(self.done(row, Outcome::NotNow, open.is_some()));
         };
-        // A previous unresolved request never becomes a new one. It can be confirmed by a
-        // person even if previously attempted under Always Allow.
         self.see(journal, &account, row)?;
         if (unasked || existing.is_some_and(|i| journal.spends[i].unasked))
             && (!Self::allowed(journal, row) || self.transport.as_ref().is_some_and(|t| !t.known()))
@@ -557,41 +673,74 @@ impl Resets {
             );
             return Ok(done);
         }
-        let mut changed = journal.clone();
-        let i = if let Some(i) = open {
-            let s = &mut changed.spends[i];
-            if existing.is_none() {
-                s.also.push(confirm.into());
-            }
+        if let Some(i) = open {
+            let later =
+                existing.is_none() && now().saturating_sub(journal.spends[i].at) >= CONFIRM_FOR;
+            let mut changed = journal.clone();
             if !unasked {
-                s.unasked = false;
+                changed.spends[i].unasked = false;
             }
-            i
-        } else {
-            changed.spends.push(Spend {
-                id: confirm.into(),
-                row: row.into(),
-                provider: account.provider.clone(),
-                via: None,
-                request: random::<16>()?,
-                target: None,
-                also: vec![],
-                by: by.map(|s| s.chars().take(200).collect()),
-                unasked,
-                at: now(),
-                state: State::Sending,
-                outcome: None,
-            });
-            changed.spends.len() - 1
+            if existing.is_none() && !later {
+                attach_alias(&mut changed.spends[i], confirm);
+            }
+            self.save(&changed)?;
+            *journal = changed;
+            let (completion, still_open) =
+                self.run_local(journal, i, &account, confirm, true).await?;
+            if !later || still_open || completion.outcome == Outcome::Reset && !completion.already {
+                if later {
+                    let mut changed = journal.clone();
+                    attach_alias(&mut changed.spends[i], confirm);
+                    self.save(&changed)?;
+                    *journal = changed;
+                }
+                return Ok(self.done_with(row, completion.outcome, still_open, completion.until));
+            }
+            // An older unsettled request was already done or definitely refused.
+            // This confirmation may now spend one new credit, under a new maker ID.
+        }
+        let Some(account) = ticket.and_then(|c| c.account) else {
+            return Ok(self.done(row, Outcome::NotNow, false));
         };
+        self.see(journal, &account, row)?;
+        let mut changed = journal.clone();
+        prune_spends(&mut changed);
+        changed.spends.push(Spend {
+            id: confirm.into(),
+            row: row.into(),
+            provider: account.provider.clone(),
+            via: None,
+            request: random::<16>()?,
+            target: None,
+            also: vec![],
+            by: by.map(|s| s.chars().take(200).collect()),
+            unasked,
+            at: now(),
+            state: State::Sending,
+            outcome: None,
+            until: None,
+            already: false,
+            finished: None,
+        });
+        let i = changed.spends.len() - 1;
         self.save(&changed)?;
         *journal = changed;
-        let previously_sent = journal.spends[i].target.is_some();
+        let (completion, still_open) = self.run_local(journal, i, &account, confirm, false).await?;
+        Ok(self.done_with(row, completion.outcome, still_open, completion.until))
+    }
+    async fn run_local(
+        &self,
+        journal: &mut Journal,
+        i: usize,
+        account: &Account,
+        confirm: &str,
+        previous: bool,
+    ) -> Answer<(Completion, bool)> {
         let target = match journal.spends[i].target.clone() {
             Some(target) => Ok(target),
-            None => self.port.choose(&account).await,
+            None => self.port.choose(account).await,
         };
-        let outcome = match target {
+        let completion = match target {
             Ok(target) => {
                 let mut changed = journal.clone();
                 changed.spends[i].target = Some(target.clone());
@@ -600,36 +749,49 @@ impl Resets {
                 if confirm.split_once(':').is_some_and(|(from, _)| {
                     !self.transport.as_ref().is_some_and(|t| t.member(from))
                 }) {
-                    Outcome::NotNow
+                    Outcome::NotNow.into()
                 } else {
                     self.port
-                        .consume(&account, &journal.spends[i].request, &target)
+                        .consume(account, &journal.spends[i].request, &target)
                         .await
                 }
             }
-            Err(outcome) => outcome,
+            Err(outcome) => outcome.into(),
         };
-        // A failure before a retry reached its maker cannot settle an earlier lost response.
-        let still_open = outcome.open()
-            || (previously_sent
-                && matches!(
-                    outcome,
-                    Outcome::NotNow | Outcome::Failed | Outcome::NoReset
-                ));
+        let still_open = completion.outcome.open() || previous && !completion.reached;
         if !still_open {
             let mut changed = journal.clone();
-            changed.spends[i].state = State::Done;
-            changed.spends[i].outcome = Some(outcome);
+            let kept = &mut changed.spends[i];
+            kept.state = State::Done;
+            kept.outcome = Some(completion.outcome);
+            kept.until = completion.until;
+            kept.already = completion.already;
+            kept.finished = Some(now());
             self.save(&changed)?;
             *journal = changed;
         }
-        if matches!(outcome, Outcome::Reset | Outcome::Unconfirmed) {
-            self.port.refresh(&account.provider).await;
+        if matches!(
+            completion.outcome,
+            Outcome::Reset | Outcome::Unconfirmed | Outcome::NoReset | Outcome::Unknown
+        ) {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                self.port.refresh(&account.provider),
+            )
+            .await;
+            if !still_open && journal.spends[i].finished.is_some_and(|at| at < now()) {
+                let mut changed = journal.clone();
+                changed.spends[i].finished = Some(now());
+                self.save(&changed)?;
+                *journal = changed;
+            }
         }
-        eprintln!("Plan reset of {}: {outcome:?}", account.provider);
-        Ok(self.done(row, outcome, still_open))
+        eprintln!(
+            "Plan reset of {}: {:?}",
+            account.provider, completion.outcome
+        );
+        Ok((completion, still_open))
     }
-
     async fn spend_remote(
         &self,
         row: &str,
@@ -637,11 +799,10 @@ impl Resets {
         by: Option<&str>,
         unasked: bool,
         via: &str,
+        entered: u64,
     ) -> Answer<Value> {
-        // Remote waits never hold the local journal: a peer may be asking for
-        // a different account in the opposite direction at the same time.
         let _remote = self.remote_gate.lock().await;
-        let (id, ask, prior) = {
+        let (mut id, mut ask, mut prior, mut later) = {
             let mut inner = self.inner.lock().await;
             let ticket = inner
                 .confirms
@@ -659,23 +820,37 @@ impl Resets {
                     && (s.id == confirm || s.also.iter().any(|id| id == confirm))
             });
             if let Some(i) = existing {
-                if matches!(journal.spends[i].state, State::Done) {
-                    return Ok(self.done(
+                let kept = &journal.spends[i];
+                if matches!(kept.state, State::Done) {
+                    return Ok(self.done_with(
                         row,
-                        journal.spends[i].outcome.unwrap_or(Outcome::Unknown),
+                        kept.outcome.unwrap_or(Outcome::Unknown),
                         false,
+                        kept.until,
                     ));
                 }
             } else if ticket.is_none() {
-                return Err(conflict(
-                    "That confirmation has expired: ask for the reset again.",
-                ));
+                return Err(missing("That confirmation has expired: ask again."));
+            }
+            if existing.is_none() && (!unasked || !journal.allowed.get(row).is_some_and(|d| !d.on))
+            {
+                if let Some(i) = overlap(journal, row, Some(via), entered) {
+                    let mut changed = journal.clone();
+                    let kept = &mut changed.spends[i];
+                    attach_alias(kept, confirm);
+                    let outcome = kept.outcome.unwrap_or(Outcome::Unknown);
+                    let until = kept.until;
+                    self.save(&changed)?;
+                    *journal = changed;
+                    return Ok(self.done_with(row, outcome, false, until));
+                }
             }
             let open = existing.or_else(|| {
-                journal.spends.iter().position(|s| {
+                journal.spends.iter().rposition(|s| {
                     s.row == row
                         && s.via.as_deref() == Some(via)
                         && matches!(s.state, State::Sending)
+                        && now().saturating_sub(s.at) < UNSETTLED_FOR
                 })
             });
             if unasked && journal.allowed.get(row).is_some_and(|d| !d.on) {
@@ -698,47 +873,109 @@ impl Resets {
                 return Ok(self.done(row, Outcome::NotNow, open.is_some()));
             }
             let mut changed = journal.clone();
+            let later = open.is_some_and(|i| {
+                existing.is_none() && now().saturating_sub(journal.spends[i].at) >= CONFIRM_FOR
+            });
             let i = if let Some(i) = open {
                 let spend = &mut changed.spends[i];
-                if existing.is_none() {
-                    spend.also.push(confirm.into());
-                    if spend.also.len() > 20 {
-                        spend.also.remove(0);
-                    }
+                if existing.is_none() && !later {
+                    attach_alias(spend, confirm);
                 }
                 if !unasked {
                     spend.unasked = false;
                 }
                 i
             } else {
-                changed.spends.push(Spend {
-                    id: confirm.into(),
-                    row: row.into(),
-                    provider: String::new(),
-                    via: Some(via.into()),
-                    request: confirm.into(),
-                    target: None,
-                    also: vec![],
-                    by: by.map(|s| s.chars().take(200).collect()),
-                    unasked,
-                    at: now(),
-                    state: State::Sending,
-                    outcome: None,
-                });
+                prune_spends(&mut changed);
+                changed
+                    .spends
+                    .push(remote_spend(row, confirm, by, unasked, via));
                 changed.spends.len() - 1
             };
             self.save(&changed)?;
             *journal = changed;
             let spend = &journal.spends[i];
-            let ask = RemoteAsk {
-                id: spend.id.clone(),
-                row: row.into(),
-                by: spend.by.clone(),
-                unasked: spend.unasked,
-            };
-            (spend.id.clone(), ask, open.is_some())
+            (spend.id.clone(), remote_ask(spend), open.is_some(), later)
         };
-        let key = (via.to_owned(), id.clone());
+        loop {
+            let (sent, result) = self.remote_exchange(via, ask.clone()).await;
+            let Some(answer) = result else {
+                if later {
+                    let mut inner = self.inner.lock().await;
+                    let journal = inner.journal.as_mut().map_err(|e| failure(&*e))?;
+                    let mut changed = journal.clone();
+                    if let Some(spend) = changed
+                        .spends
+                        .iter_mut()
+                        .find(|s| s.id == id && s.via.as_deref() == Some(via))
+                    {
+                        attach_alias(spend, confirm);
+                        self.save(&changed)?;
+                        *journal = changed;
+                    }
+                }
+                return Ok(self.done(
+                    row,
+                    if sent {
+                        Outcome::Unknown
+                    } else {
+                        Outcome::NotNow
+                    },
+                    prior || sent,
+                ));
+            };
+            let terminal = !answer.open && !answer.outcome.open();
+            let next = later && terminal && (answer.outcome != Outcome::Reset || answer.already);
+            {
+                let mut inner = self.inner.lock().await;
+                let journal = inner.journal.as_mut().map_err(|e| failure(&*e))?;
+                let mut changed = journal.clone();
+                if let Some(spend) = changed
+                    .spends
+                    .iter_mut()
+                    .find(|s| s.id == id && s.via.as_deref() == Some(via))
+                {
+                    if terminal {
+                        spend.state = State::Done;
+                        spend.outcome = Some(answer.outcome);
+                        spend.until = answer.until;
+                        spend.already = answer.already;
+                        spend.finished = Some(now());
+                    }
+                    if later && !next {
+                        attach_alias(spend, confirm);
+                    }
+                }
+                if next {
+                    if !self.transport.as_ref().is_some_and(|t| t.reachable(via)) {
+                        self.save(&changed)?;
+                        *journal = changed;
+                        return Ok(self.done(row, Outcome::NotNow, false));
+                    }
+                    prune_spends(&mut changed);
+                    changed
+                        .spends
+                        .push(remote_spend(row, confirm, by, unasked, via));
+                    id = confirm.into();
+                    ask = remote_ask(changed.spends.last().expect("new remote spend"));
+                    prior = false;
+                    later = false;
+                }
+                self.save(&changed)?;
+                *journal = changed;
+            }
+            if next {
+                continue;
+            }
+            let mut done = self.done_with(row, answer.outcome, answer.open, answer.until);
+            if let Some(message) = answer.message {
+                done["message"] = json!(message);
+            }
+            return Ok(done);
+        }
+    }
+    async fn remote_exchange(&self, via: &str, ask: RemoteAsk) -> (bool, Option<RemoteAnswer>) {
+        let key = (via.to_owned(), ask.id.clone());
         let (send, receive) = tokio::sync::oneshot::channel();
         self.pending
             .lock()
@@ -758,37 +995,7 @@ impl Resets {
             None
         };
         self.pending.lock().expect("reset answers").remove(&key);
-        let Some(answer) = result else {
-            return Ok(self.done(
-                row,
-                if sent {
-                    Outcome::Unknown
-                } else {
-                    Outcome::NotNow
-                },
-                prior || sent,
-            ));
-        };
-        if !answer.open && !answer.outcome.open() {
-            let mut inner = self.inner.lock().await;
-            let journal = inner.journal.as_mut().map_err(|e| failure(&*e))?;
-            let mut changed = journal.clone();
-            if let Some(s) = changed
-                .spends
-                .iter_mut()
-                .find(|s| s.id == id && s.via.as_deref() == Some(via))
-            {
-                s.state = State::Done;
-                s.outcome = Some(answer.outcome);
-                self.save(&changed)?;
-                *journal = changed;
-            }
-        }
-        let mut done = self.done(row, answer.outcome, answer.open);
-        if let Some(message) = answer.message {
-            done["message"] = json!(message);
-        }
-        Ok(done)
+        (sent, result)
     }
     pub fn take_answer(&self, from: &str, answer: RemoteAnswer) {
         if valid_id(&answer.id) {
@@ -860,6 +1067,8 @@ impl Resets {
             id: ask.id.clone(),
             outcome: Outcome::Failed,
             open: false,
+            already: false,
+            until: None,
             message: Some(message.into()),
         };
         if !valid_id(&ask.id) || !shared_row(&ask.row) {
@@ -869,7 +1078,7 @@ impl Resets {
             return failed("The computer isn't one of yours now: nothing was used.");
         }
         let key = format!("{from}:{}", ask.id);
-        {
+        let prior_done = {
             let mut inner = self.inner.lock().await;
             let known = inner.journal.as_ref().is_ok_and(|j| {
                 j.spends.iter().any(|s| {
@@ -892,6 +1101,14 @@ impl Resets {
                     }
                 }
             }
+            let already = inner.journal.as_ref().is_ok_and(|j| {
+                j.spends.iter().any(|s| {
+                    s.row == ask.row
+                        && (s.id == key || s.also.iter().any(|id| id == &key))
+                        && matches!(s.state, State::Done)
+                        && s.outcome == Some(Outcome::Reset)
+                })
+            });
             if !known {
                 let Some((account, _)) = self.limits.reset_account(Some(&ask.row), None) else {
                     return failed("This computer's sign-in can't use this account's resets.");
@@ -906,7 +1123,8 @@ impl Resets {
                     },
                 );
             }
-        }
+            already
+        };
         // A peer may not substitute a provider or credit target. The local
         // account and its maker choose those, just as for a local confirmation.
         let result = self
@@ -917,17 +1135,24 @@ impl Resets {
             Err(error) => return failed(&refusal_words(error).await),
         };
         let outcome = serde_json::from_value(answer["outcome"].clone()).unwrap_or(Outcome::Unknown);
-        let open = self.inner.lock().await.journal.as_ref().is_ok_and(|j| {
-            j.spends.iter().any(|s| {
-                s.row == ask.row
-                    && (s.id == key || s.also.iter().any(|id| id == &key))
-                    && matches!(s.state, State::Sending)
-            })
-        });
+        let (open, already) = {
+            let inner = self.inner.lock().await;
+            let kept = inner.journal.as_ref().ok().and_then(|j| {
+                j.spends.iter().find(|s| {
+                    s.row == ask.row && (s.id == key || s.also.iter().any(|id| id == &key))
+                })
+            });
+            (
+                kept.is_some_and(|s| matches!(s.state, State::Sending)),
+                prior_done || kept.is_some_and(|s| s.already),
+            )
+        };
         RemoteAnswer {
             id: ask.id,
             outcome,
             open,
+            already: already && outcome == Outcome::Reset,
+            until: answer["until"].as_u64(),
             message: answer["message"].as_str().map(str::to_owned),
         }
     }

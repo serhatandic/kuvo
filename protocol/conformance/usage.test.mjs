@@ -1046,9 +1046,9 @@ test('usage and Insights merge only admitted peer records, retain them across re
   const first=studio.start();
   const main=studio.connect(await first.ready());
   const setup=await main('GET','kuvo/setup');
-  await until(()=>leases.leaseFor(setup.json.setup),'History Studio did not claim its relay lease');
   const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
   assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'History Studio did not claim its relay lease');
   const joined=await lab.join(invite.json.code);
   assert.equal(joined.code,0,joined.log);
   seed(lab,'ses_lab_history',40,0.02);
@@ -1342,9 +1342,9 @@ test('a peer remembers a crossing even after its visible notice expires (Rust co
   write(file,JSON.stringify(saved));
   resident=studio.start();main=studio.connect(await resident.ready());
   const setup=await main('GET','kuvo/setup');
-  await until(()=>leases.leaseFor(setup.json.setup),'Studio has no relay lease');
   const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
   assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'Studio has no relay lease');
   assert.equal((await lab.join(invite.json.code)).code,0);
   const call=lab.connect(await lab.start().ready());
   await until(async()=>{const value=await read(call);return value.rows.find(r=>r.provider==='openai')?.rings.short?.used===0.91;},'Lab did not receive Studio’s accepted window',30000,250);
@@ -1390,13 +1390,16 @@ test('a computer without the plan sign-in spends once on the holder, and shares 
   await here('POST',base+'/refresh',{});
   const row=await until(async()=>{const data=(await here('GET',base)).json.data;return data.rows.find(r=>r.provider==='claude-code'&&r.extras?.some(e=>e.kind==='resets'&&e.usable));},'The holder did not read its own grants');
   const setup=await here('GET','kuvo/setup');
-  await until(()=>leases.leaseFor(setup.json.setup),'Holder did not claim a relay lease');
   const invite=await here('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
   assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'Holder did not claim a relay lease');
   assert.equal((await asker.join(invite.json.code)).code,0);
   let resident=asker.start(),call=asker.connect(await resident.ready());
   const remote=async()=>{const r=(await call('GET',base)).json.data.rows.find(r=>r.id===row.id);return r?.extras?.find(e=>e.kind==='resets');};
   await until(async()=>{const extra=await remote();return extra?.on?.name==='ResetHolder'&&extra;},'Remote grant account did not arrive',30000,250);
+  const plan=await call('POST','kuvo/agent-tools',{name:'plan_limits',arguments:{}});
+  assert.match(plan.json.text,/signed in on ResetHolder/);
+  assert.match(plan.json.text,/used on ResetHolder, which has its sign-in/);
   const post=body=>call('POST',base+'/reset',body);
   const offered=await post({row:row.id});
   assert.equal(offered.status,200,offered.text);assert.equal(offered.json.data.on.name,'ResetHolder');
@@ -1508,7 +1511,7 @@ test('Antigravity keeps another host’s usable windows while one quota call is 
 
 test('Antigravity reads only its running profile’s owned loopback TLS server without a bearer token',async t=>{
   if(boxBinary().typescript)return t.skip('The TypeScript scratch bridge disables provider requests.');
-  if(process.platform==='win32')return t.skip('The reference does not discover native Windows local Antigravity servers.');
+  if(process.platform==='win32')return t.skip('The synthetic /proc fixture is Unix-only; the native Windows case exercises actual process ownership.');
   const fs=await import('node:fs');
   const https=await import('node:https');
   const {spawnSync}=await import('node:child_process');
@@ -1546,4 +1549,140 @@ test('Antigravity reads only its running profile’s owned loopback TLS server w
   assert.equal((await call('POST',base+'/refresh',{})).status,200);
   const row=await until(async()=>{const data=(await call('GET',base)).json.data;return !data.refreshPending&&data.rows.find(r=>r.provider==='antigravity'&&r.rings.short?.used===0.8);},'Own local server did not provide quota windows');
   assert.equal(row.plan,'Pro');assert.ok(methods.includes('RetrieveUserQuotaSummary'));assert.ok(methods.includes('GetUserStatus'));
+});
+
+test('the engine ChatGPT reset credit uses the saved OAuth identity without starting the engine',async t=>{
+  if(boxBinary().typescript)return t.skip('The TS scratch bridge disables engine sign-in calls.');
+  const fs=await import('node:fs');
+  const http=await import('node:http');
+  const {DatabaseSync}=await import('node:sqlite');
+  const {computer}=await bench(t);
+  const at=Date.now(),reset=Math.floor(at/1000)+7200;let outcome='unknown',delay=0,creditList=[{id:'late',status:'available',expires_at:reset+7200},{id:'soon',status:'available',expires_at:reset+3600}];const spent=[];
+  const maker=http.createServer((req,res)=>{
+    const send=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json'});res.end(JSON.stringify(value));};
+    assert.equal(req.headers.authorization,'Bearer fixture-engine-reset');
+    if(req.url==='/chatgpt'){send(200,{plan_type:'plus',rate_limit:{primary_window:{used_percent:100,limit_window_seconds:18000,reset_at:reset}},rate_limit_reset_credits:{available_count:creditList.length}});return;}
+    assert.equal(req.headers['chatgpt-account-id'],'fixture-engine-reset-account');
+    assert.equal(req.headers['openai-beta'],'codex-1');
+    if(req.url==='/chatgpt/resets'){send(200,{available_count:creditList.length,credits:creditList});return;}
+    if(req.url==='/chatgpt/resets/consume'){
+      let body='';req.on('data',c=>body+=c);req.on('end',()=>{const used=JSON.parse(body),saved=JSON.parse(fs.readFileSync(path.join(box.home,'agents','limits-resets.json'),'utf8'));assert.ok(saved.spends.some(s=>s.request===used.redeem_request_id&&s.target===used.credit_id&&s.state==='sending'));spent.push(used);setTimeout(()=>send(200,{code:outcome}),delay);});return;
+    }
+    send(404,{});
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const box=await computer('EngineReset',undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  const folder=path.join(box.home,'data','opencode');fs.mkdirSync(folder,{recursive:true});const database=path.join(folder,'opencode.db');
+  const credential=accountID=>JSON.stringify({type:'oauth',access:'fixture-engine-reset',expires:at+3600000,metadata:{accountID}});
+  let db=new DatabaseSync(database);db.exec('CREATE TABLE credential(id TEXT,integration_id TEXT,value TEXT,active INTEGER,time_updated INTEGER)');db.prepare('INSERT INTO credential VALUES(?,?,?,?,?)').run('one','openai',credential('fixture-engine-reset-account'),1,at);db.close();
+  const engineFile=path.join(box.home,'run','engine.json');fs.unlinkSync(engineFile);
+  let resident=box.start(),call=box.connect(await resident.ready());const base='kuvo/agents/api/kuvo/limits';
+  assert.equal((await call('POST',base+'/refresh',{})).status,200);
+  const row=await until(async()=>{const data=(await call('GET',base)).json.data;return !data.refreshPending&&data.rows.find(r=>r.provider==='openai'&&r.extras?.some(e=>e.kind==='resets'&&e.usable));},'Engine account did not offer its credits');
+  const offer=await call('POST',base+'/reset',{row:row.id});assert.equal(offer.status,200,offer.text);assert.equal(offer.json.data.count,2);assert.equal(spent.length,0);
+  const confirm=offer.json.data.confirm;
+  const post=()=>call('POST',base+'/reset',{row:row.id,confirm});
+  assert.equal((await post()).json.data.outcome,'unknown');assert.equal(spent.length,1);assert.equal(spent[0].credit_id,'soon');
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());outcome='already_redeemed';
+  assert.equal((await post()).json.data.outcome,'reset');assert.equal(spent.length,2);assert.deepEqual(spent[0],spent[1]);
+  await post();assert.equal(spent.length,2);
+  creditList=creditList.filter(c=>c.id==='late');outcome='reset';delay=200;
+  await call('POST',base+'/refresh',{});
+  await until(async()=>{const data=(await call('GET',base)).json.data;return !data.refreshPending&&data.rows.find(r=>r.id===row.id)?.extras?.find(e=>e.kind==='resets')?.count===1;},'Remaining credit was not refreshed');
+  const offers=await Promise.all([1,2].map(()=>call('POST',base+'/reset',{row:row.id})));
+  const both=await Promise.all(offers.map(o=>call('POST',base+'/reset',{row:row.id,confirm:o.json.data.confirm})));
+  assert.ok(both.every(r=>r.json.data.outcome==='reset'));assert.equal(spent.length,3,'Overlapping confirmations share one newly spent credit');assert.equal(spent[2].credit_id,'late');assert.notEqual(spent[2].redeem_request_id,spent[0].redeem_request_id);
+  assert.equal(fs.existsSync(engineFile),false);assert.equal(box.engine.asked.filter(r=>r.path==='/api/credential').length,0);
+});
+
+test('an older unsettled reset is settled before a later confirmation spends another credit',async t=>{
+  if(boxBinary().typescript)return t.skip('Rust native fixture.');
+  const fs=await import('node:fs');
+  const codex=await scriptedCodex();t.after(()=>codex.close());
+  const jwt=['e30',Buffer.from(JSON.stringify({'https://api.openai.com/auth':{chatgpt_account_id:'fixture',chatgpt_user_id:'fixture-user'}})).toString('base64url'),'fixture'].join('.');
+  write(path.join(codex.root,'.codex','auth.json'),JSON.stringify({tokens:{access_token:jwt,account_id:'fixture'}}));
+  const reset=Math.floor(Date.now()/1000)+7200;
+  const inventory=credits=>JSON.stringify({accountId:'fixture',rateLimits:{planType:'plus',primary:{usedPercent:100,windowDurationMins:300,resetsAt:reset}},rateLimitResetCredits:{availableCount:credits.length,credits}});
+  const soon={id:'soon',status:'available',expiresAt:reset+3600},late={id:'late',status:'available',expiresAt:reset+7200};
+  write(path.join(codex.root,'codex-limits.json'),inventory([late,soon]));
+  write(path.join(codex.root,'codex-reset-answer.json'),JSON.stringify({outcome:'unknown'}));
+  let listener=await codex.start();const base='kuvo/agents/api/kuvo/limits';
+  const read=async()=>{assert.equal((await request(listener,'POST',base+'/refresh',{})).status,200);return until(async()=>{const result=await request(listener,'GET',base);return !result.json.data.refreshPending&&result.json.data.rows.find(r=>r.provider==='codex-cli'&&r.extras?.some(e=>e.kind==='resets'&&e.usable));},'Reset account did not settle');};
+  const row=await read();const post=body=>request(listener,'POST',base+'/reset',body);
+  const offer=await post({row:row.id});assert.equal((await post({row:row.id,confirm:offer.json.data.confirm})).json.data.outcome,'unknown');
+  const first=codex.sent('account/rateLimitResetCredit/consume');assert.equal(first.length,1);
+  await codex.stop();
+  const file=path.join(codex.home,'agents','limits-resets.json'),kept=JSON.parse(fs.readFileSync(file,'utf8'));
+  kept.spends[0].at=Date.now()-11*60000;write(file,JSON.stringify(kept));
+  write(path.join(codex.root,'codex-limits.json'),inventory([late]));write(path.join(codex.root,'codex-reset-answer.json'),JSON.stringify({outcome:'reset'}));
+  listener=await codex.start();await read();
+  const next=await post({row:row.id});assert.equal(next.status,200,next.text);
+  const done=await post({row:row.id,confirm:next.json.data.confirm});assert.equal(done.json.data.outcome,'reset');
+  const spends=codex.sent('account/rateLimitResetCredit/consume');assert.equal(spends.length,3);assert.deepEqual(spends[0].params,spends[1].params);assert.equal(spends[2].params.creditId,'late');assert.notEqual(spends[2].params.idempotencyKey,spends[0].params.idempotencyKey);
+  await post({row:row.id,confirm:next.json.data.confirm});assert.equal(codex.sent('account/rateLimitResetCredit/consume').length,3);
+});
+
+test('Codex history prefers a live session’s tier to its copied archive and reads each configured home',async t=>{
+  const fs=await import('node:fs');const {computer}=await bench(t);
+  const box=await computer('CodexRoots',undefined,folder=>({...isolated(folder),CODEX_HOME:[path.join(folder,'codex-one'),path.join(folder,'codex-two')].join(',')}));
+  const [one,two]=box.env.CODEX_HOME.split(',');const at=Date.now()-60000;
+  const event=(when,priority)=>[JSON.stringify({type:'session_meta',timestamp:new Date(when).toISOString(),payload:{id:'fixture-'+when}}),JSON.stringify({type:'turn_context',payload:{model:'gpt-5.5'}}),...(priority?[JSON.stringify({type:'event_msg',payload:{type:'thread_settings_applied',service_tier:'priority'}})]:[]),JSON.stringify({type:'event_msg',timestamp:new Date(when).toISOString(),payload:{type:'token_count',info:{last_token_usage:{input_tokens:400,cached_input_tokens:0,output_tokens:100,total_tokens:500}}}})].join('\n')+'\n';
+  write(path.join(one,'sessions','live.jsonl'),event(at,true));
+  write(path.join(one,'archived_sessions','copy.jsonl'),event(at,false));
+  // The second named home has neither sessions nor archived_sessions: the home itself counts.
+  write(path.join(two,'rollout.jsonl'),event(at+1000,false));
+  if(process.platform!=='win32'){
+    write(path.join(box.home,'agents','accounts.json'),JSON.stringify([{formatVersion:1},{kind:'codex',id:'linked',label:'Linked'}]));
+    const linked=path.join(box.home,'agents','codex','accounts','linked');fs.mkdirSync(linked,{recursive:true});fs.symlinkSync(path.join(one,'sessions'),path.join(linked,'sessions'));
+  }
+  const call=box.connect(await box.start().ready());const base='kuvo/agents/api/kuvo/usage';
+  assert.equal((await call('POST',base+'/refresh?zone=UTC',{})).status,200);
+  const result=await until(async()=>{const data=(await call('GET',base+'?zone=UTC')).json.data;const row=data.rows.find(r=>r.provider==='codex-cli');return row?.days?.reduce((n,d)=>n+d.tokens,0)===1000&&data;},'The two configured homes did not reach usage');
+  const row=result.rows.find(r=>r.provider==='codex-cli');const baseCost=(400*5)/1e6+(100*30)/1e6;assert.equal(row.days.reduce((sum,d)=>sum+d.cost,0),baseCost*2.5+baseCost,'The live session’s priority tier must win over its archive, with identical arithmetic');
+  assert.ok(!result.rows.find(r=>r.provider==='codex-cli@linked')?.days?.some(d=>d.tokens>0));
+});
+
+test('native Windows finds only the listening language server of its own Antigravity ACP profile',async t=>{
+  if(boxBinary().typescript||process.platform!=='win32')return t.skip('Native Windows process and TCP ownership fixture.');
+  const fs=await import('node:fs');const {spawn}=await import('node:child_process');const {computer}=await bench(t);
+  const box=await computer('AntigravityWindowsProfile',undefined,folder=>({...isolated(folder),KUVO_TEST_AG_WINDOWS_ROOT:path.join(folder,'account','fixture agy windows'),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:1/'}));
+  const root=box.env.KUVO_TEST_AG_WINDOWS_ROOT;fs.mkdirSync(root,{recursive:true});
+  const profile=path.join(box.home,'agents','antigravity','profile');const wrongProfile=profile+'-not-ours';
+  fs.mkdirSync(wrongProfile,{recursive:true});
+  write(path.join(profile,'antigravity-acp','kuvo-sign-in.json'),JSON.stringify({id:'fixture-windows-local-sign-in'}));
+  const agy=path.join(root,'agy.exe'),languageServer=path.join(root,'language_server_fixture.exe');
+  fs.copyFileSync(process.execPath,agy);fs.copyFileSync(process.execPath,languageServer);
+  const script=path.join(root,'server.mjs'),parentScript=path.join(root,'parent.mjs');
+  write(script,`import http from 'node:http';import fs from 'node:fs';
+const [mode,log,ready]=process.argv.slice(2);const at=Date.now();
+const server=http.createServer((req,res)=>{const method=req.url.split('/').at(-1);fs.appendFileSync(log,JSON.stringify({method,authorization:req.headers.authorization,csrf:req.headers['x-codeium-csrf-token']})+'\\n');
+const answer=method==='GetUserStatus'?{userStatus:{userTier:{name:'Pro'}}}:{groups:[{buckets:['gemini-5h','gemini-weekly','3p-5h','3p-weekly'].map(bucketId=>({bucketId,remainingFraction:mode==='own'?0.2:0.99,resetTime:new Date(at+7200000).toISOString()}))}]};
+res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(answer));});
+server.listen(0,'127.0.0.1',()=>fs.writeFileSync(ready,String(server.address().port)));
+process.on('message',m=>{if(m==='stop'){server.closeAllConnections();server.close(()=>process.exit(0));}});`);
+  write(parentScript,`import {spawn} from 'node:child_process';
+const [exe,script,log,ready]=process.argv.slice(2);
+const child=spawn(exe,[script,'own',log,ready,'--csrf_token','fixture-win-csrf'],{stdio:'ignore',env:process.env});
+const stop=()=>{if(child.exitCode===null)child.kill();};process.on('message',m=>{if(m==='stop')stop();});process.on('disconnect',stop);process.on('exit',stop);child.on('exit',()=>process.exit(0));`);
+  const wrongLog=path.join(root,'wrong.jsonl'),wrongReady=path.join(root,'wrong.ready');const ownLog=path.join(root,'own.jsonl'),ownReady=path.join(root,'own.ready');
+  const children=[];
+  const start=(exe,args)=>{const child=spawn(exe,args,{cwd:root,env:box.env,stdio:['ignore','ignore','ignore','ipc']});const exited=new Promise(resolve=>child.once('close',resolve));child.on('error',()=>{});children.push({child,exited});return child;};
+  try {
+  start(agy,[script,'wrong',wrongLog,wrongReady,'--gemini-dir',wrongProfile]);
+  await until(()=>fs.existsSync(wrongReady),'Wrong profile server did not start');
+  start(agy,[parentScript,languageServer,script,ownLog,ownReady,'--gemini-dir',profile]);
+  await until(()=>fs.existsSync(ownReady),'Own profile language server did not start');
+  const call=box.connect(await box.start().ready()),base='kuvo/agents/api/kuvo/limits';
+  assert.equal((await call('POST',base+'/refresh',{})).status,200);
+  const row=await until(async()=>{const data=(await call('GET',base)).json.data;return !data.refreshPending&&data.rows.find(r=>r.provider==='antigravity'&&r.rings.short?.used===0.8);},'Native Windows did not read its own ACP child server');
+  assert.equal(row.plan,'Pro');assert.equal(fs.existsSync(wrongLog),false,'Another profile was contacted');
+  const methods=fs.readFileSync(ownLog,'utf8').trim().split('\n').map(JSON.parse);assert.ok(methods.some(m=>m.method==='RetrieveUserQuotaSummary'));assert.ok(methods.some(m=>m.method==='GetUserStatus'));
+  assert.ok(methods.every(m=>m.authorization===undefined&&m.csrf==='fixture-win-csrf'));
+  } finally {
+    for(const {child,exited} of children.reverse()){
+      if(child.exitCode===null){if(child.connected)child.send('stop');else child.kill();}
+      await exited;
+    }
+  }
 });

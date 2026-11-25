@@ -332,7 +332,7 @@ impl Reader {
                     if status >= 500 || matches!(status, 401 | 403 | 429) {
                         ResetOutcome::Unknown
                     } else {
-                        ResetOutcome::Failed
+                        ResetOutcome::MakerFailed
                     }
                 } else {
                     let body = reply.json::<Value>().await.unwrap_or_default();
@@ -346,12 +346,14 @@ impl Reader {
                         Some("already_used") => ResetOutcome::AlreadyRedeemed,
                         Some("not_limited") => ResetOutcome::NothingToReset,
                         Some("ineligible" | "no_grant" | "unknown_grant" | "not_next_grant") => {
-                            ResetOutcome::NoReset
+                            ResetOutcome::MakerNoReset
                         }
                         Some("reset_unconfirmed" | "stamp_indeterminate") => {
                             ResetOutcome::Unconfirmed
                         }
-                        Some("cooldown" | "paused" | "low_priority_active") => ResetOutcome::NotNow,
+                        Some("cooldown" | "paused" | "low_priority_active") => {
+                            ResetOutcome::MakerNotNow(date(&body["cooldown_until"]))
+                        }
                         _ => ResetOutcome::Unknown,
                     }
                 }

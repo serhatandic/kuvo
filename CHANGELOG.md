@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers offer ChatGPT reset credits through the engine’s saved sign-in, settle an older uncertain reset before a later one, and read native Windows Antigravity quotas from the computer’s own running profile. Codex history uses the live log’s tier before archived copies and uses the previous box’s cost arithmetic.
+
 - Rust computers can ask the computer holding a plan sign-in to spend a reset, share Always Allow decisions, and retry without spending twice. Antigravity can read its own running profile’s local quotas; copied billed history is counted once.
 
 - Usage history includes Cursor account-wide events and ChatGPT subscription calls made through the engine; Claude file-owned accounts can spend reset grants, and usage warnings do not repeat when another computer takes over the same window.

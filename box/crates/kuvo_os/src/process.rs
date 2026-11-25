@@ -132,6 +132,26 @@ pub fn process_started(pid: u32) -> Option<u64> {
     sys::read_start(pid).ok().flatten()?.parse().ok()
 }
 
+/// Read only a matching Windows process's arguments, checking its creation
+/// identity around both the executable and command-line queries.
+#[cfg(windows)]
+pub(crate) fn candidate_arguments(
+    pid: u32,
+    matching: impl FnOnce(&Path) -> bool,
+) -> io::Result<Option<(ProcessIdentity, Vec<String>)>> {
+    let Some(identity) = ProcessIdentity::read(pid)? else {
+        return Ok(None);
+    };
+    if !matching(&sys::executable(pid)?) || identity.state() != ProcessState::Live {
+        return Ok(None);
+    }
+    let args = sys::arguments(pid)?;
+    if identity.state() != ProcessState::Live {
+        return Ok(None);
+    }
+    Ok(Some((identity, args)))
+}
+
 /// Each listening TCP socket's owner and port, IPv4 and IPv6.
 #[cfg(windows)]
 pub fn tcp_listeners() -> io::Result<Vec<(u32, u16)>> {

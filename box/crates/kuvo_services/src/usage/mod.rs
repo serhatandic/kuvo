@@ -11,6 +11,7 @@ pub mod limits_peers;
 mod native_index;
 pub mod native_logs;
 pub mod plan_facts;
+mod plan_tool_words;
 mod price_feed;
 pub mod pricing;
 pub mod readings;

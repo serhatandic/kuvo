@@ -57,7 +57,17 @@ fn long(base: &str) -> Option<(f64, f64, f64)> {
 }
 fn cost(rates: Rates, model: &str, counts: &Counts, fast: bool, ultrafast: bool) -> f64 {
     let base = date_base(model);
-    let total = counts.input.saturating_add(counts.cache_read);
+    let total = counts
+        .input
+        .saturating_add(counts.cache_read)
+        .saturating_add(counts.cache_write_5m)
+        .saturating_add(counts.cache_write_1h);
+    let above = total
+        > if long(base).is_some() {
+            272_000
+        } else {
+            200_000
+        };
     let (input, output, mut cached) = if let Some((i, o, c)) = long(base) {
         if total > 272_000 {
             (i, o, c)
@@ -91,10 +101,16 @@ fn cost(rates: Rates, model: &str, counts: &Counts, fast: bool, ultrafast: bool)
     } else {
         1.
     };
-    (counts.input as f64 * input
-        + counts.cache_read as f64 * cached
-        + counts.output as f64 * output)
-        / 1e6
+    let creation = if above {
+        rates.cache_write_above.unwrap_or(rates.cache_write)
+    } else {
+        rates.cache_write
+    };
+    ((counts.input as f64 * input) / 1e6
+        + (counts.output as f64 * output) / 1e6
+        + (counts.cache_write_5m as f64 * creation) / 1e6
+        + (counts.cache_write_1h as f64 * input * 2.0) / 1e6
+        + (counts.cache_read as f64 * cached) / 1e6)
         * multiplier
 }
 pub struct Price {
