@@ -141,6 +141,63 @@ pub struct LocalList {
     pub pending: Option<Vec<String>>,
 }
 
+impl LocalList {
+    fn visible(&self) -> impl Iterator<Item = (&String, &Facts)> {
+        self.sessions
+            .iter()
+            .map(|(id, row)| (id, &row.facts))
+            .filter(|(_, facts)| {
+                facts.archived != Some(true)
+                    && facts.away != Some(true)
+                    && !matches!(facts.kind, Kind::Subagent | Kind::Hidden)
+            })
+    }
+
+    /// Local sessions at work, newest first; asking sessions aren't working.
+    pub fn working(&self) -> Vec<(&String, &Facts)> {
+        let mut rows: Vec<_> = self
+            .visible()
+            .filter(|(_, facts)| facts.running == Some(true) && facts.asked.is_none())
+            .collect();
+        rows.sort_by(|(a_id, a), (b_id, b)| {
+            b.updated
+                .as_f64()
+                .unwrap_or_default()
+                .total_cmp(&a.updated.as_f64().unwrap_or_default())
+                .then(a_id.cmp(b_id))
+        });
+        rows
+    }
+
+    /// Local sessions waiting on you, newest ask first, with the list's summary.
+    pub fn asking(&self) -> Vec<GetKuvoBoxAtWorkStatus200AskingItem> {
+        let summaries: BTreeMap<_, _> = self
+            .needs_you
+            .iter()
+            .flatten()
+            .map(|row| (row.session.as_str(), row.asks.summary.as_str()))
+            .collect();
+        let mut rows: Vec<_> = self
+            .visible()
+            .filter_map(|(id, facts)| Some((id, facts, facts.asked.as_ref()?.as_f64()?)))
+            .collect();
+        rows.sort_by(|(a_id, _, a), (b_id, _, b)| b.total_cmp(a).then(a_id.cmp(b_id)));
+        rows.into_iter()
+            .map(|(id, facts, _)| GetKuvoBoxAtWorkStatus200AskingItem {
+                id: id.clone(),
+                title: facts
+                    .title
+                    .as_deref()
+                    .and_then(crate::directory::work_title),
+                asks: summaries
+                    .get(id.as_str())
+                    .filter(|text| !text.is_empty())
+                    .map(|text| (*text).to_owned()),
+            })
+            .collect()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Local {
     pub list: Option<LocalList>,

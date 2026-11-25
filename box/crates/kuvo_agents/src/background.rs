@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 /// How long unseen or unending background work can hold a finish (ms).
-pub const AT_WORK_LIMIT: u64 = 6 * 3_600_000;
+pub use kuvo_store::background::AT_WORK_LIMIT;
 
 /// How long an ended command's output can still be read.
 const KEPT_AFTER: Duration = Duration::from_secs(10 * 60);

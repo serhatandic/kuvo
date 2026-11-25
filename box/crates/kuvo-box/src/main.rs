@@ -8,6 +8,7 @@ mod bot_setup;
 mod model_stars;
 mod serve;
 mod box_app;
+mod box_at_work;
 mod session_ownership;
 mod setup_search;
 #[cfg(target_os = "macos")]

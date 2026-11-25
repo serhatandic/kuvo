@@ -23,7 +23,7 @@ use super::{services::listening_ports, told::now, works_for};
 use crate::work::Work;
 
 /// How long a command or subagent that never ends counts as work, from when it started (ms).
-pub const AT_WORK_LIMIT: u64 = 6 * 3_600_000;
+pub use kuvo_store::background::AT_WORK_LIMIT;
 // As the box starts: the sessions updated this recently have their folders' tools running still.
 const RECENT: u64 = 3_600_000;
 const WAIT: Duration = Duration::from_secs(10);

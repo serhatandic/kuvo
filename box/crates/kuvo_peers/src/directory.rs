@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kuvo_protocol::json::{Null, Nullable};
 use kuvo_protocol::routes::types::{
+    GetKuvoBoxAtWorkStatus200AskingItem as Asking,
     GetKuvoComputersStatus200ComputersItemAgents as ComputerAgents,
     GetKuvoComputersStatus200ComputersItemAgentsState4 as AgentState,
     GetKuvoComputersStatus200ComputersItemAtWorkItem as AtWork,
@@ -160,6 +161,10 @@ pub struct ComputerFacts {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at_work: Option<Vec<AtWork>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asking: Option<Vec<Asking>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agents: Option<ComputerAgents>,
     // Compatibility fields for consumers of the retained announcement, including older boxes.
     #[serde(flatten)]
@@ -313,9 +318,22 @@ impl<'de> Deserialize<'de> for ComputerFacts {
         let release = given
             .remove("fleetUpdate")
             .and_then(|field| serde_json::from_value(field).ok());
-        let working = given.remove("working").and_then(|field| {
+        let count = |field: Value| {
             let count = field.as_f64()?;
             ((0.0..=10_000.0).contains(&count) && count.fract() == 0.0).then_some(count as u64)
+        };
+        let working = given.remove("working").and_then(count);
+        let waiting = given.remove("waiting").and_then(count);
+        let asked = given.remove("asking");
+        let asking = waiting.map(|_| {
+            asked
+                .as_ref()
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(asking_session)
+                .take(10)
+                .collect()
         });
         let at_work = given.remove("atWork").and_then(|rows| {
             working?;
@@ -374,8 +392,6 @@ impl<'de> Deserialize<'de> for ComputerFacts {
                         | "releaseManifest"
                         | "releaseTarget"
                         | "runningManifest"
-                        | "waiting"
-                        | "asking"
                         | "oldApp"
                         | "addresses"
                         | "release"
@@ -390,6 +406,8 @@ impl<'de> Deserialize<'de> for ComputerFacts {
             kuvo,
             working,
             at_work,
+            waiting,
+            asking,
             agents,
             extra,
         })
@@ -409,6 +427,15 @@ fn active_session(value: &Value) -> Option<AtWork> {
         id: id.into(),
         title,
     })
+}
+
+fn asking_session(value: &Value) -> Option<Asking> {
+    let AtWork { id, title } = active_session(value)?;
+    let asks = value
+        .get("asks")
+        .and_then(Value::as_str)
+        .and_then(work_title);
+    Some(Asking { id, title, asks })
 }
 
 pub(crate) fn work_title(text: &str) -> Option<String> {

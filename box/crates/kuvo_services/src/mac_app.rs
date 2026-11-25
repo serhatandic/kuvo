@@ -184,20 +184,26 @@ pub fn app_check(run: &Path, selected: &str) -> Option<String> {
 
 /// The old Mac app's advertised version was kept in its link configuration.
 /// A launch version takes precedence, as it did before the own-home move.
+fn legacy_config(home: &Path) -> Option<Value> {
+    let saved = read_value(&home.join("run/mac-link.json"))?;
+    saved["phones"].as_bool()?;
+    let relay = Url::parse(saved["relay"].as_str()?).ok()?;
+    (matches!(relay.scheme(), "ws" | "wss") && saved["own"] != true).then_some(saved)
+}
+
 pub fn legacy_version(home: &Path) -> Option<String> {
     if let Some(version) = crate::config::box_env(home, "KUVO_APP_VERSION") {
         return Some(version);
     }
-    let saved = read_value(&home.join("run/mac-link.json"))?;
-    saved["phones"].as_bool()?;
-    let relay = Url::parse(saved["relay"].as_str()?).ok()?;
-    if !matches!(relay.scheme(), "ws" | "wss") || saved["own"] == true {
-        return None;
-    }
-    saved["app"]
+    legacy_config(home)?["app"]
         .as_str()
         .filter(|app| !app.is_empty())
         .map(str::to_owned)
+}
+
+/// The name supplied by the earlier Mac app, if it managed this Mac's link settings.
+pub fn legacy_name(home: &Path) -> Option<String> {
+    legacy_config(home)?["name"].as_str().map(str::to_owned)
 }
 
 enum Registration {
