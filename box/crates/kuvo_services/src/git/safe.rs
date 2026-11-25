@@ -251,23 +251,10 @@ pub async fn run(
     let mut environment = crate::vault::command_environment();
     if intent == Intent::Yours
         && cfg!(target_os = "macos")
+        && environment.contains_key(std::ffi::OsStr::new("HOME"))
         && std::env::var_os("KUVO_TEST_LOGIN_ENV").as_deref() != Some(std::ffi::OsStr::new("off"))
     {
-        let original = environment.clone();
-        let login = tokio::task::spawn_blocking(move || {
-            let account = kuvo_os::platform::Account::current().ok()?;
-            kuvo_os::platform::login_environment(
-                &account,
-                &original,
-                Duration::from_secs(3),
-                Duration::from_secs(3),
-            )
-            .ok()
-            .flatten()
-        })
-        .await
-        .ok()
-        .flatten();
+        let login = login_environment(&environment).await;
         for (key, value) in login.into_iter().flatten() {
             let name = key.to_string_lossy();
             if !["DYLD_", "BUN_", "KUVO_", "OPENCODE_"]
@@ -325,6 +312,79 @@ pub async fn run(
             stderr: err,
         })
     }
+}
+
+/// Share a login read across requested Git commands. The initial read is waited for;
+/// subsequent refreshes have one second to answer, falling back to the last good read.
+async fn login_environment(
+    original: &kuvo_os::platform::Environment,
+) -> Option<kuvo_os::platform::Environment> {
+    use kuvo_os::platform::Environment;
+    use tokio::sync::{Mutex, watch};
+
+    struct Read {
+        at: Instant,
+        environment: Option<Environment>,
+    }
+    struct Cache {
+        last: Option<Read>,
+        reading: Option<watch::Receiver<bool>>,
+    }
+    static CACHE: Mutex<Cache> = Mutex::const_new(Cache {
+        last: None,
+        reading: None,
+    });
+    let mut cache = CACHE.lock().await;
+    if cache.reading.is_none()
+        && cache
+            .last
+            .as_ref()
+            .is_none_or(|read| read.at.elapsed() > Duration::from_secs(60))
+    {
+        let (done, reading) = watch::channel(false);
+        cache.reading = Some(reading);
+        let original = original.clone();
+        let at = Instant::now();
+        tokio::spawn(async move {
+            let environment = tokio::task::spawn_blocking(move || {
+                let account = kuvo_os::platform::Account::current().ok()?;
+                kuvo_os::platform::login_environment(
+                    &account,
+                    &original,
+                    Duration::from_secs(6),
+                    Duration::from_secs(2),
+                )
+                .ok()
+                .flatten()
+            })
+            .await
+            .ok()
+            .flatten();
+            let mut cache = CACHE.lock().await;
+            let environment =
+                environment.or_else(|| cache.last.take().and_then(|read| read.environment));
+            cache.last = Some(Read { at, environment });
+            cache.reading = None;
+            let _ = done.send(true);
+        });
+    }
+    let first = cache.last.is_none();
+    let reading = cache.reading.clone();
+    drop(cache);
+    if let Some(mut reading) = reading {
+        if first {
+            let _ = reading.wait_for(|done| *done).await;
+        } else {
+            let _ =
+                tokio::time::timeout(Duration::from_secs(1), reading.wait_for(|done| *done)).await;
+        }
+    }
+    CACHE
+        .lock()
+        .await
+        .last
+        .as_ref()
+        .and_then(|read| read.environment.clone())
 }
 
 pub(crate) fn own_args_in(

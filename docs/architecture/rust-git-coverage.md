@@ -77,8 +77,8 @@ environment (yours, with `GIT_TERMINAL_PROMPT=0`). The Changes routes now run th
 | --- | --- |
 | git-programs 1: the repository's programs are really there | `hostile::the_repositorys_programs_are_really_there…` |
 | git-programs 2–7: Changes, the branch menu, switching branches, a review, Undo, backups start none | Layer half: `hostile::what_the_box_runs_by_itself…`, `…what_you_ask_for…` (the commands they run); the Changes and branches routes are served; equivalent hostile route scenarios and review/Undo/backups **left** |
-| git-programs 8: what you stage and commit runs its filters and hooks | `hostile::what_you_ask_for…`; the routes are served; equivalent hook/filter scenario **left** |
-| git-programs 9: git-lfs as installed stays on, one of the same name elsewhere doesn't | `hostile::a_file_git_lfs_keeps…`; Changes showing it unchanged **proof left** |
+| git-programs 8: what you stage and commit runs its filters and hooks | `hostile::what_you_ask_for…`; Requested Programs conformance: configured clean filter changes the staged blob, pre-commit hook runs |
+| git-programs 9: git-lfs as installed stays on, one of the same name elsewhere doesn't | `hostile::a_file_git_lfs_keeps…`; LFS conformance: installed filter makes a touched file appear unchanged in Changes and its file list (Unix); the different-path refusal remains a layer proof |
 | git-programs 10: a program name settings can't switch off isn't read | `hostile::one_whose_program_has_a_name…`, table (`unswitchable`, `hookeq`) |
 | git-programs 11: git's own watcher on a Mac | `hostile::gits_own_watcher…` |
 | git-common 1–3: commondir elsewhere, a bare repository made around a broken `.git`, own/none/worktree as ever | `common::…` (the layer's refusals); Changes' Commit served; equivalent route proof **left** |
@@ -102,23 +102,29 @@ The `git` conformance area has these new cases (short names used in the table):
 - **Discard:** discard checks the listed stamp, keeps blocking entries and unstages a first commit (literal path, missing stamp and invalid path, parent file, binary/large diff, first commit).
 - **GitLab:** a failed push keeps the commit, and GitLab's pull-request page names the branch and base (local push URL, draft and prompt, title/body, no live network or hosting account).
 - **Directory queries:** both Windows separators and the same parent-traversal guard for the three folder query routes. The new case failed on the old TS and the native Windows Rust box, before the shared path guard was corrected in both.
+- **Folder commit:** with nothing staged, a subfolder's diff and commit include its changed and new files only, leaving an outside edit uncommitted. List also asserts the subfolder's grouped rows.
+- **Bare menu:** a folder with a `.git` pointer to a bare repository lists its branch and refuses switching without a checkout.
+- **Hook exit:** the commit succeeds while a post-commit hook's background child still holds the pipes open (Unix).
+- **Requested Programs:** staging uses the configured clean filter and committing runs the configured pre-commit hook.
+- **LFS:** the installed git-lfs stand-in stores a different blob; after its file's timestamp changes, both Changes routes still say nothing changed (Unix).
+- **Login cache:** a Mac login shell's environment reaches commit hooks, private variables do not, and a changed startup file within the minute does not trigger another login read. This scenario fails on the old Rust box.
 
 ### Proof
 
 | System | TypeScript | Rust |
 | --- | --- | --- |
-| macOS | 10/10 | 10/10 |
-| Linux (Lokum, one container, 1 CPU/1 GiB; Git 2.39.5) | — | 10/10 |
-| Ubuntu 24.04 under WSL2 (Git 2.43.0) | — | 10/10 |
-| Native Windows (Git 2.56.1) | — | 10/10 |
+| macOS | 16/16 | 16/16 |
+| Linux (Lokum, one container, 1 CPU/1 GiB; Git 2.39.5) | — | 15 passed, 1 Mac-only skip |
+| Ubuntu 24.04 under WSL2 (Git 2.43.0) | — | 15 passed, 1 Mac-only skip |
+| Native Windows (Git 2.56.1) | — | 13 passed, 3 skips (Mac login, Unix hook child PID and git-lfs stand-in) |
 
 The Mac's shared workspace check, TypeScript check, and Rust `engine-sessions` conformance (81/81) also pass. The native Windows run exposed the Windows directory query bug in both boxes' path guard; the new regression fails on the old TypeScript build and the old Windows Rust build.
 
 Differential: six requests on copies of one seeded home (PUT and GET projects, file list, the diff of a deleted tracked file, branches, and refused pull-request draft). All six answers, the project record, the repository files (including its git records) and the engine transcript match. The full-home comparison still exits nonzero: 67 unrelated startup/identity/usage/work-queue differences, not hidden by the comparison. That's not a whole-home equivalence claim.
 
-Size: 60,542 net added non-test Rust characters, without indentation, versus approximately 71,601 of the corresponding TypeScript route/functions (including project edit, pull-link and pull-request prompt; excluding the uncalled read/migration routes), 0.85×. No client or generated file is changed.
+Size: 62,669 net added non-test Rust characters, without indentation (2,127 more for the login cache and Trash deadline), versus approximately 71,601 of the corresponding TypeScript route/functions (including project edit, pull-link and pull-request prompt; excluding the uncalled read/migration routes), 0.88×. No client or generated file is changed.
 
-Related behaviour not yet matched/proven in full: Mac login refresh is per requested action rather than the TS minute cache; fallback Trash uses a private random directory instead of a timestamped directory, and the native Trash command is not yet time-limited. The shared conformance uses a local bare remote (no real hosting account); the signed-in GitHub command and its persisted session link still need their equivalent stand-in scenario. The table below records other scenario-level proof gaps.
+Mac login refresh now shares the TS one-minute cache, waiting for the first read and for at most one second during later refreshes, keeping the last successful environment if a read fails. The native Trash command now has the TS 30-second deadline; a Rust test of a real child process proves it is stopped at the deadline, not a shared native Trash route scenario. Related behaviour not yet matched/proven in full: fallback Trash uses a private random directory instead of a timestamped directory; native Trash timing through the real route is not proven. The shared conformance uses a local bare remote (no real hosting account); the signed-in GitHub command and its persisted session link still need their equivalent stand-in scenario. The table below records other scenario-level proof gaps.
 
 ### TypeScript case map
 
@@ -133,7 +139,7 @@ A case marked partly or proof left has an implementation but does not have the f
 | projects 1–2 | Edit (including retired terminal setting) |
 | projects 3–7 | Remove Project (`DELETE kuvo/projects`), with the engine (row 5.1); left |
 | projects 8 | Not ported: no client (`projects/events`) |
-| git-files 1 | List, grouped rows, partial stage and line counts; subfolder filtering proof left |
+| git-files 1 | List, grouped rows, partial stage, line counts and subfolder filtering |
 | git-files 2 | Conflict row proof left |
 | git-files 3 | List covers move; spaced names, staged new discard and nested repository proof left |
 | git-files 4 | List, Discard: one-file, new-file, binary and large diff; old path and binary false positive proof left |
@@ -156,12 +162,12 @@ A case marked partly or proof left has an implementation but does not have the f
 | changes 6–10 | Not ported: no client (`changes/count`) |
 | changes 11–14 | List, Discard |
 | changes 15 | Not ported: no client (`git/show`) |
-| changes 16 | Discard, first commit including new files; folder-only and commit message diff proof left (`commit-diff` not ported: no client) |
-| changes 17 | Requested commands use filtered environment and refresh the Mac login environment; hook scenario proof left (refresh per action rather than TS's one-minute cache) |
+| changes 16 | Discard, first commit including new files; Folder commit proves folder-only diff and commit. Commit-message diff skipped (`commit-diff` not ported: no client) |
+| changes 17 | Login cache proves filtered environment and minute-cache reuse in a Mac commit hook; later refresh timeout and failed refresh are implemented but not scenario-proven |
 | changes 18 | Blocking directory discard proof left |
 | changes 19, 21, 23 | Discard: missing stamp, invalid path, unborn HEAD |
 | changes 20, 22 | Move and nested repository discard proof left |
-| changes 24 | Requested git settles on child exit even if a hook holds pipes open; proof left |
+| changes 24 | Hook exit conformance (Unix); native Windows PID-cleanup scenario skipped |
 | changes 25 | Branch scope since merge base; proof left |
 | changes 26–27 | Branches, GitLab: local push, failed push preserves commit; retry after failed commit+push proof left |
 | changes 28 | Branches: clean/dirty merge and conflict rollback; nothing new and preexisting merge proof left |
@@ -173,12 +179,12 @@ A case marked partly or proof left has an implementation but does not have the f
 | changes 36–37 | Branches: listing and create/switch; multiple dated branches, tag name, carried edits, hooks and failure proof left |
 | changes 38 | Not ported: no client (`git/status`) |
 | changes 39 | Files/folders: see [coverage](rust-files-coverage.md) |
-| changes 40 | Bare repository menu implemented, proof left; status not ported: no client |
+| changes 40 | Bare menu conformance, including refused switch; status not ported: no client |
 | git-words 1, 4–7 | Not ported: no client (`commit-diff`, `settings/move`) |
 | git-words 2 | GitLab: prompt uses the computer's instructions |
 | git-words 3 | No-origin refusal implemented; proof left |
 | git-settings 1–5 | Settings migration: not ported here, no client for `settings/move` |
-| git-programs 1–11, git-common 1–3, git-hostile 1–4 | Layer proof above; route-level equivalents of the hostile cases remain |
+| git-programs 1–11, git-common 1–3, git-hostile 1–4 | Layer proof above; Requested Programs and LFS route scenarios; remaining hostile route-level equivalents left |
 | worktrees 1–32, worktrees-where 1–12 | Worktree lifecycle/Settings routes outside this desktop slice (some appear in the generic worktrees route fixture); files/folders cases in the files coverage map |
 | branch-backups 1–14 | Not ported: no client for `git/backups` and restore |
 
