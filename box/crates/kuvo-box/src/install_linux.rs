@@ -309,7 +309,7 @@ fn running_refusal(home: &Home) -> io::Result<Option<u8>> {
 
 fn start_keeper(home: &Home, profile: &Path) -> io::Result<()> {
     let started = Command::new("/bin/sh")
-        .arg(home.bin().join("kuvo-start"))
+        .arg(kuvo_keeper::shell_keeper(&home.bin()))
         .arg("box")
         .env("HOME", profile)
         .current_dir(home.root())

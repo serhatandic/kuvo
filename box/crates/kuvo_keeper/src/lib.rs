@@ -17,6 +17,8 @@ mod retirement;
 pub mod staging;
 pub mod update_status;
 mod worker;
+#[cfg(target_os = "linux")]
+mod wsl_task;
 
 #[cfg(windows)]
 pub mod windows;
@@ -48,6 +50,17 @@ use worker::Worker;
 /// Native installations use a plain file. It can be replaced even while a reader
 /// opened with FILE_SHARE_DELETE still holds the old contents.
 pub const SELECTOR: &str = "active-release";
+
+/// Rust packs keep a second signed keeper that released Macs never replace.
+#[cfg(unix)]
+pub fn shell_keeper(bin: &std::path::Path) -> PathBuf {
+    let saved = bin.join(".kuvo-start-keeper");
+    if bin.join("kuvo-box").is_file() && saved.is_file() {
+        saved
+    } else {
+        bin.join("kuvo-start")
+    }
+}
 
 #[derive(Debug)]
 pub enum Command {

@@ -36,6 +36,8 @@ use tokio::{
 };
 
 const FEED: &str = "https://github.com/serhatandic/kuvo-code/releases/latest/download/boxes.json";
+/// Each release's own files, by `v<version>/`, for repairing the one a computer runs.
+pub(crate) const RELEASES: &str = "https://github.com/serhatandic/kuvo-code/releases/download";
 const CHECK_EVERY_MS: i64 = 6 * 3_600_000;
 const CHECK_POLL: Duration = Duration::from_secs(10 * 60);
 const CHECK_KEPT: i64 = 24 * 60 * 60_000;

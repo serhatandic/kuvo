@@ -170,8 +170,18 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
     };
     let supervised =
         cfg!(windows) && (word(0), word(1), args.len()) == (Some("serve"), Some("--supervised"), 2);
+    // An older keeper says no format version.
+    let repair = match (word(0), word(1), word(2), args.len()) {
+        (Some("repair"), _, _, 1) | (Some("repair"), Some("--format-version"), Some("0" | "1"), 3) => {
+            true
+        }
+        (Some("repair"), ..) => {
+            return Err("Use repair with --format-version 1.".into());
+        }
+        _ => false,
+    };
     let released_settings = match (word(0), word(1), args.len()) {
-        (Some("box"), Some("read" | "adopt" | "change"), 2) => word(1),
+        (Some("box"), Some("read" | "adopt" | "change" | "personalities"), 2) => word(1),
         (Some("box"), Some("key"), 3) => word(1),
         _ => None,
     };
@@ -187,7 +197,8 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             || keeper.is_some()
             || probe.is_some()
             || supervised
-            || released_settings.is_some() =>
+            || released_settings.is_some()
+            || repair =>
         {
             None
         }
@@ -266,6 +277,20 @@ fn run() -> Result<ExitCode, Box<dyn std::error::Error>> {
             eprintln!("{note}");
         }
         return Ok(ExitCode::from(outcome.status));
+    }
+    if repair {
+        // Only a scratch home takes a test's key and feed.
+        let scratch = kuvo_keeper::prepare_command::is_scratch(&home).unwrap_or(false);
+        let test = |name| std::env::var(name).ok().filter(|_| scratch);
+        let key = test("KUVO_TEST_RELEASE_KEY");
+        let key = key.as_deref().unwrap_or(kuvo_keeper::manifest::UPDATE_KEY);
+        let feed = test("KUVO_TEST_RELEASE_FEED").unwrap_or_else(|| updates::RELEASES.into());
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(kuvo_keeper::staging::repair_with_fetch(&home, key, &feed))?;
+        println!("{result}");
+        return Ok(ExitCode::SUCCESS);
     }
     if let Some(verb) = released_settings {
         return released_settings::run(&home, verb, word(2));

@@ -10,6 +10,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Changes and project edits accept Windows folder paths.
 
 - Released beta.1 Macs' machine settings commands and peer lists work with Rust computers.
+- A Rust computer puts back its own files when an older Mac copies its files over them, from the signed release it runs. Released beta.1 Macs can still change its settings and personalities over SSH.
 
 - Background commands that Codex or Claude Code leave running stay visible and stoppable through a Rust computer update. The installer also refuses release receipts it cannot read.
 

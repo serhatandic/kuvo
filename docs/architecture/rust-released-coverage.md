@@ -45,7 +45,30 @@ also compared against the same tagged oracle by R1–R3.
 | `peers.test.js` 878 | R2: an address-less Mac's roster mail is taken. Explicit no-answer check for an address-less signed enroller remains 7.3. |
 | `peers.test.js` 950, 980 | R2: a peer cannot supply an unsigned roster; the unsigned list isn't a signed document. Signed legacy authority and replacement/re-enrollment remain 7.3 / 9.3. |
 | Tagged `compat.test.mjs` | R1, R3, R4. Current-beta durable case owned by 5.1. |
-| `box read/adopt/change/key/route` | R3 exercises the binary. The released app's actual engine-runtime invocation of the legacy JS delegate and installed pack proof remain the repair/keeper slice. |
+| `box read/adopt/change/key/route/personalities` | R3 exercises the binary; R6 runs beta.1's own MachineBox shell lines through the engine runtime and the pack's delegate; R7 the personalities save. |
+
+## Part B: overwritten tools and the released command path
+
+| Case | Proof |
+| --- | --- |
+| R5 | `compat-repair`: an earlier Mac's launcher, keeper and browser files are put back from the selected signed pack (not during `run/mac-installing`); a sound visit writes nothing; the stale `bin/.own` goes; `run/repair.json` records it. A damaged saved pack is removed and only the running release's signed pack is fetched again; a bad download changes nothing. The live saved keeper (`bin/.kuvo-start-keeper`) repairs an overwritten `kuvo-start` and `kuvo-launch`, moves a day-old `run/attached` to `run/older-mac`, registers its own `@reboot` line on Linux, repairs a later visit, and keeps the same resident answering. Both boxes give the same busy, repaired and sound transcript for the same overwrite. The 0.7 leave-running guard (its tagged shell) holds exactly while `run/link.seen` is fresh. |
+| R6 | `compat-shim`: the pack builder emits `bin/kuvo-link.js`, a delegate that only forwards `box adopt/read/change/key/route/personalities` to `bin/kuvo-box` (stdin, stdout and exit code through). beta.1's tagged `RemoteEngineInstaller.script` and `MachineBox.lastLine` lines find the Rust-installed pinned engine (beta.1's own 2.0.32 is absent, so its newest-engine fallback) and run its SSH transcript, every verb through the delegate. The pack test (`release-catalogs`) checks the delegate and the saved keeper in all five target packs. |
+| R7 | `compat-shim`: `box personalities` merges beta.1's library at a main computer, answered as before (`personalities`, `removed`, `operation`, `save`); a member refuses with the main-computer message. The Rust command hands it to the resident's internal `kuvo/personalities/exchange`. |
+
+**Not served by design** (the lead, 2026-11-25): beta.1's `kuvo-link.js setup` (its
+phone link sync; the phone app is dropped), `kuvo-link.js leave <key>` (removing a machine
+from a beta.1 Mac before it updates) and `box bot-keys-refresh` (the TypeScript box refused it
+too). The delegate refuses each with exit 2: "Update Kuvo Code on this Mac to use this computer."
+
+**The delegate goes with the TypeScript box**, 4 weeks after the last switch, with the
+`box read/change/key` markers.
+
+Rust differs from the TypeScript structure here on purpose. Repair verifies the signed
+envelope and the pack digest, then hashes each installed file against the packed manifest and
+extracts only the wrong files into a draft beside the release, renaming each into place; the
+TypeScript keeper copied back `bin/.own` by modification time. A beta.1 home opened by Rust
+leads its own setup, so `box personalities` saves through the setup rather than the legacy
+file, and needs the resident (the keeper keeps it running).
 
 Remaining cases and owners are also indexed in the move, moves, keeper, peers
 and setup coverage maps. In particular the repair of overwritten tools,

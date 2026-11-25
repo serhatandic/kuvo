@@ -197,7 +197,7 @@ fn upgrade(args: &[OsString]) -> Result<bool, Box<dyn std::error::Error>> {
     }
     drop(launch);
     let launched = Command::new("/bin/sh")
-        .arg(home.bin().join("kuvo-start"))
+        .arg(kuvo_keeper::shell_keeper(&home.bin()))
         .arg("box")
         .env("HOME", &profile)
         .current_dir(home.root())
