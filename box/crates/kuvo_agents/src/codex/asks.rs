@@ -331,8 +331,17 @@ async fn elicitation(
             json!({ "action": if decision == Decision::Reject { "decline" } else { "accept" }, "content": null }),
         );
     }
-    // An MCP server asks you something (a form), or to open a page (a sign-in).
     let named = params["serverName"].as_str().unwrap_or("A tool");
+    elicitation_form(sink.as_ref(), id, named, &params).await
+}
+
+/// An MCP server asks you something (a form), or to open a page (a sign-in): its answer.
+pub(crate) async fn elicitation_form(
+    sink: &dyn TurnSink,
+    id: String,
+    named: &str,
+    params: &Value,
+) -> std::io::Result<Value> {
     let title = format!("{named} asks");
     let metadata = json!({ "kind": "mcp-elicitation", "server": named })
         .as_object()

@@ -285,7 +285,7 @@ Carried to the rows that bring them:
   shared, for every agent (`SessionRuns::signed_out`).
 - 59–60 and 127–139: see the sessions row above. The handing cases are ported
   (4.2); turns an agent begins on its own go with the agents that begin them
-  (Claude Code's with 4.6, the ACP agents' with 4.3), and kept files and the
+  (Claude Code's with 4.6, the ACP agents' in 4.3), and kept files and the
   handover with 4.6.
 - Moves and wake-ups into a coding agent's conversation: 4.6, with carry and
   handover.
@@ -438,7 +438,7 @@ Case numbers use the order in the cited source file.
 
 | TypeScript source | Port and remaining owner |
 |---|---|
-| [hold.test.ts](../../box/test/agents/hold.test.ts), 19 | 1 → R1, diagnostic events checked through H7. 2 → H1. 3 → H7. 4–5 → H2. 6–7 → H4. 8 → managed program install cleanup (4.3). 9 → H4. 10 → H2. 11 → H8. 12 → H9. 13 → H5. 14 → R2. 15 → H6 and H11. 16 → H1. 17 → H3. 18 → socket path fallback integration (4.1b). 19 → startup cancellation and fallback (4.1b). |
+| [hold.test.ts](../../box/test/agents/hold.test.ts), 19 | 1 → R1, diagnostic events checked through H7. 2 → H1. 3 → H7. 4–5 → H2. 6–7 → H4. 8 → `acp::antigravity::forget_releases` (unit test, 4.3): an earlier Antigravity release stays until the kept one is whole and no holder may use it. 9 → H4. 10 → H2. 11 → H8. 12 → H9. 13 → H5. 14 → R2. 15 → H6 and H11. 16 → H1. 17 → H3. 18 → socket path fallback integration (4.1b). 19 → startup cancellation and fallback (4.1b). |
 | [held-resume.test.ts](../../box/test/agents/held-resume.test.ts), 3 | 1–3 → `kuvo_agents/tests/updates.rs`, with `agent-turn-fixture` 4 through the binary. R1 covers the underlying process and replay. |
 | [hold-claude.test.ts](../../box/test/agents/hold-claude.test.ts), 1 | H3 covers holder suppression, with real CLI reconnection and request cancellation in 4.4. |
 | [bridge-update.test.ts](../../box/test/agents/bridge-update.test.ts), 2 and [bridge-update-cursor.test.ts](../../box/test/agents/bridge-update-cursor.test.ts), 2 | Holder continuity → R1. Adapter readiness, same conversation and next-turn reuse → 4.1b, 4.2, 4.4 and 4.5. |
@@ -452,11 +452,11 @@ Case numbers use the order in the cited source file.
 |---|---|
 | [accounts-check](../../box/test/agents/accounts-check.test.ts), 20, [account-refresh](../../box/test/agents/account-refresh.test.ts), 8, [added-account-route](../../box/test/agents/added-account-route.test.ts), 3, [own-homes](../../box/test/agents/own-homes.test.ts), 4, and [signin-mode](../../box/test/agents/signin-mode.test.ts), 3 | 4.1b owns account index, home selection, checks, catalog cache and sign-in state. Vendor sign-in commands and authentication messages → 4.2–4.5. Accounts-check 18 covers Work Queue GitHub authorization in 5.2. |
 | [sign-in.test.js](../../box/bridge-tests/sign-in.test.js), 11 | Agent route cases 2–4, 8 and 10–11 → 4.1b. OpenCode methods and status → 3.2. Setup and remote transport assertions use the resident dispatcher. |
-| [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. The program updater, its drain, its routes, the Accounts rows' versions and update notices are 4.2's (program-updates and update-notices). Grok's and Antigravity's `Agent::program` → 4.3. |
+| [renewal](../../box/test/agents/renewal.test.ts), 14, [sandbox-claude-renewal](../../box/test/sandbox-claude-renewal.test.ts), [program-updates](../../box/test/agents/program-updates.test.ts), 9, [update-notices](../../box/test/agents/update-notices.test.ts), 4, and [claude-mac-update](../../box/test/agents/claude-mac-update.test.ts), 3 | 4.1b owns shared renewal scheduling and roster updates. Provider commands and policies → 4.2–4.5, sandbox → 6.1, full release workflow → 7.2. The program updater, its drain, its routes, the Accounts rows' versions and update notices are 4.2's (program-updates and update-notices). Grok's and Antigravity's `Agent::program` are 4.3's (`Flavour::program`), with no case yet. |
 | [toolrelay](../../box/test/agents/toolrelay.test.ts), 9 | 1 → `kuvo_agents/tests/tool_forwarder.rs`; 2–6 and `relay-live` 1 → `kuvo_agents/tests/tool_relay.rs`, with the relay's parts of four `acp` cases (re-checks and the idle stop). 7 and 8 not ported: no caller since the Swift app was dropped. 9 with 6.1. Tool handlers remain with their service or work area. Compatibility removal and sandbox allowlists → 7.3 and 6.1. |
 | [engine-own-tools](../../box/test/engine-own-tools.test.ts), 4 | 6.4: the browser keeper owns the `kuvo-browser` tools program the engine starts with. |
 | [bridge](../../box/test/agents/bridge.test.ts), 45, and [bridge.test.js](../../box/bridge-tests/bridge.test.js) | Resident route, roster and agent runtime checks → 4.1b. Tool transport and sidecar launch → 4.1c. Bridge-only HTTP hop and split process lifecycle retire with the TypeScript bridge in 9.1. |
-| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 to `inbox.rs`, 12 to agents-codex (4.2). 59 and 133–136 to `inbox.rs` (4.2): a message taken as its turn ends goes once; Stop, with or without resume, and Send Now while one is being handed; a handed one cancelled after Send Now starts nothing later. 60 (a message its agent never got to goes with the next) is the handover's seen cursor → 4.6; Codex never reports one. Turns an agent begins on its own come from Claude Code and the ACP agents only (the reference's `onOwnTurn`): Claude Code's (127–129, 132, 137, 139's own half and 136's second half) → 4.6, and the ACP agents' → 4.3; those waiting on kept files (130, 131, 138) → 4.6. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
+| [sessions](../../box/test/agents/sessions.test.ts), 158 | 22 ported: 3–7, 10, 11, 13–18, 48, 54–58 and 61 to `kuvo_agents/tests/inbox.rs`, 8 to `kuvo_agents/tests/updates.rs`. 9 to `inbox.rs`, 12 to agents-codex (4.2). 59 and 133–136 to `inbox.rs` (4.2): a message taken as its turn ends goes once; Stop, with or without resume, and Send Now while one is being handed; a handed one cancelled after Send Now starts nothing later. 60 (a message its agent never got to goes with the next) is the handover's seen cursor → 4.6; Codex never reports one. Turns an agent begins on its own come from Claude Code and the ACP agents only (the reference's `onOwnTurn`): Claude Code's (127–129, 132, 137, 139's own half and 136's second half) → 4.6, and the ACP agents' are 4.3's (agents-grok); those waiting on kept files (130, 131, 138) → 4.6. Vendor wire, transcript specifics → 4.2–4.5. Carry, handover, review and subagent projection → 4.6. |
 | [codex](../../box/test/agents/codex.test.ts), 121, [acp](../../box/test/agents/acp.test.ts), 73, [claude](../../box/test/agents/claude.test.ts), 136, and [cursor](../../box/test/agents/cursor.test.ts), 31 | 4.2–4.5 own vendor protocols and per-agent tests. The adapter-independent JSON-RPC seam and runtime package install belong to 4.1c. |
 | [agent-tools.test.js](../../box/bridge-tests/agent-tools.test.js), [artifacts](../../box/test/artifacts.test.ts), [subagents](../../box/test/agents/subagents.test.ts), [carry-agents](../../box/test/agents/carry-agents.test.ts), [to-agents](../../box/bridge-tests/to-agents.test.js) and [agents-handover](../../box/bridge-tests/agents-handover.test.js) | Agent registration and tools dispatch share 4.1b/c. Tool handler semantics span 2.4 ownership and messages, 4.6 subagents and transfers, 5.1 starts and bot work, 5.5 artifacts, and 6.1 permissions. |
 | Agent account imports in [usage tests](../../box/test/usage), and [settings-agents-live](../../box/bridge-tests/settings-agents-live.test.js) | 5.4 owns usage and limits. 6.1 owns the engine Agents settings file and the live engine settings page. Both consume 4.1b account state. |
@@ -685,7 +685,7 @@ remaining differences.
 
 | Difference | Owner or reason |
 |---|---|
-| Picker generation values and absent generations for accounts with no model catalog | The values are per-instance IDs. 4.1b owns reporting generations for signed-out accounts. Other vendor accounts are registered by 4.2, 4.3 and 4.5. |
+| Picker generation values and absent generations for accounts with no model catalog | The values are per-instance IDs. 4.1b owns reporting generations for signed-out accounts. Codex's, Grok's and Antigravity's accounts are registered (4.2, 4.3); 4.5 registers its own. |
 | `agents/runtime/claude` | The TypeScript fixture installs its SDK symlink here. Rust speaks stream-json directly. |
 | `agents/limits.json`, `agents/usage/`, `run/usage-attribution.json` | 5.4 owns limits, usage collection and Insights. |
 | `agents/sessions/`, `run/agents.json`, `run/glance-source.json`, `run/lists/sessions.json` sequence | 4.1b owns resident session storage and its shared projections. |
@@ -748,6 +748,135 @@ Besides the files in the table above, these differences remain:
 | `run/agents/tmp/claude/catalog-settings.json` | Rust's model probe writes its settings there. TS passes them to the SDK. |
 | `run/work/background.json` `engine` place | The engine's place is written by the engine watcher (5.1). Rust writes the coding agents' `bridge` place. |
 | `run/work-queue/model.json`, `run/work/told.json` | 5.2 and 5.1. |
+
+## Grok and Antigravity over ACP (4.3)
+
+`kuvo_agents::acp` is one ACP client for every agent that speaks it, each a flavour of its own
+(`acp/grok.rs`, `acp/antigravity.rs`; OpenCode is the third in 4.7). The reference ran one agent
+process per conversation. Here a process carries several conversations, each one of its ACP
+sessions, under one holder (`kind: grok|antigravity`, `turns` and `sessions` by ACP session).
+
+- **Sharing.** Conversations whose launch matches share a process: the same mode, sign-in and
+  compaction threshold, and for Antigravity the same program (`agy` or the earlier agent). The
+  key is read before each turn without starting anything (`Flavour::launch_key`). A process
+  that's outdated (a new program, a stop it can't go on from, an answer that never came) takes no
+  new sessions and stops once nothing uses it. One that nothing has used for 15 minutes stops.
+- **Opening sessions.** What a process says before `session/new` answers is kept for that session
+  (at most 1024 updates) and handed to it in order. What a load replays is dropped. A process
+  that ends fails each turn on it with its own words. A turn whose access ran out partway, after
+  the first minute, carries on in a new process.
+- **Wire.** It speaks over the shared `Rpc` (JSON-RPC 2 framing), not the `agent-client-protocol`
+  crate. That crate's connection can't take a holder's replayed lines or the IDs an earlier
+  resident sent. ACP's shapes are read into Kuvo's own types at the edge (`acp/wire.rs`).
+  `Rpc::send` gives a request's ID before its answer, for the holder's turn note.
+- **Light (4.8).** Listing accounts and models never starts Grok or `agy`. Grok's sign-in comes
+  from `GROK_HOME/auth.json` or `XAI_API_KEY`. Its catalog is the one a turn's `session/new` last
+  listed, kept per account under `run/agents/grok/catalogs`. Before any turn it offers one
+  provisional "its default model", which picks no model. Antigravity reads its home's
+  `kuvo-sign-in.json` and `kuvo-models.json`. Refresh doesn't start it, and its sign-in check
+  runs only when you sign in.
+- **No plan mode** (user, 11-25). Neither agent is offered one. A conversation saved in plan mode
+  goes on in the normal mode, and its saved value stays on disk, unread. `Mode::read_only` is the
+  box's own, for 4.6's reviews and side questions (Grok's `--permission-mode plan`,
+  Antigravity's `plan`), never a mode anyone picks. The reference's case 21 and the plan halves
+  of 22 and 23 are not ported.
+- **Agent-started turns.** The resident takes one through `SessionContext::own_turns`. It runs at
+  once when nothing runs, or after the turn under way when that turn is on the same agent (the
+  conversation's `own`, before what waits in line), as `TurnKind::AgentStarted`, shown as
+  "Grok carried on by itself." One not taken is turned away: the agent is told to cancel, and
+  what it begins after 20 quiet seconds is offered again.
+- **Work Queue #992.** For an Antigravity account signed in before `agy` (Google's earlier agent
+  and its `acp_token.json` in its home):
+  - With `agy` installed, it's signed in only once `agy` takes that sign-in. Until then its row
+    offers one Sign In, which first asks `agy` to use the earlier sign-in (`Takeover`, no page).
+    Only if `agy` refuses does Google's page come, as for any sign-in.
+  - Without `agy`, it runs on the earlier agent and says "Install agy, then sign in to move it
+    there".
+  - It never says "update".
+  - Starting a sign-in without `agy` fails with its reason and the fix ("Antigravity needs Google's
+    agy CLI on this computer. Install it in Settings › Accounts…"). The agents' sign-in route keeps
+    every agent's reason (`refuse`). The reference's generic "couldn't be started" is in its
+    `kuvo/sign-in/*` routes (6.1a), not ported yet.
+  - agents-antigravity proves these with a stand-in token in a temp home. **Checked in the update
+    rehearsal:** whether the real `agy` takes a real earlier token it didn't write.
+
+### TypeScript scenarios
+
+Numbers follow source order in [acp.test.ts](../../box/test/agents/acp.test.ts), 73 cases.
+
+| Cases | Coverage and remaining owner |
+|---|---|
+| 1–2 | `acp::projection`: pictures, links, sound clips and unknown kinds' words; context and window. Unit tests for the projection; agents-grok's turn case on both boxes. |
+| 3–6 | Reads that end only as the turn does (`Flavour::reads_unsaid`): unit `a_read_kuvo_did…`, agents-antigravity's read through Kuvo. 5 (in the sandbox) → 6.1. 6: Grok's reads stay as it says (its flavour doesn't settle them). |
+| 7–8 | `acp::tools::kuvo_tool`: wrapped Kuvo tools, tool search, server-prefixed names; a call renamed later carries its new name on its next event. Titled names of Kuvo's own tools need its tool list (`KnownTools`), which the tool program's listing brings (6.4). |
+| 9 | A subagent's session shows its row, named by its task (unit). Its own steps → 4.6. |
+| 10–13 | Antigravity's questions (permission asks on `interaction_…` calls), declined words on its step; Grok's `x.ai/ask_user_question` (agents-grok, both boxes) and declined words as its answer; forms (`elicitation/create`) through `codex::elicitation_field`. |
+| 14 | Agent-started turns: agents-grok, both boxes. |
+| 15–20 | Asks: allow-once picked for Once and Always (Always is Kuvo's to keep); reject-once for No, the step declined; Approve All answered for you (agents-grok's ask case, agents-antigravity's yolo case). Carrying on after a refusal of your settings' (never after yours), at most three times a turn. |
+| 21 | Not ported: no plan mode (user, 11-25). |
+| 22–23 | Grok's mode in its command, a change starting another process; Antigravity's yolo or default by `session/set_config_option`, and a conversation to ask first that can't leave yolo doesn't start. Plan halves not ported. |
+| 24–27 | Skills and your subagents as Grok plugins and Antigravity custom agents: not in the Rust box yet (no skills module in `kuvo_agents`) → 4.6 with subagents. |
+| 28 | Stop: agents-grok, both boxes. |
+| 29 | Closed while starting: `Shared::halt` and `shutdown` (the same as Codex's 11–14); no case yet. |
+| 30 | Stop while it waits on you: an ask settled after Stop answers cancelled (`Settled::Asked { cancellable }`); no case yet. |
+| 31–33 | Background tasks: 31 (a reported start wins) and 32 (busy keeps the process) in `thread.rs`; agents-grok shows them as at work. 33 (killed from outside: the conversation woken with what was lost) → 5.1, which owns waking a conversation; Rust only logs it. |
+| 34–36 | Steps, edits with their change, one to-do list, cost as the conversation's total (unit tests; agents-grok's turn case). |
+| 37–44, 46, 65–66 | The box's sandbox → 6.1. |
+| 45, 47–64 | The computer's MCP servers through the relay: the relay's behaviour is 4.1c's (`kuvo_agents/tests/tool_relay.rs`). Here each session is given the relay's addresses and its own key, and drops them as it closes. |
+| 67 | `agy` stopping as it signs in: its reason in a line (`stopped_words`), the traceback to the log. |
+| 68 | Reading and writing through Kuvo with the sandbox off (agents-antigravity's read). |
+| 69–72 | `/compact` exactly as typed with no instructions; Grok's threshold as a share of its window (`GROK_AUTO_COMPACT_THRESHOLD_PERCENT`); its own summaries as one row. In `thread.rs` and the projection; no conformance case yet. |
+| 73 | Antigravity can't be asked to summarize (`compacts()` is Grok's only). |
+
+[antigravity-agy.test.ts](../../box/test/agents/antigravity-agy.test.ts): signing in with Google's
+code and the models listed then (agents-antigravity, both boxes); not installed (its reason
+kept: Rust only, the reference's route says only "The sign-in couldn't continue"); an account
+from before `agy` (#992 wording, Rust only, the reference still says "update"). A wrong code, someone else's models, sign-out, the version and Update use the
+same code (`Antigravity::{verify_sign_in, saved_models, forget, program}`) and have no case yet.
+
+Not ported yet: Antigravity's transcript follower for its subagents (its rows and sessions → 4.6).
+Its other half, a prompt the transcript says is answered though ACP never said, is
+`Flavour::record_answer`: the actor looks every second and ends the turn on two matching looks.
+
+Size is counted in non-whitespace characters, without tests.
+
+- `acp` and its modules are 1.37× `acp.ts`, `grok.ts` and `antigravity.ts`.
+- They are 1.30× once the base also counts what the reference keeps elsewhere and `acp` does
+  itself:
+  - from `turn.ts`: `startStep`, `ensureStep`, `endStep`, `toolStart`, `toolRename`,
+    `toolCalled`, `stopTools`, `hasTool`, `toolInput` and `toolStep` (the projection's steps and
+    merged calls);
+  - from `agent.ts`: `signOutWith`, `ContextWindows` and `model`;
+  - from `kuvotools.ts`: `isKuvoTool` and `kuvoToolName` (`KnownTools`);
+  - from `shared/agent-credentials.ts`: `grokCredential` and `grokHome` (`grok_secret`, which
+    usage reads too).
+- Forms are Codex's (`codex::elicitation_form`), not a copy.
+- What it does beyond the reference: several conversations on one process, updates kept until
+  `session/new` answers, and Grok's catalog for listing without starting it.
+
+### Verification
+
+| Platform | agents-grok, Rust | agents-grok, TypeScript | agents-antigravity, Rust | agents-antigravity, TypeScript |
+|---|---:|---:|---:|---:|
+| macOS | 8/8 | 6/6, 2 skipped (Rust-only) | 10/10 | 6/6, 4 skipped (#992, Rust-only) |
+| Linux x86-64, lokum (musl) | 8/8 | — | 10/10 | — |
+| WSL2, Ubuntu 24.04 (musl) | 8/8 | — | 10/10 | — |
+| Native Windows x64 | 8/8 | — | 10/10 | — |
+
+On native Windows the stand-in `agy` is `agy.CMD`. Antigravity's sign-in starts it as the
+conversations' holder does (`Spawn::executable`). It first failed two sign-in cases there, which
+started it by its bare path.
+
+Live runs:
+
+- **Pending: live Antigravity turn (Gemini 4 Hydrogen).** It waits for the user's go-ahead, and
+  uses a sign-in copied read-only while its token is fresh.
+- **Pending: live Grok turn on its cheapest model.** Neither the Mac nor lokum has a sign-in to copy
+  (no `auth.json`, no `XAI_API_KEY`).
+
+Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on the rerun:
+agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
+sentence keeps its words" (the stand-in Claude Code exited 127 before speaking).
 
 ## Codex (4.2)
 
@@ -863,7 +992,7 @@ with this row, each 1:1 and for every agent:
   rows (`account_rows`). Each agent's facts are kept by kind, for all five
   agents: its sign-in methods, its installer, and how signing out goes. An
   account shows them whatever adapter runs it here. Grok's and Antigravity's
-  `Agent::program` → 4.3; Cursor reads no program, as in the reference.
+  `Agent::program` is 4.3's (`Flavour::program`); Cursor reads no program, as in the reference.
 - `POST kuvo/agents/api/integration/:provider/install`, the maker's installer.
 - `POST kuvo/agents/api/kuvo/updates[/:provider]`,
   `DELETE kuvo/agents/api/kuvo/updates/:provider?at=`, and the update notices

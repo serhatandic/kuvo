@@ -8,6 +8,7 @@ use std::{
 
 use kuvo_agents::{
     accounts::{AgentKind, Provider},
+    acp::AcpFactory,
     claude::{ClaudeFactory, adopt_console_folder},
     codex::CodexFactory,
     resident::ResidentAgents,
@@ -88,6 +89,7 @@ pub(super) async fn factories(
     if let Err(error) = adopt_console_folder(&home).await {
         eprintln!("Kuvo could not register the previous Claude Code account: {error}");
     }
+    kuvo_agents::acp::forget_old_antigravity(&home).await;
     let Ok(binary) = std::env::current_exe() else {
         return HashMap::new();
     };
@@ -95,9 +97,21 @@ pub(super) async fn factories(
         CodexFactory::new(home.clone(), binary.clone(), Some(relay.clone()))
             .with_feed(feed.clone()),
     );
+    let acp = |kind| -> Arc<dyn Factory> {
+        Arc::new(
+            AcpFactory::new(kind, home.clone(), binary.clone(), Some(relay.clone()))
+                .with_feed(feed.clone()),
+        )
+    };
+    let (grok, antigravity) = (acp(AgentKind::Grok), acp(AgentKind::Antigravity));
     let claude: Arc<dyn Factory> =
         Arc::new(ClaudeFactory::new(home, binary).with_feed(feed.clone()));
-    HashMap::from([(AgentKind::Claude, claude), (AgentKind::Codex, codex)])
+    HashMap::from([
+        (AgentKind::Claude, claude),
+        (AgentKind::Codex, codex),
+        (AgentKind::Grok, grok),
+        (AgentKind::Antigravity, antigravity),
+    ])
 }
 
 pub(super) struct Models {

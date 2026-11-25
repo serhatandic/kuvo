@@ -41,9 +41,9 @@ also compared against the same tagged oracle by R1–R3.
 | TypeScript case | Port / remaining owner |
 | --- | --- |
 | `peers.test.js` 44, 57 | R1–R2: on-disk legacy projection, live newer, older and non-enroller lists, peer omission. |
-| `peers.test.js` 77, 100 | 7.3: legacy enroller online-time expiry and clock changes still open. |
-| `peers.test.js` 878 | R2: an address-less Mac's roster mail is taken. Explicit no-answer check for an address-less signed enroller remains 7.3. |
-| `peers.test.js` 950, 980 | R2: a peer cannot supply an unsigned roster; the unsigned list isn't a signed document. Signed legacy authority and replacement/re-enrollment remain 7.3 / 9.3. |
+| `peers.test.js` 77, 100 | Not served by design (below); R9 removes an away beta.1 Mac instead. |
+| `peers.test.js` 878 | R2: an address-less Mac's roster mail is taken. The signed enroller's no-answer case is TypeScript-beta-only (below). |
+| `peers.test.js` 950, 980 | R2: a peer cannot supply an unsigned roster; the unsigned list isn't a signed document. Signed legacy authority is TypeScript-beta-only (below); a beta.1 Mac enrolling again as Rust is 9.3. |
 | Tagged `compat.test.mjs` | R1, R3, R4. Current-beta durable case owned by 5.1. |
 | `box read/adopt/change/key/route/personalities` | R3 exercises the binary; R6 runs beta.1's own MachineBox shell lines through the engine runtime and the pack's delegate; R7 the personalities save. |
 
@@ -65,6 +65,10 @@ Native Windows: repair 3/3, shim 2/2 (the delegate under the pinned Windows engi
 compat 4/4. Off the Mac the current-beta compat case needs Bun to generate its home and the app
 moves need APFS, so they don't apply there.
 
+Lighter than TypeScript, same answers: a repair round on WSL 2 asks Windows about the sign-in
+task only until it's seen starting the saved keeper (`run/wsl-task.keeper`), not each round.
+That saves a few PowerShell starts (seconds of CPU) at every start, visit and hourly check.
+
 **Row 9.3: the Helper's keeper path.** Kuvo Helper starts `bin/kuvo-start` itself
 (`mac/helper/Sources/KuvoHelperKit/BoxHelper.swift`, `start`, its folder check and its version
 read). On a Rust pack it must start `bin/.kuvo-start-keeper` when `bin/kuvo-box` and that file
@@ -73,10 +77,50 @@ case: a Helper test where the Rust pack's `bin/kuvo-start` has been replaced by 
 (`exit 1`) still starts `keep` from the saved keeper, which then repairs `bin/kuvo-start`; and
 the 9.3 rehearsal's released-Mac visit to the Mac's own box.
 
+## Part C: `stays` and `next` items
+
+| Item | Proof or owner |
+| --- | --- |
+| 0.7 files, keeper, leave-running | R5. The Helper's own keeper path is row 9.3 (below). |
+| 0.7 first-launch | `compat-stays`: `kuvo/accounts/found` lists an opencode's keys and sign-ins (never a key), the engine's shell keys and connected providers, and the coding agents, saying which parts weren't read; `/use` copies a key into the engine once, refuses a sign-in and one that's gone. The Rust box advertises `accounts.found`. New in Rust (`serve/found.rs`). |
+| 0.7 engine-stop | `compat-stays`: with `run/stopped`, `kuvo/info` says stopped, the engine's routes answer "The engine isn't running.", there's no Stop, and Start takes the older Mac's Stop away. |
+| 0.7 visits | `updates`' "the shell keepers wait for a preparing member, then an offline computer catches up" seeds `run/older-mac` and an older Mac's launcher and still updates the fleet (7.2); R5 records the visit. |
+| 0.7 keeper-number | `bin/kuvo-browser.js`, which carries `keeper: 51`, ships unchanged in every Rust pack (`release-catalogs`); its own scenarios are `browser-keeper-version.test.js`. |
+| 0.7 app-agents-stopped | Only for a box still in the retired app's folder. A Rust Mac box always lives in its own home: the move takes it there and leaves `run/agents-stopped` behind (`kuvo_move/src/mac.rs`, move cases C1/C2). |
+| 0.7 bot-json-job | `agents-bots`: a changed job's line is in the bot's `bot.json` beside its `job.json`. |
+| 0.7 own-envelope | `compat-stays`: a message a client wrote the blocks of itself (`text`, no `words`) reaches the engine as written, with `metadata.kuvo.parts`; a plain one gets none. The phone's `<from-phone>` marking goes with the phone app. |
+| 0.7 limits-own-numbers | Row 5.4: it sits on peer plan limits (`limits-peers.test.ts`, all open there). |
+| beta.1 box-read-change, peers-list | R1–R3, R6. |
+| beta.1 deleted-bots | `agents-bots`: a deleted bot is first in `bots/deleted.json`. |
+| beta.1 mac-moves | The live projection is not served by design (below). At that Mac's own switch: a finished move needs nothing taken in, as its original is gone and it lives only where it went. A move cut short after it switched (`movesUnderWay`, stage `switched`) is told to the user (`rehome`, "a released Mac move refuses unsafe inputs and can be tried again"), but the original it left isn't hidden: row 9.1, case "a beta.1 Mac whose move of `ses_x` from A to B had switched switches to Rust; `ses_x` is listed once, on B, and A's original is retired, not shown". |
+
+**Removing a released beta.1 Mac (R9), a deliberate difference.** In TypeScript a machine
+never removed a Mac (`DELETE` answered 409 "A Mac can't be removed from here.") and a legacy Mac
+that stopped writing aged out after 30 days of the box running. Rust doesn't age legacy Macs out
+(below), so that answer would be a dead end: a beta.1 Mac that never updates would stay listed
+for good. Rust shows it away once the relay finds it gone (or after 30 minutes unheard), offers
+Remove on its row (`removal: {choices: ["unlink"]}`, as the app opens it) and lets it go through
+`kuvo/computers/<key>/unlink` (and `DELETE`), with the computers it listed. A signed Mac and any
+computer in a setup keep the setup's removal. `compat`'s beta.1 roster case proves both boxes
+show it away, and that Rust removes it while TypeScript keeps its 409.
+
+**Only TypeScript betas after beta.1 sent these, not a live target.** Neither tagged release (0.7.2,
+beta.1) signs documents or mails time zones (`macSign`, `signDoc` and `"zone"` appear in neither
+tag's app or link sources). So the signed-Mac and zone-mail cases these maps give 7.3 come only from
+TypeScript betas after beta.1, which every computer leaves together:
+`documents.test.js` (two mains at one epoch, a phone staying with its signed Mac, an older Mac
+beside a newer Mac's setup, the original signed personalities kind), `setup-mac.test.js`'s old
+signed setup over SSH, `time-zone.test.ts`'s legacy count ties and `peers.test.js` 745 (zone mail),
+`peers.test.js` 875 (a legacy Mac with a saved signing key), 885 (the per-peer signed personality
+library) and 947/980's signed legacy authority. `setup-handover.test.js`'s older receiver of
+move evidence is an earlier TypeScript build, not a released Mac. The released Macs' paths are R1–R9 and Part C.
+
 **Not served by design** (the lead, 2026-11-25): beta.1's `kuvo-link.js setup` (its
 phone link sync; the phone app is dropped), `kuvo-link.js leave <key>` (removing a machine
-from a beta.1 Mac before it updates) and `box bot-keys-refresh` (the TypeScript box refused it
-too). The delegate refuses each with exit 2: "Update Kuvo Code on this Mac to use this computer."
+from a beta.1 Mac before it updates), `box bot-keys-refresh` (the TypeScript box refused it
+too), the live projection of a beta.1 Mac's legacy `moved` list while it runs beside Rust
+computers, and ageing a legacy Mac out after 30 days of running (`peers.test.js` 77, 100): its
+phones go with the phone app, and Remove above takes the Mac off. The delegate refuses the three commands with exit 2: "Update Kuvo Code on this Mac to use this computer."
 
 **The delegate goes with the TypeScript box**, 4 weeks after the last switch, with the
 `box read/change/key` markers.
@@ -88,8 +132,6 @@ TypeScript keeper copied back `bin/.own` by modification time. A beta.1 home ope
 leads its own setup, so `box personalities` saves through the setup rather than the legacy
 file, and needs the resident (the keeper keeps it running).
 
-Remaining cases and owners are also indexed in the move, moves, keeper, peers
-and setup coverage maps. In particular the repair of overwritten tools,
-legacy enroller expiry/unlink, signed-roster coexistence, leave-running
-integration, legacy zone/personality and device mail, and the remaining
-`stays` / `next` items are not yet complete.
+Parts A–C and the paragraphs above cover the row's own files. The other coverage maps
+(engine, keeper, adding, updates, settings, setup) still hand 7.3 some cases; their sweep
+comes next.

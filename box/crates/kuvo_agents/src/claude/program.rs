@@ -517,6 +517,7 @@ impl Program {
                 code_prompt: Some("Paste code here if prompted >"),
                 instructions: "Finish signing in on Claude’s page.",
                 code_instructions: "Sign in on Claude’s page, then paste its code here.",
+                user_code: None,
                 confirm: Box::new(move || {
                     let env = confirm.environment(false);
                     confirm.executable(&env).is_some_and(|executable| {

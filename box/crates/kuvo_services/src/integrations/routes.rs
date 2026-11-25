@@ -65,6 +65,16 @@ impl EngineClient {
         Some(val.get("data").cloned().unwrap_or(val))
     }
 
+    /// A JSON body sent to the engine; its answer's data, or none when it refused.
+    pub async fn post(&self, t: &EngineTarget, route: &str, body: &Value) -> Option<Value> {
+        let resp = self.client.post(format!("http://127.0.0.1:{}{route}", t.port))
+            .header(ROUTE_VERSION_HEADER, ROUTE_VERSION).header("authorization", t.auth_header())
+            .json(body).timeout(Duration::from_secs(10)).send().await.ok()?;
+        if !resp.status().is_success() { return None; }
+        let val: Value = resp.json().await.unwrap_or(Value::Null);
+        Some(val.get("data").cloned().unwrap_or(val))
+    }
+
     pub async fn reconnect_everywhere(&self, t: &EngineTarget, id: &str) {
         let connect = format!("/api/experimental/mcp/{}/connect", utf8_percent_encode(id, SEGMENT_ENCODE));
         let _ = self.call(t, reqwest::Method::POST, &connect, None).await;

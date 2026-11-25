@@ -133,6 +133,11 @@ test("the beta.1 Mac alone replaces its peer list, even before its address is kn
     proc = startBox({ binary: boxBinary(), home, env, relay });
     const server = await proc.ready();
     await until(() => relay.has(recipient), "machine connects");
+    const peerKeysOf = async record => {
+      const result = await request(record, "GET", "kuvo/computers");
+      assert.equal(result.status, 200, result.text);
+      return result.json.computers.map(row => row.key).sort();
+    };
     const peerKeys = async () => {
       const result = await request(server, "GET", "kuvo/computers");
       assert.equal(result.status, 200, result.text);
@@ -158,6 +163,33 @@ test("the beta.1 Mac alone replaces its peer list, even before its address is kn
     send(mac, roster.removed);
     await waitFor([roster.own.key, key]);
     assert.equal(readJSON(file).legacy[key].at, at + 3);
+
+    // A beta.1 Mac that never updates is no dead end. The relay found it gone two minutes ago.
+    mac.leave();
+    await proc.stop();
+    write(path.join(home, "run/peer-reach.json"), JSON.stringify({ [key]: Date.now() - 120_000 }));
+    proc = startBox({ binary: boxBinary(), home, env, relay });
+    const again = await proc.ready();
+    const rowOf = async () => (await request(again, "GET", "kuvo/computers")).json.computers.find(row => row.key === key);
+    let row;
+    await until(async () => (row = await rowOf())?.reach === "away", () => "the quiet Mac isn't away: " + JSON.stringify(row));
+    const unlink = () => request(again, "POST", `kuvo/computers/${encodeURIComponent(key)}/unlink`, {}, { "x-kuvo-from": "app" });
+    if (boxBinary().typescript) {
+      // TypeScript refused, and aged such a Mac out after 30 days of running instead.
+      assert.deepEqual((await request(again, "DELETE", `kuvo/computers/${encodeURIComponent(key)}`, undefined, { "x-kuvo-from": "app" })).json,
+        { message: "A Mac can't be removed from here." });
+      return;
+    }
+    // Rust offers Remove, as the app opens it, and lets the Mac go with the computers it listed.
+    const remove = row.actions.find(action => action.id === "remove");
+    assert.deepEqual(remove?.removal, { choices: ["unlink"] }, JSON.stringify(row.actions));
+    const removed = await unlink();
+    assert.equal(removed.status, 200, removed.text);
+    assert.equal(removed.json.removal.state, "unlinked");
+    assert.deepEqual(await peerKeysOf(again), [roster.own.key]);
+    const link = readJSON(file);
+    assert.equal(link.legacy?.[key], undefined);
+    assert.equal((link.macs ?? []).includes(key), false);
   } finally {
     mac.leave(); second.leave();
     await proc?.stop();

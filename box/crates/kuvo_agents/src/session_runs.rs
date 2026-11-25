@@ -163,6 +163,8 @@ struct Conversation {
     checking: bool,
     /// The turn an earlier resident left under way, being taken up here.
     recovered: Option<AdoptedTurn>,
+    /// A turn its agent began on its own, taken: it starts before what waits in line.
+    own: Option<line::OwnStart>,
 }
 
 /// How long a turn asked to stop is waited for before its conversation goes
@@ -220,6 +222,28 @@ impl SessionRuns {
         limits: Arc<dyn crate::PlanLimits>,
     ) -> Self {
         let (commands, requests) = mpsc::channel(32);
+        // Turns agents begin on their own come here, as line requests.
+        let (offers, mut offered) = mpsc::unbounded_channel::<crate::session::OwnTurn>();
+        let store = store.with_own_turns(crate::session::OwnTurns::new(offers));
+        let line = commands.downgrade();
+        tokio::spawn(async move {
+            while let Some(offer) = offered.recv().await {
+                let Some(commands) = line.upgrade() else {
+                    return;
+                };
+                let (reply, answer) = oneshot::channel();
+                let request = line::Request::OwnTurn {
+                    session: offer.session,
+                    provider: offer.provider,
+                    text: offer.text,
+                    reply,
+                };
+                let sent = commands.send(Command::Line(request)).await.is_ok();
+                drop(commands);
+                let taken = sent && answer.await.ok().and_then(Result::ok).unwrap_or(false);
+                let _ = offer.taken.send(taken);
+            }
+        });
         let (identities, running) = watch::channel(Arc::new(BTreeSet::new()));
         let (events, _) = broadcast::channel(256);
         let asks = LiveAsks::start();
