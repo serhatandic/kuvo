@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers keep usage notice settings and use accepted Claude Code and Codex turn readings for the menu rings and in-app usage warnings.
+
 - Rust computers support editing projects and using Changes to view, stage, discard, commit, switch branches, merge worktrees and create pull requests.
 - Changes and project edits accept Windows folder paths.
 - On Rust computers, Mac Git commands reuse a recent login environment and the native Trash command stops waiting after 30 seconds.

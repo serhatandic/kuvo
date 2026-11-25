@@ -152,6 +152,60 @@ impl Codex {
 }
 
 impl Agent for Codex {
+    fn plan_sign_in(&self) -> BoxFuture<'_, Option<(String, String)>> {
+        Box::pin(async {
+            let credentials = self.shared.program.credentials().await?;
+            let mark = program::fingerprint(&credentials.token);
+            let identity =
+                program::chatgpt_identity(&credentials.token, credentials.account.as_deref())?;
+            Some((mark, identity))
+        })
+    }
+
+    fn read_plan_limits(&self) -> AdapterCall<'_, Option<crate::session::PlanLimitReading>> {
+        Box::pin(async {
+            let Some((_, identity)) = self.plan_sign_in().await else {
+                return Ok(None);
+            };
+            let server = self.shared.server().await?;
+            let value = server
+                .rpc
+                .request(
+                    "account/rateLimits/read",
+                    Some(serde_json::json!({})),
+                    Some(Duration::from_secs(20)),
+                )
+                .await
+                .map_err(io::Error::other)?;
+            let Some((mark, current)) = self.plan_sign_in().await else {
+                return Ok(None);
+            };
+            if current != identity {
+                return Ok(None);
+            }
+            let mut windows = vec![];
+            if let Some(by_id) = value["rateLimitsByLimitId"].as_object() {
+                for (id, snapshot) in by_id {
+                    let mut snapshot = snapshot.clone();
+                    if !snapshot.is_object() {
+                        continue;
+                    }
+                    snapshot["limitId"] = serde_json::json!(id);
+                    windows.extend(account::windows(&snapshot));
+                }
+                if !by_id.contains_key("codex") {
+                    windows.extend(account::windows(&value["rateLimits"]));
+                }
+            } else {
+                windows.extend(account::windows(&value["rateLimits"]));
+            }
+            Ok(Some(crate::session::PlanLimitReading {
+                windows,
+                sign_in: Some(mark),
+            }))
+        })
+    }
+
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>> {
         Box::pin(self.shared.account.probe(&self.shared))
     }

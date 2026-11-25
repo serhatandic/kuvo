@@ -11,4 +11,5 @@ pub mod mac_app;
 pub mod marketplace;
 pub mod programs;
 pub mod skills;
+pub mod usage;
 pub mod vault;

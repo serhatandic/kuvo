@@ -37,6 +37,7 @@ const areas = new Map([
   ["files", "./files.test.mjs"],
   ["git", "./git.test.mjs"],
   ["library", "./library.test.mjs"],
+  ["usage", "./usage.test.mjs"],
   ["updates", "./updates.test.mjs"],
   ["vault", "./vault.test.mjs"],
   // Bots, wake-ups and work: their route scenarios (`bots.json` and `wakes.json`).

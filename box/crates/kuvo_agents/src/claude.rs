@@ -158,6 +158,10 @@ impl Claude {
 }
 
 impl Agent for Claude {
+    fn plan_sign_in(&self) -> BoxFuture<'_, Option<(String, String)>> {
+        Box::pin(self.program.plan_sign_in())
+    }
+
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>> {
         Box::pin(async {
             let (status, replaced) =

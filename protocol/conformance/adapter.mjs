@@ -50,6 +50,11 @@ export function isolatedEnv(root) {
     GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Tests", GIT_AUTHOR_EMAIL: "tests@example.com",
     GIT_COMMITTER_NAME: "Tests", GIT_COMMITTER_EMAIL: "tests@example.com",
+    ...(["usage", "engine-sessions"].includes(process.env.KUVO_CONFORMANCE_AREA) ? {
+      CODEX_HOME: path.join(account, ".codex"), GROK_HOME: path.join(account, ".grok"),
+      CLAUDE_CONFIG_DIR: path.join(account, ".claude"), KUVO_TEST_PRICE_FEEDS: "off",
+      KUVO_TEST_PATH_ONLY: "1",
+    } : {}),
   };
 }
 

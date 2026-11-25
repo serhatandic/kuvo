@@ -200,6 +200,25 @@ impl SessionRuns {
         location: ConfigLocation,
         update: Update,
     ) -> Self {
+        Self::start_with_limits(
+            agents,
+            store,
+            home,
+            location,
+            update,
+            Arc::new(crate::turn_projection::Unheard),
+        )
+    }
+
+    /// The resident's usage service receives the plan readings from every live turn.
+    pub fn start_with_limits(
+        agents: ResidentAgents,
+        store: SessionStore,
+        home: PathBuf,
+        location: ConfigLocation,
+        update: Update,
+        limits: Arc<dyn crate::PlanLimits>,
+    ) -> Self {
         let (commands, requests) = mpsc::channel(32);
         let (identities, running) = watch::channel(Arc::new(BTreeSet::new()));
         let (events, _) = broadcast::channel(256);
@@ -207,6 +226,7 @@ impl SessionRuns {
         let restoring = Arc::new(watch::channel(update::expected_asks(&update)).0);
         let programs = programs::Holds::new(&home);
         let service = Service {
+            limits,
             programs: programs.clone(),
             restoring: restoring.clone(),
             agents,
@@ -599,6 +619,7 @@ impl SessionRuns {
 
 #[derive(Clone)]
 struct Service {
+    limits: Arc<dyn crate::PlanLimits>,
     agents: ResidentAgents,
     store: SessionStore,
     asks: LiveAsks,
@@ -1017,7 +1038,8 @@ impl Service {
             shown.as_ref(),
             note,
         )
-        .await?;
+        .await?
+        .with_limits(self.limits.clone());
         let asks = self.asks.for_turn(session.into(), input.id.clone());
         let provider = input.model.provider.clone();
         let (sink, writes) = ResidentSink::channel(

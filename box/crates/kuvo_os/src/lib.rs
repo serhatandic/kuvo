@@ -10,3 +10,4 @@ pub mod watch;
 pub mod windows;
 
 pub mod trash;
+pub mod usage_computer;
