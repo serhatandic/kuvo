@@ -260,9 +260,16 @@ impl View {
         ownership.owner_of(scope, id, &self.roster, &self.announced, &self.reach, now)
     }
 
+    /// What `key` (one of your other computers) last told this box of its agents.
+    pub fn announcement(&self, key: &str) -> Option<&crate::directory::Announcement> {
+        self.announced.get(key)
+    }
+
     pub(crate) fn features(&self) -> Vec<&'static str> {
         let mut features = crate::routes::FEATURES.to_vec();
         features.push("box.atWork");
+        // (Edits held for a bot here are taken, its effort and its job's two fields too.)
+        features.extend(["bots.held", "bots.effort", "bots.job-fields"]);
         features.push("data.queued-device-authority");
         if self.backup_receiver {
             features.push("box.backups.relay");

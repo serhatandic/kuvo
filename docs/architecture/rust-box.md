@@ -385,7 +385,7 @@ public release: the compatibility older Macs need is ported (section 4).
 | Unconverted setup authority and standby receipts | 750 | Every main converts on its first lease; no public release wrote a setup. The Rust box refuses an unconverted one. |
 | Split launch (`run` with `serve --kept`, `box-services`) | 400 | The resident owns services ([one client process](one-client-process.md), step 7). |
 | Folder layout steps as steps (20 of 23 empty) | 400 | Frozen layout; the move does step 1's work. |
-| `kuvo/data/edits*` adapters and non-session owner reads | 60 | No desktop caller. Storage and the ordinary session owner reads stay. |
+| `kuvo/data/edits*` adapters and non-session owner reads, with the bot settings they edit (`bots/offline.ts`) | 175 | No desktop caller. Storage and the ordinary session owner reads stay, and a bot keeps the `offlineEdits` and `offlineJob` a TypeScript box wrote. |
 | Goal cards: `link/work/goals.ts`, `agents/goals.ts`, `shared/goals.ts` | 2,320 | Removed from the TypeScript box on 23 November. |
 | Typed keywords and slash commands | 310 | Removed on 22 November. Composer draft delivery and the 0.7.x `/typed` compatibility route remain. |
 | Letters' `peerOf` and `moved` | 100 | Ported onto `ownerOf` instead. |

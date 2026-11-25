@@ -337,7 +337,7 @@ pub async fn run(
     let search_engine = engine.clone();
     let read_owner = kuvo_peers::owner_read::Service::new(
         peers.reader(),
-        owners,
+        owners.clone(),
         memory.clone(),
         engine.clone(),
     );
@@ -445,6 +445,10 @@ pub async fn run(
         .service
         .give_agent_bots(Arc::new(bots.clone()));
     let bots_follow_engine = bots.follow_engine();
+    // Edits held for bots on your other computers, sent; and theirs for bots here, taken.
+    let bots_held = peers
+        .relay_handle()
+        .map(|relay| bots.follow_held(owners.clone(), relay));
     // Bots' old keys of their own taken away, with no client there.
     let _own_keys = kuvo_work::bots::own_keys::keep_bots_own_keys_gone(
         home.to_owned(),
@@ -700,6 +704,7 @@ pub async fn run(
     }
     firing.stop().await;
     bots_follow_engine.abort();
+    bots_held.inspect(tokio::task::JoinHandle::abort);
     approvals_kept.abort();
     insights_watch.abort();
     work_watch.abort();

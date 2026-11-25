@@ -3,6 +3,7 @@
 mod added;
 mod edit;
 pub mod elsewhere;
+mod held;
 pub mod here;
 pub mod job;
 pub mod kit;
@@ -34,8 +35,8 @@ use list::{FolderGoes, Place};
 use now::{Rest, Told};
 use setup::{Setup, ZoneFiles};
 
-/// What these routes answer whole (held edits come with a later part).
-pub const FEATURES: &[&str] = &["bots.elsewhere", "bots.make", "bots.state"];
+/// What these routes answer whole.
+pub const FEATURES: &[&str] = &["bots.elsewhere", "bots.held", "bots.make", "bots.state"];
 
 /// What's said while a bot runs with the coding agents, whose bridge isn't in this box yet.
 pub const AGENTS_DOWN: &str = "The coding agents are restarting. This takes a few seconds.";
@@ -65,6 +66,7 @@ struct Inner {
     goes: FolderGoes,
     told: Mutex<Told>,
     changes: watch::Sender<u64>,
+    held: held::State,
 }
 
 /// Where the bots live and how this computer is named.
@@ -121,6 +123,7 @@ impl Bots {
                 sessions,
                 told: Mutex::new(Told::default()),
                 changes: watch::channel(0).0,
+                held: held::State::default(),
                 home,
             }),
         }
@@ -311,20 +314,23 @@ impl Bots {
         let view = self.inner.peers.view();
         let pending = view.pending_bots();
         let mut said = json!({ "pendingComputers": pending, "bots": bots });
-        // (Not without a link of its own: it can't check what it holds for them, and a client
-        // keeps what it last heard.)
-        if view.roster.here.is_some() {
-            said["elsewhere"] = Value::Array(
-                elsewhere::bots_elsewhere(
-                    &view,
-                    &self.inner.run,
-                    &self.inner.bots,
-                    self.inner.peers.now(),
-                )
-                .iter()
-                .map(elsewhere::Elsewhere::said)
-                .collect(),
-            );
+        // What's held for your other computers and what they refused, and their bots with both
+        // marked: not while this box can't tell its own from what's planted (no secret of its
+        // own), and a client keeps what it last heard.
+        if let Some((held, refused)) = self.held_lists(&view) {
+            let listed = elsewhere::bots_elsewhere(
+                &view,
+                &self.inner.run,
+                &self.inner.bots,
+                self.inner.peers.now(),
+            )
+            .iter()
+            .map(elsewhere::Elsewhere::said)
+            .collect();
+            let here = |id: &str| here::BotHere::read(&self.inner.bots, id).is_some();
+            said["elsewhere"] = json!(held::elsewhere_said(listed, &held, &refused, here));
+            said["held"] = json!(held);
+            said["refused"] = json!(refused);
         }
         (said, turns)
     }
