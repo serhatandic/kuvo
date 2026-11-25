@@ -362,6 +362,7 @@ pub async fn run(
         .handle()
         .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
+    kuvo_services::settings::register(&mut routes, home.to_owned(), setup.handle());
     kuvo_services::files::register(
         &mut routes,
         kuvo_services::files::Places {
@@ -373,7 +374,7 @@ pub async fn run(
     kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
     kuvo_services::programs::register(&mut routes, account.clone());
     let integration_keys =
-        kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
+        kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac, setup.handle());
     let skills = kuvo_services::skills::ResidentSkills::start(&mut routes, home, &account);
     let resident_marketplace = kuvo_services::marketplace::ResidentMarketplace::start(
         &mut routes,

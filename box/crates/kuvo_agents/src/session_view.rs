@@ -14,7 +14,7 @@ pub enum Compaction {
     Never,
 }
 
-const CHOICES: [Compaction; 4] = [
+pub const CHOICES: [Compaction; 4] = [
     Compaction::At(200_000),
     Compaction::At(400_000),
     Compaction::At(600_000),

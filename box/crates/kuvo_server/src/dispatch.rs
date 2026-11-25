@@ -185,9 +185,15 @@ pub struct RouteCall<T> {
     pub body: T,
     pub cancel: CancellationToken,
     params: Vec<(&'static str, String)>,
+    dispatcher: Dispatcher,
 }
 
 impl<T> RouteCall<T> {
+    /// The same authenticated dispatcher, for sections composed from existing routes.
+    pub fn dispatcher(&self) -> Dispatcher {
+        self.dispatcher.clone()
+    }
+
     /// An encoded path segment matched by the generated route pattern.
     pub fn param(&self, name: &str) -> Option<&str> {
         self.params
@@ -376,7 +382,12 @@ fn status(value: u16) -> StatusCode {
 
 type FutureReply = Pin<Box<dyn Future<Output = Reply> + Send>>;
 type Handler = Box<
-    dyn Fn(DispatchRequest, CancellationToken, Vec<(&'static str, String)>) -> FutureReply
+    dyn Fn(
+            DispatchRequest,
+            CancellationToken,
+            Vec<(&'static str, String)>,
+            Dispatcher,
+        ) -> FutureReply
         + Send
         + Sync,
 >;
@@ -464,7 +475,7 @@ impl Registry {
         self.entries.push(Entry {
             route: R::ROUTE,
             access,
-            handler: Box::new(move |request, cancel, params| {
+            handler: Box::new(move |request, cancel, params, dispatcher| {
                 let bytes = if R::ROUTE.body.is_none() {
                     b"null"
                 } else {
@@ -477,6 +488,7 @@ impl Registry {
                             body,
                             cancel,
                             params,
+                            dispatcher,
                         });
                         Box::pin(async move {
                             answer.await.map_or_else(Refusal::reply, |typed| typed.0)
@@ -605,7 +617,7 @@ impl Dispatcher {
         }
         if let Some((entry, params)) = best {
             if entry.access.admits(&request.caller) {
-                return (entry.handler)(request, cancel, params).await;
+                return (entry.handler)(request, cancel, params, self.clone()).await;
             }
             return Refusal::new(
                 StatusCode::FORBIDDEN,
@@ -617,7 +629,12 @@ impl Dispatcher {
             return Reply::empty_json(StatusCode::METHOD_NOT_ALLOWED);
         }
         if canonical == request.path && path.starts_with("kuvo/") {
-            if let Some(retired) = self.0.retired.iter().find(|retired| (retired.matches)(path)) {
+            if let Some(retired) = self
+                .0
+                .retired
+                .iter()
+                .find(|retired| (retired.matches)(path))
+            {
                 return Refusal::new(StatusCode::NOT_FOUND, retired.message).reply();
             }
             return Reply::empty_json(StatusCode::NOT_FOUND);
