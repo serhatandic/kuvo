@@ -3,6 +3,7 @@ mod library_artifacts;
 mod marketplace;
 mod usage;
 mod usage_peers;
+mod usage_history_peers;
 
 use std::{fs, io, path::Path, sync::Arc, time::UNIX_EPOCH};
 
@@ -548,7 +549,7 @@ pub async fn run(
     let insights_watch = insights.follow(usage_watch.clone());
     let engine_usage_watch = insights.follow_engine(usage_watch.clone());
     let native_usage_watch = insights.follow_native(usage_watch, limits.clone());
-    kuvo_services::usage::insights::register(&mut routes, insights);
+    kuvo_services::usage::insights::register(&mut routes, insights.clone());
     let refresh_limits = limits.clone();
     let refresh_agents = agent_shutdown.clone();
     let refresh_engine = engine.clone();
@@ -596,6 +597,9 @@ pub async fn run(
             setup.handle(),
         ))
     });
+    let history_peers=peers.relay_handle().map(|relay|tokio::spawn(usage_history_peers::follow(
+        insights,limits.clone(),peers.reader(),relay,setup.handle()
+    )));
     let _ = limits.answer(kuvo_services::usage::limits::now());
     crate::box_at_work::register(
         &mut routes,
@@ -779,6 +783,7 @@ pub async fn run(
     if let Some(task) = limits_peers {
         task.abort();
     }
+    if let Some(task)=history_peers{task.abort();}
     work_watch.abort();
     work_rows.inspect(tokio::task::JoinHandle::abort);
     if let Some(kept_awake) = kept_awake {

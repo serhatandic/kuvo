@@ -1510,6 +1510,7 @@ dependencies = [
  "kuvo_server",
  "kuvo_setup",
  "kuvo_store",
+ "kuvo_wire",
  "libc",
  "p256",
  "p384",

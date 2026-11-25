@@ -2,7 +2,7 @@
 //! index without launching the engine. The file watcher drives each changed channel.
 use kuvo_os::watch::{Notice, Options, WatchHub};
 use kuvo_store::files::FileStamp;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -41,6 +41,8 @@ pub fn stamp(path: &Path) -> Result<Option<Stamp>> {
 pub struct Checkpoint {
     pub stamp: Option<Stamp>,
     pub watermarks: BTreeMap<String, i64>,
+    #[serde(default)]
+    pub headers: u64,
 }
 fn side(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -183,7 +185,9 @@ pub fn read(
     let db = open_maker(path)?;
     let read = db.unchecked_transaction()?;
     let mut sessions = BTreeMap::new();
-    for table in ["session", "session_v2"] {
+    let mut missing = BTreeSet::new();
+    let mut headers = vec![];
+    for table in ["session_v2", "session"] {
         let names = columns(&read, table)?;
         if !names.contains("id") {
             continue;
@@ -199,33 +203,16 @@ pub fn read(
             ("NULL", "NULL", "NULL")
         };
         let sql = format!(
-            "SELECT id,{},{},{bot},{name},{seat} FROM {table}",
+            "SELECT id,{},{},{bot},{name},{seat} FROM {table} WHERE id=?",
             col("parent_id"),
             col("title")
         );
-        let mut query = read.prepare(&sql)?;
-        let mut rows = query.query([])?;
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            let seat = matches!(
-                row.get_ref(5)?,
-                rusqlite::types::ValueRef::Text(_) | rusqlite::types::ValueRef::Integer(1)
-            );
-            sessions.insert(
-                id,
-                Session {
-                    parent: row.get(1)?,
-                    title: row.get(2)?,
-                    bot: row.get(3)?,
-                    bot_name: row.get(4)?,
-                    seat,
-                },
-            );
-        }
+        headers.push(sql);
     }
     let mut checkpoint = Checkpoint {
         stamp: Some(stamp.clone()),
         watermarks: BTreeMap::new(),
+        headers: 0,
     };
     for (table, role) in [
         ("message", "json_extract(data,'$.role')"),
@@ -294,9 +281,47 @@ pub fn read(
                 observed_account: row.get(11)?,
                 cost: row.get(12).ok().flatten(),
             };
+            // Only a changed call's session and parent lineage are read. A
+            // channel with many inactive headers does not walk them for one call.
+            let mut id = Some(record.session.clone());
+            while let Some(key) = id.take() {
+                if sessions.contains_key(&key) || missing.contains(&key) {
+                    break;
+                }
+                let mut found = None;
+                for sql in &headers {
+                    let mut query = read.prepare_cached(sql)?;
+                    found = query
+                        .query_row([&key], |row| {
+                            Ok(Session {
+                                parent: row.get(1)?,
+                                title: row.get(2)?,
+                                bot: row.get(3)?,
+                                bot_name: row.get(4)?,
+                                seat: matches!(
+                                    row.get_ref(5)?,
+                                    rusqlite::types::ValueRef::Text(_)
+                                        | rusqlite::types::ValueRef::Integer(1)
+                                ),
+                            })
+                        })
+                        .optional()?;
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                if let Some(session) = found {
+                    id = session.parent.clone();
+                    sessions.insert(key, session);
+                } else {
+                    missing.insert(key);
+                    break;
+                }
+            }
             take(record, &sessions)?;
         }
     }
+    checkpoint.headers = sessions.len() as u64;
     read.commit()?;
     Ok(Some(checkpoint))
 }

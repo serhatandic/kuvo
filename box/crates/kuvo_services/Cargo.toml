@@ -33,6 +33,7 @@ kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
 kuvo_setup = { path = "../kuvo_setup" }
 kuvo_store = { path = "../kuvo_store" }
+kuvo_wire = { path = "../kuvo_wire" }
 libc = "0.2"
 percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }

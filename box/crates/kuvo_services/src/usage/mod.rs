@@ -17,3 +17,6 @@ pub mod readings;
 pub mod resets;
 pub mod settings;
 pub mod standalone;
+
+pub mod history_peers;
+pub mod insight_mail;
