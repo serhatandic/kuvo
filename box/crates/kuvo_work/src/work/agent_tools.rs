@@ -6,6 +6,7 @@
 mod calls;
 mod letters;
 mod limits;
+mod own;
 mod receipts;
 mod sessions;
 mod start;
@@ -329,6 +330,28 @@ impl Work {
                     }
                 }
             }
+            "schedule_wake_up" | "watch_for_change" | "list_wake_ups" | "cancel_wake_up" => {
+                // (The caller's own conversation: a subagent's, where it isn't its root's.)
+                let own = match (&caller, session, &engine) {
+                    (Some(caller), Some(session), _) if caller.session == session => {
+                        Some(caller.data.clone())
+                    }
+                    (_, Some(session), Some(engine)) => engine
+                        .call(
+                            Method::GET,
+                            &format!("api/session/{}", encoded(session)),
+                            None,
+                            WAIT,
+                        )
+                        .await
+                        .ok()
+                        .filter(|data| data["id"] == session),
+                    _ => None,
+                };
+                self.wake_tool(name, args, session, own.as_ref(), caller.as_ref())
+                    .await
+            }
+            "set_job" => self.set_job_tool(args, session, caller.as_ref()).await,
             "list_agents" => {
                 let (agents, _) = self.everyone(engine.as_ref()).await;
                 said(self.describe_agents(

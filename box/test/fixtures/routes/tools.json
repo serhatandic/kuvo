@@ -1133,6 +1133,272 @@
      }
     }
    ]
+  },
+  {
+   "name": "A conversation keeps its wake-ups with its tools, and a bot its job",
+   "steps": [
+    {
+     "send": "GET kuvo/work/settings",
+     "expect": {
+      "status": 200
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_work",
+       "title": "Work"
+      }
+     }
+    },
+    {
+     "given": {
+      "session": {
+       "id": "ses_sub",
+       "title": "Look",
+       "parent": "ses_work"
+      }
+     }
+    },
+    {
+     "given": {
+      "bot": {
+       "id": "bot_scout1",
+       "name": "Scout",
+       "session": "ses_scout"
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "when": "+2h",
+       "note": "Look at the last CI run.",
+       "summary": "Check CI"
+      },
+      "session": "ses_sub"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false
+      }
+     },
+     "why": "A subagent's wake-up is its conversation's."
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "list_wake_ups",
+      "arguments": {},
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": {
+        "<contains>": "Look at the last CI run."
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "note": "Later."
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Say when (when): +20m, +2h, +1d, or a time like 2026-10-21T09:00."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "when": "+2h",
+       "note": " "
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Add a note for yourself (note): what to do when you wake up."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "cancel_wake_up",
+      "arguments": {},
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Say which one (id), from list_wake_ups."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "when": "+2h",
+       "note": "Later."
+      },
+      "session": "ses_nobody"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Kuvo Code doesn't know this conversation yet. Try again in a moment."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "cancel_wake_up",
+      "arguments": {
+       "id": "abc"
+      },
+      "session": "ses_scout"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "No wake-up \"abc\". See list_wake_ups."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "watch_for_change",
+      "arguments": {
+       "every": "10m",
+       "note": "Say what changed."
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Give how often (every), the check (a shell command) and a note for when it changes."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "schedule_wake_up",
+      "arguments": {
+       "when": "yesterday-ish",
+       "note": "Later."
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": {
+        "<contains>": "Couldn't read the time"
+       }
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "set_job",
+      "arguments": {
+       "summary": "Keeps CI green.",
+       "details": "Watch main."
+      },
+      "session": "ses_scout"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "Kept. Kuvo Code shows \"Keeps CI green\" under your name."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "set_job",
+      "arguments": {
+       "summary": "Keeps CI green."
+      },
+      "session": "ses_scout"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Provide a non-empty summary and details, or clear: true to clear your job."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "set_job",
+      "arguments": {
+       "summary": "Anything",
+       "details": ""
+      },
+      "session": "ses_work"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": true,
+       "text": "Only a bot keeps a job, and this conversation isn't one."
+      }
+     }
+    },
+    {
+     "send": "POST kuvo/agent-tools",
+     "body": {
+      "name": "set_job",
+      "arguments": {
+       "clear": true
+      },
+      "session": "ses_scout"
+     },
+     "expect": {
+      "status": 200,
+      "json": {
+       "isError": false,
+       "text": "Kept: you have no job now."
+      }
+     }
+    }
+   ]
   }
  ]
 }
