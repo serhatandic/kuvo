@@ -652,16 +652,7 @@ impl Readers {
             .headers()
             .get("retry-after")
             .and_then(|h| h.to_str().ok())
-            .and_then(|s| {
-                s.parse::<u64>()
-                    .ok()
-                    .map(|n| at.saturating_add(n.saturating_mul(1000)))
-                    .or_else(|| {
-                        s.parse::<jiff::Timestamp>()
-                            .ok()
-                            .and_then(|t| t.as_millisecond().try_into().ok())
-                    })
-            });
+            .and_then(|s| super::plan_facts::retry_at(s, at));
         let body = response.json().await.unwrap_or(Value::Null);
         Ok((status, body, retry))
     }

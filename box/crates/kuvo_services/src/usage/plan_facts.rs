@@ -115,3 +115,23 @@ pub struct Facts {
 fn false_value(value: &bool) -> bool {
     !*value
 }
+
+/// A Retry-After can be a delay or an HTTP date. A past date means now.
+pub(super) fn retry_at(raw: &str, now: u64) -> Option<u64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(now.saturating_add(raw.parse::<u64>().ok()?.saturating_mul(1000)));
+    }
+    if let Ok(date) = httpdate::parse_http_date(raw) {
+        let at = date
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        return Some(u64::try_from(at).ok()?.max(now));
+    }
+    let stamp = raw.parse::<jiff::Timestamp>().ok()?.as_millisecond();
+    Some(u64::try_from(stamp).unwrap_or(0).max(now))
+}

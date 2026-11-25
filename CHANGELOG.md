@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers keep confirmed Claude sign-ins without repeatedly asking the Keychain, respect engine plan read holds across restarts, and show active Z.ai usage without including inactive keys.
+
 - Rust computers keep consistent plan rings and forecasts across upgrades, group many accounts in one rail card, and show Insights bot conversations, their subagents and completed skill use without recounting older calls.
 
 - Rust computers no longer show a signed-out account’s old plan limits as a live sign-in. Its previous usage remains in history.

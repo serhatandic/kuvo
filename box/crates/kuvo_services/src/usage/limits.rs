@@ -166,6 +166,11 @@ struct Entry {
     window_order: Vec<String>,
     #[serde(default)]
     notices: Vec<Fact>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    refusals: u8,
+}
+fn is_zero(value: &u8) -> bool {
+    *value == 0
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Saved {
@@ -549,6 +554,7 @@ impl Service {
             partial_missing: BTreeSet::new(),
             window_order: vec![],
             notices: vec![],
+            refusals: 0,
         });
         if entry.trails.is_empty() && entry.facts.checked.is_none() {
             if let Some((facts, trails, order)) = self
@@ -603,7 +609,27 @@ impl Service {
                 window_order.push(id.clone());
             }
         }
-        if let Some(facts) = facts {
+        if let Some(mut facts) = facts {
+            if entry.account.account.is_none() && !only_resets {
+                if let Some(problem) = facts.problem.as_mut() {
+                    if problem.kind == ProblemKind::RateLimited {
+                        entry.refusals = entry.refusals.saturating_add(1);
+                        let wait = problem
+                            .until
+                            .map(|until| until.max(now + 10 * 60_000))
+                            .unwrap_or_else(|| {
+                                now + (60
+                                    * 60_000
+                                    * (1u64 << entry.refusals.saturating_sub(1).min(3)))
+                                .min(6 * 60 * 60_000)
+                            });
+                        facts.next = Some(wait);
+                        problem.until = Some(wait);
+                    }
+                } else {
+                    entry.refusals = 0;
+                }
+            }
             if only_resets {
                 entry.facts.extras.retain(|extra| match extra {
                     super::plan_facts::Extra::Resets { .. } => false,
@@ -620,6 +646,9 @@ impl Service {
                     entry.trails.clear();
                     entry.partial_missing.clear();
                     entry.notices.clear();
+                    if problem.kind == ProblemKind::Ended {
+                        facts.plan = facts.plan.or_else(|| entry.facts.plan.clone());
+                    }
                     entry.facts = facts;
                 } else {
                     entry.facts.problem = facts.problem;
@@ -861,6 +890,7 @@ impl Service {
                     partial_missing: BTreeSet::new(),
                     window_order: vec![],
                     notices: vec![],
+                    refusals: 0,
                 });
             if entry.trails.is_empty() && entry.facts.checked.is_none() {
                 if let Some((facts, trails, order)) = self
@@ -956,7 +986,29 @@ impl Service {
                     .iter()
                     .any(|a| provider == &a.provider && same_sign_in(a, &entry.account))
         });
-        if state.entries.len() == before {
+        let mut changed = state.entries.len() != before;
+        for account in accounts {
+            if let Some(entry) = state.entries.get_mut(&account.provider)
+                && entry.account.account.is_none()
+                && entry.account.sign_in != account.sign_in
+            {
+                entry.account.sign_in = account.sign_in.clone();
+                // A renewal of the same maker identity makes an expired
+                // sign-in eligible again, not a new usage window.
+                if entry.facts.problem.as_ref().is_some_and(|p| {
+                    matches!(
+                        p.kind,
+                        super::plan_facts::ProblemKind::Expired
+                            | super::plan_facts::ProblemKind::Unreadable
+                    )
+                }) {
+                    entry.facts.problem = None;
+                    entry.facts.next = None;
+                }
+                changed = true;
+            }
+        }
+        if !changed {
             return;
         }
         let keep = state
@@ -994,6 +1046,9 @@ impl Service {
             .cloned()
             .collect::<Vec<_>>();
         order.extend_from_slice(providers);
+        if state.entries.len() == before && state.order == order {
+            return;
+        }
         state.order = order;
         if state.entries.len() < before && self.file.exists() && self.cache_error.is_none() {
             if let Ok(bytes) = serde_json::to_vec(&*state) {
@@ -1010,12 +1065,14 @@ impl Service {
             .values()
             .filter(|entry| {
                 entry.account.account.is_none()
-                    && entry
-                        .facts
-                        .problem
-                        .as_ref()
-                        .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::RateLimited)
-                    && entry.facts.next.is_some_and(|n| n > now)
+                    && entry.facts.problem.as_ref().is_some_and(|p| match p.kind {
+                        super::plan_facts::ProblemKind::Expired
+                        | super::plan_facts::ProblemKind::Unreadable => true,
+                        super::plan_facts::ProblemKind::RateLimited => {
+                            entry.facts.next.is_some_and(|n| n > now)
+                        }
+                        _ => false,
+                    })
             })
             .map(|e| e.account.provider.clone())
             .collect()
@@ -1251,6 +1308,7 @@ impl Service {
                     partial_missing: BTreeSet::new(),
                     window_order: account.windows.iter().map(|w| w.id.clone()).collect(),
                     notices: account.notices.clone(),
+                    refusals: 0,
                 };
                 add(
                     &entry,

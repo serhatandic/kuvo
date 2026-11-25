@@ -572,7 +572,7 @@ pub fn credentials(root: &Path) -> Result<Option<Value>> {
             ""
         };
         let sql = format!(
-            "SELECT integration_id,value FROM credential WHERE (active IS NULL OR active=1) AND integration_id IN ('openai','xai','github-copilot','openrouter','zai-coding-plan','opencode-go'){order}"
+            "SELECT integration_id,value FROM credential WHERE active=1 AND integration_id IN ('openai','xai','github-copilot','openrouter','zai','zai-coding-plan','opencode-go'){order}"
         );
         let mut query = db.prepare(&sql)?;
         let mut rows = query.query([])?;
@@ -613,6 +613,7 @@ pub fn credentials(root: &Path) -> Result<Option<Value>> {
                     | "xai"
                     | "github-copilot"
                     | "openrouter"
+                    | "zai"
                     | "zai-coding-plan"
                     | "opencode-go"
             ) && value.is_object()

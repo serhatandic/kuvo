@@ -523,13 +523,51 @@ were removed, as were the cross target directories.
 Cumulative non-test size: 549,884 new-module characters plus 40,276 added existing
 production characters (590,160 total, 0.858× the 687,546 TS characters).
 
-Remaining lightness opportunity: `kuvo_agents/src/claude/program.rs`'s
-`plan_sign_in` calls `local_status` (`:287`, `:344`); on macOS with a retained
-OAuth identity, checking the actual Keychain credential may invoke the existing
-`security` helper (`keychain_written`, `:561`) on a limits read. This avoids
-starting Claude itself and ensures a sign-out is not masked by cached metadata.
-Replacing the short subprocess with native credential metadata is a separate
-platform seam improvement; no change to sign-in truth is assumed here.
+## Eleventh slice: cached OAuth confirmation and engine plan edges
+
+The previous macOS Claude credential metadata subprocess on each confirmation is
+now replaced by a per-Program cache owned by `kuvo_os::keychain::CredentialDate`.
+It tracks the actual Keychain search-list order, store file generations and
+lock status (metadata only, never store contents or passwords). An unchanged
+generation returns the confirmed date; an actual OAuth identity change,
+explicit sign-in, sign-out or maker refusal invalidates it. Any other item's
+edit to the same store also invalidates conservatively: keeping a confirmed
+sign-in after an external deletion is worse than making one extra metadata
+query. Unavailable metadata or a transient query error is not cached. The
+existing macOS metadata command is used only when this evidence changes or
+cannot be confirmed. The scoped test uses a scratch store and lookup stand-in,
+including removal and renewal; all scratch accounts bypass actual Keychain
+searches at both the caller and OS seam. No tests read, write or search the
+user's Keychain, including metadata, or change its search list.
+
+Engine local credential admission now includes the Z.ai alias and excludes
+inactive/NULL records. Provider HTTP-date and delay holds use the common
+Retry-After conversion and the engine's minimum spacing and persisted
+refusal count; an unchanged expired OAuth credential is not sent again.
+A renewed credential of the same identity is eligible for a new answer.
+After a maker read, the current credential list is rechecked even when the
+already-running legacy engine was the authority (never start it to read).
+The limits GET also verifies that authority when no local database supplies
+credentials, bounded to 250 ms; a timeout is not a sign-out. No unchanged
+engine inventory is republished. The old Rust box failed the
+Z.ai/null-active fixture and omitted the dated hold's expiry on the wire. It
+also sent an unchanged refused OAuth token twice and retained a signed-out
+legacy engine's row; both newly corrected route regressions fail on the old
+box and pass on the new one. The six focused route cases and the isolated
+Keychain-cache test pass on Mac.
+
+### Verification of the eleventh port slice
+
+Mac and Lokum (one capped static-musl container) Rust usage: 59/59 applicable.
+TypeScript 20/20 applicable; engine-sessions 81/81; workspace and Bun checks
+pass. The exact expanded differential still matches 12/13 route answers,
+with the only difference the actual local coverage scan timestamp; the native
+UTC/Istanbul corpus matches 2/2. No comparator changes or numeric tolerances.
+The cross binaries are built and cross target directories removed. WSL and
+native Windows runs await the reserved PC handoff.
+
+Cumulative non-test size: 558,172 new-module characters plus 39,795 added
+existing production characters (597,967 total, 0.870× the 687,546 TS characters).
 
 ## Remaining implementation gaps
 
@@ -544,16 +582,16 @@ platform seam improvement; no change to sign-in truth is assumed here.
 ### `box/test/usage/engine-limits.test.ts`
 
 - L50: each sign-in in Settings › Accounts is a row of its own, read with that sign-in — partial — engine credential plan scenario (individual integration rows; full added-account cases open).
-- L91: an OpenRouter key's spend today, this week and this month (UTC's), each starting over when OpenRouter's does; what was bought, for what's left of it — open.
-- L108: a Copilot seat its organization pays for by the credit: the organization's credits and spend this month, where the sign-in may read its billing; nothing, never a zero, where it may not — open.
-- L139: GitHub holding requests off (a 403 with retry-after) stops the look through your organizations, and the next read looks again — open.
+- L91: an OpenRouter key's spend today, this week and this month (UTC's), each starting over when OpenRouter's does; what was bought, for what's left of it — covered by the UTC spend-period route fixture (exact balance and absent extras).
+- L108: a Copilot seat its organization pays for by the credit: the organization's credits and spend this month, where the sign-in may read its billing; nothing, never a zero, where it may not — covered by the Copilot organization route case, including transient failure, filtered fee products and no admin rights.
+- L139: GitHub holding requests off (a 403 with retry-after) stops the look through your organizations, and the next read looks again — covered by the Copilot organization case (only first organization asked while held).
 - L152: ChatGPT's credits and reset credits, read with the engine's sign-in — covered by engine credential plan scenario plus usable credit inventory read and confirmed spending with the saved OAuth identity.
-- L161: an API key with no plan isn't listed; a lapsed sign-in says so without asking its maker — open.
+- L161: an API key with no plan isn't listed; a lapsed sign-in says so without asking its maker — partial — read-only engine database alias/active/no-plan/expired fixture (OpenCode Go and OpenAI API key); specific Z.ai no-plan response still open.
 - L173: SuperGrok's weekly pool, as the Grok CLI reads it — partial — engine credential plan scenario (xAI weekly reading, not the standalone CLI).
-- L180: a SuperGrok plan that ended is listed as ended, with nothing of its last week and no ring — open.
-- L196: an xAI answer in a shape Kuvo doesn't know is a read that failed, never a plan that ended — open.
-- L202: OpenCode Go turning a key away for having no plan lists nothing, rather than asking to sign in again — open.
-- L208: a box starting before its engine answers keeps the engine's sign-ins' holds, and asks nothing early — open.
+- L180: a SuperGrok plan that ended is listed as ended, with nothing of its last week and no ring — covered by the active/malformed/ended SuperGrok route fixture.
+- L196: an xAI answer in a shape Kuvo doesn't know is a read that failed, never a plan that ended — covered by the malformed SuperGrok route case (last accepted ring remains).
+- L202: OpenCode Go turning a key away for having no plan lists nothing, rather than asking to sign in again — covered by the read-only engine database alias/no-plan fixture.
+- L208: a box starting before its engine answers keeps the engine's sign-ins' holds, and asks nothing early — partial — dated maker hold kept across restart (engine process absent; actual local credential DB); exact unavailable legacy engine startup case open.
 - L241: an API key turned away is tried again later, not held to that key as a lapsed sign-in — open.
 - L254: each sign-in says who it is, the same on every computer: a key by the key, Copilot by GitHub's login, SuperGrok by its user — open.
 - L296: signed in to Copilot as another GitHub account, what was kept of the one before isn't shown as this one's — open.
