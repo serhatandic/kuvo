@@ -41,9 +41,9 @@ also compared against the same tagged oracle by R1–R3.
 | TypeScript case | Port / remaining owner |
 | --- | --- |
 | `peers.test.js` 44, 57 | R1–R2: on-disk legacy projection, live newer, older and non-enroller lists, peer omission. |
-| `peers.test.js` 77, 100 | 7.3: legacy enroller online-time expiry and clock changes still open. |
-| `peers.test.js` 878 | R2: an address-less Mac's roster mail is taken. Explicit no-answer check for an address-less signed enroller remains 7.3. |
-| `peers.test.js` 950, 980 | R2: a peer cannot supply an unsigned roster; the unsigned list isn't a signed document. Signed legacy authority and replacement/re-enrollment remain 7.3 / 9.3. |
+| `peers.test.js` 77, 100 | Not served by design (below); R9 removes an away beta.1 Mac instead. |
+| `peers.test.js` 878 | R2: an address-less Mac's roster mail is taken. The signed enroller's no-answer case is TypeScript-beta-only (below). |
+| `peers.test.js` 950, 980 | R2: a peer cannot supply an unsigned roster; the unsigned list isn't a signed document. Signed legacy authority is TypeScript-beta-only (below); a beta.1 Mac enrolling again as Rust is 9.3. |
 | Tagged `compat.test.mjs` | R1, R3, R4. Current-beta durable case owned by 5.1. |
 | `box read/adopt/change/key/route/personalities` | R3 exercises the binary; R6 runs beta.1's own MachineBox shell lines through the engine runtime and the pack's delegate; R7 the personalities save. |
 
@@ -120,7 +120,7 @@ phone link sync; the phone app is dropped), `kuvo-link.js leave <key>` (removing
 from a beta.1 Mac before it updates), `box bot-keys-refresh` (the TypeScript box refused it
 too), the live projection of a beta.1 Mac's legacy `moved` list while it runs beside Rust
 computers, and ageing a legacy Mac out after 30 days of running (`peers.test.js` 77, 100): its
-phones go with the phone app, and Remove above takes the Mac off. The delegate refuses each with exit 2: "Update Kuvo Code on this Mac to use this computer."
+phones go with the phone app, and Remove above takes the Mac off. The delegate refuses the three commands with exit 2: "Update Kuvo Code on this Mac to use this computer."
 
 **The delegate goes with the TypeScript box**, 4 weeks after the last switch, with the
 `box read/change/key` markers.
@@ -132,8 +132,6 @@ TypeScript keeper copied back `bin/.own` by modification time. A beta.1 home ope
 leads its own setup, so `box personalities` saves through the setup rather than the legacy
 file, and needs the resident (the keeper keeps it running).
 
-Remaining cases and owners are also indexed in the move, moves, keeper, peers
-and setup coverage maps. In particular the repair of overwritten tools,
-legacy enroller expiry/unlink, signed-roster coexistence, leave-running
-integration, legacy zone/personality and device mail, and the remaining
-`stays` / `next` items are not yet complete.
+Parts A–C and the paragraphs above cover the row's own files. The other coverage maps
+(engine, keeper, adding, updates, settings, setup) still hand 7.3 some cases; their sweep
+comes next.
