@@ -55,6 +55,24 @@ also compared against the same tagged oracle by R1–R3.
 | R6 | `compat-shim`: the pack builder emits `bin/kuvo-link.js`, a delegate that only forwards `box adopt/read/change/key/route/personalities` to `bin/kuvo-box` (stdin, stdout and exit code through). beta.1's tagged `RemoteEngineInstaller.script` and `MachineBox.lastLine` lines find the Rust-installed pinned engine (beta.1's own 2.0.32 is absent, so its newest-engine fallback) and run its SSH transcript, every verb through the delegate. The pack test (`release-catalogs`) checks the delegate and the saved keeper in all five target packs. |
 | R7 | `compat-shim`: `box personalities` merges beta.1's library at a main computer, answered as before (`personalities`, `removed`, `operation`, `save`); a member refuses with the main-computer message. The Rust command hands it to the resident's internal `kuvo/personalities/exchange`. |
 
+| R8 | `compat-repair` on WSL 2 (real Windows Task Scheduler, disposable tasks): `box wsl-startup <distro>` (the installer's same registration) registers this installation's hidden sign-in task for the saved keeper, starts it so Windows runs the keeper inside the distribution, keeps only Linux folders in the saved PATH, refuses another distribution, and `uninstall --check` / `uninstall` report and remove the task (one already gone counts as removed). A task an earlier release registered for `bin/kuvo-start` is registered again for the saved keeper with its account and trigger, and a later overwrite can't stop it starting. The Linux installer registers the task instead of a crontab line on WSL 2; a released WSL machine's upgrade registers it again. |
+
+Part B results (Rust): macOS `compat-repair` 5/5 (2 WSL-only skips), `compat-shim` 2/2,
+`compat` 7/7; TypeScript passes every case that applies to it (the saved keeper, the shim and
+WSL are Rust-pack only). Linux (static musl, lokum, one CPU / 1 GB): repair 4/4, shim 2/2,
+released compat 4/4. WSL 2 Ubuntu 24.04 (musl): repair 6/6, shim 2/2, released compat 4/4.
+Native Windows: repair 3/3, shim 2/2 (the delegate under the pinned Windows engine), released
+compat 4/4. Off the Mac the current-beta compat case needs Bun to generate its home and the app
+moves need APFS, so they don't apply there.
+
+**Row 9.3: the Helper's keeper path.** Kuvo Helper starts `bin/kuvo-start` itself
+(`mac/helper/Sources/KuvoHelperKit/BoxHelper.swift`, `start`, its folder check and its version
+read). On a Rust pack it must start `bin/.kuvo-start-keeper` when `bin/kuvo-box` and that file
+are there, and `bin/kuvo-start` otherwise, as `kuvo_keeper::shell_keeper` picks. The proving
+case: a Helper test where the Rust pack's `bin/kuvo-start` has been replaced by a 0.7 Mac's
+(`exit 1`) still starts `keep` from the saved keeper, which then repairs `bin/kuvo-start`; and
+the 9.3 rehearsal's released-Mac visit to the Mac's own box.
+
 **Not served by design** (the lead, 2026-11-25): beta.1's `kuvo-link.js setup` (its
 phone link sync; the phone app is dropped), `kuvo-link.js leave <key>` (removing a machine
 from a beta.1 Mac before it updates) and `box bot-keys-refresh` (the TypeScript box refused it
