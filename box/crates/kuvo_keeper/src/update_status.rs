@@ -10,14 +10,37 @@ use crate::{Release, SELECTOR, prepare_command::version_order};
 const BLOCKED: &str = "Only a machine's own Kuvo Code folder updates itself.";
 const STATE: ObjectFormat = ObjectFormat::additive("Box update state");
 
-pub fn note_check(home: &Home, latest: &str, checked: i64) -> io::Result<()> {
+pub fn checked_round(home: &Home) -> io::Result<Option<String>> {
+    Ok(STATE
+        .read(&home.run().join("update.json"))
+        .map_err(io::Error::other)?
+        .and_then(|state| {
+            state
+                .fields
+                .get("round")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        }))
+}
+
+pub fn note_check(
+    home: &Home,
+    latest: Option<&str>,
+    checked: i64,
+    round: Option<&str>,
+) -> io::Result<()> {
     let path = home.run().join("update.json");
     let mut fields = STATE
         .read(&path)
         .map_err(io::Error::other)?
         .map_or_else(Default::default, |state| state.fields);
-    fields.insert("latest".into(), latest.into());
-    fields.insert("checked".into(), checked.into());
+    if let Some(latest) = latest {
+        fields.insert("latest".into(), latest.into());
+        fields.insert("checked".into(), checked.into());
+    }
+    if let Some(round) = round {
+        fields.insert("round".into(), round.into());
+    }
     files::write_secret(&path, &serde_json::to_vec(&STATE.encode(fields))?)
 }
 

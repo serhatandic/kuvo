@@ -28,6 +28,7 @@ use kuvo_peers::{
 use kuvo_setup::SetupHandle;
 use kuvo_store::{files, home::Home};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -35,7 +36,8 @@ use tokio::{
 };
 
 const FEED: &str = "https://github.com/serhatandic/kuvo-code/releases/latest/download/boxes.json";
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+const CHECK_EVERY_MS: i64 = 6 * 3_600_000;
+const CHECK_POLL: Duration = Duration::from_secs(10 * 60);
 const CHECK_KEPT: i64 = 24 * 60 * 60_000;
 const UPDATING: &str = "It's updating already.";
 
@@ -75,7 +77,26 @@ enum CheckReply {
 
 struct FeedCheck {
     manual: bool,
+    round: Option<String>,
     task: JoinHandle<io::Result<Candidate>>,
+}
+
+fn check_offset(home: &Home) -> i64 {
+    let name = hostname::get().unwrap_or_default();
+    let key = Sha256::digest(format!(
+        "{} {}",
+        name.to_string_lossy(),
+        home.root().display()
+    ));
+    i64::from(u32::from_be_bytes(
+        key[..4].try_into().expect("SHA-256 has four bytes"),
+    )) % CHECK_EVERY_MS
+}
+
+fn release_round(now: i64, offset: i64) -> String {
+    now.saturating_add(offset)
+        .div_euclid(CHECK_EVERY_MS)
+        .to_string()
 }
 
 fn feed(home: &Home, profile: &Path) -> Option<(String, String, bool)> {
@@ -134,13 +155,14 @@ pub fn start(
         .and_then(|mail| mail.serve(home.clone(), checks.clone()));
     let summary = summary::History::load(&home);
     let mut fleet = Fleet {
+        check_offset: check_offset(&home),
         home,
         peers,
         setup,
         engine,
         key,
         url,
-        test_feed: scratch,
+        early_fixture: scratch && std::env::var_os("KUVO_TEST_RELEASE_AGE").is_none(),
         next_check: Instant::now() + delay,
         check_now: false,
         fetcher: Fetcher::default(),
@@ -265,8 +287,9 @@ struct Fleet {
     engine: kuvo_engine::Engine,
     key: String,
     url: String,
-    test_feed: bool,
+    early_fixture: bool,
     next_check: Instant,
+    check_offset: i64,
     check_now: bool,
     fetcher: Fetcher,
     checking: Option<FeedCheck>,
@@ -430,34 +453,52 @@ impl Fleet {
                 .is_some_and(|checking| checking.task.is_finished())
                 && let Some(checking) = self.checking.take()
             {
-                match checking.task.await.map_err(io::Error::other)? {
-                    Ok(fetched) => {
-                        if let Err(error) =
-                            update_status::note_check(&self.home, fetched.version(), now)
-                        {
-                            eprintln!("Recording the release check: {error}");
-                        }
-                        if checking.manual
-                            || self.test_feed
-                            || fetched.old_enough_for_automatic_check()
-                        {
-                            self.consider(&mut candidate, fetched.envelope().to_owned(), &version)?;
-                        }
-                    }
-                    Err(error) => eprintln!("Checking Kuvo's release: {error}"),
+                let result = checking.task.await.map_err(io::Error::other)?;
+                // Keep an eligible signed offer before recording this round as finished.
+                // A restart after the round write must still be able to prepare it.
+                if let Ok(fetched) = &result
+                    && (checking.manual
+                        || self.early_fixture
+                        || fetched.old_enough_for_automatic_check())
+                {
+                    self.consider(&mut candidate, fetched.envelope().to_owned(), &version)?;
+                }
+                let latest = result.as_ref().ok().map(Candidate::version);
+                if (latest.is_some() || checking.round.is_some())
+                    && let Err(error) = update_status::note_check(
+                        &self.home,
+                        latest,
+                        now,
+                        checking.round.as_deref(),
+                    )
+                {
+                    eprintln!("Recording the release check: {error}");
+                }
+                if let Err(error) = result {
+                    eprintln!("Checking Kuvo's release: {error}");
                 }
             }
-            if self.checking.is_none()
-                && (self.check_now || Instant::now() >= self.next_check)
-                && (standalone || self.setup.may_switch_fleet().await)
-            {
-                self.next_check = Instant::now() + CHECK_EVERY;
-                let (fetcher, url, key) =
-                    (self.fetcher.clone(), self.url.clone(), self.key.clone());
-                self.checking = Some(FeedCheck {
-                    manual: std::mem::take(&mut self.check_now),
-                    task: tokio::spawn(async move { fetcher.candidate(&url, &key).await }),
-                });
+            if self.checking.is_none() && (self.check_now || Instant::now() >= self.next_check) {
+                let manual = self.check_now;
+                let round = release_round(now, self.check_offset);
+                if !manual
+                    && update_status::checked_round(&self.home)?.as_deref() == Some(round.as_str())
+                {
+                    self.next_check = Instant::now() + CHECK_POLL;
+                } else if self.pending.is_none()
+                    && !self.home.run().join("previous").try_exists()?
+                    && (standalone || self.setup.may_switch_fleet().await)
+                {
+                    self.next_check = Instant::now() + CHECK_POLL;
+                    self.check_now = false;
+                    let (fetcher, url, key) =
+                        (self.fetcher.clone(), self.url.clone(), self.key.clone());
+                    self.checking = Some(FeedCheck {
+                        manual,
+                        round: (!manual).then_some(round),
+                        task: tokio::spawn(async move { fetcher.candidate(&url, &key).await }),
+                    });
+                }
             }
         } else if let Some(main) = main {
             if let Some(checking) = self.checking.take() {
