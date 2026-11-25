@@ -65,6 +65,10 @@ Native Windows: repair 3/3, shim 2/2 (the delegate under the pinned Windows engi
 compat 4/4. Off the Mac the current-beta compat case needs Bun to generate its home and the app
 moves need APFS, so they don't apply there.
 
+Lighter than TypeScript, same answers: a repair round on WSL 2 asks Windows about the sign-in
+task only until it's seen starting the saved keeper (`run/wsl-task.keeper`), not each round.
+That saves a few PowerShell starts (seconds of CPU) at every start, visit and hourly check.
+
 **Row 9.3: the Helper's keeper path.** Kuvo Helper starts `bin/kuvo-start` itself
 (`mac/helper/Sources/KuvoHelperKit/BoxHelper.swift`, `start`, its folder check and its version
 read). On a Rust pack it must start `bin/.kuvo-start-keeper` when `bin/kuvo-box` and that file

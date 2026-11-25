@@ -20,6 +20,18 @@ const FLAGS: [&str; 6] = [
     "-EncodedCommand",
 ];
 const RECORD: &str = "wsl-task";
+/// The keeper the task was last seen starting, so a repair round asks Windows only once.
+const CHECKED: &str = "wsl-task.keeper";
+
+/// Whether the task is known to start `keeper` already: nothing to ask Windows.
+pub fn checked(home: &Home) -> bool {
+    files::text_of(&home.run().join(CHECKED))
+        .is_some_and(|seen| Path::new(seen.trim()) == crate::shell_keeper(&home.bin()))
+}
+
+fn note_checked(home: &Home, keeper: &Path) -> io::Result<()> {
+    files::write_secret(&home.run().join(CHECKED), keeper.to_string_lossy().as_bytes())
+}
 
 /// This installation's task, once WSL 2 and Windows have said who and where it runs.
 pub struct WslTask {
@@ -126,8 +138,8 @@ $task.SetSecurityDescriptor($acl.GetSddlForm('Access'), 0)
             action = literal(&action),
             start = if start { "Start-ScheduledTask -TaskName $name" } else { "" },
         ))
-        .await
-        .map(drop)
+        .await?;
+        note_checked(home, &crate::shell_keeper(&home.bin()))
     }
 
     /// A task an earlier release registered starts the ordinary keeper, which a released Mac
@@ -143,7 +155,7 @@ $task.SetSecurityDescriptor($acl.GetSddlForm('Access'), 0)
         ))
         .await?;
         if current.trim() == self.action(&saved) {
-            return Ok(());
+            return note_checked(home, &saved);
         }
         self.put(home, false).await
     }
@@ -169,6 +181,7 @@ exit 0"#,
             name = literal(&self.name),
         ))
         .await?;
+        files::remove_file_synced(&home.run().join(CHECKED))?;
         files::remove_file_synced(&home.run().join(RECORD))
     }
 
