@@ -159,6 +159,19 @@ process.stdin.on("data", (chunk) => {
     else if (method === "account/rateLimits/read") {
       answer(read("codex-limits.json", {}));
     }
+    else if (method === "account/rateLimitResetCredit/consume") {
+      const journal=read("../box/agents/limits-resets.json", {});
+      const kept=journal.spends?.find(s=>s.request===params.idempotencyKey && s.target===params.creditId && s.state==="sending");
+      if (!kept) {refuse(-32000,"Reset request was not journaled."); continue;}
+      const prior=read("codex-consumed.json", []);
+      const outcome=read("codex-reset-answer.json", {outcome:"reset"});
+      if (prior.includes(params.idempotencyKey)) answer({outcome:"alreadyRedeemed"});
+      else {
+        prior.push(params.idempotencyKey);
+        fs.writeFileSync(path.join(root,"codex-consumed.json"), JSON.stringify(prior));
+        answer(outcome);
+      }
+    }
     else if (method === "account/read") {
       const saved = fs.existsSync(auth) ? JSON.parse(fs.readFileSync(auth, "utf8")) : null;
       answer({ account: saved, requiresOpenaiAuth: true });

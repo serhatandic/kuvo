@@ -27,6 +27,8 @@ pub struct Window {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<super::plan_facts::Amount>,
     pub read: u64,
     pub source: Source,
 }

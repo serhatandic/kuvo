@@ -136,15 +136,43 @@ impl Fact {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Entry {
     account: Account,
+    #[serde(default)]
+    facts: super::plan_facts::Facts,
     trails: BTreeMap<String, Trail>,
     #[serde(default)]
     notices: Vec<Fact>,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Saved {
     #[serde(default)]
     version: u32,
     entries: BTreeMap<String, Entry>,
+    #[serde(default)]
+    order: Vec<String>,
+}
+impl Saved {
+    fn ordered(&self) -> Vec<&Entry> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.order
+            .iter()
+            .chain(self.entries.keys())
+            .filter(|provider| seen.insert(*provider))
+            .filter_map(|provider| self.entries.get(provider))
+            .collect()
+    }
+}
+fn same_account(a: &Account, b: &Account) -> bool {
+    a.service == b.service
+        && a.identity
+            .as_ref()
+            .is_some_and(|id| b.identity.as_ref() == Some(id))
+}
+fn same_sign_in(a: &Account, b: &Account) -> bool {
+    if a.identity.is_some() && b.identity.is_some() {
+        same_account(a, b)
+    } else {
+        a.provider == b.provider && a.sign_in == b.sign_in
+    }
 }
 type Tell = dyn Fn(Fact) + Send + Sync;
 #[derive(Clone)]
@@ -162,6 +190,7 @@ pub struct Service {
     refresh_failed: Arc<std::sync::atomic::AtomicBool>,
     refresh_completed: Arc<std::sync::atomic::AtomicU64>,
     changes: tokio::sync::watch::Sender<u64>,
+    reset_permission: Arc<Mutex<BTreeMap<String, bool>>>,
 }
 impl Service {
     pub fn new(
@@ -207,31 +236,85 @@ impl Service {
             refresh_failed: Arc::default(),
             refresh_completed: Arc::default(),
             changes: tokio::sync::watch::channel(0).0,
+            reset_permission: Arc::default(),
         }
     }
     pub fn attach_notices(&self, tell: Arc<Tell>) {
         let _ = self.tell.set(tell);
     }
     pub fn observe(&self, account: Account, windows: Vec<Window>, now: u64) -> std::io::Result<()> {
+        self.observe_facts(account, windows, None, now)
+    }
+    pub fn observe_facts(
+        &self,
+        account: Account,
+        windows: Vec<Window>,
+        facts: Option<super::plan_facts::Facts>,
+        now: u64,
+    ) -> std::io::Result<()> {
+        use super::plan_facts::ProblemKind;
         if let Some(error) = &self.cache_error {
             return Err(std::io::Error::other(format!(
                 "Accepted limits cache: {error}"
             )));
         }
         let mut state = self.state.lock().expect("limits lock");
-        let old = state.entries.get(&account.provider);
-        let mut entry = old
-            .filter(|e| {
-                e.account.sign_in == account.sign_in
-                    || e.account.identity.is_some() && e.account.identity == account.identity
-            })
-            .cloned()
-            .unwrap_or_else(|| Entry {
-                account: account.clone(),
-                trails: BTreeMap::new(),
-                notices: vec![],
-            });
+        let before = state.clone();
+        let old = state
+            .entries
+            .get(&account.provider)
+            .filter(|entry| same_sign_in(&entry.account, &account));
+        let sibling = state
+            .entries
+            .values()
+            .filter(|entry| same_account(&entry.account, &account))
+            .max_by_key(|entry| entry.trails.values().map(|t| t.current.read).max());
+        let mut entry = old.or(sibling).cloned().unwrap_or_else(|| Entry {
+            account: account.clone(),
+            facts: Default::default(),
+            trails: BTreeMap::new(),
+            notices: vec![],
+        });
+        // All local sign-ins to the same maker account keep the same accepted window.
+        // A turn reading of one must not create a second trail or second warning for it.
+        if let Some(other) = sibling {
+            for (id, trail) in &other.trails {
+                if let Some(current) = entry.trails.get_mut(id) {
+                    if trail.current.read > current.current.read {
+                        if current
+                            .observe(trail.current.clone(), &Default::default())
+                            .is_some()
+                        {
+                            *current = trail.clone();
+                        }
+                    }
+                } else {
+                    entry.trails.insert(id.clone(), trail.clone());
+                }
+            }
+            for fact in &other.notices {
+                if !entry.notices.iter().any(|n| n.id == fact.id) {
+                    entry.notices.push(fact.clone());
+                }
+            }
+        }
         entry.account = account;
+        if let Some(facts) = facts {
+            if let Some(problem) = facts.problem.as_ref() {
+                if matches!(problem.kind, ProblemKind::Ended | ProblemKind::None) {
+                    entry.trails.clear();
+                    entry.notices.clear();
+                    entry.facts = facts;
+                } else {
+                    entry.facts.problem = facts.problem;
+                    entry.facts.checked = facts.checked;
+                    entry.facts.next = facts.next;
+                }
+            } else {
+                entry.facts = facts;
+            }
+        }
+
         let mut facts = vec![];
         for window in windows {
             let toggles = self
@@ -258,16 +341,23 @@ impl Service {
         });
         entry.notices.extend(facts.clone());
         let provider = entry.account.provider.clone();
-        let previous = state.entries.insert(provider.clone(), entry);
+        for sibling in state
+            .entries
+            .values_mut()
+            .filter(|s| same_account(&s.account, &entry.account))
+        {
+            sibling.trails = entry.trails.clone();
+            sibling.notices = entry.notices.clone();
+        }
+        if !state.order.contains(&provider) {
+            state.order.push(provider.clone());
+        }
+        state.entries.insert(provider, entry);
         if let Err(err) = kuvo_store::files::write_secret(
             &self.file,
             &serde_json::to_vec(&*state).map_err(std::io::Error::other)?,
         ) {
-            if let Some(previous) = previous {
-                state.entries.insert(provider, previous);
-            } else {
-                state.entries.remove(&provider);
-            }
+            *state = before;
             return Err(err);
         }
         self.publish(&state, now);
@@ -283,10 +373,12 @@ impl Service {
     /// Only current sign-ins may expose kept readings after restart.
     pub fn confirm_accounts(&self, accounts: &[Account], now: u64) {
         let mut state = self.state.lock().expect("limits lock");
+        let before = state.entries.len();
         state.entries.retain(|provider, entry| {
-            accounts.iter().any(|account| {
-                provider == &account.provider && account.identity == entry.account.identity
-            })
+            entry.account.account.is_none()
+                || accounts.iter().any(|account| {
+                    provider == &account.provider && account.identity == entry.account.identity
+                })
         });
         for account in accounts {
             state
@@ -294,15 +386,129 @@ impl Service {
                 .entry(account.provider.clone())
                 .or_insert_with(|| Entry {
                     account: account.clone(),
+                    facts: Default::default(),
                     trails: BTreeMap::new(),
                     notices: vec![],
                 })
                 .account = account.clone();
         }
+        let mut order = accounts
+            .iter()
+            .map(|a| a.provider.clone())
+            .collect::<Vec<_>>();
+        order.extend(
+            state
+                .order
+                .iter()
+                .filter(|p| {
+                    state
+                        .entries
+                        .get(*p)
+                        .is_some_and(|e| e.account.account.is_none())
+                })
+                .cloned(),
+        );
+        state.order = order;
+        if state.entries.len() < before && self.file.exists() && self.cache_error.is_none() {
+            if let Ok(bytes) = serde_json::to_vec(&*state) {
+                let _ = kuvo_store::files::write_secret(&self.file, &bytes);
+            }
+        }
         self.publish(&state, now);
         self.changes.send_modify(|n| *n = n.wrapping_add(1));
     }
 
+    pub fn confirm_engine_accounts(&self, providers: &[String], now: u64) {
+        let mut state = self.state.lock().expect("limits lock");
+        let before = state.entries.len();
+        state.entries.retain(|provider, entry| {
+            entry.account.account.is_some() || providers.contains(provider)
+        });
+        let mut order = state
+            .order
+            .iter()
+            .filter(|p| {
+                state
+                    .entries
+                    .get(*p)
+                    .is_some_and(|e| e.account.account.is_some())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        order.extend_from_slice(providers);
+        state.order = order;
+        if state.entries.len() < before && self.file.exists() && self.cache_error.is_none() {
+            if let Ok(bytes) = serde_json::to_vec(&*state) {
+                let _ = kuvo_store::files::write_secret(&self.file, &bytes);
+            }
+        }
+        self.publish(&state, now);
+        self.changes.send_modify(|n| *n = n.wrapping_add(1));
+    }
+    pub fn held_engine_providers(&self, now: u64) -> std::collections::BTreeSet<String> {
+        let state = self.state.lock().expect("limits lock");
+        state
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.account.account.is_none()
+                    && entry
+                        .facts
+                        .problem
+                        .as_ref()
+                        .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::RateLimited)
+                    && entry.facts.next.is_some_and(|n| n > now)
+            })
+            .map(|e| e.account.provider.clone())
+            .collect()
+    }
+
+    pub fn reset_permissions(&self, allowed: BTreeMap<String, bool>) {
+        *self.reset_permission.lock().expect("reset permissions") = allowed;
+        self.changes.send_modify(|n| *n = n.wrapping_add(1));
+    }
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+    pub fn reset_sign_ins(&self) -> Vec<(Account, String)> {
+        let state = self.state.lock().expect("limits lock");
+        state
+            .ordered()
+            .into_iter()
+            .filter(|e| e.account.service == Provider::Codex && e.account.account.is_some())
+            .map(|e| (e.account.clone(), e.account.row(&self.key)))
+            .collect()
+    }
+    pub fn here(&self) -> Value {
+        json!({"key":self.key,"name":self.name,"here":true})
+    }
+    pub fn row(&self, id: &str) -> Option<Value> {
+        self.answer(now())["data"]["rows"]
+            .as_array()?
+            .iter()
+            .find(|r| r["id"] == id)
+            .cloned()
+    }
+    /// The resident's eligible sign-in for a reset; an optional provider pins a previous offer.
+    pub fn reset_account(
+        &self,
+        row: Option<&str>,
+        provider: Option<&str>,
+    ) -> Option<(Account, String)> {
+        let state = self.state.lock().expect("limits lock");
+        state
+            .ordered()
+            .into_iter()
+            .filter(|entry| {
+                entry.account.service == Provider::Codex && entry.account.account.is_some()
+            })
+            .filter(|entry| provider.is_none_or(|p| p == entry.account.provider))
+            .find_map(|entry| {
+                let id = entry.account.row(&self.key);
+                row.is_none_or(|row| row == id)
+                    .then(|| (entry.account.clone(), id))
+            })
+    }
     pub fn describe(&self) -> String {
         let now = now();
         let state = self.state.lock().expect("limits lock");
@@ -316,13 +522,33 @@ impl Service {
             "Plan limits of your accounts (signed in on {} unless it says where; used is how much of the window is gone):",
             self.name
         )];
-        for entry in state.entries.values() {
+        let mut seen = std::collections::BTreeSet::new();
+        for entry in state.ordered() {
+            if entry
+                .facts
+                .problem
+                .as_ref()
+                .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::None)
+            {
+                continue;
+            }
+            if !seen.insert(entry.account.row(&self.key)) {
+                continue;
+            }
             lines.push(format!(
-                "- {}, provider {}:",
+                "- {}{}, provider {}:",
                 entry.account.title(),
+                entry
+                    .facts
+                    .plan
+                    .as_ref()
+                    .map_or(String::new(), |plan| format!(", {plan}")),
                 entry.account.provider
             ));
-            if entry.trails.is_empty() {
+            if entry.trails.is_empty()
+                && entry.facts.extras.is_empty()
+                && entry.facts.balance.is_none()
+            {
                 lines.push("  - none read yet".into());
             }
             for trail in entry.trails.values() {
@@ -349,6 +575,82 @@ impl Service {
                     (window.used * 100.0).round()
                 ));
             }
+            let amount = |n: f64, unit: super::plan_facts::Unit| match unit {
+                super::plan_facts::Unit::Usd => format!("${n:.2}"),
+                super::plan_facts::Unit::Requests => format!("{:.0} requests", n),
+                super::plan_facts::Unit::Credits => format!("{:.0} credits", n),
+            };
+            if let Some(b) = &entry.facts.balance {
+                lines.push(format!(
+                    "  - credits: {} left{}",
+                    amount(b.left, b.unit),
+                    b.limit
+                        .map_or(String::new(), |n| format!(" of {}", amount(n, b.unit)))
+                ));
+            }
+            use super::plan_facts::Extra;
+            for extra in &entry.facts.extras {
+                match extra {
+                    Extra::Resets { count, usable, .. } => {
+                        let id = entry.account.row(&self.key);
+                        let always = self
+                            .reset_permission
+                            .lock()
+                            .expect("reset permissions")
+                            .get(&id)
+                            == Some(&true);
+                        let use_words = if *count > 0 && *usable {
+                            format!(
+                                "; use_limit_reset with account \"{id}\" uses one ({})",
+                                if always {
+                                    "the user allows it without asking"
+                                } else {
+                                    "the user approves each"
+                                }
+                            )
+                        } else if *count > 0 {
+                            "; none can be used from your computers now".into()
+                        } else {
+                            String::new()
+                        };
+                        lines.push(format!(
+                            "  - rate-limit resets: {count} available{use_words}"
+                        ));
+                    }
+                    Extra::Unreadable { message, .. } => lines.push(format!("  - {message}")),
+                    Extra::Left {
+                        name,
+                        amount: n,
+                        unit,
+                        ..
+                    } => lines.push(format!("  - {name}: {} left", amount(*n, *unit))),
+                    Extra::Spent {
+                        name,
+                        amount: n,
+                        unit,
+                        resets_at,
+                        ..
+                    } if resets_at.is_none_or(|at| at > now) => {
+                        lines.push(format!("  - {name}: {} spent", amount(*n, *unit)))
+                    }
+                    Extra::Capped {
+                        name,
+                        amount: n,
+                        limit,
+                        unit,
+                        resets_at,
+                        ..
+                    } if resets_at.is_none_or(|at| at > now) => lines.push(format!(
+                        "  - {name}: {} of {} used",
+                        amount(*n, *unit),
+                        amount(*limit, *unit)
+                    )),
+                    _ => {}
+                }
+            }
+            if let Some(problem) = &entry.facts.problem {
+                lines.push(format!("  - Not read just now: {}", problem.message));
+            }
         }
         lines.join("\n")
     }
@@ -358,9 +660,9 @@ impl Service {
     }
     fn publish(&self, state: &Saved, now: u64) -> Value {
         let mut accounts = vec![];
-        let mut rows = vec![];
+        let mut rows: Vec<Value> = vec![];
         let mut rail = vec![];
-        let mut notices = vec![];
+        let mut notices: Vec<Fact> = vec![];
         // The contract names the supported service families even when no account is
         // signed into one. Keep the TypeScript order; active rows remain independent.
         let services = [
@@ -375,18 +677,66 @@ impl Service {
             "opencode",
         ];
         let mut updated = 0;
-        for entry in state.entries.values() {
-            let account = &entry.account;
+        for entry in state.ordered() {
+            if entry
+                .facts
+                .problem
+                .as_ref()
+                .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::None)
+            {
+                continue;
+            }
             let (local, row) = project(entry, &self.key, &self.name, now);
             if let Some(read) = entry.trails.values().map(|t| t.current.read).max() {
                 updated = updated.max(read);
             }
-            if !entry.trails.is_empty() {
-                rail.push(json!({"key":account.service,"rows":[row["id"]],"ring":row["id"],"selected":row["id"],"title":row["title"]}));
-            }
             accounts.push(local);
-            rows.push(row);
-            notices.extend(entry.notices.iter().filter(|n| n.current(now)).cloned());
+            if let Some(existing) = rows.iter_mut().find(|existing| existing["id"] == row["id"]) {
+                let mut boxes = existing["boxes"].as_array().cloned().unwrap_or_default();
+                boxes.extend(row["boxes"].as_array().into_iter().flatten().cloned());
+                if existing["checked"].as_u64().unwrap_or(0) < row["checked"].as_u64().unwrap_or(0)
+                {
+                    *existing = row;
+                }
+                existing["boxes"] = json!(boxes);
+            } else {
+                rows.push(row);
+            }
+            for fact in entry.notices.iter().filter(|n| n.current(now)) {
+                if !notices.iter().any(|n| n.id == fact.id) {
+                    notices.push(fact.clone());
+                }
+            }
+        }
+        let allowed = self.reset_permission.lock().expect("reset permissions");
+        for row in &mut rows {
+            let id = row["id"].as_str().unwrap_or_default();
+            let agents = allowed.get(id) == Some(&true);
+            if let Some(extras) = row["extras"].as_array_mut() {
+                for extra in extras
+                    .iter_mut()
+                    .filter(|e| e["kind"] == "resets" && e["usable"] == true)
+                {
+                    extra["on"] = self.here();
+                    if agents {
+                        extra["agents"] = json!(true);
+                    }
+                }
+            }
+        }
+        drop(allowed);
+        for row in &rows {
+            if row["windows"]
+                .as_array()
+                .is_some_and(|windows| !windows.is_empty())
+                && row["ended"] != true
+            {
+                let mut item = json!({"key":row["agent"].as_str().or(row["service"].as_str()).unwrap_or_default(),"rows":[row["id"]],"ring":row["id"],"selected":row["id"],"title":row["title"]});
+                if let Some(dot) = row["card"].get("dot") {
+                    item["dot"] = dot.clone();
+                }
+                rail.push(item);
+            }
         }
         self.menu.publish(&rows);
         let mut data = json!({"accounts":accounts,"rows":rows,"rail":rail,"services":services,"pendingComputers":[],"refreshPending":self.refreshing.try_lock().is_err(),"refreshFailed":self.cache_error.is_some()||self.refresh_failed.load(std::sync::atomic::Ordering::Relaxed),"notificationAvailability":settings::notification_availability(),"notices":notices,"ownNotices":notices});
@@ -421,6 +771,10 @@ fn shown(window: &Window, now: u64) -> Value {
             .as_object_mut()
             .expect("window")
             .shift_remove("resetsAt");
+        value
+            .as_object_mut()
+            .expect("window")
+            .shift_remove("amount");
     }
     value
 }
@@ -428,6 +782,9 @@ fn project(entry: &Entry, key: &str, name: &str, now: u64) -> (Value, Value) {
     let acc = &entry.account;
     let title = acc.title();
     let mut local = json!({"provider":acc.provider,"service":acc.service,"title":title,"windows":entry.trails.values().map(|t|shown(&t.current,now)).collect::<Vec<_>>()});
+    if let Ok(Value::Object(facts)) = serde_json::to_value(&entry.facts) {
+        local.as_object_mut().expect("account").extend(facts);
+    }
     let mut box_record = json!({"key":key,"name":name,"provider":acc.provider,"here":true});
     if let Some(account) = &acc.account {
         local["account"] = json!(account);
@@ -553,6 +910,22 @@ fn project(entry: &Entry, key: &str, name: &str, now: u64) -> (Value, Value) {
         row["bar"] = json!(bar);
         row["level"] = rings[bar]["level"].clone();
     }
+    if rings.is_empty() {
+        let balance = entry.facts.balance.as_ref().and_then(|b| {
+            b.limit
+                .filter(|n| *n > 0.0)
+                .map(|limit| 1.0 - b.left / limit)
+        });
+        let extras = entry.facts.extras.iter().filter_map(|extra| match extra {
+            super::plan_facts::Extra::Capped { amount, limit, .. } if *limit > 0.0 => {
+                Some(amount / limit)
+            }
+            _ => None,
+        });
+        if let Some(used) = balance.into_iter().chain(extras).reduce(f64::max) {
+            row["level"] = json!(level(used));
+        }
+    }
     let updated = current.iter().map(|w| w.read).max();
     let mut usage = json!({"title":title,"computers":[{"name":name,"here":true}],"meters":meters});
     if let Some(updated) = updated {
@@ -574,6 +947,22 @@ fn project(entry: &Entry, key: &str, name: &str, now: u64) -> (Value, Value) {
     }
     row["usage"] = usage;
     row["card"] = card;
+    if entry
+        .facts
+        .problem
+        .as_ref()
+        .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::Ended)
+    {
+        row["ended"] = json!(true);
+        row["windows"] = json!([]);
+        row["rings"] = json!({});
+        row.as_object_mut().expect("row").shift_remove("level");
+        row.as_object_mut().expect("row").shift_remove("bar");
+        row["card"]["lines"] = json!([]);
+        row["card"]["note"] = json!("Plan ended.");
+        row["usage"]["meters"] = json!([]);
+        row["usage"]["status"] = json!({"words":"Plan ended.","warning":false});
+    }
     (local, row)
 }
 pub fn now() -> u64 {
@@ -627,6 +1016,43 @@ where
     Fut: std::future::Future<Output = bool> + Send + 'static,
 {
     let read = Arc::new(read);
+    let mut clients = routes.client_activity();
+    let connected_service = service.clone();
+    let connected_reader = read.clone();
+    tokio::spawn(async move {
+        use std::time::Duration;
+        loop {
+            if let Some(()) = clients.wait_for(|n| *n > 0).await.ok().map(|_| ()) {
+                // Do not keep a periodic wake when the final client leaves, and don't read
+                // just because a brief startup/request probe was connected for a moment.
+                let mut next = tokio::time::Instant::now() + Duration::from_secs(60);
+                loop {
+                    tokio::select! {
+                        changed=clients.changed()=>{
+                            if changed.is_err(){return;}
+                            if *clients.borrow()==0 {break;}
+                        },
+                        _=tokio::time::sleep_until(next)=>{
+                            if *clients.borrow()==0 {break;}
+                            start_read(&connected_service,connected_reader.clone(),false,None);
+                            next=tokio::time::Instant::now()+Duration::from_secs(60);
+                        }
+                    }
+                }
+            } else {
+                return;
+            }
+        }
+    });
+
+    let menu_service = service.clone();
+    let menu_reader = read.clone();
+    let mut requested = service.menu.requests();
+    tokio::spawn(async move {
+        while requested.changed().await.is_ok() {
+            start_read(&menu_service, menu_reader.clone(), false, None);
+        }
+    });
     let deadlines = service.clone();
     let deadline_reader = read.clone();
     tokio::spawn(async move {

@@ -59,15 +59,22 @@ fn rings_of(row: &Value) -> Option<RingsOn> {
 /// The service publishes on readings, account removal and peer changes. Until it has a reading,
 /// the Helper has no rings to draw; it does not fetch or infer account limits itself.
 #[derive(Clone)]
-pub struct MenuLimits(watch::Sender<Arc<Vec<RingsOn>>>);
+pub struct MenuLimits(watch::Sender<Arc<Vec<RingsOn>>>, watch::Sender<u64>);
 
 impl Default for MenuLimits {
     fn default() -> Self {
-        Self(watch::channel(Arc::new(Vec::new())).0)
+        Self(watch::channel(Arc::new(Vec::new())).0, watch::channel(0).0)
     }
 }
 
 impl MenuLimits {
+    /// The menu feed is connected and may display these readings now.
+    pub fn requested(&self) {
+        self.1.send_modify(|n| *n = n.wrapping_add(1));
+    }
+    pub fn requests(&self) -> watch::Receiver<u64> {
+        self.1.subscribe()
+    }
     pub fn publish(&self, rows: &[Value]) {
         let rings: Vec<_> = rows.iter().filter_map(rings_of).collect();
         self.0.send_if_modified(|previous| {

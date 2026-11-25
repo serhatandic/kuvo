@@ -10,6 +10,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Rust computers serve Settings pages and keep individual changes with their own revisions. New conversations start in Ask First when no supported mode has been chosen.
 - Rust computers keep usage notice settings and use accepted Claude Code and Codex turn readings for the menu rings and in-app usage warnings.
+- Rust computers read Claude Code, Codex and supported engine plan limits, offer Codex resets through the existing confirmation cards, and keep the portable Insights index ready as transcripts change.
 
 - Rust computers support editing projects and using Changes to view, stage, discard, commit, switch branches, merge worktrees and create pull requests.
 - Changes and project edits accept Windows folder paths.
