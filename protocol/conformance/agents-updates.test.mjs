@@ -49,6 +49,15 @@ async function withPrograms({ installed, latest, work = false, prepare = () => {
         assert.equal(answer.status, 200, answer.text);
         return Object.fromEntries(answer.json.data.map((row) => [row.id, row.metadata]));
       },
+      /** The rows asked anew, once its version and the newest have come (a read waits two
+       * seconds for them at most, and says them the next time). */
+      async known() {
+        await box.rows(true);
+        return until(async () => {
+          const rows = await box.rows();
+          return rows[provider].latestVersion && rows;
+        }, "Its newest version never came.");
+      },
       async ask(route, method = "POST", body = {}) {
         const answer = await request(box.listener, method, route, method === "GET" || method === "DELETE" ? undefined : body, headers, 30000);
         return { status: answer.status, value: answer.json, text: answer.text };
@@ -63,6 +72,15 @@ async function withPrograms({ installed, latest, work = false, prepare = () => {
       },
       updatesRun: () => codex.heard().filter((line) => line.update).length,
       notices: async () => (await box.ask(updates + "/notices", "GET")).value.data.notices,
+      /** Read anew, until the notices served are `ids` (each read decides them once its versions come). */
+      async noticesAre(ids) {
+        let now = [];
+        await until(async () => {
+          await box.rows(true);
+          now = (await box.notices()).map((each) => each.id);
+          return JSON.stringify(now) === JSON.stringify(ids);
+        }, () => `The notices were ${JSON.stringify(now)}, not ${JSON.stringify(ids)}.`);
+      },
     };
     await check(box);
   } catch (error) {
@@ -78,7 +96,7 @@ test("Update All: the box picks a program behind once, answers as it starts, a s
     codex.go("codex-update-waits");
     write(path.join(codex.root, "codex-update-to"), "2.0.0");
   } }, async (box) => {
-    const before = await box.rows(true);
+    const before = await box.known();
     // Said of the agent's own sign-in: once for its program.
     assert.deepEqual([before[provider].updateAll, before[box.codex.work].updateAll], [true, false]);
     assert.deepEqual([before[provider].version, before[provider].latestVersion, before[provider].outdated, before[provider].updates], ["1.0.0", "2.0.0", true, true]);
@@ -126,7 +144,7 @@ test("an update waits for the turns of its program under way, and a second ask d
 
 test("one that fails says why to every client, and is offered again until the version moves on", { skip, timeout: 90000 }, () =>
   withPrograms({ installed: "1.0.0", latest: "1.1.0", prepare: (codex) => codex.go("codex-update-fails") }, async (box) => {
-    await box.rows(true);
+    await box.known();
     assert.deepEqual((await box.ask(updates + "/" + provider)).value.data, { updating: ["codex"] });
     const failed = await box.settled();
     assert.equal(failed.programUpdate.state, "failed");
@@ -139,7 +157,7 @@ test("one that fails says why to every client, and is offered again until the ve
 
 test("why one failed, seen on one client, is gone for every client; one seen before a newer outcome leaves that one", { skip, timeout: 90000 }, () =>
   withPrograms({ installed: "1.0.0", latest: "1.1.0", prepare: (codex) => codex.go("codex-update-fails") }, async (box) => {
-    await box.rows(true);
+    await box.known();
     await box.ask(updates + "/" + provider);
     const failed = (await box.settled()).programUpdate;
     // Seen on an older outcome: this one stays.
@@ -175,7 +193,7 @@ test("a program under someone else's node_modules isn't the box's to update, alo
     fs.renameSync(path.join(bin, "codex"), path.join(project, "codex"));
     fs.symlinkSync(path.join(project, "codex"), path.join(bin, "codex"));
   } }, async (box) => {
-    const row = (await box.rows(true))[provider];
+    const row = (await box.known())[provider];
     assert.deepEqual([row.outdated, row.updates, row.updateAll, row.updateCommand], [true, false, false, undefined]);
     assert.deepEqual((await box.ask(updates)).value.data, { updating: [] });
     assert.equal(box.updatesRun(), 0);
@@ -193,27 +211,25 @@ test("update notices, off: a newer version is available with Update, once, also 
       title: "Codex 2.0.0 is available", body: "You have 1.0.0.", at: 0, action: { id: "update", label: "Update" },
     });
     // Read again, and after the box starts again: still the one.
-    await box.rows(true);
+    await box.known();
     await box.codex.stop();
     box.listener = await box.codex.start();
-    await box.rows(true);
+    await box.known();
     assert.deepEqual((await box.notices()).map((each) => each.id), ["codex-available-2.0.0"]);
     // Seen on one client: gone for every client, and not raised again.
     assert.equal((await box.ask(`${updates}/notices/${notice.id}`, "DELETE")).status, 200);
-    await box.rows(true);
+    await box.known();
     assert.deepEqual(await box.notices(), []);
     // A newer one is raised; once it's updated in Terminal, it goes.
     box.npm.said.latest = "2.1.0";
-    await box.rows(true);
-    assert.deepEqual((await box.notices()).map((each) => each.id), ["codex-available-2.1.0"]);
+    await box.noticesAre(["codex-available-2.1.0"]);
     write(path.join(box.codex.root, "codex-version"), "2.1.0");
-    await box.rows(true);
-    assert.deepEqual(await box.notices(), []);
+    await box.noticesAre([]);
   }));
 
 test("update notices, on: nothing is raised for what's out; once it updated itself, it says so, once", { skip, timeout: 90000 }, () =>
   withPrograms({ installed: "1.0.0", latest: "2.0.0", prepare: (codex) => write(path.join(codex.home, "box", "agents-update-themselves.json"), "true") }, async (box) => {
-    await box.rows(true);
+    await box.known();
     assert.deepEqual(await box.notices(), []);
     write(path.join(box.codex.root, "codex-version"), "2.0.0");
     await box.rows(true);
