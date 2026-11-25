@@ -108,6 +108,17 @@ pub struct Trail {
     samples: Vec<Sample>,
     pace: Pace,
     fired: BTreeSet<Milestone>,
+    #[serde(default)]
+    counts: BTreeMap<Milestone, u32>,
+    // A real recovery can re-arm a milestone; tiny jitter cannot.
+    #[serde(default)]
+    rearmed: BTreeMap<Milestone, u64>,
+    #[serde(default)]
+    recovering: BTreeMap<Milestone, u64>,
+    #[serde(default)]
+    notice_under: Option<bool>,
+    #[serde(default)]
+    notice_pace: Option<Pace>,
 }
 impl Trail {
     pub fn new(mut first: Window) -> Option<Self> {
@@ -121,8 +132,15 @@ impl Trail {
             samples: vec![],
             pace: Pace::Unknown,
             fired: BTreeSet::new(),
+            counts: BTreeMap::new(),
+            rearmed: BTreeMap::new(),
+            recovering: BTreeMap::new(),
+            notice_under: None,
+            notice_pace: None,
         };
         trail.note();
+        trail.notice_under = Some(trail.current.used > 0.9);
+        trail.notice_pace = Some(trail.pace);
         Some(trail)
     }
     // A reset never goes backwards. Small forward jitter is treated as belonging to
@@ -196,38 +214,81 @@ impl Trail {
             _ => {}
         }
         self.candidate = None;
-        let was_under = old.used > 0.9;
-        let before = self.pace;
+        let was_under = self.notice_under.unwrap_or(old.used > 0.9);
+        let before = self.notice_pace.unwrap_or(self.pace);
+        let now = next.read;
+        let under = next.used > 0.9;
         if restarted || corrected {
             self.samples.clear();
             self.pace = Pace::Unknown;
+            self.recovering.clear();
             if restarted {
-                self.fired.clear();
+                self.clear_fired();
             }
         }
         self.current = next;
         self.note();
-        if restarted || corrected {
+        if restarted {
+            self.notice_under = Some(under);
+            self.notice_pace = Some(self.pace);
             return Some(vec![]);
+        }
+        if corrected {
+            // Only the corroborated correction (two matching, lower reads at
+            // least a minute apart) can rearm Almost Out within a window.
+            if self.current.used <= 0.9 - DROP {
+                self.rearm(Milestone::UnderTenPercent, now);
+                self.notice_under = Some(false);
+            } else if under {
+                self.notice_under = Some(true);
+            }
+            return Some(vec![]);
+        }
+        for (milestone, recovered) in [
+            (Milestone::HealthyToClose, self.pace == Pace::Healthy),
+            (
+                Milestone::CloseToRunningOut,
+                matches!(self.pace, Pace::Healthy | Pace::Close),
+            ),
+        ] {
+            if recovered && self.fired.contains(&milestone) {
+                let since = *self.recovering.entry(milestone).or_insert(now);
+                if now.saturating_sub(since) >= 5 * MINUTE {
+                    self.rearm(milestone, now);
+                }
+            } else {
+                self.recovering.remove(&milestone);
+            }
         }
         let mut notices = vec![];
         let mut cross = |milestone, crossed| {
             if crossed && toggles.contains(&milestone) && self.fired.insert(milestone) {
+                let count = self.counts.entry(milestone).or_default();
+                *count = count.saturating_add(1);
                 notices.push(milestone);
+                true
+            } else {
+                false
             }
         };
-        cross(
-            Milestone::UnderTenPercent,
-            !was_under && self.current.used > 0.9,
-        );
-        cross(
+        let under_fired = cross(Milestone::UnderTenPercent, !was_under && under);
+        let close = cross(
             Milestone::HealthyToClose,
             before < Pace::Close && self.pace == Pace::Close,
         );
-        cross(
+        let running = cross(
             Milestone::CloseToRunningOut,
             before < Pace::RunsOut && self.pace == Pace::RunsOut,
         );
+        if under_fired
+            || !under && !self.fired.contains(&Milestone::UnderTenPercent)
+            || under && was_under
+        {
+            self.notice_under = Some(under);
+        }
+        if self.pace != Pace::Unknown && (self.pace <= before || close || running) {
+            self.notice_pace = Some(self.pace);
+        }
         Some(notices)
     }
     fn lookback(&self) -> u64 {
@@ -300,7 +361,7 @@ impl Trail {
     /// Wake only for a known reset or an estimate of the 90% crossing.
     /// A wake confirms with the maker; it is not itself a new reading.
     pub fn notice_state(&self) -> NoticeState {
-        let previous = match self.pace {
+        let previous = match self.notice_pace.unwrap_or(self.pace) {
             Pace::Unknown => NoticeBucket::Untracked,
             Pace::Healthy => NoticeBucket::Healthy,
             Pace::Close => NoticeBucket::Close,
@@ -310,27 +371,115 @@ impl Trail {
             resets_at: self.current.resets_at,
             fired: self.fired.clone(),
             previous,
-            under: self.current.used > 0.9,
+            under: self.notice_under.unwrap_or(self.current.used > 0.9),
             primed: true,
             read: Some(self.current.read),
             anchor: self.current.resets_at.map(|at| (at + 500) / 1000),
-            counts: self.fired.iter().map(|m| (*m, 1)).collect(),
+            counts: [
+                Milestone::UnderTenPercent,
+                Milestone::HealthyToClose,
+                Milestone::CloseToRunningOut,
+            ]
+            .into_iter()
+            .filter_map(|m| {
+                let count = self.occurrence(m);
+                (count > 0).then_some((m, count))
+            })
+            .collect(),
         }
+    }
+    pub fn occurrence(&self, m: Milestone) -> u32 {
+        self.counts
+            .get(&m)
+            .copied()
+            .unwrap_or(u32::from(self.fired.contains(&m)))
+    }
+    fn rearm(&mut self, m: Milestone, at: u64) {
+        let count = self.occurrence(m);
+        if count > 0 {
+            self.counts.insert(m, count);
+            self.rearmed.insert(m, at);
+        }
+        self.fired.remove(&m);
+        self.recovering.remove(&m);
     }
     pub fn take_notice_state(&mut self, state: &NoticeState) {
         if state.primed && state.resets_at == self.current.resets_at {
-            self.fired.extend(state.fired.iter().copied());
+            for m in [
+                Milestone::UnderTenPercent,
+                Milestone::HealthyToClose,
+                Milestone::CloseToRunningOut,
+            ] {
+                let theirs = state
+                    .counts
+                    .get(&m)
+                    .copied()
+                    .unwrap_or(u32::from(state.fired.contains(&m)));
+                let ours = self.occurrence(m);
+                if theirs > ours {
+                    self.counts.insert(m, theirs);
+                    self.rearmed.remove(&m);
+                    if state.fired.contains(&m) {
+                        self.fired.insert(m);
+                    } else {
+                        self.fired.remove(&m);
+                    }
+                } else if theirs == ours
+                    && state.fired.contains(&m)
+                    && !self.rearmed.contains_key(&m)
+                {
+                    self.fired.insert(m);
+                }
+            }
         }
     }
     pub fn clear_fired(&mut self) {
         self.fired.clear();
+        self.counts.clear();
+        self.rearmed.clear();
+        self.recovering.clear();
     }
-    pub fn mark_fired(&mut self, milestone: Milestone) {
+    pub fn mark_fired_at(&mut self, milestone: Milestone, at: u64) {
+        if self.rearmed.get(&milestone).is_some_and(|r| *r >= at) {
+            return;
+        }
+        let count = self.occurrence(milestone).max(1);
+        self.counts.insert(milestone, count);
         self.fired.insert(milestone);
     }
     pub fn merge_fired(&mut self, other: &Self) {
-        if self.current.resets_at == other.current.resets_at {
-            self.fired.extend(other.fired.iter().copied());
+        if self.current.resets_at != other.current.resets_at {
+            return;
+        }
+        for m in [
+            Milestone::UnderTenPercent,
+            Milestone::HealthyToClose,
+            Milestone::CloseToRunningOut,
+        ] {
+            let ours = self.occurrence(m);
+            let theirs = other.occurrence(m);
+            if theirs > ours {
+                self.counts.insert(m, theirs);
+                self.rearmed.remove(&m);
+                if other.fired.contains(&m) {
+                    self.fired.insert(m);
+                } else {
+                    self.fired.remove(&m);
+                }
+            }
+            if theirs >= ours {
+                if let Some(at) = other.rearmed.get(&m) {
+                    if self.rearmed.get(&m).is_none_or(|ours| at > ours) {
+                        self.rearmed.insert(m, *at);
+                        if !other.fired.contains(&m) {
+                            self.fired.remove(&m);
+                        }
+                    }
+                }
+            }
+            if theirs == ours && other.fired.contains(&m) && !self.rearmed.contains_key(&m) {
+                self.fired.insert(m);
+            }
         }
     }
     pub fn check_at(&self) -> Option<u64> {

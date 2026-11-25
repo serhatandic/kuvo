@@ -16,6 +16,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct Stamp {
     identity: String,
     revision: String,
+    #[serde(default)]
+    bytes: u64,
 }
 fn signature(stamp: &FileStamp) -> String {
     format!(
@@ -30,6 +32,7 @@ pub fn stamp(path: &Path) -> Result<Option<Stamp>> {
     let wal = kuvo_store::files::file_stamp(&side(path, "-wal"))?;
     Ok(Some(Stamp {
         identity: format!("{}:{}:{:?}", main.device, main.file, main.created_ns),
+        bytes: main.size,
         revision: format!(
             "{}:{}",
             signature(&main),
@@ -47,6 +50,8 @@ pub struct Checkpoint {
     pub auth_revision: Option<String>,
     #[serde(default)]
     pub sign_in: super::engine_codex_history::SignIn,
+    #[serde(default)]
+    history_version: u8,
 }
 fn side(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -109,9 +114,12 @@ pub fn changed_databases(root: &Path, paths: Vec<PathBuf>) -> Result<Vec<PathBuf
         if !engine_name(name) {
             continue;
         }
-        if let Some(path) = owned(root, &root.join(name))? {
+        let path = root.join(name);
+        if let Some(path) = owned(root, &path)? {
             files.insert(path);
-        }
+        } else if !path.exists() {
+            files.insert(path);
+        } // removal wakes the metadata reconciliation
     }
     Ok(files.into_iter().collect())
 }
@@ -181,6 +189,7 @@ pub fn read(
     path: &Path,
     since: i64,
     previous: &Checkpoint,
+    mut reset: impl FnMut(i64) -> Result<()>,
     mut take: impl FnMut(Record, &BTreeMap<String, Session>) -> Result<()>,
 ) -> Result<Option<Checkpoint>> {
     let Some(stamp) = stamp(path)? else {
@@ -192,7 +201,10 @@ pub fn read(
         .flatten()
         .as_ref()
         .map(signature);
-    if previous.stamp.as_ref() == Some(&stamp) && previous.auth_revision == auth_revision {
+    if previous.history_version == 2
+        && previous.stamp.as_ref() == Some(&stamp)
+        && previous.auth_revision == auth_revision
+    {
         return Ok(None);
     }
     let db = open_maker(path)?;
@@ -232,17 +244,20 @@ pub fn read(
         headers: 0,
         auth_revision,
         sign_in,
+        history_version: 2,
     };
     for (table, role) in [
         ("message", "json_extract(data,'$.role')"),
         ("session_message", "type"),
     ] {
         let names = columns(&read, table)?;
+        let version = if table == "message" { 1 } else { 2 };
         if !["id", "session_id", "time_created", "data"]
             .iter()
             .all(|field| names.contains(*field))
             || table == "session_message" && !names.contains("type")
         {
+            reset(version)?;
             continue;
         }
         let has_update = names.contains("time_updated");
@@ -255,18 +270,21 @@ pub fn read(
             if let Some(last) = last {
                 checkpoint.watermarks.insert(table.into(), last);
             }
-            let before = previous.watermarks.get(table).copied().filter(|before| {
-                previous
-                    .stamp
-                    .as_ref()
-                    .is_some_and(|old| old.identity == stamp.identity)
-                    && last.is_some_and(|last| last >= *before)
-                    && previous.sign_in == sign_in
-            });
+            let before =
+                previous.watermarks.get(table).copied().filter(|before| {
+                    previous.stamp.as_ref().is_some_and(|old| {
+                        old.identity == stamp.identity && old.bytes <= stamp.bytes
+                    }) && previous.history_version == 2
+                        && last.is_some_and(|last| last >= *before)
+                        && previous.sign_in == sign_in
+                });
             before.map(|old| old.saturating_sub(3_600_000))
         } else {
             None
         };
+        if after.is_none() {
+            reset(version)?;
+        }
         let changed = if after.is_some() {
             "AND (time_updated IS NULL OR time_updated>=?2)"
         } else {
@@ -300,7 +318,7 @@ pub fn read(
                 origin: row.get(10)?,
                 observed_account: row.get(11)?,
                 cost: row.get(12).ok().flatten(),
-                version: if table == "message" { 1 } else { 2 },
+                version,
                 codex_history: false,
             };
             let finished = record.completed.is_some()
@@ -426,6 +444,13 @@ pub async fn follow(root: PathBuf, hub: WatchHub, send: tokio::sync::mpsc::Sende
             while let Ok(Some(next)) = tokio::time::timeout_at(until, watch.recv()).await {
                 add(next);
             }
+            // A directory change or legacy auth change is a full discovery,
+            // including the empty list when the last channel was removed.
+            let all = all
+                || files.iter().any(|path| {
+                    path.as_os_str().is_empty()
+                        || path.file_name().is_some_and(|name| name == "auth.json")
+                });
             let paths = (if all {
                 databases(&root)
             } else {

@@ -7,6 +7,7 @@ use kuvo_peers::{
 use kuvo_services::usage::{
     limits::{self, Service},
     limits_peers::Reading,
+    resets::{PeerTransport, ResetMail, Resets},
 };
 use kuvo_setup::SetupHandle;
 use kuvo_wire::{keys::encode, mail::Envelope};
@@ -20,11 +21,43 @@ struct Told {
     scope: Option<String>,
 }
 
+impl Told {
+    fn wait_until(
+        &self,
+        contents: &Value,
+        checked: &[Option<u64>],
+        scope: Option<&str>,
+        now: u64,
+    ) -> Option<u64> {
+        let refresh = self.at.saturating_add(600_000);
+        if now >= refresh {
+            return None;
+        }
+        if &self.contents == contents {
+            return Some(refresh);
+        }
+        let throttle = self.at.saturating_add(60_000);
+        (self.checked == checked && self.scope.as_deref() == scope && now < throttle)
+            .then_some(throttle)
+    }
+}
+pub(super) async fn at_deadline(at: Option<u64>) {
+    if let Some(at) = at {
+        tokio::time::sleep(Duration::from_millis(
+            at.saturating_sub(limits::now()).max(1),
+        ))
+        .await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
 pub async fn follow_limits(
     service: Service,
     mut directory: Reader,
     relay: RelayHandle,
     setup: SetupHandle,
+    resets: Resets,
 ) {
     let Some(mut mail) = relay.subscribe() else {
         return;
@@ -33,9 +66,8 @@ pub async fn follow_limits(
     let mut refreshes = service.remote_refreshes();
     let mut told = BTreeMap::<String, Told>::new();
     let mut answered = BTreeMap::<String, u64>::new();
+    let mut reset_told = BTreeMap::<(String, String), (u64, u64)>::new();
     let mut connected = false;
-    let mut tick = tokio::time::interval(Duration::from_secs(60));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let view = directory.view();
         let scope = setup.config_receipt_scope().map(|(id, _)| id);
@@ -50,8 +82,42 @@ pub async fn follow_limits(
         answered.retain(|id, _| names.contains_key(id));
         if view.relay_connected && !connected {
             told.clear();
+            reset_told.clear();
         }
+        reset_told.retain(|(computer, _), _| names.contains_key(computer));
         connected = view.relay_connected;
+        let mut deadline = None;
+        let mut wake = |at: u64| deadline = Some(deadline.map_or(at, |old: u64| old.min(at)));
+        if connected {
+            if let Some(at) = service.peer_expiry(limits::now()) {
+                wake(at);
+            }
+            let decisions = resets.decisions().await;
+            for member in &view.roster.members {
+                let Some(host) = member.host() else {
+                    continue;
+                };
+                let id = encode(&member.key);
+                for decision in &decisions {
+                    let mark = (id.clone(), decision.row.clone());
+                    let now = limits::now();
+                    if let Some((_, sent)) = reset_told.get(&mark).filter(|(at, sent)| {
+                        *at == decision.at && now.saturating_sub(*sent) < 600_000
+                    }) {
+                        wake(sent.saturating_add(600_000));
+                        continue;
+                    }
+                    if send_reset(&relay, host.clone(), ResetMail::decision(decision.clone())).await
+                    {
+                        let sent = limits::now();
+                        reset_told.insert(mark, (decision.at, sent));
+                        wake(sent.saturating_add(600_000));
+                    } else {
+                        wake(now.saturating_add(60_000));
+                    }
+                }
+            }
+        }
         if connected && !names.is_empty() {
             let at = limits::now();
             let snapshot = service.peer_snapshot(scope.clone(), at);
@@ -67,13 +133,10 @@ pub async fn follow_limits(
                 };
                 let id = encode(&member.key);
                 let old = told.get(&id);
-                if old.is_some_and(|old| {
-                    at.saturating_sub(old.at) < 600_000
-                        && (old.contents == contents
-                            || (old.checked == checked
-                                && old.scope == scope
-                                && at.saturating_sub(old.at) < 60_000))
-                }) {
+                if let Some(when) =
+                    old.and_then(|old| old.wait_until(&contents, &checked, scope.as_deref(), at))
+                {
+                    wake(when);
                     continue;
                 }
                 let mut snapshot = snapshot.clone();
@@ -88,13 +151,16 @@ pub async fn follow_limits(
                             scope: scope.clone(),
                         },
                     );
+                    wake(at.saturating_add(600_000));
+                } else {
+                    wake(at.saturating_add(60_000));
                 }
             }
         }
         tokio::select! {
             changed=changes.changed()=>{if changed.is_err(){break;}},
             changed=directory.changed()=>{if changed.is_err(){break;}},
-            _=tick.tick()=>{},
+            _=at_deadline(deadline)=>{service.answer(limits::now());},
             _=refreshes.recv()=>{
                 let view=directory.view();
                 let scope=setup.config_receipt_scope().map(|(id,_)|id);
@@ -111,6 +177,14 @@ pub async fn follow_limits(
                 Ok(event)=> if let RelayEvent::Mail{key,envelope,..}=event.as_ref() {
                     let view=directory.view();
                     let Some(member)=view.roster.member(key) else {continue;};
+                    if let Some(value)=envelope.0.get("seat").filter(|value|value["kind"]=="reset") {
+                        let Ok(given)=serde_json::from_value::<ResetMail>(value.clone()) else{continue;};
+                        let from=encode(key);
+                        if let Some(answer)=given.answer {resets.take_answer(&from,answer);}
+                        else if let Some(decision)=given.always {if resets.take_decision(&from,decision).await.is_err(){eprintln!("Couldn't keep peer reset permission.");}}
+                        else if let Some(ask)=given.ask {if let Some(host)=member.host(){let resets=resets.clone();let relay=relay.clone();tokio::spawn(async move{let answer=resets.take_ask(&from,ask).await;send_reset(&relay,host,ResetMail::answer(answer)).await;});}}
+                        continue;
+                    }
                     let Some(value)=envelope.0.get("limits") else {continue;};
                     let scope=setup.config_receipt_scope().map(|(id,_)|id);
                     let now=limits::now();
@@ -143,4 +217,97 @@ async fn send(relay: &RelayHandle, host: kuvo_wire::keys::Host, snapshot: Readin
         ("at".into(), json!(snapshot.at)),
     ]));
     relay.sender.mail(host, envelope).await.is_ok()
+}
+
+#[derive(Clone)]
+pub struct ResetTransport {
+    pub directory: Reader,
+    pub relay: RelayHandle,
+}
+impl PeerTransport for ResetTransport {
+    fn known(&self) -> bool {
+        self.directory.view().roster.here.is_some()
+    }
+    fn member(&self, key: &str) -> bool {
+        self.directory
+            .view()
+            .roster
+            .members
+            .iter()
+            .any(|m| encode(&m.key) == key)
+    }
+    fn reachable(&self, key: &str) -> bool {
+        let view = self.directory.view();
+        view.relay_connected
+            && view
+                .roster
+                .members
+                .iter()
+                .any(|m| encode(&m.key) == key && m.host().is_some())
+    }
+    fn send<'a>(
+        &'a self,
+        key: &'a str,
+        mail: ResetMail,
+    ) -> futures_core::future::BoxFuture<'a, bool> {
+        Box::pin(async move {
+            let host = self
+                .directory
+                .view()
+                .roster
+                .members
+                .iter()
+                .find(|m| encode(&m.key) == key)
+                .and_then(|m| m.host());
+            match host {
+                Some(host) => send_reset(&self.relay, host, mail).await,
+                None => false,
+            }
+        })
+    }
+}
+async fn send_reset(relay: &RelayHandle, host: kuvo_wire::keys::Host, mail: ResetMail) -> bool {
+    let at = mail.at;
+    let Ok(value) = serde_json::to_value(mail) else {
+        return false;
+    };
+    let envelope = Envelope(Map::from_iter([
+        ("seat".into(), value),
+        ("at".into(), json!(at)),
+    ]));
+    relay.sender.mail(host, envelope).await.is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_unchanged_peer_heartbeats_or_throttled_actual_changes_have_deadlines() {
+        let told = Told {
+            at: 1000,
+            contents: json!(["old"]),
+            checked: vec![Some(1000)],
+            scope: Some("setup".into()),
+        };
+        assert_eq!(
+            told.wait_until(&json!(["old"]), &[Some(1000)], Some("setup"), 2000),
+            Some(601_000)
+        );
+        assert_eq!(
+            told.wait_until(&json!(["changed"]), &[Some(1000)], Some("setup"), 2000),
+            Some(61_000)
+        );
+        assert_eq!(
+            told.wait_until(&json!(["changed"]), &[Some(2000)], Some("setup"), 2000),
+            None
+        );
+        assert_eq!(
+            told.wait_until(&json!(["changed"]), &[Some(1000)], Some("new-setup"), 2000),
+            None
+        );
+        assert_eq!(
+            told.wait_until(&json!(["old"]), &[Some(1000)], Some("setup"), 601_000),
+            None
+        );
+    }
 }

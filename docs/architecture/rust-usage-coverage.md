@@ -54,6 +54,14 @@ is in the thin app rather than kuvo_box). All have resident route specs.
 | Claude grants | `Claude file-owned reset grants spend the maker’s named next grant once, with a saved request` | Rust maker fixture (Mac, Lokum, WSL and native Windows verified) |
 | Notice handoff | `a peer remembers a crossing even after its visible notice expires` | Rust correction (Mac, Lokum, WSL and native Windows verified) |
 
+| Peer resets | `a computer without the plan sign-in spends once on the holder, and shares Always Allow decisions` | Rust pair, Mac verified; cross runs pending |
+| Billed channel history | `a copied billed engine message uses the first channel and falls back when it is removed` | Both boxes; Rust final empty-channel reconciliation verified on Mac |
+| Antigravity refusals | `Antigravity never resends a refused bearer or refresh token after restart` | Rust loopback maker; Mac verified; cross runs pending |
+| Antigravity holds | `Antigravity keeps another host’s usable windows while one quota call is held` | Rust loopback maker; Mac verified; cross runs pending |
+| Antigravity local | `Antigravity reads only its running profile’s owned loopback TLS server without a bearer token` | Rust synthetic process/socket fixture and temporary self-signed TLS; Mac verified; native Windows not applicable |
+| Notice recovery | `usage_readings.rs`: corroborated recovery and off-toggle crossing | Deterministic scoped Rust tests; Mac 5/5 |
+| Peer scheduling | `usage_peers` exact deadline helper; no timer with no reachable member | Rust idle design; verification pending |
+
 ## Deliberate work-timing changes
 
 The user's revised rule is to keep frequently viewed data ready, incrementally, and to
@@ -94,7 +102,9 @@ start rarely used work only on demand.
   use the existing per-peer SQLite cursor/epoch and accepted historical origins.
   Rust acknowledges a final nonempty page with a pull at the new cursor (an
   empty final reply stops it), so later local mutations reach the other box
-  immediately; TypeScript requests again on its scheduled scan. The both-box
+  immediately; TypeScript requests again on its scheduled scan. Peer sender tasks now
+  sleep until the next actual heartbeat, pending-page retry, or retained-reading
+  expiry, and have no timer when no reachable member needs their data. The both-box
   scenario checks initial and retained data (and mixed versions), with the
   Rust-only no-request live-delta assertion documenting this work-timing change.
 - Limits are refreshed on a rail/menu subscription, a manual refresh, turn readings,
@@ -344,10 +354,28 @@ existing unused wake helper warning.
 Cumulative non-test size: 437,241 new-module characters plus 34,202 added
 existing production characters (471,443 total, 0.686× the 687,546 TS characters).
 
+## Verification of the eighth port slice
+
+Mac and static musl Lokum Rust usage: 40/40; TypeScript: 14/14 applicable, 26 Rust-only skips. WSL and Windows runs await the shared PC.
+Workspace check and Bun check pass (existing unused wake helper warning); engine-sessions 81/81.
+Scoped current-window reading tests: 5/5. The last billed channel removal
+regression passed after fixing reconciliation on an empty channel set.
+The eight seeded route answers in the standard differential match; the
+existing deliberate process/cache/index inventory differences remain.
+A second seeded differential containing the checked-in native provider-log
+corpus agrees on model names, counts and dates, but exposes a remaining Codex
+archive-copy tier mismatch (the live priority reading was not always chosen;
+$0.0371 vs $0.0296 on the affected model). The other numeric differences are
+floating-point rounding below $0.000000000000001. The archive-priority mismatch
+is an open parity gap, not an intentional timing difference.
+
+Cumulative non-test size: 464,513 new-module characters plus 34,471 added
+existing production characters (498,984 total, 0.726× the 687,546 TS characters).
+
 ## Remaining implementation gaps
 
-- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity running-profile quota fallback and durable credential refusal/hold semantics (including refresh-only defaults), Cursor full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state edge cases.
-- Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding/decisions, prolonged unsettled-spend settlement and other reset edge cases remain open.
+- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity partial-read lifetime, local CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state edge cases.
+- Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Prolonged unsettled-spend settlement, engine ChatGPT resets, revoked-member answers and full decision convergence remain open.
 - Reading preservation across TS-to-Rust upgrade, full mixed-version multi-computer account identity, extended notice-state handoff and forwarder election, all card/rail/detail presentation and notice visibility cases.
 - Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, bot lineage/appearance, full summary and detail parity remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
@@ -480,13 +508,13 @@ existing production characters (471,443 total, 0.686× the 687,546 TS characters
 - L341: its maker turns the chosen credit away (expired since): nothing was used, it says so, and the next ask isn't held to that credit — open.
 - L358: an account with no resets left, or none at all, is refused before anything is offered — partial — missing and unknown account refusal conformance; zero-inventory test remains open.
 - L474: alone, a Mac's Claude row has its windows and extra usage from Claude Code, says its resets show only from Linux, and asking for one says why — open.
-- L493: with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is — open.
-- L536: Always Allow, set from the Mac, is kept with the account on the machine that spends its resets, and every box says so — open.
+- L493: with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is — covered by two-computer Claude grant forwarding fixture on isolated file-owned sign-ins.
+- L536: Always Allow, set from the Mac, is kept with the account on the machine that spends its resets, and every box says so — covered by two-computer grant forwarding and shared decisions fixture.
 - L583: its maker couldn't say a reset went through: Retry, with a new confirmation, goes as the same request, so a second isn't used — open.
 - L604: two confirmations at once (two apps): one request goes, and both hear it went — open.
 - L619: Always Allow is the account's: signed in to another account in the same place, agents ask again, and coming back doesn't bring it back — open.
-- L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — open.
-- L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — open.
+- L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — partial — remote caller enables, holder disables, and both observe the decision; both holders signed in variant open.
+- L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — partial — remote unknown and caller restart replay same confirmation; new confirmation and lost relay answer variants open.
 - L714: Always Allow, and another account signed in between the offer and the spend: nothing is spent from it, and the allowance goes — partial — stale Codex offer refused and separate local Always Allow on/off case.
 - L733: Always Allow on, then off, while the computer with the sign-in is away: the older on, told last, doesn't undo the off — open.
 - L760: an off for an account this box doesn't know yet is kept: once it does, the account isn't allowed, and an older on doesn't change that — open.
@@ -607,34 +635,34 @@ existing production characters (471,443 total, 0.686× the 687,546 TS characters
 - L38: all three pools retain independent windows in client rows — open.
 - L48: Argon is separate and unambiguous — open.
 - L54: legacy worst pool, blacklist, missing fraction and Argon exclusions — open.
-- L60: the usage account reads its running profile's local quotas when cloud endpoints fail — open.
-- L115: Linux /proc maps only own profile and owned listening socket inodes — open.
+- L60: the usage account reads its running profile's local quotas when cloud endpoints fail — partial — local-only profile fixture; cloud-failure fallback combination not separately exercised.
+- L115: Linux /proc maps only own profile and owned listening socket inodes — covered by synthetic process/socket and local TLS route fixture.
 - L133: Mac own profile can contain spaces and regex punctuation — open.
 - L140: Mac agy stand-in permits no CSRF and language_server still requires it — open.
 - L148: Linux agy own-profile stand-in permits no CSRF — open.
 - L158: Mac ps/lsof stand-ins require own profile — open.
-- L168: with no token file, its quotas come from its own running server, and no credential is sent anywhere — open.
+- L168: with no token file, its quotas come from its own running server, and no credential is sent anywhere — covered by local-only profile route fixture.
 - L193: with no token file and it isn't running, it says its usage shows while it runs, and asks no one — open.
 - L211: the overview shows heavy use of the tightest available pool without mixing pools — open.
 - L256: one host refusing and optional plan refusing cannot poison usable quotas — open.
 - L278: legacy project-plan 403 still permits quota retrieval — open.
-- L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — open.
+- L292: agent OAuth metadata and verified defaults are used by refresh-only own sign-ins — partial — refusal fixture proves refresh-only defaults; metadata combinations remain open.
 - L312: profile and predictable state symlinks cannot redirect refusal writes; signout prunes state — open.
 - L334: agy with no CSRF is retried after an authless endpoint 403 — open.
 - L347: missing windows without resets survive only one partial round across restart — open.
 - L360: refused access refreshes once, valid refresh cache survives expired source expiry — open.
 - L380: malformed and unreadable sign-in retain known identity and windows — open.
-- L404: access refusal persists through failed refresh and restart without resending old bearer — open.
+- L404: access refusal persists through failed refresh and restart without resending old bearer — covered by refusal/restart fixture.
 - L423: unwritable or unreadable refusal journal stops further sends — open.
 - L443: restart never sends a refused token returned unchanged by refresh — open.
-- L459: refused refresh is not retried after access disappears or changes — open.
+- L459: refused refresh is not retried after access disappears or changes — partial — refusal survives restart; changed access cases open.
 - L477: local CSRF refusal survives restart — open.
 - L491: persisted refusal survives restart and metadata-only credential rewrites — open.
 - L510: holds stop further endpoints; a refusal never resends unchanged credential — open.
 - L531: complete read, partial and unreadable reads keep prior known windows — open.
 - L560: only the main host's own refusal of the token's call can refuse the sign-in — open.
 - L583: a token a summary just answered is never refused by a later call, which still tries the daily host — open.
-- L603: a daily host's wait keeps the main host's windows, and only that host waits — open.
+- L603: a daily host's wait keeps the main host's windows, and only that host waits — covered by independent held-host fixture (other quota remains usable).
 - L625: a plan or project lookup's wait keeps the windows read, partial, and holds only that call — open.
 - L656: the language server's plan status waiting keeps its windows, and only that call waits — open.
 - L676: with every host waiting, the read waits for the soonest, and says whether a request left — open.
@@ -643,7 +671,7 @@ existing production characters (471,443 total, 0.686× the 687,546 TS characters
 
 ### `box/test/usage/usage-antigravity-tls.test.ts`
 
-- L9: own loopback language server accepts its self-signed HTTPS certificate and CSRF — open.
+- L9: own loopback language server accepts its self-signed HTTPS certificate and CSRF — partial — self-signed local TLS fixture; CSRF retry variant open.
 
 ### `box/test/usage/usage-codex.test.ts`
 
@@ -721,14 +749,14 @@ existing production characters (471,443 total, 0.686× the 687,546 TS characters
 - L26: cold start records bad baseline — open.
 - L27: reset rollover re-arms — open — related accepted-window and notice tests above; this exact case not yet ported.
 - L28: reset jitter does not re-arm — open — related accepted-window and notice tests above; this exact case not yet ported.
-- L29: recovery then worsening re-fires — open.
-- L30: under ten recovery re-arms — open.
+- L29: recovery then worsening re-fires — covered by scoped accepted-reading test with corroborated recovery.
+- L30: under ten recovery re-arms — partial — corroborated current-window recovery and distinct occurrence test; exact threshold fixture open.
 - L31: no data never fires — open.
 - L32: level fires almost out only — open.
 - L33: no data preserves previous signals — open.
 - L34: disabled toggles never fire — open.
 - L35: per trigger off suppresses only it — open.
-- L36: off toggle does not consume edge — open.
+- L36: off toggle does not consume edge — covered by scoped accepted-reading off-toggle test.
 - L49: evaluator healthy to close once, facts and route — open.
 - L50: evaluator close to red — open.
 - L51: evaluator jitter and restart do not duplicate — open.
@@ -745,7 +773,7 @@ existing production characters (471,443 total, 0.686× the 687,546 TS characters
 - L82: turn-only Mac Claude inherits peer window dedup without checked timestamps — open.
 - L96: visibility mappings cover model-specific Codex and Antigravity windows — open.
 - L102: exact ten percent remaining does not trigger Almost Out — open.
-- L108: parallel readers use the same occurrence IDs and recovery receives a new one — open.
+- L108: parallel readers use the same occurrence IDs and recovery receives a new one — partial — scoped test checks the distinct rearmed occurrence; simultaneous parallel readers open.
 - L116: peer handoff timestamps are normalized to the receiver clock — open.
 - L128: one direct account holder forwards even a received peer decision — partial — expired notice-state handoff verified; received fact forwarding and pin election open.
 - L142: provider hide and re-enable resets baseline but preserves occurrence counters — open — related accepted-window and notice tests above; this exact case not yet ported.

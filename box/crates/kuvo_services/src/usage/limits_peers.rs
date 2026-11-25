@@ -238,7 +238,12 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
         windows,
         notices,
         notice_state,
-        agents_reset: value["agentsReset"] == true,
+        agents_reset: value["agentsReset"] == true
+            || value["extras"].as_array().is_some_and(|extras| {
+                extras
+                    .iter()
+                    .any(|e| e["kind"] == "resets" && e["agents"] == true)
+            }),
     })
 }
 impl Reading {
@@ -286,7 +291,19 @@ impl Reading {
         {
             reading.accounts.pop();
         }
-        serde_json::to_value(reading).unwrap_or_default()
+        let mut value = serde_json::to_value(reading).unwrap_or_default();
+        if let Some(accounts) = value["accounts"].as_array_mut() {
+            for account in accounts {
+                if account["agentsReset"] == true {
+                    if let Some(extras) = account["extras"].as_array_mut() {
+                        for extra in extras.iter_mut().filter(|e| e["kind"] == "resets") {
+                            extra["agents"] = json!(true);
+                        }
+                    }
+                }
+            }
+        }
+        value
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -454,7 +471,7 @@ impl Book {
             }
             for notice in &account.notices {
                 if let Some(t) = trail.get_mut(&notice.window) {
-                    t.mark_fired(notice.milestone);
+                    t.mark_fired_at(notice.milestone, notice.at);
                 }
             }
             notices.extend(

@@ -16,7 +16,7 @@ use kuvo_services::usage::{
 use kuvo_setup::SetupHandle;
 use kuvo_wire::keys::{Host, encode};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, time::Duration};
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 struct Sent {
@@ -118,8 +118,6 @@ pub async fn follow(
     let mut dirty = true;
     let mut tell_pages = true;
     let mut force = false;
-    let mut interval = tokio::time::interval(Duration::from_secs(60));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let view = directory.view();
         let now = limits::now() as i64;
@@ -172,6 +170,8 @@ pub async fn follow(
             tell_pages = true;
         }
         connected = view.relay_connected;
+        let mut deadline = None;
+        let mut wake = |at: i64| deadline = Some(deadline.map_or(at, |old: i64| old.min(at)));
         if connected && !hosts.is_empty() {
             let identities = limits
                 .peer_snapshot(None, now as u64)
@@ -210,9 +210,16 @@ pub async fn follow(
                             sent.digest = Some(snapshot.digest.clone());
                             sent.fallback_revision = Some(snapshot.fallback_revision.clone());
                             sent.at = now;
+                            wake(now.saturating_add(600_000));
+                        } else {
+                            wake(now.saturating_add(60_000));
                         }
+                    } else {
+                        wake(sent.at.saturating_add(600_000));
                     }
                 }
+            } else {
+                wake(now.saturating_add(60_000));
             }
             for (id, host) in &hosts {
                 // Cursor retry on a connection/roster change, while an initial
@@ -229,7 +236,12 @@ pub async fn follow(
                 {
                     if ask(&service, &relay, id, host.clone(), force, now).await {
                         pulled.insert(id.clone(), now);
+                        wake(now.saturating_add(delay));
+                    } else {
+                        wake(now.saturating_add(60_000));
                     }
+                } else if let Some(at) = pulled.get(id) {
+                    wake(at.saturating_add(delay));
                 }
                 if tell_pages {
                     let worker = service.clone();
@@ -250,7 +262,7 @@ pub async fn follow(
             changed=updates.changed()=>{if changed.is_err(){break;}dirty=true;tell_pages=true;},
             changed=limit_updates.changed()=>{if changed.is_err(){break;}},
             request=manual.recv()=>{if request.is_ok(){force=true;dirty=true;tell_pages=true;}},
-            _=interval.tick(),if !hosts.is_empty()=>{},
+            _=super::usage_peers::at_deadline(deadline.and_then(|at|u64::try_from(at).ok()))=>{},
             event=inbox.recv()=>match event{
                 Ok(event)=>if let RelayEvent::Mail{key,envelope,..}=event.as_ref(){
                     let id=encode(key);

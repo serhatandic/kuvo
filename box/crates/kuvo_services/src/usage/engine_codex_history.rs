@@ -119,11 +119,8 @@ fn counts(raw: Option<&Value>) -> Counts {
     counts
 }
 pub fn observe(db: &Connection, source: &str, record: &Record, pricing: &Pricing) -> Result<()> {
-    if record.provider.as_deref() != Some("openai") {
-        return Ok(());
-    }
     let at = record.completed.unwrap_or(record.created);
-    if !record.codex_history {
+    if record.provider.as_deref() != Some("openai") || !record.codex_history {
         db.execute(
             "DELETE FROM engine_codex_call WHERE source=? AND table_version=? AND call=?",
             params![source, record.version, &record.call],
