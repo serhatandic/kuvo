@@ -450,6 +450,10 @@ impl Adopted {
         }
     }
 
+    pub(super) fn terminate(&self) -> io::Result<()> {
+        self.signal(Signal::TERM)
+    }
+
     pub(super) fn stop(&mut self, grace: Duration) -> io::Result<()> {
         self.signal(Signal::TERM)?;
         if !self.wait(grace) {

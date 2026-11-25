@@ -24,6 +24,8 @@ pub(super) enum Error {
     Format(#[from] format::Error),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("{0}")]
+    Migration(String),
 }
 
 pub(super) fn exclusive(

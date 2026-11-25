@@ -162,9 +162,13 @@ impl Writer {
                 for session in named(&args["unlink"]) {
                     unlink_session(row, session, &actor, now);
                 }
+                // Legacy rows can omit the empty lists and default values that
+                // a write fills in. Those are not changes made by this agent.
+                let before = item.clone().normalized();
+                let after = Item::read(&item.owner, row).expect("edited item").normalized();
                 let changes = ["title", "body", "priority", "labels", "assignee", "due", "progress", "source", "files", "links", "sessions"]
                     .into_iter()
-                    .filter(|field| item.saved.get(*field) != row.get(*field) && (*field != "sessions" || item.saved.get("events") == row.get("events")))
+                    .filter(|field| before.get(*field) != after.get(*field) && (*field != "sessions" || before.get("events") == after.get("events")))
                     .collect::<Vec<_>>();
                 if !changes.is_empty() {
                     append_event(row, json!({"at":now,"by":actor,"kind":"edited","fields":changes}));

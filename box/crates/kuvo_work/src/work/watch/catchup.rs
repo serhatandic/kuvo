@@ -28,7 +28,7 @@ const UNREAD_STARTS: u64 = 3;
 // How often answers given late that couldn't be told yet are tried again.
 const LATE_AGAIN: Duration = Duration::from_secs(300);
 
-fn ids_of(active: &Value) -> Vec<String> {
+pub(super) fn ids_of(active: &Value) -> Vec<String> {
     match active {
         Value::Array(ids) => ids
             .iter()
@@ -374,7 +374,7 @@ fn question_text(form: &Value) -> String {
 
 /// Every session here that's someone's work (started by another conversation), whole: none when a
 /// page can't be read.
-async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
+pub(super) async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
     let mut found = Vec::new();
     let mut query = Some("limit=200&order=desc&parentID=null".to_owned());
     for _ in 0..15 {
@@ -405,7 +405,7 @@ async fn work_sessions(engine: &BotEngine) -> Option<Vec<Value>> {
 
 /// What a session (or one of its subagents) asks now: its permissions and questions, and whether
 /// its questions could all be read.
-async fn asks_in(engine: &BotEngine, session: &str) -> (Vec<Value>, Vec<Value>, bool) {
+pub(super) async fn asks_in(engine: &BotEngine, session: &str) -> (Vec<Value>, Vec<Value>, bool) {
     let mut askers = vec![session.to_owned()];
     let mut at = 0;
     while at < askers.len() && at < 40 && !(at > 0 && askers.len() > 30) {

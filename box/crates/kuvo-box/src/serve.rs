@@ -520,7 +520,13 @@ pub async fn run(
         })
         .await;
     if let Some((runs, runtime)) = agent_handover {
-        agents::hand_over(home, &runs, &runtime).await;
+        // Making way for the next resident, its coding agents go on for it to take up; stopping
+        // for good (turned off, paused, or with no keeper to start another), they stop with it.
+        if kuvo_keeper::next_resident_coming(home) {
+            agents::hand_over(home, &runs, &runtime).await;
+        } else if let Err(error) = runtime.holders().stop_all().await {
+            eprintln!("Kuvo could not stop the coding agents: {error}");
+        }
     }
     tools.shutdown().await;
     if let Some(agents) = agent_shutdown {

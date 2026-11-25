@@ -711,6 +711,18 @@ The comparison found three Claude differences, now fixed and covered by both-box
   conversation on it").
 - A session read keeps the listed window in `session.json`, as the bridge does.
 
+It also found that a Rust resident handed its agents over on every stop, and each holder waited
+15 minutes for a resident that wasn't coming. TS's bridge hands them over only when it makes way
+(a release switch or a newer build). On SIGTERM, SIGINT or a closed stdin it stops every held
+agent. Now the keeper's stop request says whether another resident comes: yes for a release
+switch or a rollback, no when turned off or paused. The resident hands over only then; otherwise
+`Directory::stop_all` asks each holder to stop. That's SIGTERM where there is one, and on any
+system a `<id>.stop` request beside its record, which a Windows holder watches. Without a request,
+a resident its keeper keeps comes back unless it's off or paused, and one no keeper keeps stops for
+good. `agents-claude` "a box stopping for good stops the Claude Code it holds" covers both boxes:
+the agent and its holder go, and the next start ends the cut-off turn as interrupted. The keeper
+switch case still keeps the turn.
+
 Besides the files in the table above, these differences remain:
 
 | Difference | Owner or reason |
@@ -722,7 +734,6 @@ Besides the files in the table above, these differences remain:
 | `session.json` `contextWindow` before a turn says one | TS keeps the listed window as a side effect: it reads the session before sending to check that the model takes pictures. Rust keeps it on a session read. Both answer the same window to clients. The send-time read goes with attachments (3.2, 7.3). |
 | `agent.json` `snapshots` and the thread's `seen` | 4.6 owns staged Undo's file keeping and the handover's seen cursor (the open `todo` case). |
 | `run/lists/sessions.json` `running`, `working` and `seq` at the stop | TS's list was last written while the second turn ran, before its writer caught up with the end. Rust's shows the ended turn. This is reference timing; 4.1b owns the list. |
-| Held Claude Code at a plain stop: TS's bridge stops every held agent; the Rust resident hands each over, and the holder waits 15 minutes for the next resident | 4.1b owns holders and the handover. A plain stop with no switch should stop them, as TS does. |
 | `run/agents/tmp/claude/catalog-settings.json` | Rust's model probe writes its settings there. TS passes them to the SDK. |
 | `run/work/background.json` `engine` place | The engine's place is written by the engine watcher (5.1). Rust writes the coding agents' `bridge` place. |
 | `run/work-queue/model.json`, `run/work/told.json` | 5.2 and 5.1. |

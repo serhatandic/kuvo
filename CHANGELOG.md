@@ -8,6 +8,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - When a Rust computer needs a different engine for an update, current work finishes first and new messages wait. They go in order once the new release is ready or the previous one is restored.
 
+- A computer removed from your setup can be added back after it restarts; it no longer says it has setup data that needs a merge.
+- Work Queue history on Rust computers no longer records an edit just because an old item lacked empty fields, and an interrupted local handoff is cleaned up on the next write.
+- Assigning personal Work Queue items to a local bot moves them into its queue on Rust computers.
 - Moving a conversation to another computer carries its Work Queue, its attachments and saved decisions; a changed attachment keeps the move from switching.
 - Work Queue totals on Rust computers include older Done and Canceled items kept on other Rust computers, even when only recent items are listed.
 - The Rust box checks Claude Code sign-in and lists the models available to each account.
