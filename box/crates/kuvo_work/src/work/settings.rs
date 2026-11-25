@@ -49,6 +49,11 @@ impl WorkSettings {
     }
 
     /// Your home folder here.
+    /// Whether this computer is a Mac.
+    pub fn is_mac(&self) -> bool {
+        self.is_mac
+    }
+
     pub fn account(&self) -> &Path {
         &self.account
     }

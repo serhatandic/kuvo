@@ -95,7 +95,10 @@ impl Work {
     }
 
     /// The sessions at work now: in a turn, or with something they left running.
-    pub(super) async fn at_work_now(&self, engine: &BotEngine) -> (HashSet<String>, HashSet<String>) {
+    pub(super) async fn at_work_now(
+        &self,
+        engine: &BotEngine,
+    ) -> (HashSet<String>, HashSet<String>) {
         let turns = working_now(engine).await;
         let mut working = turns.clone();
         let file = self.home.join("run/work/background.json");

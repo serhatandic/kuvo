@@ -453,6 +453,334 @@ impl Work {
     }
 }
 
+/// What a session asks, that an answer is for.
+pub enum Ask {
+    Permission(Value),
+    Question(Value),
+}
+
+/// The answers kept on a session, at most this many (the latest).
+const ANSWERS_KEPT: usize = 40;
+
+/// The question a form asks in one field, by that field's key; none for one of more parts.
+fn question_key(form: &Value) -> Option<&str> {
+    let shown = |field: &&Value| {
+        field["hidden"] != true && field["when"].as_array().is_none_or(Vec::is_empty)
+    };
+    let fields: Vec<&Value> = form["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(shown)
+        .collect();
+    match fields.as_slice() {
+        [field] if field["type"] == "string" => field["key"].as_str(),
+        _ => None,
+    }
+}
+
+impl Work {
+    /// What one of `lead`'s sessions asks that `args` answers, before anything's answered: or what
+    /// to say where it can't be.
+    pub async fn ask_to_answer(
+        &self,
+        engine: &BotEngine,
+        lead: &str,
+        args: &Map<String, Value>,
+    ) -> Result<(Value, Ask), Said> {
+        let session = args.get("session").and_then(Value::as_str);
+        let data = self.one_of_mine(engine, lead, session, "answer").await?;
+        let title = title_of(&data).to_owned();
+        let text = |field: &str| {
+            args.get(field)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+        };
+        let ask = text("ask");
+        if ask.is_empty() {
+            return Err(refused(
+                "Say which ask (ask), by its id from the [Session asks] message or list_sessions.",
+            ));
+        }
+        if text("reason").is_empty() {
+            return Err(refused(
+                "Say why, in a line (reason): the user sees it with your answer.",
+            ));
+        }
+        let id = data["id"].as_str().unwrap_or_default();
+        let (permissions, questions, _) = asks_in(engine, id).await;
+        if let Some(permission) = permissions.into_iter().find(|each| each["id"] == ask) {
+            return Ok((data, Ask::Permission(permission)));
+        }
+        if let Some(question) = questions.into_iter().find(|each| each["id"] == ask) {
+            return Ok((data, Ask::Question(question)));
+        }
+        Err(refused(format!(
+            "\"{title}\" doesn't ask {ask} now: it was answered, or it moved on."
+        )))
+    }
+
+    /// Why nothing it asks may be allowed for the user: it's in Ask First (for now, or as it's set)
+    /// as it stands here now, whatever the lead's mode.
+    pub fn ask_first_refusal(&self, data: &Value) -> Option<String> {
+        let approvals = crate::approval::Approvals::new(&self.home, self.settings.is_mac());
+        let id = data["id"].as_str().unwrap_or_default();
+        let bot = self.bot_of_conversation(id).is_some() || works_for(data).is_some();
+        let mode = approvals.of(data, bot, approvals.since(), approvals.default_approval());
+        if mode.effective != crate::approval::Approval::AskFirst {
+            return None;
+        }
+        let title = title_of(data);
+        let state = match mode.held {
+            Some(held) => format!(
+                "\"{title}\" asks first for now ({})",
+                held.why.trim_end_matches('.')
+            ),
+            None => format!("\"{title}\" is in Ask First"),
+        };
+        Some(format!(
+            "You can't allow that: {state}, so the user answers every ask it makes, whatever mode you're in. The user sees the ask on \"{title}\" and answers it there. Tell them in a line why it's needed if it matters, and carry on with the rest. You can still deny it."
+        ))
+    }
+
+    /// What an allow of `permission` is judged by, as `action` and what: a command's parts as the
+    /// engine matches each and what it lists; a file's paths as written, and, outside the
+    /// session's folders, as working outside the project, where it's written and where it is.
+    pub async fn allow_checks(
+        &self,
+        engine: &BotEngine,
+        data: &Value,
+        permission: &Value,
+    ) -> Vec<(String, String)> {
+        let action = permission["action"].as_str().unwrap_or_default().to_owned();
+        let mut asked: Vec<String> = permission["resources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        if asked.is_empty() {
+            asked.push("*".into());
+        }
+        let input = call_input(engine, permission).await;
+        let mut checks: Vec<(String, String)> = Vec::new();
+        if action == "shell" || action == "bash" {
+            let command = input.as_ref().and_then(|input| input["command"].as_str());
+            for part in command
+                .map(super::super::policy::parts_of)
+                .unwrap_or_default()
+            {
+                checks.push((action.clone(), part));
+            }
+        }
+        let files = super::super::policy::FILES.contains(&action.as_str());
+        let named: Vec<String> = match &input {
+            Some(input) if files => ["filePath", "file_path", "path", "file"]
+                .iter()
+                .filter_map(|field| input[*field].as_str().map(str::to_owned))
+                .collect(),
+            _ => Vec::new(),
+        };
+        // (A path the tool names is judged for its `\\` only, which the engine reads as a `/`: the
+        // peers refuse that for a file tool.)
+        let marked = named.iter().filter(|each| each.contains('\\'));
+        for each in asked.iter().chain(marked) {
+            checks.push((action.clone(), each.clone()));
+        }
+        if files {
+            let folder = folder_of(data);
+            let mut folders: Vec<std::path::PathBuf> = Vec::new();
+            if !folder.is_empty() {
+                folders.push(folder.into());
+                let projects = kuvo_services::git::read_projects(&self.home).unwrap_or_default();
+                let listed = projects
+                    .iter()
+                    .find(|each| each.get("directory").and_then(Value::as_str) == Some(folder));
+                let more = listed
+                    .and_then(|each| each.get("folders"))
+                    .and_then(Value::as_array);
+                folders.extend(
+                    more.into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(Into::into),
+                );
+            }
+            let from = folders.first().cloned().unwrap_or_else(|| "/".into());
+            for each in asked.iter().chain(&named).filter(|each| *each != "*") {
+                if !(std::path::Path::new(each).is_absolute() || !folders.is_empty()) {
+                    continue;
+                }
+                let full = super::super::policy::resolved(&from, each);
+                let real = super::super::policy::real_of(&full);
+                let inside = folders.iter().any(|folder| {
+                    super::super::policy::within(&real, &super::super::policy::real_of(folder))
+                });
+                if !inside {
+                    for at in [&full, &real] {
+                        checks.push((
+                            "external_directory".into(),
+                            at.to_string_lossy().into_owned(),
+                        ));
+                    }
+                }
+            }
+        }
+        checks
+    }
+
+    /// answer_ask, once it's been checked: what one of `lead`'s sessions asks answered, by `by`
+    /// (the bot it is, or its name), and kept on the session with why.
+    pub async fn answer_ask_tool(
+        &self,
+        engine: &BotEngine,
+        lead: &str,
+        by: Value,
+        args: &Map<String, Value>,
+    ) -> Said {
+        let (data, ask) = match self.ask_to_answer(engine, lead, args).await {
+            Ok(found) => found,
+            Err(said) => return said,
+        };
+        let (id, title) = (
+            data["id"].as_str().unwrap_or_default(),
+            title_of(&data).to_owned(),
+        );
+        let text = |field: &str| {
+            args.get(field)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let reason = text("reason");
+        let at = super::told::now();
+        let (kept, answered) = match ask {
+            Ask::Question(question) => {
+                let answer = text("answer");
+                let asked = question_text(&question);
+                if answer.is_empty() {
+                    return refused(format!(
+                        "\"{title}\" asks: {asked} Answer it in words (answer)."
+                    ));
+                }
+                let Some(key) = question_key(&question) else {
+                    return refused(format!(
+                        "\"{title}\"'s question has more than one part: tell the user, who answers it in the session."
+                    ));
+                };
+                let asker = question["asker"].as_str().unwrap_or(id);
+                let form = question["id"].as_str().unwrap_or_default();
+                let path = format!(
+                    "api/session/{}/form/{}/reply",
+                    encoded(asker),
+                    encoded(form)
+                );
+                let body = json!({ "answer": { key: answer } });
+                if let Err(error) = engine.call(Method::POST, &path, Some(&body), WAIT).await {
+                    return refused(format!("Couldn't answer it: {}", error.0));
+                }
+                let kept = json!({ "ask": form, "what": format!("Asks: {asked}"), "decision": "answer", "reason": format!("{answer} ({reason})"), "by": by, "at": at });
+                (kept, format!("Answered \"{title}\"."))
+            }
+            Ask::Permission(permission) => {
+                let decision = text("decision");
+                if decision != "allow" && decision != "deny" {
+                    return refused("Say allow or deny (decision).");
+                }
+                let resources: Vec<&str> = permission["resources"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let shown: Vec<&str> = resources
+                    .iter()
+                    .copied()
+                    .filter(|each| *each != "*")
+                    .collect();
+                let shown = if shown.is_empty() {
+                    permission["action"].as_str().unwrap_or_default().to_owned()
+                } else {
+                    shown.join(", ")
+                };
+                let asker = permission["asker"].as_str().unwrap_or(id);
+                let ask = permission["id"].as_str().unwrap_or_default();
+                let path = format!(
+                    "api/session/{}/permission/{}/reply",
+                    encoded(asker),
+                    encoded(ask)
+                );
+                let name = by["name"].as_str().unwrap_or_default();
+                let body = if decision == "allow" {
+                    json!({ "decision": "once" })
+                } else {
+                    json!({ "decision": "reject", "message": format!("{name}: {reason}") })
+                };
+                if let Err(error) = engine.call(Method::POST, &path, Some(&body), WAIT).await {
+                    return refused(format!("Couldn't answer it: {}", error.0));
+                }
+                let mut kept = json!({ "ask": ask, "what": describe_permission(&permission), "decision": decision, "reason": reason, "by": by, "at": at });
+                if let Some(call) = permission["source"]["id"].as_str() {
+                    kept["call"] = json!(call);
+                }
+                let answered = if decision == "allow" {
+                    format!("Allowed: {shown}.")
+                } else {
+                    format!("Denied: {shown}. \"{title}\" is told why.")
+                };
+                (kept, answered)
+            }
+        };
+        let _ = engine
+            .rewrite(id, |now| {
+                let before = now["metadata"]["kuvo"]["answers"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let mut answers: Vec<Value> = before.into_iter().chain([kept]).collect();
+                let over = answers.len().saturating_sub(ANSWERS_KEPT);
+                answers.drain(..over);
+                let kuvo = [("answers".to_owned(), Some(Value::Array(answers)))].into();
+                Some(NoteEdits {
+                    kuvo,
+                    ..NoteEdits::default()
+                })
+            })
+            .await;
+        self.work_changed(&data, Some((lead, "answered")));
+        said(answered)
+    }
+}
+
+/// The tool call a permission asks for, whole (its input): never only what the ask lists (it
+/// leaves out a command's `cd`), so what's judged is what would run.
+async fn call_input(engine: &BotEngine, permission: &Value) -> Option<Value> {
+    let call = permission["source"]["id"].as_str()?;
+    let message = permission["source"]["messageID"].as_str();
+    let asker = permission["asker"].as_str()?;
+    for each in last_messages(engine, asker, 30).await {
+        if message.is_some_and(|message| each["id"] != message) {
+            continue;
+        }
+        let parts = each["content"].as_array().into_iter().flatten();
+        if let Some(part) = parts
+            .into_iter()
+            .find(|part| part["type"] == "tool" && part["id"] == call)
+        {
+            let input = &part["state"]["input"];
+            return Some(if input.is_object() {
+                input.clone()
+            } else {
+                json!({})
+            });
+        }
+    }
+    None
+}
+
 /// What a refusal says, in words.
 pub async fn refusal_words(refusal: kuvo_server::Refusal) -> String {
     use http_body_util::BodyExt;
