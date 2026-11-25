@@ -81,7 +81,11 @@ process.stdin.on("data", (chunk) => {
     const answer = (result) => send({ id, result });
     const refuse = (code, words) => send({ id, error: { code, message: words } });
     if (method === undefined) { waiting.get(id)?.(); waiting.delete(id); continue; }
-    if (method === "initialize") answer({ userAgent: "codex-stand-in/1" });
+    if (method === "initialize") {
+      // (An older or newer Codex turns it down; one stuck never answers.)
+      if (fs.existsSync(path.join(root, "codex-refuses-initialize"))) refuse(-32601, "Unknown method");
+      else if (!fs.existsSync(path.join(root, "codex-never-initializes"))) answer({ userAgent: "codex-stand-in/1" });
+    }
     else if (method === "initialized") {}
     else if (method === "account/read") {
       const saved = fs.existsSync(auth) ? JSON.parse(fs.readFileSync(auth, "utf8")) : null;
@@ -151,6 +155,11 @@ process.stdin.on("data", (chunk) => {
       const there = (file) => file && fs.existsSync(path.join(root, file));
       if (kept?.failsUntil && !there(kept.failsUntil)) refuse(-32603, "background terminals unavailable");
       else answer({ data: kept && !there(kept.endsWith) ? kept.terminals : [], nextCursor: null });
+    } else if (method === "thread/backgroundTerminals/terminate" || method === "thread/backgroundTerminals/clean") {
+      // Ended: one (by its process), or all its thread left running.
+      const kept = terminals.get(params.threadId);
+      if (kept) kept.terminals = method.endsWith("clean") ? [] : kept.terminals.filter((terminal) => terminal.processId !== params.processId);
+      answer({});
     } else if (method === "thread/read") {
       const kept = threads.get(params.threadId);
       if (!kept) refuse(-32603, "history unavailable");
@@ -288,6 +297,11 @@ export async function scriptedCodex(fixture = {}) {
     /** The box's answer to the stand-in's ask `ask`. */
     answered: (ask) => until(() => codex.heard().find((line) => line.message?.id === ask && line.message.method === undefined)?.message,
       `The box never answered ${ask}.`),
+    /** Stop on what the session left running besides its turn. */
+    async stopBackground(id) {
+      const answer = await request(listener, "DELETE", codex.route(id) + "/background", undefined, headers, 20000);
+      assert.equal(answer.status, 200, answer.text);
+    },
     /** What the box says runs besides the session's turn (`kuvo/work/background…`). */
     async work(suffix = "") {
       const answer = await request(listener, "GET", `kuvo/work/background${suffix}`, undefined, headers, 20000);

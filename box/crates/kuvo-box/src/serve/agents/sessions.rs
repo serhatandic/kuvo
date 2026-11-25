@@ -20,6 +20,7 @@ use kuvo_engine::{
 use std::io;
 use serde_json::{Map, Value};
 use kuvo_protocol::routes::{
+    delete_kuvo_agents_api_session_id_background as stop_background,
     get_kuvo_agents_api_session_id_message as transcript,
     types::GetKuvoAgentsApiSessionIdMessageStatus200Cursor as Cursor,
 };
@@ -285,6 +286,10 @@ impl AgentSessionSource for Inventory {
         Some(heard)
     }
 
+    fn stop_background<'a>(&'a self, id: &'a str) -> AgentCall<'a, bool> {
+        Box::pin(self.store.stop_background(id))
+    }
+
     fn stop_if_waiting<'a>(&'a self, id: &'a str) -> AgentCall<'a, bool> {
         Box::pin(async move {
             let Some(runs) = &self.running else {
@@ -305,6 +310,27 @@ impl AgentSessionSource for Inventory {
 }
 
 pub(crate) fn register(sessions: SessionStore, routes: &mut Registry) {
+    let stops = sessions.clone();
+    routes.register::<stop_background::Spec, _, _>(Access::DesktopOrPaired, move |call| {
+        let sessions = stops.clone();
+        async move {
+            let given = call.param("id").unwrap_or_default();
+            let id = percent_decode_str(given)
+                .decode_utf8()
+                .map_err(|_| missing(given))?;
+            let stopped = sessions.stop_background(&id).await.map_err(|error| {
+                eprintln!("Kuvo could not stop what {id} left running: {error}");
+                Refusal::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "What it left running couldn't be stopped. Try again in a moment.",
+                )
+            })?;
+            if !stopped {
+                return Err(missing(&id));
+            }
+            Ok(RouteReply::json::<200>(stop_background::Status200 {}))
+        }
+    });
     routes.register::<transcript::Spec, _, _>(Access::Any, move |call| {
         let sessions = sessions.clone();
         async move {

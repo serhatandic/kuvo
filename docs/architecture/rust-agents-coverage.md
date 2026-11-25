@@ -775,6 +775,14 @@ resident-replacement cases now switch releases through the keeper, as an
 update does. A separate case turns the keeper off and checks that the held
 agents stop and the next resident closes their turn.
 
+Stop on what a conversation left running is served for every agent: `DELETE
+kuvo/agents/api/session/:id/background` stops each command its agent left
+running through `Background::stop`. The work's `end_background` (5.1c-7) asks
+the agents first (`AgentSessionSource::stop_background`), then the engine. Its
+callers still look a conversation up in the engine only, so a coding agent's
+conversation reaches it once 5.1 counts those conversations as someone's work.
+Both boxes pass for Codex (agents-codex) and Claude Code (agents-claude-turns).
+
 ### TypeScript scenarios
 
 Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.ts): its 121
@@ -785,9 +793,10 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 1 | Rust adapter: receipts before the steer, `thread/read` by client ID. Conformance case open (4.2). |
 | 2 | Unit test `a_model_at_its_own_limit_waits_alone`. |
 | 3 | 4.6 (spawned agents). |
-| 4–10 | `codex::terminals` keeps what Codex left running in the background model. It's listed as each turn ends, before the end is said, and again every 30 s while any runs. A terminal with a command shows in the bar with what it printed, a terminal without one is a task, and a failed first list is the task `unknown:<thread>`. The app-server stays busy for them, and its holder notes `backgroundSessions`. Ported to agents-codex on both boxes: 4 (in the bar with its output); 5–7 (a failed list isn't none, it's listed again until it ends, and it isn't woken). Unit tests: 6 (a failed later list keeps them), 8 (a reset forgets their times), 9 (a replacement item gets a fresh start), and a command's Stop through `thread/backgroundTerminals/terminate`. 10 (Stop on what it left running, `thread/backgroundTerminals/clean`) waits on the agent sessions' `DELETE api/session/:id/background`, which the Rust box doesn't serve yet for any agent: no row owns it yet. Taking up the terminals of an idle app-server after an update is 7.2's, with Claude Code's. |
-| 11–13 | A failed `initialize` stops that app-server and the next ask starts another; one stopped while starting isn't kept. Process cases open (4.2). |
-| 14–15 | Open (4.2): shutdown during credential reading, a forgotten thread. |
+| 4–10 | `codex::terminals` keeps what Codex left running in the background model. It's listed as each turn ends, before the end is said, and again every 30 s while any runs. A terminal with a command shows in the bar with what it printed, a terminal without one is a task, and a failed first list is the task `unknown:<thread>`. The app-server stays busy for them, and its holder notes `backgroundSessions`. Ported to agents-codex on both boxes: 4 (in the bar with its output); 5–7 (a failed list isn't none, it's listed again until it ends, and it isn't woken). Unit tests: 6 (a failed later list keeps them), 8 (a reset forgets their times), 9 (a replacement item gets a fresh start), and a command's Stop through `thread/backgroundTerminals/terminate`. 10 is ported on both boxes: Stop on what it left running (`DELETE kuvo/agents/api/session/:id/background`) ends each command through Codex. The reference cleans the thread's terminals, `thread/backgroundTerminals/clean`; a terminal without a command (a task) isn't stopped by Rust, which stops commands only. Taking up the terminals of an idle app-server after an update is 7.2's, with Claude Code's. |
+| 11–12 | Ported to agents-codex on both boxes: a Codex that refuses `initialize` is stopped each time it's tried, and one stopped while it starts (its account signed out) is stopped at once, not after the 30 s it's given. A stop now cuts a start short (`Shared::halt`), and signing out halts a start before closing the threads that wait on it. |
+| 13–14 | Rust: a stop while the holder starts, or while its sign-in is read, fails that start once the holder answers, and stops it (the same `Shared::halt`); a holder is never dropped half-started. |
+| 15 | Not applicable: a conversation's actor handles one command at a time, so closing it waits for its start. The app-server it started is the account's, shared, and stops when idle. |
 | 16 | 6.1 (vault and the sandbox). |
 | 17–19 | Ported (both boxes). Making an image and failing to are open (4.2). |
 | 20–22 | Ported. |
