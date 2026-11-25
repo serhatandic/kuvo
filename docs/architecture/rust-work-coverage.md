@@ -799,13 +799,10 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 ### Gaps and owners
 
-- **The wake tools on native Windows**: there's no `kuvo-wake` there, so they answer that it can't
-  be run. 5.1a's wake-ups on native Windows (`docs/architecture/windows.md`).
+- **The wake tools on native Windows**: done in 5.1e-3.
 - **stop_session from a coding agent's conversation**: refused as there, which finds only the
   engine's conversations as callers. 4.6.
-- **A wake tool's command cut short by the box stopping mid-run** (`runToolCommand`'s receipt): run
-  again when its call comes again. Its answer once given is kept, as any call's. Owner: 5.1a (the
-  wake-ups' commands).
+- **A wake tool's command cut short by the box stopping mid-run**: done in 5.1e-3.
 - Those following wake-ups are told as a tool changes them (`Wakes::changed`), as there.
 
 
@@ -869,3 +866,37 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **Asks the box keeps** (`notices/asking.ts`: the vault's and the sandbox's): 6.1. **Usage
   notices**: 5.4.
 - **A permission Auto's reviewer took up** is told as any other: the reviewer is 6.1.
+
+## 5.1e-3 — the wake tools on native Windows, and each wake command once
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `wakes::verbs` (`Wakes::run_verb`, `verb_in`): `kuvo-wake`'s add, watch, list and cancel for a conversation's or a bot's own wake-ups, for a computer that can't run the script (native Windows, which has no shell for it): the same folders, checks, limits and words, a time read as the script reads it on every computer (+30m, a time like 2026-10-16T09:00 on the folder's clock or with its zone, seconds), said as it says it. The client routes' `add_wake` and `add_watch` keep a summary and give back what they made | `keeper/kuvo-wake` (`add`, `watch`, `list`, `cancel`, `seconds`, `readable`, `summed`, `made`) |
+| `agent_tools::own`: the wake tools through the verbs on Windows, `kuvo-wake` elsewhere; with an operation, a command that changes something claimed in `run/tool-commands/<key>.json` and its result kept there (the TypeScript box's file), run in a task of its own so a call cut short doesn't stop it. Sent again: that result; while it runs here (or in the TypeScript box's worker): what it comes to; one whose run the box stopping cut off: "The command worker was interrupted after accepting the command.", never run again | `letters/own-tools.ts` `wakeTool`, `resumedWake`; `tool-command.ts` `runToolCommand`, `commandReceipt` |
+
+### Proof
+
+- A unit test runs the verbs and the script itself on the same bot folder (on Unix, where the script
+  runs): adding at a time, with a repeat and a summary, on weekdays (moved to the next weekday),
+  times that don't read, a repeat that doesn't, one in the past; a watch too often, with no check,
+  and one with a summary; the list; canceling one that isn't there and one by its letters; the list
+  after. Every answer is the same, ids aside. Another reads times as the script does.
+- `agent-tools.test.mjs`, a new case: a wake command whose run was cut off (claimed by a process
+  that's gone) says so and adds nothing; one sent twice with its operation is done once and says
+  the same. Passes against both boxes; the old Rust scheduled it again.
+- `tools`: the wake tools' scenario runs on native Windows again (the `unix` mark is gone); on
+  Windows it goes through the verbs and must say what `kuvo-wake` says on the Mac.
+- macOS, both boxes: `tools` 10/10, `bots` 40/40 (with the wake-up routes), `work` 15/15, `notices`
+  4/4, `agent-tools` 3/3. Linux (WSL, static musl): `tools` 10/10, `bots` 40/40, `notices` 4/4,
+  `agent-tools` 3/3. Native Windows, the Rust box: `tools` 10/10 (the wake tools through the
+  verbs), `bots` 40/40, `notices` 4/4 (one skipped, as elsewhere), `agent-tools` 3/3.
+
+### Gaps and owners
+
+- **A time in words** ("tomorrow 9am"): GNU `date` on Linux reads them, the BSD one on a Mac
+  doesn't; the verbs read what both do, as Windows has neither.
+- **A coding agent's conversation's wake-ups through its bridge** (`via`): with its conversations
+  as callers, 4.6.
+

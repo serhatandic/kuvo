@@ -347,7 +347,7 @@ impl Work {
                         .filter(|data| data["id"] == session),
                     _ => None,
                 };
-                self.wake_tool(name, args, session, own.as_ref(), caller.as_ref())
+                self.wake_tool(name, args, session, own.as_ref(), caller.as_ref(), operation)
                     .await
             }
             "set_job" => self.set_job_tool(args, session, caller.as_ref()).await,
