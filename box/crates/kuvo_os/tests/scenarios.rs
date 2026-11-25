@@ -209,6 +209,19 @@ fn executable_search_uses_pathext_and_git_bash_from_its_own_installation() {
     assert!(matches!(shim, Executable::CmdScript(_)));
     assert!(shim.path().ends_with("runner.CMD"));
     assert_eq!(git_bash(&env).unwrap(), bin.join("bash.exe"));
+    // Git's own mingw64\bin on PATH names the same installation.
+    let mingw = prefix.join("mingw64").join("bin");
+    fs::create_dir_all(&mingw).unwrap();
+    fs::write(mingw.join("git.exe"), "").unwrap();
+    let inner = Environment::from([("PATH".into(), mingw.as_os_str().to_owned())]);
+    assert_eq!(git_bash(&inner).unwrap(), bin.join("bash.exe"));
+    // The installation Git names for itself comes first.
+    let own = temp.path().join("Own Git");
+    fs::create_dir_all(own.join("bin")).unwrap();
+    fs::write(own.join("bin").join("bash.exe"), "").unwrap();
+    let mut named = env.clone();
+    named.insert("GIT_INSTALL_ROOT".into(), own.as_os_str().to_owned());
+    assert_eq!(git_bash(&named).unwrap(), own.join("bin").join("bash.exe"));
     fs::remove_file(bin.join("bash.exe")).unwrap();
     assert_eq!(
         git_bash(&env).unwrap_err().kind(),

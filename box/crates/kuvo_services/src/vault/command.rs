@@ -171,14 +171,7 @@ impl Resident {
                     None,
                 )?;
             }
-            let shell = environment
-                .get(std::ffi::OsStr::new("SHELL"))
-                .map(PathBuf::from)
-                .filter(|file| file.is_absolute() && file.is_file())
-                .unwrap_or_else(|| PathBuf::from("/bin/sh"));
-            let mut spawn = Spawn::new(shell, environment);
-            spawn.args = vec!["-lc".into(), command.into()];
-            spawn.cwd = Some(folder.clone());
+            let mut spawn = shell(environment, &folder, command)?;
             spawn.stdout = Stdio::Pipe;
             spawn.stderr = Stdio::Pipe;
             Ok((spawn, scratch, hidden, credentials))
@@ -196,6 +189,25 @@ impl Resident {
         .await
         .map_err(|_| Error::refused(503, "The vault's command worker stopped."))?;
         Ok(output)
+    }
+}
+
+/// The user's shell, as a login shell, or Git for Windows' Bash.
+fn shell(environment: kuvo_os::platform::Environment, folder: &Path, command: &str) -> Result<Spawn> {
+    #[cfg(windows)]
+    return kuvo_os::platform::git_bash_spawn(environment, folder, command)
+        .map_err(|error| Error::refused(503, error.to_string()));
+    #[cfg(unix)]
+    {
+        let shell = environment
+            .get(std::ffi::OsStr::new("SHELL"))
+            .map(PathBuf::from)
+            .filter(|file| file.is_absolute() && file.is_file())
+            .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+        let mut spawn = Spawn::new(shell, environment);
+        spawn.args = vec!["-lc".into(), command.into()];
+        spawn.cwd = Some(folder.to_owned());
+        Ok(spawn)
     }
 }
 

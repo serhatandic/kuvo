@@ -175,7 +175,7 @@ impl Owner {
                     .iter()
                     .any(|feature| feature == offer.request.tool.feature())
             });
-        let status = peer_state(view, offer.key);
+        let status = admitted_state(view, offer.key);
         if !supported || matches!(status, PeerState::Unknown | PeerState::Removed) {
             let _ = offer.reply.send(Ok(Outcome::Older));
             return Ok(());
@@ -231,7 +231,8 @@ impl Owner {
         let sends = self.calls.round(
             now,
             view.relay_connected,
-            |key| peer_state(view, key),
+            // (One mid-handover of the coding agents' bridge, or this one on a trial, waits.)
+            |key| admitted_state(view, key),
             |session| home(view, &self.reader, session, now),
         )?;
         for send in sends {
@@ -284,7 +285,12 @@ impl Owner {
                 if self.away.remove(key) {
                     self.calls.heard(*key, now);
                 }
-                if let Some(call) = envelope.0.get("call") {
+                // (Not taken while work isn't admitted between the two: its sender tries again.)
+                if let Some(call) = envelope
+                    .0
+                    .get("call")
+                    .filter(|_| view.work_admitted(&encode(key)))
+                {
                     let replies = self
                         .calls
                         .receive(
@@ -407,6 +413,14 @@ fn unavailable(online: bool, kept: bool) -> Outcome {
         Outcome::Away { kept, sent: false }
     } else {
         Outcome::Offline { kept }
+    }
+}
+
+// A computer work isn't admitted with now counts as away: what's for it is kept until it is.
+fn admitted_state(view: &View, key: ComputerKey) -> PeerState {
+    match peer_state(view, key) {
+        PeerState::Online if !view.work_admitted(&encode(&key)) => PeerState::Away,
+        state => state,
     }
 }
 

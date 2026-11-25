@@ -105,6 +105,26 @@ fn legacy_command_contains(_pid: u32, _name: &str) -> bool {
     false
 }
 
+/// Windows has no process groups: a command's work is its process tree. Each running
+/// process's parent as Windows recorded it; that parent may since have exited and its PID
+/// been reused, so compare start times before trusting a link.
+#[cfg(windows)]
+pub fn process_parents() -> io::Result<std::collections::HashMap<u32, u32>> {
+    sys::parents()
+}
+
+/// When a running process started (Windows file time), none once it's gone.
+#[cfg(windows)]
+pub fn process_started(pid: u32) -> Option<u64> {
+    sys::read_start(pid).ok().flatten()?.parse().ok()
+}
+
+/// Each listening TCP socket's owner and port, IPv4 and IPv6.
+#[cfg(windows)]
+pub fn tcp_listeners() -> io::Result<Vec<(u32, u16)>> {
+    sys::tcp_listeners()
+}
+
 #[derive(Default, Debug)]
 pub enum Stdio {
     #[default]
