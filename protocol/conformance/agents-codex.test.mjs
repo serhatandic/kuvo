@@ -1295,6 +1295,8 @@ describe("What Codex asks, turned down, typed over and told again", { skip }, ()
 
   test("two asked in one turn: both cards are up, and each answer goes in", { timeout: 60000 }, async () => {
     const { id } = await box.begin([...asking("e4"), second("e4"), { sleeps: true }, { sleeps: true }, ...answered("e4")]);
+    // (Answered as it sleeps on them: one answered before it sleeps is told again as it does.)
+    await asleep(id);
     const forms = await card(id, 2);
     for (const form of forms) {
       const value = form.fields[0].description === "Which tone?" ? "Plain" : "Turkish";
