@@ -831,10 +831,10 @@ program updater; the live GPT-6-Luna run.
 
 | Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
 |---|---:|---:|---:|
-| macOS | 55/55 | 54/54, 1 skipped (Rust-only) | 6/6 |
-| Linux x86-64, lokum (musl) | 48/48 | — | 6/6 |
-| WSL2, Ubuntu 24.04 (musl) | 48/48 | — | 6/6 |
-| Native Windows x64 | 48/48 | — | 6/6 |
+| macOS | 57/57 | 56/56, 1 skipped (Rust-only) | 6/6 |
+| Linux x86-64, lokum (musl) | 48/48 at 04774ec91 | — | 6/6 |
+| WSL2, Ubuntu 24.04 (musl) | 57/57 | — | 6/6 |
+| Native Windows x64 | 57/57 | — | 6/6 |
 
 On Windows, a cross build's `libunwind.dll` sits beside the box. The keeper
 cases put that folder on the PATH.
