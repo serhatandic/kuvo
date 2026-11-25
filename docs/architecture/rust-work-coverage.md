@@ -900,3 +900,43 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **A coding agent's conversation's wake-ups through its bridge** (`via`): with its conversations
   as callers, 4.6.
 
+
+## 5.1d-1 — bots' old keys of their own
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `bots::own_keys`: as the resident starts, each bot's folder's settings (read as the engine reads them: comments, a last comma) without the servers that name a key of its own, noted first in `keys-gone.json`; a conversation open there connects them again; the keys go (not while an update is on trial, nor while this Mac's keys can't be reached or its move still owes the Keychain, tried again a minute later, twice as long each time); a bot whose settings can't be put right keeps its own | `bots/own-keys.ts` `settingsValue`, `dropOwnServers`, `dropBotsOwnServers`, `dropBotsOwnKeys`, `keepBotsOwnKeysGone`, `reconnectIn` |
+| `own_keys::keys_gone_note`, `forget_connected_keys` in what a bot is told (`Bots::told_now`, `freshen`): an integration it had a key for that isn't connected here, by its catalog name, and settings that still name its own | `keysGoneNote`, `forgetConnectedKeys` in `bots/tell.ts` |
+| `KeyStore::drop_bot_keys`: the host's (this Mac's Keychain) and the files in `box/keys`, `box/bot-keys` and `keys` | `keys.ts` `dropBotKeys` |
+| `upgrade::update_on_trial` reads the keeper's mark, `run/update-trial` (it read a file nothing writes) | `updates/update.ts` `updateOnTrial` |
+
+### Proof
+
+- `bot-keys.test.mjs`, two new cases against both boxes: as the box starts, a bot's server naming
+  its own key goes (its other server, and the settings' comment-free rest, stay), the key and an
+  earlier box's folder of bots' keys go, your own key stays, a bot whose settings can't be read
+  keeps its own; each is told what's so. While an update is on trial nothing goes; an integration
+  connected since is said no more and leaves the note. The trial case failed on the old Rust.
+- Unit tests: settings read as the engine reads them; a bot's own servers taken out and the rest
+  kept; another bot's key named there counts for nothing.
+- Regressions: `bots` 40/40, `integrations` 7/7, `tools` 10/10, both boxes on macOS; Linux (WSL):
+  `bots` 40/40, `integrations` 7/7, `bot-keys` 2/2. kuvo_services' integration tests pass (their
+  trial now written as the keeper writes it).
+- Size: about 14,100 characters of Rust for about 15,100 of TypeScript: 0.94×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bot-keys-gone](../../box/bridge-tests/bot-keys-gone.test.js) | 96, 120, 150, 163, 187 | `bot-keys.test.mjs`; `own_keys` unit tests |
+| | 209 settings that can't be rewritten | `drop_bots_own_servers` keeps that bot's keys; unproven by a case |
+| | 227 a bot's key among the box's own and an earlier Mac's folder | `drop_bot_keys` over the three folders; the case covers `box/keys` and `box/bot-keys` |
+| | 238, 247 a machine without a bridge; the gone key routes | the resident always starts it; the routes are gone (5.1b) |
+| [bot-keys-gone-host](../../box/bridge-tests/bot-keys-gone-host.test.js) | 51, 64, 79 this Mac's Keychain | `drop_bot_keys` asks the host as `key_names` does, tried again while it isn't answering; unproven by a case (no host stand-in in conformance) |
+
+### Gaps and owners
+
+- **A bot's conversation open as its servers go** is connected to this computer's own server two
+  seconds later, as there; proven only by reading.
