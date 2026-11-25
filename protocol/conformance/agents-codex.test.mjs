@@ -25,9 +25,10 @@ const offered = async (listener) => {
 };
 
 /** A resident of its own for one case. */
-async function withCodex(fixture, check) {
+async function withCodex(fixture, check, prepare = () => {}) {
   const codex = await scriptedCodex(fixture);
   try {
+    prepare(codex);
     await codex.start();
     await check(codex);
   } catch (error) {
@@ -469,6 +470,8 @@ describe("Codex's cards, modes, context and summaries", { skip }, () => {
   test("dismissing the card with its turn over ends the turn there, with nothing sent to Codex", { timeout: 60000 }, async () => {
     const { id } = await box.begin([asking("m1")]);
     const form = await until(async () => (await box.codex.forms(id))[0], "No card.");
+    // (Its turn over by then: one at work would hear the card was dismissed.)
+    await new Promise((resolve) => setTimeout(resolve, 300));
     assert.equal((await box.codex.dismissForm(id, form.id)).status, 200);
     const rows = await box.codex.idles(id);
     assert.equal(idles(rows)[0].outcome, "succeeded");
@@ -579,6 +582,20 @@ describe("Codex's cards, modes, context and summaries", { skip }, () => {
     assertMatch(mcp.state.content[0], { type: "text", text: "Found.\nSpec: https://example.test/spec" });
     assertMatch(mcp.state.content[1], { type: "file", mime: "image/png" });
   });
+});
+
+test("signed out while it works: Codex is told to sign out, and the turn on it ends as Codex stopped", { timeout: 60000, skip }, async () => {
+  const id = "ses_codex_signout";
+  await withCodex({}, async (codex) => {
+    codex.script(`go ${id}`, [item("item/started", { type: "commandExecution", id: "c1", command: "sleep 100" }), "stop"]);
+    await codex.prompt(id, `go ${id}`);
+    await until(async () => toolCalls(await codex.rows(id)).length === 1, "The command never showed.");
+    const out = await request(codex.listener, "POST", `kuvo/agents/api/integration/${provider}/disconnect`, {}, headers, 20000);
+    assert.ok(out.status < 300, out.text);
+    const rows = await codex.idles(id);
+    assertMatch(idles(rows)[0], { outcome: "failed", error: { type: "agent", message: "Codex stopped." } });
+    assert.ok(codex.heard().some((line) => line.logout), "Codex was never told to sign out.");
+  }, (codex) => codex.seed(id, { directory: codex.root }));
 });
 
 /** The holder of the account's Codex app-server. */

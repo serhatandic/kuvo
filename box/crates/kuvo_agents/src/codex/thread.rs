@@ -62,7 +62,9 @@ enum Command {
     Resolve(SteerReceipt, Reply<Option<bool>>),
     Handover(Reply<()>),
     LetGo(TurnNote, Reply<()>),
-    Close(Reply<()>),
+    /// `signed_out`: its account signed out (a turn under way fails, as Codex stopped);
+    /// otherwise removed, or the box stopping (it ends as stopped).
+    Close(bool, Reply<()>),
 }
 
 #[derive(Clone)]
@@ -146,8 +148,8 @@ impl Conversation {
         self.send(|reply| Command::LetGo(note, reply)).await
     }
 
-    pub async fn close(&self) -> io::Result<()> {
-        self.send(Command::Close).await
+    pub async fn close(&self, signed_out: bool) -> io::Result<()> {
+        self.send(|reply| Command::Close(signed_out, reply)).await
     }
 }
 
@@ -388,7 +390,18 @@ impl Actor {
                 let result = self.let_go(note).await;
                 let _ = reply.send(result);
             }
-            Command::Close(reply) => {
+            Command::Close(signed_out, reply) => {
+                // Its account signed out (Codex stopped under it), or removed, or the box
+                // stopping (the turn ends as stopped, without Stop).
+                if self.active.is_some() {
+                    self.stop_native().await?;
+                    let outcome = if signed_out {
+                        Outcome::Failed(failure("Codex stopped."))
+                    } else {
+                        Outcome::Interrupted
+                    };
+                    self.finish(outcome).await?;
+                }
                 if let Some(server) = self.server.clone().filter(|server| !server.closed())
                     && let Some(native) = self.native.clone().filter(|_| self.loaded)
                 {
@@ -1024,6 +1037,7 @@ impl Actor {
             }
         }
         // Dismissed: a turn at work hears so rather than wait on it; one that's over just ends.
+        let dismissed = said.is_none();
         let said = match said {
             Some(said) => said,
             None if active.between => return self.settle_between().await,
@@ -1038,7 +1052,10 @@ impl Actor {
         {
             return Ok(());
         }
-        self.answers.push(said);
+        // (A dismissal its turn didn't take isn't kept: there's nothing to tell a next turn.)
+        if !dismissed {
+            self.answers.push(said);
+        }
         if self.active.as_ref().is_some_and(|active| active.between) {
             return self.settle_between().await;
         }

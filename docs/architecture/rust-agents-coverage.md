@@ -807,7 +807,7 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 106–108, 110, 111 | Ported. 106 reloads the thread in place; the reference starts its app-server again. |
 | 109 | Fast ported; Standard (null) and none picked open (4.2). |
 | 112–113 | Open: foreground commands listed while they run (background model). |
-| 114 | Open (4.2): a removed account should end the turn as stopped. |
+| 114 | Rust: a removed account (or the box stopping) ends the turn as stopped; the conformance case for removal is open (4.2). Signing out mid-turn is ported: Codex is told to sign out and the turn fails as "Codex stopped.", as the reference has it. |
 | 115–119 | Ported. |
 | 120 | Open (4.2): Stop during a summary. |
 | 121 | Open (4.2): the instructions note on a thread it goes on with. |
@@ -819,7 +819,7 @@ program updater; the live GPT-6-Luna run.
 
 | Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
 |---|---:|---:|---:|
-| macOS | 36/36 | 35/35, 1 skipped (Rust-only) | 6/6 |
+| macOS | 37/37 | 36/36, 1 skipped (Rust-only) | 6/6 |
 | Linux x86-64, lokum | 22/22 at b255c5fc0 | — | 6/6 |
 | WSL2, Ubuntu 24.04 | 22/22 at b255c5fc0 | — | 6/6 |
 | Native Windows x64 | 22/22 at b255c5fc0 | — | 6/6 |
