@@ -61,6 +61,7 @@ static HOLDERS: AtomicU64 = AtomicU64::new(1);
 type Reply<T> = oneshot::Sender<io::Result<T>>;
 
 enum Command {
+    RestoreIdle(Value, Reply<()>),
     Start(Box<TurnInput>, Arc<dyn TurnSink>, Reply<()>),
     Steer(String, Prompt, Reply<Steer>),
     Interrupt(String, Reply<()>),
@@ -155,6 +156,10 @@ impl Conversation {
 
     pub async fn handover(&self) -> io::Result<()> {
         self.send(Command::Handover).await
+    }
+
+    pub async fn restore_idle(&self, saved: Value) -> io::Result<()> {
+        self.send(|reply| Command::RestoreIdle(saved, reply)).await
     }
 
     pub async fn let_go(&self, note: TurnNote) -> io::Result<()> {
@@ -389,6 +394,10 @@ impl Actor {
 
     async fn command(&mut self, command: Command) -> io::Result<()> {
         match command {
+            Command::RestoreIdle(saved, reply) => {
+                let result = self.restore_idle(saved).await;
+                let _ = reply.send(result);
+            }
             Command::Start(input, sink, reply) => {
                 let result = self.start(*input, sink).await;
                 let _ = reply.send(result);
@@ -405,6 +414,11 @@ impl Actor {
                 let _ = reply.send(self.resolve(receipt).await);
             }
             Command::Handover(reply) => {
+                if let Some(server) = &self.server {
+                    server
+                        .note_background(&self.session, self.terminals.snapshot())
+                        .await;
+                }
                 // The next resident goes on with the turn: this one answers nothing more of it.
                 if let Some(active) = self.active.take() {
                     lock(&self.handed).push(active.sink);
@@ -449,7 +463,7 @@ impl Actor {
                 }
                 self.terminals.reset();
                 if let Some(server) = self.server.clone().filter(|server| !server.closed()) {
-                    server.note_background(&self.session, false).await;
+                    server.note_background(&self.session, None).await;
                 }
                 self.closing = true;
                 let _ = reply.send(Ok(()));
@@ -1719,12 +1733,36 @@ impl Actor {
             None => self.terminals.failed(&native, initial),
         }
         let working = self.terminals.keeps_working();
-        server.note_background(&self.session, working).await;
+        server
+            .note_background(&self.session, self.terminals.snapshot())
+            .await;
         if working {
             self.list_at = Some(Instant::now() + TERMINALS);
         }
         self.set_busy();
         Ok(())
+    }
+
+    async fn restore_idle(&mut self, saved: Value) -> io::Result<()> {
+        let Some(server) = self.shared.current().await else {
+            return Ok(());
+        };
+        let Some(native) = self.native.clone() else {
+            return Ok(());
+        };
+        self.server = Some(server.clone());
+        self.route();
+        let relist = self.relist.clone();
+        self.terminals.restore(saved, |process| {
+            terminate(
+                server.clone(),
+                native.clone(),
+                process.to_owned(),
+                relist.clone(),
+            )
+        });
+        self.set_busy();
+        self.read_terminals(true).await
     }
 
     async fn expired(&mut self) -> io::Result<()> {

@@ -116,6 +116,10 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     if super::refused_install_attempt(&home) {
         return Ok(1);
     }
+    let wipe = kuvo_setup::wipe::installer_wipe(home.root(), verb == "status")?;
+    if wipe.waiting() {
+        return Ok(wipe_waiting(&home, verb));
+    }
     let scratch = profile != account.home.canonicalize()?;
     let key = scratch
         .then(|| std::env::var("KUVO_TEST_RELEASE_KEY").ok())
@@ -136,10 +140,9 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         } else {
             judgement.verb
         };
-        println!(
-            "{}",
-            json!({"verdict":verdict, "verb":suggested, "status":judgement.status})
-        );
+        let mut reply = json!({"verdict":verdict, "verb":suggested, "status":judgement.status});
+        super::install_wipe_offer(&mut reply, &wipe);
+        println!("{reply}");
         return Ok(0);
     }
     if verb == "move" {
@@ -186,6 +189,9 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         }
         Err(error) => return Err(error.into()),
     };
+    if kuvo_setup::wipe::installer_wipe(home.root(), false)?.waiting() {
+        return Ok(wipe_waiting(&home, verb));
+    }
     let staged = Home::new(install.join(STAGED))?;
     regular(staged.root(), true)?;
     let saved = Attempt::read(&marker)?;
@@ -221,6 +227,9 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         println!("{value}");
         return Ok(1);
     }
+    if start && let Some(receipt) = wipe.receipt() {
+        kuvo_setup::wipe::finish_reinstall(home.root(), receipt)?;
+    }
     // Publish completion while holding the installer lock. A stopped or
     // failed cleanup cannot leave a partial tree at the active staging path.
     let retired = updates.join(format!("retired-install-{}", attempt.aside));
@@ -236,6 +245,27 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     }
     println!("{value}");
     Ok(0)
+}
+
+fn wipe_waiting(home: &Home, verb: &std::ffi::OsStr) -> u8 {
+    let mut reply = super::wipe_waiting_status(home);
+    let code = if verb == "status" {
+        0
+    } else {
+        reply.as_object_mut().expect("status object").remove("verb");
+        if verb == "move" {
+            reply["result"] = "refused".into();
+            reply["message"] =
+                "There's nothing to move on this computer: Kuvo is where it belongs already."
+                    .into();
+            1
+        } else {
+            reply["result"] = "waits".into();
+            4
+        }
+    };
+    println!("{reply}");
+    code
 }
 
 fn answer(result: &str, verdict: Verdict, message: &str, code: u8) -> u8 {

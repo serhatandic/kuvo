@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { gzipSync } from "node:zlib";
 
-import { boxBinary, boxCommand, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, launch, localRelay, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
@@ -4167,18 +4167,20 @@ fi
   const previousWork = path.join("workspace", "old-work");
   write(fault, "");
   write(path.join(home, previousWork), "keep earlier work");
+  const old = completedWipeReceipt(env.HOME);
   try {
     const failed = install("new");
     assert.equal(failed.status, 1, failed.error?.message ?? failed.stdout + failed.stderr);
     const failure = JSON.parse(failed.stdout);
     assert.deepEqual([failure.result, failure.verdict, failure.started], ["failed", "fresh", false]);
+    assert.deepEqual(readJSON(old.marker), { ...old.receipt, formatVersion: 1 });
     const firstId = fs.readFileSync(path.join(home, "machine-id"), "utf8");
     assert.equal(fs.readFileSync(path.join(failure.setAside, previousWork), "utf8"), "keep earlier work");
     const table = fs.readFileSync(cron, "utf8");
     const status = install("status");
     assert.equal(status.status, 0, status.error?.message ?? status.stdout + status.stderr);
-    const { verdict, verb } = JSON.parse(status.stdout);
-    assert.deepEqual({ verdict, verb }, { verdict: "fresh", verb: "new" });
+    const { verdict, verb, offer, wipeReceipt } = JSON.parse(status.stdout);
+    assert.deepEqual({ verdict, verb, offer, wipeReceipt }, { verdict: "fresh", verb: null, offer: "reinstall-local", wipeReceipt: old.receipt });
     fs.rmSync(fault);
     const made = install("new");
     assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
@@ -4188,7 +4190,9 @@ fi
     assert.equal(fs.readFileSync(path.join(result.setAside, "run/link.json"), "utf8"), interruptedLink);
     const link = readJSON(path.join(home, "run/link.json"));
     assert.equal(link.setup.role, "primary");
+    assert.notEqual(link.setup.id, old.receipt.setup);
     assert.equal(link.mac, undefined);
+    assert.equal(fs.existsSync(old.marker), false);
     assert.notEqual(fs.readFileSync(path.join(home, "machine-id"), "utf8"), firstId);
     assert.equal(fs.readFileSync(path.join(failure.setAside, previousWork), "utf8"), "keep earlier work");
     assert.equal(fs.readFileSync(cron, "utf8"), table);
@@ -4727,6 +4731,232 @@ test("installer refuses future or unreadable making markers before acting", t =>
   }
 });
 
+test("installer checks the selected installed receipt before judging or staging", t => {
+  const fixture = box(t);
+  const { env, binary, release } = fixture;
+  env.HOME = env.USERPROFILE = fs.realpathSync(env.HOME);
+  const home = path.join(env.HOME, ".kuvo-code");
+  if (!binary.typescript) privateWindowsHome(home);
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.receipt-fixture") : undefined;
+  const ask = verb => {
+    if (bundle && verb !== "media-status") return macInstallerRequest(fixture, bundle, verb);
+    const args = binary.typescript ? ["--config=/dev/null", "--no-env-file", binary.file, "install", `--${verb}`, "--root", ".kuvo-code"]
+      : verb === "media-status" ? ["install", "--status", "--root", ".kuvo-code", "--media", release, ...(bundle ? ["--app", bundle] : [])]
+      : verb === "status" ? ["install", "--status", "--root", ".kuvo-code"] : ["install-linux", verb === "shell-status" ? "status" : verb, release, ".kuvo-code"];
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, { cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000 });
+    assert.ifError(result.error);
+    assert.ok(result.stdout, result.stderr);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const primary = path.join(home, "bin/.installed.json"), legacy = path.join(home, "updates/installed.json");
+  const verbs = process.platform === "win32" ? ["status"] : ["status", "new", "move"];
+  if (!binary.typescript) verbs.push("media-status", ...(process.platform === "linux" ? ["shell-status"] : []));
+  for (const file of [legacy, primary]) {
+    for (const bytes of ['{}', '{"formatVersion":0}', '{"formatVersion":1}']) {
+      write(file, bytes);
+      assert.equal(ask("status")[0], 0);
+    }
+    for (const [bytes, message] of [['{"formatVersion":2,"extra":{"keep":true}}', "Installed Box receipt format version 2 is unsupported (this build writes 1)."], ['{', `Kuvo cannot read ${file}; its bytes were kept.`], ['[]', `Kuvo cannot read ${file}; its bytes were kept.`]]) {
+      write(file, bytes);
+      for (const verb of verbs) {
+        assert.deepEqual(ask(verb), [1, { result: "refused", message }]);
+        assert.equal(fs.readFileSync(file, "utf8"), bytes);
+        assert.equal(fs.existsSync(path.join(home, "active-release")), false);
+      }
+    }
+    fs.unlinkSync(file);
+  }
+  write(legacy, '{"formatVersion":2}');
+  write(primary, '{"formatVersion":1}');
+  assert.equal(ask("status")[0], 0, "the selected receipt wins over legacy");
+  assert.equal(fs.readFileSync(legacy, "utf8"), '{"formatVersion":2}');
+  if (!binary.typescript) {
+    const selected = "versions/0.8.0-111111111111/bin";
+    write(path.join(home, "active-release"), selected);
+    write(path.join(home, selected, ".installed.json"), '{"formatVersion":2}');
+    assert.deepEqual(ask("status"), [1, { result: "refused", message: "Installed Box receipt format version 2 is unsupported (this build writes 1)." }]);
+  }
+});
+
+// Directory identity is read from the same native metadata as the wipe journal.
+function wipeDirectoryIdentity(folder) {
+  if (process.platform !== "win32") {
+    const { dev, ino } = fs.lstatSync(folder, { bigint: true });
+    return `${dev}:${ino}`;
+  }
+  const script = `
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class FixtureDirectoryId {
+  [StructLayout(LayoutKind.Sequential)] public struct Id { public ulong Volume, Low, High; }
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  public static extern SafeFileHandle CreateFile(string p, uint a, uint s, IntPtr x, uint d, uint f, IntPtr t);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  public static extern bool GetFileInformationByHandleEx(SafeFileHandle h, int c, out Id i, uint n);
+  public static string Read(string p) {
+    using (var h = CreateFile(p, 0x80, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+      Id i; if (h.IsInvalid || !GetFileInformationByHandleEx(h, 18, out i, 24)) throw new System.ComponentModel.Win32Exception();
+      return i.Volume + ":" + i.Low + ":" + i.High;
+    }
+  }
+}
+
+'@
+    [FixtureDirectoryId]::Read($env:KUVO_FIXTURE_DIRECTORY)
+  `;
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+    env: { ...process.env, KUVO_FIXTURE_DIRECTORY: folder }, encoding: "utf8", timeout: 15000,
+  });
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  const [volume, low, high] = result.stdout.trim().split(":");
+  return `${volume}:${BigInt(low) + (BigInt(high) << 64n)}`;
+}
+
+function completedWipeReceipt(profile) {
+  const receipts = path.join(profile, ".kuvo-code-removal-receipts");
+  const marker = path.join(receipts, "last-setup-wipe");
+  const receipt = { setup: "set_" + Buffer.alloc(16, 15).toString("base64url"), operation: Buffer.alloc(16, 91).toString("base64url") };
+  write(marker, JSON.stringify({ ...receipt, formatVersion: 1 }), { mode: 0o600 });
+  fs.chmodSync(receipts, 0o700);
+  return { marker, receipt };
+}
+
+test("installer resumes only the authorized detached wipe and offers reinstall", t => {
+  const fixture = box(t);
+  const { env, binary, release } = fixture;
+  const home = path.join(env.HOME, ".kuvo-code");
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.wipe-fixture") : undefined;
+  const ask = verb => {
+    if (bundle) return macInstallerRequest(fixture, bundle, verb);
+    const install = ["install", `--${verb}`, "--root", ".kuvo-code"];
+    const args = binary.typescript
+      ? ["--config=/dev/null", "--no-env-file", binary.file, ...install, "--release", release, "--engine", release]
+      : verb === "status" ? install : ["install-linux", verb, release, ".kuvo-code"];
+    const result = spawnSync(binary.typescript ? typescriptRuntime() : binary.file, args, {
+      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+    });
+    assert.ifError(result.error);
+    assert.ok(result.stdout, result.stderr);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const setup = "set_" + Buffer.alloc(16, 15).toString("base64url"), operation = Buffer.alloc(16, 91).toString("base64url");
+  const receipts = path.join(env.HOME, ".kuvo-code-removal-receipts");
+  const marker = path.join(receipts, "last-setup-wipe"), detached = path.join(receipts, `erase-${operation}`);
+  if (!binary.typescript) { privateWindowsHome(receipts); privateWindowsHome(home); }
+  const old = path.join(detached, "data/old.txt"), replacement = path.join(home, "desktop/marker");
+  write(old, "the old installation"); write(replacement, "keep for reinstall");
+  fs.chmodSync(receipts, 0o700);
+  const oldId = wipeDirectoryIdentity(detached), newId = wipeDirectoryIdentity(home);
+  const keep = (source, phase = "erasing") => {
+    write(marker, JSON.stringify({ setup, operation, phase, source, formatVersion: 1 }), { mode: 0o600 });
+    fs.chmodSync(marker, 0o600);
+  };
+  const waits = () => {
+    const [code, answer] = ask("status");
+    assert.equal(code, 0);
+    assert.deepEqual([answer.verdict, answer.verb, answer.offer, answer.message], ["waits", null, undefined, "This computer’s wipe hasn’t finished."]);
+    assert.equal(fs.readFileSync(old, "utf8"), "the old installation");
+    assert.equal(fs.readFileSync(replacement, "utf8"), "keep for reinstall");
+  };
+  const unapproved = path.join(home, "run/link.json");
+  write(unapproved, JSON.stringify({ setup: { id: setup, role: "primary" }, localWipe: { setup, operation } }), { mode: 0o600 });
+  waits();
+  assert.equal(fs.existsSync(marker), false, "a marker without committed authority must not erase anything");
+  fs.unlinkSync(unapproved);
+  keep(newId); // The recorded inode is not the retired directory: refuse to erase.
+  waits();
+  keep(oldId);
+  const lock = path.join(env.HOME, ".kuvo-code-wipe.lock");
+  write(path.join(lock, `owner-${process.pid}-${"a".repeat(16)}`), "");
+  waits();
+  if (process.platform !== "win32") {
+    const [code, answer] = ask("new");
+    assert.equal(code, 4);
+    assert.deepEqual([answer.result, answer.verdict, answer.message], ["waits", "waits", "This computer’s wipe hasn’t finished."]);
+  }
+  fs.rmSync(lock, { recursive: true });
+  // The future maker must be refused before the status is allowed to resume a wipe.
+  const making = path.join(home, "updates/install/making");
+  write(making, '{"at":1,"formatVersion":2}');
+  const [refused, answer] = ask("status");
+  assert.equal(refused, 1);
+  assert.equal(answer.result, "refused");
+  assert.ok(fs.existsSync(old));
+  fs.unlinkSync(making);
+  for (const phase of ["erasing", "detached"]) {
+    // Both journal checkpoints are resumable, including a crash after the rename.
+    if (!fs.existsSync(detached)) { write(old, "the old installation"); keep(wipeDirectoryIdentity(detached), phase); }
+    const [code, reply] = ask("status");
+    assert.equal(code, 0);
+    assert.deepEqual([reply.verdict, reply.verb, reply.offer, reply.wipeReceipt], ["fresh", null, "reinstall-local", { setup, operation }]);
+    assert.equal(fs.existsSync(detached), false);
+    assert.deepEqual(readJSON(marker), { setup, operation, formatVersion: 1 });
+    assert.equal(fs.readFileSync(replacement, "utf8"), "keep for reinstall");
+  }
+  assert.deepEqual(ask("status")[1].wipeReceipt, { setup, operation });
+});
+
+test("installer completes the real standalone wipe after its owner stops", { timeout: 60000 }, async t => {
+  const fixture = box(t);
+  const { env, binary } = fixture;
+  if (binary.typescript) return t.skip("The native signed standalone removal receipt is the carried authority.");
+  const home = path.join(env.HOME, ".kuvo-code");
+  privateWindowsHome(home);
+  const bundle = process.platform === "darwin" ? macInstallerBundle(env.HOME, "run.kuvo.code.wipe-owner-fixture") : undefined;
+  const ask = () => {
+    if (bundle) return macInstallerRequest(fixture, bundle, "status");
+    const result = spawnSync(binary.file, ["install", "--status", "--root", ".kuvo-code"], {
+      cwd: env.HOME, env: { ...env, KUVO_HOME: home }, encoding: "utf8", timeout: 15000,
+    });
+    assert.ifError(result.error);
+    return [result.status, JSON.parse(result.stdout)];
+  };
+  const data = path.join(home, "data/old-work"), outside = path.join(env.HOME, "outside");
+  write(path.join(home, "folder-version.json"), '{"version":23}\n');
+  write(path.join(home, "run/link.json"), '{"name":"Last computer","phones":[]}');
+  write(data, "old work"); write(outside, "not part of the installation");
+  const relay = await localRelay();
+  const resident = startBox({ binary, home, env, relay });
+  try {
+    const record = await resident.ready();
+    const before = (await request(record, "GET", "kuvo/setup")).json;
+    const operation = Buffer.alloc(16, 93).toString("base64url");
+    const lock = path.join(env.HOME, ".kuvo-code-wipe.lock");
+    write(path.join(lock, `owner-${process.pid}-${"b".repeat(16)}`), "");
+    const response = await request(record, "POST", `kuvo/computers/${before.you.key}/unlink`, { operation }, { "x-kuvo-from": "mac" });
+    assert.equal(response.status, 200, response.text);
+    assert.equal(response.json.removal.state, "wipe-pending");
+    await resident.exited;
+    const receiptFolder = path.join(env.HOME, ".kuvo-code-removal-receipts");
+    const marker = path.join(receiptFolder, "last-setup-wipe");
+    if (process.platform === "win32") {
+      // The resident's own eraser waits for its exact parent, then sees our lock.
+      const exe = path.join(receiptFolder, `eraser-${resident.child.pid}`, "kuvo-box.exe");
+      const script = `@(Get-CimInstance Win32_Process -Filter "Name='kuvo-box.exe'" | Where-Object ExecutablePath -eq $env:KUVO_FIXTURE_ERASER).Count`;
+      await until(() => {
+        const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+          env: { ...env, KUVO_FIXTURE_ERASER: exe }, encoding: "utf8", timeout: 10000,
+        });
+        return result.status === 0 && result.stdout.trim() === "0";
+      }, "the resident's own eraser should exit while the receipt lock is held", 20000, 100);
+    }
+    const [waiting, held] = ask();
+    assert.equal(waiting, 0);
+    assert.deepEqual([held.verdict, held.verb, held.offer], ["waits", null, undefined]);
+    assert.equal(fs.readFileSync(data, "utf8"), "old work");
+    assert.equal(fs.existsSync(marker), false);
+    fs.rmSync(lock, { recursive: true });
+    const [code, after] = ask();
+    assert.equal(code, 0);
+    assert.deepEqual([after.verdict, after.verb, after.offer, after.wipeReceipt], ["fresh", null, "reinstall-local", { setup: before.setup, operation }]);
+    assert.equal(fs.existsSync(home), false);
+    assert.deepEqual(readJSON(marker), { setup: before.setup, operation, formatVersion: 1 });
+    assert.equal(fs.readFileSync(outside, "utf8"), "not part of the installation");
+  } finally { await resident.stop(); await relay.close(); }
+});
+
 test("the Mac installer offers a move when the earlier app still has work", t => {
   if (process.platform !== "darwin") return t.skip("Uses the earlier Mac app's home.");
   const fixture = box(t);
@@ -5029,11 +5259,17 @@ esac
       const status = install("status", fresh, freshTools);
       assert.equal(status.status, 0, status.stderr);
       assert.equal(JSON.parse(status.stdout).verb, "new");
+      const old = completedWipeReceipt(fresh);
+      const offer = install("status", fresh, freshTools);
+      assert.equal(offer.status, 0, offer.stderr);
+      const { verdict, verb, offer: reinstall, wipeReceipt } = JSON.parse(offer.stdout);
+      assert.deepEqual({ verdict, verb, reinstall, wipeReceipt }, { verdict: "fresh", verb: null, reinstall: "reinstall-local", wipeReceipt: old.receipt });
       const made = install("new", fresh, freshTools);
       assert.equal(made.status, 0, made.error?.message ?? made.stdout + made.stderr);
       const answer = JSON.parse(made.stdout.trim().split("\n").at(-1));
       assert.equal(answer.result, "done");
       assert.equal(answer.started, true);
+      assert.equal(fs.existsSync(old.marker), false);
       const home = path.join(fresh, ".kuvo-code");
       assert.equal(readJSON(path.join(home, "box.json")).launch, "rust");
       installedRelease(home);

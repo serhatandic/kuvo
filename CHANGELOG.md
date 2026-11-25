@@ -6,6 +6,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Background commands that Codex or Claude Code leave running stay visible and stoppable through a Rust computer update. The installer also refuses release receipts it cannot read.
+
+- The installer can finish a previously approved standalone computer wipe after a crash, then offer reinstall without touching replacement data.
+
 - An installer leaves an interrupted installation from a newer version untouched instead of offering to start over.
 
 - Kuvo Helper’s menu on a Rust computer shows current work, what waits on you, background work, and what your other computers last told it.
