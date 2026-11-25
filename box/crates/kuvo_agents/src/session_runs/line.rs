@@ -1020,7 +1020,7 @@ impl Service {
     }
 
     /// As the resident starts: a turn an earlier one left unfinished (and
-    /// no agent goes on with) is closed, uncertain handoffs are looked at,
+    /// no agent goes on with) is closed when it's first needed, uncertain handoffs are looked at,
     /// and what an earlier resident held for this one goes, each once.
     /// `resumed`: the conversations whose turns go on here.
     pub(super) async fn wake_saved(&self, state: &mut State, resumed: &BTreeSet<String>) {
@@ -1029,13 +1029,14 @@ impl Service {
         };
         for header in headers {
             let session = header.id().to_owned();
-            if !resumed.contains(&session)
-                && let Err(error) = self.store.repair(&session).await
+            // (Closed, and Codex's replies an older bridge kept with its directives as words read,
+            // as its messages are first needed: one nobody opens stays as it was. One whose turn
+            // goes on here has them read now.)
+            if !resumed.contains(&session) {
+                self.store.repair_when_needed([session.clone()]);
+            } else if let Err(error) =
+                crate::codex::read_kept_citations(&self.store, &session).await
             {
-                eprintln!("Kuvo could not close the unfinished turn in {session}: {error}");
-            }
-            // (Codex's replies an older bridge kept with its directives as words.)
-            if let Err(error) = crate::codex::read_kept_citations(&self.store, &session).await {
                 eprintln!("Kuvo could not read Codex's citations in {session}: {error}");
             }
             let Ok(Some(line)) = self.store.line(&session).await else {

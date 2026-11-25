@@ -74,7 +74,7 @@ impl SessionStore {
             ((), line.inputs.len() != before)
         })
         .await?;
-        if !self.write_messages(id, changed).await? {
+        if !self.write_rows(id, changed).await? {
             return Ok(false);
         }
         self.change_header(id, move |header| {
