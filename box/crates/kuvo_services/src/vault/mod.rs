@@ -99,3 +99,5 @@ pub(crate) fn check_id(id: &str) -> Result<()> {
         Err(Error::refused(400, "That isn't an item."))
     }
 }
+
+pub(crate) use command::command_environment;

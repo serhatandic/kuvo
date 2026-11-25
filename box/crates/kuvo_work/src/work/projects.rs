@@ -135,15 +135,7 @@ async fn run(mut command: Command, limit: u64) -> Result<Output, String> {
 
 /// Git in `folder` by the box itself (`gitLater`): its trimmed output, or none where it failed.
 pub(crate) async fn git(folder: &Path, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
-    let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-    let at = folder.to_owned();
-    let own = spawn_blocking(move || safe::own_args(&args, Some(&at), None));
-    let mut command = Command::new("git");
-    command.args(own.await.ok()?.ok()?).current_dir(folder);
-    command.envs(env.iter().copied()).stderr(Stdio::null());
-    command.env("GIT_OPTIONAL_LOCKS", "0");
-    command.env("GIT_TERMINAL_PROMPT", "0");
-    let output = run(command, 60).await.ok()?;
+    let output = safe::run(folder, args, safe::Intent::Own, env, Duration::from_secs(60)).await.ok()?;
     let said = String::from_utf8_lossy(&output.stdout);
     output.status.success().then(|| said.trim().to_owned())
 }

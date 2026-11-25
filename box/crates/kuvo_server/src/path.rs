@@ -46,6 +46,9 @@ const FOLDER_PATHS: &[(&str, &str)] = &[
     ("kuvo/folders", "path"),
     ("kuvo/folders/tree", "path"),
     ("kuvo/files/find", "directory"),
+    ("kuvo/git/files", "directory"),
+    ("kuvo/git/files/events", "directory"),
+    ("kuvo/projects", "directory"),
 ];
 
 pub(crate) fn canonical(path: &str) -> Option<String> {

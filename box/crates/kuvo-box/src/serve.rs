@@ -370,7 +370,7 @@ pub async fn run(
             platform: kuvo_os::platform::Platform::current(),
         },
     );
-    kuvo_services::git::register(&mut routes, home.to_owned());
+    kuvo_services::git::register(&mut routes, home.to_owned(), kind == ComputerKind::Mac);
     kuvo_services::programs::register(&mut routes, account.clone());
     let integration_keys =
         kuvo_services::integrations::register(&mut routes, home, kind == ComputerKind::Mac);
@@ -738,6 +738,7 @@ fn info(
     features.push(kuvo_peers::memory_read::FEATURE);
     features.push(kuvo_peers::owner_read::FEATURE);
     features.extend_from_slice(kuvo_services::files::FEATURES);
+    features.extend_from_slice(kuvo_services::git::FEATURES);
     features.extend_from_slice(kuvo_services::artifacts::FEATURES);
     features.extend_from_slice(kuvo_services::library::FEATURES);
     features.extend_from_slice(kuvo_services::programs::FEATURES);
