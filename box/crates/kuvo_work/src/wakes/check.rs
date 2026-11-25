@@ -154,33 +154,21 @@ pub fn run(
     }
 }
 
-fn shell() -> Option<PathBuf> {
-    if cfg!(unix) {
-        return Some(PathBuf::from("/bin/sh"));
+/// Kuvo's own shell: `/bin/sh`, or Git for Windows' Bash.
+fn plain_shell(
+    script: &str,
+    directory: &Path,
+    env: kuvo_os::platform::Environment,
+) -> std::io::Result<Spawn> {
+    #[cfg(windows)]
+    return kuvo_os::platform::git_bash_spawn(env, directory, script);
+    #[cfg(unix)]
+    {
+        let mut spawn = Spawn::new("/bin/sh", env);
+        spawn.args = vec!["-c".into(), OsString::from(script), "sh".into()];
+        spawn.cwd = Some(directory.to_owned());
+        Ok(spawn)
     }
-    // Git for Windows' shell: where its installer says, beside the `git` on PATH (its `cmd` or
-    // `mingw64/bin` folder), or any `sh.exe` on PATH.
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let folders: Vec<PathBuf> = std::env::split_paths(&path).collect();
-    let installed = std::env::var_os("GIT_INSTALL_ROOT").map(PathBuf::from);
-    let beside_git = folders
-        .iter()
-        .find(|folder| folder.join("git.exe").is_file())
-        .into_iter()
-        .flat_map(|folder| {
-            folder
-                .ancestors()
-                .skip(1)
-                .take(2)
-                .map(Path::to_owned)
-                .collect::<Vec<_>>()
-        });
-    installed
-        .into_iter()
-        .chain(beside_git)
-        .map(|root| root.join("bin").join("sh.exe"))
-        .chain(folders.iter().map(|folder| folder.join("sh.exe")))
-        .find(|candidate| candidate.is_file())
 }
 
 /// The script's status, as `timeout` gives it: 124 when out of time, 128 and the signal when
@@ -196,7 +184,7 @@ fn run_shell(
 ) -> Option<i32> {
     let mut env = base.clone();
     env.insert("KUVO_WATCH_FAILED".into(), failed.as_os_str().to_owned());
-    let program = match fence {
+    let mut spawn = match fence {
         Fence::On(launcher) => {
             env.insert("KUVO_FENCE_WORK".into(), directory.as_os_str().to_owned());
             env.insert("KUVO_FENCE_SHELL".into(), "/bin/sh".into());
@@ -204,16 +192,16 @@ fn run_shell(
                 "OPENCODE_SESSION_ID".into(),
                 super::folder::text(&owner.join("session")).into(),
             );
-            launcher.clone()
+            let mut spawn = Spawn::new(launcher.clone(), env);
+            spawn.args = vec!["-c".into(), OsString::from(script), "sh".into()];
+            spawn.cwd = Some(directory.to_owned());
+            spawn
         }
-        _ => match shell() {
-            Some(shell) => shell,
-            None => return Some(127),
+        _ => match plain_shell(script, directory, env) {
+            Ok(spawn) => spawn,
+            Err(_) => return Some(127),
         },
     };
-    let mut spawn = Spawn::new(program, env);
-    spawn.args = vec!["-c".into(), OsString::from(script), "sh".into()];
-    spawn.cwd = Some(directory.to_owned());
     spawn.stdout = Stdio::File(fs::File::create(out).ok()?);
     let Ok(mut child) = spawn.spawn() else {
         return Some(127);
