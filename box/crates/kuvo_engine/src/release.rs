@@ -149,7 +149,7 @@ impl Engine {
         {
             return Ok(false);
         }
-        self.keep_inboxes().await?;
+        self.keep_inboxes_with(Demand::Owned).await?;
         if crate::session_move::writes_in_flight(&self.home).await? {
             return Ok(false);
         }
@@ -188,12 +188,12 @@ impl Engine {
             hold.stage = Stage::Releasing;
             self.save_release_hold(&hold).await?;
         }
-        if self.queues.release_pending(self).await? {
-            if self.acquire(Demand::Start).await.is_none() {
+        if self.queues.release_pending(self, None).await? {
+            let Some(lease) = self.acquire(Demand::Start).await else {
                 return Ok(());
-            }
+            };
             self.release_waiting().await?;
-            if self.queues.release_pending(self).await? {
+            if self.queues.release_pending(self, Some(&lease)).await? {
                 return Ok(());
             }
         }

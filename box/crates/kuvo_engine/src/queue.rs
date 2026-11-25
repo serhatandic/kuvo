@@ -387,21 +387,38 @@ impl QueueStore {
         Ok(true)
     }
 
-    pub(crate) async fn release_pending(&self, engine: &Engine) -> io::Result<bool> {
+    pub(crate) async fn release_pending(
+        &self,
+        engine: &Engine,
+        lease: Option<&Lease>,
+    ) -> io::Result<bool> {
         for (session, state) in self.index().await? {
-            if !state.paused
-                && state.limit_stop.is_none()
-                && !state.waiting.is_empty()
-                && engine
+            if state.paused
+                || state.limit_stop.is_some()
+                || state.waiting.is_empty()
+                || engine
                     .agent_session(&session)
                     .await
                     .map_err(|_| {
                         io::Error::other("Could not check the owner of a waiting message.")
                     })?
-                    .is_none()
+                    .is_some()
             {
-                return Ok(true);
+                continue;
             }
+            if let Some(lease) = lease {
+                match engine
+                    .call::<Value>(lease, Method::GET, &sessions::path(&session), None)
+                    .await
+                {
+                    // Preserve this queue, but a confirmed absent session has
+                    // no turn to release and must not hold every other update.
+                    Err(error) if error.missing() => continue,
+                    Err(error) => return Err(io::Error::other(error)),
+                    Ok(_) => {}
+                }
+            }
+            return Ok(true);
         }
         Ok(false)
     }
@@ -2241,7 +2258,11 @@ impl Engine {
     /// Keep the old engine's inboxes before a coordinated release switch.
     /// A failed inventory or transfer leaves the engine in place and can be retried.
     pub async fn keep_inboxes(&self) -> io::Result<usize> {
-        let Some(lease) = self.acquire(Demand::Existing).await else {
+        self.keep_inboxes_with(Demand::Existing).await
+    }
+
+    pub(crate) async fn keep_inboxes_with(&self, demand: Demand) -> io::Result<usize> {
+        let Some(lease) = self.acquire(demand).await else {
             return Ok(0);
         };
         let ids = inbox_inventory(self, &lease).await?;

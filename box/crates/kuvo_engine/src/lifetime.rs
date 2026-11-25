@@ -110,6 +110,7 @@ impl Drop for Lease {
 pub(crate) enum Demand {
     Start,
     Existing,
+    Owned,
     Passive,
 }
 
@@ -227,7 +228,9 @@ impl Engine {
     }
 
     pub(crate) async fn quiet_for_release(&self) -> io::Result<bool> {
-        let Some(lease) = self.acquire(Demand::Existing).await else {
+        // A borrowed engine may answer the same endpoints but its inbox is
+        // not ours to move. Probe a verified worker without blocking the actor.
+        let Some(lease) = self.acquire(Demand::Owned).await else {
             return Ok(!fs::try_exists(self.home.join("run/engine.json")).await?);
         };
         Ok(!browser_asks(&self.home).await && !busy(&self.upstream, &lease.record).await)
@@ -375,7 +378,9 @@ impl Supervisor {
         let lease = self
             .worker
             .as_ref()
-            .filter(|_| self.healthy && result.is_ok())
+            .filter(|worker| {
+                self.healthy && result.is_ok() && (demand != Demand::Owned || worker.owned())
+            })
             .map(|worker| {
                 let commands = if demand != Demand::Passive {
                     self.commands.upgrade()
@@ -511,7 +516,7 @@ impl Supervisor {
     async fn drain(&mut self) -> io::Result<bool> {
         self.reap().await?;
         let Some(worker) = &self.worker else {
-            return Ok(true);
+            return Ok(!fs::try_exists(self.home.join("run/engine.json")).await?);
         };
         if !worker.owned()
             || !self.healthy

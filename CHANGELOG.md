@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A saved message whose conversation is no longer in the engine stays saved without holding up the computer’s next engine update.
+
 - When a Rust computer needs a different engine for an update, current work finishes first and new messages wait. They go in order once the new release is ready or the previous one is restored.
 
 - A computer removed from your setup can be added back after it restarts; it no longer says it has setup data that needs a merge.
