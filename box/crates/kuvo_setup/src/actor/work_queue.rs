@@ -186,6 +186,21 @@ impl Owner {
         if setup.role != Role::Primary || self.can_write().is_err() {
             return None;
         }
+        if self.roster().is_ok_and(|roster| roster.boxes.len() == 1) {
+            let had_peers = self.roster().is_ok_and(|roster| !roster.left.is_empty());
+            let floor = if had_peers {
+                self.lease
+                    .seen
+                    .as_ref()
+                    .filter(|seen| seen.setup == setup.position.id)
+                    .map_or(0, |seen| seen.high)
+            } else {
+                0
+            };
+            let high =
+                crate::lease::reserve_local_numbers(&self.files, &setup.position.id, floor).ok()?;
+            return Some(QueueNumberLease { floor, high });
+        }
         let seen = self
             .lease
             .seen

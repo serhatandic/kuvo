@@ -255,6 +255,40 @@ impl Writer {
                     self.reads.restore_labels.here(value, false).await
                 }
             }
+            RequestKind::Archive { session, action } => {
+                let owned = self
+                    .owners
+                    .scope(session, None)
+                    .is_ok_and(|scope| !scope.held && scope.owner.is_some_and(|owner| owner.local));
+                if !owned {
+                    Err(Refusal::new(
+                        StatusCode::CONFLICT,
+                        "This computer couldn’t confirm it owns that record.",
+                    ))
+                } else if let Some((settings, dispatch)) = self
+                    .archives
+                    .get()
+                    .and_then(|(settings, dispatch)| Some((settings, dispatch.upgrade()?)))
+                {
+                    match act
+                        .body
+                        .as_ref()
+                        .and_then(|body| body["value"]["was"].as_str())
+                    {
+                        Some(was) => {
+                            settings
+                                .owner_action(dispatch.clone(), session, action, was)
+                                .await
+                        }
+                        None => Err(Refusal::new(StatusCode::FORBIDDEN, "")),
+                    }
+                } else {
+                    Err(Refusal::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "The session list isn’t ready.",
+                    ))
+                }
+            }
             RequestKind::Delete => self.change(act.item, Removal::Delete).await,
             RequestKind::Restore => self.change(act.item, Removal::Restore).await,
             _ => unreachable!("mutation already selected"),

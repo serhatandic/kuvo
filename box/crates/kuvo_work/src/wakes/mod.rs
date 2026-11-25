@@ -8,7 +8,7 @@
 
 pub mod check;
 pub mod clock;
-mod fire;
+pub(crate) mod fire;
 pub mod folder;
 mod inbox;
 mod routes;
@@ -31,9 +31,7 @@ pub use folder::{Listing, Roots};
 /// What these routes answer whole.
 pub const FEATURES: &[&str] = &["wakes", "wakes.edit", "wakes.events"];
 
-/// How often the resident looks whether a wake-up came due (one an agent's `kuvo-wake` wrote
-/// beside the box included), and how often watches and held folders are looked at regardless.
-const LOOK: Duration = Duration::from_secs(2);
+/// Active watches run their check once a minute, and blocked wake-ups retry no sooner.
 const ROUND: Duration = Duration::from_secs(60);
 
 /// This computer's wake-ups and watches.
@@ -90,25 +88,65 @@ impl Wakes {
     async fn fire(self, mut stopping: watch::Receiver<bool>) {
         let env = check::environment();
         let mut changes = self.changes();
-        let mut last = (Instant::now(), fire::now());
+        let mut last_round = None::<(Instant, i64)>;
         let mut watching: Option<JoinHandle<()>> = None;
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
         loop {
             let roots = self.inner.roots.clone();
+            let mut paths = vec![
+                roots.run.join("off"),
+                roots.run.join("paused"),
+                roots.run.join("stopped"),
+            ];
+            // A Windows directory watch keeps a handle to the directory. Holding
+            // one inside a bot's folder prevents moving that bot to Trash. Watch
+            // the two stable roots recursively there, not the removable children.
+            let mut folders = vec![(roots.bots.clone(), cfg!(windows)), (roots.sessions.clone(), cfg!(windows))];
+            let mut has_watches = false;
+            for (_, folder) in roots.folders() {
+                if !cfg!(windows) {
+                    paths.extend(["session", "paused", "via", ".retry"].map(|name| folder.join(name)));
+                    folders.push((folder.join("wakes"), false));
+                    folders.push((folder.join("watches"), true));
+                }
+                has_watches |= folder.join("session").exists()
+                    && !folder.join("paused").exists()
+                    && !folder::names(&folder.join("watches")).is_empty();
+            }
+            files.set_targets(paths, folders);
             let now = fire::now();
             let due = tokio::task::spawn_blocking(move || next_wake(&roots))
                 .await
                 .ok()
                 .flatten();
-            // One still due after a round it was due before (it couldn't go) waits a minute.
-            let due_now = due.is_some_and(|due| due <= now as f64 && due > last.1 as f64);
-            if due_now || last.0.elapsed() >= ROUND {
-                last = (Instant::now(), now);
-                self.round(now, &env, &mut watching).await;
-            }
+            let retry = last_round.map_or(Duration::ZERO, |last| {
+                ROUND.saturating_sub(last.0.elapsed())
+            });
+            let wake_delay = due.map(|due| {
+                if due <= now as f64 {
+                    if last_round.is_some_and(|last| due <= last.1 as f64) {
+                        retry
+                    } else {
+                        Duration::ZERO
+                    }
+                } else {
+                    Duration::from_secs_f64(due - now as f64)
+                }
+            });
+            let delay = match (wake_delay, has_watches) {
+                (Some(wake), true) => Some(wake.min(retry)),
+                (None, true) => Some(retry),
+                (wake, false) => wake,
+            };
             tokio::select! {
                 _ = stopping.changed() => break,
-                () = tokio::time::sleep(LOOK) => {}
-                _ = changes.changed() => tokio::time::sleep(Duration::from_millis(200)).await,
+                _ = changes.changed() => {},
+                _ = files.changed() => {},
+                () = async { match delay { Some(delay) => tokio::time::sleep(delay).await, None => std::future::pending().await } } => {
+                    let now = fire::now();
+                    last_round = Some((Instant::now(), now));
+                    self.round(now, &env, &mut watching).await;
+                }
             }
             if *stopping.borrow() {
                 break;
@@ -126,11 +164,9 @@ impl Wakes {
         watching: &mut Option<JoinHandle<()>>,
     ) {
         let roots = self.inner.roots.clone();
-        let (engine, agents) = tokio::task::spawn_blocking(move || {
-            (fire::wanted(&roots, now), fire::agents_wanted(&roots, now))
-        })
-        .await
-        .unwrap_or_default();
+        let (engine, agents) = tokio::task::spawn_blocking(move || fire::wanted_by(&roots, now))
+            .await
+            .unwrap_or_default();
         // The engine started for its own conversations; the coding agents, in this box, reached
         // with it or alone.
         let engine = match engine {

@@ -55,7 +55,6 @@ pub const AGENT_TOOLS: &[&str] = &[
 
 /// The tools this box doesn't answer yet, and the part of the rewrite each comes with.
 const NOT_YET: &[(&str, &str)] = &[
-    ("use_limit_reset", "5.4"),
     ("show_in_panel", "6.4"),
     ("show_file", "6.4"),
     ("mark_final", "6.4"),
@@ -301,6 +300,7 @@ impl Work {
         }
         let here = self.own_name_here();
         Ok(match name {
+            "use_limit_reset" => self.use_reset(caller.as_ref(), args).await,
             "list_models" | "list_projects" => match self.computer_of(args.get("computer")) {
                 Err(why) => refused(why),
                 Ok(Some(peer)) => match &caller {
@@ -354,8 +354,15 @@ impl Work {
                         .filter(|data| data["id"] == session),
                     _ => None,
                 };
-                self.wake_tool(name, args, session, own.as_ref(), caller.as_ref(), operation)
-                    .await
+                self.wake_tool(
+                    name,
+                    args,
+                    session,
+                    own.as_ref(),
+                    caller.as_ref(),
+                    operation,
+                )
+                .await
             }
             "set_job" => self.set_job_tool(args, session, caller.as_ref()).await,
             "notify_user" => match &caller {

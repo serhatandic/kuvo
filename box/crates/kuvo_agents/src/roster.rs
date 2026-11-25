@@ -21,8 +21,21 @@ pub trait Agent: Adoption {
 
     /// A maker's current plan windows, on demand. Adapters without a direct reader
     /// can still report the readings heard by a turn.
-    fn read_plan_limits(&self) -> AdapterCall<'_, Option<crate::session::PlanLimitReading>> {
+    fn read_plan_limits(
+        &self,
+        _explicit: bool,
+    ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
         Box::pin(async { Ok(None) })
+    }
+
+    /// Consume the already journaled reset target with the same maker request ID.
+    fn consume_plan_reset<'a>(
+        &'a self,
+        _identity: &'a str,
+        _request: &'a str,
+        _target: &'a str,
+    ) -> AdapterCall<'a, crate::session::ResetOutcome> {
+        Box::pin(async { Ok(crate::session::ResetOutcome::Failed) })
     }
 
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>>;
@@ -37,6 +50,12 @@ pub trait Agent: Adoption {
                 "This agent doesn't run sessions here.",
             ))
         })
+    }
+
+    /// The conversation's own process let go, the conversation deleted: nothing of it keeps
+    /// running, nor holds the folder it worked in.
+    fn close_thread(&self, _session: &str) -> AdapterCall<'_, ()> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Whether it summarizes its conversation when asked (not only by itself as it fills up).

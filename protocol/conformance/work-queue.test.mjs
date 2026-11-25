@@ -324,7 +324,6 @@ test("a label saved on a member is signed by the main and reaches both computers
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
   assert.equal(setup.json.you.role, "primary");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const app = { "x-kuvo-from": "app" };
   const labels = "kuvo/work-queue/labels";
   const first = await main("POST", labels, { add: "Ready", color: "sky" }, app);
@@ -332,6 +331,7 @@ test("a label saved on a member is signed by the main and reaches both computers
   assert.equal(first.json.status, "committed");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -543,9 +543,9 @@ test("the main grants unique Work Queue numbers across two computers", { timeout
   const main = studio.connect(await primary.ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -584,10 +584,10 @@ test("work queue views merge live and deleted rows by their owning computer", { 
   const lab = await computer("Lab");
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not obtain its number lease.");
   const app = { "x-kuvo-from": "app" };
   const enrollment = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(enrollment.status, 201, enrollment.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not obtain its number lease.");
   const joined = await lab.join(enrollment.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -668,9 +668,9 @@ test("closed Work Queue counts include items older than the peer's recent list",
   }));
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not obtain its number lease.");
   const enrollment = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(enrollment.status, 201, enrollment.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not obtain its number lease.");
   const joined = await lab.join(enrollment.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -729,7 +729,7 @@ test("a Markdown backlog keeps its numbers, headings and previous imports", { ti
   const route = studio.connect(await studio.start().ready());
   const setup = await route("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const ask = (url, method = "GET", body, headers) => route(method, url, body, headers);
   const source = path.join(queue, "..", "..", "backlog.md");
   write(source, [
@@ -779,9 +779,9 @@ test("a member waits for the main to grant the numbers of its imported items", {
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -810,9 +810,9 @@ test("a member saves an offline Work Queue edit and merges it when the keeper re
   const main = studio.connect(await primary.ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -1049,9 +1049,9 @@ test("a running agent adds a GitHub issue and another computer sees the same ite
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -1184,7 +1184,7 @@ test("an expired deletion retains its fence and prunes the old item links", { ti
   const ask = computerHere.connect(await computerHere.start().ready());
   const setup = await ask("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The resident did not acquire the setup lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "The resident did not acquire the setup lease.");
   const changed = await ask("PATCH", "kuvo/work-queue/items/" + live, { title: "Still here" }, app);
   assert.equal(changed.status, 200, changed.text);
   const saved = JSON.parse(readFileSync(file, "utf8"));
@@ -1223,7 +1223,7 @@ test("a session an agent starts is linked to the item it names before it sees it
   const ask = lab.connect(await lab.start().ready());
   const setup = await ask("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The resident never received its number lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "The resident never received its number lease.");
   const app = { "x-kuvo-from": "app" };
   const warm = await ask("POST", "kuvo/work-queue/items", { operation: "start-link-lease-fixture", title: "Number lease fixture" }, app);
   assert.equal(warm.status, 200, warm.text);
@@ -1286,7 +1286,7 @@ test("a running agent adds, lists and reads its numbered work with an attachment
   const ask = lab.connect(await lab.start().ready());
   const setup = await ask("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The resident never received its number lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "The resident never received its number lease.");
   const app = { "x-kuvo-from": "app" };
   const warm = await ask("POST", "kuvo/work-queue/items", { operation: "agent-tool-lease-fixture", title: "Number lease fixture" }, app);
   assert.equal(warm.status, 200, warm.text);
@@ -1472,9 +1472,9 @@ test("the label restore command previews on the main computer without saving", {
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -1545,7 +1545,7 @@ test("linking a numbered item to GitHub retains its number and previous descript
   const ask = lab.connect(await lab.start().ready());
   const setup = await ask("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "No accepted number lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "No accepted number lease.");
   const app = { "x-kuvo-from": "app" };
   const add = await ask("POST", "kuvo/work-queue/items", { operation: "local-before-gh", title: "Original title", body: "Decided here." }, app);
   assert.equal(add.status, 200, add.text);
@@ -1579,7 +1579,7 @@ test("an agent manages shared labels and records which items it changed", { time
   const ask = lab.connect(await lab.start().ready());
   const setup = await ask("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const app = { "x-kuvo-from": "app" };
   const labels = "kuvo/work-queue/labels";
   const shared = await ask("POST", labels, { add: "Already there", color: "mint" }, app);
@@ -1631,9 +1631,9 @@ test("a keeper records the agent's changes and files from another computer", { t
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -1680,7 +1680,7 @@ test("queue writers use the resident PID to reclaim a dead owner and wait for a 
   const studio = await computer("Studio");
   const ask = studio.connect(await studio.start().ready());
   const setup = await ask("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const queue = path.join(studio.home, "run", "work-queue");
   const app = { "x-kuvo-from": "app" };
   const add = operation => ask("POST", "kuvo/work-queue/items", { operation, title: operation }, app);
@@ -1742,9 +1742,9 @@ test("a Work Queue handoff keeps its files and relays only one live item", { tim
   const resident = await studio.start().ready();
   const main = studio.connect(resident);
   const setup = await main("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = lab.connect(await lab.start().ready());
@@ -1867,7 +1867,7 @@ test("an agent removes a kept file and a web link from an item", { timeout: 4500
   studio.engine.sessions.push(session);
   const ask = studio.connect(await studio.start().ready());
   const setup = await ask("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const apply = (name, args, operation) => {
     studio.engine.messages.set(session.id, [{ id: "msg_remove_files", type: "assistant", content: [{
       type: "tool", name: "kuvo-browser_" + name, state: { status: "running", input: args },
@@ -1899,7 +1899,7 @@ test("starting fourth item work drops the oldest session link with a stop event"
   studio.engine.sessions.push(session);
   const ask = studio.connect(await studio.start().ready());
   const setup = await ask("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its relay lease.");
   const call = (name, args, index) => {
     studio.engine.messages.set(session.id, [{ id: "msg_fourth_link", type: "assistant", content: [{
       type: "tool", name: "kuvo-browser_" + name, state: { status: "running", input: args },
@@ -2014,9 +2014,9 @@ test("the sole remaining main continues its Work Queue numbers after unlink", { 
   const joinedSetup = await main("GET", "kuvo/setup");
   assert.equal(joinedSetup.status, 200, joinedSetup.text);
   const setup = joinedSetup.json.setup;
-  await until(() => leases.leaseFor(setup), "The main did not claim its relay lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup), "The main did not claim its relay lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = await until(async () => {
@@ -2145,9 +2145,9 @@ test("a member spends its last granted number offline and edits an unnumbered it
   let main = studio.connect(await sourceProcess.ready());
   const setup = await main("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its lease.");
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   let resident = lab.start();
@@ -2406,7 +2406,7 @@ test("client status edits validate fields atomically and keep the untouched fiel
   const lab = await computer("Lab");
   const ask = lab.connect(await lab.start().ready());
   const setup = await ask("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
   const app = { "x-kuvo-from": "app" };
   const route = "kuvo/work-queue/items";
   const ok = async (method, route, body) => {
@@ -2531,7 +2531,7 @@ test("assigning personal work to a bot moves it to the bot's queue only once", {
   );
   const ask = lab.connect(await lab.start().ready());
   const setup = await ask("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
   const app = { "x-kuvo-from": "app" };
   const items = "kuvo/work-queue/items";
   const assigned = { kind: "bot", id: botId };
@@ -3536,7 +3536,6 @@ test("a signed label removal while a member is offline strips live and deleted r
   const lab = await computer("Lab");
   const main = studio.connect(await studio.start().ready());
   const setup = await main("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its lease.");
   const app = { "x-kuvo-from": "app" };
   const labels = "kuvo/work-queue/labels";
   const keep = async body => {
@@ -3549,6 +3548,7 @@ test("a signed label removal while a member is offline strips live and deleted r
   const mine = (await keep({ add: "Writing", color: "sky" })).label;
   const invite = await main("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main did not claim its lease.");
   const joined = await lab.join(invite.json.code);
   assert.equal(joined.code, 0, joined.log);
   let resident = lab.start();
@@ -3997,7 +3997,7 @@ test("imports retain valid near numbers and renumber outliers without jumping th
   studio.engine.sessions.push({ id: owner, title: "Importer", location: { directory: studio.home }, time: { created: 1, updated: 2 } });
   const ask = studio.connect(await studio.start().ready());
   const setup = await ask("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
   const tool = async (name, args) => {
     studio.engine.messages.set(owner, [{ id: "msg_import_far", type: "assistant", content: [{ type: "tool", name: "kuvo-browser_" + name, state: { status: "running", input: args } }] }]);
     const answer = await ask("POST", "kuvo/work-queue/tools", { name, arguments: args, session: owner });
@@ -4650,7 +4650,7 @@ test("the first item on a new computer creates no migration copy and defaults to
   const queue = path.join(studio.home, "run", "work-queue");
   const ask = studio.connect(await studio.start().ready());
   const setup = await ask("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "No number lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "No number lease.");
   assert.deepEqual((await ask("GET", "kuvo/work-queue?owner=all&glance=1")).json.items, []);
   const added = await ask("POST", "kuvo/work-queue/items", { title: "The first", operation: "new-queue" }, { "x-kuvo-from": "app" });
   assert.equal(added.status, 200, added.text);
@@ -4984,7 +4984,7 @@ test("revision-aware queue edits merge large passages and require a fresh choice
   const studio = await computer("Studio");
   const ask = studio.connect(await studio.start().ready());
   const setup = await ask("GET", "kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup), "No numbering lease.");
   const app = { "x-kuvo-from": "app" };
   const id = "wqi_" + "A".repeat(20), ref = { kind: "queueItems", id, queue: "usr_you", computer: setup.json.you.key };
   const route = "kuvo/work-queue/items/" + id;
@@ -5328,7 +5328,7 @@ test("a lead sees delegated work, and a subagent writes in the lead's own queue"
   studio.engine.sessions.push(lead,helper,child,grandchild,other);
   const ask = studio.connect(await studio.start().ready());
   const setup = await ask("GET","kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup),"No number lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup),"No number lease.");
   const tool = async (who, name, args) => {
     studio.engine.messages.set(who.id,[{id:"msg_queue_hierarchy",type:"assistant",content:[{type:"tool",name:"kuvo-browser_"+name,state:{status:"running",input:args}}]}]);
     const reply=await ask("POST","kuvo/work-queue/tools",{name,arguments:args,session:who.id});
@@ -5369,7 +5369,7 @@ test("live session links do not set status; an agent can start, stop and close l
   const record = await studio.start().ready();
   const ask = studio.connect(record);
   const setup = await ask("GET","kuvo/setup");
-  await until(() => leases.leaseFor(setup.json.setup),"No number lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(() => leases.leaseFor(setup.json.setup),"No number lease.");
   const tool = async (name,args) => {
     studio.engine.messages.set(worker.id,[{id:"msg_queue_status",type:"assistant",content:[{type:"tool",name:"kuvo-browser_"+name,state:{status:"running",input:args}}]}]);
     const answer=await ask("POST","kuvo/work-queue/tools",{name,arguments:args,session:worker.id});
@@ -5430,7 +5430,7 @@ test("a newer number ledger written while the resident runs prevents a new alloc
   const studio = await computer("Studio");
   const ask=studio.connect(await studio.start().ready());
   const setup=await ask("GET","kuvo/setup");
-  await until(()=>leases.leaseFor(setup.json.setup),"No numbering lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(()=>leases.leaseFor(setup.json.setup),"No numbering lease.");
   const app={"x-kuvo-from":"app"};
   const first=await ask("POST","kuvo/work-queue/items",{title:"Kept",operation:"first-future-ledger"},app);
   assert.equal(first.status,200,first.text);
@@ -5515,7 +5515,7 @@ test("the one-shot route delivers a verified queue tool and replays its accepted
   studio.engine.sessions.push(worker);
   const resident=await studio.start().ready(), ask=studio.connect(resident);
   const setup=await ask("GET","kuvo/setup");
-  await until(()=>leases.leaseFor(setup.json.setup),"No numbering lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(()=>leases.leaseFor(setup.json.setup),"No numbering lease.");
   const args=boxBinary().typescript?["box","route"]:["route"];
   const route="kuvo/work-queue/tools", given={name:"queue_add",arguments:{title:"From the route command"},session:worker.id,operation:"verified-one-shot"};
   studio.engine.messages.set(worker.id,[{id:"msg_queue_one_shot",type:"assistant",content:[{type:"tool",name:"kuvo-browser_queue_add",state:{status:"running",input:given.arguments}}]}]);
@@ -5704,7 +5704,7 @@ test("linking an issue with no description keeps the prior text, and GitHub's ow
   const worker={id:"ses_GitHubFinal",title:"Author",location:{directory:studio.home},time:{created:1,updated:2}};
   studio.engine.sessions.push(worker);
   const ask=studio.connect(await studio.start().ready()),setup=await ask("GET","kuvo/setup");
-  await until(()=>leases.leaseFor(setup.json.setup),"No numbering lease.");
+  if (boxBinary().typescript || setup.json.computers.length > 1) await until(()=>leases.leaseFor(setup.json.setup),"No numbering lease.");
   const tool=async(name,args)=>{studio.engine.messages.set(worker.id,[{id:"msg_gh_final",type:"assistant",content:[{type:"tool",name:"kuvo-browser_"+name,state:{status:"running",input:args}}]}]);const answer=await ask("POST","kuvo/work-queue/tools",{name,session:worker.id,arguments:args});assert.equal(answer.status,200,answer.text);return answer.json;};
   const app={"x-kuvo-from":"app"};
   const original=await ask("POST","kuvo/work-queue/items",{operation:"gh-empty-description",title:"Original",body:"The original description."},app);

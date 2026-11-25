@@ -56,6 +56,7 @@ pub(in crate::queue) enum RequestKind<'a> {
     OfflineRead,
     LabelRestore,
     LabelEdit,
+    Archive { session: &'a str, action: &'a str },
     Agent,
     File(&'a str),
     Edit,
@@ -86,6 +87,20 @@ impl Act {
                 (Method::Post, crate::queue::labels::EDIT_ROUTE) => Some(RequestKind::LabelEdit),
                 (Method::Post, crate::queue::labels::RESTORE_ROUTE) => {
                     Some(RequestKind::LabelRestore)
+                }
+                (Method::Post, route) => {
+                    let (session, action) =
+                        route.strip_prefix("kuvo/peer-archive/")?.split_once('/')?;
+                    let suffix = session.strip_prefix("ses")?;
+                    if !(1..=95).contains(&suffix.len())
+                        || !suffix
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+                        || !matches!(action, "unarchive" | "delete" | "delete-all")
+                    {
+                        return None;
+                    }
+                    Some(RequestKind::Archive { session, action })
                 }
                 _ => None,
             };

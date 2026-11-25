@@ -27,6 +27,7 @@ pub const FEATURES: &[&str] = &[
     "attention",
     "computers",
     "line.merged-notices",
+    crate::setup_lists::ARCHIVE_FEATURE,
     "line.merged-sessions",
     "line.merged-waiting",
     "line.setup-lists",

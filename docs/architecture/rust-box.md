@@ -385,7 +385,7 @@ public release: the compatibility older Macs need is ported (section 4).
 | Unconverted setup authority and standby receipts | 750 | Every main converts on its first lease; no public release wrote a setup. The Rust box refuses an unconverted one. |
 | Split launch (`run` with `serve --kept`, `box-services`) | 400 | The resident owns services ([one client process](one-client-process.md), step 7). |
 | Folder layout steps as steps (20 of 23 empty) | 400 | Frozen layout; the move does step 1's work. |
-| `kuvo/data/edits*` adapters and non-session owner reads | 60 | No desktop caller. Storage and the ordinary session owner reads stay. |
+| `kuvo/data/edits*` adapters and non-session owner reads, with the bot settings they edit (`bots/offline.ts`) | 175 | No desktop caller. Storage and the ordinary session owner reads stay, and a bot keeps the `offlineEdits` and `offlineJob` a TypeScript box wrote. |
 | Goal cards: `link/work/goals.ts`, `agents/goals.ts`, `shared/goals.ts` | 2,320 | Removed from the TypeScript box on 23 November. |
 | Typed keywords and slash commands | 310 | Removed on 22 November. Composer draft delivery and the 0.7.x `/typed` compatibility route remain. |
 | Letters' `peerOf` and `moved` | 100 | Ported onto `ownerOf` instead. |
@@ -434,12 +434,13 @@ parallel.
 | 4.5 | Cursor through the Bun sidecar for runs, account/sign-in and model catalog | agents | 4.1, 0.3 | 3 | C |
 | 4.7 | OpenCode as one more coding agent, on 4.3's ACP client ([design](opencode-agent.md)). 4.7a: parity spike, ACP or HTTP (2 h). 4.7b: adapter, one held process per computer, catalog cache, sign-in paths, MCP config read by the box, bots and wake-ups pointed at it (6 ×2). 4.7c: the box's own terminals, `kuvo_os::pty` and `api/pty` in `kuvo_services`, lane D, any time after 1.3 and before 4.7d (5 h). 4.7d: existing conversations listed, read and continued, then the engine place removed: every `Place::Engine` branch and the engine's start triggers (5 h). | agents | 4.3, 3.2 | 24 | B |
 | 4.6 | Subagents, reviews, side questions, carry and handover, snapshots, transcripts | agents | 4.2–4.4, 4.7 | 4 ×2 | B |
-| 5.1 | 5.1a done: wake-ups and watches fired by the resident and the bot list; 5.1b done: making, changing, deleting and telling bots, on macOS, Windows and Linux; 5.1c-1 done: approval routes and the round that keeps conversations' rules; 5.1c-2 done: work settings, Keep This Mac Awake, oversight, work changes and the asks list; 5.1c-3 done: a bot's work (`kuvo/work?bot=`) from the session list; 5.1c-4 done: `kuvo/projects/new` and answering what's asked; 5.1c-5 done: models that can't answer now; 5.1c-6a and 6b done: the work watcher (live, catch-up, held finishes, late answers) and the engine's place in the background model; 5.1c-7 done: Stop on someone's work and Stop All; 5.1f-1 done: a lead's sessions here listed, stopped, summarized and answered from another computer, and their rows told it; 5.1f-2 done: work started here for a lead on another computer, its models and projects read, and its Stop All; 5.1e-1 done: the agents' work tools and letters (`kuvo/agent-tools`: sessions here and on your other computers, starts with a bot's limits, the start rate and 5.2's Work Queue link, models, projects, make_project, Stop All elsewhere, list_agents, send_message, read_conversation). Open: 5.1e-2 (the wake tools, set_job), the rest of 5.1c (notices and their holds) and 5.1d (held edits, bots elsewhere, bots' old keys). [Coverage](rust-work-coverage.md)<br>Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |
+| 4.8 | **In progress.** [Idle work](#48-idle-work): agent discovery and version checks made lazy; Library, Marketplace, session and Settings follow changes; keeper, work and peer idle rounds are event-driven. Setup leases are demand-driven, with fenced shared numbering; cross-platform gates remain. | all | 4.2, 4.4, 5.5, 6.1, 7.1 | — | B |
+| 5.1 | **Done.** Bots: making (on the engine and on coding agents, from New Bot and Add Agent), changing, deleting, telling and settling them, held edits for your other computers and those computers' bots; wake-ups and watches fired by the resident, for the engine's conversations and the coding agents'; approvals, work settings, oversight, notices and their holds, the work watcher, Stop and Stop All, work for leads on your other computers, the agents' work tools, wake tools and letters; and the app's routes from the audit (`kuvo/asks`, shell output and Stop, Add Agent). Verified on macOS (both boxes), static Linux musl under WSL2, and native Windows. Not ported: offline bot setting edits, with the record-edit adapters (section 5). Open elsewhere: an engine bot switched to a coding agent's model (4.6) and group chats as a bot is deleted (5.3). [Coverage](rust-work-coverage.md)<br>Bots, wake-ups and watches fired by the resident, notes, attention, approvals. Bot retell and wake consumers from `personalities-box.test.js`, `time-zone.test.ts`, `time-zone.test.js`, and `setup-handover.test.js`. Bot templates in the personality route fixtures.<br>Also covers `setup-lists.test.ts`, `notices-rule.test.ts`, `notices-plain.test.ts`, `mac-peers.test.js`, `devices.test.js`.<br>Use `LocalSessions::activity()` for the local OpenCode rows in background work and peer activity. | work | 3.2 | 5 ×2 | C |
 | 5.2 | **Done for the resident contract.** Work Queue: store, numbers and lease, labels, statuses, peer exchange, GitHub. Verified on Mac (both boxes), native Windows and static Linux musl under WSL. [Coverage and integration dependencies](rust-workqueue-coverage.md) Queue cases from `setup-shared.test.ts`, `setup-merge.test.ts`, `work-queue-numbering.test.ts`, `offline-merge.test.ts`, `setup-two-boxes.test.js`, `documents.test.js`, `owner-mutations.test.js`, and `setup-handover.test.js`.<br>Also covers `setup-lists.test.ts`.<br>Reuse 3.2's `kuvo_peers::memory_read` transport for authenticated read-only requests without a disk spool.<br>2.3 cannot close until setup merge reserves Work Queue numbers on the current relay lease with a durable source-bound approval, then connects the queue import, retained aliases and Markdown reference rewrite. | work | 2.2 | 5 ×2 | C |
 | 5.3 | Group chats and seats, autopilot. Group clock consumer in `time-zone.test.ts`.<br>Also covers `mac-peers.test.js`. | work | 4.6, 2.2 | 4 ×2 | B |
-| 5.4 | **In progress:** the local usage settings routes, accepted Claude Code/Codex turn readings, Codex demand-driven refresh, menu/notice consistency, bundled pricing resolution and portable SQLite Insights index have a first verified slice. Remaining provider readers, resets, peer merge, native histories and full Insights parity are open. [Coverage](rust-usage-coverage.md).<br>Also covers `notices-usage.test.ts`. | services | 4.1, 2.2 | 5 ×2 | C |
+| 5.4 | **In progress:** the local usage settings routes, accepted Claude Code/Codex turn readings, native Claude/Codex/Grok, Cursor/Antigravity readings, engine credential plans, local Codex reset confirmation/replay and work asks, menu/notice consistency, bundled pricing resolution and a startup/file-watch SQLite Insights index with portable mutation cursors and native JSONL offsets, peer limit merge, passive Codex log readings that never start an app-server, read-only engine SQLite/Antigravity history, native usage calendar aggregation, Codex fallback and price catalog refresh have verified slices. Peer history and Insight cursor exchange (including mixed-version mail), normalized SQL summary and changed-header engine lineage have verified slices. Claude file-owned grants, engine ChatGPT and Cursor account-wide history, and expired-notice peer-state handoff now have four-platform verified scenarios. Peer reset spending and shared Always Allow decisions, Antigravity local quotas/refusal journal/independent holds, and billed-channel deduplication/removal have four-platform verified scenarios (local Antigravity discovery not applicable on native Windows). Provider edge cases, reset settlement/decisions, additional notice-state cases, historical replay and full Insights parity are open. [Coverage](rust-usage-coverage.md).<br>Also covers `notices-usage.test.ts`. | services | 4.1, 2.2 | 5 ×2 | C |
 | 5.5 | **Done.** Library, artifacts, attachments, setup-list peer views (cases 17, 23, 28), marketplace, integrations, skills, MCP catalog and `kuvo/programs` ported to `kuvo_services` (plus additive `kuvo_setup` marketplace installations helper) and verified on macOS, Linux musl and native Windows. Live bot creation from Marketplace Add Agent stays with 5.1b; Settings pages stay with 6.1. [Coverage](rust-library-coverage.md) | services | 2.2 | 4 ×2 | A |
-| 6.1 | Settings pages and flows, permissions. Auto mode, its reviewer and the sandbox are postponed past 0.8 (user 11-25); every computer answers as one without the sandbox. | services | 4.1 | 5 ×2 | D |
+| 6.1 | Settings pages and flows, permissions. 6.1b serves the settings sections, forms, revision-guarded writes, events, Git migration, Custom Auto lists and peer archive copies/actions. [Coverage and remaining owner gates](rust-settings-coverage.md). Auto mode, its reviewer and the sandbox are postponed past 0.8 (user 11-25); every computer answers as one without the sandbox. | services | 4.1 | 5 ×2 | D |
 | 6.2 | **Done.** (Mac wipe end to end is verified in 2.3; Helper supervision cases are 7.2's, browser and settings cases 6.4 and 6.1.) Vault: Helper Keychain, wrapped-key files, broker and SSH agent. The released move uses the TypeScript `security` path for custom Claude Code credentials, verified with a disposable Mac Keychain. Installed Helper and Keychain cases in `setup-mac.test.js` remain open. See the [coverage and remaining gates](rust-vault-coverage.md). | services | 1.3, 4.1, 6.1 | 6 | D |
 | 6.3 | Files, Git, Changes, worktrees, projects, folders. Golden-home projects in `protocol/conformance/compat.test.mjs`. 6.3a files and folders: a file's info, text and bytes, folder lists, a new folder, a folder's tree, finding files and suggested folders ported (`kuvo_services::files`, `files` conformance area, every TS case covered); **part A done** on macOS and native Windows (15 of 16 there, unreadable files skipped: no mode bits); Linux left ([coverage](rust-files-coverage.md)). 6.3b1 projects list: `GET kuvo/projects` ported (`kuvo_services::git`, `git` conformance area, macOS, Windows, Linux); 6.3b2 safe git: `ownArgs`/`askedArgs` ported (`kuvo_services::git::safe`), the argument table matching TS and a hostile repository starting nothing through either box; TS gaps fixed in both: `write-tree`, and a repository's transports and askPass (the box's own git reaches only local paths). 6.3c: project edit and every Git/Changes route the desktop calls are served; conformance 16/16 in TypeScript and Rust on macOS, and in Rust 15/15 applicable on Linux and WSL, 13/13 applicable on native Windows. Windows folder queries fixed in both; Mac login cache and native Trash deadline matched. Differential matches the Git/project answers and files, not unrelated startup files; remaining scenario and worktree lifecycle gaps in the [coverage map](rust-git-coverage.md). | services | 1.4 | 5 ×2 | D |
 | 6.4 | Browser keeper: Chrome for Testing, CDP pipe, browser tools, live view, downloads | services | 4.1 | 5 ×2 | A |
@@ -461,6 +462,161 @@ While the plan runs, the TypeScript box keeps taking fixes. Each fix lands with 
 conformance test, so the Rust lane for that area takes it in. Windows sessions 4–11 in
 [windows.md](windows.md) are replaced by 0.4, 1.3, 7.1 and 8.1–8.2. The native box is the Rust
 box.
+
+### 4.8 Idle work
+
+The resident should do nothing until there is useful work. The following intentionally change when
+work happens, not which computer owns it or the route shapes:
+
+- **Agent accounts and model lists:** Codex reads its native sign-in metadata and its last catalog
+  without starting an app-server; it refreshes the catalog when the app-server starts for work or
+  a sign-in completes. On first use it can read Codex's own model cache; without either cache the
+  catalog is incomplete (the resident must not pretend an unlisted model has gone). Claude reads
+  native sign-in metadata and a saved catalog, or offers its usual provisional models. Its first
+  real turn or sign-in discovers the complete catalog and context limits. Both keep disposable,
+  per-account catalogs under `run/agents` across resident restarts. The Rust-only timing cases in
+  `agents-codex` and `agents-claude` fail on the previous binary; the ordinary catalog cases exercise
+  the same account and model answers after work. Claim labels available only from a native probe
+  may be less specific until the agent does work. Plan usage probes belong to row 5.4.
+- **Agent program checks:** no version or installer check at resident startup. The agents settings
+  asks on first use or refresh; otherwise the check is daily. A local executable's canonical path,
+  modification time and length identify the last successful version read even after a resident
+  restart. Package release lookups keep their daily result. The `agents-updates` case checks that
+  reopening Settings and restarting do not run the unchanged executable, and a changed executable
+  gives its new version.
+
+- **Library and Outputs:** independent content hashes and per-recipient ledgers mean an unchanged
+  Library is not sent with a changed output. Stores, file-parent and bot-description watches and
+  peer membership/reconnect events update the copies. Modern computers request the initial copy
+  after their own receiver is ready (`ask: "library-copy"`); new and returning computers get a full
+  copy without relying on a periodic resend to recover startup mail.
+  Rust peers advertise `data.library-change-copy` and no longer age out Library content merely
+  because it hasn't changed. A released peer without that capability still gets the old 60-second
+  refresh while connected (its standing rules require it); no such timer runs with no peers or
+  with only change-driven peers. The `library` conformance case pins an output without rewriting
+  the peer's Library, then removes an untracked file and checks that the peer sees it disappear.
+
+- **Marketplace:** installation records, setup view and vault/settings changes trigger the existing
+  projection instead of a five-second round. A fresh empty installation performs no projection or
+  vault scan. A previous installation may still need cleanup of projected tools or credentials when
+  unlocked. `library` tests an installed MCP server following an external config edit, without a
+  second route read or a maintenance round. The `vault` conformance cases still use the same routes.
+
+- **Resident inventory and Settings:** the complete session inventory has no minute refresh; a
+  missed file-watch notification or an actual engine event-feed reconnection triggers recovery.
+  A parked engine waits for a state change, not a two-second retry. The `idle_inventory` scenario
+  advances the clock by a minute, checks that a silent fixture edit has not read the engine, then
+  sends an inventory event and sees the changed list. Followed Settings pages listen to their
+  specific files, setup/peer views, sessions, engine/catalog/agent events, vault and measurements.
+  The Git settings case edits the config file outside a route; Permissions and Archived Sessions
+  cases follow local and remote mutations. Peer archives are rebuilt on archive revision, roster,
+  time zone or move ownership changes, not every ten seconds.
+- **Keeper, work and peers:** the keeper follows selection and stop/handover files and a native
+  exact-process exit notification (Darwin kqueue, Linux pidfd, Windows process handle). A kernel
+  without the exit facility uses the old fallback; real release trials and restart backoff still
+  have deadlines. A supervised Windows resident receives a private local socket notification and
+  verifies its durable stop identity; a file watch accepts the older keeper's request. Native
+  process and keeper scenarios exercise the exit notification and matching stop identity.
+  A fast release switch can precede the holder's batched acknowledgement; saved Codex terminal
+  outputs retain their last applied holder line per item, so replay does not append those bytes
+  twice. The existing idle-terminal adoption scenario and a deterministic replay test cover it. Update
+  rounds follow setup, peers, files and engine, and sleep until the next check when there is no
+  release to prepare; active release progress and switch barriers still have a short deadline.
+  A failed direct release download can wait for a holder announcement during preparation and
+  chooses the next holder from the current peer view after a transfer fails, rather than from a
+  frozen snapshot. Fleet rounds follow changes in release facts rather than each transfer chunk;
+  authenticated part mail reaches transfer subscribers without queuing a durable peer-list rebuild
+  for each part. A newly promoted main's started feed request gets a one-shot old-round grace
+  before replacing its resident, without waiting for the feed's response. The preparation task
+  settles its outcome before that switch, even if its ready-file event arrives first. The failover and
+  alternate-holder progress cases cover these active paths.
+  Wake-ups sleep until their next due time and watch their folders, with a minute deadline only
+  for active watches or blocked work. Windows uses recursive watches on the stable wake-up roots
+  rather than handles inside a removable bot; the bot deletion scenarios exercise moving those
+  directories to Trash. Approval changes use live channels/file watches with a
+  one-shot grace for initial conversation writes. Peer lists follow local and ownership changes;
+  the old copy-standing heartbeat remains only with connected peers. The relay's departure push
+  (`0x07`, already in the wire contract) marks the departing computer away rather than waiting
+  for another send to be rejected; the member update-check scenario exercises that push. Letters follow the outbox,
+  replies and peer changes; retries only run while work is kept. A release admission announcement
+  is sent before the newly admitted peer work. The Library uses the resident's existing engine
+  event feed instead of opening another one. Existing `bots`, `engine-sessions`, `library`,
+  `peers`, `moves`, `work-elsewhere`, and `updates` cases exercise these paths; the quiet member
+  release case compares the signed preparing row after the peer's target is known.
+
+- **Setup lease and Work Queue numbers:** a setup with just its own computer no longer reads or
+  renews a relay lease. A live installer invitation starts the lease, and enrollment is fenced
+  until its relay high-water mark covers the local number ledger, including the persisted number
+  reservation, used and granted ranges, pending reservations and merge allocations. Solo numbering
+  uses a durable local ceiling, with the last relay floor carried forward after removing the final
+  peer. That removal first confirms the changed roster at the relay; a missing or unconfirmed
+  roster observation keeps the fence. With members, the main renews twenty seconds before expiry
+  (normally about every forty seconds). Authenticated change mail prompts an authoritative read;
+  a missed hint or an older main is recovered at lease expiry, with takeover and transfer deadlines
+  retained. Real pending setup edits, handovers and removal deliveries still retry; no quiet
+  setup maintenance round runs. `two-boxes` checks that solo startup, numbering and restart do
+  not call the relay and that a first invitation carries a reserved merge range before both
+  computers allocate distinct numbers. `adding`, `ssh-adding`, `removal`, `setup-judge`,
+  `work-queue` and `updates` keep the enrollment, fencing, failover and release contracts. Fixtures
+  that waited for a solo lease before an invitation now wait after the invitation; fixtures that
+  only number locally retain the wait for the TypeScript reference or an already grouped roster.
+  The pair case also checks that no relay calls occur in a settled three-second interval and that
+  the final unlink is fenced at the relay before solo numbering resumes. The backup fixture uses
+  a current approval record with `since` so independent normalization does not race its exact-byte
+  assertion.
+
+The conformance harness creates private NTFS homes before testing installer rejection or stopped
+uninstall. Windows Node's forced process termination exercises the stale discovery-record restart
+case, rather than the Unix graceful shutdown assertion. The vault plaintext fixture tolerates a
+disappearing file during enumeration and Windows's lock on the transient Insights WAL index;
+it still checks the database, WAL and other files. Seen once in the cross runs: the Codex repeated
+Autopilot question and the native Windows move's withheld-part resend; both passed on focused
+reruns (the latter completed the full lost-part and switch recovery in 177 seconds).
+
+Mac baseline (debug binary, isolated home with a signed-in scripted Codex, one computer, local
+relay stand-in). For each sample: three seconds to settle, then eleven `top -l` samples a second
+apart; IDLEW differences divided by ten. RSS is `ps`'s resident pages, including shared pages,
+not PSS. The connected sample includes a persistent line plus model and account requests.
+
+| Run | No client: RSS / processes / idle wakes/s | One client: total RSS / processes / idle wakes/s |
+|---|---|---|
+| Before 4.8, `27ed3c8e6` | 79,904 KiB / 1 / 2.8 | 144,720 KiB / 3 / 8.2 |
+| After the agent catalog and program changes | 77,440 KiB / 1 / 0.0 | 81,984 KiB / 1 / 0.0 |
+| After all eight idle changes (debug resident) | 80,800 KiB / 1 / 0.0 | 85,648 KiB / 1 / 0.0 |
+| After all eight changes, with keeper as well | 99,408 KiB / 2 / 0.0 | 104,304 KiB / 2 / 0.0 |
+| Final optimized (opt-level 1, stripped) resident | 48,096 KiB / 1 / 0.0 | 46,400 KiB / 1 / 0.0 |
+| Final optimized resident and keeper | 61,024 KiB / 2 / 0.0 | 65,520 KiB / 2 / 0.0 |
+
+The baseline's other two live processes were the holder (18,288 KiB) and its scripted app-server
+(44,016 KiB); neither starts on the new route reads. The version command can run briefly when the
+agents settings is opened, not at startup. The wake readings are short OS samples on a busy Mac;
+zero reported idle wakes is not a count of all application timer callbacks. The final keeper sample
+uses a lease-capable stand-in and records zero relay lease calls before and after connecting the
+client, with no native agent launched. The direct resident is the like-for-like memory comparison:
+its connected RSS fell 40.8%, and its unconnected RSS is within 1.2% of baseline. The keeper sample
+is supplemental (there was no before-keeper sample). The separate optimized sample is the
+same final code in the build used for SSH Add and cross-platform checks, not a like-for-like
+comparison against the debug baseline.
+
+Eight-change checkpoint verification (Rust, applicable scenarios; OS-specific scenarios are
+skipped where their platform or optional fixture is absent):
+
+| Area | Mac | Linux musl | WSL | Native Windows |
+|---|---:|---:|---:|---:|
+| Engine sessions | 81 | 81 | 81 | 81 |
+| Library | 18 | 18 | 18 | 18 |
+| Settings / bots | 17 / 40 | 17 / 40 | 17 / 40 | 17 / 40 |
+| Adding / removal / setup judge / SSH adding | 7 / 7 / 2 / 1 | 7 / 7 / 2 / 1 | 7 / 7 / 2 / 1 | 7 / 5 / 2 / skipped |
+| Two computers / number allocation and failover | 2 / 14 | 2 / 14 | 2 / 14 | 2 / 14 |
+| Moves | 68 | 68 | 68 | 67 |
+| Updates | 84 | 65 | 65 | 51 |
+
+The repeatable Linux/WSL release-promote failure and the Linux terminal replay issue were
+corrected and passed focused reruns; the Windows root watcher and fixture corrections passed
+their affected areas. Mac conformance also ran the TypeScript reference, including engine
+sessions 81/81 and the number allocation/failover cases 14/14. Workspace test checking and the
+TypeScript check passed. The remaining 4.8 work inventories other idle timers and measures
+actual timer callbacks, rather than relying on the operating system's idle-wake estimate alone.
 
 ## 7. Release decisions
 

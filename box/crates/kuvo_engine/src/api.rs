@@ -115,6 +115,22 @@ impl Engine {
             .map_err(|error| error.to_string())
     }
 
+    /// A page may observe an engine without starting it or renewing its idle lifetime.
+    pub async fn call_passive(
+        &self,
+        method: Method,
+        path: &str,
+        wait: Duration,
+    ) -> Result<Value, String> {
+        let lease = self
+            .acquire(Demand::Passive)
+            .await
+            .ok_or_else(|| "The engine isn't running.".to_owned())?;
+        self.call_raw(&lease, method, path, None, wait)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     pub(crate) async fn call<T: DeserializeOwned>(
         &self,
         lease: &Lease,

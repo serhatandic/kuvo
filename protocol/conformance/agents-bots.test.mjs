@@ -24,6 +24,8 @@ for (const [name, providerID, id, scripted] of agents) {
     const harness = await scripted({});
     try {
       write(path.join(harness.home, "bin", "bot-words.json"), fs.readFileSync(words));
+      // (Codex's own cached catalog, which the picker reads without starting it.)
+      if (providerID === codex) write(path.join(harness.root, ".codex", "models_cache.json"), JSON.stringify({ models: [{ slug: id, display_name: "GPT Test", visibility: "list", priority: 0 }] }));
       write(path.join(harness.home, "bin", "kuvo-wake"), fs.readFileSync(new URL("../../box/src/keeper/kuvo-wake", import.meta.url)), { mode: 0o755 });
       const listener = await harness.start();
       const ask = (method, route, body) => request(listener, method, route, body, headers, 45000);

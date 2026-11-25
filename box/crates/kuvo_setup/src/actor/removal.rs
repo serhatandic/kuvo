@@ -329,6 +329,21 @@ impl Owner {
         Ok(local_wipe_reply(&operation, proof))
     }
 
+    pub(super) fn pending_unlinks(&self) -> bool {
+        self.roster().is_ok_and(|roster| {
+            roster
+                .extra
+                .get("removals")
+                .and_then(Value::as_object)
+                .is_some_and(|rows| {
+                    rows.iter().any(|(key, value)| {
+                        read_removal(key, value)
+                            .is_some_and(|record| record.plain() && !record.delivered)
+                    })
+                })
+        })
+    }
+
     pub(super) async fn offer_unlinks(&self) -> Result<(), Error> {
         if self.network.is_none() || self.can_write().is_err() {
             return Ok(());
@@ -453,7 +468,7 @@ impl Owner {
                 let mut next = self.link.clone();
                 next.extra.shift_remove("localUnlink");
                 self.commit(next).await?;
-                self.next = Instant::now();
+                self.next = Some(Instant::now());
             }
             return Ok(());
         }

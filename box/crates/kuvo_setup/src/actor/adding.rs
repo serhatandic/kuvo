@@ -318,7 +318,7 @@ impl Owner {
         let position = setup.position.clone();
         // A sole computer may issue a code while offline. The claim needs the relay lease.
         if !self.lease.holds(&self.link) {
-            let _ = self.tick().await;
+            let _ = self.tick_for_add().await;
         }
         self.can_write()?;
         let actor = match submitter {
@@ -542,9 +542,24 @@ impl Owner {
             return Ok(());
         }
         if !enrolled {
-            if !self.lease.holds(&self.link) {
-                self.tick().await?;
-                if !self.lease.holds(&self.link) || self.can_write().is_err() {
+            let setup_id = self.link.setup()?.position.id.clone();
+            let solo_high = crate::lease::required_local_high(&self.files, &setup_id)?;
+            if !self.lease.holds(&self.link)
+                || self
+                    .lease
+                    .seen
+                    .as_ref()
+                    .is_none_or(|seen| seen.high < solo_high)
+            {
+                self.tick_for_add().await?;
+                if !self.lease.holds(&self.link)
+                    || self.can_write().is_err()
+                    || self
+                        .lease
+                        .seen
+                        .as_ref()
+                        .is_none_or(|seen| seen.high < solo_high)
+                {
                     return Ok(());
                 }
             }

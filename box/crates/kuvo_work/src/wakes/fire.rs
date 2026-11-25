@@ -124,32 +124,33 @@ fn retry_at(folder: &Path) -> Option<i64> {
         .ok()
 }
 
-/// Whether a round now has anything for the engine: a wake-up due, or a watch, in a folder that's
-/// neither held nor waiting to try again, of a conversation the engine runs.
-pub fn wanted(roots: &Roots, now: i64) -> bool {
-    wanted_by(roots, now, false)
-}
-
-/// As `wanted`, for the coding agents' conversations.
-pub fn agents_wanted(roots: &Roots, now: i64) -> bool {
-    wanted_by(roots, now, true)
-}
-
-fn wanted_by(roots: &Roots, now: i64, agents: bool) -> bool {
-    roots.folders().any(|(_, folder)| {
+/// Whether a round now has anything for the engine, and for the coding agents: a wake-up due, or a
+/// watch, in a folder that's neither held nor waiting to try again, of a conversation each runs.
+pub fn wanted_by(roots: &Roots, now: i64) -> (bool, bool) {
+    let (mut engine, mut agents) = (false, false);
+    for (_, folder) in roots.folders() {
+        if engine && agents {
+            break;
+        }
         if folder.join("paused").exists() || !folder.join("session").exists() {
-            return false;
+            continue;
         }
         if retry_at(&folder).is_some_and(|at| at > now) {
-            return false;
+            continue;
         }
         let due = !names(&folder.join("watches")).is_empty()
             || names(&folder.join("wakes"))
                 .iter()
                 .filter_map(|name| WakeName::parse(name))
                 .any(|wake| wake.due <= now as f64);
-        due && via_agents(&folder) == agents
-    })
+        if due {
+            match via_agents(&folder) {
+                true => agents = true,
+                false => engine = true,
+            }
+        }
+    }
+    (engine, agents)
 }
 
 /// A conversation the coding agents run (its folder says `via` bridge): theirs to reach.

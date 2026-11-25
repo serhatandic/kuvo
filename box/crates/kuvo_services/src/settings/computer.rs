@@ -21,7 +21,18 @@ pub async fn read(ctx: &Context) -> Value {
         .ok()
         .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
         .is_some_and(|v| v["port"].as_u64().is_some_and(|p| p > 0));
-    let mut state = json!({"id":"state","title":if running{"Running"}else{"Not running"},"kind":"actions","value":running,"line":if !running{"Its engine isn’t running, so no agent works here. Restart starts it again."}else if mac{"Kuvo Helper keeps it running, and starts it at login."}else{"It runs whether or not an app is open."},"actions":[{"id":"restart","title":"Restart…","confirm":{"title":format!("Restart Kuvo on {where_}?"),"body":format!("What agents are doing on {where_} now stops. Kuvo is back in a moment."),"button":"Restart"}}]});
+    let working = ctx
+        .ask(Method::GET, "kuvo/box/at-work", None)
+        .await
+        .ok()
+        .and_then(|v| v["working"].as_u64())
+        .map(|n| n != 0);
+    let stops = match working {
+        Some(true) => format!("Agents are at work on {where_} now: what they’re doing stops."),
+        Some(false) => format!("Nothing is at work on {where_} now."),
+        None => format!("What agents are doing on {where_} now stops."),
+    };
+    let mut state = json!({"id":"state","title":if running{"Running"}else{"Not running"},"kind":"actions","value":running,"line":if !running{"Its engine isn’t running, so no agent works here. Restart starts it again."}else if mac{"Kuvo Helper keeps it running, and starts it at login."}else{"It runs whether or not an app is open."},"actions":[{"id":"restart","title":"Restart…","confirm":{"title":format!("Restart Kuvo on {where_}?"),"body":format!("{stops} Kuvo is back in a moment."),"button":"Restart"}}]});
     if !running {
         state["tone"] = json!("warning");
     }

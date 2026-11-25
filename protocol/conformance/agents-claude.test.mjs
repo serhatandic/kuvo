@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { seedClaudeAuth } from "../../box/bridge-tests/claude-stand-in.js";
 import {
   claudeEnvironment, headers, heldClaude, keptListener, provider, result, seedSession, startClaudeBridge,
   stopFixtureHolders, stopPids, streams, transcript, twoReleases,
@@ -13,6 +14,42 @@ import {
 } from "./adapter.mjs";
 
 const picker = "kuvo/models/offered?refresh=1";
+const warmSession = "ses_claude_catalog";
+async function warmCatalog(listener) {
+  if (boxBinary().typescript) return; // The reference discovers models when the picker asks.
+  const route = `kuvo/agents/api/session/${warmSession}`;
+  const sent = await request(listener,"POST",route+"/prompt",{id:"msg_catalog",text:"Hello."},headers,45000);
+  assert.equal(sent.status,200,sent.text);
+  await until(async () => (await transcript(listener, route)).some(row=>row.type==="idle"), "The catalog turn never ended.");
+}
+const seedWarm = home => seedSession(home,warmSession);
+
+test("reading the Claude Code account and picker does not start Claude", {timeout:60000,skip:boxBinary().typescript}, async t => {
+  await withClaude(t, {}, async (listener,_home,env) => {
+    const pickerAnswer = await request(listener,"GET",picker,undefined,headers);
+    assert.equal(pickerAnswer.status,200,pickerAnswer.text);
+    assert.ok(pickerAnswer.json.models.some(model=>model.providerID===provider&&model.id==="opus"));
+    const accounts=await request(listener,"GET","kuvo/agents/api/integration",undefined,headers);
+    assert.equal(accounts.status,200,accounts.text);
+    const launched=path.join(env.HOME,"claude-processes.jsonl");
+    const processes=fs.existsSync(launched)?fs.readFileSync(launched,"utf8").trim().split("\n").map(JSON.parse):[];
+    assert.deepEqual(processes.filter(process=>process.args[0]!=="--version"),[]);
+  });
+});
+
+test("Claude's definitive model and window catalog is kept through a restart", {timeout:60000,skip:boxBinary().typescript}, async t => {
+  await withClaude(t, {turns:true}, async (listener,_home,env,restart) => {
+    await warmCatalog(listener);
+    const models=async box=>(await request(box,"GET",picker,undefined,headers)).json.models.filter(model=>model.providerID===provider);
+    const before=await models(listener);
+    assert.ok(before.length&&before.every(model=>!model.provisional));
+    const launched=path.join(env.HOME,"claude-processes.jsonl");
+    const reads=()=>fs.readFileSync(launched,"utf8").trim().split("\n").map(JSON.parse).filter(process=>process.args[0]!=="--version").length;
+    const count=reads();
+    assert.deepEqual(await models(await restart()),before);
+    assert.equal(reads(),count);
+  },seedWarm);
+});
 
 const opus = { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5" };
 const haiku = { value: "haiku", resolvedModel: "claude-haiku-5-5", displayName: "Haiku 5.5" };
@@ -31,7 +68,8 @@ const scenarios = [
 
 for (const [name, fixture, expected] of scenarios) {
   test(name, { timeout: 60000 }, async t => {
-    await withClaude(t, fixture, async listener => {
+    await withClaude(t, { ...fixture, turns:true }, async listener => {
+      if (fixture.signedIn !== false) await warmCatalog(listener);
       const answer = await request(listener, "GET", picker, undefined, headers, 45000);
       assert.equal(answer.status, 200, answer.text);
       assert.equal(answer.json.known.agents, true, answer.text);
@@ -39,7 +77,7 @@ for (const [name, fixture, expected] of scenarios) {
         .sort((a, b) => a.id.localeCompare(b.id));
       assert.deepEqual(models.map(model => [model.id, model.name, model.aliases ?? []]), expected);
       assert.ok(models.every(model => !model.provisional));
-    });
+    }, seedWarm);
   });
 }
 
@@ -81,6 +119,7 @@ const listedModels = [
 /** How much each conversation's model holds, as its Claude Code is started with "never summarize"
  * (only a model of 900,000 tokens or more goes without), once Claude Code has listed its models. */
 async function heldBy(listener, env, sessions) {
+  await warmCatalog(listener);
   await until(async () => {
     const answer = await request(listener, "GET", picker, undefined, headers, 45000);
     return answer.json?.models?.some(model => model.providerID === provider && model.id === "claude-haiku-4-5" && !model.provisional);
@@ -101,6 +140,7 @@ async function heldBy(listener, env, sessions) {
 
 const windowSessions = { ses_window_opus: "opus", ses_window_haiku: "claude-haiku-4-5", ses_window_million: "opus[1m]" };
 const seedWindows = (catalog) => (home, env) => {
+  seedWarm(home);
   for (const [session, model] of Object.entries(windowSessions)) seedSession(home, session, { model });
   write(path.join(home, "box", "conversation-compaction.json"), JSON.stringify("never"));
   write(path.join(env.HOME, "claude-catalog.json"), JSON.stringify(catalog));
@@ -114,6 +154,7 @@ test("each model holds what Claude Code says it does on your plan, which its lis
 
 test("what Claude Code said a model holds as a turn ended counts for the next conversation on it", { timeout: 90000 }, async t => {
   await withClaude(t, { turns: true }, async (listener, home, env) => {
+    await warmCatalog(listener);
     await until(async () => {
       const answer = await request(listener, "GET", picker, undefined, headers, 45000);
       return answer.json?.models?.some(model => model.providerID === provider && model.id === "claude-haiku-4-5" && !model.provisional);
@@ -235,10 +276,11 @@ test("a new Claude account starts a new probe, and an old probe can't change its
     const marked = name => fs.existsSync(path.join(env.HOME, name));
     const model = (value, displayName) => ({ value, resolvedModel: `claude-${value}`, displayName });
     try {
-      await signIn();
       // The first account's models are asked for, and Claude Code takes its time to say.
+      // On Rust sign-in, not a picker read, starts discovery.
+      if (boxBinary().typescript) await signIn();
       catalog({ models: [model("old-model", "Old model")], until: "old-goes" });
-      const old = offered().catch(() => undefined);
+      const old = (boxBinary().typescript ? offered() : signIn()).catch(() => undefined);
       await until(() => marked("claude-catalog-waiting"), "The first account's probe never started.");
       // Meanwhile it signs out, and in as another account, with models of its own.
       const out = await request(listener, "POST", "kuvo/agents/api/integration/claude-code/disconnect", {}, headers, 20000);
@@ -280,6 +322,7 @@ test("the saved Claude Console account keeps its own directory and model access"
   }, home => {
     write(path.join(home, "agents/claude/console/projects/kept"), "fixture transcript");
     write(path.join(home, "agents/claude/console/fixture-signed-in"), "--console");
+    seedClaudeAuth(home, path.join(home, "agents/claude/console"), "console_api_key");
     // macOS adopts an unindexed folder left by the old Console sign-in.
     if (process.platform !== "darwin") {
       write(path.join(home, "agents/accounts.json"), JSON.stringify([
@@ -297,6 +340,7 @@ test("a saved setup token is replaced only when Claude reports its own sign-in",
     assert.ok(before.json.models.some(model => model.providerID === provider));
     assert.ok(fs.existsSync(token));
     write(path.join(env.HOME, "fixture-signed-in"), "--claudeai");
+    seedClaudeAuth(env.HOME);
     const after = await request(await restart(), "GET", picker, undefined, headers, 45000);
     assert.equal(after.status, 200, after.text);
     assert.ok(after.json.models.some(model => model.providerID === provider));

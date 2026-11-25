@@ -47,7 +47,7 @@ function readFrames(buffer) {
 }
 
 // `changed`: called each time what it keeps changes (a device on it or gone, a push), for a test waiting on it.
-export async function relayStandIn({ addressOf }, { changed: told = () => {}, request } = {}) {
+export async function relayStandIn({ addressOf }, { changed: told = () => {}, request, presenceEvents = false } = {}) {
   // What waits for devices to say their close back (`closing`).
   const waitingForClose = [];
   const changed = () => {
@@ -56,6 +56,15 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {}, re
   };
   // Who's on it, by address (hex): how to give each what comes for it.
   const devices = new Map();
+  // The real relay notifies the endpoints this connection has exchanged mail with
+  // when it leaves or is replaced (PROTOCOL.md, 0x07).
+  const contacts = new Map();
+  const gone = (address, reason) => {
+    const key = address.toString("hex");
+    const peers = contacts.get(key) ?? [];
+    contacts.delete(key);
+    for (const peer of peers) devices.get(peer)?.(Buffer.concat([Buffer.from([7]), address, Buffer.from([reason])]));
+  };
   const pushed = [];
   const delivered = [];
   // What it answers a push with (`answers.push`: 0 sent, 1 no phone, 2 not allowed, 3 refused);
@@ -70,6 +79,11 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {}, re
   const forward = ({ from, to, payload }) => {
     const device = devices.get(to.toString("hex"));
     if (!device) return devices.get(from.toString("hex"))?.(Buffer.concat([Buffer.from([3]), to]));
+    const fromKey = from.toString("hex"), toKey = to.toString("hex");
+    if (presenceEvents && fromKey !== toKey && devices.has(fromKey)) {
+      contacts.get(fromKey)?.add(toKey);
+      contacts.get(toKey)?.add(fromKey);
+    }
     device(Buffer.concat([Buffer.from([2]), from, payload]));
     delivered.push({ from: Buffer.from(from), to: Buffer.from(to), payload: Buffer.from(payload) });
     changed();
@@ -92,7 +106,10 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {}, re
       }
       state.held = undefined;
       state.address = address;
-      devices.set(state.address.toString("hex"), give);
+      const key = state.address.toString("hex");
+      if (devices.has(key)) gone(state.address, 0);
+      devices.set(key, give);
+      contacts.set(key, new Set());
       give(Buffer.concat([Buffer.from([1]), state.address]));
       changed();
       return;
@@ -131,15 +148,18 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {}, re
         if (opcode === 0x2) take(payload, state, give);
       }
     });
-    const gone = () => {
+    const closed = () => {
       sockets.delete(socket);
-      if (state.address && devices.get(state.address.toString("hex")) === give) devices.delete(state.address.toString("hex"));
+      if (state.address && devices.get(state.address.toString("hex")) === give) {
+        devices.delete(state.address.toString("hex"));
+        gone(state.address, 1);
+      }
       changed();
     };
     // (A device's process ending, with no word first: as the real relay sees it, it's gone.)
     socket.on("end", () => socket.destroy());
-    socket.on("close", gone);
-    socket.on("error", gone);
+    socket.on("close", closed);
+    socket.on("error", closed);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   return {
@@ -193,7 +213,13 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {}, re
           waiting.push(resolve);
           setTimeout(() => reject(new Error("nothing arrived")), ms).unref();
         }),
-        leave: () => devices.delete(state.address.toString("hex")),
+        leave: () => {
+          if (devices.get(state.address.toString("hex")) === give) {
+            devices.delete(state.address.toString("hex"));
+            gone(state.address, 1);
+            changed();
+          }
+        },
       };
     },
     // Every connection dropped (the relay restarting).

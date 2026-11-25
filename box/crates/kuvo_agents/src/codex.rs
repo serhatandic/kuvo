@@ -162,12 +162,31 @@ impl Agent for Codex {
         })
     }
 
-    fn read_plan_limits(&self) -> AdapterCall<'_, Option<crate::session::PlanLimitReading>> {
-        Box::pin(async {
+    fn read_plan_limits(
+        &self,
+        explicit: bool,
+    ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
+        Box::pin(async move {
             let Some((_, identity)) = self.plan_sign_in().await else {
                 return Ok(None);
             };
-            let server = self.shared.server().await?;
+            let server = if explicit {
+                self.shared.server().await?
+            } else if let Some(server) = self.shared.current().await {
+                server
+            } else {
+                return Ok(None);
+            };
+            if server
+                .signed_in_as
+                .lock()
+                .ok()
+                .and_then(|id| id.clone())
+                .as_deref()
+                != Some(identity.as_str())
+            {
+                return Ok(None);
+            }
             let value = server
                 .rpc
                 .request(
@@ -199,10 +218,128 @@ impl Agent for Codex {
             } else {
                 windows.extend(account::windows(&value["rateLimits"]));
             }
-            Ok(Some(crate::session::PlanLimitReading {
-                windows,
-                sign_in: Some(mark),
-            }))
+            let mut direct =
+                crate::session::DirectPlanReading::windows(crate::session::PlanLimitReading {
+                    windows,
+                    sign_in: Some(mark),
+                });
+            let main = value["rateLimitsByLimitId"]
+                .get("codex")
+                .unwrap_or(&value["rateLimits"]);
+            direct.plan = main["planType"].as_str().map(account::plan_name);
+            if main["credits"]["hasCredits"] == true {
+                let balance = &main["credits"]["balance"];
+                direct.credits = balance
+                    .as_f64()
+                    .or_else(|| balance.as_str()?.parse().ok())
+                    .filter(|n| n.is_finite())
+                    .map(|n| n.max(0.0).floor());
+            }
+            if let Some(count) = value["rateLimitResetCredits"]["availableCount"].as_u64() {
+                let now = jiff::Timestamp::now().as_millisecond().max(0) as u64;
+                let mut targets = value["rateLimitResetCredits"]["credits"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|credit| {
+                        if credit["status"].as_str().is_some_and(|s| s != "available") {
+                            return None;
+                        }
+                        let id = credit["id"].as_str()?.to_owned();
+                        if id.is_empty()
+                            || id.len() > 100
+                            || !id
+                                .bytes()
+                                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                        {
+                            return None;
+                        }
+                        let expires_at =
+                            credit["expiresAt"].as_u64().map(|n| n.saturating_mul(1000));
+                        if expires_at.is_some_and(|at| at <= now) {
+                            return None;
+                        }
+                        Some(crate::session::ResetTarget { id, expires_at })
+                    })
+                    .collect::<Vec<_>>();
+                targets.sort_by_key(|t| t.expires_at.unwrap_or(u64::MAX));
+                direct.resets = Some(crate::session::ResetInventory {
+                    count: count.min(u64::from(u32::MAX)) as u32,
+                    targets,
+                    refills: vec![],
+                    display_expiries: None,
+                });
+            }
+            Ok(Some(direct))
+        })
+    }
+
+    fn consume_plan_reset<'a>(
+        &'a self,
+        identity: &'a str,
+        request: &'a str,
+        target: &'a str,
+    ) -> AdapterCall<'a, crate::session::ResetOutcome> {
+        Box::pin(async move {
+            use crate::session::ResetOutcome;
+            let server = match self.shared.server().await {
+                Ok(server) => server,
+                Err(_) => return Ok(ResetOutcome::Failed),
+            };
+            if server
+                .signed_in_as
+                .lock()
+                .ok()
+                .and_then(|id| id.clone())
+                .as_deref()
+                != Some(identity)
+            {
+                return Ok(ResetOutcome::NotNow);
+            }
+            // The server may have kept the previous login in memory. Ask it, not just
+            // the credential file, before a request can spend an account's credit.
+            let maker = server
+                .rpc
+                .request(
+                    "account/rateLimits/read",
+                    Some(serde_json::json!({"excludeResetCreditDetails":true})),
+                    Some(Duration::from_secs(20)),
+                )
+                .await;
+            let Some(maker) = maker
+                .ok()
+                .and_then(|m| m["accountId"].as_str().map(str::to_ascii_lowercase))
+            else {
+                return Ok(ResetOutcome::NotNow);
+            };
+            let expected = identity
+                .strip_prefix("chatgpt:")
+                .and_then(|id| id.split('/').next());
+            if expected != Some(maker.as_str())
+                || self
+                    .plan_sign_in()
+                    .await
+                    .is_none_or(|(_, raw)| raw != identity)
+            {
+                return Ok(ResetOutcome::NoReset);
+            }
+            let answer = server
+                .rpc
+                .request(
+                    "account/rateLimitResetCredit/consume",
+                    Some(serde_json::json!({"idempotencyKey":request,"creditId":target})),
+                    Some(Duration::from_secs(20)),
+                )
+                .await;
+            Ok(
+                match answer.as_ref().ok().and_then(|a| a["outcome"].as_str()) {
+                    Some("reset") => ResetOutcome::Reset,
+                    Some("alreadyRedeemed") => ResetOutcome::AlreadyRedeemed,
+                    Some("nothingToReset") => ResetOutcome::NothingToReset,
+                    Some("noCredit") => ResetOutcome::NoReset,
+                    _ => ResetOutcome::Unknown,
+                },
+            )
         })
     }
 
@@ -241,7 +378,7 @@ impl Agent for Codex {
         Box::pin(async {
             self.shared.program.logout().await?;
             self.stop_all(true).await;
-            self.shared.account.forget_models();
+            self.shared.account.clear_catalog(&self.shared).await;
             Ok(())
         })
     }
@@ -254,6 +391,7 @@ impl Agent for Codex {
             if self.shared.program.added() {
                 let _ = self.shared.program.logout().await;
             }
+            self.shared.account.clear_catalog(&self.shared).await;
             Ok(())
         })
     }

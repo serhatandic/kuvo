@@ -26,5 +26,5 @@ pub mod session;
 pub mod setup_lists;
 pub mod work_rows;
 
-pub use parts::work_queue_mails;
+pub use parts::{work_queue_mails, SeatParts, usage_seat_mails};
 pub const WORK_QUEUE_SNAPSHOTS: &str = "work-queue.elsewhere";

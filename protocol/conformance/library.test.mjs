@@ -497,6 +497,55 @@ test("merged Library and Outputs views include away peers' kept copies and pendi
   assert.equal(typeof outFrame.d.artifacts[0].lastSeen, "number");
 });
 
+test("an output change doesn't republish an unchanged Library to another computer", {timeout:30000, skip:boxBinary().typescript}, async t => {
+  const {computer,relay}=await bench(t);
+  const sender=await computer("Studio"), receiver=await computer("Lab");
+  const {main,member}=seedPeerSetup(sender.home,relay.url,1,2);
+  seedPeerSetup(receiver.home,relay.url,2,2);
+  const file=path.join(realpathSync(sender.home),"notes.txt");
+  writeFileSync(file,"notes");
+  const hash=sha256("notes"), id=artId(file), at="2026-10-26T10:00:00.000Z";
+  const loose=path.join(realpathSync(sender.home),"loose.txt");
+  writeFileSync(loose,"untracked");
+  seedLibrary(sender.home,[{id:libId(file),path:file,name:"notes.txt",kind:"document",type:"text/plain",how:"shown",session:"ses_notes",at},
+    {id:libId(loose),path:loose,name:"loose.txt",kind:"document",type:"text/plain",how:"shown",session:"ses_notes",at}]);
+  seedArtifacts(sender.home,[{a:{id,path:file,name:"notes.txt",kind:"document",type:"text/plain",where:{bots:[],sessions:["ses_notes"],groups:[]},pinned:null,gone:null,updated:at},v:{n:1,at,by:{kind:"agent",session:"ses_notes"},via:["write"],status:"added",edits:1,size:5,hash:"sha256:"+hash,kept:true}}],[[hash,Buffer.from("notes")]]);
+  await receiver.start().ready();
+  const ask=sender.connect(await sender.start().ready());
+  await until(()=>relay.has(Buffer.from(main.address,"base64url")) && relay.has(Buffer.from(member.address,"base64url")),"Both computers never connected.");
+  const copy=name=>{
+    try {return JSON.parse(readFileSync(path.join(receiver.home,"run/peers",main.key,name),"utf8"));} catch {return null;}
+  };
+  await until(()=>copy("library-v1.json")?.items?.length===2 && copy("outputs-v1.json")?.artifacts?.length===1,"The initial copies never arrived.");
+  const seen=copy("library-v1.json").seen;
+  const pinned=await ask("POST",`kuvo/artifacts/${id}/pin`,{pinned:true});
+  assert.equal(pinned.status,200,pinned.text);
+  await until(()=>copy("outputs-v1.json")?.artifacts?.[0]?.pinned===true,"The pinned output was never sent.");
+  assert.equal(copy("library-v1.json").seen,seen,"An unchanged Library was sent again.");
+  rmSync(loose);
+  await until(()=>copy("library-v1.json")?.items?.find(item=>item.id===libId(loose))?.there===false,"The disappeared file was never reflected in the peer Library.");
+});
+
+test("an installed Marketplace app follows an external settings change without waiting for a round", {timeout:30000,skip:boxBinary().typescript}, async t => {
+  const {computer}=await bench(t);
+  const box=await computer("MarketplaceWatch");
+  const config=path.join(box.home,"box","opencode.json");
+  mkdirSync(path.dirname(config),{recursive:true});
+  writeFileSync(config,"{}\n");
+  const ready=await box.start().ready();
+  const added=await request(ready,"POST","kuvo/marketplace/apps/custom",{title:"Docs MCP",url:"https://docs.example.com/mcp",auth:"open"},{"x-kuvo-from":"app"});
+  assert.equal(added.status,200,added.text);
+  const projection=()=>JSON.parse(readFileSync(config,"utf8"));
+  const expected=projection().mcp.servers["marketplace-docs-mcp"];
+  const changed=projection();
+  delete changed.mcp.servers["marketplace-docs-mcp"];
+  writeFileSync(config,JSON.stringify(changed));
+  // The installed app's projection should be repaired after the actual file change, not on the
+  // five-second maintenance round. Observe the file itself without another Marketplace request.
+  await until(()=>projection().mcp?.servers?.["marketplace-docs-mcp"],"The MCP projection did not follow the changed settings.",2000);
+  assert.deepEqual(projection().mcp.servers["marketplace-docs-mcp"],expected);
+});
+
 test("marketplace, programs and mcp catalog routes match across boxes", async t => {
   const { computer } = await bench(t);
   const box = await computer("MarketBox");

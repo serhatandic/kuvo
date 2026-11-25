@@ -30,6 +30,7 @@ pub fn register(routes: &mut Registry, home: &Path, is_mac: bool, setup: kuvo_se
         key_store.clone(),
     ));
     crate::config::register(routes, config.clone(), setup.clone());
+    crate::git_preferences::register(routes, config.clone());
     keys::register(routes, key_store.clone());
     mcp_catalog::register(routes, config.clone(), setup);
     routes::register(routes, integrations);

@@ -1,6 +1,7 @@
 //! Claude Code's command line and stream-json protocol.
 
 mod diagnostic;
+mod grants;
 mod model;
 mod owned_paths;
 mod permissions;
@@ -22,6 +23,7 @@ use std::{
 
 use futures_util::future::{BoxFuture, join_all};
 use kuvo_store::home::Home;
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::{
@@ -40,6 +42,7 @@ use crate::{
 pub struct ClaudeFactory {
     home: Home,
     holder_binary: PathBuf,
+    feed: Option<crate::feed::Feed>,
 }
 
 impl ClaudeFactory {
@@ -47,7 +50,13 @@ impl ClaudeFactory {
         Self {
             home,
             holder_binary,
+            feed: None,
         }
+    }
+
+    pub fn with_feed(mut self, feed: crate::feed::Feed) -> Self {
+        self.feed = Some(feed);
+        self
     }
 }
 
@@ -88,16 +97,19 @@ pub async fn adopt_console_folder(home: &Home) -> io::Result<()> {
 
 impl Factory for ClaudeFactory {
     fn create(&self, account: &Account, home: Option<PathBuf>) -> io::Result<Arc<dyn Agent>> {
+        let program = program::Program::new(
+            self.home.clone(),
+            self.holder_binary.clone(),
+            account.id.clone(),
+            home,
+        );
+        let models = model::Catalog::new(program.catalog_file(), self.feed.clone())?;
         Ok(Arc::new(Claude {
-            program: program::Program::new(
-                self.home.clone(),
-                self.holder_binary.clone(),
-                account.id.clone(),
-                home,
-            ),
+            program,
             provider: account.provider().to_string(),
             threads: Mutex::new(Threads::default()),
-            models: model::Catalog::new()?,
+            grants: grants::Reader::default(),
+            models,
         }))
     }
 }
@@ -126,6 +138,7 @@ struct Claude {
     models: model::Catalog,
     provider: String,
     threads: Mutex<Threads>,
+    grants: grants::Reader,
 }
 
 #[derive(Default)]
@@ -162,6 +175,151 @@ impl Agent for Claude {
         Box::pin(self.program.plan_sign_in())
     }
 
+    fn read_plan_limits(
+        &self,
+        explicit: bool,
+    ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
+        Box::pin(async move {
+            let Some((before, identity)) = self.plan_sign_in().await else {
+                return Ok(None);
+            };
+            // No passive plan read starts a Claude process. File-owned Linux
+            // grants can be refreshed at their own hourly maker limit.
+            if !explicit {
+                let Some(resets) = self.grants.limits(&self.program).await else {
+                    return Ok(None);
+                };
+                if self
+                    .plan_sign_in()
+                    .await
+                    .as_ref()
+                    .is_none_or(|(mark, who)| mark != &before || who != &identity)
+                {
+                    return Ok(None);
+                }
+                let mut direct =
+                    crate::session::DirectPlanReading::windows(crate::session::PlanLimitReading {
+                        windows: vec![],
+                        sign_in: Some(before),
+                    });
+                direct.only_resets = true;
+                direct.resets = Some(resets);
+                return Ok(Some(direct));
+            }
+            let answer = model::usage(self.program.clone()).await?;
+            let Some((mark, current)) = self.plan_sign_in().await else {
+                return Ok(None);
+            };
+            if identity != current {
+                return Ok(None);
+            }
+            use crate::session::{DirectPlanReading, LimitWindow, PlanLimitReading, PlanSpend};
+            let rate = &answer["rate_limits"];
+            let mut windows = vec![];
+            let timestamp = |value: &Value| {
+                value
+                    .as_str()
+                    .and_then(|at| at.parse::<jiff::Timestamp>().ok())
+                    .and_then(|at| at.as_millisecond().try_into().ok())
+            };
+            let number = |value: &Value| {
+                value
+                    .as_f64()
+                    .or_else(|| value.as_str()?.parse::<f64>().ok())
+                    .filter(|v| v.is_finite())
+            };
+            let mut add = |id: &str, v: &Value, minutes: u32, model: Option<String>| {
+                if let Some(used) = number(&v["utilization"]) {
+                    if windows.iter().any(|w: &LimitWindow| w.id == id) {
+                        return;
+                    }
+                    windows.push(LimitWindow {
+                        id: id.into(),
+                        used: used / 100.0,
+                        minutes: Some(minutes),
+                        resets_at: timestamp(&v["resets_at"]),
+                        model,
+                    });
+                }
+            };
+            add("five_hour", &rate["five_hour"], 300, None);
+            add("seven_day", &rate["seven_day"], 10080, None);
+            add(
+                "seven_day_sonnet",
+                &rate["seven_day_sonnet"],
+                10080,
+                Some("Sonnet".into()),
+            );
+            add(
+                "seven_day_opus",
+                &rate["seven_day_opus"],
+                10080,
+                Some("Opus".into()),
+            );
+            for scope in rate["model_scoped"].as_array().into_iter().flatten() {
+                if let Some(model) = scope["display_name"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                {
+                    let id = format!(
+                        "seven_day_{}",
+                        model
+                            .to_ascii_lowercase()
+                            .chars()
+                            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                            .collect::<String>()
+                    );
+                    add(&id, scope, 10080, Some(model.into()));
+                }
+            }
+            let mut direct = DirectPlanReading::windows(PlanLimitReading {
+                windows,
+                sign_in: Some(mark),
+            });
+            direct.no_plan = answer["rate_limits_available"] == false;
+            direct.plan = answer["subscription_type"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    let mut chars = s.chars();
+                    format!(
+                        "{}{}",
+                        chars.next().unwrap().to_uppercase(),
+                        chars.as_str().to_lowercase()
+                    )
+                });
+            let extra = &rate["extra_usage"];
+            if extra["is_enabled"] == true
+                && let Some(used) = number(&extra["used_credits"])
+            {
+                direct.extra_usage = Some(PlanSpend {
+                    amount: used.max(0.0) / 100.0,
+                    limit: number(&extra["monthly_limit"])
+                        .filter(|n| *n > 0.0)
+                        .map(|n| n / 100.0),
+                    resets_at: timestamp(&extra["resets_at"]),
+                });
+            }
+            direct.resets = self.grants.limits(&self.program).await;
+            if direct.resets.is_none() && cfg!(target_os = "macos") {
+                direct.reset_unreadable=Some("Claude Code keeps this Mac's sign-in in the Keychain, so its resets show only from a Linux computer of yours signed in to Claude Code with the same account.".into());
+            }
+            Ok(Some(direct))
+        })
+    }
+    fn consume_plan_reset<'a>(
+        &'a self,
+        identity: &'a str,
+        request: &'a str,
+        target: &'a str,
+    ) -> AdapterCall<'a, crate::session::ResetOutcome> {
+        Box::pin(async move {
+            Ok(self
+                .grants
+                .consume(&self.program, identity, request, target)
+                .await)
+        })
+    }
     fn probe_account(&self) -> BoxFuture<'_, Result<AccountStatus, CheckFailure>> {
         Box::pin(async {
             let (status, replaced) =
@@ -275,6 +433,23 @@ impl Agent for Claude {
             ));
             threads.open.insert(session, thread.clone());
             Ok(thread as Arc<dyn Thread>)
+        })
+    }
+
+    fn close_thread(&self, session: &str) -> AdapterCall<'_, ()> {
+        let session = session.to_owned();
+        Box::pin(async move {
+            let (open, held) = {
+                let mut threads = self.threads.lock().await;
+                (threads.open.remove(&session), threads.held.remove(&session))
+            };
+            if let Some(held) = held {
+                held.stop().await?;
+            }
+            match open {
+                Some(thread) => thread.stop(false).await,
+                None => Ok(()),
+            }
         })
     }
 }

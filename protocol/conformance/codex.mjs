@@ -22,10 +22,18 @@ const path = require("node:path");
 const root = process.env.KUVO_CODEX_ROOT;
 const home = process.env.CODEX_HOME || path.join(process.env.HOME || process.env.USERPROFILE, ".codex");
 const auth = path.join(home, "fixture-auth.json");
+const nativeAuth = path.join(home, "auth.json");
+function signIn(account) {
+  fs.writeFileSync(auth, JSON.stringify(account));
+  const claims = Buffer.from(JSON.stringify({ email: account.email, "https://api.openai.com/auth": { chatgpt_plan_type: account.planType, chatgpt_account_id: account.email } })).toString("base64url");
+  const token = "e30." + claims + ".fixture";
+  fs.writeFileSync(nativeAuth, JSON.stringify(account.type === "apiKey" ? {auth_mode:"apikey",OPENAI_API_KEY:"sk-fixture"} : {auth_mode:"chatgpt",tokens:{access_token:token,id_token:token,account_id:account.email}}));
+}
 const heard = (line) => fs.appendFileSync(path.join(root, "codex-heard.jsonl"), JSON.stringify({ pid: process.pid, ...line }) + "\n");
 const args = process.argv.slice(2);
 if (args[0] === "logout") {
   fs.rmSync(auth, { force: true });
+  fs.rmSync(nativeAuth, { force: true });
   heard({ logout: true, home });
   process.exit(0);
 }
@@ -34,6 +42,7 @@ if (args[0] === "logout") {
 // moves its version to \`codex-update-to\`.
 const own = (name) => path.join(root, name);
 if (args[0] === "--version") {
+  heard({ version: true });
   process.stdout.write("codex-cli " + (fs.existsSync(own("codex-version")) ? fs.readFileSync(own("codex-version"), "utf8").trim() : "0.1.0") + "\n");
   process.exit(0);
 }
@@ -45,7 +54,11 @@ if (args[0] === "update") {
     process.stderr.write("no network\n");
     process.exit(1);
   }
-  if (fs.existsSync(own("codex-update-to"))) fs.writeFileSync(own("codex-version"), fs.readFileSync(own("codex-update-to"), "utf8").trim());
+  if (fs.existsSync(own("codex-update-to"))) {
+    fs.writeFileSync(own("codex-version"), fs.readFileSync(own("codex-update-to"), "utf8").trim());
+    const executable=path.join(root,".local","bin",process.platform==="win32"?"codex.cmd":"codex");
+    fs.appendFileSync(executable, process.platform==="win32"?"\r\n":"\n");
+  }
   process.exit(0);
 }
 if (args[0] !== "app-server") process.exit(2);
@@ -159,13 +172,26 @@ process.stdin.on("data", (chunk) => {
     else if (method === "account/rateLimits/read") {
       answer(read("codex-limits.json", {}));
     }
+    else if (method === "account/rateLimitResetCredit/consume") {
+      const journal=read("../box/agents/limits-resets.json", {});
+      const kept=journal.spends?.find(s=>s.request===params.idempotencyKey && s.target===params.creditId && s.state==="sending");
+      if (!kept) {refuse(-32000,"Reset request was not journaled."); continue;}
+      const prior=read("codex-consumed.json", []);
+      const outcome=read("codex-reset-answer.json", {outcome:"reset"});
+      if (prior.includes(params.idempotencyKey)) answer({outcome:"alreadyRedeemed"});
+      else {
+        prior.push(params.idempotencyKey);
+        fs.writeFileSync(path.join(root,"codex-consumed.json"), JSON.stringify(prior));
+        answer(outcome);
+      }
+    }
     else if (method === "account/read") {
       const saved = fs.existsSync(auth) ? JSON.parse(fs.readFileSync(auth, "utf8")) : null;
       answer({ account: saved, requiresOpenaiAuth: true });
     } else if (method === "account/login/start") {
       fs.mkdirSync(home, { recursive: true });
       if (params.type === "apiKey") {
-        fs.writeFileSync(auth, JSON.stringify({ type: "apiKey" }));
+        signIn({ type: "apiKey" });
         answer({ type: "apiKey" });
         continue;
       }
@@ -173,7 +199,7 @@ process.stdin.on("data", (chunk) => {
       if (params.type === "chatgptDeviceCode") answer({ type: "chatgptDeviceCode", loginId, verificationUrl: "https://auth.example.test/device", userCode: "ABCD-1234" });
       else answer({ type: "chatgpt", loginId, authUrl: "https://auth.example.test/codex" });
       wait("codex-login-complete").then(() => {
-        fs.writeFileSync(auth, JSON.stringify({ type: "chatgpt", email: "you@example.test", planType: "plus" }));
+        signIn({ type: "chatgpt", email: "you@example.test", planType: "plus" });
         send({ method: "account/login/completed", params: { loginId, success: true, error: null } });
       });
     } else if (method === "model/list") {
@@ -327,9 +353,17 @@ export function standInCodex(root, { signedIn = "chatgpt" } = {}) {
   }
   if (signedIn) {
     const account = signedIn === "apiKey" ? { type: "apiKey" } : { type: "chatgpt", email: "you@example.test", planType: "pro" };
-    write(path.join(root, ".codex", "fixture-auth.json"), JSON.stringify(account));
+    seedCodexAuth(path.join(root, ".codex"), account);
   }
   return bin;
+}
+
+// Seed both the native credential file and the scripted RPC's account answer, without real tokens.
+export function seedCodexAuth(home, account) {
+  write(path.join(home, "fixture-auth.json"), JSON.stringify(account));
+  const claims = Buffer.from(JSON.stringify({ email: account.email, "https://api.openai.com/auth": { chatgpt_plan_type: account.planType, chatgpt_account_id: account.email } })).toString("base64url");
+  const token = `e30.${claims}.fixture`;
+  write(path.join(home, "auth.json"), JSON.stringify(account.type === "apiKey" ? {auth_mode:"apikey",OPENAI_API_KEY:"sk-fixture"} : {auth_mode:"chatgpt",tokens:{access_token:token,id_token:token,account_id:account.email}}));
 }
 
 export function seedCodexSession(home, id, { directory = home, model = "gpt-test", permissions, agent = "build", state, metadata } = {}) {

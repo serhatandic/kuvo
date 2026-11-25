@@ -16,7 +16,7 @@ use kuvo_os::{
     process::{Spawn, Stdio},
 };
 use kuvo_store::home::Home;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -42,13 +42,20 @@ pub(super) struct Program {
     /// Counts updates of Claude Code: a conversation's Claude Code started before the last one
     /// starts again at its next message.
     updates: Arc<AtomicU64>,
+    identity: Arc<tokio::sync::Mutex<Option<IdentityCache>>>,
+}
+
+struct IdentityCache {
+    path: PathBuf,
+    stamp: (u64, Option<SystemTime>),
+    value: Option<(String, String)>,
 }
 
 const UNKNOWN: u8 = 0;
 const PLAN: u8 = 1;
 const KEY: u8 = 2;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Status {
     logged_in: bool,
@@ -79,6 +86,7 @@ impl Program {
             turned_away: Arc::default(),
             uses_key: Arc::default(),
             updates: Arc::default(),
+            identity: Arc::default(),
         }
     }
 
@@ -237,24 +245,38 @@ impl Program {
     }
 
     pub async fn plan_sign_in(&self) -> Option<(String, String)> {
-        let file = self.record_home()?.join(".claude.json");
-        let record: serde_json::Value =
-            serde_json::from_slice(&tokio::fs::read(file).await.ok()?).ok()?;
-        let account = &record["oauthAccount"];
-        let uuid = account["accountUuid"].as_str()?.trim().to_lowercase();
-        if uuid.is_empty() {
-            return None;
+        let path = self.record_home()?.join(".claude.json");
+        let stamp = tokio::fs::metadata(&path).await.ok()?;
+        let stamp = (stamp.len(), stamp.modified().ok());
+        let mut cache = self.identity.lock().await;
+        if let Some(kept) = cache
+            .as_ref()
+            .filter(|c| c.path == path && c.stamp == stamp)
+        {
+            return kept.value.clone();
         }
-        let organization = account["organizationUuid"]
-            .as_str()
-            .map(|id| id.trim().to_lowercase())
-            .unwrap_or_default();
-        let raw = format!("anthropic:{uuid}|{organization}");
-        let mark = Sha256::digest(&raw);
-        Some((
-            mark[..8].iter().map(|byte| format!("{byte:02x}")).collect(),
-            raw,
-        ))
+        let raw = tokio::fs::read(&path).await.ok()?;
+        let parsed = (|| {
+            let record: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+            let account = &record["oauthAccount"];
+            let uuid = account["accountUuid"].as_str()?.trim().to_lowercase();
+            if uuid.is_empty() {
+                return None;
+            }
+            let organization = account["organizationUuid"]
+                .as_str()
+                .map(|id| id.trim().to_lowercase())
+                .unwrap_or_default();
+            let raw = format!("anthropic:{uuid}|{organization}");
+            let mark = hex::encode(&Sha256::digest(&raw)[..8]);
+            Some((mark, raw))
+        })();
+        *cache = Some(IdentityCache {
+            path,
+            stamp,
+            value: parsed.clone(),
+        });
+        parsed
     }
 
     pub fn scratch(&self) -> PathBuf {
@@ -279,6 +301,77 @@ impl Program {
         which(OsStr::new("claude"), env, &folders)
     }
 
+    pub fn kept_version(&self) -> Option<String> {
+        let env = self.environment(false);
+        let executable = self.executable(&env)?;
+        crate::program_updates::kept_installed_version(
+            executable.path(),
+            &self.home.run().join("agents/program-cache"),
+        )
+    }
+
+    /// The catalog is produced only during a turn or sign-in, not by the picker.
+    pub fn catalog_file(&self) -> PathBuf {
+        self.home
+            .run()
+            .join("agents/claude/catalogs")
+            .join(format!("{}.json", self.account))
+    }
+
+    fn local_status(&self, env: &Environment) -> Status {
+        let record: serde_json::Value = self
+            .record_home()
+            .and_then(|folder| fs::read(folder.join(".claude.json")).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let account = &record["oauthAccount"];
+        let config = self.config_home(self.home.root());
+        let read = |name: &str| -> serde_json::Value {
+            config
+                .as_ref()
+                .and_then(|folder| fs::read(folder.join(name)).ok())
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default()
+        };
+        let credentials = read(".credentials.json");
+        let settings = read("settings.json");
+        let configured = |name| {
+            env_value(Platform::current(), env, name).is_some_and(|value| !value.is_empty())
+                || settings["env"][name]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+        };
+        let key = configured("ANTHROPIC_API_KEY")
+            || configured("ANTHROPIC_AUTH_TOKEN")
+            || settings["apiKeyHelper"]
+                .as_str()
+                .is_some_and(|helper| !helper.is_empty());
+        let cloud = [
+            ("CLAUDE_CODE_USE_BEDROCK", "bedrock"),
+            ("CLAUDE_CODE_USE_VERTEX", "vertex"),
+            ("CLAUDE_CODE_USE_FOUNDRY", "foundry"),
+        ]
+        .into_iter()
+        .find_map(|(name, service)| configured(name).then(|| service.to_owned()));
+        let oauth = account.is_object() && self.credentials_written() != SystemTime::UNIX_EPOCH;
+        Status {
+            logged_in: key || cloud.is_some() || oauth,
+            auth_method: if key || cloud.is_some() || account["organizationType"] == "api" {
+                "console_api_key".into()
+            } else if oauth {
+                "claude.ai".into()
+            } else {
+                "none".into()
+            },
+            email: account["emailAddress"].as_str().map(str::to_owned),
+            api_provider: cloud,
+            subscription_type: credentials["claudeAiOauth"]["subscriptionType"]
+                .as_str()
+                .or_else(|| account["subscriptionType"].as_str())
+                .map(str::to_owned),
+        }
+    }
+
     pub async fn probe(&self) -> io::Result<(AccountStatus, bool)> {
         let program = self.clone();
         tokio::task::spawn_blocking(move || program.probe_blocking()).await?
@@ -296,11 +389,11 @@ impl Program {
             ended: false,
             unchecked: false,
         };
-        let Some(executable) = self.executable(&env) else {
+        if self.executable(&env).is_none() {
             answer.message = Some("Install Claude Code, then sign in here.".into());
             return Ok((answer, false));
-        };
-        let status = native_status(executable, env, self.home.root())?;
+        }
+        let status = self.local_status(&env);
         answer.installed = true;
         answer.signed_in = status.logged_in;
         let key = !status.auth_method.is_empty() && status.auth_method != "claude.ai";
@@ -410,7 +503,11 @@ impl Program {
                 }),
                 completed: Box::new(move || {
                     let _ = program.forget_token();
-                    handle.block_on(models.clear());
+                    handle.block_on(async {
+                        models.clear().await;
+                        // This is explicitly a sign-in, so it may ask Claude for its models.
+                        let _ = models.refresh(program.clone()).await;
+                    });
                 }),
             })
         })

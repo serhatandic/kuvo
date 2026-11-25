@@ -44,7 +44,22 @@ use crate::{
 
 const LIST_FILE: &str = "lists-v1.json";
 const NOTICE_FILE: &str = "notices-v1.json";
-const PEER_ROUND: Duration = Duration::from_secs(3);
+const ARCHIVE_FILE: &str = "archives-v1.json";
+pub const ARCHIVE_FEATURE: &str = "line.merged-archives";
+
+pub type ArchiveGroup = kuvo_protocol::routes::types::GetKuvoSettingsSectionStatus200GroupsItem;
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Archives {
+    pub groups: Vec<ArchiveGroup>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteArchives {
+    pub computer: Computer,
+    pub standing: Standing,
+    pub copy: Arc<Archives>,
+}
+const COPY_HEARTBEAT: Duration = Duration::from_secs(60);
 const HEARD_EVERY: Millis = 300_000;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -64,6 +79,8 @@ pub struct View {
     pub(crate) announced: Arc<Announcements>,
     pub(crate) lists: BTreeMap<ComputerKey, Arc<Copy<Lists>>>,
     pub(crate) notice_copies: BTreeMap<ComputerKey, Arc<Copy<History>>>,
+    local_archives: Option<Arc<Archives>>,
+    archive_copies: BTreeMap<ComputerKey, Arc<Copy<Archives>>>,
     pub(crate) notices: Arc<History>,
     pub(crate) move_notices: Arc<crate::moves::Notices>,
     pub(crate) move_waiting: Arc<BTreeSet<String>>,
@@ -156,6 +173,44 @@ impl View {
         (presence, facts)
     }
 
+    pub fn archives(&self, now: Millis) -> Vec<RemoteArchives> {
+        self.roster
+            .members
+            .iter()
+            .filter_map(|peer| {
+                let copy = self.archive_copies.get(&peer.key)?;
+                Some(RemoteArchives {
+                    computer: Computer {
+                        id: encode(&peer.key),
+                        name: peer.name.clone(),
+                    },
+                    standing: self.copy_standing(peer.key, copy.seen, now),
+                    copy: Arc::new(copy.value.clone()),
+                })
+            })
+            .collect()
+    }
+
+    pub fn pending_archives(&self) -> Vec<Computer> {
+        self.pending(ARCHIVE_FEATURE, |key| self.archive_copies.contains_key(key))
+    }
+
+    pub fn archive_moved(&self, key: &str, session: &str) -> bool {
+        self.local
+            .ownership
+            .journal
+            .get(&(RecordScope::Session, session.into()))
+            .is_some_and(|owner| {
+                encode(
+                    self.local
+                        .ownership
+                        .replacements
+                        .get(&owner.key)
+                        .unwrap_or(&owner.key),
+                ) != key
+            })
+    }
+
     pub fn pending(&self, feature: &str, kept: impl Fn(&ComputerKey) -> bool) -> Vec<Computer> {
         self.roster
             .pending(&self.reach, &self.announced, feature, kept)
@@ -172,6 +227,11 @@ impl View {
     /// Whether the relay says a computer isn't there now.
     pub fn away(&self, key: &ComputerKey) -> bool {
         self.reach.away_since(&encode(key)).is_some()
+    }
+
+    /// A peer has announced itself on the wire, including older peers without features.
+    pub fn has_announcement(&self, key: &ComputerKey) -> bool {
+        self.announced.contains_key(&encode(key))
     }
 
     pub fn advertises(&self, key: &ComputerKey, feature: &str) -> bool {
@@ -260,10 +320,25 @@ impl View {
         ownership.owner_of(scope, id, &self.roster, &self.announced, &self.reach, now)
     }
 
+    /// What `key` (one of your other computers) last told this box of its agents.
+    pub fn announcement(&self, key: &str) -> Option<&crate::directory::Announcement> {
+        self.announced.get(key)
+    }
+
     pub(crate) fn features(&self) -> Vec<&'static str> {
         let mut features = crate::routes::FEATURES.to_vec();
         features.push("box.atWork");
+        // (Edits held for a bot here are taken, its effort and its job's two fields too.)
+        features.extend(["bots.held", "bots.effort", "bots.job-fields"]);
         features.push("data.queued-device-authority");
+        // Peer-only capability: this computer keeps Library and Outputs copies until a change,
+        // and marks them away from reach, not from the age of their content.
+        features.extend([
+            "library",
+            "line.merged-library",
+            "line.merged-outputs",
+            "data.library-change-copy",
+        ]);
         if self.backup_receiver {
             features.push("box.backups.relay");
         }
@@ -503,6 +578,18 @@ impl Reader {
         self.views.changed().await
     }
 
+    /// The release announcement must be queued before we send work admitted by it.
+    /// Otherwise the remote box may still be fencing the returning bridge.
+    pub(crate) fn work_announced_to(&self, peer: &ComputerKey) -> bool {
+        let view = self.view();
+        view.bridge.is_none()
+            || self
+                .agent_mail
+                .borrow()
+                .get(peer)
+                .is_some_and(|sent| sent.work_ready)
+    }
+
     /// Whether this computer's agent publication named the sender to this peer.
     pub(crate) fn agent_sent_to(&self, peer: &ComputerKey, session: &str) -> Option<bool> {
         let sent = self.agent_mail.borrow();
@@ -521,6 +608,7 @@ type AgentMail = BTreeMap<ComputerKey, SentAgents>;
 struct SentAgents {
     sessions: Arc<BTreeSet<String>>,
     complete: bool,
+    work_ready: bool,
 }
 
 enum Change {
@@ -528,6 +616,7 @@ enum Change {
     Versions(LocalVersions, oneshot::Sender<()>),
     Local(Arc<Local>),
     Notices(Arc<History>),
+    Archives(Arc<Archives>),
     Dispatch(kuvo_server::Dispatcher),
     WorkCalls,
     TransferWorker,
@@ -775,6 +864,10 @@ impl ResidentPeers {
         let _ = self.changes.send(Change::Local(Arc::new(local))).await;
     }
 
+    pub async fn archives(&self, copy: Archives) {
+        let _ = self.changes.send(Change::Archives(Arc::new(copy))).await;
+    }
+
     pub async fn notices(&self, notices: History) {
         let _ = self.changes.send(Change::Notices(Arc::new(notices))).await;
     }
@@ -805,6 +898,7 @@ struct Resident {
     view: View,
     list_parts: BTreeMap<ComputerKey, Parts>,
     notice_parts: BTreeMap<ComputerKey, Parts>,
+    archive_parts: BTreeMap<ComputerKey, Parts>,
     activity_parts: BTreeMap<ComputerKey, activity::Receiving>,
     move_parts: crate::moves::transfer::Receiving,
 }
@@ -818,6 +912,7 @@ impl Resident {
     ) -> Self {
         let lists = read_copies(&run, &roster, LIST_FILE);
         let notice_copies = read_copies(&run, &roster, NOTICE_FILE);
+        let archive_copies = read_copies(&run, &roster, ARCHIVE_FILE);
         let activities = roster
             .members
             .iter()
@@ -831,6 +926,8 @@ impl Resident {
             reach: Arc::new(Reach::load(&run)),
             lists,
             notice_copies,
+            local_archives: None,
+            archive_copies,
             activities,
             announced: Arc::new(kept::read(&run.join("peer-agents.json")).unwrap_or_default()),
             notices: Arc::new(notices::load(&run, telling)),
@@ -854,6 +951,7 @@ impl Resident {
             view,
             list_parts: BTreeMap::new(),
             notice_parts: BTreeMap::new(),
+            archive_parts: BTreeMap::new(),
             activity_parts: BTreeMap::new(),
             move_parts: crate::moves::transfer::Receiving::default(),
         }
@@ -874,8 +972,13 @@ impl Resident {
         } = publication;
         let mut paired = relay_routes::Routes::default();
         let mut dispatch = None;
-        let mut round = tokio::time::interval(PEER_ROUND);
-        round.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut move_files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        move_files.set_targets(Vec::new(), vec![(self.run.join("moves"), false)]);
+        if let Err(error) = self.refresh_move_ownership().await {
+            eprintln!("Refreshing move ownership: {error}");
+        }
+        let mut heartbeat = tokio::time::interval(COPY_HEARTBEAT);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut publisher = relay
             .as_ref()
             .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents));
@@ -883,6 +986,11 @@ impl Resident {
         let mut pending_trust = None;
         let mut setup_rosters = None;
         loop {
+            let expiry = self
+                .view
+                .move_notices
+                .next_expiry()
+                .map(|at| Duration::from_millis(at.saturating_sub(clock()).max(0) as u64));
             tokio::select! {
                 Ok(()) = waiting_updates.changed() => {
                     self.view.move_waiting = waiting_updates.borrow_and_update().clone();
@@ -916,8 +1024,24 @@ impl Resident {
                         incoming.ownership.journal.clone_from(&self.view.local.ownership.journal);
                         self.view.local_lists = local.publication().map(Arc::new);
                         self.view.local = local;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::None);
+                        }
                     }
-                    Some(Change::Notices(notices)) => self.view.notices = notices,
+                    Some(Change::Notices(notices)) => {
+                        self.view.notices = notices;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::None);
+                        }
+                    },
+                    Some(Change::Archives(archives)) => {
+                        if self.view.local_archives.as_deref() != Some(&archives) {
+                            self.view.local_archives = Some(archives);
+                            if let Some(publisher) = &mut publisher {
+                                publisher.request(self.view.clone(), clock(), Refresh::None);
+                            }
+                        }
+                    },
                     Some(Change::Dispatch(dispatcher)) => dispatch = Some(dispatcher),
                     Some(Change::WorkCalls) => {
                         self.view.work_calls = true;
@@ -992,7 +1116,7 @@ impl Resident {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
                     }
-                    Some(event @ (relay::Event::Mail { .. } | relay::Event::Unreachable(_))) => {
+                    Some(event @ (relay::Event::Mail { .. } | relay::Event::Unreachable(_) | relay::Event::Gone { replaced: false, .. })) => {
                         let now = clock();
                         if let (relay::Event::Mail { key, envelope, .. }, Some(devices), Some(relay)) = (&event, &devices, &relay) {
                             match devices.legacy_mail(*key, &envelope.0, now).await {
@@ -1043,17 +1167,22 @@ impl Resident {
                         publisher = None;
                     }
                 },
-                _ = round.tick() => {
-                    let now = clock();
+                _ = move_files.changed() => {
                     if let Err(error) = self.refresh_move_ownership().await {
                         eprintln!("Refreshing move ownership: {error}");
                     }
-                    if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, now) {
+                    if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
+                },
+                _ = async { match expiry { Some(delay) => tokio::time::sleep(delay).await, None => std::future::pending().await } } => {
+                    if let Err(error) = Arc::make_mut(&mut self.view.move_notices).expire(&self.run, clock()) {
                         eprintln!("Keeping moves on other computers: {error}");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
-                    if let Some(publisher) = &mut publisher {
-                        publisher.request(self.view.clone(), now, Refresh::None);
-                    }
+                },
+                _ = heartbeat.tick(), if self.view.relay_connected && !self.view.roster.members.is_empty() => {
+                    // Existing peers age out their copies; retain the wire heartbeat, never a
+                    // three-second scan. Local changes and move files publish immediately.
+                    if let Some(publisher) = &mut publisher { publisher.request(self.view.clone(), clock(), Refresh::None); }
                 },
             }
             publish.send_replace(Arc::new(self.view.clone()));
@@ -1087,7 +1216,11 @@ impl Resident {
 
     fn receive(&mut self, event: relay::Event, now: Millis) -> io::Result<Received> {
         match event {
-            relay::Event::Unreachable(address) => {
+            relay::Event::Unreachable(address)
+            | relay::Event::Gone {
+                address,
+                replaced: false,
+            } => {
                 if let Some(peer) = self.view.roster.at_address(address) {
                     Arc::make_mut(&mut self.view.reach).unreachable(
                         &self.run,
@@ -1161,6 +1294,15 @@ impl Resident {
                     now,
                     &mut self.notice_parts,
                     &mut self.view.notice_copies,
+                )?;
+                take_copy(
+                    &self.run,
+                    key,
+                    ARCHIVE_FILE,
+                    payload.remove("archiveCopy"),
+                    now,
+                    &mut self.archive_parts,
+                    &mut self.view.archive_copies,
                 )?;
                 if let Some(value) = payload.remove("activity") {
                     activity::take(
@@ -1366,6 +1508,9 @@ impl Publisher {
     }
 
     fn request(&mut self, view: View, now: Millis, refresh: Refresh) {
+        if view.roster.members.is_empty() {
+            return;
+        }
         let _ = self.tx.try_send((view, now, refresh));
     }
 }
@@ -1521,6 +1666,7 @@ async fn publish_round(
             let sent = SentAgents {
                 sessions: sessions.clone(),
                 complete: lists.is_some(),
+                work_ready: view.local_work_admitted(),
             };
             sent_agents.send_if_modified(|known| {
                 if known.get(&peer.key) == Some(&sent) {
@@ -1578,7 +1724,24 @@ async fn publish_round(
                     content,
                     now,
                     forced,
-                    spacing: 15_000,
+                    spacing: 0,
+                },
+                previous,
+            )
+            .await;
+        }
+        if known.supports(ARCHIVE_FEATURE)
+            && let Some(archives) = &view.local_archives
+        {
+            publish_copy(
+                relay,
+                &host,
+                Publication {
+                    field: "archiveCopy",
+                    content: serde_json::to_value(archives.as_ref()).expect("archives serialize"),
+                    now,
+                    forced,
+                    spacing: 0,
                 },
                 previous,
             )

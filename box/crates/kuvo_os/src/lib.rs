@@ -4,8 +4,10 @@ pub mod disk_usage;
 pub mod ipc;
 pub mod platform;
 pub mod process;
+pub mod usage_server;
 pub mod sandbox;
 pub mod watch;
+pub mod watch_live;
 
 #[cfg(windows)]
 pub mod windows;

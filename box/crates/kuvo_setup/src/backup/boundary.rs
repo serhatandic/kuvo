@@ -326,49 +326,17 @@ impl Authority for Boundary {
             .as_ref()
             .ok_or(Error::Message("Wait for accepted backup membership."))?;
         let roster = link.member_list().map_err(setup_error)?;
-        let ownership = assignments(link);
-        let known: std::collections::HashSet<_> = roster
-            .left
-            .iter()
-            .chain(roster.boxes.iter().map(|peer| &peer.key))
-            .collect();
-        let mut accepted: Vec<_> = roster
+        let accepted = roster
             .boxes
             .iter()
             .filter(|peer| peer.key != own)
             .map(|peer| peer.key.clone())
+            .chain(
+                link.historical_insight_origins_for(manifest.setup.as_deref())
+                    .map_err(setup_error)?
+                    .into_keys(),
+            )
             .collect();
-        let history = roster.extra.get("computerHistory").filter(|history| {
-            history.get("setup").and_then(Value::as_str) == manifest.setup.as_deref()
-        });
-        for old in &roster.left {
-            let matched = ownership
-                .get(&format!("replacement:{old}"))
-                .is_some_and(|record| {
-                    record.get("source").is_some_and(Value::is_string)
-                        && record
-                            .get("computer")
-                            .and_then(Value::as_str)
-                            .is_some_and(|computer| {
-                                computer != old && known.iter().any(|key| key.as_str() == computer)
-                            })
-                });
-            let recorded =
-                history
-                    .and_then(|history| history.get("slots"))
-                    .and_then(Value::as_array)
-                    .is_some_and(|slots| {
-                        slots.iter().any(|slot| {
-                            slot.get("key").and_then(Value::as_str) == Some(old)
-                                || slot.get("previous").and_then(Value::as_array).is_some_and(
-                                    |keys| keys.iter().any(|key| key.as_str() == Some(old)),
-                                )
-                        })
-                    });
-            if matched || recorded {
-                accepted.push(old.clone());
-            }
-        }
         Ok(Some(super::recovery::InsightOrigins { own, accepted }))
     }
 

@@ -10,8 +10,12 @@ import { relayStandIn } from "../../box/bridge-tests/relay-stand-in.js";
 import { createHash } from "node:crypto";
 
 export function scratch() {
-  // Keep Unix socket paths short even under macOS's long default TMPDIR.
-  return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", "kc-"));
+  // Keep Unix socket paths short even under macOS's long default TMPDIR. A local
+  // runner may choose its own short prefix so it can identify exactly the fixture
+  // processes it owns after the run, even if a child was reparented.
+  const prefix = process.env.KUVO_CONFORMANCE_SCRATCH_PREFIX ?? "kc-";
+  assert.match(prefix, /^[a-z0-9-]{1,12}$/i, "Use a short scratch-folder prefix");
+  return fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/tmp", prefix));
 }
 
 /** A box's home made private before anything's written in it: on Windows the Rust box takes only a

@@ -32,6 +32,7 @@ pub use mac_wipe::clear_mac_app_link_keys;
 
 pub use mask::{Hidden, mask};
 pub use routes::Resident;
+pub(crate) use routes::VerifiedVaultClient;
 pub use session_asks::{
     VaultAsk, VaultAskCaller, VaultAskReply, VaultCard, VaultDecision, VaultWaiting,
 };
