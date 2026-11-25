@@ -472,6 +472,12 @@ fn computers(view: &View, now: Millis) -> get_kuvo_computers::Status200 {
             local.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
         }
     }
+    if view.versions.is_mac {
+        local.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
+    }
+    local.version.clone_from(&view.versions.version);
+    local.kuvo = view.local_running_version().map(str::to_owned);
+    local.app_check.clone_from(&view.versions.app_check);
     local.system = view.system.as_deref().map(str::to_owned);
     local.fleet_update = view.local_update_row().cloned();
     let features = view.features();

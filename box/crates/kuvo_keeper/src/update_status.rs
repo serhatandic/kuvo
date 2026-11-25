@@ -290,19 +290,23 @@ fn append_event(home: &Home, event: &Value) -> io::Result<()> {
     files::append_staged_line(&path, length, &line)
 }
 
+/// The version of the selected release, not the previous working release on trial.
+pub fn version(home: &Home) -> io::Result<Option<String>> {
+    if let Some(target) = Release::read(&home.root().join(SELECTOR))? {
+        return Ok(Some(target.version().to_owned()));
+    }
+    Ok(files::text_of(&home.bin().join("box-version"))
+        .map(|value| value.trim().to_owned())
+        .filter(|value| version_order(value).is_some()))
+}
+
 pub fn read(home: &Home, profile: &Path) -> io::Result<Value> {
     if let Err(error) = settle_shell_trial(home).and_then(|_| settle_legacy_trial(home)) {
         eprintln!("Recording the completed trial: {error}");
     }
     let blocked = (home.root() != profile.join(".kuvo-code")).then_some(BLOCKED);
     let run = home.run();
-    let version = if let Some(target) = Release::read(&home.root().join(SELECTOR))? {
-        Some(target.version().to_owned())
-    } else {
-        files::text_of(&home.bin().join("box-version"))
-            .map(|value| value.trim().to_owned())
-            .filter(|value| version_order(value).is_some())
-    };
+    let version = version(home)?;
     let state = STATE
         .read(&run.join("update.json"))
         .map_err(io::Error::other)?
