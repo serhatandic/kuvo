@@ -1050,7 +1050,9 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   go (`Agent::close_thread`, from the agents' delete), so none is left running for a deleted
   conversation on any system. On Windows that process holds the folder it works in: a bot whose
   folder can't be moved for that has its conversation go first, then its folder (it went next
-  anyway). Found by `agents-bots.test.mjs` on native Windows (os error 5 on Delete).
+  anyway). Found by `agents-bots.test.mjs` on native Windows (os error 5 on Delete); it passes
+  there now, with `marketplace-agents`, `bots-held` and `bots-elsewhere` (Rust on both computers)
+  and the `wakes` 10/10, `bots` 40/40 and `work` 15/15 fixtures.
 
 ### Gaps and owners
 
