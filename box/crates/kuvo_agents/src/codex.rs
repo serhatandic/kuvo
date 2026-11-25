@@ -8,6 +8,7 @@ mod citations;
 mod program;
 mod projection;
 mod server;
+mod terminals;
 mod thread;
 
 use std::{

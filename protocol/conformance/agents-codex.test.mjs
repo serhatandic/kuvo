@@ -109,7 +109,7 @@ function resident(fixture = {}) {
     if (skip) return;
     box.codex = await scriptedCodex(fixture);
     for (const [kind, permissions, agent] of [["plain"], ["ask", askFirst], ["plan", askFirst, "plan"]]) {
-      for (let index = 1; index <= 16; index++) {
+      for (let index = 1; index <= 20; index++) {
         const id = `ses_codex_${kind}_${String(index).padStart(3, "0")}`;
         const folder = path.join(box.codex.home, "projects", id);
         write(path.join(folder, ".keep"), "");
@@ -147,6 +147,7 @@ function resident(fixture = {}) {
 }
 
 const item = (method, value) => [method, { item: value }];
+const id_of = (words) => words.replace(/\W+/g, "-");
 
 describe("Codex's turns", { skip }, () => {
   const box = resident();
@@ -357,6 +358,31 @@ describe("Codex, more of what it does", { skip }, () => {
     assert.equal(idles(rows).length, 1);
     assert.ok(texts(rows).join("\n").includes("- Which database? (Postgres / SQLite)"), JSON.stringify(texts(rows)));
   });
+
+  for (const [what, after] of [
+    ["thinking", (n) => ["item/reasoning/summaryTextDelta", { itemId: `r-go${n}`, delta: "Thinking it over." }]],
+    ["a step", (n) => item("item/started", { type: "commandExecution", id: `c-go${n}`, command: "ls" })],
+    ["more words", (n) => item("item/completed", { type: "agentMessage", id: `w-go${n}`, text: "Meanwhile, looking around." })],
+  ].map(([what, step], n) => [what, () => step(n)])) {
+    test(`${what} after asking doesn't lose the question: its card is up while it works, and the answer goes into its turn`, { timeout: 60000 }, async () => {
+      const { id } = await box.begin([
+        item("item/completed", { type: "agentMessage", id: `q-${id_of(what)}`, text: "One thing first.", questions: [{ title: "Which language should the README use?", options: ["English", "Turkish"] }] }),
+        after(),
+        { until: `answered-${id_of(what)}` },
+        item("item/completed", { type: "agentMessage", id: `t-${id_of(what)}`, text: "Writing it in Turkish." }),
+      ]);
+      const form = await until(async () => (await box.codex.forms(id))[0], "No card for its question.");
+      assert.equal(form.fields[0].description, "Which language should the README use?");
+      assert.equal((await box.codex.rows(id)).filter((row) => row.type === "idle").length, 0);
+      assert.equal((await box.codex.replyForm(id, form.id, { [form.fields[0].key]: "Turkish" })).status, 200);
+      const thread = () => box.codex.agentState(id)?.codexThread;
+      await until(() => box.codex.sent("turn/steer").some((message) => message.params.threadId === thread() && message.params.input[0].text === "Turkish"), "Its answer never went into its turn.");
+      box.codex.go(`answered-${id_of(what)}`);
+      const rows = await box.codex.idles(id);
+      assert.equal(box.codex.sent("turn/start").filter((message) => message.params.threadId === thread()).length, 1);
+      assert.ok(texts(rows).join("\n").includes("Writing it in Turkish."), JSON.stringify(texts(rows)));
+    });
+  }
 
   test("a question still open as its turn ends: the session waits, and your answer starts its next turn", { timeout: 60000 }, async () => {
     const { id } = await box.begin([
@@ -581,6 +607,52 @@ describe("Codex's cards, modes, context and summaries", { skip }, () => {
     assertMatch(mcp.state, { status: "completed", input: { q: "x" } });
     assertMatch(mcp.state.content[0], { type: "text", text: "Found.\nSpec: https://example.test/spec" });
     assertMatch(mcp.state.content[1], { type: "file", mime: "image/png" });
+  });
+});
+
+describe("Commands Codex leaves running in a background terminal", { skip }, () => {
+  const box = resident();
+  const command = (id, line) => item("item/started", { type: "commandExecution", id, command: line });
+  const work = async (id) => (await box.codex.work()).sessions?.[id];
+
+  test("a terminal it leaves running shows in the bar with what it printed", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([
+      command("bt1", "npm run dev"),
+      ["item/commandExecution/outputDelta", { itemId: "bt1", delta: "Listening on :3000\n" }],
+      { terminals: [{ processId: "p-bt1", itemId: "bt1", command: "npm run dev" }] },
+    ]);
+    await box.codex.idles(id);
+    // (Listed as its turn ends, before the box says it ended.)
+    assertMatch(await work(id), { commands: 1, tasks: 0 });
+    const bar = await box.codex.work(`/${id}`);
+    assert.equal(bar.commands.length, 1);
+    assertMatch(bar.commands[0], { command: "npm run dev", agents: true });
+    const output = `/${id}/commands/${bar.commands[0].id}/output`;
+    assertMatch(await box.codex.work(output), { output: "Listening on :3000", state: "running" });
+    assert.equal(box.codex.sent("turn/start").filter((message) => message.params.input[0].text.includes(id)).length, 1);
+  });
+
+  test("a list that fails isn't taken for none: what it left running is still to be found, and it's listed again until it ends", { timeout: 120000 }, async () => {
+    const { id } = await box.begin([
+      command("bt2", "npm test"),
+      { terminals: [{ processId: "p-bt2", itemId: "bt2", command: "npm test" }], failsUntil: "lists-work", endsWith: "bt2-done" },
+    ]);
+    await box.codex.idles(id);
+    // (A task, until it's known what it left running.)
+    assertMatch(await work(id), { commands: 0, tasks: 1 });
+    assert.deepEqual((await box.codex.work(`/${id}`)).commands, []);
+    box.codex.go("lists-work");
+    // Listed again a while later (every 30 s while any runs).
+    const listed = await until(async () => {
+      const bar = await box.codex.work(`/${id}`);
+      return bar.commands?.length === 1 && bar;
+    }, "It was never listed again.", 45000, 500);
+    assertMatch(listed.commands[0], { command: "npm test" });
+    assertMatch(await work(id), { commands: 1, tasks: 0 });
+    box.codex.go("bt2-done");
+    await until(async () => !(await work(id)), "Its end never showed.", 45000, 500);
+    // It wasn't woken for that.
+    assert.equal(box.codex.sent("turn/start").filter((message) => message.params.input[0].text.includes(id)).length, 1);
   });
 });
 

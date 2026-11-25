@@ -35,6 +35,8 @@ const read = (file, fallback) => { try { return JSON.parse(fs.readFileSync(path.
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
 const waiting = new Map();
 const threads = new Map();
+/** What each thread left running in background terminals, as a script step set it. */
+const terminals = new Map();
 let asked = 0, turns = 0, made = 0;
 let running;
 const wait = (file) => new Promise((resolve) => {
@@ -50,6 +52,8 @@ async function play(threadId, turnId, steps) {
     if (step === "stop") { await new Promise((resolve) => (running.stop = resolve)); return; }
     if (step.until) { await wait(step.until); continue; }
     if (step.end) { end = step.end; break; }
+    // {terminals: [...], failsUntil?: file, endsWith?: file}: listed while the turn goes on and after.
+    if (step.terminals) { terminals.set(threadId, step); continue; }
     if (step.ask) {
       const id = "ask-" + ++asked;
       send({ id, method: step.ask[0], params: fill(step.ask[1]) });
@@ -143,7 +147,10 @@ process.stdin.on("data", (chunk) => {
       send({ method: "item/completed", params: { threadId: thread, turnId: "c1", item: { type: "contextCompaction", id: "cc1" } } });
       send({ method: "turn/completed", params: { threadId: thread, turn: { id: "c1", status: "completed" } } });
     } else if (method === "thread/backgroundTerminals/list") {
-      answer({ data: read("codex-terminals.json", []), nextCursor: null });
+      const kept = terminals.get(params.threadId);
+      const there = (file) => file && fs.existsSync(path.join(root, file));
+      if (kept?.failsUntil && !there(kept.failsUntil)) refuse(-32603, "background terminals unavailable");
+      else answer({ data: kept && !there(kept.endsWith) ? kept.terminals : [], nextCursor: null });
     } else if (method === "thread/read") {
       const kept = threads.get(params.threadId);
       if (!kept) refuse(-32603, "history unavailable");
@@ -281,6 +288,12 @@ export async function scriptedCodex(fixture = {}) {
     /** The box's answer to the stand-in's ask `ask`. */
     answered: (ask) => until(() => codex.heard().find((line) => line.message?.id === ask && line.message.method === undefined)?.message,
       `The box never answered ${ask}.`),
+    /** What the box says runs besides the session's turn (`kuvo/work/background…`). */
+    async work(suffix = "") {
+      const answer = await request(listener, "GET", `kuvo/work/background${suffix}`, undefined, headers, 20000);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json;
+    },
     agentState: (id) => readJSON(path.join(home, "agents/sessions", id, "agent.json")).threads?.[provider]?.state,
   };
   return codex;

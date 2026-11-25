@@ -777,14 +777,15 @@ agents stop and the next resident closes their turn.
 
 ### TypeScript scenarios
 
-Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.ts) (121).
+Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.ts): its 121
+`test`s. Its two `test.each` tables are the named rows after them.
 
 | Cases | Coverage and remaining owner |
 |---|---|
 | 1 | Rust adapter: receipts before the steer, `thread/read` by client ID. Conformance case open (4.2). |
 | 2 | Unit test `a_model_at_its_own_limit_waits_alone`. |
 | 3 | 4.6 (spawned agents). |
-| 4–10 | Background terminals (#262): open (4.2), with the background model. |
+| 4–10 | `codex::terminals` keeps what Codex left running in the background model. It's listed as each turn ends, before the end is said, and again every 30 s while any runs. A terminal with a command shows in the bar with what it printed, a terminal without one is a task, and a failed first list is the task `unknown:<thread>`. The app-server stays busy for them, and its holder notes `backgroundSessions`. Ported to agents-codex on both boxes: 4 (in the bar with its output); 5–7 (a failed list isn't none, it's listed again until it ends, and it isn't woken). Unit tests: 6 (a failed later list keeps them), 8 (a reset forgets their times), 9 (a replacement item gets a fresh start), and a command's Stop through `thread/backgroundTerminals/terminate`. 10 (Stop on what it left running, `thread/backgroundTerminals/clean`) waits on the agent sessions' `DELETE api/session/:id/background`, which the Rust box doesn't serve yet for any agent: no row owns it yet. Taking up the terminals of an idle app-server after an update is 7.2's, with Claude Code's. |
 | 11–13 | A failed `initialize` stops that app-server and the next ask starts another; one stopped while starting isn't kept. Process cases open (4.2). |
 | 14–15 | Open (4.2): shutdown during credential reading, a forgotten thread. |
 | 16 | 6.1 (vault and the sandbox). |
@@ -811,6 +812,8 @@ Numbers follow source order in [codex.test.ts](../../box/test/agents/codex.test.
 | 115–119 | Ported. |
 | 120 | Open (4.2): Stop during a summary. |
 | 121 | Open (4.2): the instructions note on a thread it goes on with. |
+| `test.each`: a terminal's start relative to the lead's instruction (4) | Rust: a listed command keeps the start heard from its `item/started` (unit test). Holding the lead's finish on it is the work watcher's (5.1c-6b), which reads that start from the background file. |
+| `test.each`: thinking, a step or more words after asking (3) | Ported to agents-codex on both boxes. |
 
 Also still open for 4.2: `sessions.test.ts` 9 and 12, 59–60 and 127–139; the
 program updater; the live GPT-6-Luna run.
@@ -819,7 +822,7 @@ program updater; the live GPT-6-Luna run.
 
 | Platform | agents-codex, Rust | agents-codex, TypeScript | agent-turn-fixture |
 |---|---:|---:|---:|
-| macOS | 43/43 | 42/42, 1 skipped (Rust-only) | 6/6 |
+| macOS | 48/48 | 47/47, 1 skipped (Rust-only) | 6/6 |
 | Linux x86-64, lokum | 22/22 at b255c5fc0 | — | 6/6 |
 | WSL2, Ubuntu 24.04 | 22/22 at b255c5fc0 | — | 6/6 |
 | Native Windows x64 | 22/22 at b255c5fc0 | — | 6/6 |
