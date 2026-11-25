@@ -162,12 +162,21 @@ impl Agent for Codex {
         })
     }
 
-    fn read_plan_limits(&self) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
-        Box::pin(async {
+    fn read_plan_limits(
+        &self,
+        explicit: bool,
+    ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
+        Box::pin(async move {
             let Some((_, identity)) = self.plan_sign_in().await else {
                 return Ok(None);
             };
-            let server = self.shared.server().await?;
+            let server = if explicit {
+                self.shared.server().await?
+            } else if let Some(server) = self.shared.current().await {
+                server
+            } else {
+                return Ok(None);
+            };
             if server
                 .signed_in_as
                 .lock()

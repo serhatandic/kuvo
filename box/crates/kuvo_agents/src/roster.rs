@@ -21,7 +21,10 @@ pub trait Agent: Adoption {
 
     /// A maker's current plan windows, on demand. Adapters without a direct reader
     /// can still report the readings heard by a turn.
-    fn read_plan_limits(&self) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
+    fn read_plan_limits(
+        &self,
+        _explicit: bool,
+    ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
         Box::pin(async { Ok(None) })
     }
 
