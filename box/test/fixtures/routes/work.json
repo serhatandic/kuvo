@@ -1583,6 +1583,17 @@
      }
     },
     {
+     "send": "POST kuvo/sessions/ses_nobody/stop",
+     "body": {},
+     "why": "A conversation that isn't anywhere here.",
+     "expect": {
+      "status": 404,
+      "json": {
+       "message": "There's no such conversation here."
+      }
+     }
+    },
+    {
      "given": {
       "session": {
        "id": "ses_lead",

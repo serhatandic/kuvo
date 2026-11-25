@@ -807,8 +807,19 @@ async fn command_target(engine: &Engine, session: &str) -> Result<Place, Refusal
         return Ok(place);
     }
     let lease = api::start(engine).await?;
-    sessions::read(engine, &lease, &sessions::path(session)).await?;
-    Ok(Place::Engine(lease))
+    // (As the queue routes say it, for any of their conversations.)
+    let path = sessions::path(session);
+    match engine.call::<Value>(&lease, Method::GET, &path, None).await {
+        Ok(_) => Ok(Place::Engine(lease)),
+        Err(error) if error.missing() => Err(Refusal::new(
+            StatusCode::NOT_FOUND,
+            "There's no such conversation here.",
+        )),
+        Err(_) => Err(Refusal::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The engine isn't answering. Try again in a moment.",
+        )),
+    }
 }
 
 pub(crate) async fn check_add_target(
