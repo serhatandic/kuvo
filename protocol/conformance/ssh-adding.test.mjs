@@ -855,7 +855,11 @@ test("SSH Add recovers a selected integration after the target saved its setting
   t.after(() => { try { process.kill(service.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; } });
   const settings = readJSON(path.join(target, "box", "opencode.json"));
   assert.equal(settings.model, "target/model");
-  assert.deepEqual(settings.mcp.servers.retained, retained);
+  // Add keeps the target's own entry. Its started resident may already have added the
+  // integrations upgrade's `codemode: false`, as both boxes do for entries without it.
+  const { codemode, ...kept } = settings.mcp.servers.retained;
+  assert.deepEqual(kept, retained);
+  assert.ok(codemode === undefined || codemode === false, String(codemode));
   assert.equal(settings.mcp.servers.github?.url, trusted);
   assert.equal(settings.mcp.servers.github?.disabled, true);
   assert.equal(fs.readFileSync(keyFile, "utf8"), "key from the interrupted copy");
