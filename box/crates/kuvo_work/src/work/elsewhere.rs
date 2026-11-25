@@ -9,7 +9,7 @@ use std::{
     collections::HashSet,
     io,
     sync::{Arc, OnceLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use kuvo_peers::{
@@ -34,9 +34,8 @@ use super::{
 
 /// How many of each lead's sessions its computer is told of.
 const ROWS_EACH: usize = 40;
-/// How often the rows are worked out again with nothing said to change.
-const AGAIN: Duration = Duration::from_secs(60);
-const LOOK: Duration = Duration::from_secs(5);
+/// Retry a failed read of a running engine, not a healthy or parked engine.
+const RETRY_READ: Duration = Duration::from_secs(5);
 
 fn not_now(why: impl Into<String>) -> io::Error {
     io::Error::other(why.into())
@@ -338,39 +337,58 @@ impl Work {
         Some(leads)
     }
 
-    /// The rows of leads elsewhere, told as they change (worked out again when this box's work or
-    /// moves change, and each minute otherwise); the peers send each to the computer its lead
-    /// lives on.
+    /// The rows of leads elsewhere, told as the work/session facts change. No computer to
+    /// tell means there is no engine read at all; when one joins it receives the current rows.
     async fn tell_rows(self, peers: WorkHandle) {
-        let marks = |work: &Work| {
-            let run = work.home.join("run");
-            [
-                run.join("work/changes.json"),
-                run.join("moves/moved.json"),
-                run.join("work/homes.json"),
-            ]
-            .iter()
-            .map(|file| {
-                std::fs::metadata(file)
-                    .and_then(|meta| meta.modified())
-                    .ok()
-            })
-            .collect::<Vec<_>>()
-        };
-        let (mut seen, mut looked) = (None, None::<Instant>);
+        let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        let run = self.home.join("run");
+        files.set_files(vec![run.join("work/changes.json"), run.join("moves/moved.json"), run.join("work/homes.json")]);
+        let mut reader = self.peers.clone();
+        let mut has_peers = !reader.view().roster.members.is_empty();
+        let mut sessions = self.sessions.clone();
+        let mut engine = self.list.engine().states();
+        let mut events = self.list.engine().events();
+        let mut latest = None;
+        let mut retry = None;
+        let mut changed = true;
         loop {
-            let now = marks(&self);
-            if seen.as_ref() != Some(&now) || looked.is_none_or(|at| at.elapsed() >= AGAIN) {
-                // (After an engine that can't say now: as they were, until it can.)
-                if let Some(rows) = self.rows_elsewhere().await {
-                    if peers.publish(rows).await.is_err() {
-                        return;
+            if changed {
+                retry = None;
+                if has_peers {
+                    // If the engine can't say now, retain the last successful rows. A parked
+                    // engine sends a state event when it returns; a failed active read retries.
+                    if let Some(rows) = self.rows_elsewhere().await {
+                        if latest.as_ref() != Some(&rows) {
+                            if peers.publish(rows.clone()).await.is_err() { return; }
+                            latest = Some(rows);
+                        }
+                    } else if matches!(*engine.borrow(), kuvo_engine::State::Running { .. }) {
+                        retry = Some(tokio::time::Instant::now() + RETRY_READ);
                     }
-                    seen = Some(now);
-                    looked = Some(Instant::now());
                 }
             }
-            timer_fires::sleep(Timer::RemoteWorkRows, LOOK).await;
+            changed = tokio::select! {
+                _ = files.changed() => true,
+                changed = reader.changed() => {
+                    if changed.is_err() { return; }
+                    let current = !reader.view().roster.members.is_empty();
+                    let changed = current != has_peers;
+                    has_peers = current;
+                    changed
+                }
+                changed = sessions.changed() => if !changed { return } else { true },
+                changed = engine.changed() => if changed.is_err() { return } else { true },
+                event = events.recv() => match event {
+                    Ok(event) => super::watch::EVENTS.contains(&event.kind.as_str())
+                        || matches!(event.kind.as_str(), "session.created" | "session.updated" | "session.deleted"),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+                _ = async { match retry {
+                    Some(at) => timer_fires::sleep_until(Timer::RemoteWorkRows, at).await,
+                    None => std::future::pending().await,
+                } } => true,
+            };
         }
     }
 }

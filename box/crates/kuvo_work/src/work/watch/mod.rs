@@ -45,7 +45,7 @@ const WAIT: Duration = Duration::from_secs(10);
 const ARCHIVED_FOR: u64 = 7 * 86_400_000;
 // How long what a conversation no one here runs now would hear is kept.
 const NOTE_MEMORY: u64 = 30 * 86_400_000;
-const EVENTS: &[&str] = &[
+pub(super) const EVENTS: &[&str] = &[
     "session.inbox.delivered",
     "session.execution.started",
     "session.execution.succeeded",

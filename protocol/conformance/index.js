@@ -37,6 +37,8 @@ const areas = new Map([
   ["backups", "./backups.test.mjs"],
   ["stored-formats", "./stored-formats.test.mjs"],
   ["work-queue", "./work-queue.test.mjs"],
+  ["work-elsewhere", "./work-elsewhere.test.mjs"],
+  ["agent-tools", "./agent-tools.test.mjs"],
   ["files", "./files.test.mjs"],
   ["git", "./git.test.mjs"],
   ["library", "./library.test.mjs"],

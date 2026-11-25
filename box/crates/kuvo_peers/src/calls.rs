@@ -446,7 +446,8 @@ pub struct Calls {
     tries: BTreeMap<String, Millis>,
     answers_sent: BTreeMap<String, Millis>,
     heard: BTreeMap<ComputerKey, Millis>,
-    last_prune: Option<Millis>,
+    prune_at: Option<Millis>,
+    scan_results: bool,
 }
 
 impl Calls {
@@ -457,7 +458,8 @@ impl Calls {
             tries: BTreeMap::new(),
             answers_sent: BTreeMap::new(),
             heard: BTreeMap::new(),
-            last_prune: None,
+            prune_at: None,
+            scan_results: true,
         }
     }
 
@@ -573,9 +575,10 @@ impl Calls {
         online: bool,
         peer_state: impl Fn(ComputerKey) -> PeerState,
         home: impl Fn(&str) -> Home,
-    ) -> io::Result<Vec<Outgoing>> {
+    ) -> io::Result<(Vec<Outgoing>, Option<Millis>)> {
         let mut away = std::collections::BTreeSet::new();
         let mut work = vec![];
+        let mut next = None;
         for (id, mut call) in self.pending()? {
             let Some(key) = decode_exact::<32>(&call.peer) else {
                 continue;
@@ -589,6 +592,8 @@ impl Calls {
                 };
                 if now.saturating_sub(abandoned) > life || state == PeerState::Removed {
                     self.remove(&id)?;
+                } else {
+                    earlier(&mut next, abandoned.saturating_add(life).saturating_add(1));
                 }
                 continue;
             }
@@ -613,14 +618,18 @@ impl Calls {
                 }
                 continue;
             }
+            earlier(&mut next, call.at.saturating_add(call.call.lifetime()).saturating_add(1));
             if matches!(state, PeerState::Unknown | PeerState::Held)
                 || (state == PeerState::Away && !away.insert(key))
                 || !online
-                || self.tries.get(id.as_str()).is_some_and(|at| {
-                    now.saturating_sub(*at) < RETRY
-                        && self.heard.get(&key).is_none_or(|heard| *heard <= *at)
-                })
             {
+                continue;
+            }
+            if let Some(at) = self.tries.get(id.as_str()).filter(|at| {
+                    now.saturating_sub(**at) < RETRY
+                        && self.heard.get(&key).is_none_or(|heard| *heard <= **at)
+                }) {
+                earlier(&mut next, at.saturating_add(RETRY));
                 continue;
             }
             let envelope = packet(json!({"at":now, "call":MailedCall {
@@ -649,8 +658,9 @@ impl Calls {
             }
             self.tries.insert(id.as_str().into(), now);
             work.push(Outgoing::Mail { key, envelope });
+            earlier(&mut next, now.saturating_add(RETRY));
         }
-        Ok(work)
+        Ok((work, next))
     }
 
     pub fn finish(&mut self, id: &Id) -> io::Result<()> {
@@ -805,6 +815,7 @@ impl Calls {
             answer: (call.request.tool != Tool::StopWork).then_some(answer),
         };
         kept::write_durable(&self.result(&id), &done)?;
+        earlier(&mut self.prune_at, now.saturating_add(31 * DAY + 1));
         if done.tool != Tool::StopWork {
             self.answers_sent.insert(id.as_str().into(), now);
         }
@@ -867,36 +878,43 @@ impl Calls {
         Ok(())
     }
 
+    pub(crate) fn invalidate_results(&mut self) { self.scan_results = true; }
+
     pub(crate) fn retry_answers(
         &mut self,
         now: Millis,
         online: bool,
         here: &str,
-    ) -> io::Result<Vec<(ComputerKey, Envelope)>> {
-        if self
-            .last_prune
-            .is_none_or(|last| now.saturating_sub(last) >= 60 * RETRY)
-        {
+    ) -> io::Result<(Vec<(ComputerKey, Envelope)>, Option<Millis>)> {
+        if self.scan_results || self.prune_at.is_some_and(|at| at <= now) {
+            let mut prune_at = None;
             for (id, path, done) in self.records::<Completed>("work/call-results")? {
                 if now.saturating_sub(done.at) > 31 * DAY {
                     self.answers_sent.remove(id.as_str());
                     remove(&path)?;
-                } else if !done.acknowledged && done.tool != Tool::StopWork {
-                    self.answers_sent
-                        .entry(id.into())
-                        .or_insert(now.saturating_sub(RETRY));
+                } else {
+                    earlier(&mut prune_at, done.at.saturating_add(31 * DAY + 1));
+                    if !done.acknowledged && done.tool != Tool::StopWork {
+                        let life = if done.tool.is_list() { ANSWER_LIFE } else { 30 * DAY };
+                        if now.saturating_sub(done.at) <= life {
+                            self.answers_sent.entry(id.into()).or_insert(now.saturating_sub(RETRY));
+                        }
+                    }
                 }
             }
             for (_, path, answer) in self.records::<AnswerFrom>("work/call-answers")? {
                 if now.saturating_sub(answer.at) > 31 * DAY {
                     remove(&path)?;
+                } else {
+                    earlier(&mut prune_at, answer.at.saturating_add(31 * DAY + 1));
                 }
             }
-            self.last_prune = Some(now);
+            self.prune_at = prune_at;
+            self.scan_results = false;
         }
         let mut messages = vec![];
         if !online {
-            return Ok(messages);
+            return Ok((messages, self.prune_at));
         }
         let due: Vec<_> = self
             .answers_sent
@@ -924,7 +942,11 @@ impl Calls {
                 self.answers_sent.remove(id.as_str());
             }
         }
-        Ok(messages)
+        let mut next = self.prune_at;
+        for at in self.answers_sent.values() {
+            earlier(&mut next, at.saturating_add(RETRY));
+        }
+        Ok((messages, next))
     }
 
     fn records<T: serde::de::DeserializeOwned>(
@@ -1018,8 +1040,13 @@ impl Calls {
             &self.received_answer(call),
             &AnswerFrom { key, lead, at: now },
         )?;
+        earlier(&mut self.prune_at, now.saturating_add(31 * DAY + 1));
         self.remove(call)
     }
+}
+
+fn earlier(next: &mut Option<Millis>, at: Millis) {
+    *next = Some(next.map_or(at, |before| before.min(at)));
 }
 
 #[derive(Serialize, Deserialize)]

@@ -2248,20 +2248,28 @@ mod work {
             }
             Outgoing::Failed(_) => panic!("retry unexpectedly failed"),
         };
-        let one = send(&mut outbox, NOW + 1, PeerState::Away);
+        let (one, retry) = send(&mut outbox, NOW + 1, PeerState::Away);
         assert_eq!(one.len(), 1);
         assert_eq!(id(&one[0]), first.as_str());
-        assert!(send(&mut outbox, NOW + 2000, PeerState::Away).is_empty());
+        assert_eq!(retry, Some(NOW + 60_001));
+        let (waiting, retry) = send(&mut outbox, NOW + 2000, PeerState::Away);
+        assert!(waiting.is_empty());
+        assert_eq!(retry, Some(NOW + 60_001));
         assert_eq!(
-            id(&send(&mut outbox, NOW + 60_001, PeerState::Away)[0]),
+            id(&send(&mut outbox, NOW + 60_001, PeerState::Away).0[0]),
             first.as_str()
         );
         outbox.heard(key(2), NOW + 60_002);
-        let back = send(&mut outbox, NOW + 60_002, PeerState::Online);
+        let (back, _) = send(&mut outbox, NOW + 60_002, PeerState::Online);
         assert_eq!(
             back.iter().map(id).collect::<Vec<_>>(),
             [first.as_str(), second.as_str()]
         );
+        outbox.finish(&first).unwrap();
+        outbox.finish(&second).unwrap();
+        let (empty, retry) = send(&mut outbox, NOW + 60_003, PeerState::Online);
+        assert!(empty.is_empty());
+        assert_eq!(retry, None);
     }
 
     #[tokio::test]

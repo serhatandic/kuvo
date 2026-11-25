@@ -671,6 +671,30 @@ refresh case and three related cases passed after restricting the passive lock r
 followers (an explicit read can immediately try a newly freed lock). TypeScript passed 145,
 with three conditional skips. Both new watcher/deadline unit cases passed.
 
+**Remote work (follow-up).** The call owner recovers once, then responds to actual tool calls,
+row publications, relevant relay mail, routing/ownership changes and changes to durable calls
+or kept results. A dropped tool waiter notifies its owner. The wait for a tool answer, retries
+of outstanding calls or unacknowledged rows/answers, and expiry of retained results each have
+their own real deadline. An away computer still receives the oldest pending call first; an
+acknowledged unchanged row has no retry. No calls, results or remote rows means no timer.
+The row producer no longer probes engine file times or rereads all sessions each minute: it
+uses local session/engine events and work/move/home record watches, reads no engine at all when
+there are no peers, retains the last successful rows if the engine is unavailable, and retries
+only an actual failed read of an otherwise running engine. The Rust debug conformance case
+proves both timers park when there are no calls or remote leads. The old binary fired thirteen
+round callbacks in 6.5 seconds and the replacement fired none.
+
+The existing `work-elsewhere` Auto refusal wording case is inherited, owned by the wording pass
+(the earlier Rust binary already says “is in Ask First”, not the frozen TypeScript Auto wording;
+Auto is postponed for 0.8). Neither its fixture nor assertion is changed by this work.
+Mac conformance: both mixed and all-Rust `work-elsewhere` runs pass four of five (the single
+inherited refusal above); TypeScript passes four with the debug-only case skipped. All three
+`agent-tools` cases pass against both boxes. The away-peer retry case also checks its precise
+deadline and that removing both pending calls removes the deadline. The 65-second measurement
+now has 92 callbacks without a client (1.41/s, 49,392 KiB) and 193 with hot-page follows
+(2.97/s, 56,160 KiB), down from 235 and 336 respectively. Both remote-work counters are zero,
+there is one resident process, and no agent process starts.
+
 ## 7. Release decisions
 
 1. **0.8.** Ship with the Rust box, including native Windows and WSL2.
