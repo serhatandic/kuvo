@@ -862,10 +862,13 @@ async function engineFeed(t, release, fixture, { damageFirst = !fixture } = {}) 
   };
 }
 
-for (const rollback of [false, true]) test(rollback
-  ? "a differing engine restores waiting work after a failed release trial"
-  : "a differing engine finishes its turn and carries waiting work through a release switch",
-  { timeout: firstPreparationMs + releaseReturnMs + releaseDrainRetryMs }, async t => {
+for (const mode of ["switch", "rollback", "borrowed"]) test({
+  switch: "a differing engine finishes its turn and carries waiting work through a release switch",
+  rollback: "a differing engine restores waiting work after a failed release trial",
+  borrowed: "a differing engine leaves a borrowed worker's inbox alone",
+}[mode], { timeout: firstPreparationMs + releaseReturnMs + releaseDrainRetryMs }, async t => {
+  const rollback = mode === "rollback";
+  const borrowed = mode === "borrowed";
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust keeper and engine supervisor.");
   const { computer } = await bench(t);
@@ -877,7 +880,7 @@ for (const rollback of [false, true]) test(rollback
   const workspace = path.join(home, "workspace");
   const oldVersion = rollback ? "2.2.6" : "2.2.5", newVersion = rollback ? "2.2.7" : "2.2.6";
   const exe = process.platform === "win32" ? "opencode.exe" : "opencode";
-  const oldEngine = path.join(home, "engine", oldVersion, exe);
+  const oldEngine = borrowed ? path.join(here.env.HOME, `borrowed-${exe}`) : path.join(home, "engine", oldVersion, exe);
   const runtime = typescriptRuntime();
   const fixture = process.platform === "darwin" && !path.isAbsolute(runtime)
     ? process.env.PATH.split(path.delimiter).map(folder => path.join(folder, runtime)).find(file => fs.existsSync(file))
@@ -971,15 +974,33 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     assert.equal(readJSON(path.join(home, "run/engine.json")).pid, oldRecord.pid);
     assert.ok(engine.running.has(session));
     const app = { "x-kuvo-from": "app" };
+    const changeHold = fields => {
+      write(hold + ".test", encode({ ...readJSON(hold), ...fields }));
+      fs.renameSync(hold + ".test", hold);
+    };
+    if (borrowed) {
+      // An engine outside this home's engine directory is borrowed, even when
+      // its authenticated health endpoints answer. Give several fleet rounds
+      // to check it before its hold expires.
+      const engineRecord = path.join(home, "run/engine.json");
+      assert.deepEqual(readJSON(engineRecord), oldRecord);
+      // Losing the record must not make an already borrowed process ours.
+      fs.rmSync(engineRecord);
+      changeHold({ since: Date.now() - releaseDrainMs + 12000 });
+      engine.running.delete(session);
+      await until(() => readJSON(hold).stage === "deferred", "a borrowed worker should defer the switch", releaseDrainRetryMs);
+      assert.equal(fs.readFileSync(path.join(home, "active-release"), "utf8"), `${previous}/bin`);
+      assert.equal(worker.child.exitCode, null);
+      assert.equal(fs.existsSync(engineRecord), false);
+      assert.equal(engine.asked.filter(row => row.method === "DELETE" && row.path.includes("/inbox/")).length, 0, "a borrowed inbox must never be moved");
+      assert.deepEqual(engine.inboxes.get(session).map(item => item.id), ["msg_inboxEngine"]);
+      return;
+    }
     if (!rollback) {
       // Exercise the persisted deadline instead of sleeping five minutes.
       const deferred = await request(before, "POST", `api/session/${session}/prompt`, { id: "msg_deferredEngine", text: "wait then retry", delivery: "queue" }, app);
       assert.equal(deferred.status, 200, deferred.text);
       assert.deepEqual(deferred.json, { waits: true });
-      const changeHold = fields => {
-        write(hold + ".test", encode({ ...readJSON(hold), ...fields }));
-        fs.renameSync(hold + ".test", hold);
-      };
       changeHold({ since: Date.now() - releaseDrainMs - 1000 });
       await until(() => readJSON(hold).stage === "deferred", "an expired drain should release the queue and defer the update", releaseDrainRetryMs);
       assert.ok(readJSON(hold).retryAt > Date.now());
@@ -1010,6 +1031,16 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     const madeSession = made.json.session;
     assert.ok(madeSession);
     assert.equal(engine.messages.get(madeSession)?.length ?? 0, 0, "a new conversation's first task must also wait");
+    if (!rollback) {
+      // A saved queue can outlive its engine session (for example after a
+      // deletion that occurred while the resident was away). It must not
+      // prevent the other conversations from resuming or updates from finishing.
+      const gone = "ses_goneDuringDrain";
+      engine.sessions.push(sessionOf({ id: gone, title: "Vanished", directory: workspace }));
+      const saved = await request(before, "POST", `api/session/${gone}/prompt`, { id: "msg_goneEngine", text: "keep these words", delivery: "queue" }, app);
+      assert.deepEqual(saved.json, { waits: true });
+      engine.sessions = engine.sessions.filter(row => row.id !== gone);
+    }
     const earlier = rollback ? ["msg_inboxEngine"] : ["msg_inboxEngine", "msg_deferredEngine"];
     assert.deepEqual(engine.inboxes.get(session).map(item => item.id), earlier);
     const earlierReads = engine.asked.length;
@@ -1039,10 +1070,14 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     }, "the selected release's engine should start after the trial", 30000);
     await worker.exited;
     await until(() => !fs.existsSync(hold) && engine.messages.get(session)?.some(message => message.id === "msg_rawEngine"),
-      "the waiting work should reach the new engine", 30000);
+      () => `the waiting work should reach the selected engine and clear the fleet hold: ${fs.existsSync(hold) ? fs.readFileSync(hold, "utf8") : "no hold"}`, 30000);
     assert.deepEqual(engine.messages.get(session).filter(message => message.type === "user").map(message => message.id),
       ["msg_originalEngine", ...earlier, "msg_afterEngine", "msg_rawEngine"]);
     assert.deepEqual(engine.messages.get(madeSession).filter(message => message.type === "user").map(message => message.text), ["Start when the engine is ready"]);
+    if (!rollback) {
+      assert.equal(readJSON(path.join(home, "run/waiting/msg_goneEngine.json")).text, "keep these words");
+      assert.deepEqual(readJSON(path.join(home, "run/queues.json")).ses_goneDuringDrain.waiting.map(row => row.id), ["msg_goneEngine"]);
+    }
   } finally {
     let currentEngine;
     try { currentEngine = readJSON(path.join(home, "run/engine.json")); } catch {}
