@@ -37,8 +37,15 @@ const waiting = new Map();
 const threads = new Map();
 /** What each thread left running in background terminals, as a script step set it. */
 const terminals = new Map();
-let asked = 0, turns = 0, made = 0;
+let asked = 0, turns = 0, made = 0, sleeps = 0;
 let running;
+/** How each thread's turn takes what's steered into it, as its script's steps set it. */
+const quirks = new Map();
+const quirk = (thread) => {
+  if (!quirks.has(thread)) quirks.set(thread, { steers: 0 });
+  return quirks.get(thread);
+};
+const sleepItem = () => ({ type: "sleep", id: "sleep" + ++sleeps, durationMs: 43200000 });
 const wait = (file) => new Promise((resolve) => {
   const look = () => fs.existsSync(path.join(root, file)) ? resolve() : setTimeout(look, 20);
   look();
@@ -54,6 +61,47 @@ async function play(threadId, turnId, steps) {
     if (step.end) { end = step.end; break; }
     // {terminals: [...], failsUntil?: file, endsWith?: file}: listed while the turn goes on and after.
     if (step.terminals) { terminals.set(threadId, step); continue; }
+    const q = quirk(threadId);
+    // {refuses}: what's steered is turned down from here on; {refusesNext}: the next one only;
+    // {refusesAsItSleeps}: the next one, saying a sleep's started in the same breath.
+    if (step.refuses) { q.refusing = true; continue; }
+    if (step.refusesNext) { q.refusingNext = true; continue; }
+    if (step.refusesAsItSleeps) { q.refusingAsItSleeps = true; continue; }
+    // {endsAsTold}: takes what's steered and says its turn is over in the same breath;
+    // {takesAsItSleeps}: takes it as a sleep starts, which ends, and so does its turn.
+    if (step.endsAsTold) { q.endsAsTold = true; return; }
+    if (step.takesAsItSleeps) { q.takesAsItSleeps = true; return; }
+    // {untilTold}: works until something's steered in.
+    if (step.untilTold) {
+      if (!q.steers) await new Promise((resolve) => (q.wake = resolve));
+      q.steers = 0;
+      continue;
+    }
+    // {sleeps}: sleeps for hours until something new is steered in (one before it doesn't count).
+    if (step.sleeps) {
+      const sleep = q.sleptInBreath ?? sleepItem();
+      if (!q.sleptInBreath) send({ method: "item/started", params: fill({ item: sleep }) });
+      q.sleptInBreath = undefined;
+      await new Promise((resolve) => (q.asleep = resolve));
+      if (running?.turnId !== turnId) return;
+      send({ method: "item/completed", params: fill({ item: sleep }) });
+      continue;
+    }
+    // {sleepsAgainOnceRefused}: sleeps until it turns one down; a moment later that sleep ends and
+    // another starts in the same breath, until told.
+    if (step.sleepsAgainOnceRefused) {
+      const first = q.sleptInBreath ?? sleepItem();
+      if (!q.sleptInBreath) send({ method: "item/started", params: fill({ item: first }) });
+      q.sleptInBreath = undefined;
+      await new Promise((resolve) => (q.refusedOne = resolve));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const next = sleepItem();
+      process.stdout.write(JSON.stringify({ method: "item/completed", params: fill({ item: first }) }) + "\n" + JSON.stringify({ method: "item/started", params: fill({ item: next }) }) + "\n");
+      await new Promise((resolve) => (q.asleep = resolve));
+      if (running?.turnId !== turnId) return;
+      send({ method: "item/completed", params: fill({ item: next }) });
+      continue;
+    }
     if (step.ask) {
       const id = "ask-" + ++asked;
       send({ id, method: step.ask[0], params: fill(step.ask[1]) });
@@ -126,15 +174,71 @@ process.stdin.on("data", (chunk) => {
       const text = params.input?.[0]?.text ?? "";
       threads.get(params.threadId)?.push({ id: turnId, status: "inProgress", items: [{ type: "userMessage", id: "m" + turnId, clientId: params.clientUserMessageId, content: params.input }] });
       running = { threadId: params.threadId, turnId };
+      quirk(params.threadId).steers = 0;
       answer({ turn: { id: turnId, status: "inProgress" } });
       const script = read("codex-script.json", {});
       const key = Object.keys(script).find((each) => text.includes(each));
       void play(params.threadId, turnId, key ? script[key] : [["item/completed", { item: { type: "agentMessage", id: "a" + turnId, text: "Done." } }]]);
     } else if (method === "turn/steer") {
-      if (!running || running.turnId !== params.expectedTurnId || fs.existsSync(path.join(root, "codex-refuses-steers"))) { refuse(-32600, "no active turn to steer"); continue; }
-      threads.get(params.threadId)?.find((turn) => turn.id === running.turnId)?.items.push({ type: "userMessage", id: "s" + Date.now(), clientId: params.clientUserMessageId, content: params.input });
-      answer({ turnId: running.turnId });
-      send({ method: "item/started", params: { threadId: params.threadId, turnId: running.turnId, item: { type: "userMessage", id: "s" + Date.now(), content: params.input } } });
+      const q = quirk(params.threadId);
+      const inTurn = (more) => ({ threadId: params.threadId, turnId: running.turnId, ...more });
+      const took = () => threads.get(params.threadId)?.find((turn) => turn.id === running.turnId)?.items.push({ type: "userMessage", id: "s" + Date.now(), clientId: params.clientUserMessageId, content: params.input });
+      if (!running || running.turnId !== params.expectedTurnId || fs.existsSync(path.join(root, "codex-refuses-steers"))) {
+        refuse(-32600, "no active turn to steer");
+        q.refusedOne?.();
+        q.refusedOne = undefined;
+        continue;
+      }
+      if (q.endsAsTold) {
+        q.endsAsTold = false;
+        took();
+        const ended = running;
+        running = undefined;
+        process.stdout.write(JSON.stringify({ id, result: { turnId: ended.turnId } }) + "\n" + JSON.stringify({ method: "turn/completed", params: { threadId: params.threadId, turn: { id: ended.turnId, status: "completed" } } }) + "\n");
+        continue;
+      }
+      if (q.takesAsItSleeps) {
+        q.takesAsItSleeps = false;
+        took();
+        const ended = running;
+        running = undefined;
+        const fill = (more) => ({ threadId: params.threadId, turnId: ended.turnId, ...more });
+        const sleep = sleepItem();
+        process.stdout.write([
+          { method: "item/started", params: fill({ item: sleep }) },
+          { id, result: { turnId: ended.turnId } },
+          { method: "item/started", params: fill({ item: { type: "userMessage", id: "steer" + q.steers++, content: params.input } }) },
+          { method: "item/completed", params: fill({ item: sleep }) },
+          { method: "turn/completed", params: { threadId: params.threadId, turn: { id: ended.turnId, status: "completed" } } },
+        ].map((each) => JSON.stringify(each) + "\n").join(""));
+        continue;
+      }
+      if (q.refusingAsItSleeps) {
+        q.refusingAsItSleeps = false;
+        q.sleptInBreath = sleepItem();
+        process.stdout.write(JSON.stringify({ id, error: { code: -32600, message: "not now" } }) + "\n" + JSON.stringify({ method: "item/started", params: inTurn({ item: q.sleptInBreath }) }) + "\n");
+        q.steers++;
+        q.wake?.();
+        q.wake = undefined;
+        continue;
+      }
+      const refused = q.refusing || q.refusingNext;
+      q.refusingNext = false;
+      if (refused) {
+        refuse(-32600, "no active turn to steer");
+        q.refusedOne?.();
+        q.refusedOne = undefined;
+      } else {
+        took();
+        answer({ turnId: running.turnId });
+        send({ method: "item/started", params: inTurn({ item: { type: "userMessage", id: "s" + Date.now(), content: params.input } }) });
+        q.asleep?.();
+        q.asleep = undefined;
+      }
+      q.steers++;
+      q.wake?.();
+      q.wake = undefined;
+      continue;
     } else if (method === "turn/interrupt") {
       answer({});
       if (running && running.turnId === params.turnId) {

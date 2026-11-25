@@ -939,6 +939,93 @@ test("an app-server its resident left as it was starting, never initialized, is 
   });
 });
 
+describe("What Codex asks, turned down, typed over and told again", { skip }, () => {
+  const box = resident();
+  const autopilot = "This is on Autopilot: leave it.";
+  /** Its question (request_user_input_async): accepted at once, the turn going on. */
+  const asking = (n) => [
+    item("item/completed", { type: "functionCall", id: `f-${n}`, name: "request_user_input_async", namespace: null, arguments: "{}" }),
+    item("item/completed", { type: "agentMessage", id: `q-${n}`, text: "Which language should the README use?", delivery: "async", questions: [{ title: "Which language should the README use?", options: ["English", "Turkish"] }] }),
+  ];
+  const answered = (n) => [item("item/completed", { type: "agentMessage", id: `a-${n}`, text: "Writing it in Turkish." })];
+  const thread = (id) => box.codex.agentState(id)?.codexThread;
+  /** Words as Codex was sent them, without the reference's phone note or the session's name. */
+  const words = (id, text) => text.replace(/\n\n<from-phone>[\s\S]*<\/from-phone>$/, "").replace(` ${id}`, "");
+  const starts = (id) => box.codex.sent("turn/start").filter((message) => message.params.threadId === thread(id)).map((message) => words(id, message.params.input[0].text));
+  const steered = (id) => box.codex.sent("turn/steer").filter((message) => message.params.threadId === thread(id)).map((message) => words(id, message.params.input[0].text));
+  const card = (id, count = 1) => until(async () => {
+    const forms = await box.codex.forms(id);
+    return forms.length === count && forms;
+  }, "Its question's card never showed.");
+  const turnDown = async (id, form, words = autopilot) => {
+    const answer = await request(box.codex.listener, "DELETE", `${box.codex.route(id)}/form/${form}?message=${encodeURIComponent(words)}`, undefined, headers, 20000);
+    assert.equal(answer.status, 200, answer.text);
+  };
+
+  test("turned down by its box with words (Autopilot): Codex hears them and goes on", { timeout: 60000 }, async () => {
+    const session = box.next();
+    const { id } = session;
+    box.codex.script(`${autopilot} ${id}`, answered("tw1"));
+    await box.begin(asking("tw1"), undefined, session);
+    const [form] = await card(id);
+    await turnDown(id, form.id, `${autopilot} ${id}`);
+    await box.codex.idles(id, 1);
+    await until(() => starts(id).length === 2, () => JSON.stringify(starts(id)));
+    assert.deepEqual(starts(id), ["go", autopilot]);
+  });
+
+  test("asking again and again, each turned down by its box with words, its turn ends", { timeout: 60000 }, async () => {
+    const session = box.next();
+    const { id } = session;
+    // (Each turn's question its own item, as Codex's are.)
+    const turnedDown = (n) => `${autopilot} (${n})`;
+    box.codex.script(`${turnedDown(1)} ${id}`, asking("aa2"));
+    box.codex.script(`${turnedDown(2)} ${id}`, asking("aa3"));
+    await box.begin(asking("aa1"), undefined, session);
+    const replied = new Set();
+    await until(async () => {
+      if (idles(await box.codex.rows(id)).length) return true;
+      for (const form of (await box.codex.forms(id)).filter((form) => !replied.has(form.id))) {
+        replied.add(form.id);
+        await turnDown(id, form.id, `${turnedDown(replied.size)} ${id}`);
+      }
+    }, () => "Its turn never ended: " + JSON.stringify(starts(id)), 20000, 50);
+    assert.deepEqual(starts(id), ["go", turnedDown(1), turnedDown(2)]);
+    assert.equal(replied.size, 3);
+  });
+
+  test("it's told which tool asks you, as the other is refused outside Plan and a model that reached for it said it couldn't ask", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([]);
+    await box.codex.idles(id);
+    const told = box.codex.sent("thread/start").find((message) => message.params.cwd.endsWith(id)).params.developerInstructions;
+    assert.ok(told.includes("request_user_input_async"), told);
+    assert.match(told, /new user message/);
+  });
+
+  test("what it asks in Plan, turned down by its box with words, gets those words as its answer", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ ask: ["item/tool/requestUserInput", { itemId: "pq1", questions: [{ id: "which", header: "Which", question: "Which one?", options: [{ label: "A" }] }, { id: "key", header: "Key", question: "Your key?", isSecret: true }] }] }], { plan: true });
+    const [form] = await card(id);
+    await turnDown(id, form.id);
+    await box.codex.idles(id);
+    assert.deepEqual((await box.codex.answeredFor("pq1")).result, { answers: { which: { answers: [autopilot] }, key: { answers: [] } } });
+  });
+
+  test("a message you type leaves the question open if Codex refuses the steer", { timeout: 60000 }, async () => {
+    const { id } = await box.begin([{ refuses: true }, ...asking("rs1"), { sleeps: true }]);
+    const [form] = await card(id);
+    await until(async () => toolCalls(await box.codex.rows(id)).some((tool) => tool.name === "sleep"), "It never slept.");
+    const message = `msg_${id.replace(/^ses_/, "")}_refused`;
+    const sent = await request(box.codex.listener, "POST", box.codex.route(id) + "/prompt", { id: message, text: "Turkish", delivery: "steer" }, headers, 45000);
+    assert.equal(sent.status, 200, sent.text);
+    await until(() => box.codex.sent("turn/steer").some((each) => each.params.clientUserMessageId === message), "It was never steered in.");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.deepEqual((await box.codex.forms(id)).map((each) => each.id), [form.id]);
+    assert.ok(!(await box.codex.rows(id)).some((row) => row.id === message), "The refused message shows as sent.");
+    await box.codex.interrupt(id);
+    await box.codex.idles(id);
+  });
+});
+
 describe("Codex in the session's modes, and MCP asks", { skip }, () => {
   const box = resident();
   const mcpAsk = (item, server, tool) => ({ ask: ["mcpServer/elicitation/request", { itemId: item, serverName: server, message: `Allow the ${server} MCP server to run tool "${tool}"?`, mode: "form", requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call", tool_name: tool } }] });
