@@ -139,7 +139,7 @@ fn a_verified_point_keeps_data_and_holds_pending_work_after_source_loss() {
         .export(&store, &source, &key, &id, AT, &authority())
         .unwrap();
     assert_eq!(point.version, 6);
-    assert_eq!(store.list().unwrap(), [id.clone()]);
+    assert_eq!(store.list().unwrap(), std::slice::from_ref(&id));
     let archived = store.get(&id, &disk).unwrap();
     let bytes = fs::read(&archived).unwrap();
     assert!(bytes.starts_with(b"KUVO backup 1\n"));
@@ -200,7 +200,7 @@ HOME="$(dirname "$0")/remote" exec sh -c "$command"
         .export(&store, &source, &key, &id, AT, &authority())
         .unwrap();
     assert_eq!(point.id, id);
-    assert_eq!(store.list().unwrap(), [id.clone()]);
+    assert_eq!(store.list().unwrap(), std::slice::from_ref(&id));
     fs::rename(&source_home, scratch.path().join("old-disk")).unwrap();
     let store = SshStore::new(&target_home, scratch.path(), "fixture", &source)
         .unwrap()
@@ -613,7 +613,7 @@ async fn wipe_exports_match_the_selected_bytes_before_recording_verification() {
             .unwrap();
     }
     assert_eq!(scans.get(), 1);
-    assert_eq!(store.list().unwrap(), [id.clone()]);
+    assert_eq!(store.list().unwrap(), std::slice::from_ref(&id));
     let receipt = home.join("verified");
     let wrong = RecoveryKey::generate().unwrap();
     assert!(
@@ -766,7 +766,7 @@ fn concurrent_disk_publication_keeps_the_first_point_and_its_bytes() {
         }
         winner.expect("one publication must win")
     });
-    assert_eq!(store.list().unwrap(), [id.clone()]);
+    assert_eq!(store.list().unwrap(), std::slice::from_ref(&id));
     assert_eq!(
         fs::read(store.get(&id, scratch.path()).unwrap()).unwrap(),
         winner

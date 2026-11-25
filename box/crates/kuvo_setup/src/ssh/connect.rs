@@ -689,8 +689,10 @@ fn distro(bytes: &[u8]) -> Option<String> {
     let body = if bytes.iter().take(30).any(|b| *b == 0) {
         String::from_utf16_lossy(
             &bytes
-                .chunks_exact(2)
-                .map(|p| u16::from_le_bytes([p[0], p[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u16::from_le_bytes(*pair))
                 .collect::<Vec<_>>(),
         )
     } else {

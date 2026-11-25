@@ -111,6 +111,7 @@ impl Target {
             .stderr(Stdio::null());
         // The old app's keeper can be stopped with its process group. The wipe
         // continues in a separate session, after the resident releases its home.
+        // SAFETY: the hook only calls setsid, which is async-signal-safe after fork.
         unsafe {
             worker.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -519,7 +520,9 @@ impl Keeper {
         };
         use std::os::unix::fs::MetadataExt as _;
         let meta = file.metadata()?;
-        if !meta.is_file() || meta.mode() & 0o077 != 0 || meta.uid() != unsafe { libc::geteuid() } {
+        // SAFETY: geteuid has no preconditions.
+        let euid = unsafe { libc::geteuid() };
+        if !meta.is_file() || meta.mode() & 0o077 != 0 || meta.uid() != euid {
             return Err(io::Error::other(FAILED));
         }
         let mut bytes = Vec::new();
@@ -620,6 +623,7 @@ fn disable_service(root: &Path) -> io::Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| io::Error::other(FAILED))?;
+    // SAFETY: getuid has no preconditions.
     let uid = unsafe { libc::getuid() };
     let service = format!("gui/{uid}/{id}.box");
     let run = |verb: &str| {

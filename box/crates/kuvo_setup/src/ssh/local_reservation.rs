@@ -67,18 +67,21 @@ impl LocalReservation {
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         // The reservation shell passes FD 9. Verify its inode before marking
         // it close-on-exec so a detached resident can't keep the writer lock.
+        // SAFETY: fstat writes a whole `stat` into the buffer, which is read only after
+        // it reports success. FD 9 is borrowed, never closed here.
+        let found = (unsafe { libc::fstat(9, stat.as_mut_ptr()) } == 0)
+            .then(|| unsafe { stat.assume_init() });
         let matches_lock = meta.is_file()
-            && unsafe {
-                if libc::fstat(9, stat.as_mut_ptr()) == 0 {
-                    let stat = stat.assume_init();
-                    stat.st_dev as u64 == meta.dev() && stat.st_ino as u64 == meta.ino()
-                } else {
-                    false
-                }
-            };
+            && found.is_some_and(|stat| {
+                // `st_dev` and `st_ino` are narrower than u64 on some platforms.
+                #[allow(clippy::unnecessary_cast)]
+                let (dev, ino) = (stat.st_dev as u64, stat.st_ino as u64);
+                dev == meta.dev() && ino == meta.ino()
+            });
         if !matches_lock {
             return Err(Error::Invalid("SSH account reservation lock"));
         }
+        // SAFETY: setting close-on-exec on the inherited, verified descriptor touches no memory.
         if unsafe { libc::fcntl(9, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
             return Err(Error::File {
                 action: "keeping the SSH account lock private at",

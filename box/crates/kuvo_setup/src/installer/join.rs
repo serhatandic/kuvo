@@ -699,10 +699,7 @@ pub(crate) fn open_staged_home_at(
                                 account.owns_layout_file(home.root(), &file.path())
                             })
                         })
-                    }) =>
-                {
-                    ()
-                }
+                    }) => {}
                 "bin"
                     if fs::read_dir(entry.path()).ok()?.all(|file| {
                         file.is_ok_and(|file| {
@@ -711,10 +708,7 @@ pub(crate) fn open_staged_home_at(
                                 Some("kuvo-box" | "kuvo-box.exe" | "Kuvo.exe" | "libunwind.dll")
                             ) && file.file_type().is_ok_and(|kind| kind.is_file())
                         })
-                    }) =>
-                {
-                    ()
-                }
+                    }) => {}
                 "engine" if ssh_account.is_some() && only_cached_engine(&entry.path()) => (),
                 _ => return None,
             }

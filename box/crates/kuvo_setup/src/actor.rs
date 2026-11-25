@@ -718,7 +718,7 @@ pub(crate) fn bootstrap(
             offline_edits: None,
         },
     );
-    let cert = checkpoint::build(files, own, position.clone(), None, 1, &link)?;
+    let cert = checkpoint::build(files, own, position.clone(), None, 1, link)?;
     link.leadership.insert(1, cert.envelope);
     link.setup = Some(new_setup(position, own.sign.clone(), Role::Primary));
     link.format_version = 1;

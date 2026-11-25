@@ -99,12 +99,15 @@ pub(crate) fn prepare_configured_disk(
         )?;
         let at = jiff::Timestamp::now().as_millisecond();
         let id = PointId::generate(Reason::Wipe, at)?;
+        let key = RecoveryKey::parse(&config.key)?;
         let point = backups.export_locked(
             &store,
-            &config.source,
-            &RecoveryKey::parse(&config.key)?,
-            &id,
-            at,
+            super::PointTarget {
+                source: &config.source,
+                key: &key,
+                id: &id,
+                at,
+            },
             &authority,
             CaptureSelection {
                 projects: &config.projects,
@@ -195,10 +198,12 @@ impl Backups {
         store.check_export_projects(plan.projects)?;
         self.export_locked(
             store,
-            plan.source,
-            plan.key,
-            plan.id,
-            plan.at,
+            super::PointTarget {
+                source: plan.source,
+                key: plan.key,
+                id: plan.id,
+                at: plan.at,
+            },
             authority,
             CaptureSelection {
                 projects: plan.projects,

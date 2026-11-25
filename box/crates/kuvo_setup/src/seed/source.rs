@@ -82,6 +82,9 @@ enum Kind {
     SignIn,
 }
 
+/// A refused selection: the status and the message the route answers.
+type Refused = (u16, &'static str);
+
 #[derive(Serialize)]
 struct Item<'a> {
     id: &'a str,
@@ -172,7 +175,7 @@ impl Inventory {
         self,
         files: &Files,
         selection: &Selection,
-    ) -> Result<(Map<String, Value>, Vec<Value>), (u16, &'static str)> {
+    ) -> Result<(Map<String, Value>, Vec<Value>), Refused> {
         let unavailable = self.keys.is_none() || self.accounts.is_none();
         let mut keys = Map::new();
         let mut credentials = Vec::new();
@@ -268,7 +271,7 @@ fn safe_key_names(files: &Files) -> io::Result<Vec<Key>> {
         .filter(|name| portable_key(name))
         .take(200)
         .map(|name| Key {
-            id: digest(&["key", name.as_str()]),
+            id: digest(["key", name.as_str()]),
             name,
         })
         .collect())
@@ -308,7 +311,7 @@ async fn engine_accounts(files: &Files) -> Option<Accounts> {
         } else if result.portable.len() < 100 {
             let label = row["label"].as_str().unwrap_or_default();
             result.portable.push(SignIn {
-                id: digest(&["sign-in", id, row["id"].as_str().unwrap_or(label)]),
+                id: digest(["sign-in", id, row["id"].as_str().unwrap_or(label)]),
                 integration: id.into(),
                 label: label.into(),
                 value: row["value"].clone(),

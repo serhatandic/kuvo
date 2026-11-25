@@ -244,10 +244,10 @@ struct Pending {
 
 impl Pending {
     fn finish(self, files: &Files, result: Response) {
-        if let Some(path) = self.spool {
-            if let Err(error) = files.remove(&path) {
-                eprintln!("clearing installer request: {error}");
-            }
+        if let Some(path) = self.spool
+            && let Err(error) = files.remove(&path)
+        {
+            eprintln!("clearing installer request: {error}");
         }
         let _ = self.reply.send(Ok(result));
     }

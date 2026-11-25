@@ -305,12 +305,15 @@ impl Service {
                 store.verify(computer, &self.backups.root().join("backup"))?;
             }
             let store = self.store(&kept.dest, &kept.source)?;
+            let key = RecoveryKey::parse(&kept.key)?;
             let point = self.backups.export_locked(
                 &*store,
-                &kept.source,
-                &RecoveryKey::parse(&kept.key)?,
-                &id,
-                now,
+                super::PointTarget {
+                    source: &kept.source,
+                    key: &key,
+                    id: &id,
+                    at: now,
+                },
                 &authority,
                 super::CaptureSelection {
                     projects: &kept.projects,

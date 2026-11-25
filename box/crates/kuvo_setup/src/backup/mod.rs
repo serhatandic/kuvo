@@ -287,6 +287,14 @@ pub struct Backups {
     roots: inventory::Roots,
 }
 
+/// The restore point an export writes: where it comes from, its key, name and time.
+pub(crate) struct PointTarget<'a> {
+    pub source: &'a Source,
+    pub key: &'a RecoveryKey,
+    pub id: &'a PointId,
+    pub at: i64,
+}
+
 #[derive(Default)]
 struct CaptureSelection<'a> {
     projects: &'a [PathBuf],
@@ -348,10 +356,12 @@ impl Backups {
         let (_guard, scratch) = self.scratch()?;
         self.export_locked(
             store,
-            source,
-            key,
-            id,
-            at,
+            PointTarget {
+                source,
+                key,
+                id,
+                at,
+            },
             identity,
             CaptureSelection::default(),
             scratch.path(),
@@ -362,15 +372,18 @@ impl Backups {
     fn export_locked(
         &self,
         store: &(impl DestinationStore + ?Sized),
-        source: &Source,
-        key: &RecoveryKey,
-        id: &PointId,
-        at: i64,
+        target: PointTarget<'_>,
         identity: &impl Authority,
         selection: CaptureSelection<'_>,
         scratch: &Path,
         before_capture: impl FnOnce() -> Result<()>,
     ) -> Result<RestorePoint> {
+        let PointTarget {
+            source,
+            key,
+            id,
+            at,
+        } = target;
         let aad = context(source, id);
         if store.list()?.contains(id) {
             let received = store.get(id, scratch)?;
