@@ -89,6 +89,37 @@ impl KeyStore {
         self.remove_key_file(name)
     }
 
+    /// The keys bots once had of their own (`…__BOT_<ID>`) gone: on this Mac's host, then from
+    /// each folder boxes kept them in, but those whose names end as one in `keep` (a bot whose
+    /// settings still name them). Their old folder too, unless one's kept there.
+    pub async fn drop_bot_keys(&self, keep: &[String]) -> Result<(), KeysUnavailable> {
+        let kept = |name: &str| keep.iter().any(|end| name.ends_with(end.as_str()));
+        if let Some(host) = self.key_host()? {
+            let err = || KeysUnavailable("This Mac's keys couldn't be read.".into());
+            let names = self.host.ask_host(&host, "keys/names", &json!({}), false).await?.ok_or_else(err)?;
+            let names = names.get("names").and_then(Value::as_array).ok_or_else(err)?.clone();
+            for name in names.iter().filter_map(Value::as_str).filter(|name| is_bot_key(name) && !kept(name)) {
+                self.host.ask_host(&host, "keys/delete", &json!({ "name": name }), false).await?;
+            }
+        }
+        // (The files only once its host has let them go.)
+        let box_folder = self.box_keys.parent().unwrap_or(&self.box_keys);
+        let bot_keys = box_folder.join("bot-keys");
+        let legacy = box_folder.parent().map(|home| home.join("keys")).unwrap_or_default();
+        let names = |folder: &Path| -> Vec<String> {
+            kuvo_store::files::list_of(folder).into_iter().filter_map(|name| name.into_string().ok()).collect()
+        };
+        for folder in [&bot_keys, &self.box_keys, &legacy] {
+            for name in names(folder).into_iter().filter(|name| is_bot_key(name) && !kept(name)) {
+                let _ = fs::remove_file(folder.join(name));
+            }
+        }
+        if !names(&bot_keys).iter().any(|name| kept(name)) {
+            let _ = fs::remove_dir_all(&bot_keys);
+        }
+        Ok(())
+    }
+
     fn write_key_file(&self, name: &str, value: &str) -> Result<(), KeysUnavailable> {
         let _l = OwnedLock::acquire(&self.config_lock, Duration::from_secs(15)).map_err(|e| KeysUnavailable(e.to_string()))?;
         kuvo_store::files::write_secret(&self.box_keys.join(name), value.as_bytes()).map_err(|e| KeysUnavailable(e.to_string()))

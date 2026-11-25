@@ -274,13 +274,13 @@ async fn integrations_upgrade_updates_pinned_packages_migrates_official_and_resp
     })).unwrap()).unwrap();
 
     // Update trial prevents deleting figma key
-    fs::write(home.join("run/update-trial.json"), r#"{"formatVersion":1}"#).unwrap();
+    fs::write(home.join("run/update-trial"), "a release on trial").unwrap();
     upgrade_before_engine(&config, &catalog, &home.join("bin/mcp-catalog.json"));
     upgrade_integrations(&config, &keys, &catalog, &home.join("bin/mcp-catalog.json")).await;
     assert!(home.join("box/keys").join(figma_key).exists(), "key kept while update on trial");
 
     // Once trial finishes, figma switches to official and deletes its obsolete key; todoist updates pin + KUVO_NPX_APART + {file:...}
-    fs::remove_file(home.join("run/update-trial.json")).unwrap();
+    fs::remove_file(home.join("run/update-trial")).unwrap();
     upgrade_integrations(&config, &keys, &catalog, &home.join("bin/mcp-catalog.json")).await;
     assert!(!home.join("box/keys").join(figma_key).exists(), "obsolete figma key deleted");
     assert!(home.join("box/keys").join(todoist_key).exists());
