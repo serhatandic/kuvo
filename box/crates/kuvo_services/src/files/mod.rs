@@ -7,7 +7,7 @@ mod find;
 mod folders;
 mod git;
 mod opened;
-mod order;
+pub(crate) mod order;
 mod suggested;
 
 pub(crate) use address::resolved;

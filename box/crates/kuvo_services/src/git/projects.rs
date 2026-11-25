@@ -13,7 +13,7 @@ use super::trees::LinkedTrees;
 const PROJECT_LIST: &str = "Project list";
 /// The project list's format: one step, the first.
 const PROJECT_LIST_VERSION: u32 = 1;
-const WORKTREE_RECORDS: ObjectFormat = ObjectFormat::additive("Worktree records");
+pub(super) const WORKTREE_RECORDS: ObjectFormat = ObjectFormat::additive("Worktree records");
 
 /// A record this box can't read: one written by a newer box.
 pub type Unsupported = format::Error;
@@ -99,9 +99,70 @@ pub fn change_projects<T>(
     Ok(made)
 }
 
+/// Add or edit a project by its named folder without resolving links or requiring it to exist.
+pub(super) fn put(
+    box_home: &Path,
+    folder: &str,
+    given: &Map<String, Value>,
+) -> Result<Map<String, Value>, ChangeFailed> {
+    change_projects(box_home, |projects| {
+        let at = projects
+            .iter()
+            .position(|project| directory(project) == folder);
+        let mut project = at.map(|at| projects[at].clone()).unwrap_or_else(|| {
+            serde_json::json!({"directory": folder, "folders": []})
+                .as_object()
+                .unwrap()
+                .clone()
+        });
+        if given.get("removed") == Some(&Value::Bool(true)) {
+            project.insert("removed".into(), Value::Bool(true));
+        } else {
+            project.remove("removed");
+        }
+        for key in ["name", "run"] {
+            if let Some(value) = given.get(key) {
+                let text = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty());
+                let text = text.filter(|text| {
+                    key != "name"
+                        || Path::new(folder).file_name().and_then(|name| name.to_str())
+                            != Some(text)
+                });
+                if let Some(text) = text {
+                    project.insert(key.into(), Value::String(text.to_owned()));
+                } else {
+                    project.remove(key);
+                }
+            }
+        }
+        if let Some(value) = given.get("folders") {
+            project.remove("addedByBox");
+            let mut seen = std::collections::HashSet::new();
+            let folders = value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|name| absolute(name) && *name != folder && seen.insert(*name))
+                .map(|name| Value::String(name.to_owned()))
+                .collect();
+            project.insert("folders".into(), Value::Array(folders));
+        }
+        if let Some(at) = at {
+            projects[at] = project.clone();
+        } else {
+            projects.insert(0, project.clone());
+        }
+        project
+    })
+}
+
 /// Whether a folder is named by a full path, as Node's `path.isAbsolute` reads it here: on Windows,
 /// one that starts at a drive's top (`\\work`, `/work`) is too.
-fn absolute(folder: &str) -> bool {
+pub(super) fn absolute(folder: &str) -> bool {
     if cfg!(windows) {
         let bytes = folder.as_bytes();
         let separator = |byte: u8| byte == b'/' || byte == b'\\';

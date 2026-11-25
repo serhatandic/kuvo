@@ -8,3 +8,5 @@ pub mod watch;
 
 #[cfg(windows)]
 pub mod windows;
+
+pub mod trash;

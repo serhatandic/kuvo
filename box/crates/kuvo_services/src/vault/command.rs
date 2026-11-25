@@ -302,7 +302,7 @@ fn prepare_file(
     Ok(file)
 }
 
-fn command_environment() -> kuvo_os::platform::Environment {
+pub(crate) fn command_environment() -> kuvo_os::platform::Environment {
     let original: kuvo_os::platform::Environment = env::vars_os().collect();
     let mut environment = original
         .iter()
