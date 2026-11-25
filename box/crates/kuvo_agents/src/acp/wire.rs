@@ -1,12 +1,21 @@
 //! What ACP carries, read at the edge into Kuvo's own types: a session's updates, what an agent
 //! said as it started (`initialize`), and what a session offers (`session/new`'s answer).
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::tools::Call;
 
-/// The protocol version Kuvo speaks.
-pub(crate) const PROTOCOL_VERSION: u64 = 1;
+/// What Kuvo says first: the protocol it speaks and, with `files`, that it reads and writes files
+/// for the agent.
+pub(crate) fn initialize(files: bool, meta: Option<Value>) -> Value {
+    let fs = json!({"readTextFile": files, "writeTextFile": files});
+    json!({
+        "protocolVersion": 1,
+        "clientCapabilities": {"fs": fs, "terminal": false},
+        "clientInfo": {"name": "kuvo-code", "title": "Kuvo Code", "version": "1"},
+        "_meta": meta,
+    })
+}
 
 /// A `session/update`: whose, whether a load replays it, and what it says.
 #[derive(Clone, Debug)]

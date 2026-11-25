@@ -235,6 +235,51 @@ struct Active {
     record: Option<Record>,
 }
 
+impl Active {
+    /// `input`'s turn on `process`, nothing yet sent, told or answered.
+    fn new(
+        input: &TurnInput,
+        sink: Arc<dyn TurnSink>,
+        process: Arc<Process>,
+        projection: Projection,
+    ) -> Self {
+        Self {
+            id: input.id.clone(),
+            sink,
+            projection,
+            process,
+            model: input.model.id.clone(),
+            variant: input.model.variant.clone(),
+            mode: Actor::mode(input),
+            compact: false,
+            prompt: 0,
+            prompt_id: None,
+            request: None,
+            instructed: None,
+            answered: false,
+            renewed: false,
+            replaced: None,
+            own: false,
+            stopping: false,
+            refused: None,
+            carried_on: 0,
+            quiet: None,
+            record: None,
+        }
+    }
+}
+
+/// A turn that ends before its prompt is sent, failed with `error`'s words.
+async fn unsent(sink: &dyn TurnSink, error: impl ToString) -> io::Result<()> {
+    let outcome = Outcome::Failed(failure(error.to_string()));
+    let result = TurnResult {
+        outcome,
+        took_prompt: false,
+        missed: vec![],
+    };
+    sink.event(envelope(TurnEvent::Finished(result))).await
+}
+
 struct Record {
     mark: i64,
     sent: u64,
@@ -266,6 +311,20 @@ enum Settled {
     },
     /// Whether the resident took a turn the agent began on its own.
     Offered(bool),
+}
+
+impl Settled {
+    /// An answer that leaves nothing for the turn.
+    fn plain(process: Arc<Process>, id: Value, answer: Value) -> Self {
+        let after = After::default();
+        Self::Asked {
+            process,
+            id,
+            answer: Ok(answer),
+            after,
+            cancellable: false,
+        }
+    }
 }
 
 /// What a settled ask leaves for the turn.
@@ -685,20 +744,9 @@ impl Actor {
         }
         self.own = None;
         let mode = Self::mode(&input);
-        let opened = self.ensure_open(&input.model.id, &mode).await;
-        let started_over = match opened {
-            Ok(started_over) => started_over,
-            Err(error) => {
-                sink.event(envelope(TurnEvent::Finished(TurnResult {
-                    outcome: Outcome::Failed(failure(error.to_string())),
-                    took_prompt: false,
-                    missed: vec![],
-                })))
-                .await?;
-                return Ok(());
-            }
-        };
-        let _ = started_over;
+        if let Err(error) = self.ensure_open(&input.model.id, &mode).await {
+            return unsent(sink.as_ref(), error).await;
+        }
         let process = self
             .process
             .clone()
@@ -720,13 +768,7 @@ impl Actor {
             .select_mode(&process.rpc, &native, &mode, &mut self.setup)
             .await
         {
-            sink.event(envelope(TurnEvent::Finished(TurnResult {
-                outcome: Outcome::Failed(failure(error.to_string())),
-                took_prompt: false,
-                missed: vec![],
-            })))
-            .await?;
-            return Ok(());
+            return unsent(sink.as_ref(), error).await;
         }
         let compact = matches!(input.kind, TurnKind::Compact);
         let (content, instructed) = match &input.kind {
@@ -742,27 +784,9 @@ impl Actor {
         }
         process.touch();
         self.active = Some(Active {
-            id: input.id,
-            sink,
-            projection: Projection::new(now(), compact),
-            process,
-            model: input.model.id,
-            variant: input.model.variant,
-            mode,
             compact,
-            prompt: 0,
-            prompt_id: None,
-            request: None,
             instructed,
-            answered: false,
-            renewed: false,
-            replaced: None,
-            own: false,
-            stopping: false,
-            refused: None,
-            carried_on: 0,
-            quiet: None,
-            record: None,
+            ..Active::new(&input, sink, process, Projection::new(now(), compact))
         });
         self.set_busy();
         self.prompt(content).await
@@ -871,11 +895,8 @@ impl Actor {
             }
             // (Gone before it could be sent: its stop may have come already.)
             Err(_) => {
-                Box::pin(self.end(
-                    Outcome::Failed(failure(format!("{} stopped.", self.shared.name()))),
-                    None,
-                ))
-                .await
+                let words = format!("{} stopped.", self.shared.name());
+                Box::pin(self.end(Outcome::Failed(failure(words)))).await
             }
         }
     }
@@ -915,28 +936,12 @@ impl Actor {
             .request
             .as_ref()
             .map(|request| serde_json::to_value(request).unwrap_or(Value::Null));
+        let projection = Projection::new(note.sent_at.unwrap_or_else(now), false);
         self.active = Some(Active {
             id,
-            sink,
-            projection: Projection::new(note.sent_at.unwrap_or_else(now), false),
-            process: process.clone(),
-            model: input.model.id.clone(),
-            variant: input.model.variant.clone(),
-            mode: Self::mode(input),
-            compact: false,
             prompt: 1,
-            prompt_id: None,
             request,
-            instructed: None,
-            answered: false,
-            renewed: false,
-            replaced: None,
-            own: false,
-            stopping: false,
-            refused: None,
-            carried_on: 0,
-            quiet: None,
-            record: None,
+            ..Active::new(input, sink, process.clone(), projection)
         });
         if let (Some(active), Some(sent)) = (self.active.as_mut(), note.sent_at)
             && self.shared.flavour.record_mark(&native).is_some()
@@ -971,34 +976,16 @@ impl Actor {
         }))
         .await?;
         self.active = Some(Active {
-            id: input.id.clone(),
-            sink,
-            projection: Projection::new(own.started, false),
-            process,
-            model: input.model.id.clone(),
-            variant: input.model.variant.clone(),
-            mode: Self::mode(&input),
-            compact: false,
-            prompt: 0,
-            prompt_id: None,
-            request: None,
-            instructed: None,
-            answered: false,
-            renewed: false,
-            replaced: None,
             own: true,
-            stopping: false,
-            refused: None,
-            carried_on: 0,
             quiet: Some(Instant::now() + OWN_QUIET),
-            record: None,
+            ..Active::new(&input, sink, process, Projection::new(own.started, false))
         });
         self.set_busy();
         for update in own.updates {
             self.update(update).await?;
         }
         if own.ended {
-            self.end(Outcome::Succeeded, None).await?;
+            self.end(Outcome::Succeeded).await?;
         }
         Ok(())
     }
@@ -1218,7 +1205,7 @@ impl Actor {
             }
             Extension::PromptComplete { own: true, .. } => {
                 if self.active.as_ref().is_some_and(|active| active.own) {
-                    self.end(Outcome::Succeeded, None).await?;
+                    self.end(Outcome::Succeeded).await?;
                 } else if let Some(own) = &mut self.own {
                     if own.turned_away {
                         self.own = None;
@@ -1253,7 +1240,7 @@ impl Actor {
                     (None, "cancelled") => Outcome::Interrupted,
                     (None, _) => Outcome::Succeeded,
                 };
-                self.end(outcome, None).await?;
+                self.end(outcome).await?;
             }
         }
         Ok(())
@@ -1328,14 +1315,7 @@ impl Actor {
                     }
                     _ => OwnAnswer::Declined(None),
                 };
-                let answer = Ok(flavour.answer_own(&own, answer));
-                Settled::Asked {
-                    process,
-                    id,
-                    answer,
-                    after: After::default(),
-                    cancellable: false,
-                }
+                Settled::plain(process, id, flavour.answer_own(&own, answer))
             });
             return;
         }
@@ -1347,16 +1327,17 @@ impl Actor {
             "elicitation/create" => {
                 self.asks.spawn(async move {
                     let answer = match sink {
-                        Some(sink) => form(sink.as_ref(), name, &params).await,
+                        Some(sink) => crate::codex::elicitation_form(
+                            sink.as_ref(),
+                            format!("acp-form-{}", now()),
+                            name,
+                            &params,
+                        )
+                        .await
+                        .unwrap_or_else(|_| json!({"action": "decline"})),
                         None => json!({"action": "decline"}),
                     };
-                    Settled::Asked {
-                        process,
-                        id,
-                        answer: Ok(answer),
-                        after: After::default(),
-                        cancellable: false,
-                    }
+                    Settled::plain(process, id, answer)
                 });
             }
             _ => {
@@ -1389,15 +1370,8 @@ impl Actor {
             })
             .collect();
         let Some(active) = &self.active else {
-            self.asks.spawn(async move {
-                Settled::Asked {
-                    process,
-                    id,
-                    answer: Ok(cancelled()),
-                    after: After::default(),
-                    cancellable: false,
-                }
-            });
+            self.asks
+                .spawn(async move { Settled::plain(process, id, cancelled()) });
             return;
         };
         let sink = active.sink.clone();
@@ -1686,7 +1660,7 @@ impl Actor {
             // (Gone: how it ended comes as it stops.)
             Err(Failure::Closed(_)) => return Ok(()),
         };
-        self.end(outcome, None).await
+        self.end(outcome).await
     }
 
     /// A usage limit: the account's, or (Antigravity) the model's.
@@ -1754,7 +1728,7 @@ impl Actor {
         } else {
             Outcome::Failed(failure(said))
         };
-        self.end(outcome, None).await
+        self.end(outcome).await
     }
 
     /// Its access ran out partway and it asked for a new sign-in: started again, it renews it from
@@ -1771,8 +1745,8 @@ impl Actor {
         );
         let name = self.shared.name();
         match self.ensure_open(&model, &mode).await {
-            Err(error) => return self.end(Outcome::Failed(failure(error.to_string())), None).await,
-            Ok(true) => return self.end(Outcome::Failed(failure(format!("{name} started again and couldn't take up this conversation. Send your message again."))), None).await,
+            Err(error) => return self.end(Outcome::Failed(failure(error.to_string()))).await,
+            Ok(true) => return self.end(Outcome::Failed(failure(format!("{name} started again and couldn't take up this conversation. Send your message again.")))).await,
             Ok(false) => {}
         }
         let Some(process) = self.process.clone() else {
@@ -1794,9 +1768,7 @@ impl Actor {
             .select_mode(&process.rpc, &native, &mode, &mut self.setup)
             .await
         {
-            return self
-                .end(Outcome::Failed(failure(error.to_string())), None)
-                .await;
+            return self.end(Outcome::Failed(failure(error.to_string()))).await;
         }
         if let Some(active) = self.active.as_mut() {
             active.process = process;
@@ -1859,11 +1831,11 @@ impl Actor {
                 // Still not over: stopped here, and its process (if nothing else is on it) too.
                 self.stale = true;
                 active.process.retire();
-                self.end(Outcome::Interrupted, None).await?;
+                self.end(Outcome::Interrupted).await?;
                 self.shared.stop_quiet(false).await;
             } else {
                 // An own turn gone quiet: over.
-                self.end(Outcome::Succeeded, None).await?;
+                self.end(Outcome::Succeeded).await?;
             }
         }
         Ok(())
@@ -1899,7 +1871,7 @@ impl Actor {
         active.answered = true;
         active.process.retire();
         self.stale = true;
-        self.end(Outcome::Succeeded, None).await
+        self.end(Outcome::Succeeded).await
     }
 
     /// It stopped because Kuvo refused a tool by your settings (it takes any no as yours): told
@@ -1923,7 +1895,7 @@ impl Actor {
     }
 
     /// The turn ends as `outcome`.
-    async fn end(&mut self, mut outcome: Outcome, _agent_exited: Option<bool>) -> io::Result<()> {
+    async fn end(&mut self, mut outcome: Outcome) -> io::Result<()> {
         let flavour = self.shared.flavour.clone();
         if let Some(active) = &self.active
             && matches!(outcome, Outcome::Succeeded)
@@ -1994,7 +1966,7 @@ impl Actor {
         if let Some(active) = &mut self.active {
             active.refused = None;
         }
-        self.end(outcome, None).await
+        self.end(outcome).await
     }
 }
 
@@ -2072,104 +2044,4 @@ fn question_field(question: &super::flavour::Question) -> Field {
             }
         },
     }
-}
-
-/// A form the agent (or a tool of its) asks you to fill in, or a page to open.
-async fn form(sink: &dyn TurnSink, name: &str, params: &Value) -> Value {
-    let metadata: Map<String, Value> = json!({"kind": "mcp-elicitation", "server": name})
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    let title = format!("{name} asks");
-    if params["mode"] == "url"
-        && let Some(url) = params["url"].as_str()
-    {
-        let field = Field {
-            key: "open".into(),
-            title: Some(
-                params["message"]
-                    .as_str()
-                    .unwrap_or("Open this page to go on.")
-                    .into(),
-            ),
-            description: None,
-            required: false,
-            kind: FieldKind::External {
-                url: Some(url.into()),
-            },
-        };
-        let ask = QuestionAsk {
-            id: format!("acp-form-{}", now()),
-            title,
-            fields: vec![field],
-            tool_call_id: None,
-            metadata,
-        };
-        let accepted = matches!(sink.question(ask).await, Ok(Answer::Submitted(_)));
-        return json!({"action": if accepted { "accept" } else { "decline" }});
-    }
-    let schema = &params["requestedSchema"];
-    let required: Vec<&str> = schema["required"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    let properties = schema["properties"]
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    let mut fields: Vec<Field> = properties
-        .iter()
-        .map(|(key, field)| {
-            crate::codex::elicitation_field(key, field, required.contains(&key.as_str()))
-        })
-        .collect();
-    if let (Some(first), Some(message)) = (fields.first_mut(), params["message"].as_str()) {
-        first.description = Some(
-            [Some(message), first.description.as_deref()]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-        );
-    }
-    if fields.is_empty() {
-        fields.push(Field {
-            key: "ok".into(),
-            title: Some(params["message"].as_str().unwrap_or("Go on?").into()),
-            description: None,
-            required: true,
-            kind: FieldKind::Boolean,
-        });
-    }
-    let ask = QuestionAsk {
-        id: format!("acp-form-{}", now()),
-        title,
-        fields,
-        tool_call_id: None,
-        metadata,
-    };
-    let Ok(Answer::Submitted(answer)) = sink.question(ask).await else {
-        return json!({"action": "decline"});
-    };
-    let mut content = Map::new();
-    for (key, field) in &properties {
-        let Some(value) = answer
-            .get(key)
-            .filter(|value| !value.is_null() && value.as_str() != Some(""))
-        else {
-            continue;
-        };
-        let value = match field["type"].as_str() {
-            Some("number" | "integer") => value
-                .as_f64()
-                .or_else(|| value.as_str()?.parse().ok())
-                .map_or(Value::Null, |n| json!(n)),
-            Some("boolean") => json!(value == true || value == "true"),
-            _ => value.clone(),
-        };
-        content.insert(key.clone(), value);
-    }
-    json!({"action": "accept", "content": content})
 }

@@ -331,8 +331,17 @@ async fn elicitation(
             json!({ "action": if decision == Decision::Reject { "decline" } else { "accept" }, "content": null }),
         );
     }
-    // An MCP server asks you something (a form), or to open a page (a sign-in).
     let named = params["serverName"].as_str().unwrap_or("A tool");
+    elicitation_form(sink.as_ref(), id, named, &params).await
+}
+
+/// An MCP server asks you something (a form), or to open a page (a sign-in): its answer.
+pub(crate) async fn elicitation_form(
+    sink: &dyn TurnSink,
+    id: String,
+    named: &str,
+    params: &Value,
+) -> std::io::Result<Value> {
     let title = format!("{named} asks");
     let metadata = json!({ "kind": "mcp-elicitation", "server": named })
         .as_object()
@@ -427,7 +436,7 @@ async fn elicitation(
 }
 
 /// An MCP server's form field, as a card's.
-pub(crate) fn elicitation_field(key: &str, field: &Value, required: bool) -> Field {
+fn elicitation_field(key: &str, field: &Value, required: bool) -> Field {
     let title = Some(field["title"].as_str().unwrap_or(key).to_owned());
     let description = field["description"].as_str().map(str::to_owned);
     let option = |option: &Value| FormOption {

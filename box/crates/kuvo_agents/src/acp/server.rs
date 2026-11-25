@@ -29,7 +29,7 @@ use crate::{
 
 use super::{
     flavour::{Extension, Flavour, Launch, Line},
-    wire::{Capabilities, PROTOCOL_VERSION, SessionUpdate},
+    wire::{Capabilities, SessionUpdate, initialize},
 };
 
 const IDLE: Duration = Duration::from_secs(15 * 60);
@@ -415,16 +415,10 @@ impl Shared {
         if let Some(file) = sign_in_file {
             watch_sign_in(&process, file);
         }
-        let initialize = process.rpc.request(
-            "initialize",
-            Some(json!({
-                "protocolVersion": PROTOCOL_VERSION,
-                "clientCapabilities": {"fs": {"readTextFile": self.flavour.file_system(), "writeTextFile": self.flavour.file_system()}, "terminal": false},
-                "clientInfo": {"name":"kuvo-code","title":"Kuvo Code","version":"1"},
-                "_meta": self.flavour.initialize_meta(),
-            })),
-            Some(INITIALIZE),
-        );
+        let said = initialize(self.flavour.file_system(), self.flavour.initialize_meta());
+        let initialize = process
+            .rpc
+            .request("initialize", Some(said), Some(INITIALIZE));
         let initialized = tokio::select! {
             initialized = initialize => initialized.map_err(|failure| self.failed(&process, failure)),
             _ = halted.wait_for(|now| *now != shutdowns) => Err(stopped(self.name())),

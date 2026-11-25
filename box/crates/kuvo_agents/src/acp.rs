@@ -40,6 +40,7 @@ use crate::{
 
 pub use antigravity::forget_old_releases as forget_old_antigravity;
 use flavour::Flavour;
+pub use grok::{GrokSecret, grok_installed, grok_secret};
 use server::Shared;
 use thread::Conversation;
 

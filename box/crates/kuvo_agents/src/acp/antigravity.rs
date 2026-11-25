@@ -36,7 +36,7 @@ use super::{
     local::{self, Catalog, Listed},
     server::lock,
     tools::{self, Call},
-    wire::{Capabilities, PROTOCOL_VERSION, Setup},
+    wire::{Capabilities, Setup, initialize},
 };
 
 const INSTALL: &str = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
@@ -216,28 +216,34 @@ impl Antigravity {
     /// The model list kept in its home (`kuvo-models.json`, as earlier boxes kept it), for the
     /// sign-in it belongs to.
     fn saved_models(&self) -> Option<Catalog> {
-        let saved: Value = serde_json::from_slice(&std::fs::read(self.models_file()).ok()?).ok()?;
-        let credential = self.credential()?;
-        if saved["credential"] != credential.as_str() {
-            return None;
+        #[derive(serde::Deserialize)]
+        struct Saved {
+            credential: String,
+            current: Option<String>,
+            models: Vec<Model>,
         }
-        let models = saved["models"]
-            .as_array()?
-            .iter()
-            .map(|info| {
-                Some(Listed {
-                    id: info["value"].as_str().filter(|id| !id.is_empty())?.into(),
-                    name: info["name"].as_str()?.into(),
-                    efforts: Vec::new(),
-                    effort: None,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
+        #[derive(serde::Deserialize)]
+        struct Model {
+            value: String,
+            name: String,
+        }
+        let saved: Saved = serde_json::from_slice(&std::fs::read(self.models_file()).ok()?).ok()?;
+        let models = saved.models.into_iter().map(|Model { value, name }| {
+            let listed = Listed {
+                id: value,
+                name,
+                efforts: Vec::new(),
+                effort: None,
+            };
+            (!listed.id.is_empty()).then_some(listed)
+        });
         Some(Catalog {
-            credential: Some(credential),
-            current: saved["current"].as_str().map(str::to_owned),
-            models,
+            credential: Some(saved.credential)
+                .filter(|saved| Some(saved) == self.credential().as_ref()),
+            current: saved.current,
+            models: models.collect::<Option<_>>()?,
         })
+        .filter(|catalog| catalog.credential.is_some())
     }
 
     /// Keeps the models a session offered, for the sign-in it ran with: whether it listed them.
@@ -383,20 +389,40 @@ impl Antigravity {
         let temporary = launch.temporary.clone();
         let cwd = launch.start.cwd.clone().unwrap_or_default();
         let result = async {
-            let controller = Directory::for_home(&self.home).start(&self.holder, launch.start).await?;
-            let (rpc, _incoming) = Rpc::over(controller, Options { framing: Framing::JsonRpc2, first_id: 1, filter: Some(Box::new(|line: &str| !line.contains(SIGN_IN_LINE))) });
+            let controller = Directory::for_home(&self.home)
+                .start(&self.holder, launch.start)
+                .await?;
+            let (rpc, _incoming) = Rpc::over(
+                controller,
+                Options {
+                    framing: Framing::JsonRpc2,
+                    first_id: 1,
+                    filter: Some(Box::new(|line: &str| !line.contains(SIGN_IN_LINE))),
+                },
+            );
             let checked = async {
                 let wait = Some(Duration::from_secs(120));
-                let init = json!({"protocolVersion": PROTOCOL_VERSION, "clientCapabilities": {"fs": {"readTextFile": true, "writeTextFile": true}, "terminal": false}, "clientInfo": {"name": "kuvo-code", "version": "1"}});
-                rpc.request("initialize", Some(init), wait).await?;
-                rpc.request("authenticate", Some(json!({"methodId": METHOD})), wait).await?;
-                rpc.request("session/new", Some(json!({"cwd": cwd, "mcpServers": []})), wait).await
+                rpc.request("initialize", Some(initialize(true, None)), wait)
+                    .await?;
+                rpc.request("authenticate", Some(json!({"methodId": METHOD})), wait)
+                    .await?;
+                rpc.request(
+                    "session/new",
+                    Some(json!({"cwd": cwd, "mcpServers": []})),
+                    wait,
+                )
+                .await
             }
             .await;
             rpc.stop().await;
             let setup = checked.map_err(|failure| match failure {
-                Failure::Refused(error) if error.message.contains("SUBSCRIPTION_REQUIRED") => io::Error::other("Google says this account needs an Antigravity subscription."),
-                Failure::Refused(error) => io::Error::other(format!("Antigravity didn't take the sign-in: {}", error.message)),
+                Failure::Refused(error) if error.message.contains("SUBSCRIPTION_REQUIRED") => {
+                    io::Error::other("Google says this account needs an Antigravity subscription.")
+                }
+                Failure::Refused(error) => io::Error::other(format!(
+                    "Antigravity didn't take the sign-in: {}",
+                    error.message
+                )),
                 Failure::Closed(said) => {
                     eprintln!("Google's Antigravity agent stopped while signing in:\n{said}");
                     io::Error::other(stopped_words(&said))
@@ -448,10 +474,15 @@ impl Antigravity {
         for name in ["DISPLAY", "WAYLAND_DISPLAY"] {
             env.remove(std::ffi::OsStr::new(name));
         }
-        let mut command = launch.start.command.into_iter();
-        let program = command.next().ok_or_else(not_installed)?;
-        let mut spawn = Spawn::new(Path::new(&program), env);
-        spawn.args = command
+        // (Found as the conversations' holder finds it: on Windows, how to run its `agy.cmd`.)
+        let agy = self.executable(&env).ok_or_else(not_installed)?;
+        let mut spawn = Spawn::new(agy.path(), env);
+        spawn.executable = agy;
+        spawn.args = launch
+            .start
+            .command
+            .into_iter()
+            .skip(1)
             .map(PathBuf::into_os_string)
             .chain(["--login".into()])
             .collect();
@@ -512,7 +543,7 @@ impl Antigravity {
                         filter: None,
                     },
                 );
-                let init = json!({"protocolVersion": PROTOCOL_VERSION, "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false}, "clientInfo": {"name": "kuvo-code", "version": "1"}});
+                let init = initialize(false, None);
                 if let Ok(init) = rpc
                     .request("initialize", Some(init), Some(Duration::from_secs(60)))
                     .await

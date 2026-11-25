@@ -39,7 +39,8 @@ use crate::{
 
 use server::Shared;
 
-pub(crate) use asks::elicitation_field;
+pub(crate) use asks::elicitation_form;
+pub(crate) use program::fingerprint;
 
 /// A conversation's replies kept from before Codex's directives in its words were read (an older
 /// bridge kept them as words), and its title with one, as they read now: read once, as the

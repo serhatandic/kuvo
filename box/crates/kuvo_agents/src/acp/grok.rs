@@ -37,6 +37,83 @@ use super::{
 };
 
 const INSTALL: &str = "curl -fsSL https://x.ai/cli/install.sh | bash";
+
+/// A Grok account's sign-in, read without starting Grok.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GrokSecret {
+    /// `XAI_API_KEY` from the environment, which Grok takes first, for every account.
+    ApiKey(String),
+    /// What `grok login` keeps in its home's `auth.json`.
+    SignedIn {
+        key: String,
+        id_token: Option<String>,
+    },
+}
+
+impl GrokSecret {
+    /// Its name in catalogs and launches: never the secret.
+    pub fn credential(&self) -> String {
+        match self {
+            Self::ApiKey(key) => format!("key:{}", local::fingerprint(key)),
+            Self::SignedIn { key, .. } => local::fingerprint(key),
+        }
+    }
+}
+
+/// The sign-in a Grok account runs on (`managed`: an added account's own home), as Accounts reads
+/// it.
+pub fn grok_secret(managed: Option<&Path>) -> Option<GrokSecret> {
+    secret(&local::environment(), managed)
+}
+
+/// Whether Grok's CLI is on this computer, as Accounts finds it: it isn't run.
+pub fn grok_installed() -> bool {
+    executable(&local::environment()).is_some()
+}
+
+fn executable(env: &Environment) -> Option<kuvo_os::platform::Executable> {
+    local::program("grok", &[".grok/bin", ".local/bin"], env)
+}
+
+/// Its home (GROK_HOME): an added account's own folder, else yours.
+fn grok_home(env: &Environment, managed: Option<&Path>) -> Option<PathBuf> {
+    if let Some(home) = managed {
+        return Some(home.to_owned());
+    }
+    let user = local::user_home(env);
+    match local::variable(env, "GROK_HOME") {
+        Some(set) if set == "~" => user,
+        Some(set) => match set.strip_prefix("~/") {
+            Some(rest) => user.map(|home| home.join(rest)),
+            None => Some(set.into()),
+        },
+        None => user.map(|home| home.join(".grok")),
+    }
+}
+
+fn api_key(env: &Environment) -> Option<String> {
+    local::variable(env, "XAI_API_KEY")
+}
+
+/// `XAI_API_KEY`, else the first entry of its home's `auth.json` with a key.
+fn secret(env: &Environment, managed: Option<&Path>) -> Option<GrokSecret> {
+    if let Some(key) = api_key(env) {
+        return Some(GrokSecret::ApiKey(key));
+    }
+    let bytes = std::fs::read(grok_home(env, managed)?.join("auth.json")).ok()?;
+    let entries: Map<String, Value> = serde_json::from_slice(&bytes).ok()?;
+    entries.values().find_map(|entry| {
+        let key = entry["key"]
+            .as_str()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())?;
+        let id_token = entry["id_token"].as_str().map(str::to_owned);
+        Some(GrokSecret::SignedIn {
+            key: key.to_owned(),
+            id_token,
+        })
+    })
+}
 /// How much a Grok model holds before it says.
 const CONTEXT: u64 = 256_000;
 /// The efforts every Grok model has, before a session says.
@@ -83,40 +160,11 @@ impl Grok {
     }
 
     fn executable(&self, env: &Environment) -> Option<kuvo_os::platform::Executable> {
-        local::program("grok", &[".grok/bin", ".local/bin"], env)
+        executable(env)
     }
 
-    /// Its home (GROK_HOME): an added account's own folder, else yours.
-    fn grok_home(&self, env: &Environment) -> Option<PathBuf> {
-        if let Some(home) = &self.managed {
-            return Some(home.clone());
-        }
-        let user = local::user_home(env);
-        match local::variable(env, "GROK_HOME") {
-            Some(set) if set == "~" => user,
-            Some(set) => match set.strip_prefix("~/") {
-                Some(rest) => user.map(|home| home.join(rest)),
-                None => Some(set.into()),
-            },
-            None => user.map(|home| home.join(".grok")),
-        }
-    }
-
-    fn api_key(env: &Environment) -> Option<String> {
-        local::variable(env, "XAI_API_KEY")
-    }
-
-    /// The sign-in Grok keeps in its home: the key of its first entry that has one.
-    fn kept_key(&self, env: &Environment) -> Option<String> {
-        let bytes = std::fs::read(self.grok_home(env)?.join("auth.json")).ok()?;
-        let entries: Map<String, Value> = serde_json::from_slice(&bytes).ok()?;
-        entries.values().find_map(|entry| {
-            entry["key"]
-                .as_str()
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .map(str::to_owned)
-        })
+    fn secret(&self, env: &Environment) -> Option<GrokSecret> {
+        secret(env, self.managed.as_deref())
     }
 
     fn catalog_file(&self) -> PathBuf {
@@ -231,8 +279,9 @@ impl Flavour for Grok {
         Box::pin(async move {
             let env = self.environment();
             let installed = self.executable(&env).is_some();
-            let key = Self::api_key(&env).is_some();
-            let signed_in = installed && (key || self.kept_key(&env).is_some());
+            let secret = self.secret(&env);
+            let key = matches!(secret, Some(GrokSecret::ApiKey(_)));
+            let signed_in = installed && secret.is_some();
             let message = if !installed {
                 Some("Install Grok's CLI, then sign in here.".into())
             } else if !signed_in {
@@ -289,7 +338,7 @@ impl Flavour for Grok {
     fn sign_out(&self) -> AdapterCall<'_, ()> {
         Box::pin(async move {
             let env = self.environment();
-            let key = Self::api_key(&env).is_some();
+            let key = api_key(&env).is_some();
             if let Some(executable) = self.executable(&env) {
                 let cwd = self.home.root().to_owned();
                 let done = tokio::task::spawn_blocking(move || {
@@ -345,9 +394,7 @@ impl Flavour for Grok {
 
     fn credential(&self) -> Option<String> {
         let env = self.environment();
-        Self::api_key(&env)
-            .map(|key| format!("key:{}", local::fingerprint(&key)))
-            .or_else(|| self.kept_key(&env).map(|key| local::fingerprint(&key)))
+        self.secret(&env).map(|secret| secret.credential())
     }
 
     fn launch_key(&self, mode: &Mode, _directory: &Path, model: &str) -> io::Result<String> {
@@ -398,7 +445,7 @@ impl Flavour for Grok {
 
     fn auth_method(&self, _: &Capabilities) -> Option<String> {
         Some(
-            if Self::api_key(&self.environment()).is_some() {
+            if api_key(&self.environment()).is_some() {
                 "xai.api_key"
             } else {
                 "cached_token"
@@ -683,6 +730,33 @@ impl Flavour for Grok {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn its_sign_in_is_the_environment_s_key_else_what_its_home_keeps() {
+        let home = tempfile::tempdir().unwrap();
+        let managed = Some(home.path());
+        let none: Environment =
+            std::iter::empty::<(std::ffi::OsString, std::ffi::OsString)>().collect();
+        assert_eq!(secret(&none, managed), None);
+        std::fs::write(
+            home.path().join("auth.json"),
+            r#"{"a":{"key":" "},"b":{"key":"tok","id_token":"jwt"}}"#,
+        )
+        .unwrap();
+        let kept = secret(&none, managed).unwrap();
+        assert_eq!(
+            kept,
+            GrokSecret::SignedIn {
+                key: "tok".into(),
+                id_token: Some("jwt".into())
+            }
+        );
+        assert_eq!(kept.credential(), local::fingerprint("tok"));
+        let keyed: Environment = [("XAI_API_KEY".into(), "xai".into())].into_iter().collect();
+        let key = secret(&keyed, managed).unwrap();
+        assert_eq!(key, GrokSecret::ApiKey("xai".into()));
+        assert!(key.credential().starts_with("key:"));
+    }
 
     #[test]
     fn reads_the_device_code_it_prints() {

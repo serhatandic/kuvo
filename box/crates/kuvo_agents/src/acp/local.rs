@@ -14,7 +14,8 @@ use kuvo_os::{
 };
 use kuvo_store::home::Home;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+
+pub(super) use crate::codex::fingerprint;
 
 use crate::catalog::{Model, Models};
 
@@ -54,11 +55,6 @@ pub(super) fn program(name: &str, places: &[&str], env: &Environment) -> Option<
 pub(super) fn agents_update_themselves(home: &Home) -> bool {
     fs::read(home.settings().join("agents-update-themselves.json"))
         .is_ok_and(|bytes| matches!(serde_json::from_slice::<bool>(&bytes), Ok(true)))
-}
-
-/// A short sign of a secret (never the secret itself).
-pub(super) fn fingerprint(secret: &str) -> String {
-    hex::encode(Sha256::digest(secret.as_bytes()))[..16].to_owned()
 }
 
 /// Runs the agent's own short command (its `logout`), at most 20 seconds: whether it went well.
@@ -157,7 +153,8 @@ pub(super) fn models(
                 context: Some(context(&listed.id)),
                 efforts: listed.efforts,
                 name: name(&listed.name),
-                ..model(&listed.id)
+                id: listed.id,
+                ..Model::default()
             })
             .collect(),
     }
@@ -171,25 +168,12 @@ pub(super) fn provisional(name: &str) -> Models {
         complete: false,
         models: vec![Model {
             name: format!("{name} (its default model)"),
+            id: DEFAULT_MODEL.into(),
             provisional: true,
-            ..model(DEFAULT_MODEL)
+            ..Model::default()
         }],
     }
 }
 
 /// The model the agent picks itself: none is chosen for it.
 pub(super) const DEFAULT_MODEL: &str = "default";
-
-fn model(id: &str) -> Model {
-    Model {
-        id: id.into(),
-        name: id.into(),
-        aliases: Vec::new(),
-        efforts: Vec::new(),
-        speeds: Vec::new(),
-        hidden: false,
-        retiring: false,
-        provisional: false,
-        context: None,
-    }
-}

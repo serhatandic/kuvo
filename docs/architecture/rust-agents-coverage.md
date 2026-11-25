@@ -838,13 +838,41 @@ Not ported yet: Antigravity's transcript follower for its subagents (its rows an
 Its other half, a prompt the transcript says is answered though ACP never said, is
 `Flavour::record_answer`: the actor looks every second and ends the turn on two matching looks.
 
-By non-whitespace characters, without tests, `acp` and its modules are 1.36× `acp.ts`,
-`grok.ts` and `antigravity.ts`. The flavours are smaller than theirs (Grok 0.95×, Antigravity
-0.76×). The shared client is 1.81× `acp.ts`, because it carries what the reference takes from
-`agent.ts` and `turn.ts`: the per-conversation actor, its asks and its line of turns. It also
-carries what the reference doesn't do at all: several conversations on one process, updates kept
-until `session/new` answers, and Grok's catalog for listing without starting it. To be looked at
-again in 9.0.
+Size is counted in non-whitespace characters, without tests.
+
+- `acp` and its modules are 1.37× `acp.ts`, `grok.ts` and `antigravity.ts`.
+- They are 1.30× once the base also counts what the reference keeps elsewhere and `acp` does
+  itself:
+  - from `turn.ts`: `startStep`, `ensureStep`, `endStep`, `toolStart`, `toolRename`,
+    `toolCalled`, `stopTools`, `hasTool`, `toolInput` and `toolStep` (the projection's steps and
+    merged calls);
+  - from `agent.ts`: `signOutWith`, `ContextWindows` and `model`;
+  - from `kuvotools.ts`: `isKuvoTool` and `kuvoToolName` (`KnownTools`);
+  - from `shared/agent-credentials.ts`: `grokCredential` and `grokHome` (`grok_secret`, which
+    usage reads too).
+- Forms are Codex's (`codex::elicitation_form`), not a copy.
+- What it does beyond the reference: several conversations on one process, updates kept until
+  `session/new` answers, and Grok's catalog for listing without starting it.
+
+### Verification
+
+| Platform | agents-grok, Rust | agents-grok, TypeScript | agents-antigravity, Rust | agents-antigravity, TypeScript |
+|---|---:|---:|---:|---:|
+| macOS | 8/8 | 6/6, 2 skipped (Rust-only) | 10/10 | 6/6, 4 skipped (#992, Rust-only) |
+| Linux x86-64, lokum (musl) | 8/8 | — | 10/10 | — |
+| WSL2, Ubuntu 24.04 (musl) | 8/8 | — | 10/10 | — |
+| Native Windows x64 | 8/8 | — | 10/10 | — |
+
+On native Windows the stand-in `agy` is `agy.CMD`. Antigravity's sign-in starts it as the
+conversations' holder does (`Spawn::executable`). It first failed two sign-in cases there, which
+started it by its bare path.
+
+Live runs:
+
+- **Pending: live Antigravity turn (Gemini 4 Hydrogen).** It waits for the user's go-ahead, and
+  uses a sign-in copied read-only while its token is fresh.
+- **Pending: live Grok turn on its cheapest model.** Neither the Mac nor lokum has a sign-in to copy
+  (no `auth.json`, no `XAI_API_KEY`).
 
 Seen once on the Rust box (11-25, the Mac, under a busy test lane), passing on the rerun:
 agents-codex "Stop during a summary" (no `turn/interrupt` sent), and agents-claude-turns "a plain
