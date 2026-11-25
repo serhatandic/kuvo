@@ -2077,13 +2077,20 @@ async function engineFeed(t, release, fixture, { damageFirst = !fixture, holdDow
   };
 }
 
-for (const mode of ["switch", "rollback", "borrowed"]) test({
+for (const mode of ["switch", "rollback", "borrowed", "holder-switch", "holder-rollback"]) test({
   switch: "a differing engine finishes its turn and carries waiting work through a release switch",
   rollback: "a differing engine restores waiting work after a failed release trial",
   borrowed: "a differing engine leaves a borrowed worker's inbox alone",
+  "holder-switch": "a signed differing-engine switch adopts the actual coding-agent holder",
+  "holder-rollback": "a failed signed differing-engine trial adopts the same coding-agent holder after rollback",
 }[mode], { timeout: firstPreparationMs + releaseReturnMs + releaseDrainRetryMs }, async t => {
-  const rollback = mode === "rollback";
+  const rollback = mode.endsWith("rollback");
   const borrowed = mode === "borrowed";
+  const held = mode.startsWith("holder-");
+  const holderProbe = process.env.KUVO_CONFORMANCE_HOLDER_PROBE;
+  if (held && (!holderProbe || !path.isAbsolute(holderProbe) || !fs.existsSync(holderProbe))) {
+    return t.skip("Set KUVO_CONFORMANCE_HOLDER_PROBE to the dedicated agent_holders test executable.");
+  }
   const binary = boxBinary();
   if (binary.typescript) return t.skip("Uses the Rust keeper and engine supervisor.");
   const { computer } = await bench(t);
@@ -2137,7 +2144,7 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
   const targetVersion = "0.8.0";
   const release = path.join(here.env.HOME, "release");
   let keeper;
-  let keeperEnv;
+  let keeperEnv, startedHolder;
   const keep = (...args) => {
     const result = spawnSync(binary.file, ["keep", ...args], { env: keeperEnv, cwd: home, encoding: "utf8", timeout: 15000 });
     assert.equal(result.status, 0, result.error?.message ?? result.stderr);
@@ -2171,6 +2178,14 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     write(path.join(home, previous, "box.json"), encode({ kuvo: "box/1", version: current, launch: "rust", engine: oldVersion }));
     write(path.join(home, previous, "bin", program), oldBinary, { mode: 0o700 });
     write(path.join(home, previous, "bin/box-version"), current + "\n");
+    const heldSession = path.join(home, "agents/sessions/ses_keeper_fixture");
+    if (held) {
+      write(path.join(home, "run/agent-fixture-program"), holderProbe);
+      write(path.join(heldSession, "session.json"), encode({
+        id: "ses_keeper_fixture", projectID: "fixture", agent: "build", location: { directory: home },
+        time: { created: 1, updated: 1 }, model: { providerID: "codex-cli", id: "stand-in" },
+      }));
+    }
     keeperEnv = { ...here.env, KUVO_HOME: home, ...updateEnv };
     keep("select", `${previous}/bin`);
     keeper = launch(binary.file, ["keep"], keeperEnv, home);
@@ -2178,6 +2193,17 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     const before = await until(async () => {
       try { const record = readJSON(serve); return (await request(record, "GET", "kuvo/info")).status === 200 && record; } catch { return false; }
     }, () => "the earlier resident did not answer\n" + keeper.log(), 25000);
+    const checkpoint = name => {
+      const file = path.join(home, "run", name);
+      try { return readJSON(file); } catch { return false; }
+    };
+    if (held) {
+      write(path.join(home, "run/agent-fixture-begin"), "");
+      startedHolder = await until(() => checkpoint("agent-fixture-started"),
+        () => "the first resident must start its actual holder\n" + keeper.log(), 25000);
+      assert.equal(startedHolder.resident, before.pid);
+      assert.equal(startedHolder.generation, 1);
+    }
     await until(() => {
       const failed = path.join(home, "run/fleet-cannot.json");
       if (fs.existsSync(failed)) assert.fail(fs.readFileSync(failed, "utf8"));
@@ -2284,6 +2310,11 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     if (rollback) {
       await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === selected && fs.existsSync(path.join(home, "run/previous")), "the keeper should try the signed target", keeperTrialMs);
       assert.ok(fs.existsSync(hold), "the queue stays held during the failed health trial");
+      if (held) {
+        assert.doesNotThrow(() => process.kill(startedHolder.holder, 0));
+        assert.doesNotThrow(() => process.kill(startedHolder.agent, 0));
+        assert.equal(checkpoint("agent-fixture-finished"), false, "the held provider has not been completed before the keeper's verdict");
+      }
       assert.equal(fs.existsSync(path.join(home, "run/engine.json")), false, "no engine starts before the keeper verdict");
       assert.deepEqual(engine.messages.get(session).map(message => message.id), ["msg_originalEngine"]);
       await until(() => fs.readFileSync(path.join(home, "active-release"), "utf8") === `${previous}/bin` && fs.existsSync(path.join(home, "run/update-cannot")) && !fs.existsSync(path.join(home, "run/previous")),
@@ -2309,6 +2340,23 @@ setInterval(() => { if (fs.existsSync(path.join(__dirname, "fixture-stop"))) pro
     assert.ok(received.text.includes(attached[0]));
     assert.deepEqual(received.files, [inline]);
     assert.deepEqual(engine.messages.get(madeSession).filter(message => message.type === "user").map(message => message.text), ["Start when the engine is ready"]);
+    if (held) {
+      const finished = await until(() => checkpoint("agent-fixture-finished"),
+        () => "the replacement resident must adopt the actual holder\n" + keeper.log(), 30000);
+      assert.notEqual(finished.resident, startedHolder.resident);
+      assert.equal(finished.resident, readJSON(serve).pid);
+      assert.equal(finished.holder, startedHolder.holder);
+      assert.equal(finished.agent, startedHolder.agent);
+      assert.equal(finished.generation, 2);
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(path.join(heldSession, "messages-v1.sqlite"), { readOnly: true });
+      try {
+        const message = id => JSON.parse(db.prepare("SELECT body FROM message WHERE id = ?").get(id).body);
+        assert.equal(message("msg_keeper_fixture_1").content[0].text, "before after");
+        assert.equal(message("msg_keeper_fixture_2").outcome, "succeeded");
+        assert.equal(db.prepare("SELECT count(*) AS n FROM message WHERE id = ?").get("msg_keeper_fixture_2").n, 1);
+      } finally { db.close(); }
+    }
     const settled = (await request(readJSON(path.join(home, "run/serve.json")), "GET", "kuvo/update")).json;
     assert.equal(settled.updating, null);
     assert.equal(settled.engineChange, undefined);
