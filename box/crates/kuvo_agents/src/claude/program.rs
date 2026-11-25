@@ -43,6 +43,7 @@ pub(super) struct Program {
     /// starts again at its next message.
     updates: Arc<AtomicU64>,
     identity: Arc<tokio::sync::Mutex<Option<IdentityCache>>>,
+    keychain: Arc<kuvo_os::keychain::CredentialDate>,
 }
 
 struct IdentityCache {
@@ -87,6 +88,7 @@ impl Program {
             uses_key: Arc::default(),
             updates: Arc::default(),
             identity: Arc::default(),
+            keychain: Arc::default(),
         }
     }
 
@@ -110,6 +112,7 @@ impl Program {
 
     /// Claude turned the sign-in away in a run: the account needs one until it's written again.
     pub fn turn_away(&self) {
+        self.keychain.invalidate();
         let written = self.credentials_written();
         *self
             .turned_away
@@ -150,7 +153,11 @@ impl Program {
             }
             None => "Claude Code-credentials".into(),
         };
-        file.max(keychain_written(&service).unwrap_or(SystemTime::UNIX_EPOCH))
+        file.max(
+            self.keychain
+                .written(&service)
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        )
     }
 
     fn token_file(&self) -> PathBuf {
@@ -272,6 +279,12 @@ impl Program {
                     let mark = hex::encode(&Sha256::digest(&raw)[..8]);
                     Some((mark, raw))
                 })();
+                if cache
+                    .as_ref()
+                    .is_none_or(|old| old.path != path || old.value != parsed)
+                {
+                    self.keychain.invalidate();
+                }
                 *cache = Some(IdentityCache {
                     path,
                     stamp,
@@ -526,6 +539,7 @@ impl Program {
                     })
                 }),
                 completed: Box::new(move || {
+                    program.keychain.invalidate();
                     let _ = program.forget_token();
                     handle.block_on(async {
                         models.clear().await;
@@ -542,6 +556,7 @@ impl Program {
     pub async fn logout(&self) -> io::Result<()> {
         let program = self.clone();
         tokio::task::spawn_blocking(move || {
+            program.keychain.invalidate();
             program.forget_token()?;
             let env = program.environment(false);
             if let Some(executable) = program.executable(&env) {
@@ -551,33 +566,11 @@ impl Program {
                     return Err(io::Error::other("Claude Code couldn't sign out."));
                 }
             }
+            program.keychain.invalidate();
             Ok(())
         })
         .await?
     }
-}
-
-/// The Keychain item's modification date, read from its attributes (never its secret).
-fn keychain_written(service: &str) -> Option<SystemTime> {
-    let output = std::process::Command::new("/usr/bin/security")
-        .args(["find-generic-password", "-s", service])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let line = text
-        .lines()
-        .find(|line| line.contains("\"mdat\"<timedate>="))?;
-    let stamp = line.split('"').nth(3)?;
-    let digits = stamp
-        .strip_suffix("Z\\000")
-        .or_else(|| stamp.strip_suffix('Z'))?;
-    let digits = digits.get(..14)?;
-    let time: jiff::civil::DateTime =
-        jiff::civil::DateTime::strptime("%Y%m%d%H%M%S", digits).ok()?;
-    let at = time.to_zoned(jiff::tz::TimeZone::UTC).ok()?.timestamp();
-    Some(SystemTime::from(at))
 }
 
 fn native_status(executable: Executable, env: Environment, cwd: &Path) -> io::Result<Status> {

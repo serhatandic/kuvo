@@ -102,9 +102,12 @@ export function boxBinary(value = process.env.KUVO_BOX_BIN) {
 export const relayAddress = secret => createHash("sha256").update("kuvo-link address v1").update(secret).digest().subarray(0, 16);
 export const localRelay = options => relayStandIn({ addressOf: relayAddress }, options);
 
+// Bun for the TypeScript box and the golden home generators; with none installed (a Linux or
+// Windows test computer), the pinned engine, which is Bun underneath (`BUN_BE_BUN=1`).
 export function typescriptRuntime() {
   const installed = path.join(os.homedir(), ".bun", "bin", process.platform === "win32" ? "bun.exe" : "bun");
-  return process.env.KUVO_CONFORMANCE_BUN || process.env.BUN || (fs.existsSync(installed) ? installed : "bun");
+  return process.env.KUVO_CONFORMANCE_BUN || process.env.BUN
+    || (fs.existsSync(installed) ? installed : process.env.KUVO_CONFORMANCE_ENGINE || "bun");
 }
 
 export function boxCommand(binary, home, env, relay, args, extra = {}, stdout = "ignore") {

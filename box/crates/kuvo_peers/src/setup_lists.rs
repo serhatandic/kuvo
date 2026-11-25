@@ -467,10 +467,15 @@ impl View {
                         .clone()
                         .or_else(|| bot.map(|(id, _)| id.clone()));
                     let bot = bot.map(|(_, bot)| bot);
+                    let is_bot = row.facts.kind == lists::Kind::Bot;
                     Some(AnnouncedAgent {
                         session: row.id.clone(),
-                        name: row.facts.title.clone()?,
-                        kind: if row.facts.kind == lists::Kind::Bot {
+                        name: match &row.facts.title {
+                            Some(title) => title.clone(),
+                            None if is_bot => return None,
+                            None => "New session".into(),
+                        },
+                        kind: if is_bot {
                             AgentKind::Bot
                         } else {
                             AgentKind::Session
@@ -482,7 +487,7 @@ impl View {
                         about: bot
                             .and_then(|bot| bot.job.clone())
                             .filter(|job| !job.is_empty()),
-                        project: None,
+                        project: (!is_bot).then(|| project_name(lists, &row.facts)).flatten(),
                         machine: None,
                         marketplace_agent: None,
                     })
@@ -1920,4 +1925,24 @@ async fn publish_copy(relay: &relay::Sender, host: &Host, item: Publication, pre
 
 fn envelope(value: Value) -> Envelope {
     Envelope(value.as_object().expect("mail object").clone())
+}
+
+/// The project a session is announced under, as the Mac names its own: a project's name where it
+/// isn't its folder's, "Chats" for a chat, else its folder's name.
+fn project_name(lists: &lists::Lists, facts: &lists::Facts) -> Option<String> {
+    let directory = facts.directory.as_str();
+    if let Some(name) = lists
+        .projects
+        .iter()
+        .find(|project| project.directory == directory)
+        .and_then(|project| project.facts.name.clone())
+    {
+        return Some(name);
+    }
+    if facts.kind == lists::Kind::Chat {
+        return Some("Chats".into());
+    }
+    std::path::Path::new(directory)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
 }

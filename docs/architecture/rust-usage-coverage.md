@@ -523,17 +523,123 @@ were removed, as were the cross target directories.
 Cumulative non-test size: 549,884 new-module characters plus 40,276 added existing
 production characters (590,160 total, 0.858× the 687,546 TS characters).
 
-Remaining lightness opportunity: `kuvo_agents/src/claude/program.rs`'s
-`plan_sign_in` calls `local_status` (`:287`, `:344`); on macOS with a retained
-OAuth identity, checking the actual Keychain credential may invoke the existing
-`security` helper (`keychain_written`, `:561`) on a limits read. This avoids
-starting Claude itself and ensures a sign-out is not masked by cached metadata.
-Replacing the short subprocess with native credential metadata is a separate
-platform seam improvement; no change to sign-in truth is assumed here.
+## Eleventh slice: cached OAuth confirmation and engine plan edges
+
+The previous macOS Claude credential metadata subprocess on each confirmation is
+now replaced by a per-Program cache owned by `kuvo_os::keychain::CredentialDate`.
+It tracks the actual Keychain search-list order, store file generations and
+lock status (metadata only, never store contents or passwords). An unchanged
+generation returns the confirmed date; an actual OAuth identity change,
+explicit sign-in, sign-out or maker refusal invalidates it. Any other item's
+edit to the same store also invalidates conservatively: keeping a confirmed
+sign-in after an external deletion is worse than making one extra metadata
+query. Unavailable metadata or a transient query error is not cached. The
+existing macOS metadata command is used only when this evidence changes or
+cannot be confirmed. The scoped test uses a scratch store and lookup stand-in,
+including removal and renewal; all scratch accounts bypass actual Keychain
+searches at both the caller and OS seam. No tests read, write or search the
+user's Keychain, including metadata, or change its search list.
+
+Engine local credential admission now includes the Z.ai alias and excludes
+inactive/NULL records. Provider HTTP-date and delay holds use the common
+Retry-After conversion and the engine's minimum spacing and persisted
+refusal count; an unchanged expired OAuth credential is not sent again.
+A renewed credential of the same identity is eligible for a new answer.
+After a maker read, the current credential list is rechecked even when the
+already-running legacy engine was the authority (never start it to read).
+The limits GET also verifies that authority when no local database supplies
+credentials, bounded to 250 ms; a timeout is not a sign-out. No unchanged
+engine inventory is republished. The old Rust box failed the
+Z.ai/null-active fixture and omitted the dated hold's expiry on the wire. It
+also sent an unchanged refused OAuth token twice and retained a signed-out
+legacy engine's row; both newly corrected route regressions fail on the old
+box and pass on the new one. The six focused route cases and the isolated
+Keychain-cache test pass on Mac.
+
+### Verification of the eleventh port slice
+
+Mac and Lokum (one capped static-musl container) Rust usage: 59/59 applicable.
+TypeScript 20/20 applicable; engine-sessions 81/81; workspace and Bun checks
+pass. The exact expanded differential still matches 12/13 route answers,
+with the only difference the actual local coverage scan timestamp; the native
+UTC/Istanbul corpus matches 2/2. No comparator changes or numeric tolerances.
+The cross binaries were built and cross target directories removed. WSL passes
+59/59; native Windows passed 58/59 with the peer crossing handoff timing out
+again in a focused rerun (not a one-off). The next slice moves remote refresh
+fanout after local admission, to remove the duplicate maker read; the combined
+tip is held until that Windows regression passes.
+
+Cumulative non-test size: 558,172 new-module characters plus 39,795 added
+existing production characters (597,967 total, 0.870× the 687,546 TS characters).
+
+## Twelfth slice: freshness, refresh completion and corrupt evidence
+
+A passive refresh skips a currently confirmed local reading until its spacing
+expires, or borrows the same stable account's newest successful reading from
+an admitted peer in the current setup. It advertises the local sign-in without
+inventing a local checked timestamp, maker reading or notice; old clients'
+`accounts` see the borrowed numbers, while `rows` and peer mail retain the
+actual source. The marker survives restart and sign-out withdraws the holder.
+Older peer mail without the current setup marker cannot suppress a fetch. The
+focused two-computer menu fixture fails on the old box (two maker reads) and
+passes on the new box. Explicit user refreshes still ask the maker directly
+and selected reset/crossing deadlines are not held back by passive spacing;
+the complete TS manual-refresh freshness/away/failure/convergence matrix
+remains open. Remote refresh fanout moves from request start to completed
+local admission; a peer responding to a refresh never fans out a second one.
+
+Refresh completion now considers the whole explicit round's changed maker
+check times: one real success means the round succeeds, and an entirely
+failed round does not make the last successful completion time look newer.
+The old mixed result failed on the prior box; the new mixed/all-failed and
+slow-feed cases pass in the initial Mac focused run.
+
+The shared Grok corpus is read through the actual usage routes on both boxes
+with fixture compact prices and shifted UTC dates. Complete calls, per-model
+event deduplication, caps, billed/fallback prices, unknown models, added
+account labels, append and restart are asserted. The fixture's rounded
+`0.0008` is tested at the actual wire arithmetic `1000*0.3/1e6+1000*0.5/1e6`
+(`0.0007999999999999999`) on both boxes, not a tolerance.
+
+The setup-actor panic from part 6 is fixed separately: a signed replacement
+without a removal record uses the TS fallback `Former computer (<first 8
+characters>)`. A new signed seed and the moves receipt page both failed on
+the old Rust box (connection reset / 409); both Rust and TS pass the focused
+cases. The whole-box source sweep also identified a corrupted persisted
+negative short-only ring selecting a missing map key (old route reset the
+connection). Invalid kept trail bounds/sample order are rejected at load,
+invalid local/peer windows cannot become fresh zero readings, and projections
+choose only an actual ring. The own code's history slot lookup, lineage map
+and rail lookup are optional rather than indexing; peer mail serialization
+refuses a bad body rather than panicking. Two other confirmed external missing
+map keys were reported to the lead and assigned to this slice for independent
+fixes: `kuvo_agents/src/tool_forwarder.rs:136` (cancellation without params)
+and `kuvo_work/src/bots/kit.rs:132–133` (incomplete words without here).
+Each original scoped test panics on old code and passes on the separate
+repair: notifications without a request id are ignored, and incomplete bot
+words are unavailable, both as in TS. Keychain stand-in testing never
+consults the user's real Keychain.
+
+Usage conformance: Rust 64/64 applicable on Mac, Lokum (musl, capped
+container), WSL and native Windows; TS 21/21 applicable on Mac. The
+Unix synthetic process fixture and the native Windows process-ownership
+fixture skip on their respective other platform. Engine-sessions 81/81,
+workspace test check and Bun type check clean. The previous reproducible
+native Windows peer-crossing failure is fixed by asking remote holders
+only after local admission; its scenario passes on all four platforms.
+Cross target directories and remote test scratch were removed, and no
+test boxes remained running.
+The exact expanded seeded differential matches 12 of 13 answers, differing
+only in `coverage[0].scanned` (the real scan time); the native corpus matches
+both answers. No numeric comparison tolerance is used. Home inventory
+differences remain the deliberate timing/storage differences described above.
+Cumulative non-test size: 566,133 new-module characters plus 39,805 added
+existing production characters (605,938 total, 0.881× the 687,546 TS
+characters; independent repairs in other rows excluded).
 
 ## Remaining implementation gaps
 
-- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are local Antigravity CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state edge cases.
+- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are local Antigravity CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, manual refresh freshness/convergence, and full peer refresh/away/notice-state edge cases. Passive duplicate fetch suppression now has a two-computer fixture.
 - Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Engine ChatGPT reset inventory/spending, overlapping confirmations and prolonged unsettled-spend settlement now have focused scenarios. Revoked-member answers, prolonged remote settlement variants and full decision convergence remain open.
 - Legacy reading/pace import, partial windows, semantic account windows, cards/rail/display and notice visibility are implemented with focused cases; remaining mixed-version multi-computer account identity, extended notice-state handoff/forwarder election, full card/display edge cases and delivery parity.
 - Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, full historical lineage replay, remote bot appearance and remaining summary/detail edge states remain open. Bot lineage, kept summaries, page shares, choices and ownership destinations now have boundary cases; the overview/summary is not advertised as complete.
@@ -544,16 +650,16 @@ platform seam improvement; no change to sign-in truth is assumed here.
 ### `box/test/usage/engine-limits.test.ts`
 
 - L50: each sign-in in Settings › Accounts is a row of its own, read with that sign-in — partial — engine credential plan scenario (individual integration rows; full added-account cases open).
-- L91: an OpenRouter key's spend today, this week and this month (UTC's), each starting over when OpenRouter's does; what was bought, for what's left of it — open.
-- L108: a Copilot seat its organization pays for by the credit: the organization's credits and spend this month, where the sign-in may read its billing; nothing, never a zero, where it may not — open.
-- L139: GitHub holding requests off (a 403 with retry-after) stops the look through your organizations, and the next read looks again — open.
+- L91: an OpenRouter key's spend today, this week and this month (UTC's), each starting over when OpenRouter's does; what was bought, for what's left of it — covered by the UTC spend-period route fixture (exact balance and absent extras).
+- L108: a Copilot seat its organization pays for by the credit: the organization's credits and spend this month, where the sign-in may read its billing; nothing, never a zero, where it may not — covered by the Copilot organization route case, including transient failure, filtered fee products and no admin rights.
+- L139: GitHub holding requests off (a 403 with retry-after) stops the look through your organizations, and the next read looks again — covered by the Copilot organization case (only first organization asked while held).
 - L152: ChatGPT's credits and reset credits, read with the engine's sign-in — covered by engine credential plan scenario plus usable credit inventory read and confirmed spending with the saved OAuth identity.
-- L161: an API key with no plan isn't listed; a lapsed sign-in says so without asking its maker — open.
+- L161: an API key with no plan isn't listed; a lapsed sign-in says so without asking its maker — partial — read-only engine database alias/active/no-plan/expired fixture (OpenCode Go and OpenAI API key); specific Z.ai no-plan response still open.
 - L173: SuperGrok's weekly pool, as the Grok CLI reads it — partial — engine credential plan scenario (xAI weekly reading, not the standalone CLI).
-- L180: a SuperGrok plan that ended is listed as ended, with nothing of its last week and no ring — open.
-- L196: an xAI answer in a shape Kuvo doesn't know is a read that failed, never a plan that ended — open.
-- L202: OpenCode Go turning a key away for having no plan lists nothing, rather than asking to sign in again — open.
-- L208: a box starting before its engine answers keeps the engine's sign-ins' holds, and asks nothing early — open.
+- L180: a SuperGrok plan that ended is listed as ended, with nothing of its last week and no ring — covered by the active/malformed/ended SuperGrok route fixture.
+- L196: an xAI answer in a shape Kuvo doesn't know is a read that failed, never a plan that ended — covered by the malformed SuperGrok route case (last accepted ring remains).
+- L202: OpenCode Go turning a key away for having no plan lists nothing, rather than asking to sign in again — covered by the read-only engine database alias/no-plan fixture.
+- L208: a box starting before its engine answers keeps the engine's sign-ins' holds, and asks nothing early — partial — dated maker hold kept across restart (engine process absent; actual local credential DB); exact unavailable legacy engine startup case open.
 - L241: an API key turned away is tried again later, not held to that key as a lapsed sign-in — open.
 - L254: each sign-in says who it is, the same on every computer: a key by the key, Copilot by GitHub's login, SuperGrok by its user — open.
 - L296: signed in to Copilot as another GitHub account, what was kept of the one before isn't shown as this one's — open.
@@ -632,14 +738,14 @@ platform seam improvement; no change to sign-in truth is assumed here.
 - L93: Usage draws capped credit balances and extras even without normal windows — open.
 - L113: Reset labels round up across hour and day boundaries, by elapsed time across DST — open.
 - L142: Limits include the check time for an ended plan without meters — open.
-- L154: A delayed provider leaves refresh pending and sends an update when the new snapshot is ready — open.
-- L189: A failed provider refresh keeps the prior successful completion time — open.
+- L154: A delayed provider leaves refresh pending and sends an update when the new snapshot is ready — covered by slow maker/limits events route fixture.
+- L189: A failed provider refresh keeps the prior successful completion time — covered by mixed/wholly failed refresh route fixture.
 
 ### `box/test/usage/limits-peers.test.ts`
 
-- L233: an account signed in on three computers is read from its maker once each round, by one of them, and every one lists it once with its newest reading — partial — two-computer merged account with stale reset rejection and restart; one maker fetch per round not yet proved.
+- L233: an account signed in on three computers is read from its maker once each round, by one of them, and every one lists it once with its newest reading — partial — two-computer merged account with stale reset rejection and restart; one maker fetch on two computers verified with passive menu borrow/restart/sign-out; three-computer timed convergence open.
 - L285: computers that read at the same moment settle on one reader by the next round — open.
-- L301: a refresh asked of one computer reads there only what's due, and asks the computer an account is on for one it doesn't have — open.
+- L301: a refresh asked of one computer reads there only what's due, and asks the computer an account is on for one it doesn't have — partial — fanout after local sign-in admission; complete explicitly due/remote-only matrix open.
 - L324: a computer that's off keeps its last reading, listed as of when it was read and away, through a restart; what it read is read elsewhere once it's due — open.
 - L356: a maker that turns one computer away holds that one only: another reads the account, and a read that failed never stands in for one — open.
 - L388: a computer signed in to another account since, whose sign-in doesn't say who it is (Copilot's), reads it rather than taking a peer's reading of the one before — open.
@@ -885,9 +991,9 @@ platform seam improvement; no change to sign-in truth is assumed here.
 
 ### `box/test/usage/usage-grok-hosted.test.ts`
 
-- L62: Grok's transcripts: completed turns by model, its own costs where it said them, else priced; a copied event once per model (UsageKit's GrokLogUsageScanner) — open.
+- L62: Grok's transcripts: completed turns by model, its own costs where it said them, else priced; a copied event once per model (UsageKit's GrokLogUsageScanner) — covered by exact shared Grok corpus on both routes.
 - L75: the engine's hosted rows: Go's and Zen's billed costs, both tables, a copy in another table or database once; a key of your own, a cost as text, a running compaction never (UsageKit's OpenCodeUsageScanner) — open.
-- L109: an account's sessions' transcripts, only their updates.jsonl: a row by the account, Grok's total; read on as one grows, through a restart — open.
+- L109: an account's sessions' transcripts, only their updates.jsonl: a row by the account, Grok's total; read on as one grows, through a restart — covered by both-box shared Grok corpus, append and restart.
 - L141: the default account reads your GROK_HOME (your Terminal's sessions too); an added account whose home is the same folder doesn't count it again — open.
 - L179: Go's and Zen's each a row, as billed (not estimated): Go's the same row as its plan limits'; OpenCode's total both; the databases only read — open.
 - L197: an engine's databases in WAL mode, closed so their side files are gone (a channel not running), are read as they are, every one — open.

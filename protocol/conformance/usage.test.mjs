@@ -1973,3 +1973,438 @@ test('Insights lists only completed skill use from compact portable and engine r
   }
   const overview=await call('GET',base+'?period=7&zone=UTC');const skills=overview.json.data.breakdowns.skill;assert.deepEqual(skills.map(row=>row.name).sort(),['fixture','research']);assert.ok(skills.every(row=>row.processed===3*652));
 });
+
+test('engine credentials omit inactive keys, read the Z.ai alias, and distinguish no-plan from lapsed sign-ins',async t=>{
+  if(boxBinary().typescript)return t.skip('Rust reads the isolated engine database rather than starting a maker.');
+  const fs=await import('node:fs');
+  const http=await import('node:http');
+  const {DatabaseSync}=await import('node:sqlite');
+  const now=Date.now();
+  const seen=[];
+  const maker=http.createServer((req,res)=>{
+    seen.push([req.url,req.headers.authorization]);
+    const reply=req.url==='/zai' ? {data:{limits:[{type:'TOKENS_LIMIT',unit:3,number:5,percentage:12,nextResetTime:now+7200000}]}} : {type:'error',error:{type:'EntitlementError',message:'No active subscription'}};
+    res.writeHead(req.url==='/zai'?200:403,{'Content-Type':'application/json'});res.end(JSON.stringify(reply));
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const {computer}=await bench(t);
+  const box=await computer('EngineAliases',undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  const folder=path.join(box.home,'data','opencode');fs.mkdirSync(folder,{recursive:true});
+  const sqlite=path.join(folder,'opencode.db');
+  let db=new DatabaseSync(sqlite);
+  db.exec('CREATE TABLE credential(id TEXT,integration_id TEXT,value TEXT,active INTEGER,time_updated INTEGER)');
+  const insert=db.prepare('INSERT INTO credential VALUES(?,?,?,?,?)');
+  for(const [id,value,active] of [
+    ['openai',{type:'api',key:'fixture-not-a-plan'},1],
+    ['zai',{type:'api',key:'fixture-zai-alias'},1],
+    ['zai-coding-plan',{type:'api',key:'fixture-inactive'},null],
+    ['opencode-go',{type:'api',key:'fixture-no-go-plan'},1],
+    ['xai',{type:'oauth',access:'fixture-expired',expires:now-1},1],
+  ])insert.run(id,id,JSON.stringify(value),active,now);
+  db.close();
+  fs.unlinkSync(path.join(box.home,'run','engine.json'));
+  const before=fs.readFileSync(sqlite);
+  const call=box.connect(await box.start().ready());
+  const refreshed=await call('POST','kuvo/agents/api/kuvo/limits/refresh',{});
+  assert.equal(refreshed.status,200,refreshed.text);
+  const data=await until(async()=>{
+    const reply=await call('GET','kuvo/agents/api/kuvo/limits');
+    return !reply.json.data.refreshPending&&reply.json.data;
+  },'Engine credential read did not settle');
+  const accounts=Object.fromEntries(data.accounts.map(a=>[a.provider,a]));
+  assert.deepEqual(Object.keys(accounts).sort(),['xai','zai']);
+  assert.equal(accounts.zai.service,'zai');
+  assert.equal(accounts.zai.windows[0].used,0.12);
+  assert.equal(accounts.xai.problem.kind,'expired');
+  assert.deepEqual(seen.sort((a,b)=>a[0].localeCompare(b[0])),[['/opencodeGo','Bearer fixture-no-go-plan'],['/zai','Bearer fixture-zai-alias']]);
+  assert.equal(data.refreshFailed,false);
+  assert.deepEqual(fs.readFileSync(sqlite),before);
+  assert.equal(box.engine.asked.filter(r=>r.path==='/api/credential').length,0);
+});
+
+test('an engine maker’s dated hold survives restart without fetching again',async t=>{
+  if(boxBinary().typescript)return t.skip('The scratch bridge disables engine provider reads.');
+  const fs=await import('node:fs');
+  const http=await import('node:http');
+  const {DatabaseSync}=await import('node:sqlite');
+  const now=Date.now(),untilAt=Math.floor((now+3600000)/1000)*1000;
+  let reads=0;
+  const maker=http.createServer((req,res)=>{
+    reads++;
+    res.writeHead(429,{'Content-Type':'application/json','Retry-After':new Date(untilAt).toUTCString()});res.end('{}');
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const {computer}=await bench(t);
+  const box=await computer('EngineHeld',undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  const folder=path.join(box.home,'data','opencode');fs.mkdirSync(folder,{recursive:true});
+  const db=new DatabaseSync(path.join(folder,'opencode.db'));
+  db.exec('CREATE TABLE credential(id TEXT,integration_id TEXT,value TEXT,active INTEGER,time_updated INTEGER)');
+  db.prepare('INSERT INTO credential VALUES(?,?,?,?,?)').run('one','openrouter',JSON.stringify({type:'api',key:'fixture-held'}),1,now);db.close();
+  fs.unlinkSync(path.join(box.home,'run','engine.json'));
+  let resident=box.start(),call=box.connect(await resident.ready());
+  const refresh=async()=>{
+    const reply=await call('POST','kuvo/agents/api/kuvo/limits/refresh',{});
+    assert.equal(reply.status,200,reply.text);
+    return until(async()=>{const view=await call('GET','kuvo/agents/api/kuvo/limits');return !view.json.data.refreshPending&&view.json.data;},'Engine hold did not settle');
+  };
+  let data=await refresh();
+  assert.equal(data.accounts.find(a=>a.provider==='openrouter').problem.kind,'rate-limited');
+  assert.equal(data.accounts.find(a=>a.provider==='openrouter').problem.until,untilAt);
+  assert.equal(reads,1);
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());
+  data=await refresh();
+  assert.equal(data.accounts.find(a=>a.provider==='openrouter').problem.until,untilAt);
+  assert.equal(reads,1);
+});
+
+async function engineQuotaFixture(t,name,respond,credentials) {
+  const http=await import('node:http');
+  const seen=[];
+  const maker=http.createServer((req,res)=>{
+    seen.push({path:req.url,auth:req.headers.authorization});
+    const reply=respond(req);
+    const send=()=>{res.writeHead(reply.status??200,{'Content-Type':'application/json',...reply.headers});
+    res.end(JSON.stringify(reply.body??{}));};
+    if(reply.delay)setTimeout(send,reply.delay);else send();
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const {computer}=await bench(t);
+  const box=await computer(name,undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  box.engine.credentials=credentials;
+  const resident=box.start(),listener=await resident.ready(),call=box.connect(listener);
+  const refresh=async()=>{
+    const result=await call('POST','kuvo/agents/api/kuvo/limits/refresh',{});
+    assert.equal(result.status,200,result.text);
+    return until(async()=>{const reply=await call('GET','kuvo/agents/api/kuvo/limits');return !reply.json.data.refreshPending&&reply.json.data;},'Engine provider refresh did not settle');
+  };
+  return {box,seen,refresh,call,listener,resident};
+}
+const engineSign=(integrationID,value)=>({integrationID,active:true,value});
+
+test('OpenRouter spend periods end at the UTC day, Monday and month boundaries, with no fabricated zero',async t=>{
+  if(boxBinary().typescript)return t.skip('The scratch bridge disables engine provider reads.');
+  let complete=true;
+  const now=Date.now(),today=new Date(now);today.setUTCHours(0,0,0,0);
+  const week=new Date(today);week.setUTCDate(week.getUTCDate()+7-((week.getUTCDay()+6)%7));
+  const month=new Date(today);month.setUTCDate(1);month.setUTCMonth(month.getUTCMonth()+1);
+  const {refresh}=await engineQuotaFixture(t,'RouterPeriods',req=>({body:req.url==='/openrouterKey'?{data:complete?{limit:null,usage_daily:1.84,usage_weekly:9.2,usage_monthly:31.75,is_free_tier:false}:{limit:10,usage:2}}:{data:{total_credits:50,total_usage:42.3}}}),[engineSign('openrouter',{type:'api',key:'fixture-router'})]);
+  let account=(await refresh()).accounts.find(a=>a.provider==='openrouter');
+  assert.deepEqual(account.balance,{left:50-42.3,limit:50,unit:'usd'});
+  assert.deepEqual(account.extras,[
+    {kind:'spent',id:'today',name:'Today',amount:1.84,unit:'usd',resetsAt:today.getTime()+86400000},
+    {kind:'spent',id:'week',name:'This Week',amount:9.2,unit:'usd',resetsAt:week.getTime()},
+    {kind:'spent',id:'month',name:'This Month',amount:31.75,unit:'usd',resetsAt:month.getTime()},
+  ]);
+  complete=false;
+  account=(await refresh()).accounts.find(a=>a.provider==='openrouter');
+  assert.equal(account.extras,undefined);
+});
+
+test('Copilot organization credits ignore seat fees, retain usable answers through failure and stop on a GitHub hold',async t=>{
+  if(boxBinary().typescript)return t.skip('The scratch bridge disables engine provider reads.');
+  let mode='hold';
+  const sign=refresh=>engineSign('github-copilot',{type:'oauth',access:'short',refresh,expires:Date.now()-1000});
+  const orgPrefix='/githubBilling/';
+  const {box,refresh,seen,call}=await engineQuotaFixture(t,'CopilotOrg',req=>{
+    if(req.url==='/copilot')return {body:{login:'fixture-admin',copilot_plan:'business',token_based_billing:true,quota_snapshots:{premium_interactions:{entitlement:0,remaining:0,percent_remaining:0}}}};
+    if(req.url==='/githubOrgs')return {body:[{login:'member-only'},{login:'acme'}]};
+    if(req.url.startsWith(orgPrefix+'member-only/'))return {status:403,headers:mode==='hold'?{'Retry-After':'60'}:{},body:{message:'Must have admin rights'}};
+    if(req.url.startsWith(orgPrefix+'acme/')){
+      if(mode==='failed')return {status:503};
+      if(mode==='member')return {status:403};
+      return {body:{usageItems:[
+        {product:'Copilot',unitType:'ai-credits',grossQuantity:1200,netAmount:14.5},
+        {product:'copilot',unitType:'AI-Units',grossQuantity:300,netAmount:0.5},
+        {product:'Copilot',unitType:'user-months',grossQuantity:3,netAmount:57},
+        {product:'Actions',unitType:'minutes',grossQuantity:900,netAmount:2},
+      ]}};
+    }
+    return {status:404};
+  },[sign('fixture-admin')]);
+  let account=(await refresh()).accounts[0];
+  assert.equal(account.extras,undefined);
+  assert.deepEqual(seen.filter(r=>r.path.startsWith(orgPrefix)).map(r=>r.path.split('/')[2]),['member-only']);
+  mode='allowed';
+  account=(await refresh()).accounts[0];
+  const expected=[{kind:'spent',id:'org_credits',name:'Org Credits',amount:1500,unit:'credits'},{kind:'spent',id:'org_spend',name:'Org Spend',amount:15,unit:'usd'}];
+  assert.deepEqual(account.windows,[]);
+  assert.deepEqual(account.extras,expected);
+  assert.equal(seen.find(r=>r.path==='/githubOrgs').auth,'token fixture-admin');
+  mode='failed';account=(await refresh()).accounts[0];assert.deepEqual(account.extras,expected);
+  mode='member';box.engine.credentials=[sign('fixture-member')];
+  account=(await refresh()).accounts[0];
+  assert.equal(account.plan,'Business');
+  assert.equal(account.extras,undefined);
+  box.engine.credentials=[];
+  const asked=seen.length;
+  const signedOut=await call('GET','kuvo/agents/api/kuvo/limits');
+  assert.ok(!signedOut.json.data.accounts.some(a=>a.provider==='github-copilot'));
+  assert.equal(seen.length,asked,'Withdrawing a legacy engine sign-in requires no maker request');
+});
+
+test('a malformed SuperGrok answer retains the previous window, but an ended plan removes all rings',async t=>{
+  if(boxBinary().typescript)return t.skip('The scratch bridge disables engine provider reads.');
+  let mode='active';
+  const now=Date.now(),start=new Date(now-3*86400000).toISOString(),end=new Date(now+4*86400000).toISOString();
+  const jwt=['e30',Buffer.from(JSON.stringify({sub:'fixture-grok'})).toString('base64url'),'fixture'].join('.');
+  const {refresh}=await engineQuotaFixture(t,'GrokEnded',()=>({body:{config:mode==='active'?{currentPeriod:{start,end},creditUsagePercent:40}:mode==='malformed'?{current_period:{start,end},creditUsagePercent:20}:{isUnifiedBillingUser:true}}}),[engineSign('xai',{type:'oauth',access:jwt,expires:now+3600000})]);
+  let data=await refresh();
+  assert.equal(data.rows.find(r=>r.provider==='xai').rings.long.used,0.4);
+  mode='malformed';data=await refresh();
+  assert.equal(data.accounts[0].problem.kind,'failed');
+  assert.equal(data.rows.find(r=>r.provider==='xai').rings.long.used,0.4);
+  mode='ended';data=await refresh();
+  const row=data.rows.find(r=>r.provider==='xai');
+  assert.equal(row.ended,true);
+  assert.equal(row.problem.kind,'ended');
+  assert.deepEqual(row.windows,[]);
+  assert.deepEqual(row.rings,{});
+});
+
+test('a turned-away engine OAuth sign-in waits for renewal of that credential, then reads the same account',async t=>{
+  if(boxBinary().typescript)return t.skip('The scratch bridge disables engine provider reads.');
+  const fs=await import('node:fs');
+  const http=await import('node:http');
+  const {DatabaseSync}=await import('node:sqlite');
+  const now=Date.now();
+  const claim=Buffer.from(JSON.stringify({sub:'fixture-renewing-grok'})).toString('base64url');
+  const sign=signature=>({type:'oauth',access:['e30',claim,signature].join('.'),expires:now+3600000});
+  let allowed=false,reads=0;
+  const maker=http.createServer((req,res)=>{
+    reads++;
+    const body=allowed?{config:{currentPeriod:{start:new Date(now-3*86400000).toISOString(),end:new Date(now+4*86400000).toISOString()},creditUsagePercent:37}}:{};
+    res.writeHead(allowed?200:401,{'Content-Type':'application/json'});res.end(JSON.stringify(body));
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const {computer}=await bench(t);
+  const box=await computer('RenewedEngine',undefined,folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'}));
+  const folder=path.join(box.home,'data','opencode');fs.mkdirSync(folder,{recursive:true});
+  const sqlite=path.join(folder,'opencode.db');
+  let db=new DatabaseSync(sqlite);db.exec('CREATE TABLE credential(id TEXT,integration_id TEXT,value TEXT,active INTEGER,time_updated INTEGER)');
+  db.prepare('INSERT INTO credential VALUES(?,?,?,?,?)').run('one','xai',JSON.stringify(sign('old')),1,now);db.close();
+  fs.unlinkSync(path.join(box.home,'run','engine.json'));
+  const call=box.connect(await box.start().ready());
+  const refresh=async()=>{
+    const reply=await call('POST','kuvo/agents/api/kuvo/limits/refresh',{});
+    assert.equal(reply.status,200,reply.text);
+    return until(async()=>{const view=await call('GET','kuvo/agents/api/kuvo/limits');return !view.json.data.refreshPending&&view.json.data;},'Renewed engine plan did not settle');
+  };
+  let account=(await refresh()).accounts[0];
+  assert.equal(account.problem.kind,'expired');
+  const identity=account.identity;
+  assert.ok(identity);
+  account=(await refresh()).accounts[0];
+  assert.equal(account.problem.kind,'expired');
+  assert.equal(reads,1,'A refused OAuth credential must not be sent again unchanged');
+  allowed=true;
+  db=new DatabaseSync(sqlite);db.prepare('UPDATE credential SET value=?,time_updated=? WHERE id=?').run(JSON.stringify(sign('new')),now+1,'one');db.close();
+  account=(await refresh()).accounts[0];
+  assert.equal(account.identity,identity);
+  assert.equal(account.problem,undefined);
+  assert.equal(account.windows[0].used,0.37);
+  assert.equal(reads,2);
+});
+
+test('a connected menu borrows a fresh account reading from another computer without asking the maker again',{timeout:120000},async t=>{
+  if(boxBinary().typescript)return t.skip('Scratch TS provider reads are disabled; the Rust reader must reuse actual peer mail.');
+  const http=await import('node:http');
+  const {openLine}=await import('./adapter.mjs');
+  const now=Date.now(),reset=Math.floor(now/1000)+7200;
+  const asked=[];
+  const maker=http.createServer((req,res)=>{
+    asked.push(req.headers.authorization);
+    res.writeHead(200,{'Content-Type':'application/json'});
+    res.end(JSON.stringify({plan_type:'plus',rate_limit:{primary_window:{used_percent:req.headers.authorization==='Bearer fixture-studio'?23:91,limit_window_seconds:18000,reset_at:reset}}}));
+  });
+  await new Promise(resolve=>maker.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>{maker.close(resolve);maker.closeAllConnections();}));
+  const {computer,leases}=await bench(t);
+  const env=folder=>({...isolated(folder),KUVO_TEST_USAGE_BASE:'http://127.0.0.1:'+maker.address().port+'/'});
+  const studio=await computer('FreshStudio',undefined,env);
+  const lab=await computer('FreshLab',undefined,env);
+  const sign=access=>[{integrationID:'openai',active:true,value:{type:'oauth',access,expires:now+3600000,metadata:{accountID:'same-fresh-account'}}}];
+  studio.engine.credentials=sign('fixture-studio');lab.engine.credentials=sign('fixture-lab');
+  const base='kuvo/agents/api/kuvo/limits';
+  const main=studio.connect(await studio.start().ready());
+  const read=await main('POST',base+'/refresh',{});
+  assert.equal(read.status,200,read.text);
+  const original=await until(async()=>{
+    const answer=await main('GET',base);
+    return answer.json.data.rows.find(r=>r.provider==='openai'&&r.rings.short?.used===0.23);
+  },'Studio did not read the plan');
+  assert.deepEqual(asked,['Bearer fixture-studio']);
+  const setup=await main('GET','kuvo/setup');
+  const invite=await main('POST','kuvo/computers/add/code',{}, {'x-kuvo-from':'mac'});
+  assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(setup.json.setup),'Studio did not claim its relay lease');
+  const joined=await lab.join(invite.json.code);assert.equal(joined.code,0,joined.log);
+  let resident=lab.start();
+  const listener=await resident.ready();
+  let call=lab.connect(listener);
+  await until(async()=>{const data=(await call('GET',base)).json.data;return data.rows.find(r=>r.id===original.id)?.rings.short?.used===0.23;},'Lab did not receive fresh peer evidence',30000,100);
+  const line=await openLine(listener,'','kuvo/box/at-work/events',{},30000);
+  try{
+    assert.equal(line.status,200);
+    const borrowed=await until(async()=>{
+      const data=(await call('GET',base)).json.data;
+      return !data.refreshPending&&data.accounts.find(a=>a.provider==='openai'&&a.windows.length)&&data;
+    },'Opening the menu did not admit the local holder',20000,100);
+    assert.deepEqual(asked,['Bearer fixture-studio'],'A fresh peer reading replaces the passive maker request');
+    const own=borrowed.accounts.find(a=>a.provider==='openai');
+    assert.equal(own.windows[0].used,0.23);
+    assert.equal(own.checked,undefined,'Borrowed numbers are not reported as a local maker read');
+    const row=borrowed.rows.find(r=>r.id===original.id);
+    assert.equal(row.rings.short.used,0.23);
+    assert.equal(row.boxes.length,2);
+    assert.equal(row.boxes.find(b=>b.here).checked,undefined);
+    await until(async()=>{const data=(await main('GET',base)).json.data;return data.rows.find(r=>r.id===original.id)?.boxes.length===2;},'The borrower was not advertised as a current holder');
+  }finally{line.close();}
+  await resident.stop();resident=lab.start();call=lab.connect(await resident.ready());
+  await until(async()=>{
+    const view=(await call('GET',base)).json.data;
+    const local=view.accounts.find(a=>a.provider==='openai');
+    return local?.windows[0]?.used===0.23 && local.checked===undefined;
+  },'The borrowed reading did not survive restart');
+  lab.engine.credentials=[];
+  const signedOut=(await call('GET',base)).json.data;
+  assert.ok(!signedOut.accounts.some(a=>a.provider==='openai'));
+  assert.ok(signedOut.rows.find(r=>r.id===original.id)?.boxes.every(b=>!b.here));
+  assert.deepEqual(asked,['Bearer fixture-studio'],'Borrowed history is not a sign-in');
+});
+
+test('a mixed provider refresh succeeds, and a wholly failed refresh retains its last successful completion',async t=>{
+  if(boxBinary().typescript)return t.skip('The scratch bridge disables engine provider reads.');
+  let mode='good';
+  const {refresh}=await engineQuotaFixture(t,'RefreshSuccess',req=>{
+    if(req.url.startsWith('/openrouter')){
+      if(mode!=='good')return {status:503};
+      return {body:req.url==='/openrouterKey'?{data:{limit:10,usage:2}}:{data:{total_credits:50,total_usage:10}}};
+    }
+    if(mode==='failed')return {status:503};
+    return {body:{data:{limits:[{type:'TOKENS_LIMIT',unit:3,number:5,percentage:12,nextResetTime:Date.now()+7200000}]}}};
+  },[engineSign('openrouter',{type:'api',key:'fixture-router'}),engineSign('zai-coding-plan',{type:'api',key:'fixture-zai'})]);
+  let data=await refresh();
+  assert.equal(data.refreshFailed,false);
+  const first=data.refreshCompletedAt;assert.ok(first);
+  mode='mixed';data=await refresh();
+  assert.equal(data.accounts.find(a=>a.provider==='openrouter').problem.kind,'failed');
+  assert.equal(data.accounts.find(a=>a.provider==='zai-coding-plan').problem,undefined);
+  assert.equal(data.refreshFailed,false,'A round with a real success is not a failed refresh');
+  const latest=data.refreshCompletedAt;assert.ok(latest>=first);
+  mode='failed';data=await refresh();
+  assert.equal(data.refreshFailed,true);
+  assert.equal(data.refreshCompletedAt,latest,'A failure must not make the old success look newer');
+});
+
+test('a slow maker keeps the previous ring while refresh is pending and publishes completion on the existing feed',async t=>{
+  if(boxBinary().typescript)return t.skip('The scratch bridge disables engine provider reads.');
+  let slow=false;
+  const {refresh,call,listener}=await engineQuotaFixture(t,'SlowRefresh',()=>({
+    delay:slow?3000:0,
+    body:{data:{limits:[{type:'TOKENS_LIMIT',unit:3,number:5,percentage:slow?40:12,nextResetTime:Date.now()+7200000}]}}
+  }),[engineSign('zai-coding-plan',{type:'api',key:'fixture-zai'})]);
+  const first=await refresh();
+  assert.equal(first.accounts[0].windows[0].used,0.12);
+  const {openLine}=await import('./adapter.mjs');
+  const base='kuvo/agents/api/kuvo/limits';
+  const line=await openLine(listener,'',base+'/events',{},15000);
+  try{
+    assert.equal(line.status,200);
+    slow=true;
+    const pending=await call('POST',base+'/refresh',{});
+    assert.equal(pending.status,200,pending.text);
+    assert.equal(pending.json.data.refreshPending,true);
+    assert.equal(pending.json.data.accounts[0].windows[0].used,0.12);
+    let completed;
+    for await(const frame of line.frames()){
+      if(!frame.changed)continue;
+      const view=(await call('GET',base)).json.data;
+      if(!view.refreshPending&&view.accounts[0]?.windows[0]?.used===0.4){completed=view;break;}
+    }
+    assert.ok(completed,'The limits feed did not announce the completed reading');
+    assert.equal(completed.refreshFailed,false);
+    assert.ok(completed.refreshCompletedAt>=first.refreshCompletedAt);
+  }finally{line.close();}
+});
+
+test('the shared Grok corpus counts completed model turns once and keeps append-only history through restart',async t=>{
+  const fs=await import('node:fs');
+  const fixture=name=>new URL('../../box/test/fixtures/usage/'+name,import.meta.url);
+  const expected=JSON.parse(fs.readFileSync(fixture('grok-expected.json'),'utf8'));
+  const utcDay=at=>new Date(at).toISOString().slice(0,10);
+  const shift=(Math.floor(Date.now()/86400000)-1)*86400000-Date.parse('2026-11-12T00:00:00Z');
+  const shiftDay=day=>utcDay(Date.parse(day+'T00:00:00Z')+shift);
+  const {computer}=await bench(t);
+  const box=await computer('GrokCorpus',undefined,isolated);
+  write(path.join(box.home,'agents','accounts.json'),JSON.stringify([{formatVersion:1},{kind:'grok',id:'work',label:'Work'}]));
+  const home=path.join(box.home,'agents','grok','accounts','work');
+  const priceFolder=path.join(box.home,'agents','usage','pricing');
+  write(path.join(priceFolder,'litellm.json'),fs.readFileSync(fixture('pricing-grok-litellm.json')));
+  write(path.join(priceFolder,'models_dev.json'),fs.readFileSync(fixture('pricing-grok-models-dev.json')));
+  const files=[];
+  for(const name of expected.files){
+    const target=path.join(home,...name.split('/').slice(1));files.push(target);
+    const shifted=fs.readFileSync(fixture(name),'utf8').trimEnd().split('\n').map(line=>{
+      let row;try{row=JSON.parse(line);}catch{return line;}
+      for(const meta of [row._meta,row.params?._meta])if(typeof meta?.agentTimestampMs==='number')meta.agentTimestampMs+=shift;
+      if(typeof row.timestamp==='number')row.timestamp+=shift/1000;
+      if(typeof row.timestamp==='string')row.timestamp=new Date(Date.parse(row.timestamp)+shift).toISOString();
+      return JSON.stringify(row);
+    });
+    write(target,shifted.join('\n')+'\n');
+  }
+  // Other files and the CLI debug log are not usage inputs.
+  write(path.join(home,'sessions','not-updates.jsonl'),fs.readFileSync(files[0]));
+  write(path.join(home,'grok.log'),fs.readFileSync(files[0]));
+  let resident=box.start(),call=box.connect(await resident.ready());
+  const base='kuvo/agents/api/kuvo/usage';
+  const refresh=async()=>{const r=await call('POST',base+'/refresh?zone=UTC',{});assert.equal(r.status,200,r.text);};
+  const get=async()=>{
+    const r=await call('GET',base+'?zone=UTC');assert.equal(r.status,200,r.text);return r.json.data;
+  };
+  await refresh();
+  const first=await until(async()=>{
+    const data=await get();
+    return data.rows.find(r=>r.provider==='grok-cli@work')?.days.some(d=>d.models.length)&&data;
+  },'The native Grok corpus did not reach usage');
+  const rows=first.rows.filter(r=>r.service==='grok'&&r.days.some(d=>d.models.length||d.unknown));
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].provider,'grok-cli@work');
+  assert.equal(rows[0].label,'Work');
+  const days=first.totals.grok.filter(d=>d.models.length).map(({date,tokens,cost,models})=>({date,tokens,cost,models}));
+  // UsageKit's fixture rounds this one decimal; the bridge's wire value is
+  // the exact sum of the two per-token price terms, not that rounded decimal.
+  const exact=expected.days.map(d=>({...d,date:shiftDay(d.date),models:d.models.map(m=>m.model==='grok-5-mini'?{...m,cost:1000*0.3/1e6+1000*0.5/1e6}:m)}));
+  assert.deepEqual(days,exact);
+  assert.deepEqual(Object.fromEntries(first.totals.grok.filter(d=>d.unknown).map(d=>[d.date,d.unknown])),Object.fromEntries(Object.entries(expected.unknown).map(([date,models])=>[shiftDay(date),models])));
+  const at=Date.parse('2026-11-12T13:30:00Z')+shift;
+  fs.appendFileSync(files.at(-1),JSON.stringify({params:{update:{sessionUpdate:'turn_completed',usage:{modelUsage:{'grok-5':{inputTokens:40,outputTokens:2,costUsdTicks:10000000}}}},_meta:{eventId:'fixture-new',agentTimestampMs:at}}})+'\n');
+  await refresh();
+  const grown=await until(async()=>{const data=await get();const day=data.totals.grok.find(d=>d.date===shiftDay('2026-11-12'));return day?.tokens===days[0].tokens+42&&day;},'Appended Grok turn did not reach usage');
+  assert.equal(grown.cost,days[0].cost+0.001);
+  await resident.stop();resident=box.start();call=box.connect(await resident.ready());
+  await until(async()=>{const day=(await get()).totals.grok.find(d=>d.date===grown.date);return day?.tokens===grown.tokens;},'Grok history did not survive restart');
+  assert.deepEqual((await get()).totals.grok.find(d=>d.date===grown.date),grown);
+});
+
+test('a corrupt saved ring cannot panic the resident or invent fresh usage',async t=>{
+  if(boxBinary().typescript)return t.skip('The accepted-reading cache is a Rust format.');
+  const now=Date.now(),reset=Math.floor(now/1000)+7200;
+  const {box,refresh,resident,seen}=await engineQuotaFixture(t,'CorruptRing',()=>({body:{plan_type:'plus',rate_limit:{primary_window:{used_percent:25,limit_window_seconds:18000,reset_at:reset}}}}),[engineSign('openai',{type:'oauth',access:'fixture-corrupt-ring',expires:now+3600000,metadata:{accountID:'fixture-account'}})]);
+  assert.equal((await refresh()).rows[0].rings.short.used,0.25);
+  await resident.stop();
+  const fs=await import('node:fs');
+  const file=path.join(box.home,'agents','usage','accepted-limits.json');
+  const kept=JSON.parse(fs.readFileSync(file,'utf8'));
+  kept.entries.openai.trails.primary.current.used=-0.25;
+  write(file,JSON.stringify(kept));
+  const call=box.connect(await box.start().ready());
+  const reply=await call('GET','kuvo/agents/api/kuvo/limits');
+  assert.equal(reply.status,200,reply.text);
+  assert.ok(!reply.json.data.rows.find(r=>r.provider==='openai')?.rings.short,'Invalid kept evidence cannot look like a fresh 0% ring');
+  assert.equal(seen.length,1,'Recovery did not call a maker on an idle startup');
+});

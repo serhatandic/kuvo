@@ -57,7 +57,7 @@ struct Credential {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SignIn {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     kind: String,
     access: Option<String>,
     refresh: Option<String>,
@@ -72,9 +72,15 @@ impl SignIn {
     }
     fn secret(&self, integration: Integration) -> Option<&str> {
         if integration == Integration::Copilot {
-            self.refresh.as_deref().or(self.key.as_deref())
+            self.refresh
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .or(self.key.as_deref())
         } else {
-            self.access.as_deref().or(self.key.as_deref())
+            self.access
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .or(self.key.as_deref())
         }
     }
 }
@@ -91,7 +97,10 @@ fn admitted(credentials: &Value) -> Option<Vec<(Account, Integration, SignIn)>> 
             .filter_map(|credential| {
                 let kind = Integration::of(&credential.integration_id)?;
                 let sign_in = credential.value;
-                if matches!(kind, Integration::Openai | Integration::Xai) && !sign_in.oauth() {
+                if matches!(kind, Integration::Openai | Integration::Xai)
+                    && !sign_in.oauth()
+                    && !sign_in.access.as_deref().is_some_and(|s| !s.is_empty())
+                {
                     return None;
                 }
                 let secret = sign_in.secret(kind)?.trim();
@@ -446,8 +455,7 @@ impl Reader {
                 .headers()
                 .get("retry-after")
                 .and_then(|h| h.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(|s| now.saturating_add(s.saturating_mul(1000)));
+                .and_then(|s| super::plan_facts::retry_at(s, now));
             return Err(Problem {
                 kind: ProblemKind::RateLimited,
                 message: format!("{maker} is turning away reads of the limits for now."),
@@ -475,7 +483,7 @@ impl Reader {
             };
             return Err(problem);
         }
-        if status != 200 {
+        if !(200..300).contains(&status) {
             return Err(Problem::new(
                 ProblemKind::Failed,
                 format!("{maker} answered {status}."),
@@ -503,7 +511,9 @@ impl Reader {
                 providers.push(account.provider);
                 continue;
             }
-            let secret = sign_in.secret(kind).expect("admitted credential").trim();
+            let Some(secret) = sign_in.secret(kind).map(str::trim) else {
+                continue;
+            };
             let result = if kind != Integration::Copilot
                 && sign_in.oauth()
                 && sign_in.expires.is_some_and(|at| at <= now)

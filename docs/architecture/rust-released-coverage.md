@@ -62,8 +62,14 @@ Part B results (Rust): macOS `compat-repair` 5/5 (2 WSL-only skips), `compat-shi
 WSL are Rust-pack only). Linux (static musl, lokum, one CPU / 1 GB): repair 4/4, shim 2/2,
 released compat 4/4. WSL 2 Ubuntu 24.04 (musl): repair 6/6, shim 2/2, released compat 4/4.
 Native Windows: repair 3/3, shim 2/2 (the delegate under the pinned Windows engine), released
-compat 4/4. Off the Mac the current-beta compat case needs Bun to generate its home and the app
-moves need APFS, so they don't apply there.
+compat 4/4. The app moves need APFS, so they don't apply off the Mac. Where no Bun is installed,
+the current-beta home is generated with the pinned engine's Bun; the TypeScript box can't make or
+keep that home on native Windows (it syncs folders, which Windows refuses), so only that case
+skips there.
+
+Final 7.3 results (Rust): macOS, Linux (musl, one CPU / 1 GB) and WSL 2 pass `compat-repair`,
+`compat-shim`, `compat-stays` and `compat` (R1–R10 and the current-beta home); native Windows
+passes every case that applies to it.
 
 Lighter than TypeScript, same answers: a repair round on WSL 2 asks Windows about the sign-in
 task only until it's seen starting the saved keeper (`run/wsl-task.keeper`), not each round.
@@ -132,6 +138,40 @@ TypeScript keeper copied back `bin/.own` by modification time. A beta.1 home ope
 leads its own setup, so `box personalities` saves through the setup rather than the legacy
 file, and needs the resident (the keeper keeps it running).
 
-Parts A–C and the paragraphs above cover the row's own files. The other coverage maps
-(engine, keeper, adding, updates, settings, setup) still hand 7.3 some cases; their sweep
-comes next.
+**R10, the beta.1 Mac reads the machine's agents.** `compat`'s beta.1 roster case sends the
+Mac's own `ask: "agents"` mail and opens what the machine mails back with beta.1's link itself
+(its one bundled file, copied from the tag; `compat/released-reader.mjs`): the machine's
+conversations, newest first, named as the Mac names its own ("New session" for one without a
+title) and with their project. Rust had sent no project and left untitled conversations out;
+`announced_agents` now names them as TypeScript does (`kuvo_peers/src/setup_lists.rs`). R2 already
+proves the other way. beta.1 ignores the fields it doesn't know (`libraryCopy`, `outputCopy`,
+`activity`, `moving`).
+
+## Part D: what the other maps gave 7.3
+
+| Map, case | Verdict |
+| --- | --- |
+| Engine: `models-starred` 3 | Covered by the Mac move: `favoriteModels` becomes `box/models.json` (`kuvo_move/tests/mac_stage.rs`). |
+| Engine: `attachments-go` 1 (the Mac app's copies), the released Mac copy location | TypeScript-beta only: neither tag sets `KUVO_MAC_ATTACHMENTS`. The move carries the app's `Attachments` (`kuvo_move/src/mac.rs`). The rest of case 1 is 4.1's. |
+| Engine: `attachments-go` 3 | Covered: `kuvo_engine/tests/resident.rs` keeps an attachment a branch names by its Windows path (`ses_sourceWin`). |
+| Engine: `session-notes-writers` 6, `run/notes` | Covered on both boxes: `engine-sessions` "concurrent session note writes…" waits on a held `run/work/.notes.lock`. Neither tag takes a notes lock, so no released process writes beside Rust. |
+| Engine: `worktrees` 15–16 | Row 6.3, which serves the worktree routes (Rust serves none yet). Its case replays beta.1's calls (`Workspace.swift`): `POST kuvo/worktrees {project, branchPrefix}`, `GET kuvo/worktrees` and `?records=1`, `POST kuvo/worktrees/record`, `POST kuvo/worktrees/remove {path, forget \| discard}`, and `POST kuvo/worktrees/rename` turned away with the machine's name kept. |
+| Engine: `engine-own-tools` 2–3, `own-box-engine` Mac launch settings and attribution | beta.1 never starts its engine over a newer box: its `refuseScript` exits 75 on the Rust pack's `bin/box-version`. 0.7.2 starts one with its own launch script and settings, and Rust adds nothing to it; R5 repairs the files after. The retired app's own box went with the app (2.6 move). |
+| Engine: `own-box-engine` Helper launch notes, HOME with a trailing slash | Row 9.3 (the real Helper). |
+| Engine: phone message decoration | The phone app is retired (Part C, own-envelope). |
+| Engine: `run/link.seen`, `run/link.version` | `link.seen`: R5 (0.7's leave-running guard). `link.version`: the box's own marker; no tag reads it. |
+| Keeper: stale Mac visit, saved launcher | R5. |
+| Keeper: `setup-mac.test.js` old signed setup | TypeScript-beta only (above); the writer handoff is 9.1. |
+| Adding: beta.1 peers mail; earlier released Macs adding and removal | R2. A machine a released Mac adds runs that release, which the fleet updates (7.2: U18–U19, U24–U25, U73); R9 removes an away beta.1 Mac. |
+| Adding: a phone's Add a Machine, Remove, Uninstall and Forget (`kuvo/machines`, `kuvo/hosts`) | The phone app is retired. |
+| Adding 413, setup "different terms", "phone stays with its signed Mac", "older Mac coexists", "altered part", "peer announces its setup", "zone count ties", "no known address", "legacy library", "forwarded signed roster" | TypeScript-beta only (above). No tag reads `agents.setup` either. |
+| Setup: SSH personalities | R7. Label restores are 2.5 and 5.2. |
+| The row's `personalities-box.test.js` | The setup map's B1, B5, B18 and B19; the app folder's libraries are 2.6's move and a bot's retelling 5.1's. A beta.1 Mac's library meets the machine's through R7. |
+| Setup: released peer mail readers | R1–R3, R6–R7, R10. |
+| Updates: `update-from-before`, `update-real-keeper` and the predecessor updater rehearsals | 9.1: the predecessor updater is a TypeScript beta's (beta.30). 9.3: a 0.7.2 Mac and a beta.1 machine straight to Rust, with the real Helper. Repair is R5. |
+| Updates: `run/link.json` `macMoved`, `macPeers` | TypeScript-beta fields (neither tag has them); `kuvo_setup/src/actor.rs` carries them. |
+| Settings: Mac device switch and relay (771–855) | The released setting is carried: the move turns `phoneLink` and `phoneLink.relay` into `run/mac-link.json` (`kuvo_move/src/mac/preferences.rs`), which `kuvo_setup/src/mac_host.rs` applies. The switch on This Mac's page is 6.1's: Rust shows it off and unchangeable (`kuvo_services/src/settings/computer.rs:91`). |
+| Peers: `peers.test.js` 2, 22, 24–25 | R1–R3; their signed parts TypeScript-beta only. 3–4: not served by design. 18–19: TypeScript-beta only. 23: beta.1 machines go box to box until the fleet updates them (7.2); a beta.1 Mac's path is R7. |
+| Peers: `mac-peers.test.js` 1 | R2 (the Mac's agents in) and R10 (the machine's out). |
+| Peers: `devices.test.js` 3–4 | TypeScript-beta only: no tag pairs a desktop (`kuvo/devices/pair`). |
+| Peers: `devices-two-boxes.test.js` 1, 5 | 1: the phone app is retired. 5: an earlier TypeScript build's signed copies, 9.1. |

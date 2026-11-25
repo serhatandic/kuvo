@@ -2,6 +2,7 @@
 
 pub mod disk_usage;
 pub mod ipc;
+pub mod keychain;
 pub mod platform;
 pub mod process;
 pub mod usage_server;

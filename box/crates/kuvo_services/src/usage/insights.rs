@@ -1077,13 +1077,12 @@ impl Service {
                         decoded += 1;
                         super::engine_codex_history::observe(&tx, &key, &record, &prices)?;
                         super::engine_hosted_history::observe(&tx, &key, &record)?;
-                        if !lines.contains_key(&record.session) {
-                            lines.insert(
-                                record.session.clone(),
-                                lineage::line_of(&tx, &record.session)?,
-                            );
-                        }
-                        let line = &lines[&record.session];
+                        let line = match lines.entry(record.session.clone()) {
+                            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                entry.insert(lineage::line_of(&tx, &record.session)?)
+                            }
+                        };
                         self.accept_engine(&tx, &mut seq, now, &prices, record, sessions, line)
                     },
                 )?;

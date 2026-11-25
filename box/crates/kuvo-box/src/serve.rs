@@ -645,7 +645,7 @@ pub async fn run(
                     false
                 };
                 let engine_failed = if let Some(reader) = reader {
-                    usage::refresh_engine(limits, engine, reader, home, selected).await
+                    usage::refresh_engine(limits, engine, reader, home, selected, explicit).await
                 } else {
                     false
                 };
