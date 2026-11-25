@@ -193,6 +193,19 @@ impl Installation {
     async fn confirm(&self, selected: &Release) -> io::Result<()> {
         let _lock = self.lock_selection().await?;
         if &self.selected()? == selected {
+            if let Some(previous) = Release::read(&self.previous)? {
+                let home = Home::new(self.home.clone())?;
+                if let Err(error) = update_status::note_last(
+                    &home,
+                    jiff::Timestamp::now().as_millisecond(),
+                    update_status::Outcome::Updated {
+                        from: previous.version().into(),
+                        to: selected.version().into(),
+                    },
+                ) {
+                    eprintln!("Recording the confirmed release: {error}");
+                }
+            }
             files::remove_file_synced(&self.run.join("update-cannot"))?;
             files::remove_file_synced(&self.previous)?;
         }
