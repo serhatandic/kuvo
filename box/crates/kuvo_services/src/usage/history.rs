@@ -87,7 +87,39 @@ fn price(event: &Observation, kind: Kind, pricing: &Pricing, fallback: Option<&s
         fallback: None,
     }
 }
+// SQLite's built-in REAL SUM uses compensated arithmetic. The old bridge
+// adds each maker cost in its traversal order, so a compact SQL aggregate
+// must do the same rather than change the last bit of the wire number.
+struct WireSum;
+impl rusqlite::functions::Aggregate<Option<f64>, Option<f64>> for WireSum {
+    fn init(&self, _: &mut rusqlite::functions::Context<'_>) -> rusqlite::Result<Option<f64>> {
+        Ok(None)
+    }
+    fn step(
+        &self,
+        context: &mut rusqlite::functions::Context<'_>,
+        sum: &mut Option<f64>,
+    ) -> rusqlite::Result<()> {
+        if let Some(cost) = context.get::<Option<f64>>(0)? {
+            *sum = Some(sum.map_or(cost, |sum| sum + cost));
+        }
+        Ok(())
+    }
+    fn finalize(
+        &self,
+        _: &mut rusqlite::functions::Context<'_>,
+        sum: Option<Option<f64>>,
+    ) -> rusqlite::Result<Option<f64>> {
+        Ok(sum.flatten())
+    }
+}
 pub fn schema(db: &Connection) -> rusqlite::Result<()> {
+    db.create_aggregate_function(
+        "kuvo_wire_sum",
+        1,
+        rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        WireSum,
+    )?;
     super::engine_codex_history::schema(db)?;
     super::engine_hosted_history::schema(db)?;
     super::cursor_history_store::schema(db)?;
@@ -219,7 +251,7 @@ fn days(days: &Days) -> Vec<WireDay<'_>> {
             WireDay {
                 date,
                 tokens: models.iter().map(|m| m.tokens).sum(),
-                cost: models.iter().map(|m| m.cost).sum(),
+                cost: models.iter().fold(0.0, |sum, m| sum + m.cost),
                 models,
                 unknown: &day.unknown,
                 fallback: &day.fallback,
@@ -230,17 +262,22 @@ fn days(days: &Days) -> Vec<WireDay<'_>> {
 #[derive(Clone, Default, Debug)]
 pub struct Slots {
     pub used: BTreeMap<i64, BTreeMap<String, (u64, f64)>>,
+    order: Vec<i64>,
     pub unknown: BTreeMap<i64, BTreeSet<String>>,
     pub fallback: BTreeMap<i64, BTreeSet<String>>,
 }
 impl Slots {
     pub fn add(&mut self, slot: i64, model: String, tokens: u64, cost: f64) {
+        if !self.used.contains_key(&slot) {
+            self.order.push(slot);
+        }
         let entry = self.used.entry(slot).or_default().entry(model).or_default();
         entry.0 = entry.0.saturating_add(tokens);
         entry.1 += cost;
     }
     pub fn merge(&mut self, other: &Self) {
-        for (slot, models) in &other.used {
+        for slot in &other.order {
+            let models = &other.used[slot];
             for (model, (tokens, cost)) in models {
                 self.add(*slot, model.clone(), *tokens, *cost);
             }
@@ -271,7 +308,8 @@ impl Slots {
             (day >= earliest && day <= today).then(|| day.to_string())
         };
         let mut days = Days::new();
-        for (at, models) in &self.used {
+        for at in &self.order {
+            let models = &self.used[at];
             let Some(date) = date(*at) else {
                 continue;
             };
@@ -331,7 +369,7 @@ pub fn own(
 ) -> Result<Vec<Account>> {
     let mut records = BTreeMap::<String, Slots>::new();
     let query = format!(
-        "SELECT n.provider,n.at/{SLOT}*{SLOT},p.model,COALESCE(SUM(CASE WHEN p.cost IS NOT NULL THEN p.tokens ELSE 0 END),0),SUM(p.cost),MAX(p.unknown),p.fallback FROM native_call n JOIN native_price p ON p.source=n.source AND p.position=n.position AND p.ordinal=n.ordinal WHERE n.at>=? AND ({}) GROUP BY n.provider,n.at/{SLOT},p.model,p.fallback",
+        "SELECT n.provider,n.at/{SLOT}*{SLOT},p.model,COALESCE(SUM(CASE WHEN p.cost IS NOT NULL THEN p.tokens ELSE 0 END),0),kuvo_wire_sum(p.cost ORDER BY nf.source_order,n.position,n.ordinal),MAX(p.unknown),MAX(p.fallback) FROM native_call n JOIN native_file nf ON nf.source=n.source JOIN native_price p ON p.source=n.source AND p.position=n.position AND p.ordinal=n.ordinal WHERE n.at>=? AND ({}) GROUP BY n.provider,n.at/{SLOT},p.model ORDER BY n.provider,MIN(nf.source_order||char(1)||printf('%016x%08x',n.position,n.ordinal))",
         native_index::CANONICAL
     );
     let mut statement = db.prepare(&query)?;

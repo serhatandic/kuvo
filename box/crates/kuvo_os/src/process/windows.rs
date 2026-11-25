@@ -530,6 +530,98 @@ pub(super) fn executable(pid: u32) -> io::Result<PathBuf> {
     Ok(OsString::from_wide(&path[..length as usize]).into())
 }
 
+/// Ask Windows for the candidate process's command line. This uses limited-query
+/// access and never reads another process's memory or environment.
+pub(super) fn arguments(pid: u32) -> io::Result<Vec<String>> {
+    use windows_sys::{
+        Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation},
+        Win32::UI::Shell::CommandLineToArgvW,
+    };
+    // SAFETY: the PID and access rights are checked by Windows.
+    let process = owned(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })?;
+    let mut needed = 0u32;
+    // SAFETY: a zero-sized null output asks only for the required size.
+    unsafe {
+        NtQueryInformationProcess(
+            process.as_raw_handle(),
+            ProcessCommandLineInformation,
+            null_mut(),
+            0,
+            &mut needed,
+        )
+    };
+    if (needed as usize) < size_of::<UNICODE_STRING>() || needed > 1024 * 1024 {
+        return Err(io::Error::other("Invalid process command line length"));
+    }
+    let mut buffer = vec![0usize; (needed as usize).div_ceil(size_of::<usize>())];
+    // SAFETY: the aligned buffer is writable for the byte count Windows requested.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process.as_raw_handle(),
+            ProcessCommandLineInformation,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::other(format!(
+            "Process command line query: {status:#x}"
+        )));
+    }
+    // SAFETY: the buffer holds at least a UNICODE_STRING and is suitably aligned.
+    let text = unsafe { *buffer.as_ptr().cast::<UNICODE_STRING>() };
+    let start = text.Buffer as usize;
+    let length = usize::from(text.Length);
+    let base = buffer.as_ptr() as usize;
+    if length % 2 != 0
+        || start % 2 != 0
+        || start < base
+        || start
+            .checked_add(length)
+            .is_none_or(|end| end > base + buffer.len() * size_of::<usize>())
+    {
+        return Err(io::Error::other("Invalid process command line buffer"));
+    }
+    // SAFETY: the UTF-16 text is inside the returned, validated buffer.
+    let mut line = unsafe { std::slice::from_raw_parts(text.Buffer, length / 2) }.to_vec();
+    line.push(0);
+    let mut count = 0i32;
+    // SAFETY: line is a terminated UTF-16 command line; Windows owns the returned argv.
+    let argv = unsafe { CommandLineToArgvW(line.as_ptr(), &mut count) };
+    if argv.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    struct Args(*mut *mut u16);
+    impl Drop for Args {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.0.cast());
+            }
+        }
+    }
+    let argv = Args(argv);
+    if count <= 0 || count as usize > line.len() {
+        return Err(io::Error::other("Invalid argument count"));
+    }
+    // SAFETY: CommandLineToArgvW returned this many terminated strings. Bound
+    // each traversal by the original line length and free the allocation once.
+    let mut result = Vec::with_capacity(count as usize);
+    for &ptr in unsafe { std::slice::from_raw_parts(argv.0, count as usize) } {
+        let mut len = 0;
+        while len < line.len() && unsafe { *ptr.add(len) } != 0 {
+            len += 1;
+        }
+        if len == line.len() {
+            return Err(io::Error::other("Unterminated process argument"));
+        }
+        result.push(String::from_utf16_lossy(unsafe {
+            std::slice::from_raw_parts(ptr, len)
+        }));
+    }
+    Ok(result)
+}
+
 pub(super) struct Adopted {
     identity: ProcessIdentity,
     process: OwnedHandle,
@@ -679,7 +771,10 @@ fn listeners<Row>(family: u32, read: impl Fn(&Row) -> (u32, u16)) -> io::Result<
     }
     // SAFETY: the table holds `count` rows after its count, within the checked buffer.
     let rows = unsafe {
-        std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>().add(offset).cast::<Row>(), count)
+        std::slice::from_raw_parts(
+            buffer.as_ptr().cast::<u8>().add(offset).cast::<Row>(),
+            count,
+        )
     };
     Ok(rows.iter().map(read).collect())
 }

@@ -485,12 +485,16 @@ pub async fn run(
         kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
     let working = sessions.clone();
     let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
+    let engine_reader = usage::engine_reader(home, &account);
     let mut resets = kuvo_services::usage::resets::Resets::new(
         home,
         limits.clone(),
         Arc::new(usage::ResetPort {
             agents: agent_shutdown.clone(),
             limits: limits.clone(),
+            engine: engine_reader
+                .clone()
+                .map(|reader| (engine.clone(), reader, home.to_owned())),
         }),
     );
     if let Some(relay) = peers.relay_handle() {
@@ -568,7 +572,6 @@ pub async fn run(
     let refresh_agents = agent_shutdown.clone();
     let refresh_engine = engine.clone();
     let refresh_home = home.to_owned();
-    let engine_reader = usage::engine_reader(home, &account);
     kuvo_services::usage::limits::register_refresh(
         &mut routes,
         limits.clone(),

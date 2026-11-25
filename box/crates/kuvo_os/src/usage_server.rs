@@ -18,14 +18,26 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         }
     })
 }
+fn program_name(program: &str) -> String {
+    let name = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    name.strip_suffix(".exe").unwrap_or(&name).to_owned()
+}
 fn ours(args: &[String]) -> bool {
-    args.first()
-        .is_some_and(|program| program.contains("language_server") || program.ends_with("/agy"))
+    args.first().is_some_and(|program| {
+        let name = program_name(program);
+        name.starts_with("language_server") || name == "agy"
+    })
 }
 fn endpoints(args: &[String], ports: BTreeSet<u16>) -> Vec<Endpoint> {
-    let Some(csrf) = flag(args, "--csrf_token")
-        .or_else(|| args.first().filter(|s| s.ends_with("/agy")).map(|_| ""))
-    else {
+    let Some(csrf) = flag(args, "--csrf_token").or_else(|| {
+        args.first()
+            .filter(|s| program_name(s) == "agy")
+            .map(|_| "")
+    }) else {
         return vec![];
     };
     let mut out = ports
@@ -59,6 +71,7 @@ fn endpoints(args: &[String], ports: BTreeSet<u16>) -> Vec<Endpoint> {
     }
     out
 }
+#[cfg(not(windows))]
 fn nul(file: &Path) -> Option<Vec<String>> {
     Some(
         std::fs::read(file)
@@ -69,6 +82,7 @@ fn nul(file: &Path) -> Option<Vec<String>> {
             .collect(),
     )
 }
+#[cfg(not(windows))]
 fn proc_ports(folder: &Path) -> BTreeSet<u16> {
     let fds = std::fs::read_dir(folder.join("fd"))
         .ok()
@@ -107,6 +121,7 @@ fn proc_ports(folder: &Path) -> BTreeSet<u16> {
 }
 // The fixture root is supplied explicitly by a scratch-home caller; production
 // Linux reads its own /proc. No process is started in either case.
+#[cfg(not(windows))]
 fn from_proc(root: &Path, profile: &Path) -> Vec<Endpoint> {
     let profile = profile.to_string_lossy();
     let home = format!("GEMINI_HOME={profile}");
@@ -129,6 +144,7 @@ fn from_proc(root: &Path, profile: &Path) -> Vec<Endpoint> {
             continue;
         }
         if flag(&args, "--app_data_dir") != Some(profile.as_ref())
+            && flag(&args, "--gemini-dir") != Some(profile.as_ref())
             && !nul(&folder.join("environ")).is_some_and(|env| env.contains(&home))
         {
             continue;
@@ -260,8 +276,119 @@ async fn mac(profile: &Path) -> Vec<Endpoint> {
     }
     vec![]
 }
+#[cfg(windows)]
+fn windows(profile: &Path, fixture: Option<&Path>) -> Vec<Endpoint> {
+    use crate::process::{self, ProcessState};
+    let profile = match profile.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    let within = |path: &Path| {
+        fixture.is_none_or(|root| path.canonicalize().is_ok_and(|p| p.starts_with(root)))
+    };
+    let owns = |args: &[String]| {
+        ["--gemini-dir", "--app_data_dir", "--app-data-dir"]
+            .into_iter()
+            .filter_map(|name| flag(args, name))
+            .any(|value| {
+                Path::new(value).canonicalize().is_ok_and(|path| {
+                    path.to_string_lossy()
+                        .eq_ignore_ascii_case(&profile.to_string_lossy())
+                        || path.to_string_lossy().eq_ignore_ascii_case(
+                            &profile.join("antigravity-acp").to_string_lossy(),
+                        )
+                })
+            })
+    };
+    let candidate = |pid| {
+        process::candidate_arguments(pid, |exe| {
+            let name = program_name(&exe.to_string_lossy());
+            within(exe) && (name == "agy" || name.starts_with("language_server"))
+        })
+        .ok()
+        .flatten()
+    };
+    let parents = match process::process_parents() {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    let listeners = match process::tcp_listeners() {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    // Check only listeners, and only command lines of matching executables.
+    let mut pids = BTreeSet::new();
+    pids.extend(listeners.into_iter().map(|(pid, _)| pid));
+    for pid in pids {
+        let Some((identity, args)) = candidate(pid) else {
+            continue;
+        };
+        let mut admitted = owns(&args);
+        if !admitted
+            && args
+                .first()
+                .is_some_and(|p| program_name(p).starts_with("language_server"))
+        {
+            // An ACP language server inherits its profile from the agy parent
+            // launched with --gemini-dir. No other editor's process is admitted.
+            let mut child = pid;
+            let mut child_start = identity.start_identity.parse::<u64>().unwrap_or(0);
+            for _ in 0..8 {
+                let Some(&parent) = parents.get(&child) else {
+                    break;
+                };
+                if parent == 0 || parent == child {
+                    break;
+                }
+                let Some(start) = process::process_started(parent) else {
+                    break;
+                };
+                if start > child_start {
+                    break;
+                }
+                if let Some((parent_identity, parent_args)) = candidate(parent) {
+                    if parent_args
+                        .first()
+                        .is_some_and(|p| program_name(p) == "agy")
+                        && owns(&parent_args)
+                        && parent_identity.state() == ProcessState::Live
+                    {
+                        admitted = true;
+                        break;
+                    }
+                }
+                child = parent;
+                child_start = start;
+            }
+        }
+        if !admitted || identity.state() != ProcessState::Live {
+            continue;
+        }
+        // The listening table is sampled again after the profile proof, so a
+        // recycled PID cannot lend a previous process's port to this candidate.
+        let ports = process::tcp_listeners()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(owner, port)| (owner == pid && port > 0).then_some(port))
+            .collect::<BTreeSet<_>>();
+        if identity.state() != ProcessState::Live {
+            continue;
+        }
+        let out = endpoints(&args, ports);
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    vec![]
+}
+
 pub async fn discover(profile: PathBuf, fixture: Option<PathBuf>) -> Vec<Endpoint> {
     if let Some(root) = fixture {
+        #[cfg(windows)]
+        return tokio::task::spawn_blocking(move || windows(&profile, Some(&root)))
+            .await
+            .unwrap_or_default();
+        #[cfg(not(windows))]
         return tokio::task::spawn_blocking(move || from_proc(&root, &profile))
             .await
             .unwrap_or_default();
@@ -276,7 +403,13 @@ pub async fn discover(profile: PathBuf, fixture: Option<PathBuf>) -> Vec<Endpoin
     {
         return mac(&profile).await;
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        return tokio::task::spawn_blocking(move || windows(&profile, None))
+            .await
+            .unwrap_or_default();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = profile;
         vec![]

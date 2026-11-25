@@ -53,12 +53,16 @@ impl Rates {
         let above = long_context && prompt > 200_000;
         let pick = |base: f64, tier: Option<f64>| if above { tier.unwrap_or(base) } else { base };
         let input = pick(self.input, self.input_above);
-        let total = tokens.input as f64 * input
-            + tokens.output as f64 * pick(self.output, self.output_above)
-            + tokens.cache_write_5m as f64 * pick(self.cache_write, self.cache_write_above)
-            + tokens.cache_write_1h as f64 * input * 2.0
-            + tokens.cache_read as f64 * pick(self.cache_read, self.cache_read_above);
-        total / 1_000_000.0 * if tokens.fast { self.fast } else { 1.0 }
+        // Wire costs use the bridge's IEEE-754 operation order: price each
+        // bucket in dollars, add left to right, then apply the fast multiplier.
+        let total = (tokens.input as f64 * input) / 1_000_000.0
+            + (tokens.output as f64 * pick(self.output, self.output_above)) / 1_000_000.0
+            + (tokens.cache_write_5m as f64 * pick(self.cache_write, self.cache_write_above))
+                / 1_000_000.0
+            + (tokens.cache_write_1h as f64 * input * 2.0) / 1_000_000.0
+            + (tokens.cache_read as f64 * pick(self.cache_read, self.cache_read_above))
+                / 1_000_000.0;
+        total * if tokens.fast { self.fast } else { 1.0 }
     }
     fn scaled(mut self, factor: f64) -> Self {
         self.input *= factor;
@@ -128,6 +132,7 @@ pub struct Pricing {
     aliases: Vec<(regex::Regex, String)>,
     fallback: BTreeMap<String, Vec<String>>,
     multipliers: BTreeMap<String, f64>,
+    resolved: std::sync::Mutex<BTreeMap<String, Option<Rates>>>,
 }
 const LITELLM: &str = include_str!("../../../../src/usage/pricing/pricing_litellm_snapshot.json");
 const MODELS: &str = include_str!("../../../../src/usage/pricing/pricing_models_dev_snapshot.json");
@@ -188,6 +193,7 @@ impl Pricing {
             aliases,
             fallback,
             multipliers: supplement.fast_multipliers,
+            resolved: Default::default(),
         })
     }
     fn exact(&self, name: &str) -> Option<&Rates> {
@@ -225,8 +231,18 @@ impl Pricing {
             .map_or(model, |(_, canonical)| canonical.as_str())
     }
     pub fn resolve(&self, model: &str) -> Option<Rates> {
-        self.lookup(self.canonical_name(model))
-            .or_else(|| self.lookup(model))
+        let mut resolved = self.resolved.lock().expect("resolved model prices");
+        if let Some(known) = resolved.get(model) {
+            return known.clone();
+        }
+        let rates = self
+            .lookup(self.canonical_name(model))
+            .or_else(|| self.lookup(model));
+        if resolved.len() >= 4096 {
+            resolved.clear();
+        }
+        resolved.insert(model.to_owned(), rates.clone());
+        rates
     }
     fn fuzzy(&self, model: &str) -> Option<(&str, &Rates)> {
         self.primary

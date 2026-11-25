@@ -847,8 +847,8 @@ impl Service {
             .ordered()
             .into_iter()
             .filter(|e| {
-                matches!(e.account.service, Provider::Codex | Provider::Claude)
-                    && e.account.account.is_some()
+                e.account.service == Provider::Codex
+                    || e.account.service == Provider::Claude && e.account.account.is_some()
             })
             .map(|e| (e.account.clone(), e.account.row(&self.key)))
             .collect()
@@ -870,164 +870,34 @@ impl Service {
         provider: Option<&str>,
     ) -> Option<(Account, String)> {
         let state = self.state.lock().expect("limits lock");
-        state
+        let mut candidates = state
             .ordered()
             .into_iter()
             .filter(|entry| {
-                matches!(entry.account.service, Provider::Codex | Provider::Claude)
-                    && entry.account.account.is_some()
+                entry.account.service == Provider::Codex
+                    || entry.account.service == Provider::Claude && entry.account.account.is_some()
             })
             .filter(|entry| provider.is_none_or(|p| p == entry.account.provider))
-            .find_map(|entry| {
+            .filter_map(|entry| {
                 let id = entry.account.row(&self.key);
-                row.is_none_or(|row| row == id)
-                    .then(|| (entry.account.clone(), id))
+                row.is_none_or(|row| row == id).then_some((entry, id))
             })
+            .collect::<Vec<_>>();
+        if provider.is_none() {
+            candidates.sort_by_key(|(entry, _)| {
+                !entry.facts.extras.iter().any(|extra| {
+                    matches!(extra, super::plan_facts::Extra::Resets { usable: true, .. })
+                })
+            });
+        }
+        candidates
+            .first()
+            .map(|(entry, id)| (entry.account.clone(), id.clone()))
     }
-    pub fn describe(&self) -> String {
+    pub fn describe(&self, zone: Option<&str>) -> String {
         let now = now();
-        let state = self.state.lock().expect("limits lock");
-        if state.entries.is_empty() {
-            return format!(
-                "No plan limits are known on {}: no coding agent here is signed in to a plan whose limits can be read.",
-                self.name
-            );
-        }
-        let mut lines = vec![format!(
-            "Plan limits of your accounts (signed in on {} unless it says where; used is how much of the window is gone):",
-            self.name
-        )];
-        let mut seen = std::collections::BTreeSet::new();
-        for entry in state.ordered() {
-            if entry
-                .facts
-                .problem
-                .as_ref()
-                .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::None)
-            {
-                continue;
-            }
-            if !seen.insert(entry.account.row(&self.key)) {
-                continue;
-            }
-            lines.push(format!(
-                "- {}{}, provider {}:",
-                entry.account.title(),
-                entry
-                    .facts
-                    .plan
-                    .as_ref()
-                    .map_or(String::new(), |plan| format!(", {plan}")),
-                entry.account.provider
-            ));
-            if entry.trails.is_empty()
-                && entry.facts.extras.is_empty()
-                && entry.facts.balance.is_none()
-            {
-                lines.push("  - none read yet".into());
-            }
-            for trail in entry.trails.values() {
-                let window = &trail.current;
-                let title = window.title();
-                if window.expired(now) {
-                    lines.push(format!("  - {title}: started over, not read since"));
-                    continue;
-                }
-                let resets = window
-                    .resets_at
-                    .and_then(|at| jiff::Timestamp::from_millisecond(at.try_into().ok()?).ok())
-                    .map_or(String::new(), |at| format!(", resets {at}"));
-                let minutes = now.saturating_sub(window.read) / 60_000;
-                let since = if minutes == 0 {
-                    "just now".into()
-                } else if minutes < 60 {
-                    format!("{minutes}m ago")
-                } else {
-                    format!("{}h ago", minutes / 60)
-                };
-                lines.push(format!(
-                    "  - {title}: {}% used{resets}, as of {since}",
-                    (window.used * 100.0).round()
-                ));
-            }
-            let amount = |n: f64, unit: super::plan_facts::Unit| match unit {
-                super::plan_facts::Unit::Usd => format!("${n:.2}"),
-                super::plan_facts::Unit::Requests => format!("{:.0} requests", n),
-                super::plan_facts::Unit::Credits => format!("{:.0} credits", n),
-            };
-            if let Some(b) = &entry.facts.balance {
-                lines.push(format!(
-                    "  - credits: {} left{}",
-                    amount(b.left, b.unit),
-                    b.limit
-                        .map_or(String::new(), |n| format!(" of {}", amount(n, b.unit)))
-                ));
-            }
-            use super::plan_facts::Extra;
-            for extra in &entry.facts.extras {
-                match extra {
-                    Extra::Resets { count, usable, .. } => {
-                        let id = entry.account.row(&self.key);
-                        let always = self
-                            .reset_permission
-                            .lock()
-                            .expect("reset permissions")
-                            .get(&id)
-                            == Some(&true);
-                        let use_words = if *count > 0 && *usable {
-                            format!(
-                                "; use_limit_reset with account \"{id}\" uses one ({})",
-                                if always {
-                                    "the user allows it without asking"
-                                } else {
-                                    "the user approves each"
-                                }
-                            )
-                        } else if *count > 0 {
-                            "; none can be used from your computers now".into()
-                        } else {
-                            String::new()
-                        };
-                        lines.push(format!(
-                            "  - rate-limit resets: {count} available{use_words}"
-                        ));
-                    }
-                    Extra::Unreadable { message, .. } => lines.push(format!("  - {message}")),
-                    Extra::Left {
-                        name,
-                        amount: n,
-                        unit,
-                        ..
-                    } => lines.push(format!("  - {name}: {} left", amount(*n, *unit))),
-                    Extra::Spent {
-                        name,
-                        amount: n,
-                        unit,
-                        resets_at,
-                        ..
-                    } if resets_at.is_none_or(|at| at > now) => {
-                        lines.push(format!("  - {name}: {} spent", amount(*n, *unit)))
-                    }
-                    Extra::Capped {
-                        name,
-                        amount: n,
-                        limit,
-                        unit,
-                        resets_at,
-                        ..
-                    } if resets_at.is_none_or(|at| at > now) => lines.push(format!(
-                        "  - {name}: {} of {} used",
-                        amount(*n, *unit),
-                        amount(*limit, *unit)
-                    )),
-                    _ => {}
-                }
-            }
-            if let Some(problem) = &entry.facts.problem {
-                lines.push(format!("  - Not read just now: {}", problem.message));
-            }
-        }
-        lines.join("\n")
+        let answer = self.answer(now);
+        super::plan_tool_words::describe(&self.name, &answer["data"]["rows"], now, zone)
     }
     pub fn answer(&self, now: u64) -> Value {
         let state = self.state.lock().expect("limits lock");

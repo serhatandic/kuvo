@@ -58,9 +58,15 @@ is in the thin app rather than kuvo_box). All have resident route specs.
 | Billed channel history | `a copied billed engine message uses the first channel and falls back when it is removed` | Both boxes; Rust empty-channel reconciliation verified on all four platforms |
 | Antigravity refusals | `Antigravity never resends a refused bearer or refresh token after restart` | Rust loopback maker; Mac, Lokum, WSL and native Windows verified |
 | Antigravity holds | `Antigravity keeps another host’s usable windows while one quota call is held` | Rust loopback maker; Mac, Lokum, WSL and native Windows verified |
-| Antigravity local | `Antigravity reads only its running profile’s owned loopback TLS server without a bearer token` | Rust synthetic process/socket fixture and temporary self-signed TLS; Mac, Lokum and WSL verified; native Windows not applicable as in TS |
+| Antigravity local | `Antigravity reads only its running profile’s owned loopback TLS server without a bearer token` | Rust synthetic process/socket fixture and temporary self-signed TLS; Mac, Lokum and WSL verified; native Windows has its own actual-process fixture in ninth slice |
 | Notice recovery | `usage_readings.rs`: corroborated recovery and off-toggle crossing | Deterministic scoped Rust tests; Mac 5/5 |
 | Peer scheduling | `usage_peers` exact deadline helper; no timer with no reachable member | Rust idle design; verification pending |
+| Engine ChatGPT resets | `the engine ChatGPT reset credit uses the saved OAuth identity without starting the engine` | Rust loopback fixture for earliest credit, restart replay and overlapping confirms; Mac, Lokum, WSL and native Windows verified |
+| Unsettled spend | `an older unsettled reset is settled before a later confirmation spends another credit` | Rust Codex scripted maker; same old request and a distinct new credit; Mac, Lokum, WSL and native Windows verified |
+| Plan tool | `a computer without the plan sign-in spends once on the holder, and shares Always Allow decisions` | Now additionally checks the remote account and reset-holder words through `plan_limits` |
+| Codex archive and home roots | `Codex history prefers a live session’s tier to its copied archive and reads each configured home` | Both boxes; exact cost arithmetic, linked root variant on Unix, comma-separated homes |
+| Exact pricing | `usage_pricing.rs`, bundled rate fixture with exact f64 bits; native corpus differential | Exact catalog numbers; wire aggregation order; Mac, Lokum, WSL and native Windows verified |
+| Native Windows Antigravity | `native Windows finds only the listening language server of its own Antigravity ACP profile` | Actual native process tree and listening sockets, synthetic maker and wrong-profile sibling; Mac, Lokum, WSL and native Windows verified |
 
 ## Deliberate work-timing changes
 
@@ -123,7 +129,16 @@ start rarely used work only on demand.
   and deadline scenario remains open.
 - The price catalog (about 416 KiB bundled) is parsed once per Insights service;
   a new file stamp on one of its three catalog files invalidates the in-memory
-  book. The transcript writer adds compatible mutation-bounded SQLite tables and
+  book. Resolution of an individual model (including misses and aliases) is now
+  memoized within that catalog, bounded to 4,096 names. The native deduplication
+  query uses separate exact `(provider,dedup)` and `(provider,message)` indexes
+  instead of SQLite's provider-wide correlated scan: the query plan now uses both
+  key columns, and a 1,350-call fixture selected the same 149 canonical records.
+  Cost aggregation remains in SQLite over compact indexed rows, but its ordered
+  REAL sum uses the reference's plain IEEE-754 addition instead of compensated
+  SQLite `SUM`; the source/slot insertion order and per-token-bucket division
+  match the TypeScript wire, not a tolerance in the comparison.
+  The transcript writer adds compatible mutation-bounded SQLite tables and
   triggers, keeping the existing transcript schema version. An unchanged ownership
   header and generation allow Insights to select only rows whose projection
   revision advanced. A v1 file not yet opened for writing by Rust, a new database
@@ -356,7 +371,7 @@ existing production characters (471,443 total, 0.686× the 687,546 TS characters
 
 ## Verification of the eighth port slice
 
-Mac, static musl Lokum and WSL Rust usage: 40/40; native Windows: 39/39 applicable, one deliberate skip (the TS reader has no native Windows local Antigravity discovery). TypeScript: 14/14 applicable, 26 Rust-only skips. All remote scratch and cross target folders removed; the shared PC was passed to the next row after checking no test processes remained.
+Mac, static musl Lokum and WSL Rust usage: 40/40; native Windows: 39/39 applicable, one skip (native Windows local Antigravity discovery was still a Rust gap, not a permanent platform exception). TypeScript: 14/14 applicable, 26 Rust-only skips. All remote scratch and cross target folders removed; the shared PC was passed to the next row after checking no test processes remained.
 Workspace check and Bun check pass (existing unused wake helper warning); engine-sessions 81/81.
 Scoped current-window reading tests: 5/5. The last billed channel removal
 regression passed after fixing reconciliation on an empty channel set.
@@ -372,10 +387,44 @@ is an open parity gap, not an intentional timing difference.
 Cumulative non-test size: 464,513 new-module characters plus 34,471 added
 existing production characters (498,984 total, 0.726× the 687,546 TS characters).
 
+## Verification of the ninth port slice
+
+Mac Rust usage 43/43 applicable (one native-Windows fixture skip), TypeScript
+15/15 applicable (29 Rust-only/platform fixture skips), engine-sessions 81/81;
+workspace check and Bun check pass. The three pair fixtures first waited for a
+relay lease before requesting an invitation; main now claims it on demand.
+They invite first, as the existing two-computer fixture does, then wait for the
+actual lease. The focused rerun and complete Rust/TS reruns passed. The new
+flat Codex root initially looked for its sign-in in the parent; the rail and
+Helper regressions now both pass after recording the actual credential home.
+
+The eight standard seeded route answers match exactly. The separate native-log
+corpus's UTC refresh and Istanbul history answers also have **zero request
+differences** with the unchanged exact differential comparator. The former
+live/archived tier mismatch and all 24 numeric differences are fixed: price
+buckets are divided and added in the bridge's order, positive zero is kept on
+empty cost reductions, and `kuvo_wire_sum` performs ordered plain addition
+rather than SQLite's compensated `SUM`. The shared price fixture passes at
+exact f64 bits (3/3 scoped Rust pricing cases). No comparison tolerance was
+introduced. Whole-home inventories still differ for the previously mapped
+cache/startup/identity reasons; full engine/peer/Insights numeric matrices
+remain to be exercised.
+
+Native Windows discovery now asks the OS for an admitted candidate's command
+line with limited-query access and verifies its profile and current listening
+PID. A language server may be the child of the ACP process with its explicit
+`--gemini-dir`; a different profile is excluded. It does not start a program,
+read another process's memory/environment, or send a bearer token to a local
+server. The new native fixture uses actual test-owned processes and sockets,
+not a simulated `/proc` on Windows. Cross-Mac, Lokum, WSL and native Windows verified.
+
+Cumulative non-test size: 490,289 new-module characters plus 38,482 added
+existing production characters (528,771 total, 0.769× the 687,546 TS characters).
+
 ## Remaining implementation gaps
 
 - Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Antigravity partial-read lifetime, local CSRF refusal and missing-token/profile races (running-profile fallback, bearer/refresh refusal persistence and independent host holds now have scenarios), Cursor full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state edge cases.
-- Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Prolonged unsettled-spend settlement, engine ChatGPT resets, revoked-member answers and full decision convergence remain open.
+- Reset spending: local Codex credit and Claude grant confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Peer forwarding and on/off decisions now have a two-computer scenario, including a caller restart and replay of the holder’s original request. Engine ChatGPT reset inventory/spending, overlapping confirmations and prolonged unsettled-spend settlement now have focused scenarios. Revoked-member answers, prolonged remote settlement variants and full decision convergence remain open.
 - Reading preservation across TS-to-Rust upgrade, full mixed-version multi-computer account identity, extended notice-state handoff and forwarder election, all card/rail/detail presentation and notice visibility cases.
 - Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Engine and Antigravity native history, hosted billed usage and pricing feeds/repricing, quarter-hour history and fallback estimates now have route scenarios. Engine ChatGPT and Cursor account-wide history now have native route scenarios; remaining Antigravity deletion and malformed/busy/symlink cases, full history-peer delta/size/freshness/identity tests, historical Insight replay and reset/cursor edge cases, bot lineage/appearance, full summary and detail parity remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
@@ -388,7 +437,7 @@ existing production characters (498,984 total, 0.726× the 687,546 TS characters
 - L91: an OpenRouter key's spend today, this week and this month (UTC's), each starting over when OpenRouter's does; what was bought, for what's left of it — open.
 - L108: a Copilot seat its organization pays for by the credit: the organization's credits and spend this month, where the sign-in may read its billing; nothing, never a zero, where it may not — open.
 - L139: GitHub holding requests off (a 403 with retry-after) stops the look through your organizations, and the next read looks again — open.
-- L152: ChatGPT's credits and reset credits, read with the engine's sign-in — partial — engine credential plan scenario (credits and zero reset inventory).
+- L152: ChatGPT's credits and reset credits, read with the engine's sign-in — covered by engine credential plan scenario plus usable credit inventory read and confirmed spending with the saved OAuth identity.
 - L161: an API key with no plan isn't listed; a lapsed sign-in says so without asking its maker — open.
 - L173: SuperGrok's weekly pool, as the Grok CLI reads it — partial — engine credential plan scenario (xAI weekly reading, not the standalone CLI).
 - L180: a SuperGrok plan that ended is listed as ended, with nothing of its last week and no ring — open.
@@ -485,7 +534,7 @@ existing production characters (498,984 total, 0.726× the 687,546 TS characters
 - L356: a maker that turns one computer away holds that one only: another reads the account, and a read that failed never stands in for one — open.
 - L388: a computer signed in to another account since, whose sign-in doesn't say who it is (Copilot's), reads it rather than taking a peer's reading of the one before — open.
 - L440: Refresh on a Mac, whose Claude only its turns tell of, asks the computer that reads that account — open.
-- L460: an agent's plan_limits says the numbers its computer's accounts were read with anywhere, and the accounts on your other computers, where — open.
+- L460: an agent's plan_limits says the numbers its computer's accounts were read with anywhere, and the accounts on your other computers, where — covered by merged remote account/holder tool wording in the peer reset scenario.
 - L484: a box whose group chats didn't start takes plan limits, and says not now to group chat mail, so what mustn't be lost comes again — open.
 - L495: the link saying who your computers are again tells no one again, and an ask is answered once a minute at most — open.
 - L513: a tell lost while a computer's link was off is made up once that link carries mail again — open.
@@ -511,7 +560,7 @@ existing production characters (498,984 total, 0.726× the 687,546 TS characters
 - L493: with a machine signed in to the same account, the Mac's row has its resets, and a reset asked on the Mac is used there, once, and the Mac answers when it is — covered by two-computer Claude grant forwarding fixture on isolated file-owned sign-ins.
 - L536: Always Allow, set from the Mac, is kept with the account on the machine that spends its resets, and every box says so — covered by two-computer grant forwarding and shared decisions fixture.
 - L583: its maker couldn't say a reset went through: Retry, with a new confirmation, goes as the same request, so a second isn't used — open.
-- L604: two confirmations at once (two apps): one request goes, and both hear it went — open.
+- L604: two confirmations at once (two apps): one request goes, and both hear it went — covered by concurrent engine ChatGPT credit fixture.
 - L619: Always Allow is the account's: signed in to another account in the same place, agents ask again, and coming back doesn't bring it back — open.
 - L643: Always Allow set on one of your computers with the sign-in is kept on the other, and turned off on either, it's off on both — partial — remote caller enables, holder disables, and both observe the decision; both holders signed in variant open.
 - L668: the answer from the computer with the sign-in is lost: Retry, with a new confirmation, is asked there under the same id, and nothing more is used — partial — remote unknown and caller restart replay same confirmation; new confirmation and lost relay answer variants open.
@@ -519,7 +568,7 @@ existing production characters (498,984 total, 0.726× the 687,546 TS characters
 - L733: Always Allow on, then off, while the computer with the sign-in is away: the older on, told last, doesn't undo the off — open.
 - L760: an off for an account this box doesn't know yet is kept: once it does, the account isn't allowed, and an older on doesn't change that — open.
 - L776: a reset still open, asked again while its maker holds requests off: refused for now, and still open, never 'nothing was used' — open.
-- L794: a new reset asked well after one that never heard back: that one is settled first from what its maker says, and this one is its own — open.
+- L794: a new reset asked well after one that never heard back: that one is settled first from what its maker says, and this one is its own — covered by aged Codex journal and distinct late-credit fixture.
 - L831: no answer came from the computer with the sign-in, then it can't read the account (Claude Code signed out there): the Mac's spend stays open, never 'nothing was used', and Retry goes again — open.
 - L851: a peer's ask more than 10 minutes after an open spend that went through: that one is settled first, and this one is a reset of its own — open.
 - L871: hetzner's clock a minute ahead: Always Allow on there, then off from the Mac within that minute, is off on both — open.
@@ -679,11 +728,11 @@ existing production characters (498,984 total, 0.726× the 687,546 TS characters
 - L67: with a fallback model chosen, a model with no price is estimated at its rates, and the day says so; still an unknown model — open.
 - L77: the engine's rows: only those priced at nothing, a message copied between databases once, priced as Codex's (UsageKit's OpenCodeCodexUsageScanner) — partial — engine OAuth history route fixture; full UsageKit corpus open.
 - L83: auto-review is priced by its date: the model it ran on then, free from 2026-10-06 (UTC); a snapshot date comes off a model's name — open.
-- L159: an account's sessions and archived sessions: a log in both counted once, as its sessions copy; a row by the account, Codex's total — open.
+- L159: an account's sessions and archived sessions: a log in both counted once, as its sessions copy; a row by the account, Codex's total — covered by live priority versus archived copy and exact native corpus differential.
 - L183: a log as it grows is read on with its running total, through a restart; one rewritten is read again whole — partial — native JSONL append/saved cursor test; integration and rewritten Codex fixture open.
-- L213: on a Mac an added account's history is your own Codex's (its sessions link there): counted once, with yours — open.
+- L213: on a Mac an added account's history is your own Codex's (its sessions link there): counted once, with yours — covered by linked native root fixture on Mac/Unix.
 - L230: two accounts that link to a folder neither is in (your ~/.codex while CODEX_HOME names another): it's the first's, and each keeps its own — open.
-- L252: your own Codex reads each home a comma-separated CODEX_HOME names, as UsageKit did; a home with neither sessions nor archived sessions is read itself — open.
+- L252: your own Codex reads each home a comma-separated CODEX_HOME names, as UsageKit did; a home with neither sessions nor archived sessions is read itself — covered by the multiple-home live/archive fixture (including flat-home file).
 - L277: the fallback model is the box's (and your other computers'): chosen through the route, kept through a restart, a model with no price estimated at its rates; one that isn't a choice is refused — open.
 - L339: only a ChatGPT sign-in's rows, priced at nothing, from openai; opencode 2's only from when it signed in; a compaction counts — partial — v1/v2, zero-price and sign-in cutoff verified; compaction fixture open.
 - L371: a database that can't be read, and none that could: not known now (never none); one the engine left without its -wal and -shm is read as it is — open.
@@ -813,7 +862,7 @@ existing production characters (498,984 total, 0.726× the 687,546 TS characters
 ### `box/test/usage/usage.test.ts`
 
 - L36: Claude's logs: the lines that count, deduplicated, priced, by the day (UsageKit's ClaudeLogUsageScanner) — open.
-- L58: the bundled prices name each model's rates as UsageKit's do: aliases, fast variants, fuzzy keys, models.dev, none — open.
+- L58: the bundled prices name each model's rates as UsageKit's do: aliases, fast variants, fuzzy keys, models.dev, none — covered by the shared pricing-expected.json corpus at exact f64 bits.
 - L106: an account's logs as days in the zone a client asks for: late evening in UTC is the next day in Istanbul — covered by native usage history timezone scenario.
 - L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — partial — native JSONL complete-line/append/rewrite test and native Claude Insights append/rewrite/restart. Usage history totals route open.
 - L170: a subagent's log replaying its parent's reply counts once; an account removed goes; one with no identity yet is its box's own row — open.
