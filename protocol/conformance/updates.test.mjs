@@ -14,6 +14,7 @@ import { gzipSync } from "node:zlib";
 
 import { boxBinary, isolatedEnv, launch, openLine, readJSON, relayAddress, request, scratch, startBox, typescriptRuntime, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
+import { seedPeerSetup } from "./peer-fixture.mjs";
 import { sessionOf } from "./engine.mjs";
 import "./update-helper.mjs";
 
@@ -1471,7 +1472,211 @@ test("Rust prepares its target without changing the selected release and its kee
 
 test("the shell keepers wait for a preparing member, then an offline computer catches up", { timeout: 180000 }, t => fleetRun(t, { shellKeepers: true }));
 test("a new main finishes a prepared release after the old main goes away", { timeout: failoverTestMs }, t => fleetRun(t, { failover: true }));
-test("the main takes a signed release from a member already running it", { timeout: 150000 }, t => fleetRun(t, { aheadMember: true }));
+async function releaseMailPeer(t, relay, observer, seed) {
+  const root = scratch();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }));
+  const isolated = { ...isolatedEnv(root), KUVO_HOME: path.join(root, "box") };
+  const before = Object.fromEntries(Object.keys(isolated).map(key => [key, process.env[key]]));
+  Object.assign(process.env, isolated);
+  const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+  let wireAPI;
+  try { wireAPI = await import(pathToFileURL(wireFixture).href); }
+  finally {
+    for (const [key, value] of Object.entries(before)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  const { sealOneWay, openOneWay, readFrame, frame, Frame } = wireAPI;
+  const wire = relay.device(Buffer.alloc(32, 50 + seed));
+  t.after(() => wire.leave());
+  const address = Buffer.from(observer.address, "base64url");
+  const key = Buffer.from(observer.key, "base64url"), secret = Buffer.alloc(32, seed);
+  return {
+    ready: () => until(() => relay.has(address), "the resident must connect"),
+    offline: () => until(() => !relay.has(address), "the earlier resident must disconnect"),
+
+    send: release => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), release }), secret, key).message)),
+    announce: computer => wire.send(address, frame(Frame.mail, 0, sealOneWay(encode({ at: Date.now(), agents: { at: Date.now(), list: [], computer } }), secret, key).message)),
+    async receive(match) {
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        const packet = readFrame((await wire.next(Math.max(1, deadline - Date.now()))).subarray(17));
+        if (packet?.kind !== Frame.mail) continue;
+        const value = JSON.parse(openOneWay(packet.body, secret, key).payload).release;
+        if (value && match(value)) return value;
+      }
+      assert.fail("the expected signed release mail did not arrive");
+    },
+  };
+}
+
+test("release mail sends the signed pack for a computer with a different target", { timeout: 45000 }, async t => {
+  const binary = boxBinary();
+  const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+  if (binary.typescript || !fs.existsSync(wireFixture)) return t.skip("Uses the Rust target-pack mail with a reference wire peer.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Mixed target holder");
+  const { main, member } = seedPeerSetup(here.home, relay.url);
+  const version = "0.8.0";
+  const localBytes = Buffer.from("this computer's signed pack");
+  const foreignBytes = Buffer.alloc(70013, 42);
+  const foreignTarget = target === "x86_64-unknown-linux-musl" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-musl";
+  const key = keypair();
+  let signed, downloads = 0, online = true, damaged = true;
+  const feed = createServer((req, res) => {
+    if (req.url === "/boxes.json") return res.end(signed);
+    if (req.url === "/foreign.tar.gz") {
+      downloads++;
+      return online ? res.end(damaged ? Buffer.from("damaged") : foreignBytes) : res.writeHead(404).end();
+    }
+    res.writeHead(404).end();
+  });
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const local = { url: `${url}/local.tar.gz`, sha256: digest(localBytes) };
+  const foreign = { url: `${url}/foreign.tar.gz`, sha256: digest(foreignBytes) };
+  signed = encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true, launch: "rust",
+    pack: local, packs: { [target]: local, [foreignTarget]: foreign } }, key));
+  const selected = `versions/${version}-${local.sha256.slice(0,12)}/bin`;
+  const folder = path.join(here.home, path.dirname(selected));
+  write(path.join(here.home, "active-release"), selected + "\n");
+  write(path.join(folder, "boxes.json"), signed);
+  write(path.join(folder, "pack"), localBytes);
+  write(path.join(folder, "bin/box-version"), version + "\n");
+  const updateEnv = { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key };
+  let child = here.start(binary, updateEnv);
+  const peer = await releaseMailPeer(t, relay, main, 2);
+  const resident = await child.ready();
+  await peer.ready();
+  peer.announce({ kuvo: version, releaseTarget: foreignTarget, installedSha256: foreign.sha256 });
+  const heard = path.join(here.home, "run/peer-agents.json");
+  await until(() => fs.existsSync(heard) && readJSON(heard)[member.key]?.computer?.releaseTarget === foreignTarget,
+    "the holder should hear its member before the request");
+  const { send, receive } = peer;
+  const header = async sha256 => {
+    send({ want: version, sha256 });
+    try { return await receive(value => value.version === version && (value.none || value.boxes)); }
+    catch (error) { throw new Error(`${error.message} for ${sha256 === local.sha256 ? "local" : "foreign"}\n${child.log()}`, { cause: error }); }
+  };
+  await until(async () => (await request(resident, "GET", "kuvo/setup")).json.computers.length === 2,
+    "the local resident must publish the two-computer setup");
+  assert.equal((await header(local.sha256)).size, localBytes.length);
+  assert.deepEqual(await header(digest("not in the signed manifest")), { version, none: true });
+  assert.equal(downloads, 0);
+  assert.deepEqual(await header(foreign.sha256), { version, none: true });
+  assert.equal(downloads, 1);
+  assert.equal(fs.existsSync(path.join(folder, `relay-pack-${foreign.sha256}`)), false);
+  damaged = false;
+  const offered = await header(foreign.sha256);
+  assert.equal(offered.boxes, signed.toString());
+  assert.equal(offered.size, foreignBytes.length);
+  assert.equal(downloads, 2);
+  const chunks = [];
+  for (let part = 0; part * 30000 < foreignBytes.length; part++) {
+    send({ version, sha256: foreign.sha256, part });
+    const answer = await receive(value => value.version === version && value.i === part && value.d);
+    assert.equal(answer.sha256, foreign.sha256);
+    chunks.push(Buffer.from(answer.d, "base64"));
+  }
+  assert.deepEqual(Buffer.concat(chunks), foreignBytes);
+  online = false;
+  assert.equal((await header(local.sha256)).size, localBytes.length);
+  assert.equal((await header(foreign.sha256)).size, foreignBytes.length);
+  // A hash-less legacy request cannot receive an earlier foreign response.
+  send({ version, part: 0 });
+  assert.deepEqual(Buffer.from((await receive(value => value.version === version && value.i === 0 && value.d)).d, "base64"), localBytes);
+  const earlier = readJSON(heard)[member.key].at;
+  await child.stop();
+  await peer.offline();
+  child = here.start(binary, updateEnv);
+  const restarted = await child.ready();
+  await peer.ready();
+  peer.announce({ kuvo: version, releaseTarget: foreignTarget, installedSha256: foreign.sha256 });
+  await until(() => readJSON(heard)[member.key]?.at > earlier, "the restarted holder must hear its member");
+  assert.ok(fs.existsSync(path.join(folder, `relay-pack-${foreign.sha256}`)));
+  assert.equal((await request(restarted, "GET", "kuvo/setup")).json.computers.length, 2);
+  assert.equal((await request(restarted, "GET", "kuvo/update")).json.version, version);
+  assert.equal((await header(local.sha256)).size, localBytes.length);
+  assert.equal((await header(foreign.sha256)).size, foreignBytes.length);
+  assert.equal(downloads, 2, "the donor retains the verified bytes across restart while the pack URL is unavailable");
+  assert.equal(fs.readFileSync(path.join(here.home, "active-release"), "utf8").trim(), selected);
+  assert.deepEqual(fs.readFileSync(path.join(folder, "pack")), localBytes);
+});
+test("a computer prepares its own signed pack from a holder on another target", { timeout: releaseReturnMs + firstPreparationMs }, async t => {
+  const binary = boxBinary();
+  const wireFixture = fileURLToPath(new URL("../../box/dist/kuvo-link.js", import.meta.url));
+  if (binary.typescript || !fs.existsSync(wireFixture)) return t.skip("Uses Rust target-pack mail with a reference wire peer.");
+  const { computer, relay } = await bench(t);
+  const here = await computer("Mixed target recipient");
+  const { member } = seedPeerSetup(here.home, relay.url, 2);
+  const version = "0.8.0", previous = "0.8.0-beta.1";
+  const program = process.platform === "win32" ? "kuvo-box.exe" : "kuvo-box";
+  const release = path.join(here.env.HOME, "release");
+  const tree = path.join(release, "tree");
+  const files = { [`bin/${program}`]: fs.readFileSync(binary.file), "bin/box-version": Buffer.from(version + "\n") };
+  if (process.platform !== "win32") {
+    for (const name of ["kuvo-start", "kuvo-setsid"]) files[`bin/${name}`] = fs.readFileSync(new URL(`../../box/src/keeper/${name}`, import.meta.url));
+  }
+  for (const [file, bytes] of Object.entries(files)) write(path.join(tree, file), bytes, { mode: 0o700 });
+  fs.mkdirSync(path.join(tree, "bin/opencode-plugins"));
+  write(path.join(tree, "box.json"), encode({ kuvo: "box/1", version, launch: "rust", engine: "2.2.6",
+    files: Object.fromEntries(Object.entries(files).map(([file, bytes]) => [file, digest(bytes)])) }));
+  const tar = path.join(release, "signed.tar");
+  assert.equal(spawnSync("tar", ["cf", tar, "-C", tree, "box.json", "bin"], { timeout: 90000 }).status, 0);
+  const pack = gzipSync(fs.readFileSync(tar), { level: 1 });
+  const engine = await engineFeed(t, path.join(release, "engine"), undefined, { damageFirst: false });
+  const system = process.platform === "win32" ? "windows" : process.platform;
+  const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+  const feed = createServer((_req, res) => res.writeHead(404).end());
+  feed.listen(0, "127.0.0.1");
+  await once(feed, "listening");
+  t.after(() => { feed.close(); feed.closeAllConnections(); });
+  const url = `http://127.0.0.1:${feed.address().port}`;
+  const local = { url: `${url}/local.tar.gz`, sha256: digest(pack) };
+  const foreignTarget = target === "x86_64-unknown-linux-musl" ? "aarch64-apple-darwin" : "x86_64-unknown-linux-musl";
+  const foreign = { url: `${url}/foreign.tar.gz`, sha256: digest("other architecture bytes") };
+  const key = keypair();
+  const signed = encode(envelope({ kuvo: "box/1", version, engine: "2.2.6", spreads: true, launch: "rust",
+    pack: foreign, packs: { [target]: local, [foreignTarget]: foreign }, [system]: { [arch]: engine.build } }, key)).toString();
+  write(path.join(here.home, "bin/box-version"), previous + "\n");
+  write(path.join(here.home, "run/engine.json"), encode({ ...here.engine.record, version: "2.2.6" }));
+  const child = here.start(binary, { KUVO_TEST_RELEASE_FEED: `${url}/boxes.json`, KUVO_TEST_RELEASE_KEY: key.key });
+  const donor = await releaseMailPeer(t, relay, member, 1);
+  await child.ready();
+  await donor.ready();
+  donor.announce({ kuvo: previous, releaseTarget: foreignTarget, candidate: version, releaseManifest: signed,
+    staged: { version, sha256: foreign.sha256 } });
+  const asked = await donor.receive(value => value.want === version);
+  assert.deepEqual(asked, { want: version, sha256: local.sha256 });
+  donor.send({ version, sha256: local.sha256, boxes: signed, size: pack.length });
+  const served = new Set();
+  const parts = Math.ceil(pack.length / 30000);
+  while (served.size < parts) {
+    const { part, sha256 } = await donor.receive(value => value.version === version && Number.isInteger(value.part));
+    assert.equal(sha256, local.sha256);
+    const start = part * 30000;
+    assert.ok(start < pack.length);
+    donor.send({ version, sha256, i: part, d: pack.subarray(start, start + 30000).toString("base64") });
+    served.add(part);
+  }
+  const marker = path.join(here.home, "run/fleet-ready.json");
+  await until(() => {
+    const failed = path.join(here.home, "run/fleet-cannot.json");
+    if (fs.existsSync(failed)) assert.fail(fs.readFileSync(failed, "utf8"));
+    return fs.existsSync(marker);
+  }, () => `the requested target was not prepared\n${child.log()}`, firstPreparationMs);
+  assert.deepEqual(readJSON(marker), { version, sha256: local.sha256 });
+  const retained = path.join(here.home, `versions/${version}-${local.sha256.slice(0, 12)}`);
+  assert.equal(digest(fs.readFileSync(path.join(retained, "pack"))), local.sha256);
+  assert.equal(fs.readFileSync(path.join(retained, "boxes.json"), "utf8"), signed);
+  assert.equal(fs.readFileSync(path.join(here.home, "bin/box-version"), "utf8").trim(), previous);
+  assert.equal(fs.existsSync(path.join(here.home, `versions/${version}-${foreign.sha256.slice(0,12)}`)), false);
+});
+
+test("the main takes a signed release from a member already running it", { timeout: failoverTestMs }, t => fleetRun(t, { aheadMember: true }));
 test("a release pulled over relay reports its checked progress on both computers", { timeout: failoverTestMs }, t => fleetRun(t, { aheadMember: true, pullProgress: true }));
 test("peer transfer keeps its checked progress after the first holder times out", { timeout: failoverTestMs + peerTransferMs },
   t => fleetRun(t, { aheadMember: true, pullProgress: true, secondSource: true }));
@@ -1900,7 +2105,8 @@ Buffer.from = function (value, encoding, ...args) {
     if (pullProgress) await checkPullProgress();
     else startOnline();
     if (aheadMember) {
-      await until(() => confirmed(main), diagnose, pullProgress ? releaseReturnMs : firstPreparationMs);
+      await until(() => confirmed(main), diagnose, releaseReturnMs);
+      t.diagnostic(`Retained pack transfer and keeper confirmation: ${Math.round(performance.now() - began)} ms`);
       assert.equal(active(member), selected);
       assert.equal(active(away), initial(away));
       assert.ok(refusedPacks > 0, "the main must get the pack from its member after the download fails");

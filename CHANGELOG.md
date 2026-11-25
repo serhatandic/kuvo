@@ -8,10 +8,12 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Rust computers preserve Work Queue mentions when a conversation moves, return recoverable old import numbers, and retry unacknowledged queue updates promptly. Label restore previews identify an unreachable main computer.
 
+- When one computer cannot download an update, another can send the right build even if they use different systems.
+
+- Send Now, Steer and Resume still arrange waiting messages during an engine update, and attached files wait with them.
 - Saved Work Queue attachments on Rust computers stay available while other work is being saved.
 
 - After restoring a backup on a Rust computer, you can keep or discard held Work Queue items without recreating a deleted item or overwriting an existing attachment.
-- Send Now, Steer and Resume still arrange waiting messages during an engine update, and attached files wait with them.
 
 - A saved message whose conversation is no longer in the engine stays saved without holding up the computer’s next engine update.
 
