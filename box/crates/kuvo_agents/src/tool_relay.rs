@@ -104,6 +104,46 @@ pub enum AgentTools {
     },
 }
 
+/// An agent's environment with the relay's loopback addresses kept off any
+/// proxy it's given: where a proxy is set, `NO_PROXY` and `no_proxy` name
+/// them too, beside what they named already.
+pub fn unproxied_loopback(env: &mut Environment) {
+    const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+    let proxied = env.iter().any(|(name, value)| {
+        let name = name.to_string_lossy().to_ascii_lowercase();
+        matches!(name.as_str(), "http_proxy" | "https_proxy" | "all_proxy") && !value.is_empty()
+    });
+    if !proxied {
+        return;
+    }
+    // (Windows names are one whatever their case: one of them there.)
+    let keys: &[&str] = if cfg!(windows) { &["NO_PROXY"] } else { &["NO_PROXY", "no_proxy"] };
+    for &key in keys {
+        let same = |name: &std::ffi::OsString| match cfg!(windows) {
+            true => name.to_string_lossy().eq_ignore_ascii_case(key),
+            false => name.to_str() == Some(key),
+        };
+        let found = env
+            .iter()
+            .find(|(name, _)| same(name))
+            .map(|(_, value)| value.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        env.retain(|name, _| !same(name));
+        let mut hosts: Vec<String> = found
+            .split(',')
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+            .map(str::to_owned)
+            .collect();
+        for host in LOOPBACK {
+            if !hosts.iter().any(|kept| kept == host) {
+                hosts.push(host.to_owned());
+            }
+        }
+        env.insert(key.into(), hosts.join(",").into());
+    }
+}
+
 /// How long the forwarder waits for a relay that's restarting, on top of a call's time.
 const FORWARDER_WAITS: Duration = Duration::from_secs(80);
 
@@ -929,4 +969,25 @@ fn failure(id: &Value, message: &str) -> Value {
 fn stopped(id: &Value, name: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":format!("{name} stopped."),
         "data":{"kuvoRelayRestart":true}}})
+}
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::*;
+
+    #[test]
+    fn a_proxied_agent_reaches_the_relay_directly() {
+        let mut env: Environment = [("HTTPS_PROXY", "http://proxy:3128"), ("NO_PROXY", "corp.example,localhost")]
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        unproxied_loopback(&mut env);
+        assert_eq!(env.get(std::ffi::OsStr::new("NO_PROXY")).unwrap(), "corp.example,localhost,127.0.0.1,::1");
+        if !cfg!(windows) {
+            assert_eq!(env.get(std::ffi::OsStr::new("no_proxy")).unwrap(), "localhost,127.0.0.1,::1");
+        }
+        let mut plain = Environment::new();
+        unproxied_loopback(&mut plain);
+        assert!(plain.is_empty());
+    }
 }

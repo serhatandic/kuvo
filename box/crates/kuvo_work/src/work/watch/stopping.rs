@@ -123,6 +123,10 @@ impl Work {
 
     // What it left running, ended: its commands and its subagents.
     async fn end_background(&self, engine: &BotEngine, session: &str) {
+        // (A coding agents' conversation: through its agent.)
+        if engine.stop_agent_background(session).await.is_some() {
+            return;
+        }
         let path = format!("api/session/{}/background", encoded(session));
         if engine.call(Method::DELETE, &path, None, WAIT).await.is_ok() {
             return;

@@ -6,6 +6,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A Mac can finish an update under its Helper, and manual engine-data copies older than thirty days are removed.
+
+- Automatic update checks keep their six-hour schedule across restarts. Check for Updates still looks for the latest release immediately.
+- Work Queue agents on Rust computers name GitHub issues by their latest title and find a live item on another computer instead of a deleted local copy.
+
 - Work waiting for a computer’s first Rust update is sent only after that computer confirms the update.
 - Rust computers hold Work Queue changes while the conversation moves, and keep saved mentions linked when their item receives a number. Local attachments selected for work kept on another computer travel with their file contents.
 
@@ -104,6 +109,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - The computers list shows when it last heard from an unreachable computer even if that computer sent no update status.
 - The installer reports damaged release media, a local engine archive path, or a failed engine download during its status check, before it writes to the computer’s home.
 - A computer keeps checking the signed release feed if a saved update has an untrusted signature.
+- Kuvo keeps the signed release carried by its app for the fleet update, even after the app goes away or the computer restarts.
+- Update status reports the step actually under way and remembers how the last check or release switch went, including after a restart.
 - A Rust main computer can send its signed update to a returning Kuvo Code 0.7.2 machine over its saved SSH address, including when its earlier engine and link are still running.
 
 - An acknowledgement for the wrong part no longer advances a move before that part arrives.

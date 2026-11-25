@@ -1,11 +1,11 @@
-//! What a conversation was last told of Kuvo Code's instructions. Claude Code takes them only as
-//! it starts, and a conversation it goes on with keeps the ones it started with: so when they
+//! What a conversation was last told of Kuvo Code's instructions. Claude Code and Codex take them
+//! only as a conversation starts, and a conversation it goes on with keeps the ones it started with: so when they
 //! changed (it moved to another computer, its worktree or project's folders changed), the next
 //! message says what changed, once, ahead of yours.
 
 /// What to say ahead of a message, when the instructions are `now` and the conversation was told
 /// `before` (none: not known, so they're all said). Nothing when nothing changed.
-pub(super) fn instructions_note(before: Option<&str>, now: &str) -> Option<String> {
+pub(crate) fn instructions_note(before: Option<&str>, now: &str) -> Option<String> {
     if before == Some(now) {
         return None;
     }

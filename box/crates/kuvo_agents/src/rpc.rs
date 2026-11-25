@@ -8,7 +8,7 @@
 //! request IDs, pending answers, acknowledgements and the stderr tail have a
 //! single owner. Adapters hold cheap [`Rpc`] handles.
 
-use crate::hold::{Controller, Output};
+use crate::hold::{Controller, Metadata, Output};
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, fmt, io, time::Duration};
 use tokio::{
@@ -92,15 +92,18 @@ impl From<Failure> for io::Error {
 /// What the agent sent that isn't an answer to this connection's request.
 #[derive(Debug, PartialEq)]
 pub enum Incoming {
+    /// `sequence`: the holder's number for the line it came on.
     Notification {
         method: String,
         params: Value,
+        sequence: u64,
     },
     /// Answer it with [`Rpc::respond`] and the same `id`.
     Request {
         id: Value,
         method: String,
         params: Value,
+        sequence: u64,
     },
     /// An answer to a request an earlier resident sent the held agent.
     Stray {
@@ -108,10 +111,7 @@ pub enum Incoming {
         answer: Result<Value, RpcError>,
     },
     /// The agent ended. `code` is -1 when another resident took it over.
-    Exited {
-        code: i32,
-        signal: Option<String>,
-    },
+    Exited { code: i32, signal: Option<String> },
 }
 
 /// How the connection starts.
@@ -142,6 +142,9 @@ impl Default for Options {
 pub(crate) enum Write {
     Line(String),
     Ack(u64),
+    Note(Metadata),
+    Prepare(u64),
+    Unpin,
     Signal(String),
     Bye,
 }
@@ -163,6 +166,9 @@ enum Command {
         answer: Result<Value, RpcError>,
     },
     Stop,
+    Note(Metadata),
+    Prepare(u64, oneshot::Sender<bool>),
+    Unpin,
 }
 
 /// A handle on the connection. Dropping every handle leaves the agent
@@ -171,6 +177,8 @@ enum Command {
 pub struct Rpc {
     commands: mpsc::Sender<Command>,
     stderr: watch::Receiver<String>,
+    seen: watch::Receiver<u64>,
+    gone: watch::Receiver<bool>,
 }
 
 /// How often taken-in lines are acknowledged, so the holder can prune them.
@@ -199,6 +207,9 @@ impl Rpc {
                 let sent = match write {
                     Write::Line(line) => input.write(line).await,
                     Write::Ack(sequence) => input.acknowledge(sequence).await,
+                    Write::Note(meta) => input.note(meta).await,
+                    Write::Prepare(from) => input.prepare(from).await,
+                    Write::Unpin => input.unpin().await,
                     Write::Signal(signal) => input.signal(&signal).await,
                     Write::Bye => input.bye().await,
                 };
@@ -220,13 +231,18 @@ impl Rpc {
         let (commands, requests) = mpsc::channel(32);
         let (incoming, received) = mpsc::channel(64);
         let (stderr, tail) = watch::channel(String::new());
+        let (seen, last) = watch::channel(0);
+        let (ended, gone) = watch::channel(false);
         let mut connection = Connection {
             options,
             writes,
             incoming,
             stderr,
+            last: seen,
+            ended,
             next: 0,
             pending: HashMap::new(),
+            preparing: None,
             seen: 0,
             acked: 0,
             closed: false,
@@ -239,6 +255,8 @@ impl Rpc {
             Self {
                 commands,
                 stderr: tail,
+                seen: last,
+                gone,
             },
             received,
         )
@@ -296,6 +314,41 @@ impl Rpc {
         let _ = self.commands.send(Command::Stop).await;
     }
 
+    /// Keep `meta` in the holder's record, for the next resident.
+    pub async fn note(&self, meta: Metadata) {
+        let _ = self.commands.send(Command::Note(meta)).await;
+    }
+
+    /// Reserve the journal from `from` for the next resident. Whether the
+    /// holder did: then this connection hands the agent over as it closes.
+    pub async fn prepare(&self, from: u64) -> bool {
+        let (answer, answered) = oneshot::channel();
+        if self
+            .commands
+            .send(Command::Prepare(from, answer))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        answered.await.unwrap_or(false)
+    }
+
+    /// Release what [`Rpc::prepare`] reserved.
+    pub async fn unpin(&self) {
+        let _ = self.commands.send(Command::Unpin).await;
+    }
+
+    /// The holder's number for the last line this connection took in.
+    pub fn seen(&self) -> u64 {
+        *self.seen.borrow()
+    }
+
+    /// Whether the agent is gone (or handed to another resident).
+    pub fn is_closed(&self) -> bool {
+        *self.gone.borrow()
+    }
+
     /// The last of what the agent wrote to stderr.
     pub fn stderr(&self) -> String {
         self.stderr.borrow().clone()
@@ -324,8 +377,11 @@ struct Connection {
     writes: mpsc::Sender<Write>,
     incoming: mpsc::Sender<Incoming>,
     stderr: watch::Sender<String>,
+    last: watch::Sender<u64>,
+    ended: watch::Sender<bool>,
     next: u64,
     pending: HashMap<u64, oneshot::Sender<Result<Value, Failure>>>,
+    preparing: Option<oneshot::Sender<bool>>,
     seen: u64,
     acked: u64,
     closed: bool,
@@ -333,7 +389,11 @@ struct Connection {
 }
 
 impl Connection {
-    async fn run(mut self, mut frames: mpsc::Receiver<Output>, mut commands: mpsc::Receiver<Command>) {
+    async fn run(
+        mut self,
+        mut frames: mpsc::Receiver<Output>,
+        mut commands: mpsc::Receiver<Command>,
+    ) {
         let mut ack_at: Option<Instant> = None;
         let mut reading = true;
         loop {
@@ -383,11 +443,12 @@ impl Connection {
                     return false;
                 }
                 self.seen = self.seen.max(sequence);
+                self.last.send_replace(self.seen);
                 let line = line.strip_suffix('\r').unwrap_or(&line);
                 if !line.trim().is_empty()
                     && self.options.filter.as_ref().is_none_or(|keep| keep(line))
                 {
-                    self.receive(line).await;
+                    self.receive(line, sequence).await;
                 }
                 true
             }
@@ -414,14 +475,26 @@ impl Connection {
                 // A newer resident took the agent: its answers are that one's.
                 self.closed = true;
                 self.fenced = true;
+                self.ended.send_replace(true);
                 self.pending.clear();
                 false
             }
-            Output::Prepared { .. } | Output::Refused { .. } => false,
+            Output::Prepared { prepared } => {
+                if let Some(waiting) = self.preparing.take() {
+                    let _ = waiting.send(prepared);
+                }
+                false
+            }
+            Output::Refused { .. } => {
+                if let Some(waiting) = self.preparing.take() {
+                    let _ = waiting.send(false);
+                }
+                false
+            }
         }
     }
 
-    async fn receive(&mut self, line: &str) {
+    async fn receive(&mut self, line: &str, sequence: u64) {
         if self.closed {
             return;
         }
@@ -435,8 +508,17 @@ impl Connection {
         let id = message.remove("id");
         let params = message.remove("params").unwrap_or(Value::Null);
         let event = match (method, id) {
-            (Some(method), Some(id)) => Incoming::Request { id, method, params },
-            (Some(method), None) => Incoming::Notification { method, params },
+            (Some(method), Some(id)) => Incoming::Request {
+                id,
+                method,
+                params,
+                sequence,
+            },
+            (Some(method), None) => Incoming::Notification {
+                method,
+                params,
+                sequence,
+            },
             (None, Some(id)) => {
                 let answer = match message.get("error") {
                     Some(error) if !error.is_null() => Err(RpcError::read(error)),
@@ -513,6 +595,25 @@ impl Connection {
                     let _ = self.writes.send(Write::Signal("SIGTERM".into())).await;
                 }
             }
+            Command::Note(meta) => {
+                if !self.closed {
+                    let _ = self.writes.send(Write::Note(meta)).await;
+                }
+            }
+            Command::Prepare(from, answer) => {
+                if self.closed {
+                    let _ = answer.send(false);
+                    return;
+                }
+                self.acknowledge().await;
+                self.preparing = Some(answer);
+                let _ = self.writes.send(Write::Prepare(from)).await;
+            }
+            Command::Unpin => {
+                if !self.closed {
+                    let _ = self.writes.send(Write::Unpin).await;
+                }
+            }
         }
     }
 
@@ -544,6 +645,7 @@ impl Connection {
 
     fn close(&mut self, code: Option<i32>) {
         self.closed = true;
+        self.ended.send_replace(true);
         let why = closing_words(&self.stderr.borrow(), code);
         for (_, waiting) in self.pending.drain() {
             let _ = waiting.send(Err(Failure::Closed(why.clone())));

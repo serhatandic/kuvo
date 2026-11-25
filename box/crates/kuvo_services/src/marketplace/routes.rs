@@ -865,7 +865,14 @@ pub fn register(routes: &mut Registry, svc: Arc<MarketplaceService>) {
     reg!(routes, svc, delete_kuvo_marketplace_apps_id::Spec, id(false), |s, id, _q, _b| match s.read_state() {
         Err(e) => e,
         Ok(st) if !st.apps.iter().any(|a| a.id == id) && s.catalog_app(&id).is_none() => no(404, MISSING),
-        Ok(_) => { let p = s.save("remove-app", json!({ "id": id }), &[]).await; if p.0 == 200 { s.connections.clean_removed_connections(); } p }
+        Ok(_) => {
+            let p = s.save("remove-app", json!({ "id": id }), &[]).await;
+            if p.0 == 200 {
+                let connections = s.connections.clone();
+                let _ = tokio::task::spawn_blocking(move || connections.clean_removed_connections()).await;
+            }
+            p
+        }
     });
     {
         let s = svc.clone();

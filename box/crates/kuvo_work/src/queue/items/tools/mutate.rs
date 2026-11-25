@@ -174,7 +174,7 @@ impl Writer {
                     append_event(row, json!({"at":now,"by":actor,"kind":"edited","fields":changes}));
                 }
                 writer.observe_known(row, &item.id);
-                let display = read::item_name(row);
+                let display = writer.current_name(row)?;
                 let where_ = row["status"].as_str().unwrap_or_default();
                 let sessions = store::array(row.get("sessions")).len();
                 let linked_sessions = match sessions {

@@ -77,6 +77,13 @@ impl TurnRules {
         Ok(policy)
     }
 
+    /// Whether its agent may run on its own, as Blocks are now.
+    pub(crate) async fn approves_all(&self) -> bool {
+        self.load(false)
+            .await
+            .is_ok_and(|policy| policy.approves_all(self.plan))
+    }
+
     async fn resolve(
         &self,
         ask: PermissionAsk,

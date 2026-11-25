@@ -9,6 +9,7 @@ use std::{
 use kuvo_agents::{
     accounts::{AgentKind, Provider},
     claude::{ClaudeFactory, adopt_console_folder},
+    codex::CodexFactory,
     resident::ResidentAgents,
     roster::Factory,
     runtime::Runtime,
@@ -70,7 +71,6 @@ pub(super) async fn hand_over(
 /// tools (the 4.2–4.5 adapters take it up).
 pub(super) async fn factories(
     home: &std::path::Path,
-    #[cfg_attr(not(feature = "agent-runtime-fixture"), allow(unused_variables))]
     relay: &kuvo_agents::tool_relay::ToolRelay,
 ) -> HashMap<AgentKind, Arc<dyn Factory>> {
     #[cfg(feature = "agent-runtime-fixture")]
@@ -87,8 +87,9 @@ pub(super) async fn factories(
     let Ok(binary) = std::env::current_exe() else {
         return HashMap::new();
     };
+    let codex: Arc<dyn Factory> = Arc::new(CodexFactory::new(home.clone(), binary.clone(), Some(relay.clone())));
     let claude: Arc<dyn Factory> = Arc::new(ClaudeFactory::new(home, binary));
-    HashMap::from([(AgentKind::Claude, claude)])
+    HashMap::from([(AgentKind::Claude, claude), (AgentKind::Codex, codex)])
 }
 
 pub(super) struct Models {
