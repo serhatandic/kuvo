@@ -53,8 +53,16 @@ test("resident has one owner, streams numbered changes and publishes new credent
   } finally {
     line.close();
   }
-  assert.equal((await first.stop()).code, 0, first.log());
-  assert.equal(fs.existsSync(path.join(here.home, "run", "serve.json")), false);
+  const stopped = await first.stop();
+  if (process.platform === "win32") {
+    // Node's Windows SIGTERM forcibly terminates the child; unlike a Unix
+    // signal it cannot run the resident's shutdown handler. Reopening a home
+    // with that stale discovery record is the Windows restart case here.
+    assert.equal(stopped.signal, "SIGTERM", first.log());
+  } else {
+    assert.equal(stopped.code, 0, first.log());
+    assert.equal(fs.existsSync(path.join(here.home, "run", "serve.json")), false);
+  }
   const restarted = await here.start().ready();
   assert.notEqual(restarted.password, record.password);
   assert.equal((await request(restarted, "GET", "kuvo/info")).status, 200);

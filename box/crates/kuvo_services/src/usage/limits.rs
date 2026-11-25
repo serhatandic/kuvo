@@ -113,7 +113,13 @@ pub struct Fact {
     pub forwarder: Option<String>,
 }
 impl Fact {
-    fn new(account: &Account, key: &str, window: &Window, milestone: Milestone) -> Self {
+    fn new(
+        account: &Account,
+        key: &str,
+        window: &Window,
+        milestone: Milestone,
+        count: u32,
+    ) -> Self {
         let row = account.row(key);
         let hash = Sha256::digest(
             serde_json::to_vec(&(
@@ -124,7 +130,7 @@ impl Fact {
                     .map(|at| at.saturating_add(500) / 1000)
                     .unwrap_or(0),
                 milestone,
-                1,
+                count,
             ))
             .expect("serializable notice"),
         );
@@ -271,6 +277,7 @@ impl Service {
     pub fn peer_snapshot(&self, scope: Option<String>, now: u64) -> Reading {
         let state = self.state.lock().expect("limits lock");
         let allowed = self.reset_permission.lock().expect("reset permissions");
+        let book = self.peer_book.lock().expect("peer limits");
         let accounts = state
             .ordered()
             .into_iter()
@@ -306,6 +313,22 @@ impl Service {
                     } else {
                         vec![]
                     },
+                    notice_state: if scope.is_some() {
+                        let shared = book.groups.get(&acc.row(&self.key));
+                        entry
+                            .trails
+                            .iter()
+                            .map(|(id, trail)| {
+                                let mut trail = trail.clone();
+                                if let Some(other) = shared.and_then(|group| group.get(id)) {
+                                    trail.merge_fired(other);
+                                }
+                                (id.clone(), trail.notice_state())
+                            })
+                            .collect()
+                    } else {
+                        BTreeMap::new()
+                    },
                     agents_reset: allowed.get(&acc.row(&self.key)) == Some(&true),
                 }
             })
@@ -332,6 +355,16 @@ impl Service {
             self.answer(now);
             self.changes.send_modify(|n| *n = n.wrapping_add(1));
         }
+    }
+    /// The next accepted peer reading to become away. No peer means no deadline.
+    pub fn peer_expiry(&self, now: u64) -> Option<u64> {
+        let book = self.peer_book.lock().expect("peer limits");
+        book.peers
+            .iter()
+            .filter(|(key, _)| book.roster.contains_key(*key))
+            .map(|(_, peer)| peer.heard.saturating_add(AWAY).saturating_add(1))
+            .filter(|at| *at > now)
+            .min()
     }
     pub fn take_peer(&self, key: &str, name: &str, reading: Reading, now: u64) {
         let refresh = reading.refresh.clone();
@@ -420,7 +453,7 @@ impl Service {
             });
             if fresh {
                 if let Err(error) =
-                    self.observe_facts_inner(account.clone(), vec![window], None, now, true)
+                    self.observe_facts_inner(account.clone(), vec![window], None, now, true, false)
                 {
                     eprintln!("Couldn't keep logged plan limits: {error}");
                 }
@@ -440,7 +473,15 @@ impl Service {
         facts: Option<super::plan_facts::Facts>,
         now: u64,
     ) -> std::io::Result<()> {
-        self.observe_facts_inner(account, windows, facts, now, false)
+        self.observe_facts_inner(account, windows, facts, now, false, false)
+    }
+    pub fn observe_reset_facts(
+        &self,
+        account: Account,
+        facts: super::plan_facts::Facts,
+        now: u64,
+    ) -> std::io::Result<()> {
+        self.observe_facts_inner(account, vec![], Some(facts), now, false, true)
     }
     fn observe_facts_inner(
         &self,
@@ -449,6 +490,7 @@ impl Service {
         facts: Option<super::plan_facts::Facts>,
         now: u64,
         require_current: bool,
+        only_resets: bool,
     ) -> std::io::Result<()> {
         use super::plan_facts::ProblemKind;
         if let Some(error) = &self.cache_error {
@@ -506,7 +548,18 @@ impl Service {
         }
         entry.account = account;
         if let Some(facts) = facts {
-            if let Some(problem) = facts.problem.as_ref() {
+            if only_resets {
+                entry.facts.extras.retain(|extra| match extra {
+                    super::plan_facts::Extra::Resets { .. } => false,
+                    super::plan_facts::Extra::Unreadable { id, .. } if id == "resets" => false,
+                    _ => true,
+                });
+                entry.facts.extras.extend(facts.extras);
+                if entry.facts.checked.is_none() {
+                    entry.facts.checked = facts.checked;
+                    entry.facts.next = facts.next;
+                }
+            } else if let Some(problem) = facts.problem.as_ref() {
                 if matches!(problem.kind, ProblemKind::Ended | ProblemKind::None) {
                     entry.trails.clear();
                     entry.notices.clear();
@@ -541,11 +594,15 @@ impl Service {
             let local_window = window.clone();
             if let Some(trail) = entry.trails.get_mut(&window.id) {
                 if let Some(fired) = trail.observe(window.clone(), &local_toggles) {
-                    facts.extend(
-                        fired
-                            .into_iter()
-                            .map(|m| Fact::new(&entry.account, &self.key, &trail.current, m)),
-                    );
+                    facts.extend(fired.into_iter().map(|m| {
+                        Fact::new(
+                            &entry.account,
+                            &self.key,
+                            &trail.current,
+                            m,
+                            trail.occurrence(m),
+                        )
+                    }));
                 }
             } else if let Some(trail) = Trail::new(window.clone()) {
                 entry.trails.insert(trail.current.id.clone(), trail);
@@ -557,9 +614,15 @@ impl Service {
                 if let Some(fired) = trail.observe(local_window, &toggles) {
                     for m in fired {
                         if let Some(local) = entry.trails.get_mut(&window.id) {
-                            local.mark_fired(m);
+                            local.merge_fired(&trail);
                         }
-                        facts.push(Fact::new(&entry.account, &self.key, &trail.current, m));
+                        facts.push(Fact::new(
+                            &entry.account,
+                            &self.key,
+                            &trail.current,
+                            m,
+                            trail.occurrence(m),
+                        ));
                     }
                 }
                 if let Some(group) = book.groups.get_mut(&row_id) {
@@ -783,7 +846,10 @@ impl Service {
         state
             .ordered()
             .into_iter()
-            .filter(|e| e.account.service == Provider::Codex && e.account.account.is_some())
+            .filter(|e| {
+                e.account.service == Provider::Codex
+                    || e.account.service == Provider::Claude && e.account.account.is_some()
+            })
             .map(|e| (e.account.clone(), e.account.row(&self.key)))
             .collect()
     }
@@ -804,163 +870,34 @@ impl Service {
         provider: Option<&str>,
     ) -> Option<(Account, String)> {
         let state = self.state.lock().expect("limits lock");
-        state
+        let mut candidates = state
             .ordered()
             .into_iter()
             .filter(|entry| {
-                entry.account.service == Provider::Codex && entry.account.account.is_some()
+                entry.account.service == Provider::Codex
+                    || entry.account.service == Provider::Claude && entry.account.account.is_some()
             })
             .filter(|entry| provider.is_none_or(|p| p == entry.account.provider))
-            .find_map(|entry| {
+            .filter_map(|entry| {
                 let id = entry.account.row(&self.key);
-                row.is_none_or(|row| row == id)
-                    .then(|| (entry.account.clone(), id))
+                row.is_none_or(|row| row == id).then_some((entry, id))
             })
+            .collect::<Vec<_>>();
+        if provider.is_none() {
+            candidates.sort_by_key(|(entry, _)| {
+                !entry.facts.extras.iter().any(|extra| {
+                    matches!(extra, super::plan_facts::Extra::Resets { usable: true, .. })
+                })
+            });
+        }
+        candidates
+            .first()
+            .map(|(entry, id)| (entry.account.clone(), id.clone()))
     }
-    pub fn describe(&self) -> String {
+    pub fn describe(&self, zone: Option<&str>) -> String {
         let now = now();
-        let state = self.state.lock().expect("limits lock");
-        if state.entries.is_empty() {
-            return format!(
-                "No plan limits are known on {}: no coding agent here is signed in to a plan whose limits can be read.",
-                self.name
-            );
-        }
-        let mut lines = vec![format!(
-            "Plan limits of your accounts (signed in on {} unless it says where; used is how much of the window is gone):",
-            self.name
-        )];
-        let mut seen = std::collections::BTreeSet::new();
-        for entry in state.ordered() {
-            if entry
-                .facts
-                .problem
-                .as_ref()
-                .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::None)
-            {
-                continue;
-            }
-            if !seen.insert(entry.account.row(&self.key)) {
-                continue;
-            }
-            lines.push(format!(
-                "- {}{}, provider {}:",
-                entry.account.title(),
-                entry
-                    .facts
-                    .plan
-                    .as_ref()
-                    .map_or(String::new(), |plan| format!(", {plan}")),
-                entry.account.provider
-            ));
-            if entry.trails.is_empty()
-                && entry.facts.extras.is_empty()
-                && entry.facts.balance.is_none()
-            {
-                lines.push("  - none read yet".into());
-            }
-            for trail in entry.trails.values() {
-                let window = &trail.current;
-                let title = window.title();
-                if window.expired(now) {
-                    lines.push(format!("  - {title}: started over, not read since"));
-                    continue;
-                }
-                let resets = window
-                    .resets_at
-                    .and_then(|at| jiff::Timestamp::from_millisecond(at.try_into().ok()?).ok())
-                    .map_or(String::new(), |at| format!(", resets {at}"));
-                let minutes = now.saturating_sub(window.read) / 60_000;
-                let since = if minutes == 0 {
-                    "just now".into()
-                } else if minutes < 60 {
-                    format!("{minutes}m ago")
-                } else {
-                    format!("{}h ago", minutes / 60)
-                };
-                lines.push(format!(
-                    "  - {title}: {}% used{resets}, as of {since}",
-                    (window.used * 100.0).round()
-                ));
-            }
-            let amount = |n: f64, unit: super::plan_facts::Unit| match unit {
-                super::plan_facts::Unit::Usd => format!("${n:.2}"),
-                super::plan_facts::Unit::Requests => format!("{:.0} requests", n),
-                super::plan_facts::Unit::Credits => format!("{:.0} credits", n),
-            };
-            if let Some(b) = &entry.facts.balance {
-                lines.push(format!(
-                    "  - credits: {} left{}",
-                    amount(b.left, b.unit),
-                    b.limit
-                        .map_or(String::new(), |n| format!(" of {}", amount(n, b.unit)))
-                ));
-            }
-            use super::plan_facts::Extra;
-            for extra in &entry.facts.extras {
-                match extra {
-                    Extra::Resets { count, usable, .. } => {
-                        let id = entry.account.row(&self.key);
-                        let always = self
-                            .reset_permission
-                            .lock()
-                            .expect("reset permissions")
-                            .get(&id)
-                            == Some(&true);
-                        let use_words = if *count > 0 && *usable {
-                            format!(
-                                "; use_limit_reset with account \"{id}\" uses one ({})",
-                                if always {
-                                    "the user allows it without asking"
-                                } else {
-                                    "the user approves each"
-                                }
-                            )
-                        } else if *count > 0 {
-                            "; none can be used from your computers now".into()
-                        } else {
-                            String::new()
-                        };
-                        lines.push(format!(
-                            "  - rate-limit resets: {count} available{use_words}"
-                        ));
-                    }
-                    Extra::Unreadable { message, .. } => lines.push(format!("  - {message}")),
-                    Extra::Left {
-                        name,
-                        amount: n,
-                        unit,
-                        ..
-                    } => lines.push(format!("  - {name}: {} left", amount(*n, *unit))),
-                    Extra::Spent {
-                        name,
-                        amount: n,
-                        unit,
-                        resets_at,
-                        ..
-                    } if resets_at.is_none_or(|at| at > now) => {
-                        lines.push(format!("  - {name}: {} spent", amount(*n, *unit)))
-                    }
-                    Extra::Capped {
-                        name,
-                        amount: n,
-                        limit,
-                        unit,
-                        resets_at,
-                        ..
-                    } if resets_at.is_none_or(|at| at > now) => lines.push(format!(
-                        "  - {name}: {} of {} used",
-                        amount(*n, *unit),
-                        amount(*limit, *unit)
-                    )),
-                    _ => {}
-                }
-            }
-            if let Some(problem) = &entry.facts.problem {
-                lines.push(format!("  - Not read just now: {}", problem.message));
-            }
-        }
-        lines.join("\n")
+        let answer = self.answer(now);
+        super::plan_tool_words::describe(&self.name, &answer["data"]["rows"], now, zone)
     }
     pub fn answer(&self, now: u64) -> Value {
         let state = self.state.lock().expect("limits lock");
@@ -989,68 +926,93 @@ impl Service {
             entry: Entry,
             boxes: Vec<Value>,
             candidates: BTreeMap<String, Vec<Trail>>,
+            reset_members: Vec<(Value, super::plan_facts::Extra, Option<u64>, bool)>,
         }
         let mut groups = Vec::<Group>::new();
         let mut group_ids = BTreeMap::<String, usize>::new();
         let mut book = self.peer_book.lock().expect("peer limits");
-        let mut add = |entry: &Entry, key: &str, name: &str, here: bool, away: bool| {
-            if entry
-                .facts
-                .problem
-                .as_ref()
-                .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::None)
-            {
-                return;
-            }
-            let (local, row) = project(entry, key, name, now);
-            if here {
-                accounts.push(local);
-            }
-            let id = entry.account.row(key);
-            let mut box_record = row["boxes"][0].clone();
-            if !here {
-                box_record
-                    .as_object_mut()
-                    .expect("box")
-                    .shift_remove("here");
-            }
-            if away {
-                box_record["away"] = json!(true);
-            }
-            if let Some(checked) = entry.facts.checked {
-                box_record["checked"] = json!(checked);
-            }
-            let group = if let Some(index) = group_ids.get(&id) {
-                &mut groups[*index]
-            } else {
-                group_ids.insert(id.clone(), groups.len());
-                groups.push(Group {
-                    entry: entry.clone(),
-                    boxes: vec![],
-                    candidates: BTreeMap::new(),
-                });
-                groups.last_mut().expect("group")
-            };
-            group.boxes.push(box_record);
-            if entry.facts.checked > group.entry.facts.checked {
-                group.entry.facts = entry.facts.clone();
-            }
-            for (id, trail) in &entry.trails {
-                updated = updated.max(trail.current.read);
-                group
-                    .candidates
-                    .entry(id.clone())
-                    .or_default()
-                    .push(trail.clone());
-            }
-            for fact in entry.notices.iter().filter(|n| n.current(now)) {
-                if !notices.iter().any(|n| n.id == fact.id) {
-                    notices.push(fact.clone());
+        let mut add =
+            |entry: &Entry, key: &str, name: &str, here: bool, away: bool, agents_reset: bool| {
+                if entry
+                    .facts
+                    .problem
+                    .as_ref()
+                    .is_some_and(|p| p.kind == super::plan_facts::ProblemKind::None)
+                {
+                    return;
                 }
-            }
-        };
+                let (local, row) = project(entry, key, name, now);
+                if here {
+                    accounts.push(local);
+                }
+                let id = entry.account.row(key);
+                let mut box_record = row["boxes"][0].clone();
+                if !here {
+                    box_record
+                        .as_object_mut()
+                        .expect("box")
+                        .shift_remove("here");
+                }
+                if away {
+                    box_record["away"] = json!(true);
+                }
+                if let Some(checked) = entry.facts.checked {
+                    box_record["checked"] = json!(checked);
+                }
+                let group = if let Some(index) = group_ids.get(&id) {
+                    &mut groups[*index]
+                } else {
+                    group_ids.insert(id.clone(), groups.len());
+                    groups.push(Group {
+                        entry: entry.clone(),
+                        boxes: vec![],
+                        candidates: BTreeMap::new(),
+                        reset_members: vec![],
+                    });
+                    groups.last_mut().expect("group")
+                };
+                for extra in &entry.facts.extras {
+                    if matches!(extra, super::plan_facts::Extra::Resets { .. }) {
+                        group.reset_members.push((
+                            box_record.clone(),
+                            extra.clone(),
+                            entry.facts.checked,
+                            agents_reset,
+                        ));
+                    }
+                }
+                group.boxes.push(box_record);
+                if entry.facts.checked > group.entry.facts.checked {
+                    group.entry.facts = entry.facts.clone();
+                }
+                for (id, trail) in &entry.trails {
+                    updated = updated.max(trail.current.read);
+                    group
+                        .candidates
+                        .entry(id.clone())
+                        .or_default()
+                        .push(trail.clone());
+                }
+                for fact in entry.notices.iter().filter(|n| n.current(now)) {
+                    if !notices.iter().any(|n| n.id == fact.id) {
+                        notices.push(fact.clone());
+                    }
+                }
+            };
+        let allowed = self
+            .reset_permission
+            .lock()
+            .expect("reset permissions")
+            .clone();
         for entry in state.ordered() {
-            add(entry, &self.key, &self.name, true, false);
+            add(
+                entry,
+                &self.key,
+                &self.name,
+                true,
+                false,
+                allowed.get(&entry.account.row(&self.key)) == Some(&true),
+            );
         }
         let mut peers = book
             .peers
@@ -1083,6 +1045,7 @@ impl Service {
                     &peer.name,
                     false,
                     now.saturating_sub(peer.heard) > AWAY,
+                    account.agents_reset,
                 );
             }
         }
@@ -1147,6 +1110,44 @@ impl Service {
                     })
                     .collect::<Vec<_>>()
             );
+            let row_allowed = allowed.get(row["id"].as_str().unwrap_or_default()).copied();
+            if let Some(extras) = row["extras"].as_array_mut() {
+                let unread = extras
+                    .iter()
+                    .position(|e| e["kind"] == "unreadable" && e["id"] == "resets");
+                if let Some(index) = unread {
+                    if let Some((_, extra, _, _)) = group
+                        .reset_members
+                        .iter()
+                        .max_by_key(|(_, _, checked, _)| *checked)
+                    {
+                        extras[index] = serde_json::to_value(extra).unwrap_or_default();
+                    }
+                }
+                if let Some(extra) = extras.iter_mut().find(|e| e["kind"] == "resets") {
+                    let can =
+                        |(_, e, _, _): &&(Value, super::plan_facts::Extra, Option<u64>, bool)| {
+                            matches!(e, super::plan_facts::Extra::Resets { usable: true, .. })
+                        };
+                    let holder = group
+                        .reset_members
+                        .iter()
+                        .filter(can)
+                        .find(|(b, _, _, _)| b["away"] != true)
+                        .or_else(|| group.reset_members.iter().find(can));
+                    extra["usable"] = json!(holder.is_some());
+                    if let Some((b, _, _, agents)) = holder {
+                        let mut on = json!({"key":b["key"],"name":b["name"]});
+                        if b["here"] == true {
+                            on["here"] = json!(true);
+                        }
+                        extra["on"] = on;
+                        if *agents && row_allowed != Some(false) {
+                            extra["agents"] = json!(true);
+                        }
+                    }
+                }
+            }
             rows.push(row);
         }
         notices.retain(|notice| {
@@ -1164,31 +1165,6 @@ impl Service {
             .filter(|n| n.forwarder.as_deref().is_none_or(|id| id == self.key))
             .cloned()
             .collect::<Vec<_>>();
-        let allowed = self.reset_permission.lock().expect("reset permissions");
-        for row in &mut rows {
-            let id = row["id"].as_str().unwrap_or_default();
-            let agents = allowed.get(id) == Some(&true);
-            let holders = row["boxes"].as_array().cloned().unwrap_or_default();
-            if let Some(extras) = row["extras"].as_array_mut() {
-                for extra in extras
-                    .iter_mut()
-                    .filter(|e| e["kind"] == "resets" && e["usable"] == true)
-                {
-                    if let Some(holder) = holders
-                        .iter()
-                        .find(|b| b["here"] == true)
-                        .or_else(|| holders.iter().find(|b| b["away"] != true))
-                        .or_else(|| holders.first())
-                    {
-                        extra["on"] = json!({"key":holder["key"],"name":holder["name"],"here":holder["here"]==true});
-                    }
-                    if agents {
-                        extra["agents"] = json!(true);
-                    }
-                }
-            }
-        }
-        drop(allowed);
         for row in &rows {
             if row["windows"]
                 .as_array()

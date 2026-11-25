@@ -2,6 +2,7 @@ mod agents;
 mod library_artifacts;
 mod marketplace;
 mod usage;
+mod usage_history_peers;
 mod usage_peers;
 
 use std::{fs, path::Path, sync::Arc, time::UNIX_EPOCH};
@@ -199,6 +200,9 @@ pub async fn run(
     if let Some(readers) = &standalone_plans {
         readers.confirm(&limits).await;
     }
+    let agent_settings_feed = resident_agents
+        .as_ref()
+        .map(|(_, accounts)| accounts.feed().clone());
     let mut agent_handover = None;
     let mut routes = Registry::new();
     crate::box_app::register(
@@ -353,6 +357,7 @@ pub async fn run(
             peers.reader(),
             peers.relay_handle(),
             memory.clone(),
+            engine.clone(),
             &mut routes,
         )
         .await,
@@ -396,6 +401,8 @@ pub async fn run(
         vault.clone(),
         peers.reader(),
         engine.clone(),
+        sessions.clone(),
+        agent_settings_feed,
         work_queue.archive_forward(),
     );
     kuvo_services::files::register(
@@ -477,14 +484,24 @@ pub async fn run(
         kuvo_work::work::WorkSettings::new(home, &account, kind == ComputerKind::Mac);
     let working = sessions.clone();
     let kept_awake = work_settings.keep_awake(move || !working.activity().is_empty());
-    let resets = kuvo_services::usage::resets::Resets::new(
+    let engine_reader = usage::engine_reader(home, &account);
+    let mut resets = kuvo_services::usage::resets::Resets::new(
         home,
         limits.clone(),
         Arc::new(usage::ResetPort {
             agents: agent_shutdown.clone(),
             limits: limits.clone(),
+            engine: engine_reader
+                .clone()
+                .map(|reader| (engine.clone(), reader, home.to_owned())),
         }),
     );
+    if let Some(relay) = peers.relay_handle() {
+        resets = resets.with_peers(Arc::new(usage_peers::ResetTransport {
+            directory: peers.reader(),
+            relay,
+        }));
+    }
     resets.follow_sign_ins();
     kuvo_services::usage::resets::register(&mut routes, resets.clone());
     let work = kuvo_work::work::Work::new(
@@ -496,7 +513,7 @@ pub async fn run(
         bots.clone(),
     )
     .with_limits(limits.clone())
-    .with_resets(resets);
+    .with_resets(resets.clone());
     work.attach_start_link(work_queue.start_link());
     // (What it tells, read again for the clients that follow it.)
     let (told_peers, told_run) = (peers.clone(), home.join("run"));
@@ -541,18 +558,19 @@ pub async fn run(
             .unwrap_or_default(),
         &hostname::get()?.to_string_lossy(),
     )
-    .with_history(usage_settings, limits.clone());
+    .with_history(usage_settings, limits.clone())
+    .with_cursor(standalone_plans.clone());
+    let cursor_watch = insights.follow_cursor(routes.client_activity());
     let price_watch = insights.follow_prices(&account);
     let usage_watch = kuvo_os::watch::WatchHub::default();
     let insights_watch = insights.follow(usage_watch.clone());
     let engine_usage_watch = insights.follow_engine(usage_watch.clone());
     let native_usage_watch = insights.follow_native(usage_watch, limits.clone());
-    kuvo_services::usage::insights::register(&mut routes, insights);
+    kuvo_services::usage::insights::register(&mut routes, insights.clone());
     let refresh_limits = limits.clone();
     let refresh_agents = agent_shutdown.clone();
     let refresh_engine = engine.clone();
     let refresh_home = home.to_owned();
-    let engine_reader = usage::engine_reader(home, &account);
     kuvo_services::usage::limits::register_refresh(
         &mut routes,
         limits.clone(),
@@ -589,6 +607,16 @@ pub async fn run(
     );
     let limits_peers = peers.relay_handle().map(|relay| {
         tokio::spawn(usage_peers::follow_limits(
+            limits.clone(),
+            peers.reader(),
+            relay,
+            setup.handle(),
+            resets.clone(),
+        ))
+    });
+    let history_peers = peers.relay_handle().map(|relay| {
+        tokio::spawn(usage_history_peers::follow(
+            insights,
             limits.clone(),
             peers.reader(),
             relay,
@@ -671,24 +699,54 @@ pub async fn run(
         let peers = peers.clone();
         let dispatcher = dispatcher.clone();
         let mut sessions = sessions.clone();
+        let mut setup = setup.handle();
+        let mut moves = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+        moves.set_targets(Vec::new(), vec![(home.join("run/moves"), false)]);
         async move {
-            let mut timer = tokio::time::interval(std::time::Duration::from_secs(10));
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut previous = None;
+            let mut published_to = Vec::new();
+            let mut peer_changes = peers.reader();
+            let mut zone = None;
+            let mut first = true;
+            let mut held = None;
             loop {
-                let periodic = tokio::select! {
-                    _ = timer.tick() => true,
-                    changed = sessions.changed() => if changed { false } else { break },
-                };
-                if peers.reader().view().roster.members.is_empty() {
+                let mut forced = first;
+                if !first {
+                    tokio::select! {
+                        changed = sessions.changed() => if !changed { break },
+                        changed = peer_changes.changed() => if changed.is_err() { break },
+                        changed = setup.changed() => if !changed { break },
+                        _ = moves.changed() => forced = true,
+                    }
+                }
+                first = false;
+                let members = peer_changes
+                    .view()
+                    .roster
+                    .members
+                    .iter()
+                    .map(|member| member.key)
+                    .collect::<Vec<_>>();
+                if members.is_empty() {
+                    published_to.clear();
                     continue;
                 }
                 let revised = sessions.archive_revision();
-                if !periodic && revised == previous {
+                let next_zone = setup.time_zone();
+                let next_held = peer_changes.view().local.ownership.held.clone();
+                if !forced
+                    && revised == previous
+                    && members == published_to
+                    && zone == next_zone
+                    && held.as_ref() == Some(&next_held)
+                {
                     continue;
                 }
                 if let Some(copy) = archives.snapshot(dispatcher.clone()).await {
                     previous = revised;
+                    published_to = members;
+                    zone = next_zone;
+                    held = Some(next_held);
                     peers.archives(copy).await;
                 }
             }
@@ -775,10 +833,16 @@ pub async fn run(
     insights_watch.abort();
     native_usage_watch.abort();
     engine_usage_watch.abort();
+    if let Some(task) = cursor_watch {
+        task.abort();
+    }
     if let Some(task) = price_watch {
         task.abort();
     }
     if let Some(task) = limits_peers {
+        task.abort();
+    }
+    if let Some(task) = history_peers {
         task.abort();
     }
     work_watch.abort();

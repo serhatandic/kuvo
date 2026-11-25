@@ -94,8 +94,21 @@ impl SetupHandle {
         decision.await.is_ok_and(|result| result.is_ok())
     }
 
+    /// Settings and setup-wide installations changed. Followers compare the part they use.
+    pub async fn changed(&mut self) -> bool {
+        self.views.changed().await.is_ok()
+    }
+
     pub fn rosters(&self) -> watch::Receiver<Option<Arc<Roster>>> {
         self.rosters.clone()
+    }
+
+    /// Historical computer keys come only from verified setup membership.
+    pub fn insight_origins(&self) -> std::collections::BTreeMap<String, String> {
+        if self.config_receipt_scope().is_none() {
+            return Default::default();
+        }
+        self.views.borrow().insight_origins.clone()
     }
 
     /// The current accepted setup position for a local settings change receipt.
@@ -280,6 +293,7 @@ pub(crate) struct View {
     ownership: kuvo_peers::ownership::SetupState,
     local_wipe: bool,
     pending_wipes: Vec<kuvo_protocol::routes::types::GetKuvoComputersStatus200WipePendingItem>,
+    insight_origins: std::collections::BTreeMap<String, String>,
 }
 
 pub(crate) struct Request {
@@ -538,8 +552,8 @@ impl PreparedSetup {
             forwarding: computer_requests::Forwarding::default(),
             ssh,
             forwarded_handover: None,
-            next: Instant::now(),
-            next_edits: Instant::now(),
+            next: Some(Instant::now()),
+            next_edits: Some(Instant::now()),
             next_digest: Instant::now(),
             activity: activity.clone(),
         };
@@ -1015,9 +1029,18 @@ fn make_view(
             .as_ref()
             .is_none_or(|l| l.holder == setup.position.primary)
         {
-            let warning = if setup.role == Role::Primary && !lease.holds(link) {
+            let warning = if setup.role == Role::Primary
+                && link
+                    .member_list()
+                    .is_ok_and(|roster| roster.boxes.len() > 1)
+                && !lease.holds(link)
+            {
                 Some(Error::Fenced.to_string())
-            } else if lease.seen.as_ref().is_some_and(|l| l.relay_host) {
+            } else if link
+                .member_list()
+                .is_ok_and(|roster| roster.boxes.len() > 1)
+                && lease.seen.as_ref().is_some_and(|l| l.relay_host)
+            {
                 Some("The main computer also runs Kuvo's relay. If this computer goes offline, another computer can't take over.".into())
             } else {
                 None
@@ -1064,6 +1087,7 @@ fn make_view(
         setup: view,
         access,
         ownership,
+        insight_origins: link.historical_insight_origins().unwrap_or_default(),
         model_stars: link
             .value(SharedKind::SetupStarredModels)
             .map(|value| model_stars::list(Some(value))),
@@ -1113,16 +1137,72 @@ struct Owner {
     forwarding: computer_requests::Forwarding,
     ssh: watch::Receiver<Option<std::sync::Weak<crate::ssh::Adding>>>,
     forwarded_handover: Option<Handover>,
-    next: Instant,
-    next_edits: Instant,
+    next: Option<Instant>,
+    next_edits: Option<Instant>,
     next_digest: Instant,
     activity: activity::Sender,
 }
 
 impl Owner {
+    /// A removal approved for this computer prepares its wipe until the resident can stop.
+    async fn prepare_wipe(&mut self) {
+        #[cfg(target_os = "macos")]
+        if self.kind == ComputerKind::Mac
+            && let Err(error) =
+                crate::wipe::prepare_app_wipe(self.files.root(), &mut self.link, self.handle.clone()).await
+        {
+            crate::uninstall::log_cleanup(&self.files, &error);
+            eprintln!("preparing app-owned wipe: {error}");
+        }
+        if self.kind == ComputerKind::Machine
+            && let Err(error) =
+                crate::wipe::prepare_headless(self.files.root(), &mut self.link, self.handle.clone()).await
+        {
+            crate::uninstall::log_cleanup(&self.files, &error);
+            eprintln!("preparing wipe: {error}");
+        }
+    }
+
+    fn pending_maintenance(&self) -> bool {
+        ["localWipe", "removalSource"]
+            .iter()
+            .any(|field| self.link.extra.get(*field).is_some_and(|value| !value.is_null()))
+            || self.link.extra.contains_key("localUnlink")
+            || self.pending_unlinks()
+            || self.pending_handover.is_some()
+            || self.forwarded_handover.is_some()
+            || !self.pending_devices.is_empty()
+            || !self.pending_queue_labels.is_empty()
+            || !self.pending_stars.is_empty()
+            || self.forwarding.has_pending()
+    }
+
     async fn run(mut self) {
+        let hub = kuvo_os::watch::WatchHub::default();
+        let mut files = kuvo_os::watch::FileSet::new(hub.clone());
+        files.set_targets(
+            [
+                "bots/kit.json",
+                "box/time-zone.json",
+                "wakes/timezone",
+                "wakes/zoneinfo",
+                "run/launch.env",
+                "box/models.json",
+            ]
+            .map(|name| self.files.path(name))
+            .to_vec(),
+            vec![(self.files.path("run/owned-data/edit-outbox"), false)],
+        );
+        let mut lease_files = kuvo_os::watch::FileSet::new(hub.clone());
+        lease_files.set_files(vec![self.files.path("run/test-setup-clock.json")]);
+        let mut number_files = kuvo_os::watch::FileSet::new(hub);
+        number_files.set_files(vec![self.files.path("run/work-queue/numbers.json")]);
+        let mut maintenance = Some(Instant::now());
         loop {
-            let until = self.next.min(self.next_edits);
+            let until = [self.next, self.next_edits, maintenance]
+                .into_iter()
+                .flatten()
+                .min();
             let event = self.network.as_mut().map(|relay| &mut relay.events);
             let adding = !self.forwarding.jobs.is_empty();
             tokio::select! {
@@ -1131,71 +1211,64 @@ impl Owner {
                     self.request(request).await;
                 }
                 finished = self.forwarding.jobs.join_next(), if adding => {
-                    if let Some(Ok(finished)) = finished {
-                        self.finish_add_request(finished).await;
-                    }
+                    if let Some(Ok(finished)) = finished { self.finish_add_request(finished).await; }
                 }
-                incoming = async {
-                    match event {
-                        Some(events) => events.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => match incoming {
+                incoming = async { match event { Some(events) => events.recv().await, None => std::future::pending().await } } => match incoming {
                     Ok(event) => {
-                        if let Err(error) = self.receive(&event).await {
-                            eprintln!("setup relay message: {error}");
-                        }
+                        if let Err(error) = self.receive(&event).await { eprintln!("setup relay message: {error}"); }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // The lease and the next availability round recover missed state.
-                        self.next = Instant::now();
+                        self.next = Some(Instant::now());
+                        self.next_edits = Some(Instant::now());
+                        maintenance = Some(Instant::now());
                     }
                     Err(broadcast::error::RecvError::Closed) => self.network = None,
                 },
-                () = time::sleep_until(until) => {
-                    if self.next <= Instant::now() {
-                        self.next = Instant::now() + Duration::from_secs(2);
-                        #[cfg(target_os = "macos")]
-                        if self.kind == ComputerKind::Mac
-                            && let Err(error) = crate::wipe::prepare_app_wipe(self.files.root(), &mut self.link, self.handle.clone()).await
-                        {
-                            crate::uninstall::log_cleanup(&self.files, &error);
-                            eprintln!("preparing app-owned wipe: {error}");
-                        }
-                        if self.kind == ComputerKind::Machine
-                            && let Err(error) = crate::wipe::prepare_headless(self.files.root(), &mut self.link, self.handle.clone()).await
-                        {
-                            crate::uninstall::log_cleanup(&self.files, &error);
-                            eprintln!("preparing wipe: {error}");
-                        }
-                        if let Err(error) = self.resume_local_unlink().await {
-                            eprintln!("setup unlink cleanup: {error}");
-                        }
-                        if let Err(error) = self.offer_unlinks().await {
-                            eprintln!("setup removal delivery: {error}");
-                        }
-                        if let Err(error) = self.tick().await
-                            && !matches!(error, Error::Relay(_) | Error::Conflict) {
-                            eprintln!("setup heartbeat: {error}");
-                        }
+                _ = files.changed() => {
+                    self.next_edits = Some(Instant::now());
+                    self.next_stars_offer = Instant::now();
+                    maintenance = Some(Instant::now());
+                    self.refresh();
+                },
+                _ = lease_files.changed() => {
+                    if self.lease_needed() { self.next = Some(Instant::now()); }
+                },
+                _ = number_files.changed() => {
+                    if self.lease_needed() && self.lease.needs_number_reserve(&self.files, &self.link) { self.next = Some(Instant::now()); }
+                },
+                () = async { match until { Some(at) => time::sleep_until(at).await, None => std::future::pending().await } } => {
+                    if self.next.is_some_and(|at| at <= Instant::now()) {
+                        self.next = Some(Instant::now() + Duration::from_secs(2));
+                        if let Err(error) = self.tick().await && !matches!(error, Error::Relay(_) | Error::Conflict) { eprintln!("setup heartbeat: {error}"); }
                     }
-                    if self.next_edits <= Instant::now() {
-                        self.next_edits = Instant::now() + Duration::from_secs(5);
-                        if let Err(error) = self.flush_edits().await {
-                            eprintln!("setup edit delivery: {error}");
-                        }
+                    if self.next_edits.is_some_and(|at| at <= Instant::now()) {
+                        if let Err(error) = self.flush_edits().await { eprintln!("setup edit delivery: {error}"); }
+                        self.next_edits = edits::rows(&self.files).ok().filter(|rows| rows.iter().any(|row| row.queued_edit.is_some())).map(|_| Instant::now() + Duration::from_secs(5));
                     }
-                    self.expire_handover().await;
-                    self.expire_device_changes();
-                    self.expire_model_stars();
-                    if let Err(error) = self.offer_model_stars().await
-                        && !matches!(error, Error::Fenced | Error::Conflict)
-                    {
-                        eprintln!("checking existing model stars: {error}");
+                    if maintenance.is_some_and(|at| at <= Instant::now()) {
+                        self.prepare_wipe().await;
+                        if let Err(error) = self.resume_local_unlink().await { eprintln!("setup unlink cleanup: {error}"); }
+                        if let Err(error) = self.offer_unlinks().await { eprintln!("setup removal delivery: {error}"); }
+                        self.expire_handover().await;
+                        self.expire_device_changes();
+                        self.expire_model_stars();
+                        if let Err(error) = self.offer_model_stars().await && !matches!(error, Error::Fenced | Error::Conflict) { eprintln!("checking existing model stars: {error}"); }
+                        self.retry_computer_requests().await;
+                        maintenance = if self.pending_maintenance() { Some(Instant::now() + Duration::from_secs(2)) }
+                            else if self.model_stars_pending() { Some(self.next_stars_offer) } else { None };
                     }
-                    self.retry_computer_requests().await;
                     self.refresh();
                 }
+            }
+            if self.pending_maintenance() && maintenance.is_none() {
+                maintenance = Some(Instant::now() + Duration::from_secs(2));
+            }
+            if self.lease_needed() {
+                if self.next.is_none() {
+                    self.next = Some(Instant::now());
+                }
+            } else {
+                self.next = None;
             }
         }
     }
@@ -1293,7 +1366,8 @@ impl Owner {
             || ["macRotation", "setupMerge", "localWipe"]
                 .iter()
                 .any(|field| self.link.extra.get(*field).is_some_and(|v| !v.is_null()))
-            || (roster.boxes.len() > 1 && !self.lease.holds(&self.link))
+            || ((roster.boxes.len() > 1 || self.relay_roster_dirty())
+                && !self.lease.holds(&self.link))
         {
             return Err(Error::Fenced);
         }
@@ -1363,7 +1437,24 @@ impl Owner {
         })
         .await
         .map_err(|_| Error::Invalid("setup write task"))??;
+        let relay_membership_changed = self.link.member_list().ok().map(|roster| {
+            roster
+                .boxes
+                .into_iter()
+                .map(|peer| (peer.key, peer.sign))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        }) != written.member_list().ok().map(|roster| {
+            roster
+                .boxes
+                .into_iter()
+                .map(|peer| (peer.key, peer.sign))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        });
         self.link = written;
+        if position_changed || relay_membership_changed {
+            self.next = Some(Instant::now());
+            self.next_edits = Some(Instant::now());
+        }
         if last_device_gone {
             activity::record(&self.activity, activity::Activity::Forget).await;
         }

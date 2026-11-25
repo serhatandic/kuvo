@@ -80,3 +80,40 @@ fn new_window_has_no_projection_from_old_samples() {
     assert!(!trail.projected());
     assert_eq!(trail.current.used, 0.01);
 }
+#[test]
+fn a_corroborated_recovery_rearms_a_real_crossing_without_accepting_old_peer_state() {
+    let mut trail = Trail::new(reading(START + 160 * MIN, 0.88, RESET)).unwrap();
+    let milestone = Milestone::UnderTenPercent;
+    assert_eq!(
+        trail.observe(reading(START + 161 * MIN, 0.92, RESET), &toggles()),
+        Some(vec![milestone])
+    );
+    let old = trail.clone();
+    assert_eq!(trail.occurrence(milestone), 1);
+    assert_eq!(
+        trail.observe(reading(START + 162 * MIN, 0.84, RESET), &toggles()),
+        None
+    );
+    assert_eq!(
+        trail.observe(reading(START + 163 * MIN, 0.84, RESET), &toggles()),
+        Some(vec![])
+    );
+    trail.merge_fired(&old);
+    assert_eq!(
+        trail.observe(reading(START + 164 * MIN, 0.91, RESET), &toggles()),
+        Some(vec![milestone])
+    );
+    assert_eq!(trail.occurrence(milestone), 2);
+}
+#[test]
+fn an_off_toggle_does_not_consume_an_unannounced_crossing() {
+    let mut trail = Trail::new(reading(START + 160 * MIN, 0.89, RESET)).unwrap();
+    assert_eq!(
+        trail.observe(reading(START + 161 * MIN, 0.91, RESET), &BTreeSet::new()),
+        Some(vec![])
+    );
+    assert_eq!(
+        trail.observe(reading(START + 162 * MIN, 0.92, RESET), &toggles()),
+        Some(vec![Milestone::UnderTenPercent])
+    );
+}

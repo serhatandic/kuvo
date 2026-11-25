@@ -40,3 +40,34 @@ fn cache_writes_and_fast_rates_count_differently() {
     );
     assert!((fast - base * rates.fast).abs() < 1e-9);
 }
+
+#[test]
+fn the_public_price_catalog_matches_the_usagekit_fixture_aliases_and_rates() {
+    let pricing = Pricing::load(None).unwrap();
+    let corpus: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../test/fixtures/usage/pricing-expected.json"
+    ))
+    .unwrap();
+    for (model, want) in corpus.as_object().unwrap() {
+        let found = pricing.resolve(model);
+        if want.is_null() {
+            assert!(found.is_none(), "{model}");
+            continue;
+        }
+        let found = found.unwrap_or_else(|| panic!("Missing price for {model}"));
+        let got = serde_json::json!({"input":found.input,"output":found.output,"cacheWrite":found.cache_write,"cacheRead":found.cache_read,"inputAbove":found.input_above,"outputAbove":found.output_above,"cacheWriteAbove":found.cache_write_above,"cacheReadAbove":found.cache_read_above,"fast":found.fast});
+        for (field, expected) in want.as_object().unwrap() {
+            let actual = &got[field];
+            if let Some(expected) = expected.as_f64() {
+                let actual = actual.as_f64().unwrap_or_else(|| panic!("{model} {field}"));
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "{model} {field}: {actual} != {expected}"
+                );
+            } else {
+                assert_eq!(actual, expected, "{model} {field}");
+            }
+        }
+    }
+}

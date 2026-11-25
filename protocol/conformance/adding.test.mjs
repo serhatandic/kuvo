@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { boxBinary, boxCommand, isolatedEnv, launch, readJSON, scratch, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, isolatedEnv, launch, privateHome, readJSON, scratch, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 
 test("an installer code binds one computer, survives a retry, and keeps its identity", { timeout: 90000 }, async t => {
@@ -18,7 +18,6 @@ test("an installer code binds one computer, survives a retry, and keeps its iden
   const ask = main.connect(await main.start().ready());
   const original = await ask("GET", "kuvo/setup");
   assert.equal(original.status, 200, original.text);
-  await until(() => leases.leaseFor(original.json.setup), "The main computer did not claim a relay lease.");
 
   const denied = await ask("POST", "kuvo/computers/add/code", { credentials: "all" }, { "x-kuvo-from": "mac" });
   assert.equal(denied.status, 400, denied.text);
@@ -26,6 +25,7 @@ test("an installer code binds one computer, survives a retry, and keeps its iden
 
   const invite = await ask("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(original.json.setup), "The main computer did not claim a relay lease.");
   const { code, expires } = invite.json;
   const format = "kuvo-add-1.";
   assert.ok(code.startsWith(format));
@@ -103,7 +103,7 @@ test("an unsupported installer code leaves the new computer’s home untouched",
   const implementation = boxBinary();
   const root = fs.realpathSync(scratch());
   const home = path.join(root, "box");
-  fs.mkdirSync(home);
+  privateHome(home);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   for (const version of [0, 2]) {
     const args = implementation.typescript ? ["join"] : ["install", "--join"];
@@ -172,7 +172,7 @@ test("a Rust applicant leaves an older home for the move", {
 }, async t => {
   const root = fs.realpathSync(scratch());
   const home = path.join(root, "box");
-  fs.mkdirSync(home);
+  privateHome(home);
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const layout = '{"version":22}\n';
   fs.writeFileSync(path.join(home, "folder-version.json"), layout);
@@ -201,10 +201,10 @@ test("the main retires only the provisional computer named by an installer cance
   const applicant = await computer("Workshop", implementation);
   const ask = main.connect(await main.start().ready());
   const original = (await ask("GET", "kuvo/setup")).json;
-  await until(() => leases.leaseFor(original.setup), "The main computer did not claim a relay lease.");
   const headers = { "x-kuvo-from": "mac" };
   const invite = await ask("POST", "kuvo/computers/add/code", {}, headers);
   assert.equal(invite.status, 201, invite.text);
+  await until(() => leases.leaseFor(original.setup), "The main computer did not claim a relay lease.");
   const code = JSON.parse(Buffer.from(invite.json.code.split(".")[1], "base64url"));
   const issuer = Buffer.from(code.address, "base64url");
   const prefix = Buffer.from("kuvo installer v1\0");
@@ -340,7 +340,6 @@ test("installer enrollment copies only the sign-ins and keys selected for that c
   );
   const ask = main.connect(await main.start().ready());
   const setup = (await ask("GET", "kuvo/setup")).json.setup;
-  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const headers = { "x-kuvo-from": "mac" };
   const checklist = await ask("GET", "kuvo/computers/add/credentials", undefined, headers);
   assert.equal(checklist.status, 200, checklist.text);
@@ -352,6 +351,7 @@ test("installer enrollment copies only the sign-ins and keys selected for that c
   assert.doesNotMatch(checklist.text, /selected-test-key|selected-test-credential|reusable-test-token/);
   const issued = await ask("POST", "kuvo/computers/add/code", { credentials: chosen }, headers);
   assert.equal(issued.status, 201, issued.text);
+  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const mainLink = () => readJSON(path.join(main.home, "run", "link.json"));
   const invite = () => Object.values(mainLink().installerInvites)[0];
   assert.equal(typeof invite().credentialSeed, "string");
@@ -414,10 +414,10 @@ test("a member lists the main computer’s keys and issues an installer code thr
   const applicant = await computer("Laptop");
   const primary = main.connect(await main.start().ready());
   const setup = (await primary("GET", "kuvo/setup")).json.setup;
-  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const headers = { "x-kuvo-from": "mac" };
   const first = await primary("POST", "kuvo/computers/add/code", {}, headers);
   assert.equal(first.status, 201, first.text);
+  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const enrolled = await member.join(first.json.code);
   assert.equal(enrolled.code, 0, enrolled.log);
   const ask = member.connect(await member.start().ready());

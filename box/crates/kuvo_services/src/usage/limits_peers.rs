@@ -3,7 +3,7 @@
 use super::{
     limits::{Account, Fact, Provider},
     plan_facts::{Balance, Extra, Facts, Problem, ProblemKind},
-    readings::{Source, Trail, Window},
+    readings::{NoticeState, Source, Trail, Window},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,6 +34,8 @@ pub struct AccountMail {
     pub windows: Vec<Window>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notices: Vec<Fact>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub notice_state: BTreeMap<String, NoticeState>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agents_reset: bool,
 }
@@ -175,6 +177,24 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
         next: time(&value["next"])
             .map(|t| (i128::from(t) + offset).clamp(0, i128::from(u64::MAX)) as u64),
     };
+    let notice_state = if notices {
+        value["noticeState"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .take(MOST_WINDOWS)
+            .filter_map(|(id, value)| {
+                if id.is_empty() || id.len() > 100 {
+                    return None;
+                }
+                let mut state: NoticeState = serde_json::from_value(value.clone()).ok()?;
+                state.read = state.read.map(|at| clock(at, offset, now));
+                Some((id.clone(), state))
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
     let notices = if notices {
         value["notices"]
             .as_array()
@@ -217,7 +237,13 @@ fn account(value: &Value, offset: i128, now: u64, notices: bool) -> Option<Accou
         facts,
         windows,
         notices,
-        agents_reset: value["agentsReset"] == true,
+        notice_state,
+        agents_reset: value["agentsReset"] == true
+            || value["extras"].as_array().is_some_and(|extras| {
+                extras
+                    .iter()
+                    .any(|e| e["kind"] == "resets" && e["agents"] == true)
+            }),
     })
 }
 impl Reading {
@@ -265,7 +291,19 @@ impl Reading {
         {
             reading.accounts.pop();
         }
-        serde_json::to_value(reading).unwrap_or_default()
+        let mut value = serde_json::to_value(reading).unwrap_or_default();
+        if let Some(accounts) = value["accounts"].as_array_mut() {
+            for account in accounts {
+                if account["agentsReset"] == true {
+                    if let Some(extras) = account["extras"].as_array_mut() {
+                        for extra in extras.iter_mut().filter(|e| e["kind"] == "resets") {
+                            extra["agents"] = json!(true);
+                        }
+                    }
+                }
+            }
+        }
+        value
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -343,11 +381,22 @@ impl Book {
                 changed = true;
             }
             if peer.setup.as_deref() != setup {
-                changed |=
-                    peer.setup.is_some() || peer.accounts.iter().any(|a| !a.notices.is_empty());
+                changed |= peer.setup.is_some()
+                    || peer
+                        .accounts
+                        .iter()
+                        .any(|a| !a.notices.is_empty() || !a.notice_state.is_empty());
                 peer.setup = None;
                 for account in &mut peer.accounts {
                     account.notices.clear();
+                    account.notice_state.clear();
+                }
+                for trail in peer
+                    .trails
+                    .values_mut()
+                    .flat_map(|group| group.values_mut())
+                {
+                    trail.clear_fired();
                 }
             }
             true
@@ -387,6 +436,14 @@ impl Book {
                     }
                 }
             }
+            if prior
+                .as_ref()
+                .is_some_and(|old| old.setup != reading.notice_setup)
+            {
+                for trail in trail.values_mut() {
+                    trail.clear_fired();
+                }
+            }
             let ids = account
                 .windows
                 .iter()
@@ -407,9 +464,14 @@ impl Book {
                         .get(&n.window)
                         .is_some_and(|t| t.current.resets_at == n.resets_at)
             });
+            for (id, state) in &account.notice_state {
+                if let Some(trail) = trail.get_mut(id) {
+                    trail.take_notice_state(state);
+                }
+            }
             for notice in &account.notices {
                 if let Some(t) = trail.get_mut(&notice.window) {
-                    t.mark_fired(notice.milestone);
+                    t.mark_fired_at(notice.milestone, notice.at);
                 }
             }
             notices.extend(

@@ -267,6 +267,7 @@ impl Agent for Codex {
                     count: count.min(u64::from(u32::MAX)) as u32,
                     targets,
                     refills: vec![],
+                    display_expiries: None,
                 });
             }
             Ok(Some(direct))
@@ -335,7 +336,7 @@ impl Agent for Codex {
                     Some("reset") => ResetOutcome::Reset,
                     Some("alreadyRedeemed") => ResetOutcome::AlreadyRedeemed,
                     Some("nothingToReset") => ResetOutcome::NothingToReset,
-                    Some("noCredit") => ResetOutcome::NoReset,
+                    Some("noCredit") => ResetOutcome::MakerNoReset,
                     _ => ResetOutcome::Unknown,
                 },
             )

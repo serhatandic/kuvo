@@ -26,7 +26,7 @@ fn permission_error() -> io::Error {
 fn check_socket(endpoint: &Endpoint) -> io::Result<Metadata> {
     let info = fs::symlink_metadata(&endpoint.path)?;
     let permitted = match endpoint.channel {
-        Channel::Ssh => private(&info),
+        Channel::Ssh | Channel::Keeper => private(&info),
         // Legacy holders had the default umask, inside a mode-0700 directory.
         Channel::Holder(_) => info.uid() == rustix::process::getuid().as_raw(),
     };

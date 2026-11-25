@@ -67,11 +67,31 @@ pub(crate) struct Observation {
     since: Timestamp,
     valid_after: Timestamp,
     duration: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    roster_digest: Option<String>,
 }
 
 impl Observation {
     pub(crate) fn number_bounds(&self) -> Option<(u64, u64)> {
         Some((self.number_floor?, self.high))
+    }
+
+    fn remaining(&self, clock: &Clock) -> u64 {
+        let now = clock.now();
+        let age = now
+            .wall
+            .checked_sub(self.since.wall)
+            .unwrap_or(u64::MAX)
+            .max((now.uptime - self.since.uptime).max(0.0) as u64);
+        self.duration.saturating_sub(age)
+    }
+
+    fn starts_in(&self, clock: &Clock) -> u64 {
+        let now = clock.now();
+        self.valid_after
+            .wall
+            .saturating_sub(now.wall)
+            .max((self.valid_after.uptime - now.uptime).max(0.0) as u64)
     }
 
     fn fresh(&self, clock: &Clock) -> bool {
@@ -191,6 +211,55 @@ impl Client {
             })
     }
 
+    pub fn needs_number_reserve(&self, files: &Files, link: &Link) -> bool {
+        let Ok(setup) = link.setup() else {
+            return false;
+        };
+        if setup.role != Role::Primary {
+            return false;
+        }
+        let Some(seen) = &self.seen else { return true };
+        let Ok((known, requested)) = ledger_bounds(files, &setup.position.id) else {
+            return false;
+        };
+        seen.high < NUMBER_MAX && (requested > seen.high || known.saturating_add(50) > seen.high)
+    }
+
+    pub fn roster_current(&self, link: &Link) -> bool {
+        let digest = roster_digest(link).ok();
+        self.seen.as_ref().is_some_and(|seen| {
+            seen.setup
+                == link
+                    .setup()
+                    .map(|s| s.position.id.as_str())
+                    .unwrap_or_default()
+                && seen.roster_digest == digest
+        })
+    }
+
+    /// Wake for renewal twenty seconds before expiry, for the activation of a transferred
+    /// grant, or for takeover at the relay's earliest allowed time. Do not trust another
+    /// computer's claimed expiration; its mail only asks us to observe the relay again.
+    pub fn next_observation(&self, holder: bool, takeover_in: u64) -> Duration {
+        let Some(seen) = &self.seen else {
+            return Duration::from_secs(2);
+        };
+        let begins = seen.starts_in(&self.clock);
+        let remaining = seen.remaining(&self.clock);
+        let millis = if begins > 0 {
+            begins
+        } else if holder && remaining > 20_000 {
+            remaining - 20_000
+        } else if holder && remaining > 0 {
+            remaining.min(2_000)
+        } else if remaining > 0 {
+            remaining
+        } else {
+            takeover_in.max(2_000)
+        };
+        Duration::from_millis(millis.max(500))
+    }
+
     pub fn can_promote(&self, identity: &Identity) -> bool {
         self.observed_here
             && self.seen.as_ref().is_some_and(|lease| {
@@ -227,16 +296,11 @@ impl Client {
         url.set_fragment(None);
         let bootstrap = matches!(action, Action::Claim) && term == 0 && setup.role == Role::Primary;
         let roster = if matches!(action, Action::Renew | Action::Transfer) || bootstrap {
-            Some(
-                link.member_list()?
-                    .boxes
-                    .into_iter()
-                    .filter_map(|peer| Some((peer.key, peer.sign?)))
-                    .collect(),
-            )
+            Some(relay_roster(link)?)
         } else {
             None
         };
+        let roster_hash = roster.as_ref().map(|roster| digest_roster(roster));
 
         let next = link
             .value(SharedKind::QueueNumberAllocation)
@@ -254,7 +318,12 @@ impl Client {
         } else {
             number_high(files, &setup.position.id)?
         };
-        let high = next.max(old).max(known);
+        let local = if matches!(action, Action::Read) {
+            0
+        } else {
+            local_ceiling(files, &setup.position.id)?
+        };
+        let high = next.max(old).max(known).max(requested).max(local);
         let outgoing = match action {
             Action::Read => None,
             Action::Renew => {
@@ -331,6 +400,27 @@ impl Client {
             .map_or(lease.high, |saved| {
                 saved.number_floor.unwrap_or(saved.high.max(high))
             });
+        let roster_digest = if roster_hash.is_some()
+            && match action {
+                Action::Claim => bootstrap && saved.is_none() && lease.holder == identity.public,
+                Action::Renew => {
+                    lease.holder == identity.public
+                        && saved.is_some_and(|saved| {
+                            saved.term == lease.term && lease.expires > saved.expires
+                        })
+                }
+                Action::Transfer => {
+                    target == Some(lease.holder.as_str())
+                        && saved.is_some_and(|saved| saved.term < lease.term)
+                }
+                Action::Read => false,
+            } {
+            roster_hash
+        } else {
+            saved
+                .filter(|saved| saved.term == lease.term && saved.holder == lease.holder)
+                .and_then(|saved| saved.roster_digest.clone())
+        };
         let observed = Observation {
             setup: setup.position.id.clone(),
             holder: lease.holder,
@@ -343,6 +433,7 @@ impl Client {
             since,
             valid_after,
             duration: reply.remaining.min(MAX_TIME),
+            roster_digest,
         };
         files.write(RECORD, &observed)?;
         self.seen = Some(observed.clone());
@@ -355,7 +446,84 @@ impl Client {
     }
 }
 
-fn number_high(files: &Files, setup: &str) -> Result<(u64, u64), Error> {
+fn relay_roster(link: &Link) -> Result<std::collections::BTreeMap<String, String>, Error> {
+    Ok(link
+        .member_list()?
+        .boxes
+        .into_iter()
+        .filter_map(|peer| Some((peer.key, peer.sign?)))
+        .collect())
+}
+fn digest_roster(roster: &std::collections::BTreeMap<String, String>) -> String {
+    use sha2::{Digest, Sha256};
+    encode(&Sha256::digest(
+        serde_json::to_vec(roster).expect("roster serializes"),
+    ))
+}
+fn roster_digest(link: &Link) -> Result<String, Error> {
+    Ok(digest_roster(&relay_roster(link)?))
+}
+
+const LOCAL_NUMBERS: &str = "run/setup-local-numbers.json";
+const NUMBER_MAX: u64 = 999_999;
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalNumbers {
+    format_version: u64,
+    setup: String,
+    high: u64,
+}
+
+pub(crate) fn local_ceiling(files: &Files, setup: &str) -> Result<u64, Error> {
+    let Some(numbers) = files.read::<LocalNumbers>(LOCAL_NUMBERS)? else {
+        return Ok(0);
+    };
+    if numbers.format_version != 1 {
+        return Err(Error::Version("solo Work Queue number reservation"));
+    }
+    Ok(if numbers.setup == setup {
+        numbers.high.min(NUMBER_MAX)
+    } else {
+        0
+    })
+}
+
+/// Also cover kept numbers and pending merge reservations that predate the local ceiling.
+pub(crate) fn required_local_high(files: &Files, setup: &str) -> Result<u64, Error> {
+    let (known, requested) = number_high(files, setup)?;
+    Ok(known.max(requested).max(local_ceiling(files, setup)?))
+}
+
+/// Reserve locally before giving the number ledger a ceiling, so a join racing a ledger
+/// write can never announce a relay ceiling below numbers the ledger is allowed to give out.
+/// The actor cannot take the ledger lock here: the ledger holds it while asking the actor.
+pub(crate) fn reserve_local_numbers(files: &Files, setup: &str, floor: u64) -> Result<u64, Error> {
+    let previous = local_ceiling(files, setup)?;
+    let (known, requested) = if previous == 0 {
+        number_high(files, setup)?
+    } else {
+        ledger_bounds(files, setup)?
+    };
+    let high = known
+        .max(floor)
+        .saturating_add(200)
+        .max(requested)
+        .max(previous)
+        .min(NUMBER_MAX);
+    if high != previous {
+        files.write(
+            LOCAL_NUMBERS,
+            &LocalNumbers {
+                format_version: 1,
+                setup: setup.into(),
+                high,
+            },
+        )?;
+    }
+    Ok(high)
+}
+
+fn ledger_bounds(files: &Files, setup: &str) -> Result<(u64, u64), Error> {
     use serde_json::Value;
     let ledger = files
         .read::<Value>("run/work-queue/numbers.json")?
@@ -386,6 +554,29 @@ fn number_high(files: &Files, setup: &str) -> Result<(u64, u64), Error> {
                 .as_u64()
                 .unwrap_or_default(),
         );
+    if let Some(given) = ledger["given"].as_object() {
+        for grant in given.values() {
+            high = high.max(grant["to"].as_u64().unwrap_or_default());
+            if let Some(ranges) = grant["granted"].as_array() {
+                high = ranges
+                    .iter()
+                    .filter_map(|range| range.get(1).and_then(serde_json::Value::as_u64))
+                    .fold(high, u64::max);
+            }
+        }
+    }
+    Ok((
+        high.min(NUMBER_MAX),
+        ledger["reserveThrough"]
+            .as_u64()
+            .unwrap_or_default()
+            .min(NUMBER_MAX),
+    ))
+}
+
+fn number_high(files: &Files, setup: &str) -> Result<(u64, u64), Error> {
+    use serde_json::Value;
+    let (mut high, requested) = ledger_bounds(files, setup)?;
     for folder in ["run/work-queue/queues", "run/work-queue/peers"] {
         for file in files.names(folder)? {
             if !file.ends_with(".json") {
@@ -404,8 +595,5 @@ fn number_high(files: &Files, setup: &str) -> Result<(u64, u64), Error> {
             }
         }
     }
-    Ok((
-        high.min(999_999),
-        ledger["reserveThrough"].as_u64().unwrap_or_default(),
-    ))
+    Ok((high.min(999_999), requested))
 }

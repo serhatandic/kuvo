@@ -17,9 +17,14 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+#[path = "insight_peers.rs"]
+mod peers;
+#[path = "insight_summary.rs"]
+mod summary;
 
 const DAY: i64 = 86_400_000;
 const SQL:&str="
@@ -91,6 +96,7 @@ pub struct Service {
     key: String,
     alias: Arc<std::sync::OnceLock<String>>,
     hostname: String,
+    machine_identity: Arc<std::sync::OnceLock<String>>,
     gate: Arc<Mutex<()>>,
     caught_up: Arc<std::sync::atomic::AtomicBool>,
     prices: Arc<Mutex<Option<PriceBook>>>,
@@ -98,6 +104,14 @@ pub struct Service {
     native_ready: Arc<std::sync::atomic::AtomicBool>,
     engine_ready: Arc<std::sync::atomic::AtomicBool>,
     issues: Arc<Mutex<BTreeSet<String>>>,
+    scope: Arc<Mutex<super::insight_mail::Scope>>,
+    history_peers: Arc<Mutex<super::history_peers::Book>>,
+    index_changes: tokio::sync::watch::Sender<u64>,
+    manual_refresh: tokio::sync::broadcast::Sender<()>,
+    summary_revision: Arc<std::sync::atomic::AtomicU64>,
+    summary_cache: Arc<Mutex<BTreeMap<String, summary::Kept>>>,
+    cursor_reader: Option<super::standalone::Readers>,
+    cursor_busy: Arc<tokio::sync::Mutex<()>>,
 }
 #[derive(Clone)]
 struct HistoryContext {
@@ -106,11 +120,13 @@ struct HistoryContext {
 }
 impl Service {
     pub fn new(home: PathBuf, name: String, key: String, hostname: &str) -> Self {
+        let peer_history = super::history_peers::Book::read(&home.join("agents/usage/peers.json"));
         Self {
             home,
             name,
             key,
             hostname: hostname.to_owned(),
+            machine_identity: Arc::default(),
             alias: Arc::default(),
             gate: Arc::default(),
             caught_up: Arc::default(),
@@ -119,6 +135,14 @@ impl Service {
             native_ready: Arc::default(),
             engine_ready: Arc::default(),
             issues: Arc::default(),
+            scope: Arc::default(),
+            history_peers: Arc::new(Mutex::new(peer_history)),
+            index_changes: tokio::sync::watch::channel(0).0,
+            manual_refresh: tokio::sync::broadcast::channel(4).0,
+            summary_revision: Arc::default(),
+            summary_cache: Arc::default(),
+            cursor_reader: None,
+            cursor_busy: Arc::default(),
         }
     }
     pub fn with_history(
@@ -128,6 +152,46 @@ impl Service {
     ) -> Self {
         self.history = Some(HistoryContext { settings, limits });
         self
+    }
+    pub fn with_cursor(mut self, reader: Option<super::standalone::Readers>) -> Self {
+        self.cursor_reader = reader.filter(super::standalone::Readers::cursor_history_available);
+        self
+    }
+    pub async fn refresh_usage(&self) {
+        self.recount().await;
+        self.refresh_cursor().await;
+    }
+    pub async fn refresh_cursor(&self) {
+        let Some(reader) = self.cursor_reader.as_ref() else {
+            return;
+        };
+        let Ok(_busy) = self.cursor_busy.try_lock() else {
+            return;
+        };
+        reader.refresh_cursor_history(self).await;
+    }
+    pub fn follow_cursor(
+        &self,
+        mut clients: tokio::sync::watch::Receiver<usize>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        self.cursor_reader.as_ref()?;
+        let service = self.clone();
+        Some(tokio::spawn(async move {
+            service.refresh_cursor().await;
+            loop {
+                if clients.wait_for(|n| *n > 0).await.is_err() {
+                    break;
+                }
+                let mut delay = tokio::time::interval(std::time::Duration::from_secs(300));
+                delay.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        change=clients.changed()=>{if change.is_err(){return;}if *clients.borrow()==0{break;}},
+                        _=delay.tick()=>{if *clients.borrow()==0{break;}service.refresh_cursor().await;}
+                    }
+                }
+            }
+        }))
     }
     fn fallback(&self) -> (Option<String>, bool) {
         self.history
@@ -182,8 +246,13 @@ impl Service {
             }
             set(&tx, "rust-insight-price-v1", &json!(catalog))?;
             tx.commit()?;
+            self.changed_index();
         }
         Ok((pricing, fallback, chosen))
+    }
+    fn machine_identity(&self) -> &str {
+        self.machine_identity
+            .get_or_init(|| kuvo_os::usage_computer::identity(&self.hostname))
     }
     fn alias(&self) -> &str {
         self.alias.get_or_init(|| {
@@ -196,10 +265,7 @@ impl Service {
                         .map(str::to_owned)
                 })
                 .unwrap_or_else(|| {
-                    hash(&json!([
-                        "kuvo insight computer",
-                        kuvo_os::usage_computer::identity(&self.hostname)
-                    ]))[..32]
+                    hash(&json!(["kuvo insight computer", self.machine_identity()]))[..32]
                         .to_owned()
                 })
         })
@@ -612,9 +678,12 @@ impl Service {
                     eprintln!("Couldn't fold native usage: {result:?}");
                 }
                 if pending.is_empty() {
-                    service
+                    if !service
                         .native_ready
-                        .store(true, std::sync::atomic::Ordering::Release);
+                        .swap(true, std::sync::atomic::Ordering::AcqRel)
+                    {
+                        service.changed_index();
+                    }
                 }
             }
         })
@@ -630,12 +699,8 @@ impl Service {
             native_index::Change::Roster(roots) => {
                 let _gate = self.gate.lock().expect("insights gate");
                 let mut db = self.open()?;
-                affected = native_index::reconcile_roots(
-                    &mut db,
-                    &roots,
-                    &kuvo_os::usage_computer::identity(&self.hostname),
-                    now,
-                )?;
+                affected =
+                    native_index::reconcile_roots(&mut db, &roots, self.machine_identity(), now)?;
             }
             native_index::Change::Removed(root) => {
                 let _gate = self.gate.lock().expect("insights gate");
@@ -657,6 +722,7 @@ impl Service {
             }
         }
         self.reconcile_native(affected, now)?;
+        self.changed_index();
         Ok(())
     }
     fn fold_native_files(
@@ -780,15 +846,19 @@ impl Service {
                     .native_ready
                     .store(true, std::sync::atomic::Ordering::Release);
                 service.fold_engine(super::engine_index::databases(&service.engine_folder())?)?;
-                service
+                if !service
                     .engine_ready
-                    .store(true, std::sync::atomic::Ordering::Release);
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    service.changed_index();
+                }
                 let _gate = service.gate.lock().expect("insights gate");
                 let mut db = service.open()?;
                 service.scan(&mut db, Timestamp::now().as_millisecond())?;
                 service
                     .caught_up
                     .store(true, std::sync::atomic::Ordering::Release);
+                service.changed_index();
                 Ok(())
             };
             count().map_err(|error| error.to_string())
@@ -804,20 +874,7 @@ impl Service {
         let _gate = self.gate.lock().expect("insights gate");
         let mut db = self.open()?;
         let (pricing, fallback, chosen) = self.price_index(&mut db, now)?;
-        let identities = self
-            .history
-            .as_ref()
-            .map(|history| {
-                history
-                    .limits
-                    .peer_snapshot(None, now.max(0) as u64)
-                    .accounts
-                    .into_iter()
-                    .filter_map(|a| Some((a.provider, a.identity?)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let accounts = super::history::own(&db, now, &identities)?;
+        let accounts = self.local_accounts(&db, now)?;
         let computer = super::history::Computer {
             key: self.own_key().into(),
             name: self.name.clone(),
@@ -825,14 +882,9 @@ impl Service {
             away: false,
             accounts,
         };
-        super::history::view(
-            vec![computer],
-            now,
-            zone,
-            &pricing,
-            fallback.as_deref(),
-            chosen,
-        )
+        let mut computers = vec![computer];
+        computers.extend(self.peer_history(now));
+        super::history::view(computers, now, zone, &pricing, fallback.as_deref(), chosen)
     }
     pub fn follow_prices(&self, personal: &std::path::Path) -> Option<tokio::task::JoinHandle<()>> {
         let mut feeds = super::price_feed::Feeds::for_home(&self.home, personal)?;
@@ -885,24 +937,46 @@ impl Service {
                 if !matches!(result, Ok(Ok(()))) {
                     eprintln!("Couldn't fold engine usage: {result:?}");
                 }
-                service
+                if !service
                     .engine_ready
-                    .store(true, std::sync::atomic::Ordering::Release);
+                    .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    service.changed_index();
+                }
             }
         })
     }
     fn fold_engine(&self, paths: Vec<PathBuf>) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
         let prices = self.pricing()?;
+        let folder = self.engine_folder();
+        let computer = self.machine_identity();
+        let place = native_index::place_of(computer, &folder, None);
+        let go = native_index::place_of(computer, &folder, Some("opencode:opencode-go"));
+        let zen = native_index::place_of(computer, &folder, Some("opencode:opencode"));
+        let key_of = |path: &Path| {
+            format!(
+                "scan/rust-engine-v1/{}",
+                hex::encode(Sha256::digest(path.as_os_str().as_encoded_bytes()))
+            )
+        };
+        // Directory enumeration is tiny and lets a deleted channel lose its history
+        // without reopening unchanged databases or touching durable Insights events.
+        if let Ok(kept) = super::engine_index::databases(&folder) {
+            let _gate = self.gate.lock().expect("insights gate");
+            let db = self.open()?;
+            let keys = kept.iter().map(|path| key_of(path)).collect::<Vec<_>>();
+            super::engine_hosted_history::retain(&db, &keys)?;
+        }
         let mut failed = false;
         for path in paths {
+            if !path.is_file() {
+                continue;
+            }
             let _gate = self.gate.lock().expect("insights gate");
             let result = (|| -> Result<()> {
                 let mut db = self.open()?;
-                let key = format!(
-                    "scan/rust-engine-v1/{}",
-                    hex::encode(Sha256::digest(path.as_os_str().as_encoded_bytes()))
-                );
+                let key = key_of(&path);
                 let checkpoint = get(&db, &key)?
                     .and_then(|v| serde_json::from_value::<super::engine_index::Checkpoint>(v).ok())
                     .unwrap_or_default();
@@ -913,12 +987,24 @@ impl Service {
                     &path,
                     now - 366 * DAY,
                     &checkpoint,
+                    |version| super::engine_hosted_history::reset(&tx, &key, version),
                     |record, sessions| {
                         decoded += 1;
+                        super::engine_codex_history::observe(&tx, &key, &record, &prices)?;
+                        super::engine_hosted_history::observe(&tx, &key, &record)?;
                         self.accept_engine(&tx, &mut seq, now, &prices, record, sessions)
                     },
                 )?;
                 if let Some(next) = next {
+                    super::engine_codex_history::source(&tx, &key, next.sign_in, now, &place)?;
+                    super::engine_hosted_history::source(
+                        &tx,
+                        &key,
+                        &path.to_string_lossy(),
+                        now,
+                        &go,
+                        &zen,
+                    )?;
                     set(&tx, &key, &serde_json::to_value(next)?)?;
                     set(&tx, &format!("{key}/decoded"), &json!(decoded))?;
                     set(&tx, "sequence", &json!(seq))?;
@@ -945,6 +1031,7 @@ impl Service {
         let _gate = self.gate.lock().expect("insights gate");
         let db = self.open()?;
         set(&db, "rust-local-scan", &json!(now))?;
+        self.changed_index();
         Ok(())
     }
     fn accept_engine(
@@ -979,33 +1066,6 @@ impl Service {
             return Ok(());
         }
         let provider = record.provider.as_deref().unwrap_or("opencode");
-        if !human && matches!(provider, "opencode-go" | "opencode") {
-            if let Some(billed) = record.cost.filter(|n| n.is_finite() && *n >= 0.) {
-                let usage = record.usage.as_ref().cloned().unwrap_or_default();
-                let total = usage["total"].as_u64().unwrap_or_else(|| {
-                    ["input", "output", "reasoning"]
-                        .into_iter()
-                        .map(|key| usage[key].as_u64().unwrap_or(0))
-                        .chain([
-                            usage["cache"]["read"].as_u64().unwrap_or(0),
-                            usage["cache"]["write"].as_u64().unwrap_or(0),
-                        ])
-                        .fold(0u64, u64::saturating_add)
-                });
-                db.execute(
-                    "INSERT OR REPLACE INTO hosted_call VALUES(?,?,?,?,?,?,?)",
-                    params![
-                        record.call,
-                        provider,
-                        record.created,
-                        record.model.as_deref().unwrap_or(""),
-                        total.min(1_000_000_000_000_000),
-                        billed,
-                        now
-                    ],
-                )?;
-            }
-        }
         let account = record
             .observed_account
             .clone()
@@ -1156,6 +1216,7 @@ impl Service {
                             .scan_changed(&mut db, now, Some(&changed))
                             .map_err(|e| e.to_string())?;
                     }
+                    service.changed_index();
                     Ok::<_, String>(())
                 })
                 .await;
@@ -1297,16 +1358,23 @@ fn save_event(
     let field = |name: &str| body[name].as_str();
     let key = field("key").ok_or("missing usage event key")?;
     let encoded = serde_json::to_string(&body)?;
-    let previous: Option<String> = db
-        .query_row("SELECT body FROM event WHERE key=?", [key], |r| r.get(0))
+    let previous: Option<(String, Option<String>, Option<u64>)> = db
+        .query_row(
+            "SELECT body,sender,seq FROM event WHERE key=?",
+            [key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
         .optional()?;
-    if previous.as_deref() == Some(&encoded) {
+    if previous
+        .as_ref()
+        .is_some_and(|(body, sender, seq)| body == &encoded && sender.is_none() && seq.is_some())
+    {
         return Ok(());
     }
     *seq += 1;
     db.execute("INSERT INTO event VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,'[]',?22,?23,?24)
-        ON CONFLICT(key) DO UPDATE SET seq=excluded.seq,at=excluded.at,session=excluded.session,computer=excluded.computer,bot=excluded.bot,bot_name=excluded.bot_name,title=excluded.title,provider=excluded.provider,account=excluded.account,model=excluded.model,agent=excluded.agent,human=excluded.human,partial=excluded.partial,cost=excluded.cost,tokens=excluded.tokens,input=excluded.input,cache_read=excluded.cache_read,cache_write=excluded.cache_write,output=excluded.output,body=excluded.body,supersedes=excluded.supersedes,processed=excluded.processed
-        WHERE event.sender IS NULL AND event.computer=excluded.computer AND (event.partial=1 OR excluded.partial=0)",
+        ON CONFLICT(key) DO UPDATE SET seq=excluded.seq,sender=NULL,received=MIN(event.received,excluded.received),at=excluded.at,session=excluded.session,computer=excluded.computer,bot=excluded.bot,bot_name=excluded.bot_name,title=excluded.title,provider=excluded.provider,account=excluded.account,model=excluded.model,agent=excluded.agent,human=excluded.human,partial=excluded.partial,cost=excluded.cost,tokens=excluded.tokens,input=excluded.input,cache_read=excluded.cache_read,cache_write=excluded.cache_write,output=excluded.output,body=excluded.body,supersedes=excluded.supersedes,processed=excluded.processed
+        WHERE (event.computer=excluded.computer OR (json_extract(excluded.body,'$.attributed')=1 AND COALESCE(json_extract(event.body,'$.attributed'),0)=0)) AND (event.partial=1 OR excluded.partial=0)",
         params![key,*seq,now,body["at"].as_i64(),field("session"),field("computer"),field("bot"),field("botName"),field("title"),field("provider"),field("account"),field("model"),field("agent"),body["human"].as_bool().unwrap_or(false),body["partial"].as_bool().unwrap_or(false),cost,count,input,cached,creation,output,encoded,field("supersedes"),processed])?;
     Ok(())
 }
@@ -1372,9 +1440,9 @@ struct Sums {
 impl Sums {
     fn add(&mut self, other: &Self) {
         self.cost += other.cost;
-        self.tokens += other.tokens;
-        self.cached += other.cached;
-        self.input += other.input;
+        self.tokens = self.tokens.saturating_add(other.tokens);
+        self.cached = self.cached.saturating_add(other.cached);
+        self.input = self.input.saturating_add(other.input);
     }
     fn rate(&self) -> Option<f64> {
         (self.input != 0).then(|| (self.cached as f64 / self.input as f64).min(1.0))
@@ -1382,21 +1450,6 @@ impl Sums {
     fn measures(&self) -> Value {
         json!({"cost":(self.cost*1e6).round()/1e6,"tokens":self.tokens,"cacheRate":self.rate()})
     }
-}
-#[derive(Debug, Clone)]
-struct Event {
-    session: String,
-    title: Option<String>,
-    computer: String,
-    provider: String,
-    model: Option<String>,
-    bot: Option<String>,
-    bot_name: Option<String>,
-    root: Option<String>,
-    own: bool,
-    at: i64,
-    sums: Sums,
-    human: bool,
 }
 fn time_bounds(now: i64, zone: &TimeZone, period: i32) -> Result<Vec<(String, i64)>> {
     let today = Timestamp::from_millisecond(now)?
@@ -1413,267 +1466,6 @@ fn time_bounds(now: i64, zone: &TimeZone, period: i32) -> Result<Vec<(String, i6
         days.push((date.to_string(), start));
     }
     Ok(days)
-}
-fn filter_rows(
-    db: &Connection,
-    keys: &[&str],
-    params: &BTreeMap<String, String>,
-    start: i64,
-    now: i64,
-) -> Result<Vec<Event>> {
-    let mut query=db.prepare("SELECT session,title,computer,provider,model,bot,bot_name,json_extract(body,'$.root'),COALESCE(json_extract(body,'$.botOwn'),0),at,COALESCE(cost,0),COALESCE(processed,0),COALESCE(cache_read,0),COALESCE(input,0)+COALESCE(cache_read,0)+COALESCE(cache_write,0),human,account
-        FROM event WHERE at>=?1 AND at<=?2 AND computer IN (?3,?4) AND NOT EXISTS (SELECT 1 FROM event newer WHERE newer.supersedes=event.key AND newer.computer IN (?3,?4))")?;
-    let mut rows = query.query(params![start, now, keys[0], keys[1]])?;
-    let mut out = vec![];
-    while let Some(row) = rows.next()? {
-        let event = Event {
-            session: row.get(0)?,
-            title: row.get(1)?,
-            computer: row.get(2)?,
-            provider: row.get(3)?,
-            model: row.get(4)?,
-            bot: row.get(5)?,
-            bot_name: row.get(6)?,
-            root: row.get(7)?,
-            own: row.get::<_, i64>(8)? != 0,
-            at: row.get(9)?,
-            sums: Sums {
-                cost: row.get(10)?,
-                tokens: row.get(11)?,
-                cached: row.get(12)?,
-                input: row.get(13)?,
-            },
-            human: row.get::<_, i64>(14)? != 0,
-        };
-        let account: Option<String> = row.get(15)?;
-        if params
-            .get("computer")
-            .is_some_and(|c| !keys.contains(&c.as_str()))
-            || params.get("provider").is_some_and(|p| p != &event.provider)
-            || params
-                .get("account")
-                .is_some_and(|a| account.as_ref() != Some(a))
-            || params
-                .get("bot")
-                .is_some_and(|b| event.bot.as_ref() != Some(b))
-            || params
-                .get("session")
-                .is_some_and(|s| s != &event.session && event.root.as_ref() != Some(s))
-            || params
-                .get("model")
-                .is_some_and(|m| event.model.as_ref() != Some(m))
-        {
-            continue;
-        }
-        out.push(event);
-    }
-    Ok(out)
-}
-fn sum<'a>(rows: impl IntoIterator<Item = &'a Event>) -> Sums {
-    let mut sums = Sums::default();
-    for row in rows {
-        sums.add(&row.sums)
-    }
-    sums
-}
-fn ranked<'a>(
-    rows: &'a [Event],
-    group: impl Fn(&'a Event) -> (String, String, Option<String>),
-    kind: &str,
-) -> Vec<Value> {
-    let mut groups = BTreeMap::<String, (String, Option<String>, Sums)>::new();
-    for row in rows.iter().filter(|r| !r.human) {
-        let (id, name, provider) = group(row);
-        let entry = groups
-            .entry(id)
-            .or_insert_with(|| (name, provider, Sums::default()));
-        entry.2.add(&row.sums);
-    }
-    let mut rows: Vec<_> = groups
-        .into_iter()
-        .map(|(id, (name, provider, sums))| (id, name, provider, sums))
-        .collect();
-    rows.sort_by(|a, b| {
-        b.3.cost
-            .total_cmp(&a.3.cost)
-            .then(b.3.tokens.cmp(&a.3.tokens))
-            .then(a.0.cmp(&b.0))
-    });
-    rows.into_iter()
-        .take(200)
-        .map(|(id, name, provider, sums)| {
-            let mut row = sums.measures();
-            row["kind"] = json!(kind);
-            row["id"] = json!(id);
-            row["name"] = json!(name);
-            if let Some(p) = provider {
-                row["provider"] = json!(p);
-            }
-            row
-        })
-        .collect()
-}
-impl Service {
-    fn summary(&self, params: BTreeMap<String, String>) -> Result<Value> {
-        let _gate = self.gate.lock().expect("insights gate");
-        let now = super::limits::now() as i64;
-        let period = params
-            .get("period")
-            .map(|s| s.parse::<i32>())
-            .transpose()?
-            .unwrap_or(30);
-        if ![7, 30, 90].contains(&period) {
-            return Err("Choose a 7, 30 or 90 day period.".into());
-        }
-        let zone = params
-            .get("zone")
-            .and_then(|z| TimeZone::get(z).ok())
-            .unwrap_or_else(TimeZone::system);
-        let bounds = time_bounds(now, &zone, period * 2)?;
-        let mut db = self.open()?;
-        self.ensure(&mut db, now)?;
-        let keys = [self.own_key(), self.alias()];
-        let records = filter_rows(&db, &keys, &params, bounds[0].1, now)?;
-        let start = bounds[period as usize].1;
-        let prior = sum(records.iter().filter(|r| r.at < start));
-        let current: Vec<_> = records.iter().filter(|r| r.at >= start).cloned().collect();
-        let total = sum(&current);
-        let trend = bounds[period as usize..]
-            .iter()
-            .enumerate()
-            .map(|(i, (day, start))| {
-                let end = bounds.get(i + period as usize + 1).map_or(now + 1, |v| v.1);
-                let sums = sum(current.iter().filter(|r| r.at >= *start && r.at < end));
-                json!({"day":day,"cost":sums.cost,"tokens":sums.tokens})
-            })
-            .collect::<Vec<_>>();
-        let change=records.iter().any(|r|r.at<start&&!r.human).then(||json!({"cost":(prior.cost>0.0).then(||(total.cost-prior.cost)/prior.cost),"tokens":(prior.tokens>0).then(||(total.tokens as f64-prior.tokens as f64)/prior.tokens as f64),"cacheRate":total.rate().zip(prior.rate()).map(|(a,b)|a-b)}));
-        let sessions = if params.contains_key("session") {
-            ranked(
-                &current,
-                |r| {
-                    (
-                        r.session.clone(),
-                        r.title.clone().unwrap_or_else(|| "Untitled session".into()),
-                        None,
-                    )
-                },
-                "session",
-            )
-        } else if params.contains_key("bot") {
-            ranked(
-                &current,
-                |r| {
-                    (
-                        r.root.clone().unwrap_or_else(|| r.session.clone()),
-                        r.title.clone().unwrap_or_else(|| "Untitled session".into()),
-                        None,
-                    )
-                },
-                "session",
-            )
-        } else {
-            let mut by_bot = BTreeMap::<String, Vec<Event>>::new();
-            let mut loose = vec![];
-            for row in &current {
-                if let Some(bot) = &row.bot {
-                    by_bot.entry(bot.clone()).or_default().push(row.clone());
-                } else {
-                    loose.push(row.clone());
-                }
-            }
-            let mut rows = ranked(
-                &loose,
-                |r| {
-                    (
-                        r.root.clone().unwrap_or_else(|| r.session.clone()),
-                        r.title.clone().unwrap_or_else(|| "Untitled session".into()),
-                        None,
-                    )
-                },
-                "session",
-            );
-            for row in &mut rows {
-                row["note"] = json!("No bot");
-            }
-            for (id, records) in by_bot {
-                let mut children = ranked(
-                    &records,
-                    |r| {
-                        (
-                            r.root.clone().unwrap_or_else(|| r.session.clone()),
-                            r.title.clone().unwrap_or_else(|| "Untitled session".into()),
-                            None,
-                        )
-                    },
-                    "session",
-                );
-                for child in &mut children {
-                    if records
-                        .iter()
-                        .any(|record| record.own && child["id"] == record.session)
-                    {
-                        child["note"] = json!("Own chat");
-                    }
-                }
-                let mut bot = sum(&records).measures();
-                bot["kind"] = json!("bot");
-                bot["id"] = json!(id);
-                bot["name"] = json!(
-                    records
-                        .iter()
-                        .find_map(|r| r.bot_name.as_deref())
-                        .unwrap_or("A bot")
-                );
-                bot["sessions"] = json!(children);
-                rows.push(bot);
-            }
-            rows.sort_by(|a, b| {
-                b["cost"]
-                    .as_f64()
-                    .unwrap_or(0.0)
-                    .total_cmp(&a["cost"].as_f64().unwrap_or(0.0))
-                    .then(b["tokens"].as_u64().cmp(&a["tokens"].as_u64()))
-            });
-            rows
-        };
-        let providers = ranked(
-            &current,
-            |r| {
-                (
-                    r.provider.clone(),
-                    r.provider.clone(),
-                    Some(r.provider.clone()),
-                )
-            },
-            "provider",
-        );
-        let models = ranked(
-            &current,
-            |r| {
-                let model = r.model.clone().unwrap_or_else(|| "Unknown model".into());
-                (model.clone(), model, Some(r.provider.clone()))
-            },
-            "model",
-        );
-        let computers = ranked(
-            &current,
-            |r| (r.computer.clone(), self.name.clone(), None),
-            "computer",
-        );
-        let (first_key, first_name) =
-            if params.contains_key("session") || params.contains_key("bot") {
-                ("sessions", "Sessions")
-            } else {
-                ("bots", "Bots")
-            };
-        let ready = self.ready();
-        let mut answer = json!({"data":{"state":if !ready{"loading"}else if current.is_empty(){"empty"}else{"ready"},"period":period,"zone":zone.iana_name().unwrap_or("UTC"),"pendingComputers":[],"totals":total.measures(),"change":change,"trend":trend,"lists":[{"key":first_key,"name":first_name,"rows":sessions},{"key":"providers","name":"Providers","rows":providers},{"key":"models","name":"Models","rows":models},{"key":"computers","name":"Computers","rows":computers}],"standouts":[]}});
-        if let Some(counted) = self.counted(&db)? {
-            answer["data"]["countedAt"] = json!(counted);
-        }
-        Ok(answer)
-    }
 }
 struct Summary;
 impl RouteSpec for Summary {
@@ -1762,9 +1554,10 @@ fn register_history(routes: &mut Registry, service: Service) {
         async move {
             let reader = service.clone();
             let task = tokio::spawn(async move {
-                reader.recount().await;
+                reader.refresh_usage().await;
             });
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+            service.request_peer_refresh();
             read_history(service, params)
                 .await
                 .map(RouteReply::json::<200>)
@@ -1796,6 +1589,7 @@ fn register_history(routes: &mut Registry, service: Service) {
                 ));
             };
             let kept = history.settings.set_codex_fallback(model).await?;
+            service.changed_index();
             let mut result = read_history(service, params).await?;
             if let Some(save) = kept["data"].get("save") {
                 result["data"]["save"] = save.clone();
@@ -1806,6 +1600,7 @@ fn register_history(routes: &mut Registry, service: Service) {
     routes.register::<InsightsRefresh, _, _>(Access::Any, move |_| {
         let service = service.clone();
         async move {
+            service.request_peer_refresh();
             tokio::spawn(async move {
                 service.recount().await;
             });
@@ -1821,6 +1616,7 @@ pub fn register(routes: &mut Registry, service: Service) {
         let params = crate::artifacts::routes::parse_query(&call.request.path);
         async move {
             if params.get("refresh").is_some_and(|value| value == "1") {
+                service.request_peer_refresh();
                 let reader = service.clone();
                 let task = tokio::spawn(async move {
                     reader.recount().await;
@@ -1894,22 +1690,21 @@ struct Filter {
     values: Vec<rusqlite::types::Value>,
 }
 impl Filter {
-    fn new(keys: [&str; 2], given: &BTreeMap<String, String>, from: i64, to: i64) -> Self {
+    fn new(
+        keys: &[String],
+        selected: &[String],
+        given: &BTreeMap<String, String>,
+        from: i64,
+        to: i64,
+    ) -> Self {
         use rusqlite::types::Value as Sql;
-        let mut clauses=vec!["event.at>=?1 AND event.at<?2".to_owned(),"event.computer IN (?3,?4)".into(),"NOT EXISTS (SELECT 1 FROM event newer WHERE newer.supersedes=event.key AND newer.computer IN (?3,?4))".into()];
+        let mut clauses=vec!["event.at>=?1 AND event.at<?2".to_owned(),"event.computer IN (SELECT value FROM json_each(?4))".into(),"NOT EXISTS (SELECT 1 FROM event newer WHERE newer.supersedes=event.key AND newer.computer IN (SELECT value FROM json_each(?3)))".into()];
         let mut values = vec![
             Sql::Integer(from),
             Sql::Integer(to),
-            Sql::Text(keys[0].to_owned()),
-            Sql::Text(keys[1].to_owned()),
+            Sql::Text(serde_json::to_string(keys).expect("computer keys")),
+            Sql::Text(serde_json::to_string(selected).expect("selected keys")),
         ];
-        // The local alias can also be used by the records made before a link existed.
-        if given
-            .get("computer")
-            .is_some_and(|key| !keys.contains(&key.as_str()))
-        {
-            clauses.push("0".into());
-        }
         for key in ["bot", "account", "provider", "session"] {
             if let Some(value) = given.get(key).filter(|v| !v.is_empty()) {
                 values.push(Sql::Text(value.clone()));
@@ -1966,13 +1761,15 @@ impl Service {
         let days = time_bounds(now, &zone, period)?;
         let mut db = self.open()?;
         self.ensure(&mut db, now)?;
-        let keys = [self.own_key(), self.alias()];
-        let filter = Filter::new(keys, &params, days[0].1, now + 1);
-        let local_computers = if keys[0] == keys[1] {
-            vec![keys[0]]
-        } else {
-            keys.to_vec()
-        };
+        let scope = self.scope();
+        let (keys, selected) = self.keys(&scope, params.get("computer").map(String::as_str));
+        let filter = Filter::new(&keys, &selected, &params, days[0].1, now + 1);
+        let local_computers = [self.own_key(), self.alias()]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let named = self.computers(&scope);
+        let pending =
+            self.pending_computers(&db, &scope, params.get("computer").map(String::as_str))?;
         let where_sql = &filter.clauses;
         match view {
             View::Detail => {
@@ -1995,7 +1792,7 @@ impl Service {
                 let next = (calls.len() > 100).then_some(offset + 100);
                 calls.truncate(100);
                 return Ok(
-                    json!({"data":{"calls":calls,"next":next,"destination":{"status":"unavailable"},"pendingComputers":[],"localComputers":local_computers}}),
+                    json!({"data":{"calls":calls,"next":next,"destination":{"status":"unavailable"},"pendingComputers":pending,"localComputers":local_computers}}),
                 );
             }
             View::Sessions => {
@@ -2029,7 +1826,7 @@ impl Service {
                 let next = (sessions.len() > 50).then_some(offset + 50);
                 sessions.truncate(50);
                 return Ok(
-                    json!({"data":{"sessions":sessions,"next":next,"pendingComputers":[],"localComputers":local_computers}}),
+                    json!({"data":{"sessions":sessions,"next":next,"pendingComputers":pending,"localComputers":local_computers}}),
                 );
             }
             View::Overview => {}
@@ -2091,8 +1888,19 @@ impl Service {
         total["sessions"] = json!(sessions);
         let issues = self.issues.lock().expect("usage issues").clone();
         let counted = self.counted(&db)?;
-        let coverage = json!([{"key":self.own_key(),"name":self.name,"scanned":counted,"stale":false,"issues":issues}]);
-        let state = if !self.ready() {
+        let mut coverage = vec![
+            json!({"key":self.own_key(),"name":self.name,"scanned":counted,"stale":false,"issues":issues}),
+        ];
+        for (id, name) in &scope.peers {
+            let covered = get(&db, &format!("peer/{id}"))?.unwrap_or_default();
+            let scanned = covered["scanned"].as_i64();
+            coverage.push(json!({"key":id,"name":name,"scanned":scanned,"stale":scanned.is_none_or(|at|now-at>25*60_000),"issues":covered["issues"].as_array().cloned().unwrap_or_default()}));
+        }
+        let computers = named
+            .iter()
+            .map(|(id, name)| json!({"key":id,"name":name}))
+            .collect::<Vec<_>>();
+        let state = if !self.ready() || !pending.is_empty() {
             "loading"
         } else if !issues.is_empty() || totals.partial > 0 {
             "partial"
@@ -2105,7 +1913,7 @@ impl Service {
             .and_then(|at| Timestamp::from_millisecond(at).ok())
             .map(|at| at.to_zoned(zone.clone()).date().to_string());
         Ok(
-            json!({"data":{"totals":total,"daily":daily,"providers":providers,"breakdowns":{"model":models,"agent":agents,"skill":skills,"day":days_shared},"computers":[{"key":self.own_key(),"name":self.name}],"bots":[],"coverage":coverage,"state":state,"zone":zone.iana_name().unwrap_or("UTC"),"period":period,"pendingComputers":[],"updatedDay":updated_day,"scanning":!self.ready(),"localComputers":local_computers,"unavailable":[]}}),
+            json!({"data":{"totals":total,"daily":daily,"providers":providers,"breakdowns":{"model":models,"agent":agents,"skill":skills,"day":days_shared},"computers":computers,"bots":[],"coverage":coverage,"state":state,"zone":zone.iana_name().unwrap_or("UTC"),"period":period,"pendingComputers":pending,"updatedDay":updated_day,"scanning":!self.ready(),"localComputers":local_computers,"unavailable":[]}}),
         )
     }
 }

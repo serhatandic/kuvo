@@ -563,7 +563,20 @@ impl Bots {
             Ok::<_, std::io::Error>(trash.join(id))
         })();
         let moved = match trash {
-            Ok(trashed) => move_folder(&here.folder, &trashed).await,
+            Ok(trashed) => match move_folder(&here.folder, &trashed).await {
+                // (On Windows its coding agent's process keeps the folder it works in for as
+                // long as its conversation is open: that goes first, as it would go next.)
+                Err(error)
+                    if cfg!(windows)
+                        && here.agents
+                        && error.kind() == std::io::ErrorKind::PermissionDenied =>
+                {
+                    let engine = self.inner.engine.work_engine().await;
+                    engine.delete_agent_session(&here.session).await;
+                    move_folder(&here.folder, &trashed).await
+                }
+                moved => moved,
+            },
             Err(error) => Err(error),
         };
         if let Err(error) = moved {

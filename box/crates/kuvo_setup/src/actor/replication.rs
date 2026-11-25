@@ -20,8 +20,70 @@ use crate::{
     object,
 };
 
+fn needs_invite_lease(invite: &crate::installer::Invitation, now: u64, left: &[String]) -> bool {
+    invite.live(now)
+        && !invite
+            .claim
+            .as_ref()
+            .is_some_and(|claim| left.contains(&claim.key))
+        && !["cancelled", "activated", "credentialsCompleted"]
+            .iter()
+            .any(|flag| invite.extra.get(*flag) == Some(&Value::Bool(true)))
+}
+
 impl Owner {
+    pub(super) fn relay_roster_dirty(&self) -> bool {
+        self.roster()
+            .is_ok_and(|roster| roster.boxes.len() == 1 && !roster.left.is_empty())
+            && !self.lease.roster_current(&self.link)
+    }
+
+    pub(super) fn lease_needed(&self) -> bool {
+        let (Ok(setup), Ok(own), Ok(roster)) = (self.link.setup(), self.own(), self.roster())
+        else {
+            return false;
+        };
+        self.link.relay.is_some()
+            && !installer_pending(&self.link)
+            && !self.link.disabled(&roster, &own.public)
+            && !self.provisional(&own.public)
+            && (setup.role == Role::Member
+                || roster.boxes.len() > 1
+                || self.relay_roster_dirty()
+                || self
+                    .link
+                    .installer_invites
+                    .values()
+                    .any(|invite| needs_invite_lease(invite, lease::wall(), &roster.left)))
+    }
+
     pub(super) async fn tick(&mut self) -> Result<(), Error> {
+        if !self.lease_needed() {
+            self.next = None;
+            return Ok(());
+        }
+        self.observe_lease().await
+    }
+
+    pub(super) async fn tick_for_add(&mut self) -> Result<(), Error> {
+        self.observe_lease().await
+    }
+
+    pub(super) async fn announce_lease(&self) {
+        let Some(seen) = &self.lease.seen else { return };
+        let Ok(own) = self.own() else { return };
+        let Ok(roster) = self.roster() else { return };
+        for peer in roster.boxes.iter().filter(|peer| peer.key != own.public) {
+            // This message is only a hint to read the authoritative relay, not a lease grant.
+            self.send_authority(
+                &peer.key,
+                json!({"kind":"lease-changed", "term":seen.term, "expires":seen.expires}),
+            )
+            .await;
+        }
+    }
+
+    async fn observe_lease(&mut self) -> Result<(), Error> {
         let Ok(setup) = self.link.setup().cloned() else {
             return Ok(());
         };
@@ -35,6 +97,11 @@ impl Owner {
         {
             return Ok(());
         }
+        let prior = self
+            .lease
+            .seen
+            .as_ref()
+            .map(|seen| (seen.term, seen.expires));
         let seen = self.lease.seen.as_ref();
         let renew =
             setup.role == Role::Primary && seen.is_some_and(|lease| lease.holder == own.public);
@@ -71,7 +138,8 @@ impl Owner {
             && self.link.value(SharedKind::SetupDeparture).is_none()
             && !self.link.extra.contains_key("setupMerge")
         {
-            self.lease
+            observation = self
+                .lease
                 .request(&self.files, &self.link, own, Action::Claim, seen.term, None)
                 .await?;
         }
@@ -86,8 +154,49 @@ impl Owner {
 
         self.try_pending_tips().await;
         let setup = self.link.setup()?;
+        let in_charge = setup.role == Role::Primary && self.lease.holds(&self.link);
+        let changed = self
+            .lease
+            .seen
+            .as_ref()
+            .map(|seen| (seen.term, seen.expires))
+            != prior;
+        let takeover_in = observation.as_ref().map_or(2000, |(_, wait)| *wait);
+        self.next = if self.lease_needed() {
+            let wait = if self.relay_roster_dirty() {
+                Duration::from_secs(2)
+            } else {
+                self.lease.next_observation(in_charge, takeover_in)
+            };
+            let left = self.roster()?.left;
+            let invite_end = self
+                .link
+                .installer_invites
+                .values()
+                .filter(|invite| needs_invite_lease(invite, lease::wall(), &left))
+                .map(|invite| {
+                    invite
+                        .claim
+                        .as_ref()
+                        .map_or(invite.expires, |claim| claim.until)
+                })
+                .min();
+            Some(
+                Instant::now()
+                    + invite_end.map_or(wait, |at| {
+                        wait.min(Duration::from_millis(
+                            at.saturating_sub(lease::wall()).max(1),
+                        ))
+                    }),
+            )
+        } else {
+            None
+        };
+        if changed && in_charge {
+            self.announce_lease().await;
+        }
+
         if setup.role == Role::Primary && self.lease.holds(&self.link) {
-            self.next = Instant::now() + Duration::from_secs(10);
             self.publish(false).await?;
         } else {
             let primary = setup.position.primary.clone();
@@ -263,7 +372,8 @@ impl Owner {
                 self.receive_unlink(*hinted_key, *from, envelope).await?;
             }
             relay::RelayEvent::Connected(_) => {
-                self.next = Instant::now();
+                self.next = Some(Instant::now());
+                self.next_edits = Some(Instant::now());
                 self.publish(true).await?;
             }
             relay::RelayEvent::Mail { key, envelope, .. }
@@ -530,7 +640,7 @@ impl Owner {
                         self.pending_tips.pop_front();
                     }
                     self.pending_tips.push_back(doc);
-                    self.next = Instant::now();
+                    self.next = Some(Instant::now());
                 }
                 Ok(())
             }

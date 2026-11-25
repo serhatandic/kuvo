@@ -7,7 +7,7 @@ import http from "node:http";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { boxBinary, boxCommand, holdWindowsFile, isolatedEnv, launch, localRelay, readJSON, relayAddress, request, scratch, startBox, until, write } from "./adapter.mjs";
+import { boxBinary, boxCommand, holdWindowsFile, isolatedEnv, launch, localRelay, privateHome, readJSON, relayAddress, request, scratch, startBox, until, write } from "./adapter.mjs";
 import { bench } from "./bench.mjs";
 import { seedPeerSetup } from "./peer-fixture.mjs";
 
@@ -395,6 +395,7 @@ test("uninstalling a stopped machine clears its desktop identity and sign-ins bu
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "box");
   const env = isolatedEnv(root);
+  privateHome(home);
   write(path.join(home, "folder-version.json"), '{"version":23}\n');
   write(path.join(home, "desktop", "identity"), "fixture identity");
   write(path.join(home, "box", "keys", "KUVO_KEY_SAMPLE"), "fixture key");
@@ -564,9 +565,9 @@ test("the only computer commits a wipe and erases only its old installation", {
     const main = await computer("New setup");
     const ask = main.connect(await main.start().ready());
     const nextSetup = (await ask("GET", "kuvo/setup")).json.setup;
-    await until(() => leases.leaseFor(nextSetup), "The replacement setup did not claim a relay lease.");
     const invite = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
     assert.equal(invite.status, 201, invite.text);
+    await until(() => leases.leaseFor(nextSetup), "The replacement setup did not claim a relay lease.");
     fs.mkdirSync(home);
     const installer = boxCommand(binary, home, env, newRelay, ["install", "--join"]);
     children.push(installer);
@@ -936,9 +937,9 @@ test("the main revokes an offline computer once and keeps the unlink receipt aft
   const original = await ask("GET", "kuvo/setup");
   assert.equal(original.status, 200, original.text);
   const { setup, you } = original.json;
-  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const code = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
   assert.equal(code.status, 201, code.text);
+  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const joined = await other.join(code.json.code);
   assert.equal(joined.code, 0, joined.log);
   // The resident on Lab has never started, so it cannot acknowledge the operation yet.
@@ -979,10 +980,10 @@ test("a member forwards an unlink and receives the main’s saved decision", { t
   const other = await computer("Lab");
   const primary = main.connect(await main.start().ready());
   const setup = (await primary("GET", "kuvo/setup")).json.setup;
-  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   for (const computer of [member, other]) {
     const offer = await primary("POST", "kuvo/computers/add/code", {}, fromMac);
     assert.equal(offer.status, 201, offer.text);
+    await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
     const joined = await computer.join(offer.json.code);
     assert.equal(joined.code, 0, joined.log);
   }
@@ -1045,10 +1046,10 @@ test("a released computer enrolls again when its retained work is unchanged", {
   const ask = main.connect(await main.start().ready());
   const initial = await ask("GET", "kuvo/setup");
   const setup = initial.json.setup;
-  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const invite = () => ask("POST", "kuvo/computers/add/code", {}, fromMac);
   const firstCode = await invite();
   assert.equal(firstCode.status, 201, firstCode.text);
+  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const first = await other.join(firstCode.json.code);
   assert.equal(first.code, 0, first.log);
   const readLink = home => readJSON(path.join(home, "run", "link.json"));
@@ -1167,9 +1168,9 @@ test("a departing member clears credentials and keeps its work before acknowledg
   const member = await computer("Desk", applicant);
   const ask = main.connect(await main.start().ready());
   const initial = (await ask("GET", "kuvo/setup")).json;
-  await until(() => leases.leaseFor(initial.setup), "The main computer did not claim a relay lease.");
   const offered = await ask("POST", "kuvo/computers/add/code", {}, fromMac);
   assert.equal(offered.status, 201, offered.text);
+  await until(() => leases.leaseFor(initial.setup), "The main computer did not claim a relay lease.");
   const joined = await member.join(offered.json.code);
   assert.equal(joined.code, 0, joined.log);
 

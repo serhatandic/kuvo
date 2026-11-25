@@ -19,9 +19,9 @@ test("a model starred on a member is signed by the main and appears in both pick
   const holder = main.connect(await main.start().ready());
   const setup = await holder("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The main computer did not take the relay lease.");
   const code = await holder("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(code.status, 201, code.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The main computer did not take the relay lease.");
   const joined = await other.join(code.json.code);
   assert.equal(joined.code, 0, joined.log);
   const member = other.connect(await other.start().ready());

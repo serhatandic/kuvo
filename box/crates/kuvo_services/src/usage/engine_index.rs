@@ -2,7 +2,7 @@
 //! index without launching the engine. The file watcher drives each changed channel.
 use kuvo_os::watch::{Notice, Options, WatchHub};
 use kuvo_store::files::FileStamp;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -16,6 +16,8 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub struct Stamp {
     identity: String,
     revision: String,
+    #[serde(default)]
+    bytes: u64,
 }
 fn signature(stamp: &FileStamp) -> String {
     format!(
@@ -30,6 +32,7 @@ pub fn stamp(path: &Path) -> Result<Option<Stamp>> {
     let wal = kuvo_store::files::file_stamp(&side(path, "-wal"))?;
     Ok(Some(Stamp {
         identity: format!("{}:{}:{:?}", main.device, main.file, main.created_ns),
+        bytes: main.size,
         revision: format!(
             "{}:{}",
             signature(&main),
@@ -41,6 +44,14 @@ pub fn stamp(path: &Path) -> Result<Option<Stamp>> {
 pub struct Checkpoint {
     pub stamp: Option<Stamp>,
     pub watermarks: BTreeMap<String, i64>,
+    #[serde(default)]
+    pub headers: u64,
+    #[serde(default)]
+    pub auth_revision: Option<String>,
+    #[serde(default)]
+    pub sign_in: super::engine_codex_history::SignIn,
+    #[serde(default)]
+    history_version: u8,
 }
 fn side(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -92,7 +103,8 @@ pub fn databases(root: &Path) -> Result<Vec<PathBuf>> {
 pub fn changed_databases(root: &Path, paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
     let mut files = BTreeSet::new();
     for relative in paths {
-        if relative.as_os_str().is_empty() {
+        if relative.as_os_str().is_empty() || relative.file_name().is_some_and(|n| n == "auth.json")
+        {
             return databases(root);
         }
         let Some(name) = relative.file_name().and_then(|s| s.to_str()) else {
@@ -102,9 +114,12 @@ pub fn changed_databases(root: &Path, paths: Vec<PathBuf>) -> Result<Vec<PathBuf
         if !engine_name(name) {
             continue;
         }
-        if let Some(path) = owned(root, &root.join(name))? {
+        let path = root.join(name);
+        if let Some(path) = owned(root, &path)? {
             files.insert(path);
-        }
+        } else if !path.exists() {
+            files.insert(path);
+        } // removal wakes the metadata reconciliation
     }
     Ok(files.into_iter().collect())
 }
@@ -165,6 +180,8 @@ pub struct Record {
     pub origin: Option<String>,
     pub observed_account: Option<String>,
     pub cost: Option<f64>,
+    pub version: i64,
+    pub codex_history: bool,
 }
 /// A channel is read in a snapshot. A watermark uses the maker's indexed change
 /// column and an overlap for concurrent writes with the same clock tick.
@@ -172,18 +189,34 @@ pub fn read(
     path: &Path,
     since: i64,
     previous: &Checkpoint,
+    mut reset: impl FnMut(i64) -> Result<()>,
     mut take: impl FnMut(Record, &BTreeMap<String, Session>) -> Result<()>,
 ) -> Result<Option<Checkpoint>> {
     let Some(stamp) = stamp(path)? else {
         return Ok(None);
     };
-    if previous.stamp.as_ref() == Some(&stamp) {
+    let folder = path.parent().ok_or("Engine database has no folder")?;
+    let auth_revision = kuvo_store::files::file_stamp(&folder.join("auth.json"))
+        .ok()
+        .flatten()
+        .as_ref()
+        .map(signature);
+    if previous.history_version == 2
+        && previous.stamp.as_ref() == Some(&stamp)
+        && previous.auth_revision == auth_revision
+    {
         return Ok(None);
     }
     let db = open_maker(path)?;
     let read = db.unchecked_transaction()?;
+    let sign_in = super::engine_codex_history::sign_in(&read, folder).unwrap_or_else(|error| {
+        eprintln!("Couldn't read the engine's ChatGPT history sign-in: {error}");
+        previous.sign_in
+    });
     let mut sessions = BTreeMap::new();
-    for table in ["session", "session_v2"] {
+    let mut missing = BTreeSet::new();
+    let mut headers = vec![];
+    for table in ["session_v2", "session"] {
         let names = columns(&read, table)?;
         if !names.contains("id") {
             continue;
@@ -199,44 +232,32 @@ pub fn read(
             ("NULL", "NULL", "NULL")
         };
         let sql = format!(
-            "SELECT id,{},{},{bot},{name},{seat} FROM {table}",
+            "SELECT id,{},{},{bot},{name},{seat} FROM {table} WHERE id=?",
             col("parent_id"),
             col("title")
         );
-        let mut query = read.prepare(&sql)?;
-        let mut rows = query.query([])?;
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            let seat = matches!(
-                row.get_ref(5)?,
-                rusqlite::types::ValueRef::Text(_) | rusqlite::types::ValueRef::Integer(1)
-            );
-            sessions.insert(
-                id,
-                Session {
-                    parent: row.get(1)?,
-                    title: row.get(2)?,
-                    bot: row.get(3)?,
-                    bot_name: row.get(4)?,
-                    seat,
-                },
-            );
-        }
+        headers.push(sql);
     }
     let mut checkpoint = Checkpoint {
         stamp: Some(stamp.clone()),
         watermarks: BTreeMap::new(),
+        headers: 0,
+        auth_revision,
+        sign_in,
+        history_version: 2,
     };
     for (table, role) in [
         ("message", "json_extract(data,'$.role')"),
         ("session_message", "type"),
     ] {
         let names = columns(&read, table)?;
+        let version = if table == "message" { 1 } else { 2 };
         if !["id", "session_id", "time_created", "data"]
             .iter()
             .all(|field| names.contains(*field))
             || table == "session_message" && !names.contains("type")
         {
+            reset(version)?;
             continue;
         }
         let has_update = names.contains("time_updated");
@@ -249,17 +270,21 @@ pub fn read(
             if let Some(last) = last {
                 checkpoint.watermarks.insert(table.into(), last);
             }
-            let before = previous.watermarks.get(table).copied().filter(|before| {
-                previous
-                    .stamp
-                    .as_ref()
-                    .is_some_and(|old| old.identity == stamp.identity)
-                    && last.is_some_and(|last| last >= *before)
-            });
+            let before =
+                previous.watermarks.get(table).copied().filter(|before| {
+                    previous.stamp.as_ref().is_some_and(|old| {
+                        old.identity == stamp.identity && old.bytes <= stamp.bytes
+                    }) && previous.history_version == 2
+                        && last.is_some_and(|last| last >= *before)
+                        && previous.sign_in == sign_in
+                });
             before.map(|old| old.saturating_sub(3_600_000))
         } else {
             None
         };
+        if after.is_none() {
+            reset(version)?;
+        }
         let changed = if after.is_some() {
             "AND (time_updated IS NULL OR time_updated>=?2)"
         } else {
@@ -271,7 +296,7 @@ pub fn read(
         COALESCE(json_extract(data,'$.model.id'),json_extract(data,'$.modelID')),
         json_extract(data,'$.agent'),json_extract(data,'$.tokens'),
         json_extract(data,'$.metadata.source'),json_extract(data,'$.time.origin'),json_extract(data,'$.time.usageAccount'),
-        json_extract(data,'$.cost') FROM {table}
+        json_extract(data,'$.cost'),json_type(data,'$.finish') FROM {table}
         WHERE time_created>=?1 {changed} AND json_valid(data)
         AND ({role} IN ('user','assistant') OR ({role}='compaction' AND json_extract(data,'$.status')='completed'))"#
         );
@@ -279,7 +304,7 @@ pub fn read(
         let mut rows = query.query(params![since, after])?;
         while let Some(row) = rows.next()? {
             let usage: Option<String> = row.get(8).ok().flatten();
-            let record = Record {
+            let mut record = Record {
                 session: row.get(0)?,
                 call: row.get(1)?,
                 role: row.get(2)?,
@@ -293,10 +318,62 @@ pub fn read(
                 origin: row.get(10)?,
                 observed_account: row.get(11)?,
                 cost: row.get(12).ok().flatten(),
+                version,
+                codex_history: false,
             };
+            let finished = record.completed.is_some()
+                || row.get::<_, Option<String>>(13)?.as_deref() == Some("text")
+                || record.role == "compaction";
+            record.codex_history = sign_in.active()
+                && record.provider.as_deref() == Some("openai")
+                && record.cost == Some(0.)
+                && matches!(record.role.as_str(), "assistant" | "compaction")
+                && finished
+                && (record.version == 1
+                    || sign_in
+                        .since()
+                        .is_none_or(|at| record.completed.unwrap_or(record.created) >= at));
+            // Only a changed call's session and parent lineage are read. A
+            // channel with many inactive headers does not walk them for one call.
+            let mut id = Some(record.session.clone());
+            while let Some(key) = id.take() {
+                if sessions.contains_key(&key) || missing.contains(&key) {
+                    break;
+                }
+                let mut found = None;
+                for sql in &headers {
+                    let mut query = read.prepare_cached(sql)?;
+                    found = query
+                        .query_row([&key], |row| {
+                            Ok(Session {
+                                parent: row.get(1)?,
+                                title: row.get(2)?,
+                                bot: row.get(3)?,
+                                bot_name: row.get(4)?,
+                                seat: matches!(
+                                    row.get_ref(5)?,
+                                    rusqlite::types::ValueRef::Text(_)
+                                        | rusqlite::types::ValueRef::Integer(1)
+                                ),
+                            })
+                        })
+                        .optional()?;
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                if let Some(session) = found {
+                    id = session.parent.clone();
+                    sessions.insert(key, session);
+                } else {
+                    missing.insert(key);
+                    break;
+                }
+            }
             take(record, &sessions)?;
         }
     }
+    checkpoint.headers = sessions.len() as u64;
     read.commit()?;
     Ok(Some(checkpoint))
 }
@@ -334,6 +411,7 @@ pub async fn follow(root: PathBuf, hub: WatchHub, send: tokio::sync::mpsc::Sende
         if exists {
             if let Some(live) = live.as_mut() {
                 let _ = live.track(&root);
+                let _ = live.track(&root.join("auth.json"));
             }
         }
         loop {
@@ -366,6 +444,13 @@ pub async fn follow(root: PathBuf, hub: WatchHub, send: tokio::sync::mpsc::Sende
             while let Ok(Some(next)) = tokio::time::timeout_at(until, watch.recv()).await {
                 add(next);
             }
+            // A directory change or legacy auth change is a full discovery,
+            // including the empty list when the last channel was removed.
+            let all = all
+                || files.iter().any(|path| {
+                    path.as_os_str().is_empty()
+                        || path.file_name().is_some_and(|name| name == "auth.json")
+                });
             let paths = (if all {
                 databases(&root)
             } else {

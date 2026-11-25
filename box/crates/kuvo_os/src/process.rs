@@ -46,6 +46,19 @@ impl ProcessIdentity {
         }))
     }
 
+    /// A one-shot notification of this exact process exiting. The wait belongs to a detached
+    /// OS thread (not the runtime's blocking pool, so keeper handover need not wait for it).
+    pub fn watch_exit(&self) -> io::Result<tokio::sync::oneshot::Receiver<io::Result<()>>> {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let wait = sys::exit_wait(self)?;
+        std::thread::Builder::new()
+            .name("process-exit".into())
+            .spawn(move || {
+                let _ = send.send(wait());
+            })?;
+        Ok(receive)
+    }
+
     pub fn state(&self) -> ProcessState {
         if self.start_identity.is_empty() {
             return ProcessState::Unknown;
@@ -117,6 +130,26 @@ pub fn process_parents() -> io::Result<std::collections::HashMap<u32, u32>> {
 #[cfg(windows)]
 pub fn process_started(pid: u32) -> Option<u64> {
     sys::read_start(pid).ok().flatten()?.parse().ok()
+}
+
+/// Read only a matching Windows process's arguments, checking its creation
+/// identity around both the executable and command-line queries.
+#[cfg(windows)]
+pub(crate) fn candidate_arguments(
+    pid: u32,
+    matching: impl FnOnce(&Path) -> bool,
+) -> io::Result<Option<(ProcessIdentity, Vec<String>)>> {
+    let Some(identity) = ProcessIdentity::read(pid)? else {
+        return Ok(None);
+    };
+    if !matching(&sys::executable(pid)?) || identity.state() != ProcessState::Live {
+        return Ok(None);
+    }
+    let args = sys::arguments(pid)?;
+    if identity.state() != ProcessState::Live {
+        return Ok(None);
+    }
+    Ok(Some((identity, args)))
 }
 
 /// Each listening TCP socket's owner and port, IPv4 and IPv6.

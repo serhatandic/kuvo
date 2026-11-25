@@ -20,6 +20,12 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+#[path = "antigravity_refusals.rs"]
+mod antigravity_refusals;
+#[path = "cursor_history_reader.rs"]
+mod cursor_history;
+use antigravity_refusals::{Kind as RefusalKind, Refusals};
+
 type Plan = (Vec<Window>, Facts, Option<String>);
 const MINUTE: u64 = 60_000;
 const DAY: u64 = 24 * 60 * MINUTE;
@@ -71,8 +77,8 @@ pub struct Readers {
     client: reqwest::Client,
     fixture: Option<url::Url>,
     isolated: bool,
-    cursor: Arc<Mutex<BTreeMap<String, CursorSignIn>>>,
-    antigravity: Arc<Mutex<BTreeMap<String, GoogleSignIn>>>,
+    cursor: Arc<Mutex<BTreeMap<String, Arc<Mutex<CursorSignIn>>>>>,
+    antigravity: Arc<Mutex<BTreeMap<String, Arc<Mutex<GoogleSignIn>>>>>,
 }
 #[derive(Clone, Default)]
 struct CursorSignIn {
@@ -82,13 +88,22 @@ struct CursorSignIn {
     refused: bool,
     held: u64,
 }
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct GoogleSignIn {
     mark: String,
     access: Option<String>,
     until: u64,
-    denied: bool,
-    held: u64,
+    refusals: Refusals,
+    held: BTreeMap<String, u64>,
+}
+impl GoogleSignIn {
+    fn hold(&mut self, url: &str, until: u64) {
+        self.held.insert(url.into(), until);
+    }
+    fn waiting(&mut self, url: &str, at: u64) -> Option<u64> {
+        self.held.retain(|_, until| *until > at);
+        self.held.get(url).copied()
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,9 +122,16 @@ struct Google {
 }
 #[derive(Clone)]
 enum Credential {
-    Grok { home: PathBuf },
-    Cursor { key: String },
-    Antigravity(Google),
+    Grok {
+        home: PathBuf,
+    },
+    Cursor {
+        key: String,
+    },
+    Antigravity {
+        credential: Option<Google>,
+        profile: PathBuf,
+    },
 }
 struct Candidate {
     record: AgentAccount,
@@ -243,18 +265,34 @@ impl Readers {
             }
             AgentKind::Antigravity if !self.isolated || self.fixture.is_some() => {
                 let folder = managed.unwrap_or_else(|| self.root.join("antigravity"));
-                let Some(cred) = google(&folder)? else {
-                    return Ok(None);
+                let profile = folder.join("profile");
+                let credential = google(&folder)?;
+                let (mark, who) = if let Some(cred) = &credential {
+                    (
+                        sign_mark(&serde_json::to_string(&[
+                            cred.access.as_deref(),
+                            cred.refresh.as_deref(),
+                        ])?),
+                        cred.identity.clone(),
+                    )
+                } else {
+                    let Some(raw) = read_json(&profile.join("antigravity-acp/kuvo-sign-in.json"))?
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(id) = str_at(&raw["id"]) else {
+                        return Ok(None);
+                    };
+                    (sign_mark(id), None)
                 };
-                let mark = sign_mark(&serde_json::to_string(&[
-                    cred.access.as_deref(),
-                    cred.refresh.as_deref(),
-                ])?);
                 (
                     Provider::Antigravity,
                     mark,
-                    cred.identity.clone(),
-                    Credential::Antigravity(cred),
+                    who,
+                    Credential::Antigravity {
+                        credential,
+                        profile,
+                    },
                 )
             }
             _ => return Ok(None),
@@ -293,8 +331,49 @@ impl Readers {
         })
         .await?
     }
+    async fn prune_google(&self, found: &[Candidate], unreadable: &BTreeSet<String>) {
+        if self.isolated && self.fixture.is_none() {
+            return;
+        }
+        let ids = found
+            .iter()
+            .filter(|c| c.account.service == Provider::Antigravity)
+            .map(|c| c.account.account.clone().unwrap_or("default".into()))
+            .chain(unreadable.iter().filter_map(|id| {
+                if id == "antigravity" {
+                    Some("default".into())
+                } else {
+                    id.strip_prefix("antigravity@").map(str::to_owned)
+                }
+            }))
+            .collect::<BTreeSet<_>>();
+        self.antigravity.lock().await.retain(|provider, _| {
+            provider
+                .strip_prefix("antigravity@")
+                .map_or_else(|| ids.contains("default"), |id| ids.contains(id))
+        });
+        let root = self.root.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let folder = root.join("usage/antigravity");
+            let Ok(entries) = std::fs::read_dir(folder) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let Ok(id) = entry.file_name().into_string() else {
+                    continue;
+                };
+                if !ids.contains(&id) {
+                    if let Err(error) = Refusals::default().clear(&root, &id) {
+                        eprintln!("Couldn't prune Antigravity's refusal record: {error}");
+                    }
+                }
+            }
+        })
+        .await;
+    }
     pub async fn confirm(&self, service: &Service) {
         if let Ok((found, unreadable)) = self.candidates(now()).await {
+            self.prune_google(&found, &unreadable).await;
             service.confirm_standalone_accounts(
                 &found.into_iter().map(|c| c.account).collect::<Vec<_>>(),
                 &unreadable,
@@ -312,6 +391,7 @@ impl Readers {
             }
         };
         let mut failed = !unreadable.is_empty();
+        self.prune_google(&found, &unreadable).await;
         // Preserve held/unreadable rows, remove only ones known signed out.
         service.confirm_standalone_accounts(
             &found.iter().map(|c| c.account.clone()).collect::<Vec<_>>(),
@@ -340,8 +420,12 @@ impl Readers {
                     }
                 }
                 Credential::Cursor { key } => self.cursor_read(&source.account, key, at).await,
-                Credential::Antigravity(credential) => {
-                    self.google_read(&source.account, credential, at).await
+                Credential::Antigravity {
+                    credential,
+                    profile,
+                } => {
+                    self.google_read(&source.account, credential.as_ref(), profile, at)
+                        .await
                 }
             };
             let (windows, mut facts) = match result {
@@ -571,20 +655,14 @@ impl Readers {
         }
     }
     async fn cursor_read(&self, account: &Account, key: &str, at: u64) -> Result<Plan, Problem> {
-        let mut slots = self.cursor.lock().await;
-        let state = slots.entry(account.provider.clone()).or_default();
-        if state.mark != account.sign_in {
-            *state = CursorSignIn {
-                mark: account.sign_in.clone(),
-                ..Default::default()
-            };
-        }
-        let mut access = self.cursor_access(state, key, at, false).await?;
+        let sign = self.cursor_sign_in_state(account).await;
+        let mut state = sign.lock().await;
+        let mut access = self.cursor_access(&mut state, key, at, false).await?;
         let (mut status, mut usage, mut retry) = self
             .cursor_call("GetCurrentPeriodUsage", &access, at)
             .await?;
         if matches!(status, 401 | 403) {
-            access = self.cursor_access(state, key, at, true).await?;
+            access = self.cursor_access(&mut state, key, at, true).await?;
             (status, usage, retry) = self
                 .cursor_call("GetCurrentPeriodUsage", &access, at)
                 .await?;
@@ -596,7 +674,7 @@ impl Readers {
             }
         }
         if status == 429 {
-            return Err(Self::cursor_hold(state, retry, at));
+            return Err(Self::cursor_hold(&mut state, retry, at));
         }
         if !(200..300).contains(&status) {
             return Err(problem(
@@ -613,7 +691,7 @@ impl Readers {
         let user = jwt_subject(&access).map(|s| s.split('|').nth(1).unwrap_or(&s).to_owned());
         let who = user.as_deref().map(|s| identity("cursor", s));
         let info = self
-            .cursor_optional(state, "GetPlanInfo", &access, at)
+            .cursor_optional(&mut state, "GetPlanInfo", &access, at)
             .await?;
         let name = str_at(&info["planInfo"]["planName"]);
         if usage["enabled"] == false {
@@ -653,10 +731,10 @@ impl Readers {
         if fallback {
             if let Some(user) = user.as_deref() {
                 let summary = self
-                    .cursor_website(state, "/api/usage-summary", user, &access, at, false)
+                    .cursor_website(&mut state, "/api/usage-summary", user, &access, at, false)
                     .await?;
                 let requests = self
-                    .cursor_website(state, "/api/usage", user, &access, at, true)
+                    .cursor_website(&mut state, "/api/usage", user, &access, at, true)
                     .await?;
                 windows = cursor_summary(&summary, &requests, at, &mut facts)?;
             } else {
@@ -741,7 +819,7 @@ impl Readers {
                 });
             }
             let grants = self
-                .cursor_optional(state, "GetCreditGrantsBalance", &access, at)
+                .cursor_optional(&mut state, "GetCreditGrantsBalance", &access, at)
                 .await?;
             let mut credit = if grants["hasCreditGrants"] == true {
                 positive(&grants["totalCents"])
@@ -752,14 +830,14 @@ impl Readers {
             };
             if let Some(user) = user.as_deref() {
                 let stripe = self
-                    .cursor_website(state, "/api/auth/stripe", user, &access, at, false)
+                    .cursor_website(&mut state, "/api/auth/stripe", user, &access, at, false)
                     .await?;
                 credit += number(&stripe["customerBalance"])
                     .filter(|n| *n < 0.0)
                     .map_or(0.0, f64::abs);
                 if team && !windows.iter().any(|w| w.id == "on_demand") && facts.extras.is_empty() {
                     let summary = self
-                        .cursor_website(state, "/api/usage-summary", user, &access, at, false)
+                        .cursor_website(&mut state, "/api/usage-summary", user, &access, at, false)
                         .await?;
                     summary_on_demand(&summary, &mut windows, &mut facts, minutes, reset, at);
                     if facts.plan.is_none() {
@@ -776,7 +854,7 @@ impl Readers {
             }
         }
         let bot = self
-            .cursor_optional(state, "GetSandUsageStatus", &access, at)
+            .cursor_optional(&mut state, "GetSandUsageStatus", &access, at)
             .await?;
         if bot["usesPooledEnterpriseAllowance"] != true
             && bot["hasNonZeroIncludedLimit"] != false
@@ -828,42 +906,83 @@ impl Readers {
         )
         .await
     }
+    async fn google_held_call(
+        &self,
+        state: &mut GoogleSignIn,
+        base: &str,
+        path: &str,
+        access: &str,
+        body: Value,
+        at: u64,
+    ) -> Result<(u16, Value, Option<u64>), Problem> {
+        let url = format!("{base}/{path}");
+        if let Some(until) = state.waiting(&url, at) {
+            return Ok((429, Value::Null, Some(until)));
+        }
+        let result = self.google_call(base, path, access, body, at).await?;
+        if result.0 == 429 {
+            state.hold(&url, result.2.unwrap_or(at + 60 * MINUTE));
+        }
+        Ok(result)
+    }
     async fn google_access(
         &self,
         state: &mut GoogleSignIn,
         credential: &Google,
+        account: &str,
         at: u64,
         fresh: bool,
     ) -> Result<String, Problem> {
         if !fresh
             && state.until > at + MINUTE
             && let Some(token) = &state.access
+            && !state.refusals.denied(RefusalKind::Access, token)
         {
             return Ok(token.clone());
         }
         if !fresh
             && credential.expires.is_none_or(|a| a > at + MINUTE)
             && let Some(access) = &credential.access
+            && !state.refusals.denied(RefusalKind::Access, access)
         {
             return Ok(access.clone());
         }
-        let (Some(refresh), Some(id), Some(secret)) = (
-            &credential.refresh,
-            &credential.client_id,
-            &credential.client_secret,
-        ) else {
+        let Some(refresh) = &credential.refresh else {
             return Err(problem(
                 ProblemKind::Expired,
                 "Antigravity's sign-in has lapsed. Sign in again.",
             ));
         };
+        if state.refusals.denied(RefusalKind::Refresh, refresh) {
+            return Err(problem(
+                ProblemKind::Expired,
+                "Antigravity already refused this refresh token. Sign in again.",
+            ));
+        }
+        // Consumer client defaults published by the maker, matching the reference reader.
+        let id = credential
+            .client_id
+            .as_deref()
+            .unwrap_or("1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com");
+        let secret = credential
+            .client_secret
+            .as_deref()
+            .unwrap_or("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");
+        if let Some(until) = state.waiting("oauth", at) {
+            return Err(Problem {
+                kind: ProblemKind::RateLimited,
+                message: "Antigravity asked this computer to wait.".into(),
+                until: Some(until),
+                unknown: false,
+            });
+        }
         let (status, value, retry) = self
             .send(
                 self.client
                     .post(self.endpoint("antigravity/token", "https://oauth2.googleapis.com/token"))
                     .form(&[
                         ("grant_type", "refresh_token"),
-                        ("refresh_token", refresh),
+                        ("refresh_token", refresh.as_str()),
                         ("client_id", id),
                         ("client_secret", secret),
                     ]),
@@ -872,18 +991,24 @@ impl Readers {
             )
             .await?;
         if status == 429 {
-            state.held = retry.unwrap_or(at + 15 * MINUTE);
+            let until = retry.unwrap_or(at + 60 * MINUTE);
+            state.hold("oauth", until);
             return Err(Problem {
                 kind: ProblemKind::RateLimited,
                 message: "Antigravity asked this computer to wait.".into(),
-                until: Some(state.held),
+                until: Some(until),
                 unknown: false,
             });
         }
         if !(200..300).contains(&status) {
-            state.denied = matches!(status, 400 | 401 | 403);
+            let denied = matches!(status, 400 | 401 | 403);
+            if denied {
+                state
+                    .refusals
+                    .refuse(&self.root, account, RefusalKind::Refresh, refresh)?;
+            }
             return Err(problem(
-                if state.denied {
+                if denied {
                     ProblemKind::Expired
                 } else {
                     ProblemKind::Failed
@@ -899,40 +1024,249 @@ impl Readers {
                 )
             })?
             .to_owned();
+        if state.refusals.denied(RefusalKind::Access, &access) {
+            return Err(problem(
+                ProblemKind::Expired,
+                "Antigravity returned its refused access token; no credential was sent again.",
+            ));
+        }
         state.until =
             at.saturating_add((positive(&value["expires_in"]).unwrap_or(3600.0) * 1000.0) as u64);
         state.access = Some(access.clone());
         Ok(access)
     }
+    async fn google_local_call(
+        &self,
+        state: &mut GoogleSignIn,
+        client: &reqwest::Client,
+        endpoint: &kuvo_os::usage_server::Endpoint,
+        method: &str,
+        at: u64,
+    ) -> Result<(u16, Value, Option<u64>), Problem> {
+        // The certificate exception belongs solely to this literal local URL;
+        // this client is never used for the cloud and never follows a redirect.
+        let scheme = if endpoint.tls { "https" } else { "http" };
+        let url = format!(
+            "{scheme}://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/{method}",
+            endpoint.port
+        );
+        if let Some(until) = state.waiting(&url, at) {
+            return Ok((429, Value::Null, Some(until)));
+        }
+        let result=self.send(client.post(&url).header("Connect-Protocol-Version","1").header("x-codeium-csrf-token",&endpoint.csrf).timeout(std::time::Duration::from_secs(3)).json(&json!({"metadata":{"ideName":"antigravity","extensionName":"antigravity","ideVersion":"unknown","locale":"en"}})),"Antigravity",at).await?;
+        if result.0 == 429 {
+            state.hold(&url, result.2.unwrap_or(at + 60 * MINUTE));
+        }
+        Ok(result)
+    }
+    async fn google_local(
+        &self,
+        state: &mut GoogleSignIn,
+        profile: &Path,
+        account: &str,
+        who: Option<String>,
+        at: u64,
+    ) -> Result<Option<Plan>, Problem> {
+        let fixture = if self.isolated {
+            let fixture_key = if cfg!(windows) {
+                "KUVO_TEST_AG_WINDOWS_ROOT"
+            } else {
+                "KUVO_TEST_AG_PROC_ROOT"
+            };
+            let Some(root) = self
+                .env
+                .get(OsStr::new(fixture_key))
+                .map(PathBuf::from)
+                .and_then(|p| p.canonicalize().ok())
+            else {
+                return Ok(None);
+            };
+            if !self
+                .personal
+                .canonicalize()
+                .is_ok_and(|home| root.starts_with(home))
+            {
+                return Ok(None);
+            }
+            Some(root)
+        } else {
+            None
+        };
+        let endpoints = kuvo_os::usage_server::discover(profile.to_owned(), fixture).await;
+        if endpoints.is_empty() {
+            return Ok(None);
+        }
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .build()
+            .map_err(|_| {
+                problem(
+                    ProblemKind::Failed,
+                    "Could not open Antigravity's local quota reader.",
+                )
+            })?;
+        let hold = |until: Option<u64>| Problem {
+            kind: ProblemKind::RateLimited,
+            message: "Antigravity asked this computer to wait.".into(),
+            until: until.or(Some(at + 60 * MINUTE)),
+            unknown: false,
+        };
+        for endpoint in endpoints {
+            if !endpoint.csrf.is_empty() && state.refusals.denied(RefusalKind::Csrf, &endpoint.csrf)
+            {
+                continue;
+            }
+            let summary = self
+                .google_local_call(state, &client, &endpoint, "RetrieveUserQuotaSummary", at)
+                .await;
+            let summary = match summary {
+                Ok((429, _, until)) => return Err(hold(until)),
+                Ok((401 | 403, _, _)) => {
+                    if !endpoint.csrf.is_empty() {
+                        state.refusals.refuse(
+                            &self.root,
+                            account,
+                            RefusalKind::Csrf,
+                            &endpoint.csrf,
+                        )?;
+                    }
+                    continue;
+                }
+                Ok((status, body, _)) if (200..300).contains(&status) => body,
+                _ => continue,
+            };
+            if let Some(windows) = antigravity_summary(&[summary], at) {
+                if windows.is_empty() {
+                    return Err(problem(
+                        ProblemKind::Failed,
+                        "Antigravity's quota summary has no readable buckets.",
+                    ));
+                }
+                let plan = match self
+                    .google_local_call(state, &client, &endpoint, "GetUserStatus", at)
+                    .await
+                {
+                    Ok((status, body, _)) if (200..300).contains(&status) => {
+                        local_google_plan(&body)
+                    }
+                    _ => None,
+                };
+                return Ok(Some((
+                    windows,
+                    Facts {
+                        plan,
+                        ..Default::default()
+                    },
+                    who,
+                )));
+            }
+            let status = self
+                .google_local_call(state, &client, &endpoint, "GetUserStatus", at)
+                .await;
+            let status = match status {
+                Ok((status, body, _)) if (200..300).contains(&status) => body,
+                Ok((401 | 403, _, _)) => {
+                    if !endpoint.csrf.is_empty() {
+                        state.refusals.refuse(
+                            &self.root,
+                            account,
+                            RefusalKind::Csrf,
+                            &endpoint.csrf,
+                        )?;
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
+            let mut windows = antigravity_legacy(
+                status["userStatus"]["cascadeModelConfigData"]["clientModelConfigs"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                at,
+            );
+            if windows.is_empty() {
+                if let Ok((code, body, _)) = self
+                    .google_local_call(state, &client, &endpoint, "GetCommandModelConfigs", at)
+                    .await
+                    && (200..300).contains(&code)
+                {
+                    windows = antigravity_legacy(
+                        body["clientModelConfigs"]
+                            .as_array()
+                            .map(Vec::as_slice)
+                            .unwrap_or_default(),
+                        at,
+                    );
+                }
+            }
+            if !windows.is_empty() {
+                return Ok(Some((
+                    windows,
+                    Facts {
+                        plan: local_google_plan(&status),
+                        ..Default::default()
+                    },
+                    who,
+                )));
+            }
+        }
+        Ok(None)
+    }
     async fn google_read(
         &self,
         account: &Account,
-        credential: &Google,
+        credential: Option<&Google>,
+        profile: &Path,
         at: u64,
     ) -> Result<Plan, Problem> {
-        let mut slots = self.antigravity.lock().await;
-        let state = slots.entry(account.provider.clone()).or_default();
+        let slot = {
+            let mut slots = self.antigravity.lock().await;
+            slots
+                .entry(account.provider.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(GoogleSignIn::default())))
+                .clone()
+        };
+        let mut guard = slot.lock().await;
+        let state = &mut *guard;
         if state.mark != account.sign_in {
-            *state = GoogleSignIn {
-                mark: account.sign_in.clone(),
-                ..Default::default()
-            };
+            state.mark = account.sign_in.clone();
+            state.access = None;
+            state.until = 0;
         }
-        if state.denied {
+        let id = account.account.as_deref().unwrap_or("default");
+        state.refusals.prepare(&self.root, id)?;
+        if state
+            .refusals
+            .denied_hash(RefusalKind::Generation, &account.sign_in)
+        {
             return Err(problem(
                 ProblemKind::Expired,
                 "Antigravity already refused this sign-in. Sign in again.",
             ));
         }
-        if state.held > at {
-            return Err(Problem {
-                kind: ProblemKind::RateLimited,
-                message: "Antigravity asked this computer to wait.".into(),
-                until: Some(state.held),
-                unknown: false,
-            });
+        if let Some(plan) = self
+            .google_local(
+                state,
+                profile,
+                id,
+                credential.and_then(|c| c.identity.clone()),
+                at,
+            )
+            .await?
+        {
+            return Ok(plan);
         }
-        let mut access = self.google_access(state, credential, at, false).await?;
+        let Some(credential) = credential else {
+            return Err(problem(
+                ProblemKind::Failed,
+                "Antigravity says its usage while it runs on this computer. Start a conversation with it to see it.",
+            ));
+        };
+        let mut access = self.google_access(state, credential, id, at, false).await?;
         let main = "https://cloudcode-pa.googleapis.com";
         let daily = "https://daily-cloudcode-pa.googleapis.com";
         let path = "v1internal:retrieveUserQuotaSummary";
@@ -940,10 +1274,16 @@ impl Readers {
         let mut refused = false;
         let mut held = None;
         for base in [main, daily] {
-            match self.google_call(base, path, &access, json!({}), at).await {
+            match self
+                .google_held_call(state, base, path, &access, json!({}), at)
+                .await
+            {
                 Ok((status, body, _)) if (200..300).contains(&status) => bodies.push(body),
                 Ok((401 | 403, _, _)) if base == main => refused = true,
-                Ok((429, _, retry)) => held = Some(retry.unwrap_or(at + 15 * MINUTE)),
+                Ok((429, _, retry)) => {
+                    let until = retry.unwrap_or(at + 60 * MINUTE);
+                    held = Some(held.map_or(until, |old: u64| old.min(until)));
+                }
                 _ => {}
             }
             if antigravity_summary(&bodies, at)
@@ -953,24 +1293,40 @@ impl Readers {
             }
         }
         if bodies.is_empty() && refused {
-            access = self.google_access(state, credential, at, true).await?;
-            match self.google_call(main, path, &access, json!({}), at).await? {
+            state
+                .refusals
+                .refuse(&self.root, id, RefusalKind::Access, &access)?;
+            access = self.google_access(state, credential, id, at, true).await?;
+            match self
+                .google_held_call(state, main, path, &access, json!({}), at)
+                .await?
+            {
                 (status, body, _) if (200..300).contains(&status) => bodies.push(body),
                 (401 | 403, _, _) => {
-                    state.denied = true;
+                    state
+                        .refusals
+                        .refuse(&self.root, id, RefusalKind::Access, &access)?;
+                    state.refusals.refuse_hash(
+                        &self.root,
+                        id,
+                        RefusalKind::Generation,
+                        &account.sign_in,
+                    )?;
                     return Err(problem(
                         ProblemKind::Expired,
                         "Antigravity turned its sign-in away. Sign in again.",
                     ));
                 }
-                (429, _, retry) => held = Some(retry.unwrap_or(at + 15 * MINUTE)),
+                (429, _, retry) => {
+                    let until = retry.unwrap_or(at + 60 * MINUTE);
+                    held = Some(held.map_or(until, |old| old.min(until)));
+                }
                 _ => {}
             }
         }
         if bodies.is_empty()
             && let Some(until) = held
         {
-            state.held = until;
             return Err(Problem {
                 kind: ProblemKind::RateLimited,
                 message: "Antigravity asked this computer to wait.".into(),
@@ -983,7 +1339,8 @@ impl Readers {
             let mut configurations = vec![];
             for base in [main, daily] {
                 if let Ok((status, value, _)) = self
-                    .google_call(
+                    .google_held_call(
+                        state,
                         base,
                         "v1internal:fetchAvailableModels",
                         &access,
@@ -1008,7 +1365,14 @@ impl Readers {
             windows = Some(antigravity_legacy(&configurations, at));
             if windows.as_ref().is_none_or(Vec::is_empty) {
                 if let Ok((status, value, _)) = self
-                    .google_call(main, "v1internal:retrieveUserQuota", &access, json!({}), at)
+                    .google_held_call(
+                        state,
+                        main,
+                        "v1internal:retrieveUserQuota",
+                        &access,
+                        json!({}),
+                        at,
+                    )
                     .await
                     && (200..300).contains(&status)
                 {
@@ -1032,7 +1396,7 @@ impl Readers {
             )
         })?;
         let mut plan = None;
-        if let Ok((status,value,_))=self.google_call(main,"v1internal:loadCodeAssist",&access,json!({"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}),at).await&& (200..300).contains(&status){
+        if let Ok((status,value,_))=self.google_held_call(state,main,"v1internal:loadCodeAssist",&access,json!({"metadata":{"ideType":"ANTIGRAVITY","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}}),at).await&& (200..300).contains(&status){
             plan=match value["paidTier"]["id"].as_str(){
                 Some("g1-pro-tier")=>Some("Pro".into()),Some("g1-ultra-tier")=>Some("Ultra".into()),Some("g1-ultra-lite-tier")=>Some("Ultra Lite".into()),
                 _=>str_at(&value["paidTier"]["name"]).or_else(||str_at(&value["currentTier"]["name"])).map(google_plan)
@@ -1047,6 +1411,11 @@ impl Readers {
             credential.identity.clone(),
         ))
     }
+}
+fn local_google_plan(body: &Value) -> Option<String> {
+    str_at(&body["userStatus"]["userTier"]["name"])
+        .or_else(|| str_at(&body["userStatus"]["planStatus"]["planInfo"]["planName"]))
+        .map(google_plan)
 }
 fn cycle(start: Option<u64>, end: Option<u64>, fallback: u32) -> (Option<u32>, Option<u64>) {
     (

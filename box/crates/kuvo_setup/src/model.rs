@@ -358,6 +358,77 @@ impl Link {
         membership(&self.shared, &setup.position, &setup.sign)
     }
 
+    /// Only signed, admitted former members can be historical usage origins.
+    /// Keep this authority check shared by backup restore and live Insights.
+    pub fn historical_insight_origins(&self) -> Result<BTreeMap<String, String>, Error> {
+        let setup = self.setup()?;
+        self.historical_insight_origins_for(Some(&setup.position.id))
+    }
+    pub fn historical_insight_origins_for(
+        &self,
+        scope: Option<&str>,
+    ) -> Result<BTreeMap<String, String>, Error> {
+        let membership = self.member_list()?;
+        let history = membership
+            .extra
+            .get("computerHistory")
+            .filter(|history| history["setup"].as_str() == scope);
+        let known = membership
+            .left
+            .iter()
+            .chain(membership.boxes.iter().map(|peer| &peer.key))
+            .collect::<HashSet<_>>();
+        let mut origins = BTreeMap::new();
+        for key in membership.left.iter() {
+            let assignment = format!("replacement:{key}");
+            let record = self
+                .value(SharedKind::OwnershipRecovery)
+                .and_then(|v| v.get(&assignment))
+                .or_else(|| {
+                    self.value(SharedKind::OwnershipAssignments)
+                        .and_then(|v| v.get(&assignment))
+                });
+            let matched = record.is_some_and(|r| {
+                r["source"].is_string()
+                    && r["computer"].as_str().is_some_and(|computer| {
+                        computer != key && known.iter().any(|k| k.as_str() == computer)
+                    })
+            });
+            let recorded = history
+                .and_then(|h| h["slots"].as_array())
+                .is_some_and(|slots| {
+                    slots.iter().any(|slot| {
+                        slot["key"].as_str() == Some(key)
+                            || slot["previous"]
+                                .as_array()
+                                .is_some_and(|keys| keys.iter().any(|k| k.as_str() == Some(key)))
+                    })
+                });
+            if !matched && !recorded {
+                continue;
+            }
+            let given = history
+                .and_then(|h| h["retiredNames"][key].as_str())
+                .or_else(|| membership.extra["removals"][key]["peer"]["name"].as_str())
+                .unwrap_or("")
+                .trim();
+            let name = if given.is_empty() {
+                format!(
+                    "Former computer ({})",
+                    key.chars().take(8).collect::<String>()
+                )
+            } else {
+                given
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(100)
+                    .collect()
+            };
+            origins.insert(key.clone(), name);
+        }
+        Ok(origins)
+    }
+
     pub fn disabled(&self, roster: &Membership, own: &str) -> bool {
         ["localWipe", "removalSource", "localUnlink", "macRotation"]
             .iter()

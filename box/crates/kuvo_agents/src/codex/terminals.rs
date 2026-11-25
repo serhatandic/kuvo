@@ -64,6 +64,9 @@ struct SavedTerminal {
 struct Saved {
     listed: Vec<SavedTerminal>,
     outputs: HashMap<String, Printed>,
+    /// Last holder output line already included in each saved terminal's bytes.
+    #[serde(default)]
+    through: HashMap<String, u64>,
     unknown: Option<Helper>,
 }
 
@@ -78,6 +81,7 @@ pub(super) struct Terminals {
     starts: HashMap<String, (u64, WorkOrder)>,
     started: VecDeque<String>,
     outputs: Outputs,
+    through: HashMap<String, u64>,
     /// The list after a turn failed: what it left running is still to be found.
     unknown: Option<Helper>,
 }
@@ -92,6 +96,7 @@ impl Terminals {
             starts: HashMap::new(),
             started: VecDeque::new(),
             outputs: Arc::default(),
+            through: HashMap::new(),
             unknown: None,
         }
     }
@@ -126,6 +131,15 @@ impl Terminals {
                         .any(|terminal| terminal.item.as_ref() == Some(*id)))
                     .map(|(id, output)| (id.clone(), output.clone()))
                     .collect(),
+                through: self
+                    .through
+                    .iter()
+                    .filter(|(id, _)| self
+                        .listed
+                        .iter()
+                        .any(|terminal| terminal.item.as_ref() == Some(*id)))
+                    .map(|(id, sequence)| (id.clone(), *sequence))
+                    .collect(),
                 unknown: self.unknown.clone(),
             })
         })
@@ -136,6 +150,7 @@ impl Terminals {
             return;
         };
         *lock(&self.outputs) = saved.outputs;
+        self.through = saved.through;
         self.unknown = saved.unknown;
         for terminal in saved.listed {
             let shell = terminal.job.map(|job| {
@@ -162,7 +177,7 @@ impl Terminals {
     }
 
     /// What its app-server said of a command: when it began, and what it printed.
-    pub fn heard(&mut self, method: &str, params: &Value) {
+    pub fn heard(&mut self, method: &str, params: &Value, sequence: u64) {
         let item = &params["item"];
         let command = item["type"] == "commandExecution";
         match (method, item["id"].as_str()) {
@@ -175,6 +190,9 @@ impl Terminals {
                 let Some(all) = item["aggregatedOutput"].as_str() else {
                     return;
                 };
+                if !self.new_output(id, sequence) {
+                    return;
+                }
                 let mut outputs = lock(&self.outputs);
                 let printed = outputs.entry(id.to_owned()).or_default();
                 let total = all.len() as u64;
@@ -188,6 +206,9 @@ impl Terminals {
                 else {
                     return;
                 };
+                if !self.new_output(id, sequence) {
+                    return;
+                }
                 let mut outputs = lock(&self.outputs);
                 let printed = outputs.entry(id.to_owned()).or_default();
                 printed.output.push_str(delta);
@@ -196,6 +217,15 @@ impl Terminals {
             }
             _ => {}
         }
+    }
+
+    fn new_output(&mut self, item: &str, sequence: u64) -> bool {
+        let through = self.through.entry(item.to_owned()).or_default();
+        if sequence <= *through {
+            return false;
+        }
+        *through = sequence;
+        true
     }
 
     /// Its app-server listed `listed`: those gone have ended. `stop` stops one by its process.
@@ -266,6 +296,8 @@ impl Terminals {
         let live: Vec<&String> = self.listed.iter().filter_map(|t| t.item.as_ref()).collect();
         lock(&self.outputs)
             .retain(|item, _| live.contains(&item) || self.starts.contains_key(item));
+        self.through
+            .retain(|item, _| live.contains(&item) || self.starts.contains_key(item));
         self.tell();
     }
 
@@ -297,6 +329,7 @@ impl Terminals {
             }
         }
         lock(&self.outputs).clear();
+        self.through.clear();
         self.unknown = None;
         self.starts.clear();
         self.started.clear();
@@ -372,9 +405,9 @@ mod tests {
     async fn a_terminal_it_leaves_running_is_a_command_with_what_it_printed() {
         let background = Background::default();
         let mut terminals = Terminals::new("ses_a", "/work", background.clone());
-        terminals.heard("item/started", &started("c-1", "npm run dev"));
+        terminals.heard("item/started", &started("c-1", "npm run dev"), 1);
         let delta = json!({ "itemId": "c-1", "delta": "Listening on :3000\n" });
-        terminals.heard("item/commandExecution/outputDelta", &delta);
+        terminals.heard("item/commandExecution/outputDelta", &delta, 2);
         terminals.listed(
             vec![terminal("p1", Some("c-1"), Some("npm run dev"))],
             never,
@@ -391,6 +424,31 @@ mod tests {
         terminals.listed(Vec::new(), never);
         assert!(background.running("ses_a", false).is_empty());
         assert!(!terminals.keeps_working());
+    }
+
+    #[tokio::test]
+    async fn a_saved_terminal_does_not_append_the_same_holder_line_after_adoption() {
+        let mut original = Terminals::new("ses_a", "/work", Background::default());
+        original.heard("item/started", &started("c-1", "npm run dev"), 10);
+        let delta = json!({"itemId":"c-1", "delta":"Listening\n"});
+        original.heard("item/commandExecution/outputDelta", &delta, 11);
+        original.listed(
+            vec![terminal("p1", Some("c-1"), Some("npm run dev"))],
+            never,
+        );
+        let saved = original.snapshot().expect("a background terminal is saved");
+        let background = Background::default();
+        let mut adopted = Terminals::new("ses_a", "/work", background.clone());
+        adopted.restore(saved, never);
+        // The keeper can switch before the batched holder acknowledgement arrives.
+        adopted.heard("item/commandExecution/outputDelta", &delta, 11);
+        // Actual repeated output has a new holder sequence and must still be shown.
+        adopted.heard("item/commandExecution/outputDelta", &delta, 12);
+        let id = background.running("ses_a", false)[0].id.clone();
+        assert_eq!(
+            background.output(&id, 0, None).await.unwrap().output,
+            "Listening\nListening\n"
+        );
     }
 
     #[test]

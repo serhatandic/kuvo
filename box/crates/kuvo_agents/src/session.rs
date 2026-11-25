@@ -281,6 +281,7 @@ pub struct DirectPlanReading {
     pub resets: Option<ResetInventory>,
     pub reset_unreadable: Option<String>,
     pub no_plan: bool,
+    pub only_resets: bool,
 }
 impl DirectPlanReading {
     pub fn windows(reading: PlanLimitReading) -> Self {
@@ -292,6 +293,7 @@ impl DirectPlanReading {
             resets: None,
             reset_unreadable: None,
             no_plan: false,
+            only_resets: false,
         }
     }
 }
@@ -306,6 +308,7 @@ pub struct ResetInventory {
     pub count: u32,
     pub targets: Vec<ResetTarget>,
     pub refills: Vec<String>,
+    pub display_expiries: Option<Vec<u64>>,
 }
 #[derive(Clone, Debug)]
 pub struct ResetTarget {
@@ -319,6 +322,9 @@ pub enum ResetOutcome {
     NothingToReset,
     NoReset,
     NotNow,
+    MakerNotNow(Option<u64>),
+    MakerNoReset,
+    MakerFailed,
     Failed,
     Unknown,
     Unconfirmed,

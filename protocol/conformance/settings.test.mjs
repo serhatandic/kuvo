@@ -84,6 +84,10 @@ test("Git settings retain independent revisions, clean text, and follow external
     await ask("PATCH","kuvo/config",{changes:[{path:["branch_prefix"],value:""}]});
     next = await iter.next();
     assert.equal(row(next.value,"branch-prefix").value,"");
+    // The box must also follow a settings change made outside all its routes.
+    write(path.join(box.home,"box","opencode.json"),JSON.stringify({unrelated:true,branch_prefix:"external/",commit_instructions:"Keep it short."}));
+    next = await iter.next();
+    assert.equal(row(next.value,"branch-prefix").value,"external/");
   } finally { events.close(); }
 });
 
@@ -432,9 +436,9 @@ test("Archived Sessions publishes owner menus and checks a remote change again o
   const near = main.connect(nearRecord);
   const original=await near("GET","kuvo/setup");
   assert.equal(original.status,200,original.text);
-  await until(()=>leases.leaseFor(original.json.setup),"The main computer did not claim a relay lease.");
   const invite=await near("POST","kuvo/computers/add/code",{},{"x-kuvo-from":"mac"});
   assert.equal(invite.status,201,invite.text);
+  await until(()=>leases.leaseFor(original.json.setup),"The main computer did not claim a relay lease.");
   const joined=await other.join(invite.json.code);
   assert.equal(joined.code,0,joined.log);
   const session=sessionOf({id:"ses_archive_owner",title:"Archived on Lab"});

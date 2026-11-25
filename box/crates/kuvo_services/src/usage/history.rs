@@ -87,11 +87,45 @@ fn price(event: &Observation, kind: Kind, pricing: &Pricing, fallback: Option<&s
         fallback: None,
     }
 }
+// SQLite's built-in REAL SUM uses compensated arithmetic. The old bridge
+// adds each maker cost in its traversal order, so a compact SQL aggregate
+// must do the same rather than change the last bit of the wire number.
+struct WireSum;
+impl rusqlite::functions::Aggregate<Option<f64>, Option<f64>> for WireSum {
+    fn init(&self, _: &mut rusqlite::functions::Context<'_>) -> rusqlite::Result<Option<f64>> {
+        Ok(None)
+    }
+    fn step(
+        &self,
+        context: &mut rusqlite::functions::Context<'_>,
+        sum: &mut Option<f64>,
+    ) -> rusqlite::Result<()> {
+        if let Some(cost) = context.get::<Option<f64>>(0)? {
+            *sum = Some(sum.map_or(cost, |sum| sum + cost));
+        }
+        Ok(())
+    }
+    fn finalize(
+        &self,
+        _: &mut rusqlite::functions::Context<'_>,
+        sum: Option<Option<f64>>,
+    ) -> rusqlite::Result<Option<f64>> {
+        Ok(sum.flatten())
+    }
+}
 pub fn schema(db: &Connection) -> rusqlite::Result<()> {
+    db.create_aggregate_function(
+        "kuvo_wire_sum",
+        1,
+        rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        WireSum,
+    )?;
+    super::engine_codex_history::schema(db)?;
+    super::engine_hosted_history::schema(db)?;
+    super::cursor_history_store::schema(db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS native_price(source TEXT NOT NULL,position INTEGER NOT NULL,ordinal INTEGER NOT NULL,model TEXT,tokens INTEGER NOT NULL,cost REAL,unknown INTEGER NOT NULL,fallback TEXT,
           PRIMARY KEY(source,position,ordinal));
-          CREATE TABLE IF NOT EXISTS hosted_call(call TEXT PRIMARY KEY, provider TEXT NOT NULL, at INTEGER NOT NULL, model TEXT NOT NULL, tokens INTEGER NOT NULL,cost REAL NOT NULL,scanned INTEGER NOT NULL);
-          CREATE INDEX IF NOT EXISTS hosted_call_at ON hosted_call(at);")
+          ")
 }
 pub fn put(
     db: &Connection,
@@ -171,6 +205,8 @@ pub fn reprice(
             )?;
         }
     }
+    super::engine_codex_history::reprice(&tx, pricing, now)?;
+    super::cursor_history_store::reprice(&tx, pricing, now)?;
     tx.execute("INSERT INTO state(key,body) VALUES('native-price-v1',?) ON CONFLICT(key) DO UPDATE SET body=excluded.body",[serde_json::to_string(epoch)?])?;
     tx.commit()?;
     Ok(())
@@ -215,7 +251,7 @@ fn days(days: &Days) -> Vec<WireDay<'_>> {
             WireDay {
                 date,
                 tokens: models.iter().map(|m| m.tokens).sum(),
-                cost: models.iter().map(|m| m.cost).sum(),
+                cost: models.iter().fold(0.0, |sum, m| sum + m.cost),
                 models,
                 unknown: &day.unknown,
                 fallback: &day.fallback,
@@ -226,17 +262,22 @@ fn days(days: &Days) -> Vec<WireDay<'_>> {
 #[derive(Clone, Default, Debug)]
 pub struct Slots {
     pub used: BTreeMap<i64, BTreeMap<String, (u64, f64)>>,
+    order: Vec<i64>,
     pub unknown: BTreeMap<i64, BTreeSet<String>>,
     pub fallback: BTreeMap<i64, BTreeSet<String>>,
 }
 impl Slots {
     pub fn add(&mut self, slot: i64, model: String, tokens: u64, cost: f64) {
+        if !self.used.contains_key(&slot) {
+            self.order.push(slot);
+        }
         let entry = self.used.entry(slot).or_default().entry(model).or_default();
         entry.0 = entry.0.saturating_add(tokens);
         entry.1 += cost;
     }
     pub fn merge(&mut self, other: &Self) {
-        for (slot, models) in &other.used {
+        for slot in &other.order {
+            let models = &other.used[slot];
             for (model, (tokens, cost)) in models {
                 self.add(*slot, model.clone(), *tokens, *cost);
             }
@@ -267,7 +308,8 @@ impl Slots {
             (day >= earliest && day <= today).then(|| day.to_string())
         };
         let mut days = Days::new();
-        for (at, models) in &self.used {
+        for at in &self.order {
+            let models = &self.used[at];
             let Some(date) = date(*at) else {
                 continue;
             };
@@ -327,7 +369,7 @@ pub fn own(
 ) -> Result<Vec<Account>> {
     let mut records = BTreeMap::<String, Slots>::new();
     let query = format!(
-        "SELECT n.provider,n.at/{SLOT}*{SLOT},p.model,COALESCE(SUM(CASE WHEN p.cost IS NOT NULL THEN p.tokens ELSE 0 END),0),SUM(p.cost),MAX(p.unknown),p.fallback FROM native_call n JOIN native_price p ON p.source=n.source AND p.position=n.position AND p.ordinal=n.ordinal WHERE n.at>=? AND ({}) GROUP BY n.provider,n.at/{SLOT},p.model,p.fallback",
+        "SELECT n.provider,n.at/{SLOT}*{SLOT},p.model,COALESCE(SUM(CASE WHEN p.cost IS NOT NULL THEN p.tokens ELSE 0 END),0),kuvo_wire_sum(p.cost ORDER BY nf.source_order,n.position,n.ordinal),MAX(p.unknown),MAX(p.fallback) FROM native_call n JOIN native_file nf ON nf.source=n.source JOIN native_price p ON p.source=n.source AND p.position=n.position AND p.ordinal=n.ordinal WHERE n.at>=? AND ({}) GROUP BY n.provider,n.at/{SLOT},p.model ORDER BY n.provider,MIN(nf.source_order||char(1)||printf('%016x%08x',n.position,n.ordinal))",
         native_index::CANONICAL
     );
     let mut statement = db.prepare(&query)?;
@@ -382,31 +424,11 @@ pub fn own(
             slots,
         });
     }
-    let mut hosted = BTreeMap::<String, (i64, Slots)>::new();
-    let mut query=db.prepare(&format!("SELECT provider,at/{SLOT}*{SLOT},model,SUM(tokens),SUM(cost),MAX(scanned) FROM hosted_call WHERE at>=? GROUP BY provider,at/{SLOT},model"))?;
-    let mut rows = query.query([now - 35 * DAY])?;
-    while let Some(row) = rows.next()? {
-        let provider: String = row.get(0)?;
-        let (scanned, slots) = hosted.entry(provider).or_default();
-        *scanned = (*scanned).max(row.get(5)?);
-        slots.add(row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?);
+    out.extend(super::engine_hosted_history::own(db, now, identities)?);
+    if let Some(account) = super::engine_codex_history::account(db, now, identities)? {
+        out.push(account);
     }
-    for (provider, (scanned, slots)) in hosted {
-        out.push(Account {
-            identity: identities.get(&provider).cloned(),
-            provider,
-            service: "opencode".into(),
-            agent: None,
-            account: None,
-            label: None,
-            scanned: Some(scanned),
-            places: vec![],
-            billed: true,
-            wide: false,
-            cut: false,
-            slots,
-        });
-    }
+    out.extend(super::cursor_history_store::own(db, now)?);
     // The wire order follows the bridge's source roster, not SQLite's
     // alphabetical kind order. Default sign-ins precede their added accounts.
     out.sort_by_key(|row| match row.service.as_str() {
@@ -414,10 +436,11 @@ pub fn own(
         "codex" if row.agent.is_some() => 1,
         "grok" => 2,
         "codex" => 3,
-        "opencode" => 4,
-        "cursor" => 5,
-        "antigravity" => 6,
-        _ => 7,
+        "opencode" if row.provider == "opencode-go" => 4,
+        "opencode" => 5,
+        "cursor" => 6,
+        "antigravity" => 7,
+        _ => 8,
     });
     Ok(out)
 }

@@ -10,7 +10,7 @@ use kuvo_services::usage::{
     readings::{Milestone, Source, Window},
 };
 use kuvo_work::notices::{Notice, Notices};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 fn account_of(
@@ -91,10 +91,15 @@ pub async fn refresh(
                 let account = account_of(entry, &provider, mark, identity);
                 let at = limits::now();
                 let facts = direct_facts(&reading, at, provider.kind);
+                let only_resets = reading.only_resets;
                 let windows = windows(reading.reading, at, Source::Usage);
                 let service = service.clone();
                 match tokio::task::spawn_blocking(move || {
-                    service.observe_facts(account, windows, Some(facts), at)
+                    if only_resets {
+                        service.observe_reset_facts(account, facts, at)
+                    } else {
+                        service.observe_facts(account, windows, Some(facts), at)
+                    }
                 })
                 .await
                 {
@@ -173,12 +178,14 @@ fn direct_facts(
             id: "resets".into(),
             name: "Rate Limit Resets".into(),
             count: resets.count,
-            expiries: resets
-                .targets
-                .iter()
-                .filter_map(|t| t.expires_at)
-                .take(50)
-                .collect(),
+            expiries: resets.display_expiries.clone().unwrap_or_else(|| {
+                resets
+                    .targets
+                    .iter()
+                    .filter_map(|t| t.expires_at)
+                    .take(50)
+                    .collect()
+            }),
             refills: resets.refills.clone(),
             usable: resets.count > 0 && !resets.targets.is_empty(),
         });
@@ -208,6 +215,30 @@ pub fn engine_reader(
     Reader::new().ok()
 }
 
+async fn engine_credentials(
+    engine: &kuvo_engine::Engine,
+    home: std::path::PathBuf,
+) -> Result<Option<Value>, String> {
+    match kuvo_services::usage::engine_readers::kept_credentials(home).await? {
+        Some(credentials) => Ok(Some(credentials)),
+        None => {
+            let Some(engine) = engine.running_bot_engine().await else {
+                return Ok(None);
+            };
+            engine
+                .call(
+                    http::Method::GET,
+                    "api/credential",
+                    None,
+                    std::time::Duration::from_secs(15),
+                )
+                .await
+                .map(Some)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
 pub async fn refresh_engine(
     service: Service,
     engine: kuvo_engine::Engine,
@@ -223,32 +254,11 @@ pub async fn refresh_engine(
     {
         return false;
     }
-    let credentials = match kuvo_services::usage::engine_readers::kept_credentials(home).await {
+    let credentials = match engine_credentials(&engine, home).await {
         Ok(Some(credentials)) => credentials,
-        Ok(None) => {
-            // Legacy installations without a credential table may ask an engine
-            // which is already running; the quota path never launches one.
-            let Some(engine) = engine.running_bot_engine().await else {
-                return false;
-            };
-            match engine
-                .call(
-                    http::Method::GET,
-                    "api/credential",
-                    None,
-                    std::time::Duration::from_secs(15),
-                )
-                .await
-            {
-                Ok(value) => value,
-                Err(error) => {
-                    eprintln!("Could not read engine plan accounts: {error}");
-                    return true;
-                }
-            }
-        }
+        Ok(None) => return false,
         Err(error) => {
-            eprintln!("Could not read saved engine plan accounts: {error}");
+            eprintln!("Could not read engine plan accounts: {error}");
             return true;
         }
     };
@@ -398,6 +408,11 @@ pub fn notices(service: &Service, notices: Notices) {
 pub struct ResetPort {
     pub agents: Option<ResidentAgents>,
     pub limits: Service,
+    pub engine: Option<(
+        kuvo_engine::Engine,
+        kuvo_services::usage::engine_readers::Reader,
+        std::path::PathBuf,
+    )>,
 }
 impl ResetPort {
     async fn agent(
@@ -425,9 +440,19 @@ impl kuvo_services::usage::resets::Port for ResetPort {
     {
         use kuvo_services::usage::resets::Outcome;
         Box::pin(async move {
+            if account.provider == "openai" && account.account.is_none() {
+                let (engine, reader, home) = self.engine.as_ref().ok_or(Outcome::NotNow)?;
+                let credentials = engine_credentials(engine, home.clone())
+                    .await
+                    .map_err(|_| Outcome::NotNow)?
+                    .ok_or(Outcome::NotNow)?;
+                return reader
+                    .choose_reset(credentials, account, limits::now())
+                    .await;
+            }
             let (agent, _) = self.agent(account).await?;
             let plan = agent
-                .read_plan_limits(false)
+                .read_plan_limits(account.service == kuvo_services::usage::limits::Provider::Codex)
                 .await
                 .map_err(|_| Outcome::NotNow)?
                 .ok_or(Outcome::NotNow)?;
@@ -443,31 +468,65 @@ impl kuvo_services::usage::resets::Port for ResetPort {
         account: &'a Account,
         request: &'a str,
         target: &'a str,
-    ) -> futures_core::future::BoxFuture<'a, kuvo_services::usage::resets::Outcome> {
+    ) -> futures_core::future::BoxFuture<'a, kuvo_services::usage::resets::Completion> {
         use kuvo_agents::session::ResetOutcome as Native;
-        use kuvo_services::usage::resets::Outcome;
+        use kuvo_services::usage::resets::{Completion, Outcome};
         Box::pin(async move {
+            if account.provider == "openai" && account.account.is_none() {
+                let Some((engine, reader, home)) = &self.engine else {
+                    return Outcome::NotNow.into();
+                };
+                let Ok(Some(credentials)) = engine_credentials(engine, home.clone()).await else {
+                    return Outcome::NotNow.into();
+                };
+                return reader
+                    .consume_reset(credentials, account, request, target, limits::now())
+                    .await;
+            }
             let (agent, identity) = match self.agent(account).await {
                 Ok(a) => a,
-                Err(o) => return o,
+                Err(o) => return o.into(),
             };
             match agent
                 .consume_plan_reset(&identity, request, target)
                 .await
                 .unwrap_or(Native::Unknown)
             {
-                Native::Reset | Native::AlreadyRedeemed => Outcome::Reset,
-                Native::NothingToReset => Outcome::NothingToReset,
-                Native::NoReset => Outcome::NoReset,
-                Native::NotNow => Outcome::NotNow,
-                Native::Failed => Outcome::Failed,
-                Native::Unconfirmed => Outcome::Unconfirmed,
-                Native::Unknown => Outcome::Unknown,
+                Native::Reset => Completion::maker(Outcome::Reset),
+                Native::AlreadyRedeemed => Completion {
+                    already: true,
+                    ..Completion::maker(Outcome::Reset)
+                },
+                Native::NothingToReset => Completion::maker(Outcome::NothingToReset),
+                Native::MakerNoReset => Completion::maker(Outcome::NoReset),
+                Native::MakerFailed => Completion::maker(Outcome::Failed),
+                Native::MakerNotNow(until) => Completion {
+                    until,
+                    ..Completion::maker(Outcome::NotNow)
+                },
+                Native::NoReset => Outcome::NoReset.into(),
+                Native::NotNow => Outcome::NotNow.into(),
+                Native::Failed => Outcome::Failed.into(),
+                Native::Unconfirmed => Completion::maker(Outcome::Unconfirmed),
+                Native::Unknown => Completion::maker(Outcome::Unknown),
             }
         })
     }
     fn refresh<'a>(&'a self, provider: &'a str) -> futures_core::future::BoxFuture<'a, ()> {
         Box::pin(async move {
+            if provider == "openai" {
+                if let Some((engine, reader, home)) = &self.engine {
+                    refresh_engine(
+                        self.limits.clone(),
+                        engine.clone(),
+                        reader.clone(),
+                        home.clone(),
+                        Some(provider.into()),
+                    )
+                    .await;
+                }
+                return;
+            }
             if let Some(agents) = self.agents.as_ref() {
                 refresh(
                     self.limits.clone(),

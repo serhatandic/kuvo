@@ -27,6 +27,11 @@ pub struct Root {
     pub kind: Kind,
     pub managed: bool,
     pub label: Option<String>,
+    /// Provider-declared root order (live sessions before archives).
+    pub order: u32,
+    /// The sign-in file belongs to the Codex home, not necessarily the log root.
+    auth: Option<PathBuf>,
+    flat: bool,
 }
 fn key(path: &Path) -> String {
     let mut hash = Sha256::new();
@@ -89,44 +94,117 @@ pub async fn roots(home: &Path) -> std::io::Result<Vec<Root>> {
                         } else {
                             folder.join("projects")
                         };
-                        (Kind::Claude, path)
+                        (Kind::Claude, path, None, false)
                     })
                     .collect()
             }
             AgentKind::Codex => {
-                let home =
-                    managed.unwrap_or_else(|| own_path(&env, &personal, "CODEX_HOME", ".codex"));
-                vec![
-                    (Kind::Codex, home.join("sessions")),
-                    (Kind::Codex, home.join("archived_sessions")),
-                ]
+                let homes = if let Some(managed) = managed {
+                    vec![managed]
+                } else if let Some(configured) = env_value(Platform::current(), &env, "CODEX_HOME")
+                    .and_then(OsStr::to_str)
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    configured
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|part| expand_path(&personal, part))
+                        .collect()
+                } else {
+                    vec![personal.join(".codex")]
+                };
+                let mut seen = BTreeSet::new();
+                let mut paths = vec![];
+                for folder in homes {
+                    let real = std::fs::canonicalize(&folder).unwrap_or_else(|_| folder.clone());
+                    if !seen.insert(real) {
+                        continue;
+                    }
+                    let sessions = folder.join("sessions");
+                    let archive = folder.join("archived_sessions");
+                    let auth = folder.join("auth.json");
+                    if sessions.is_dir() || archive.is_dir() {
+                        paths.push((Kind::Codex, sessions, Some(auth.clone()), false));
+                        paths.push((Kind::Codex, archive, Some(auth), false));
+                    } else {
+                        paths.push((Kind::Codex, folder, Some(auth), true));
+                    }
+                }
+                paths
             }
             AgentKind::Grok => vec![(
                 Kind::Grok,
                 super::grok_native::folder(managed, &env, &personal).join("sessions"),
+                None,
+                false,
             )],
             AgentKind::Antigravity => vec![(
                 Kind::Antigravity,
                 managed
                     .unwrap_or_else(|| home.join("agents/antigravity"))
                     .join("profile"),
+                None,
+                false,
             )],
             _ => vec![],
         };
-        roots.extend(paths.into_iter().map(|(kind, folder)| Root {
-            managed: folder.starts_with(home) && (!own || folder.starts_with(home.join("agents"))),
-            folder,
-            kind,
-            provider: provider.clone(),
-            label: account.label.clone(),
-        }));
+        roots.extend(
+            paths
+                .into_iter()
+                .enumerate()
+                .map(|(order, (kind, folder, auth, flat))| Root {
+                    managed: folder.starts_with(home)
+                        && (!own || folder.starts_with(home.join("agents"))),
+                    folder,
+                    kind,
+                    provider: provider.clone(),
+                    label: account.label.clone(),
+                    order: order.min(u32::MAX as usize) as u32,
+                    auth,
+                    flat,
+                }),
+        );
     }
+    // Shared native roots belong to their actual owner, not each linked
+    // account that happens to name the same directory.
+    let mut owners = BTreeMap::<(Kind, PathBuf), String>::new();
+    let real =
+        |root: &Root| std::fs::canonicalize(&root.folder).unwrap_or_else(|_| root.folder.clone());
+    for root in &roots {
+        if root.kind == Kind::Codex
+            && !std::fs::symlink_metadata(&root.folder).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            owners
+                .entry((root.kind, real(root)))
+                .or_insert_with(|| root.provider.clone());
+        }
+    }
+    for root in &roots {
+        if matches!(root.kind, Kind::Codex | Kind::Grok) {
+            owners
+                .entry((root.kind, real(root)))
+                .or_insert_with(|| root.provider.clone());
+        }
+    }
+    roots.retain(|root| {
+        owners
+            .get(&(root.kind, real(root)))
+            .is_none_or(|owner| owner == &root.provider)
+    });
+    for root in &mut roots {
+        if let Ok(folder) = std::fs::canonicalize(&root.folder) {
+            root.folder = folder;
+        }
+    }
+    let mut seen = BTreeSet::new();
+    roots.retain(|root| seen.insert((root.provider.clone(), root.folder.clone())));
     Ok(roots)
 }
 pub fn schema(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS native_root(root TEXT NOT NULL, provider TEXT NOT NULL, kind TEXT NOT NULL, label TEXT, scanned INTEGER, place TEXT NOT NULL, PRIMARY KEY(root,provider));
-         CREATE TABLE IF NOT EXISTS native_file(source TEXT PRIMARY KEY, root TEXT NOT NULL, provider TEXT NOT NULL, kind TEXT NOT NULL, managed INTEGER NOT NULL, label TEXT, cursor TEXT NOT NULL, scanned INTEGER NOT NULL);
+         CREATE TABLE IF NOT EXISTS native_file(source TEXT PRIMARY KEY, root TEXT NOT NULL, provider TEXT NOT NULL, kind TEXT NOT NULL, managed INTEGER NOT NULL, label TEXT, cursor TEXT NOT NULL, scanned INTEGER NOT NULL,source_order TEXT NOT NULL DEFAULT '');
          CREATE INDEX IF NOT EXISTS native_file_root ON native_file(root);
          CREATE TABLE IF NOT EXISTS native_limit(source TEXT NOT NULL, provider TEXT NOT NULL, window TEXT NOT NULL, read INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(source,window,read));
          CREATE INDEX IF NOT EXISTS native_limit_provider ON native_limit(provider,read);
@@ -143,7 +221,18 @@ pub fn schema(db: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS native_step_session ON native_step(session);
          CREATE TABLE IF NOT EXISTS native_sequence(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
          INSERT OR IGNORE INTO native_sequence VALUES(1,0);"
-    )
+    )?;
+    let has: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('native_file') WHERE name='source_order')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has {
+        db.execute_batch(
+            "ALTER TABLE native_file ADD COLUMN source_order TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
 }
 fn path_age(path: &Path) -> Option<i64> {
     std::fs::symlink_metadata(path)
@@ -273,17 +362,50 @@ pub fn fold_file(
 ) -> Result<BTreeSet<String>> {
     let source = hash(&json!([key(path), root.provider]));
     let root_key = key(&root.folder);
-    let before: Option<String> = db
+    let before: Option<(String, String)> = db
         .query_row(
-            "SELECT cursor FROM native_file WHERE source=?",
+            "SELECT cursor,source_order FROM native_file WHERE source=?",
             [&source],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
     let cursor = before
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<Cursor>(s).ok())
+        .as_ref()
+        .and_then(|(s, _)| serde_json::from_str::<Cursor>(s).ok())
         .unwrap_or_default();
+    let relative = path.strip_prefix(&root.folder).unwrap_or(path);
+    let archive = if root.flat
+        && relative
+            .components()
+            .next()
+            .is_some_and(|c| c.as_os_str() == "archived_sessions")
+    {
+        1
+    } else {
+        0
+    };
+    let source_order = if root.kind == Kind::Codex {
+        // Codex declares its home order, live logs before archived copies.
+        format!(
+            "{:08x}/{archive}/{}",
+            root.order,
+            relative.to_string_lossy()
+        )
+    } else {
+        // Claude and Grok traverse the combined roots in absolute file order.
+        path.to_string_lossy().into_owned()
+    };
+    let mut reordered = BTreeSet::new();
+    if before
+        .as_ref()
+        .is_some_and(|(_, order)| order != &source_order)
+    {
+        reordered = affected(db, &source)?;
+        db.execute(
+            "UPDATE native_file SET source_order=? WHERE source=?",
+            params![source_order, source],
+        )?;
+    }
     if !path.exists() {
         let sessions = affected(db, &source)?;
         let tx = db.transaction()?;
@@ -318,12 +440,12 @@ pub fn fold_file(
             return Ok(BTreeSet::new());
         };
         if before
-            .as_deref()
-            .and_then(|s| serde_json::from_str::<super::engine_index::Stamp>(s).ok())
+            .as_ref()
+            .and_then(|(s, _)| serde_json::from_str::<super::engine_index::Stamp>(s).ok())
             .as_ref()
             == Some(&stamp)
         {
-            return Ok(BTreeSet::new());
+            return Ok(reordered);
         }
         let Some(session) = super::antigravity_history::database_session(path) else {
             return Ok(BTreeSet::new());
@@ -340,7 +462,7 @@ pub fn fold_file(
         (serde_json::to_string(&stamp)?, true, events, vec![])
     } else {
         let Some(changes) = native_logs::read(path, root.kind, &cursor, now - KEEP)? else {
-            return Ok(BTreeSet::new());
+            return Ok(reordered);
         };
         (
             serde_json::to_string(&changes.cursor)?,
@@ -349,11 +471,10 @@ pub fn fold_file(
             changes.limits,
         )
     };
-    let mut sessions = if rewritten {
-        affected(db, &source)?
-    } else {
-        BTreeSet::new()
-    };
+    let mut sessions = reordered;
+    if rewritten {
+        sessions.extend(affected(db, &source)?);
+    }
     let tx = db.transaction()?;
     tx.execute(
         "UPDATE native_sequence SET revision=revision+1 WHERE id=1",
@@ -425,7 +546,7 @@ pub fn fold_file(
             ],
         )?;
     }
-    tx.execute("INSERT INTO native_file VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,scanned=excluded.scanned,label=excluded.label",params![source,root_key,root.provider,root.kind.name(),managed,root.label,cursor_body,now])?;
+    tx.execute("INSERT INTO native_file(source,root,provider,kind,managed,label,cursor,scanned,source_order) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(source) DO UPDATE SET cursor=excluded.cursor,scanned=excluded.scanned,label=excluded.label,source_order=excluded.source_order",params![source,root_key,root.provider,root.kind.name(),managed,root.label,cursor_body,now,source_order])?;
     tx.commit()?;
     Ok(sessions)
 }
@@ -487,7 +608,30 @@ pub fn threads(
 }
 /// One canonical observation per copied maker call. The parent's Claude line
 /// wins a sidechain replay even when the latter used a different request ID.
-pub(super) const CANONICAL: &str = "NOT EXISTS(SELECT 1 FROM native_call better WHERE better.provider=n.provider AND (better.dedup=n.dedup OR (n.kind='claude' AND n.message IS NOT NULL AND better.message=n.message AND (n.sidechain=1 OR better.sidechain=1))) AND (better.sidechain<n.sidechain OR (better.sidechain=n.sidechain AND (better.processed>n.processed OR (better.processed=n.processed AND (better.speed>n.speed OR (better.speed=n.speed AND (better.source<n.source OR (better.source=n.source AND (better.position<n.position OR (better.position=n.position AND better.ordinal<n.ordinal)))))))))))";
+// Separate the two identity lookups so SQLite uses (provider,dedup) and
+// (provider,message), not a full provider scan per call.
+pub(super) const CANONICAL: &str = r#"
+NOT EXISTS (
+    SELECT 1 FROM native_call better
+    JOIN native_file bf ON bf.source=better.source
+    JOIN native_file nf ON nf.source=n.source
+    WHERE better.provider=n.provider AND better.dedup=n.dedup
+      AND CASE WHEN n.kind='codex' THEN
+        (bf.source_order,better.source,better.position,better.ordinal) <
+        (nf.source_order,n.source,n.position,n.ordinal)
+      ELSE
+        (better.sidechain,-better.processed,-better.speed,better.source,better.position,better.ordinal) <
+        (n.sidechain,-n.processed,-n.speed,n.source,n.position,n.ordinal)
+      END
+)
+AND (n.kind<>'claude' OR n.message IS NULL OR NOT EXISTS (
+    SELECT 1 FROM native_call better
+    WHERE better.provider=n.provider AND better.message=n.message
+      AND (n.sidechain=1 OR better.sidechain=1)
+      AND (better.sidechain,-better.processed,-better.speed,better.source,better.position,better.ordinal) <
+          (n.sidechain,-n.processed,-n.speed,n.source,n.position,n.ordinal)
+))
+"#;
 pub fn candidates(
     db: &Connection,
     provider: &str,
@@ -756,9 +900,9 @@ pub fn recent_limits(
         return Ok(vec![]);
     }
     let Some(auth_at) = root
-        .folder
-        .parent()
-        .and_then(|home| path_age(&home.join("auth.json")))
+        .auth
+        .as_deref()
+        .and_then(path_age)
         .and_then(|at| u64::try_from(at).ok())
     else {
         return Ok(vec![]);
@@ -822,15 +966,23 @@ pub fn reconcile_roots(
         )?;
     }
     for ((root_key, provider), root) in wanted {
-        let folder = std::fs::canonicalize(&root.folder).unwrap_or_else(|_| root.folder.clone());
-        let mut place = Sha256::new();
-        place.update(b"kuvo-code usage place v2\n");
-        place.update(computer);
-        place.update(b"\n");
-        place.update(folder.as_os_str().as_encoded_bytes());
-        let place = hex::encode(&place.finalize()[..8]);
+        let place = place_of(computer, &root.folder, None);
         tx.execute("INSERT INTO native_root VALUES(?,?,?,?,?,?) ON CONFLICT(root,provider) DO UPDATE SET label=excluded.label,place=excluded.place",params![root_key,provider,root.kind.name(),root.label,now,place])?;
     }
     tx.commit()?;
     Ok(sessions)
+}
+
+pub fn place_of(computer: &str, folder: &Path, part: Option<&str>) -> String {
+    let folder = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
+    let mut hash = Sha256::new();
+    hash.update(b"kuvo-code usage place v2\n");
+    hash.update(computer);
+    hash.update(b"\n");
+    hash.update(folder.as_os_str().as_encoded_bytes());
+    if let Some(part) = part {
+        hash.update(b"\n");
+        hash.update(part);
+    }
+    hex::encode(&hash.finalize()[..8])
 }

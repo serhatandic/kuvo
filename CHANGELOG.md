@@ -16,6 +16,21 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Add over SSH copies the settings, keys and sign-ins you choose before enrolling the computer. If enrollment fails after the copy, it removes the copied keys and sign-ins.
 - Uninstalling a computer added over SSH keeps its wipe pending until that computer confirms its data was erased.
 - Removing a computer still revokes its access if its SSH address can’t be cleared. Retrying clears the address when the list is writable again.
+- Rust computers offer ChatGPT reset credits through the engine’s saved sign-in, settle an older uncertain reset before a later one, and read native Windows Antigravity quotas from the computer’s own running profile. Codex history uses the live log’s tier before archived copies and uses the previous box’s cost arithmetic.
+
+- Rust computers can ask the computer holding a plan sign-in to spend a reset, share Always Allow decisions, and retry without spending twice. Antigravity can read its own running profile’s local quotas; copied billed history is counted once.
+
+- Usage history includes Cursor account-wide events and ChatGPT subscription calls made through the engine; Claude file-owned accounts can spend reset grants, and usage warnings do not repeat when another computer takes over the same window.
+
+- Usage history and Insights combine saved readings from your other computers, keep them when a computer is away, and group the same model under one name. Insights opens from compact indexed totals instead of re-reading each call.
+
+- A Rust computer on its own no longer contacts the relay to renew a setup lease or number its Work Queue; adding another computer establishes the shared number reservation first.
+
+- Rust computers keep sessions and followed Settings pages current from changes, and do less background work when no update, wake-up or peer letter is due.
+
+- Marketplace tools now follow changes to installations, settings and the vault instead of rechecking every few seconds.
+
+- Rust computers send changed Library and Outputs lists to one another without repeatedly sending unchanged lists.
 - Usage and Insights stay current while native agent databases are open, without starting the engine just to read its history or OpenCode Go account. Saved usage is repriced when its price catalog changes.
 
 - Opening the app on a Rust computer no longer starts unused coding agents to list their accounts and models. Agent update checks are daily or on demand, and unchanged programs are not run to read their versions.

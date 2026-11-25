@@ -580,8 +580,24 @@ impl Owner {
                     if !self.work_queue_parts.receive(*key, &mut envelope) {
                         return Ok(());
                     }
-                    if is_memory(&envelope) {
-                        envelope.0.retain(|field, _| field == "workQueue");
+                    let release_part = envelope
+                        .0
+                        .keys()
+                        .all(|field| matches!(field.as_str(), "at" | "release"))
+                        && envelope.0.get("release").is_some_and(|release| {
+                            release.get("part").and_then(|part| part.as_u64()).is_some()
+                                || release.get("i").and_then(|index| index.as_u64()).is_some()
+                                    && release.get("d").and_then(|data| data.as_str()).is_some()
+                        });
+                    let memory = is_memory(&envelope);
+                    if memory || release_part {
+                        if memory {
+                            envelope.0.retain(|field, _| field == "workQueue");
+                        }
+                        // A release header/want already tells the peer projection who
+                        // is present. Its bounded transfer windows are consumed by
+                        // the authenticated mail subscribers, not the lossless
+                        // durable peer-list queue for every data chunk.
                         let _ = self.observations.send(Arc::new(RelayEvent::Mail {
                             from,
                             key: *key,

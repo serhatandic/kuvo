@@ -16,9 +16,9 @@ test("two computers deliver addressed drafts and recover the original scoped rec
   const primary = listing.connect(await listing.start().ready());
   const setup = await primary("GET", "kuvo/setup");
   assert.equal(setup.status, 200, setup.text);
-  await until(() => leases.leaseFor(setup.json.setup), "The listing computer did not claim its setup.");
   const invitation = await primary("POST", "kuvo/computers/add/code", {}, { "x-kuvo-from": "mac" });
   assert.equal(invitation.status, 201, invitation.text);
+  await until(() => leases.leaseFor(setup.json.setup), "The listing computer did not claim its setup.");
   const joined = await owner.join(invitation.json.code);
   assert.equal(joined.code, 0, joined.log);
   const target = owner.connect(await owner.start().ready());

@@ -30,7 +30,7 @@ const ALL: [Approval; 3] = [
 /// The most pages of 200 conversations the round reads: half a million.
 const MOST_PAGES: usize = 2500;
 const WAIT: Duration = Duration::from_secs(10);
-const LOOK: Duration = Duration::from_secs(2);
+const RETRY: Duration = Duration::from_secs(2);
 
 fn words(approval: Approval) -> (&'static str, &'static str) {
     match approval {
@@ -419,10 +419,19 @@ impl ApprovalService {
             let mut sessions = service.sessions.clone();
             let mut last: Option<String> = None;
             let mut settings_made: Option<String> = None;
+            let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+            files.set_files(vec![
+                service.approvals.file.clone(),
+                service.approvals.settings.clone(),
+            ]);
             loop {
-                // (A round at most every two seconds, the first two seconds in, as TypeScript's
-                // interval runs them: what a client does as the engine starts goes first.)
-                tokio::time::sleep(LOOK).await;
+                let mut retry = false;
+                // Adopt after a short, one-shot grace once an engine or settings event arrives.
+                // The client's initial session note writes go first, as they did in the old round.
+                let running = matches!(&*states.borrow(), kuvo_engine::State::Running { .. });
+                if running {
+                    tokio::time::sleep(RETRY).await;
+                }
                 let started = match &*states.borrow_and_update() {
                     kuvo_engine::State::Running { started, .. } => Some(format!("{started:?}")),
                     _ => None,
@@ -440,26 +449,17 @@ impl ApprovalService {
                         {
                             last = Some(now);
                             settings_made = Some(settings);
+                        } else if changed {
+                            retry = true;
                         }
                         service.adopt_pending(&engine).await;
                     }
                 }
-                // (Looked at again as the engine or its list changes, and every two seconds for
-                // the switch and Settings › Permissions, which needs no engine to read.)
-                loop {
-                    tokio::select! {
-                        changed = states.changed() => if changed.is_err() { return } else { break },
-                        _ = sessions.changed() => break,
-                        () = tokio::time::sleep(LOOK) => {
-                            let now = format!("{} ", service.approvals.full_access_allowed());
-                            let settings = json!(service.approvals.permissions_here()).to_string();
-                            if last.as_ref().is_some_and(|last| !last.starts_with(&now))
-                                || settings_made.as_ref().is_some_and(|made| made != &settings)
-                            {
-                                break;
-                            }
-                        }
-                    }
+                tokio::select! {
+                    changed = states.changed() => if changed.is_err() { return },
+                    changed = sessions.changed() => if !changed { return },
+                    _ = files.changed() => {},
+                    _ = tokio::time::sleep(RETRY), if retry => {},
                 }
             }
         })

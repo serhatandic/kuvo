@@ -261,6 +261,12 @@ pub(super) struct Forwarding {
     completed: HashMap<(String, String), Cached>,
 }
 
+impl Forwarding {
+    pub(super) fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+}
+
 struct Cached {
     digest: String,
     expires: Instant,

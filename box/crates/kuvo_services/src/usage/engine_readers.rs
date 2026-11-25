@@ -8,7 +8,7 @@ use super::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jiff::{Span, Timestamp, tz::TimeZone};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -77,6 +77,88 @@ impl SignIn {
             self.access.as_deref().or(self.key.as_deref())
         }
     }
+}
+fn reset_sign_in(credentials: Value, account: &Account, now: u64) -> Option<SignIn> {
+    let list = credentials
+        .as_array()
+        .or_else(|| credentials["data"].as_array())?;
+    let expected = account.identity.as_ref()?;
+    list.iter()
+        .filter_map(|c| serde_json::from_value::<Credential>(c.clone()).ok())
+        .find(|c| {
+            c.active
+                && c.integration_id == "openai"
+                && c.value.oauth()
+                && c.value.expires.is_none_or(|at| at > now)
+                && identity(Integration::Openai, &c.value)
+                    .is_some_and(|id| Account::identity_of(&id) == *expected)
+        })
+        .map(|c| c.value)
+}
+fn reset_headers(sign: &SignIn) -> Option<Vec<(&'static str, String)>> {
+    let token = sign.access.as_deref()?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let mut headers = vec![
+        ("Authorization", format!("Bearer {token}")),
+        ("Accept", "application/json".into()),
+        ("Content-Type", "application/json".into()),
+        ("OpenAI-Beta", "codex-1".into()),
+        ("originator", "Codex Desktop".into()),
+    ];
+    if let Some(id) = sign.metadata["accountID"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
+        headers.push(("ChatGPT-Account-Id", id.into()));
+    }
+    Some(headers)
+}
+fn target_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 100
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+fn reset_time(v: &Value) -> Option<u64> {
+    v.as_f64()
+        .filter(|n| n.is_finite() && *n > 0.)
+        .map(|n| {
+            if n < 1e12 {
+                (n * 1000.) as u64
+            } else {
+                n as u64
+            }
+        })
+        .or_else(|| date(v))
+}
+fn available_credit(c: &Value) -> bool {
+    c.is_object() && (c["status"].is_null() || c["status"] == "available")
+}
+fn reset_extra(v: &Value, now: u64) -> Option<Extra> {
+    let count = v["available_count"]
+        .as_f64()
+        .filter(|n| n.is_finite() && *n >= 0.)?
+        .floor() as u32;
+    let mut expiries = v["credits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| available_credit(c))
+        .filter_map(|c| reset_time(&c["expires_at"]))
+        .filter(|at| *at > now)
+        .collect::<Vec<_>>();
+    expiries.sort();
+    expiries.truncate(50);
+    Some(Extra::Resets {
+        id: "resets".into(),
+        name: "Rate Limit Resets".into(),
+        count,
+        expiries,
+        refills: vec![],
+        usable: count > 0,
+    })
 }
 pub(super) fn fingerprint(secret: &str) -> String {
     hex::encode(&Sha256::digest(secret.as_bytes())[..8])
@@ -187,6 +269,8 @@ pub struct ReadBatch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Endpoint {
     Chatgpt,
+    ChatgptResets,
+    ChatgptConsume,
     Grok,
     Copilot,
     GithubOrgs,
@@ -200,6 +284,10 @@ impl Endpoint {
     fn url(self) -> &'static str {
         match self {
             Self::Chatgpt => "https://chatgpt.com/backend-api/wham/usage",
+            Self::ChatgptResets => "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+            Self::ChatgptConsume => {
+                "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
+            }
             Self::Grok => "https://cli-chat-proxy.grok.com/v1/billing?format=credits",
             Self::Copilot => "https://api.github.com/copilot_internal/user",
             Self::GithubOrgs => "https://api.github.com/user/orgs?per_page=100",
@@ -212,7 +300,7 @@ impl Endpoint {
     }
     fn maker(self) -> &'static str {
         match self {
-            Self::Chatgpt => "ChatGPT",
+            Self::Chatgpt | Self::ChatgptResets | Self::ChatgptConsume => "ChatGPT",
             Self::Grok => "xAI",
             Self::Copilot | Self::GithubOrgs | Self::GithubBilling => "GitHub",
             Self::OpenrouterKey | Self::OpenrouterCredits => "OpenRouter",
@@ -223,6 +311,8 @@ impl Endpoint {
     fn test_name(self) -> &'static str {
         match self {
             Self::Chatgpt => "chatgpt",
+            Self::ChatgptResets => "chatgpt/resets",
+            Self::ChatgptConsume => "chatgpt/resets/consume",
             Self::Grok => "grok",
             Self::Copilot => "copilot",
             Self::GithubOrgs => "githubOrgs",
@@ -476,7 +566,23 @@ impl Reader {
                     headers.push(("ChatGPT-Account-Id", id.to_owned()));
                 }
                 let body = self.get(Endpoint::Chatgpt, None, headers, now).await?;
-                Ok(chatgpt(&body, now))
+                let (windows, mut facts, who) = chatgpt(&body, now);
+                if body["rate_limit_reset_credits"]["available_count"]
+                    .as_f64()
+                    .is_some_and(|n| n > 0.)
+                {
+                    if let Some(headers) = reset_headers(sign_in) {
+                        if let Ok(list) =
+                            self.get(Endpoint::ChatgptResets, None, headers, now).await
+                        {
+                            if let Some(extra) = reset_extra(&list, now) {
+                                facts.extras.retain(|e| !matches!(e, Extra::Resets { .. }));
+                                facts.extras.push(extra);
+                            }
+                        }
+                    }
+                }
+                Ok((windows, facts, who))
             }
             Integration::Xai => {
                 let mut headers = auth();
@@ -531,6 +637,98 @@ impl Reader {
             }
             Integration::Zai => zai(&self.get(Endpoint::Zai, None, auth(), now).await?, now),
             Integration::Go => go(&self.get(Endpoint::Go, None, auth(), now).await?, now),
+        }
+    }
+    pub async fn choose_reset(
+        &self,
+        credentials: Value,
+        account: &Account,
+        now: u64,
+    ) -> Result<String, super::resets::Outcome> {
+        use super::resets::Outcome;
+        let sign = reset_sign_in(credentials, account, now).ok_or(Outcome::NoReset)?;
+        let headers = reset_headers(&sign).ok_or(Outcome::NoReset)?;
+        let list = self
+            .get(Endpoint::ChatgptResets, None, headers, now)
+            .await
+            .map_err(|_| Outcome::Failed)?;
+        let mut credits = list["credits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| {
+                available_credit(c) && reset_time(&c["expires_at"]).is_none_or(|at| at > now)
+            })
+            .filter_map(|c| {
+                let id = c["id"].as_str()?.trim();
+                (!id.is_empty()).then_some((reset_time(&c["expires_at"]).unwrap_or(u64::MAX), id))
+            })
+            .collect::<Vec<_>>();
+        credits.sort_by_key(|(at, _)| *at);
+        let (_, target) = credits.first().ok_or(Outcome::NoReset)?;
+        if !target_id(target) {
+            return Err(Outcome::Failed);
+        }
+        Ok((*target).to_owned())
+    }
+    pub async fn consume_reset(
+        &self,
+        credentials: Value,
+        account: &Account,
+        request: &str,
+        target: &str,
+        now: u64,
+    ) -> super::resets::Completion {
+        use super::resets::{Completion, Outcome};
+        if !target_id(target)
+            || request.is_empty()
+            || request.len() > 64
+            || !request
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        {
+            return Outcome::Failed.into();
+        }
+        let Some(sign) = reset_sign_in(credentials, account, now) else {
+            return Outcome::NoReset.into();
+        };
+        let Some(headers) = reset_headers(&sign) else {
+            return Outcome::NoReset.into();
+        };
+        let mut call = self
+            .client
+            .post(self.url(Endpoint::ChatgptConsume))
+            .timeout(std::time::Duration::from_secs(25))
+            .json(&json!({"redeem_request_id":request,"credit_id":target}));
+        for (key, value) in headers {
+            call = call.header(key, value);
+        }
+        let Ok(reply) = call.send().await else {
+            return Completion::maker(Outcome::Unknown);
+        };
+        let status = reply.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Completion::maker(if status >= 500 || matches!(status, 401 | 403 | 429) {
+                Outcome::Unknown
+            } else {
+                Outcome::Failed
+            });
+        }
+        match reply
+            .json::<Value>()
+            .await
+            .ok()
+            .and_then(|v| v["code"].as_str().map(str::to_owned))
+            .as_deref()
+        {
+            Some("reset") => Completion::maker(Outcome::Reset),
+            Some("already_redeemed") => Completion {
+                already: true,
+                ..Completion::maker(Outcome::Reset)
+            },
+            Some("nothing_to_reset") => Completion::maker(Outcome::NothingToReset),
+            Some("no_credit") => Completion::maker(Outcome::NoReset),
+            _ => Completion::maker(Outcome::Unknown),
         }
     }
     async fn organization(&self, secret: &str, now: u64) -> Vec<Extra> {
@@ -667,25 +865,21 @@ fn chatgpt(body: &Value, now: u64) -> (Vec<Window>, Facts, Option<String>) {
         }
     }
     let mut extras = vec![];
-    if body["credits"]["has_credits"] == true
-        && let Some(left) = number(&body["credits"]["balance"])
-    {
-        extras.push(Extra::Left {
-            id: "credits".into(),
-            name: "Extra Usage".into(),
-            amount: left.max(0.0).floor(),
-            unit: Unit::Credits,
-        });
+    let credits = &body["credits"];
+    if credits.is_object() && credits["unlimited"] != true {
+        if let Some(left) = number(&credits["balance"]).or_else(|| {
+            (credits["has_credits"] == false || credits["hasCredits"] == false).then_some(0.)
+        }) {
+            extras.push(Extra::Left {
+                id: "credits".into(),
+                name: "Extra Usage".into(),
+                amount: left.max(0.).floor(),
+                unit: Unit::Credits,
+            });
+        }
     }
-    if let Some(count) = number(&body["rate_limit_reset_credits"]["available_count"]) {
-        extras.push(Extra::Resets {
-            id: "resets".into(),
-            name: "Rate Limit Resets".into(),
-            count: count.max(0.0) as u32,
-            expiries: vec![],
-            refills: vec![],
-            usable: false,
-        });
+    if let Some(extra) = reset_extra(&body["rate_limit_reset_credits"], now) {
+        extras.push(extra);
     }
     (
         windows,

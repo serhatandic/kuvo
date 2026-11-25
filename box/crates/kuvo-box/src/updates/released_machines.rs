@@ -29,6 +29,14 @@ impl Checks {
         }
     }
 
+    pub fn deadline(&self) -> Instant {
+        if self.task.is_some() {
+            Instant::now() + Duration::from_secs(2)
+        } else {
+            self.next
+        }
+    }
+
     pub async fn tick(
         &mut self,
         home: &Home,

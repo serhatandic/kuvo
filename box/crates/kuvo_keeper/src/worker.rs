@@ -144,6 +144,11 @@ impl Worker {
                 next: Some(next),
             })?,
         )?;
+        #[cfg(windows)]
+        if let Ok(endpoint) = stop_endpoint(run) {
+            // A connection is only a wake-up; the resident still verifies the durable identity.
+            let _ = endpoint.connect().await;
+        }
         let result = tokio::task::spawn_blocking(move || match &mut self.process {
             Process::Child(child) => child.stop(GRACE, |_| {}).map(|_| ()),
             Process::Adopted(process) => {
@@ -204,10 +209,13 @@ pub async fn wait_for_stop(home: &Path) {
     let Ok(Some(identity)) = ProcessIdentity::read(std::process::id()) else {
         return std::future::pending().await;
     };
-    let path = home.join("run/keeper-stop");
-    let mut clock = tokio::time::interval(Duration::from_millis(250));
+    let run = home.join("run");
+    let path = run.join("keeper-stop");
+    let mut files = kuvo_os::watch::FileSet::new(kuvo_os::watch::WatchHub::default());
+    files.set_files(vec![path.clone(), run.join("socket.key")]);
+    #[cfg(windows)]
+    let mut listener = None;
     loop {
-        clock.tick().await;
         if files::read(&path)
             .ok()
             .flatten()
@@ -217,12 +225,69 @@ pub async fn wait_for_stop(home: &Path) {
         {
             return;
         }
+        #[cfg(windows)]
+        {
+            if listener.is_none() {
+                listener = stop_endpoint(&run)
+                    .and_then(|endpoint| endpoint.bind())
+                    .ok();
+            }
+            tokio::select! {
+                _ = files.changed() => {},
+                _ = async { match &mut listener { Some(listener) => { let _ = listener.accept().await; }, None => std::future::pending().await } } => {},
+            }
+        }
+        #[cfg(not(windows))]
+        files.changed().await;
     }
+}
+
+#[cfg(windows)]
+fn stop_endpoint(run: &Path) -> io::Result<kuvo_os::ipc::Endpoint> {
+    let mut key = [0; 32];
+    let text = fs::read_to_string(run.join("socket.key"))?;
+    hex::decode_to_slice(text.trim(), &mut key).map_err(io::Error::other)?;
+    kuvo_os::ipc::Endpoint::new(
+        &run.join("keeper-stop.sock"),
+        &key,
+        kuvo_os::ipc::Channel::Keeper,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stop_notification_only_answers_the_named_resident() {
+        let home = tempfile::tempdir().unwrap();
+        let run = home.path().join("run");
+        fs::create_dir_all(&run).unwrap();
+        let identity = ProcessIdentity::read(std::process::id()).unwrap().unwrap();
+        let other = ProcessIdentity {
+            start_identity: "other".into(),
+            ..identity.clone()
+        };
+        files::write_secret(
+            &run.join("keeper-stop"),
+            &serde_json::to_vec(&other).unwrap(),
+        )
+        .unwrap();
+        let mut waiting = Box::pin(wait_for_stop(home.path()));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut waiting)
+                .await
+                .is_err()
+        );
+        files::write_secret(
+            &run.join("keeper-stop"),
+            &serde_json::to_vec(&identity).unwrap(),
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn a_resident_hands_its_agents_over_only_when_another_comes_after_it() {

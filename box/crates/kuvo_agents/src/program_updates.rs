@@ -161,6 +161,15 @@ fn check_file(folder: &Path, executable: &Path) -> PathBuf {
     ))
 }
 
+/// An already-read executable version, without starting the program or checking its maker.
+pub fn kept_installed_version(executable: &Path, folder: &Path) -> Option<String> {
+    let stamp = file_stamp(executable)?;
+    let before: Checked =
+        serde_json::from_slice(&std::fs::read(check_file(folder, executable)).ok()?).ok()?;
+    (before.file == stamp)
+        .then_some(before.value.installed)
+        .flatten()
+}
 /// What you have, the newest, and how to update. The installed version is read only when its
 /// file changes. Remote checks are daily, or when the agents page explicitly asks for fresh data.
 pub async fn maintenance(definition: &Definition, fresh: bool, folder: &Path) -> Maintenance {

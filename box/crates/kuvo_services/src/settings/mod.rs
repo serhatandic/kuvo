@@ -20,6 +20,7 @@ use std::{io, path::PathBuf, sync::Arc, time::Duration};
 
 use http::{Method, StatusCode};
 use http_body_util::BodyExt;
+use kuvo_os::watch::{FileSet, WatchHub};
 use kuvo_protocol::{JsonStatus, RouteSpec, check_shape, routes::*};
 use kuvo_server::{
     Access, DispatchRequest, Dispatcher, JsonLine, Refusal, Registry, RouteCall, RouteReply,
@@ -109,49 +110,158 @@ struct Settings {
     vault: Arc<crate::vault::Resident>,
     peers: kuvo_peers::setup_lists::Reader,
     engine: kuvo_engine::Engine,
+    sessions: kuvo_engine::LocalSessions,
+    agent_feed: Option<kuvo_agents::feed::Feed>,
+    watches: WatchHub,
     archive_forward: Arc<dyn ArchiveForward>,
     turns: [Mutex<()>; Section::ALL.len()],
     changed: watch::Sender<u64>,
     measurement: Arc<sizes::Measurement>,
 }
 
-/// File-backed pages only need new projections when the file identity changes.
-/// Dynamic pages keep their existing one-second look; Agents also has a
-/// periodic read for its running engine and changes within the import folder.
-#[derive(PartialEq, Eq)]
-struct Look {
-    files: Vec<Option<kuvo_store::files::FileStamp>>,
-    period: i64,
+impl Settings {
+    /// A followed settings page owns only the file watches and events it needs. Files written by
+    /// a different route or an external editor count too; an idle page never re-reads them.
+    fn watch_files(&self, section: Section, set: &mut FileSet) {
+        let paths = match section {
+            Section::Clock => vec![],
+            Section::Conversations => vec!["box/conversation-compaction.json"],
+            Section::Git => vec![],
+            Section::Permissions => vec!["box/approval.json", "box/sandbox.json"],
+            Section::Agents => vec!["run/engine.json"],
+            Section::Browser => vec!["browser/settings.json"],
+            Section::Worktrees => vec![
+                "box/work.json",
+                "box/worktrees.json",
+                "box/projects.json",
+                "run/engine.json",
+            ],
+            Section::Storage => vec!["run/storage-sizes.json", "artifacts/settings.json"],
+            Section::Computer => vec![
+                "run/engine.json",
+                "run/serve.json",
+                "run/stopped",
+                "run/off",
+                "run/paused",
+                "box/agents-update-themselves.json",
+            ],
+            Section::Archived => vec!["run/stopped", "run/engine.json"],
+            Section::Vault => vec![
+                "box/vault/items.json",
+                "box/vault/grants.json",
+                "box/vault/paused.json",
+                "box/vault/activity.jsonl",
+                "box/vault/key.json",
+            ],
+            Section::Mcp => vec![
+                "box/marketplace/standalone-v1.json",
+                "box/vault/items.json",
+                "run/engine.json",
+            ],
+            Section::CustomAuto => vec!["agents/auto.json", "box/models.json"],
+            Section::Skills => vec![
+                "box/marketplace/standalone-v1.json",
+                "box/marketplace/removed-skills.json",
+            ],
+        };
+        let mut files = paths
+            .into_iter()
+            .map(|path| self.home.join(path))
+            .collect::<Vec<_>>();
+        let mut folders = Vec::new();
+        if matches!(
+            section,
+            Section::Git
+                | Section::Permissions
+                | Section::Agents
+                | Section::Worktrees
+                | Section::Mcp
+                | Section::Skills
+        ) {
+            files.push(self.config_file.clone());
+        }
+        if section == Section::Agents {
+            folders.push((self.account.join(".claude/agents"), false));
+        }
+        if section == Section::Archived {
+            folders.push((self.home.join("run/moves"), false));
+        }
+        if section == Section::Storage {
+            folders.push((self.home.join("artifacts/log"), false));
+        }
+        if section == Section::Computer {
+            folders.push((self.home.join("updates"), false));
+        }
+        if section == Section::Vault {
+            let bots = self.home.join("bots");
+            folders.push((bots.clone(), false));
+            for entry in std::fs::read_dir(bots).into_iter().flatten().flatten() {
+                files.push(entry.path().join("bot.json"));
+            }
+        }
+        if section == Section::Skills {
+            let store = crate::skills::store::SkillStore::for_home(&self.home, &self.account);
+            folders.extend([
+                (store.skills_dir, true),
+                (store.trash_dir, false),
+                (self.account.join(".claude/skills"), true),
+            ]);
+        }
+        set.set_targets(files, folders);
+    }
 }
 
-impl Settings {
-    fn look(&self, section: Section) -> Option<Look> {
-        let mut period = 0;
-        let paths = match section {
-            Section::Conversations => vec![self.home.join("box/conversation-compaction.json")],
-            Section::Git => vec![self.config_file.clone()],
-            Section::Permissions => vec![
-                self.config_file.clone(),
-                self.home.join("box/approval.json"),
-            ],
-            Section::Agents => {
-                period = jiff::Timestamp::now().as_millisecond() / 10_000;
-                vec![
-                    self.config_file.clone(),
-                    self.account.join(".claude/agents"),
-                ]
-            }
-            _ => return None,
-        };
-        let files = paths
-            .iter()
-            .map(|path| {
-                let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-                kuvo_store::files::file_stamp(&target).ok()
-            })
-            .collect::<Option<_>>()?;
-        Some(Look { files, period })
+async fn watched<T: Clone>(source: &mut Option<watch::Receiver<T>>) {
+    if let Some(r) = source {
+        if r.changed().await.is_ok() {
+            return;
+        }
+        *source = None;
     }
+    std::future::pending().await
+}
+async fn model_events(
+    source: &mut Option<tokio::sync::broadcast::Receiver<Arc<kuvo_engine::EngineEvent>>>,
+) {
+    if let Some(r) = source {
+        loop {
+            match r.recv().await {
+                Ok(event)
+                    if event.kind.starts_with("model.")
+                        || event.kind.starts_with("integration.") =>
+                {
+                    return;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+        *source = None;
+    }
+    std::future::pending().await
+}
+async fn agent_events(
+    source: &mut Option<tokio::sync::broadcast::Receiver<kuvo_agents::feed::FeedEvent>>,
+) {
+    if let Some(r) = source {
+        loop {
+            match r.recv().await {
+                Ok(event)
+                    if event.kind.starts_with("model.")
+                        || event.kind.starts_with("integration.")
+                        || event.kind == "kuvo.agent.account.changed" =>
+                {
+                    return;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+        *source = None;
+    }
+    std::future::pending().await
 }
 
 #[derive(Clone)]
@@ -502,6 +612,8 @@ pub fn register(
     vault: Arc<crate::vault::Resident>,
     peers: kuvo_peers::setup_lists::Reader,
     engine: kuvo_engine::Engine,
+    sessions: kuvo_engine::LocalSessions,
+    agent_feed: Option<kuvo_agents::feed::Feed>,
     archive_forward: Arc<dyn ArchiveForward>,
 ) -> ArchiveHandle {
     claude::register(routes, home.clone(), account.clone(), is_mac);
@@ -515,6 +627,9 @@ pub fn register(
         vault,
         peers,
         engine,
+        sessions,
+        agent_feed,
+        watches: WatchHub::default(),
         archive_forward,
         turns: std::array::from_fn(|_| Mutex::new(())),
         changed: watch::channel(0).0,
@@ -540,26 +655,39 @@ pub fn register(
         async move {
             let section = Section::parse(&decoded(call.param("section")))?;
             let mut changed = ctx.settings.changed.subscribe();
+            let mut files = FileSet::new(ctx.settings.watches.clone());
+            let mut peer = matches!(section, Section::Archived | Section::Computer | Section::CustomAuto | Section::Vault).then(|| ctx.settings.peers.clone());
+            let mut setup = matches!(section, Section::Clock | Section::Archived | Section::Computer | Section::Mcp).then(|| ctx.settings.setup.clone());
+            let mut sessions = matches!(section, Section::Archived | Section::Worktrees).then(|| ctx.settings.sessions.clone());
+            let mut engine = matches!(section, Section::Agents | Section::Computer | Section::Worktrees | Section::Mcp | Section::CustomAuto).then(|| ctx.settings.engine.states());
+            let mut models = matches!(section, Section::CustomAuto | Section::Agents | Section::Mcp).then(|| ctx.settings.engine.events());
+            let mut agent = matches!(section, Section::CustomAuto | Section::Agents).then(|| ctx.settings.agent_feed.as_ref().map(|feed| feed.subscribe())).flatten();
+            let mut vault = matches!(section, Section::Vault | Section::Mcp).then(|| ctx.settings.vault.changes());
+            let mut asks = (section == Section::Vault).then(|| ctx.settings.vault.session_waiting());
+            let mut sizes = (section == Section::Storage).then(|| ctx.settings.measurement.changes());
             Ok(RouteReply::ndjson::<200>(async_stream::stream! {
                 let mut previous = None;
-                let mut look = None;
-                let mut force = true;
                 loop {
-                    let next = ctx.settings.look(section);
-                    if force || next.is_none() || look != next {
-                        let page = ctx.read(section).await;
-                        if previous.as_ref() != Some(&page) {
-                            let line = serde_json::from_value(page.clone()).map_err(io::Error::other).and_then(JsonLine::new);
-                            previous = Some(page);
-                            yield line;
-                        }
+                    ctx.settings.watch_files(section, &mut files);
+                    let page = ctx.read(section).await;
+                    if previous.as_ref() != Some(&page) {
+                        let line = serde_json::from_value(page.clone()).map_err(io::Error::other).and_then(JsonLine::new);
+                        previous = Some(page);
+                        yield line;
                     }
-                    look = next;
-                    force = false;
                     tokio::select! {
                         _ = ctx.cancel.cancelled() => break,
-                        result = changed.changed() => if result.is_err() { break; } else { force = true; },
-                        _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                        result = changed.changed() => if result.is_err() { break; },
+                        _ = files.changed() => {},
+                        _ = watched(&mut engine) => {},
+                        _ = watched(&mut vault) => {},
+                        _ = watched(&mut asks) => {},
+                        _ = watched(&mut sizes) => {},
+                        _ = model_events(&mut models) => {},
+                        _ = agent_events(&mut agent) => {},
+                        result = async { match &mut setup { Some(s) => s.changed().await, None => std::future::pending().await } } => if !result { setup = None; },
+                        result = async { match &mut peer { Some(p) => p.changed().await.is_ok(), None => std::future::pending().await } } => if !result { peer = None; },
+                        result = async { match &mut sessions { Some(s) => s.changed().await, None => std::future::pending().await } } => if !result { sessions = None; },
                     }
                 }
             }))

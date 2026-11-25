@@ -189,7 +189,6 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   });
   const ask = main.connect(await main.start().ready());
   const setup = (await ask("GET", "kuvo/setup")).json.setup;
-  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   const headers = { "x-kuvo-from": "mac" };
   const page = () => ask("GET", "kuvo/computers/add");
   assert.ok(fs.statSync(path.join(main.home, "bin", "kuvo-box")).isFile(), "The installed test release is in the settled home.");
@@ -293,6 +292,7 @@ test("SSH Add trusts the selected host, copies the running Rust release and star
   assert.equal(fs.existsSync(path.join(remote, "box/box/keys/KUVO_KEY_UNSELECTED")), false);
   assert.equal(fs.existsSync(path.join(remote, "box/run/.ssh-fresh-add")), false);
   assert.equal(fs.readFileSync(oldCache, "utf8"), "cache from an earlier install");
+  await until(() => leases.leaseFor(setup), "The main computer did not claim a relay lease.");
   assert.equal(fs.readFileSync(path.join(main.home, "ssh", "known_hosts"), "utf8"), `lab ssh-ed25519 ${key}\n`);
   assert.deepEqual((await page()).json.hosts, ["second"]);
   const identity = fs.readFileSync(path.join(remote, "box", "machine-id"), "utf8");
