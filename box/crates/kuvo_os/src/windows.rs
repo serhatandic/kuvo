@@ -23,8 +23,8 @@ use windows_sys::Win32::{
         },
         CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, GetAce, GetSecurityDescriptorControl,
         GetSecurityDescriptorDacl, GetTokenInformation, OBJECT_INHERIT_ACE,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
-        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED,
+        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
     },
     Storage::FileSystem::{
         CreateDirectoryW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -219,21 +219,13 @@ pub fn private_folder(path: &Path) -> io::Result<()> {
         .open(path)?;
     let sid = user_sid()?;
     let security = Security::of(&folder)?;
-    // As root may on Unix, SYSTEM and Administrators can read anything here anyway.
-    if ![sid.as_str(), "S-1-5-18", "S-1-5-32-544"].contains(&security.owner.as_str()) {
+    if !security.owned_here(&sid) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "the folder belongs to another account",
         ));
     }
-    let open = security.aces.as_ref().is_none_or(|aces| {
-        aces.iter().any(|ace| match ace.kind {
-            ACCESS_ALLOWED_ACE_TYPE => ace.sid != sid,
-            ACCESS_DENIED_ACE_TYPE => false,
-            _ => true,
-        })
-    });
-    if !open {
+    if security.closed_to_others(&sid) {
         return Ok(());
     }
     let descriptor = SecurityDescriptor::parse(&format!("D:P(A;OICI;FA;;;{sid})"))?;
@@ -263,6 +255,18 @@ pub fn private_folder(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Whether this file or folder itself (not a link's target) is owned here and open to this
+/// account only, as `private_folder` leaves one.
+pub fn is_private(path: &Path) -> io::Result<bool> {
+    let file = OpenOptions::new()
+        .access_mode(READ_CONTROL | FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let sid = user_sid()?;
+    let security = Security::of(&file)?;
+    Ok(security.owned_here(&sid) && security.closed_to_others(&sid))
+}
+
 struct Ace {
     kind: u32,
     flags: u32,
@@ -278,6 +282,21 @@ struct Security {
 }
 
 impl Security {
+    /// As root may on Unix, SYSTEM and Administrators can read anything here anyway.
+    fn owned_here(&self, sid: &str) -> bool {
+        [sid, "S-1-5-18", "S-1-5-32-544"].contains(&self.owner.as_str())
+    }
+
+    fn closed_to_others(&self, sid: &str) -> bool {
+        self.aces.as_ref().is_some_and(|aces| {
+            aces.iter().all(|ace| match ace.kind {
+                ACCESS_ALLOWED_ACE_TYPE => ace.sid == sid,
+                ACCESS_DENIED_ACE_TYPE => true,
+                _ => false,
+            })
+        })
+    }
+
     fn of(file: &File) -> io::Result<Self> {
         let (mut descriptor, mut owner, mut acl) = (null_mut(), null_mut(), null_mut());
         // SAFETY: the file is open with READ_CONTROL. All supplied outputs are writable.
