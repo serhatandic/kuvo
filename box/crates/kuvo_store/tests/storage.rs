@@ -473,7 +473,7 @@ fn declarations_cover_each_required_kind_and_family_with_queue_specific_authorit
         .flat_map(|row| row.families.iter().copied())
         .collect();
     assert_eq!(families, inventory);
-    assert_eq!(families.len(), 55);
+    assert_eq!(families.len(), 56);
 
     for kind in [
         "queueItems",

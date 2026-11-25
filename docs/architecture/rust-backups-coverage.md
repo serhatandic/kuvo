@@ -93,5 +93,5 @@ identities and startup state for Insights, artifacts, vault, the Work Queue
 and the engine plugin. The box workspace compile check passed.
 
 The focused golden checks use a scratch home from `generateCurrent`. The
-all-family oracle currently stops on the missing `Retained work after unlink`
-table entry, owned by 2.3.
+`Retained work after unlink` family now has its machine-local declaration
+(`releasedWork`), so the all-family oracle no longer stops on it.

@@ -18,6 +18,7 @@ const REQUIRED_KINDS = [
   "computerRemovalDelivery",
   "directoryWipeReceipts",
   "computerWipePreparation",
+  "releasedWork",
   "diskBackupArchives",
   "sshBackupArchives",
   "relayBackupArchives",
