@@ -940,3 +940,47 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 - **A bot's conversation open as its servers go** is connected to this computer's own server two
   seconds later, as there; proven only by reading.
+
+## 5.1d-2 — the bots of your other computers
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `bots::elsewhere::bots_elsewhere`, `Elsewhere::said`: `elsewhere` in `kuvo/bots` (`bots.elsewhere`), each bot once: the computer that told this box last, one that lives here (not moving away) this box's own, one whose move away from here is finishing the computer's it went to; away with when it was last heard from, or switching to a new release; what it's doing as that computer's lists said, for the same conversation; left out without a link of its own | `bots/elsewhere.ts` `botsElsewhere`, `elsewhereSaid` (held and refused come with 5.1d-3); `areas/bots.ts` `botsSaid` |
+| `list::delete_lines`: what deleting one there takes, by where that computer said its deleted bots' folders go (the Trash, Kuvo Code's trash folder, or both ways where it hasn't said), with no count of wake-ups | `bots/deletes.ts` `whatDeleteTakes` |
+| `View::bots_told` (kuvo_peers): each of your computers' told bots, by computer, with when it was heard from, its standing and its lists' bot activity; `moves::bots_gone_to` | `peers/lists.ts` `standingOf`; `moves/records.ts` `readMoves` |
+| `Announcement::received` keeps a told agent's `look` (each part one of the words, else the plain one), `about`, `project`, `machine` and `marketplaceAgent`, and the computer's `trash` | `peers/directory.ts` `keptAgent`, `takeAgents` |
+| What this box tells the others: each bot with its id (the session list's rows have none: from this box's bots, by conversation), look and job, and `trash: "kuvo"` | `peers/agents.ts` `ownAgents`, `announce` |
+
+### Proof
+
+- `bots-elsewhere.test.mjs`, a new case, Lab the box under test and Studio the other, all four
+  pairings of the two boxes: Lab lists Studio's bot with its name, look, job, conversation,
+  computer, kind and what deleting it takes there, not one it has itself; Studio lists Lab's the
+  same way, with Lab's trash folder. Studio's side failed on the old Rust: it told its bots
+  without their ids, look and job.
+- Unit tests: what's kept of a told agent (a look part that isn't a word, a long job, a session's
+  look and marketplace agent dropped, a trash word that isn't one); the three folder sentences.
+- Regressions: `bots` 40/40 (a box without a link leaves the list out, as the fixture says),
+  `peers` 2/2, `two-boxes` 1/1, `bot-keys` 2/2, `work-elsewhere` 4/4, both boxes on macOS.
+- Size: about 10,700 characters of Rust (with what the peers keep and tell) for about 8,500 of
+  TypeScript: 1.26×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [bots-held](../../box/bridge-tests/bots-held.test.js) | 450 listed as each last told, with what deleting one takes | `bots-elsewhere.test.mjs`; `delete_lines` unit test for the three folder sentences |
+| | 450 one two computers list, one moving, one arrived here | `bots_elsewhere`; proven by reading, a case comes with 5.1d-3's held edits on two computers |
+| | 450 the events line saying a change | `kuvo/bots/events` looks again every three seconds; unproven by a case |
+| | 572 and the rest (held edits, refusals, `waiting`, `unlisted`) | 5.1d-3 |
+
+### Also in this tip
+
+- **A conversation an earlier box left mid-turn** is closed (its turn marked interrupted, its
+  `idle` and `outcome` set) and its Codex citations read only as its messages are first needed,
+  as TypeScript's `store.prepare` does; the Rust resident did both to every conversation as it
+  started, rewriting `session.json` files nobody opened. Proven by the compat case "the current
+  TypeScript beta's durable records survive opening" (it failed on the old Rust), 7/7 compat on
+  both boxes, and `agents-claude`, `agents-codex` and `agents-claude-turns` on both.
