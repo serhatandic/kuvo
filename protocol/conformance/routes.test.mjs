@@ -29,7 +29,10 @@ test("routes", { concurrency: 3 }, async t => {
     for (const scenario of readJSON(source).scenarios) {
       for (const kind of ["machine", ...(macFiles.has(file) ? ["mac"] : [])]) {
         const name = `${file.slice(0, -5)} [${kind}] ${scenario.name}`;
-        const skip = !isOurs(scenario.only, kind) ? scenario.why : binary.typescript && referenceGaps.get(name);
+        // (`unix`: through kuvo-wake, a shell script, which native Windows doesn't run yet.)
+        const skip = !isOurs(scenario.only, kind) ? scenario.why
+          : scenario.unix && process.platform === "win32" ? "kuvo-wake doesn't run on native Windows yet (5.1a)."
+          : binary.typescript && referenceGaps.get(name);
         runs.push(t.test(name, { skip, timeout: 60000 }, t => run(t, scenario, kind)));
       }
     }

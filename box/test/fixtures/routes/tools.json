@@ -1135,7 +1135,7 @@
    ]
   },
   {
-   "name": "A conversation keeps its wake-ups with its tools, and a bot its job",
+   "name": "A conversation keeps its wake-ups with its tools, and a bot its job", "unix": true,
    "steps": [
     {
      "send": "GET kuvo/work/settings",

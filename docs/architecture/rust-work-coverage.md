@@ -778,6 +778,12 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   running); on the old Rust, the terminal stays and Stop All stops none. The file: 53/53 Rust;
   52/52 TypeScript, with one case failing once in one run and passing on the next (noted).
 - Regressions: `work` 15/15, `bots` 40/40 and `work-elsewhere` 4/4 with either lead, both boxes.
+- Platforms: native Windows: `tools` 9/9 (the wake tools' scenario, marked `unix`, skipped: no
+  `kuvo-wake` there yet), `work` 15/15, `agent-tools` 2/2, `agents-codex` 53/53 and `work-elsewhere`
+  4/4 with the Rust lead. Linux (WSL, static musl): `tools` 10/10, `work` 15/15, `agent-tools` 2/2,
+  `agents-codex` 53/53, `work-elsewhere` 4/4 with either lead. Seen once each, and passing when run
+  again: on Windows, 4.2's "a Codex that turns down being started isn't left running" (2 of 4 runs);
+  on macOS, one TypeScript case in `agents-codex`.
 - Size: the receipts and the own tools are about 11,300 characters of Rust for about 17,700 of
   TypeScript; with the start's resume and Stop's changes the part stays under 1.2×.
 
