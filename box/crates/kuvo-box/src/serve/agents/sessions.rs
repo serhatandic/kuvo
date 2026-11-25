@@ -41,6 +41,11 @@ pub(crate) struct Inventory {
 }
 
 impl Inventory {
+    /// The agents' feed, where there are agents here.
+    fn feed(&self) -> Option<&kuvo_agents::feed::Feed> {
+        self.agents.as_ref().map(ResidentAgents::feed)
+    }
+
     /// The window its agent lists for the conversation's model (not one it's still guessing).
     async fn listed_window(&self, fields: &Map<String, Value>) -> Option<u64> {
         let model = fields.get("contextModel").or_else(|| fields.get("model"))?;
@@ -134,7 +139,9 @@ impl AgentSessionSource for Inventory {
                 permissions,
                 metadata,
             } = patch;
-            self.store
+            let told = (title.clone(), metadata.is_some());
+            let saved = self
+                .store
                 .update(
                     id,
                     SessionPatch {
@@ -143,16 +150,41 @@ impl AgentSessionSource for Inventory {
                         metadata,
                     },
                 )
-                .await
+                .await?;
+            // Said on the agents' feed, as the bridge says it: renamed, its notes changed.
+            if let (Some(saved), Some(feed)) = (&saved, self.feed()) {
+                let directory = saved
+                    .get("location")
+                    .and_then(|location| location["directory"].as_str())
+                    .map(str::to_owned);
+                if let Some(title) = told.0 {
+                    feed.emit_from("session.renamed", serde_json::json!({ "sessionID": id, "title": title }), directory.clone());
+                }
+                if told.1 {
+                    feed.emit_from("session.metadata.updated", serde_json::json!({ "sessionID": id }), directory);
+                }
+            }
+            Ok(saved)
         })
     }
 
     fn delete<'a>(&'a self, id: &'a str) -> AgentCall<'a, bool> {
         Box::pin(async move {
-            match &self.running {
+            let directory = self
+                .store
+                .read(id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|header| header.directory().map(str::to_owned));
+            let deleted = match &self.running {
                 Some(runs) => runs.delete(id.to_owned()).await,
                 None => self.store.delete(id).await,
+            }?;
+            if deleted && let Some(feed) = self.feed() {
+                feed.emit_from("session.deleted", serde_json::json!({ "sessionID": id }), directory);
             }
+            Ok(deleted)
         })
     }
 

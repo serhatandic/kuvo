@@ -210,6 +210,7 @@ pub async fn run(
         );
         agent_handover = Some((runs.clone(), runtime.clone()));
         agents::asks::register(runs.clone(), sessions.clone(), &mut routes);
+        agents::asks::follow(runs.clone(), sessions.clone(), accounts.feed().clone());
         let inventory = agents::sessions::Inventory {
             store: sessions.clone(),
             running: Some(runs.clone()),
@@ -223,7 +224,7 @@ pub async fn run(
         );
         agents::rows::register(rows, Some(runs.clone()), sessions.clone(), &mut routes);
         agents::sessions::register_reads(inventory.clone(), &mut routes);
-        agents::turns::register(runs, &mut routes);
+        agents::turns::register(runs, accounts.feed().clone(), &mut routes);
         engine
             .with_agent_model_source(Arc::new(agents::Models {
                 runtime,

@@ -467,6 +467,12 @@ impl SessionRuns {
     }
 
     /// The conversation's mode from its next message on.
+    /// The conversation's folder.
+    pub async fn directory(&self, session: &str) -> Option<String> {
+        let header = self.store.read(session).await.ok()??;
+        header.directory().map(str::to_owned)
+    }
+
     /// Puts the conversation on `model` from its next turn: one of an agent connected here.
     /// `None` when the conversation isn't here; otherwise the model it was on, when it changed.
     pub async fn select_model(
@@ -482,7 +488,11 @@ impl SessionRuns {
         self.store.select_model(session, model, connected).await
     }
 
-    pub async fn select_agent(&self, session: &str, agent: &str) -> io::Result<bool> {
+    pub async fn select_agent(
+        &self,
+        session: &str,
+        agent: &str,
+    ) -> io::Result<Option<Option<Value>>> {
         self.store.select_agent(session, agent).await
     }
 

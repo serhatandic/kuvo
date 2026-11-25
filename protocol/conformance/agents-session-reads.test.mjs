@@ -4,7 +4,8 @@
 // sessions. Stand-in: Codex.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boxBinary, request, until } from "./adapter.mjs";
+import { boxBinary, openLine, request, until } from "./adapter.mjs";
+import { askFirst } from "./claude.mjs";
 import { provider, scriptedCodex } from "./codex.mjs";
 
 const headers = { "x-kuvo-from": "app" };
@@ -82,4 +83,47 @@ test("a conversation's model: from its next turn, said once in its conversation,
     assert.deepEqual([notModel.status, notModel.json?.message], [400, "That isn't a model."]);
     const missing = await ask("POST", "kuvo/agents/api/session/ses_nowhere/model", { model: picked });
     assert.equal(missing.status, 404, missing.text);
+  }));
+
+test("a conversation's changes reach a client following the agents' feed on the line: its model, its mode, and an approval asked and answered", { skip, timeout: 60000 }, () =>
+  withCodex((codex) => {
+    codex.seed("ses_told", { permissions: askFirst });
+    codex.script("ask first", [{ ask: ["item/commandExecution/requestApproval", { itemId: "c1", command: "make" }] }]);
+  }, async (codex, ask) => {
+    const watch = Buffer.from(JSON.stringify({ agents: "kuvo/agents/api/event" })).toString("base64url");
+    const line = await openLine(codex.listener, "?watch=" + watch);
+    try {
+      const frames = line.frames();
+      const seen = [];
+      const next = async (wanted, what) => {
+        for (;;) {
+          const { value: frame, done } = await frames.next().catch((error) => {
+            throw new Error("Waiting for " + what + ": " + JSON.stringify(seen), { cause: error });
+          });
+          assert.equal(done, false, "The line ended waiting for " + what);
+          if (frame?.t !== "agents" || !frame.d?.type) continue;
+          seen.push(frame.d.type);
+          if (wanted(frame.d)) return frame.d;
+        }
+      };
+      await next((event) => event.type === "server.connected", "the feed");
+      const picked = { providerID: provider, id: "gpt-other" };
+      assert.equal((await ask("POST", "kuvo/agents/api/session/ses_told/model", { model: picked })).status, 200);
+      const model = await next((event) => event.type === "session.model.selected", "the model");
+      assert.deepEqual(model.data, { sessionID: "ses_told", model: picked, previous: { providerID: provider, id: "gpt-test" } });
+      assert.equal(typeof model.location?.directory, "string");
+      assert.equal((await ask("POST", "kuvo/agents/api/session/ses_told/agent", { agent: "plan" })).status, 200);
+      const mode = await next((event) => event.type === "session.agent.selected", "the mode");
+      assert.deepEqual([mode.data.sessionID, mode.data.agent], ["ses_told", "plan"]);
+
+      await codex.prompt("ses_told", "ask first");
+      const asked = await next((event) => event.type === "permission.asked", "the approval");
+      assert.equal(asked.data.sessionID, "ses_told");
+      const replied = await ask("POST", `kuvo/agents/api/session/ses_told/permission/${encodeURIComponent(asked.data.id)}/reply`, { decision: "once" });
+      assert.ok(replied.status < 300, replied.text);
+      const answered = await next((event) => event.type === "permission.replied", "its answer");
+      assert.deepEqual(answered.data, { sessionID: "ses_told", requestID: asked.data.id });
+    } finally {
+      line.close();
+    }
   }));
