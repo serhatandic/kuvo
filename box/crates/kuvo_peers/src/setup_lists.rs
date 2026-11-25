@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::{
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 
@@ -78,9 +78,18 @@ pub struct View {
     backup_receiver: bool,
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
+    pub(crate) versions: LocalVersions,
 }
 
 impl View {
+    pub(crate) fn local_running_version(&self) -> Option<&str> {
+        self.update
+            .facts
+            .kuvo
+            .as_deref()
+            .or(self.versions.running.as_deref())
+    }
+
     pub(crate) fn in_bridge_handoff(&self, peer: &str) -> bool {
         self.bridge.as_ref().is_some_and(|bridge| {
             self.announced
@@ -511,6 +520,7 @@ struct SentAgents {
 
 enum Change {
     Update(Arc<UpdatePublication>),
+    Versions(LocalVersions, oneshot::Sender<()>),
     Local(Arc<Local>),
     Notices(Arc<History>),
     Dispatch(kuvo_server::Dispatcher),
@@ -536,6 +546,15 @@ pub struct BridgeUpdate {
 pub struct BridgeAdmission {
     pub release: PreparedRelease,
     pub local_trial: bool,
+}
+
+/// The local row's installed versions and the desktop's private update check.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct LocalVersions {
+    pub version: Option<String>,
+    pub running: Option<String>,
+    pub app_check: Option<String>,
+    pub is_mac: bool,
 }
 
 #[derive(Default, PartialEq)]
@@ -755,6 +774,21 @@ impl ResidentPeers {
         let _ = self.changes.send(Change::Notices(Arc::new(notices))).await;
     }
 
+    pub async fn announce_versions(&self, versions: LocalVersions) -> io::Result<()> {
+        let (done, published) = oneshot::channel();
+        let unavailable = || {
+            io::Error::new(
+                io::ErrorKind::NotConnected,
+                "The computer list is not running.",
+            )
+        };
+        self.changes
+            .send(Change::Versions(versions, done))
+            .await
+            .map_err(|_| unavailable())?;
+        published.await.map_err(|_| unavailable())
+    }
+
     pub async fn announce_update(&self, update: Arc<UpdatePublication>) {
         let _ = self.changes.send(Change::Update(update)).await;
     }
@@ -807,6 +841,7 @@ impl Resident {
             backup_receiver: false,
             endpoint,
             system: system_name(),
+            versions: LocalVersions::default(),
         };
         Self {
             run,
@@ -858,6 +893,17 @@ impl Resident {
                         if announce && let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::None);
                         }
+                    }
+                    Some(Change::Versions(versions, done)) => {
+                        if self.view.versions != versions {
+                            self.view.versions = versions;
+                            if let Some(publisher) = &mut publisher {
+                                publisher.request(self.view.clone(), clock(), Refresh::None);
+                            }
+                            publish.send_replace(Arc::new(self.view.clone()));
+                        }
+                        let _ = done.send(());
+                        continue;
                     }
                     Some(Change::Local(mut local)) => {
                         let incoming = Arc::make_mut(&mut local);
@@ -1381,23 +1427,36 @@ async fn publish_round(
     {
         state["computer"]["engine"] = json!(engine);
     }
-    let offer = |update: &UpdateFacts| {
+    let offer = |update: &UpdateFacts, normal: bool| {
+        // A legacy recipient must get only the bridge's signed facts. Do not
+        // expose a selected Rust version while the first update facts are pending.
+        let metadata = normal && (view.bridge.is_none() || update.kuvo.is_some());
         let mut state = state.clone();
         if let (Some(computer), Ok(Value::Object(update))) = (
             state["computer"].as_object_mut(),
             serde_json::to_value(update),
         ) {
             computer.extend(update);
+            if metadata {
+                if let Some(version) = &view.versions.version {
+                    computer.insert("version".into(), json!(version));
+                }
+                if !computer.contains_key("kuvo")
+                    && let Some(running) = &view.versions.running
+                {
+                    computer.insert("kuvo".into(), json!(running));
+                }
+            }
         }
         let digest: [u8; 32] = Sha256::digest(state.to_string()).into();
         (state, digest)
     };
-    let current = offer(&view.update.facts);
+    let current = offer(&view.update.facts, true);
     let bridge = view
         .update
         .bridge
         .as_ref()
-        .map(|bridge| (bridge, offer(&bridge.facts)));
+        .map(|bridge| (bridge, offer(&bridge.facts, false)));
     for peer in &view.roster.members {
         let Some(host) = peer.host() else {
             continue;

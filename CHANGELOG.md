@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Kuvo on a Mac tells the desktop app when it runs a newer release, and keeps the desktop’s location separate from its browser connection.
+
 - A Mac can finish an update under its Helper, and manual engine-data copies older than thirty days are removed.
 
 - Automatic update checks keep their six-hour schedule across restarts. Check for Updates still looks for the latest release immediately.
