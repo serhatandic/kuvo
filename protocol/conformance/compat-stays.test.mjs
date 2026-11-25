@@ -80,3 +80,28 @@ test("an engine a 0.7 Mac's Stop left down is said to be stopped until Start", {
   await until(() => !fs.existsSync(path.join(run, "stopped")), "Start didn't take the older Mac's Stop away");
   assert.equal((await ask("GET", "kuvo/info")).json.stopped, false);
 });
+
+// A 0.7 Mac writes a message's blocks itself (`text`, no `words`): it reaches the engine as
+// written, with the parts clients draw it by kept beside it.
+test("a message a 0.7 Mac wrote the blocks of itself keeps its parts", { timeout: 45000 }, async t => {
+  const { sessionOf } = await import("./engine.mjs");
+  const { request } = await import("./adapter.mjs");
+  const { computer } = await bench(t);
+  const here = await computer("own-envelope");
+  const target = "ses_ownEnvelope";
+  here.engine.sessions.push(sessionOf({ id: target, directory: here.home }));
+  const record = await here.start().ready();
+  const add = body => request(record, "POST", `kuvo/sessions/${target}/queue/add`, body, { "x-kuvo-from": "app" });
+  const latest = () => here.engine.asked.findLast(row => row.method === "POST" && row.path.endsWith("/prompt")).json;
+  const text = "After this\n\n<from-widget>\nThe user sent this from a widget shown in this conversation (show_widget), titled:\nPlans\n</from-widget>";
+  const own = await add({ id: "msg_own", text, delivery: "steer" });
+  assert.equal(own.status, 200, own.text);
+  assert.equal(latest().text, text);
+  assert.equal(latest().delivery, "steer");
+  assert.deepEqual(latest().metadata.kuvo.parts, { words: "After this", widget: "Plans" });
+  const plain = await add({ id: "msg_plain", text: "Just words" });
+  assert.equal(plain.status, 200, plain.text);
+  assert.equal(latest().text, "Just words");
+  assert.equal(latest().delivery, "queue");
+  assert.equal(latest().metadata?.kuvo?.parts, undefined);
+});
