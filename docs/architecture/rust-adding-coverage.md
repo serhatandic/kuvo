@@ -111,7 +111,11 @@ retained work is stamped by last write time, and the disposable artifact index
 is left out on every platform. The TypeScript box does not run natively (it
 cannot fsync there). Seen once:
 TypeScript's offline wipe case timed out waiting for the member to learn the
-main's removal capability, and passed on the next run.
+main's removal capability, and passed on the next run. Seen twice on macOS under heavy
+load (load average near 20), after the second main merge: the first Rust SSH Add
+case once ended with "lost contact … during a change" where removal was
+expected, and once with "The SSH command could not complete". It passes in
+WSL 2 and on lokum at the same code.
 
 In the five selected process areas through U23 and C25, Rust passes 46 tests
 on macOS and TypeScript passes 42 with four Rust-specific skips. An earlier
