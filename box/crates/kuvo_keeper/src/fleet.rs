@@ -73,6 +73,10 @@ impl Candidate {
     pub fn version(&self) -> &str {
         self.signed.version()
     }
+
+    pub fn engine(&self) -> &str {
+        self.signed.engine()
+    }
     pub fn old_enough_for_automatic_check(&self) -> bool {
         self.signed.released().is_some_and(|release| {
             jiff::Timestamp::now()

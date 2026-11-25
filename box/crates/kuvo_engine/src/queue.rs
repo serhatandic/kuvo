@@ -322,12 +322,16 @@ impl QueueStore {
         prompt: &Prompt,
         words: Option<&str>,
         from: Option<String>,
-        before: Option<&str>,
-        inbox: &[Inbox],
+        before: Option<(&str, &[Inbox])>,
+        engine_target: bool,
     ) -> io::Result<bool> {
         let current = self.get(session).await?;
         let arriving = current.arriving(&prompt.id);
-        if !current.paused
+        let release = engine_target
+            && (crate::release::holding(&self.run)
+                || (crate::release::releasing(&self.run) && !current.waiting.is_empty()));
+        if !release
+            && !current.paused
             && !current
                 .limit_stop
                 .as_ref()
@@ -336,7 +340,8 @@ impl QueueStore {
         {
             return Ok(false);
         }
-        if prompt.delivery == Delivery::Steer
+        if !release
+            && prompt.delivery == Delivery::Steer
             && !arriving
             && current.inbox_moved.is_empty()
             && !current
@@ -373,11 +378,32 @@ impl QueueStore {
                 state.came_held.push(prompt.id.clone());
                 state.paused = true;
             } else {
-                state.restore_before(waiting, before, inbox);
+                let (anchor, inbox) =
+                    before.map_or((None, &[][..]), |(anchor, inbox)| (Some(anchor), inbox));
+                state.restore_before(waiting, anchor, inbox);
             }
         })
         .await?;
         Ok(true)
+    }
+
+    pub(crate) async fn release_pending(&self, engine: &Engine) -> io::Result<bool> {
+        for (session, state) in self.index().await? {
+            if !state.paused
+                && state.limit_stop.is_none()
+                && !state.waiting.is_empty()
+                && engine
+                    .agent_session(&session)
+                    .await
+                    .map_err(|_| {
+                        io::Error::other("Could not check the owner of a waiting message.")
+                    })?
+                    .is_none()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn clear(&self, session: &str, id: &str) -> io::Result<Queue> {
@@ -492,8 +518,12 @@ impl Queue {
             if let Some(stop) = &self.limit_stop {
                 value["line"] = json!(limit::line(home, stop));
             }
-        } else if !self.waiting.is_empty() && !self.inbox_moved.is_empty() {
-            value["line"] = json!("Messages wait while Kuvo checks the engine’s inbox.");
+        } else if !self.waiting.is_empty() {
+            if crate::release::holding(&home.join("run")) {
+                value["line"] = json!(crate::release::HOLD_LINE);
+            } else if !self.inbox_moved.is_empty() {
+                value["line"] = json!("Messages wait while Kuvo checks the engine’s inbox.");
+            }
         }
         value
     }
@@ -1134,13 +1164,17 @@ pub(crate) async fn advance(
     Ok(true)
 }
 
-async fn is_running(engine: &Engine, target: Target<'_>, session: &str) -> Result<bool, api::Error> {
+async fn is_running(
+    engine: &Engine,
+    target: Target<'_>,
+    session: &str,
+) -> Result<bool, api::Error> {
     target.is_running(engine, session).await
 }
 
 async fn resume_queue(engine: &Engine, session: &str) -> Result<Value, Refusal> {
     let _turn = engine.turn(session).await;
-    let _admitted = crate::session_move::admit(engine, session, None).await?;
+    let _admitted = crate::session_move::admit_turn(engine, session, None).await?;
     let lease = command_target(engine, session).await?;
     resume_on(engine, lease.target(), session).await
 }
@@ -1152,7 +1186,7 @@ pub(crate) async fn resume_move(
     movement: &str,
 ) -> Result<(), Refusal> {
     let _turn = engine.turn(session).await;
-    let _admitted = crate::session_move::admit(engine, session, Some(movement)).await?;
+    let _admitted = crate::session_move::admit_turn(engine, session, Some(movement)).await?;
     resume_on(engine, target, session).await.map(|_| ())
 }
 
@@ -1673,7 +1707,7 @@ where
     let engine = engine.clone();
     let work = async move {
         let _turn = engine.turn(&session).await;
-        let _admitted = crate::session_move::admit(&engine, &session, None).await?;
+        let _admitted = crate::session_move::admit_turn(&engine, &session, None).await?;
         let lease = command_target(&engine, &session).await?;
         if !advance(&engine, lease.target(), &session, &id, how).await? {
             return Err(not_waiting());
@@ -1981,7 +2015,9 @@ async fn remove_reply(
             if crate::query(&call.request.path, "arriving").as_deref() == Some("1") {
                 if send::was_sent(engine, &session, &id).await?
                     || match lease.as_ref() {
-                        Some(lease) => reached(engine, lease.target(), &session, &id).await.unwrap_or(false),
+                        Some(lease) => reached(engine, lease.target(), &session, &id)
+                            .await
+                            .unwrap_or(false),
                         None => false,
                     }
                 {
@@ -2800,13 +2836,18 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
     let Some(place) = Place::passive(engine, session).await else {
         return Ok(());
     };
+    let engine_held =
+        matches!(place, Place::Engine(_)) && crate::release::holding(&engine.home.join("run"));
     let lease = place.target();
     let saved = engine.queues.get(session).await?;
     if matches!(operation, QueueEvent::Prune) && saved.held.is_empty() {
         return Ok(());
     }
     if matches!(operation, QueueEvent::Drain)
-        && (saved.paused || saved.limit_stop.is_some() || !saved.inbox_moved.is_empty())
+        && (engine_held
+            || saved.paused
+            || saved.limit_stop.is_some()
+            || !saved.inbox_moved.is_empty())
     {
         return Ok(());
     }
@@ -2816,7 +2857,7 @@ async fn react(engine: &Engine, session: &str, operation: QueueEvent, at: u64) -
         {
             return Ok(());
         }
-        if matches!(operation, QueueEvent::Failed(_)) {
+        if matches!(operation, QueueEvent::Failed(_)) && !engine_held {
             let page = lease.recent(engine, session, 6).await.unwrap_or_default();
             if page
                 .iter()

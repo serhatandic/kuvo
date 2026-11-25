@@ -424,7 +424,13 @@ pub async fn run(
         kind == ComputerKind::Mac,
     );
     let update_home = kuvo_store::home::Home::new(home.to_owned())?;
-    let updates = crate::updates::start(update_home, &account, peers.clone(), setup.handle());
+    let updates = crate::updates::start(
+        update_home,
+        &account,
+        peers.clone(),
+        setup.handle(),
+        engine.clone(),
+    );
     crate::updates::register_check(
         &mut routes,
         kuvo_store::home::Home::new(home.to_owned())?,
