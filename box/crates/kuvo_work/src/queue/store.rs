@@ -55,6 +55,12 @@ impl Store {
         }
     }
 
+    pub fn move_fences(&self) -> Result<kuvo_peers::moves::BackupFences, Error> {
+        Ok(kuvo_peers::moves::BackupFences::read(
+            self.root.parent().expect("Work Queue under run"),
+        )?)
+    }
+
     pub fn items(&self) -> Result<Vec<Item>, Error> {
         match migration::migrate(&self.root) {
             Err(error @ Error::Format(format::Error::Unsupported { .. })) => return Err(error),
