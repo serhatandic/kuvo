@@ -178,6 +178,26 @@ impl Book {
         }
     }
 
+    // Binding a newly numbered item belongs in the same owner-file write as
+    // the number itself, not in a second asynchronous update.
+    pub fn sync_mentions(&mut self, writer: &Writer, before: &HashMap<String, u32>) {
+        let updates =
+            crate::queue::mentions::sync_indexes(&writer.refs.mentions, &self.items, before);
+        let mut admitted = HashMap::new();
+        for (at, index) in updates {
+            let item = &self.items[at];
+            if !*admitted
+                .entry(item.owner.clone())
+                .or_insert_with(|| writer.admit(&item.owner).is_ok())
+            {
+                continue;
+            }
+            let saved = &mut self.mark(at).saved;
+            saved.insert("mentionIndex".into(), json!(index));
+            saved.remove("mentionLinks");
+        }
+    }
+
     pub fn save(self, writer: &Writer, now: i64) -> Result<(), Refusal> {
         let mut documents = BTreeMap::<String, Document>::new();
         for index in self.dirty {

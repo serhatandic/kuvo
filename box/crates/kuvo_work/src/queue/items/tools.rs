@@ -350,7 +350,7 @@ impl Writer {
         operation: Option<String>,
     ) -> Result<Value, Refusal> {
         let owner = self.tool_owner(&caller, true)?;
-        self.admit(&owner)?;
+        self.admit_async(&owner).await?;
         let issue = self.issue_for(&args["issue"], &owner, None).await?;
         let writer = self.clone();
         let folder = caller.directory.clone();

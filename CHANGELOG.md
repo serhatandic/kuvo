@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Rust computers hold Work Queue changes while the conversation moves, and keep saved mentions linked when their item receives a number. Local attachments selected for work kept on another computer travel with their file contents.
+
 - Rust computers preserve Work Queue mentions when a conversation moves, return recoverable old import numbers, and retry unacknowledged queue updates promptly. Label restore previews identify an unreachable main computer.
 
 - Saved Work Queue attachments on Rust computers stay available while other work is being saved.

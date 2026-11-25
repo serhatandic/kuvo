@@ -407,7 +407,7 @@ impl Writer {
         operation: Option<String>,
     ) -> Result<Value, Refusal> {
         let owner = self.tool_owner(&caller, true)?;
-        self.admit(&owner)?;
+        self.admit_async(&owner).await?;
         let now = Timestamp::now().as_millisecond();
         let who = actor(&caller);
         let working = args["working"] == true && !caller.seat;
