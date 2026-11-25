@@ -994,7 +994,7 @@ impl<'a> Engaged<'a> {
 }
 
 /// Why no conversation was made.
-enum Made {
+pub(crate) enum Made {
     Engine(api::Error),
     Agents(std::io::Error),
 }
@@ -1008,7 +1008,7 @@ impl std::fmt::Display for Made {
     }
 }
 
-async fn create_on_agents(
+pub(crate) async fn create_on_agents(
     engine: &Engine,
     source: &dyn crate::AgentSessionSource,
     body: Value,

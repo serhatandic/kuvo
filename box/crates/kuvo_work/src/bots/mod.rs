@@ -192,11 +192,14 @@ impl Bots {
         Some(Value::Object(list::listed(&self.place(), here).value))
     }
 
-    /// As the engine starts: every bot on it told what it is now and its rules put right, and
-    /// what deleted bots left behind gone.
+    /// As the box starts, and the engine does: every bot told what it is now and its rules put
+    /// right, and what deleted bots left behind gone.
     pub fn follow_engine(&self) -> tokio::task::JoinHandle<()> {
         let bots = self.clone();
         tokio::spawn(async move {
+            // (The coding agents' run with this box: theirs at once.)
+            bots.finish_deletes().await;
+            bots.freshen_those(true).await;
             let mut states = bots.inner.engine.states();
             let mut last = None;
             loop {

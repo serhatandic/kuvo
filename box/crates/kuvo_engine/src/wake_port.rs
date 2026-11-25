@@ -2,15 +2,18 @@
 //! a conversation through this handle, as `kuvo-wake fire` reached the engine over HTTP; the
 //! handle keeps the engine up for as long as it's held.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use http::{HeaderMap, HeaderValue, Method};
 use serde_json::{Value, json};
 
 use crate::{
-    Engine, api,
+    AgentSessionSource, Engine, api,
     lifetime::{Demand, Lease},
-    queue::{self, Delivery, Prompt},
+    queue::{self, Delivery, Prompt, Target},
     sessions,
 };
 
@@ -59,10 +62,11 @@ pub struct BoxMessage<'a> {
     pub steer: bool,
 }
 
-/// The engine, held up for a round of wake-ups.
+/// The engine, held up for a round of wake-ups, and the coding agents for theirs; or the coding
+/// agents alone, for a round only they have anything in.
 pub struct WakeEngine {
     engine: Engine,
-    lease: Lease,
+    lease: Option<Lease>,
 }
 
 impl Engine {
@@ -77,21 +81,63 @@ impl Engine {
             .await?;
         Some(WakeEngine {
             engine: self.clone(),
-            lease,
+            lease: Some(lease),
+        })
+    }
+
+    /// The coding agents alone for wake-ups, the engine left as it is; none where they don't run
+    /// here.
+    pub fn agents_wake_engine(&self) -> Option<WakeEngine> {
+        self.agent_sessions.as_ref()?;
+        Some(WakeEngine {
+            engine: self.clone(),
+            lease: None,
         })
     }
 }
 
 impl WakeEngine {
-    /// The session as the engine has it now; `None` once it's gone.
+    /// Whether this round reaches the coding agents' conversations (`agents`), or the engine's.
+    pub fn reaches(&self, agents: bool) -> bool {
+        if agents {
+            self.engine.agent_sessions.is_some()
+        } else {
+            self.lease.is_some()
+        }
+    }
+
+    fn lease(&self) -> Result<&Lease, Unreachable> {
+        let down = || Unreachable("The engine isn't running.".into());
+        self.lease.as_ref().ok_or_else(down)
+    }
+
+    /// The coding agents, where the conversation is theirs.
+    async fn theirs(
+        &self,
+        session: &str,
+    ) -> Result<Option<Arc<dyn AgentSessionSource>>, Unreachable> {
+        let down = |_| Unreachable("The coding agents on this computer aren't answering.".into());
+        Ok(self
+            .engine
+            .agent_session(session)
+            .await
+            .map_err(down)?
+            .map(|(source, _)| source))
+    }
+
+    /// The session as the engine, or its coding agents, have it now; `None` once it's gone.
     pub async fn session(&self, session: &str) -> Result<Option<Value>, Unreachable> {
+        let down = |_| Unreachable("The coding agents on this computer aren't answering.".into());
+        if let Some((_, header)) = self.engine.agent_session(session).await.map_err(down)? {
+            return Ok(Some(Value::Object(header)));
+        }
         if !sessions::valid_id(session) {
             return Ok(None);
         }
         match self
             .engine
             .call_raw(
-                &self.lease,
+                self.lease()?,
                 Method::GET,
                 &sessions::path(session),
                 None,
@@ -114,6 +160,9 @@ impl WakeEngine {
     /// at most, as the engine's watchdog waits before a wake-up: one sent sooner reaches a model
     /// without their tools. A folder it has only just opened lists none for a moment first.
     pub async fn wait_for_tools(&self, directory: &str) {
+        let Some(lease) = &self.lease else {
+            return;
+        };
         let started = Instant::now();
         let mut headers = HeaderMap::new();
         let Ok(folder) = HeaderValue::from_str(&api::segment(directory)) else {
@@ -125,7 +174,7 @@ impl WakeEngine {
             let Ok(listed) = self
                 .engine
                 .call_with_headers(
-                    &self.lease,
+                    lease,
                     Method::GET,
                     "api/mcp",
                     None,
@@ -152,7 +201,9 @@ impl WakeEngine {
 
     /// A conversation archived while it waits on you stops, as a phone's Archive has it.
     pub async fn stop_if_waiting(&self, session: &str) {
-        crate::asks::stop_waiting(&self.engine, &self.lease, session).await;
+        if let Some(lease) = &self.lease {
+            crate::asks::stop_waiting(&self.engine, lease, session).await;
+        }
     }
 
     /// Whether the conversation's queue is stopped (you stopped it): what arrives waits on the box.
@@ -164,10 +215,19 @@ impl WakeEngine {
             .is_ok_and(|queue| queue.is_paused())
     }
 
-    /// Whether this wake-up's note waits in the engine's own inbox for the conversation still.
+    /// Whether this wake-up's note waits in the conversation's own inbox still (the engine's, or
+    /// the line its coding agent keeps).
     pub async fn waits_in_inbox(&self, session: &str, note: &str) -> bool {
         let text = format!("{WAKE_MARKER}{note}");
-        queue::inbox(&self.engine, queue::Target::Engine(&self.lease), session)
+        let Ok(theirs) = self.theirs(session).await else {
+            return false;
+        };
+        let target = match (&theirs, &self.lease) {
+            (Some(source), _) => Target::Agents(source.as_ref()),
+            (None, Some(lease)) => Target::Engine(lease),
+            (None, None) => return false,
+        };
+        queue::inbox(&self.engine, target, session)
             .await
             .is_ok_and(|inbox| inbox.iter().any(|item| item.text_is(&text)))
     }
@@ -253,7 +313,11 @@ impl WakeEngine {
             .await
             .map_err(|error| Unreachable(error.to_string()))?;
         if !held {
-            let target = crate::queue::Target::Engine(&self.lease);
+            let theirs = self.theirs(session).await?;
+            let target = match &theirs {
+                Some(source) => Target::Agents(source.as_ref()),
+                None => Target::Engine(self.lease()?),
+            };
             crate::send::post(&self.engine, target, session, &prompt)
                 .await
                 .map_err(|_| Unreachable("The message couldn’t be sent.".into()))?;

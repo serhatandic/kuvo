@@ -897,8 +897,8 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 
 - **A time in words** ("tomorrow 9am"): GNU `date` on Linux reads them, the BSD one on a Mac
   doesn't; the verbs read what both do, as Windows has neither.
-- **A coding agent's conversation's wake-ups through its bridge** (`via`): with its conversations
-  as callers, 4.6.
+- **A coding agent's conversation's wake-ups** (`via`): sent since, in "bots on a coding agent's
+  model" below.
 
 
 ## 5.1d-1 — bots' old keys of their own
@@ -1015,7 +1015,37 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **The browser's process** is checked by its pid alone (TypeScript also reads its command line);
   native Windows has no browser yet, so nothing is asked there.
 - **Asks told to your phones** (`watchAsks`) went with phone push (retired with 5.1c's holds).
-- **A bot on a coding agent's model** from Add Agent is refused as `POST kuvo/bots` refuses one
-  (the agents' bridge in `Bots::make`, 4.x).
+- **A bot on a coding agent's model**: made since, below.
 - `engine-models.test.mjs` has three cases failing on the tip without this work (the agents'
   catalog now answers): for the engine row.
+
+## 5.1 — bots on a coding agent's model
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `Bots::make`: a coding agent's model makes its conversation with the coding agents in this box (`BotEngine::agent_create`), kept as a bot's (`BotEngine::rewrite`, either side), told what it is (`kuvo.bot` in its `kuvoInstructions`), `via` noted, its greeting a synthetic message; the conversation taken away where making it didn't finish | `bots/make.ts` `makeBot` through the bridge |
+| `Bots::change`: renamed (`BotEngine::rename`), on another of its agents' models (`select_model`), its effort one of its model's own as its agents list them (`reach::usable_agent_models`), told again | `bots/edit.ts` `changeBot`, `effortOf` with the bridge |
+| `Bots::settle` (`arrived`), `freshen_those` (as the box starts, as the engine does, `retell`), the approval kept (`settle_session` reads either side) | `bots/tell.ts` `settleBot`, `freshenBots(bridge)` |
+| Delete: its conversation gone with its agents (`delete_agent_session`), as the box starts for one left | `bots/edit.ts` `deleteBot`, `leaveBehind`, `finishDeletes` |
+| Wake-ups and watches of a coding agent's conversation (its folder's `via`): a round for the engine reaches theirs too, and one only they have anything due in reaches them alone (`fire::agents_wanted`, `Engine::agents_wake_engine`), their tools not waited for; Wake Up Now the same; sent into their line (`WakeEngine` by the conversation's side) | `areas/wakes.ts` `wakeDemand`, Wake Up Now; `keeper/kuvo-wake` `fire` (`reach`, `tools`) |
+
+### Proof
+
+- `agents-bots.test.mjs` (new, both boxes), for Claude Code and Codex with their stand-ins: made
+  with its agent (201, `agents`, `via`, its notes and own rule, what it's told), greets you;
+  renamed and given a job (its conversation renamed, told so); an effort of Codex's model set, one
+  it hasn't refused; arrived; told again as its words change; a wake-up sent now and one due sent
+  by the box's round, both reaching its agent; Add Agent on the same model; deleted, its
+  conversation gone. All failed on the old Rust (422, then 503 for each change and Wake Up Now).
+- Regressions: `bots` 40/40, `wakes` 10/10, `work` 15/15, `agent-tools`, `marketplace-agents`,
+  `agents-codex`, `agents-claude`, kuvo_work's wake tests, on macOS (one Codex case, "Stop during a
+  summary", failed once and passed on rerun). WSL2 (static musl): `agents-bots`,
+  `marketplace-agents`, `wakes` 10/10, `bots` 40/40. Native Windows: in 5.1's Windows slot.
+
+### Gaps and owners
+
+- **An engine bot switched to a coding agent's model** still answers 503: carrying its conversation
+  on to the agents is 4.6's (carry and handover).
+- **Its group chats** as it's deleted: noted as left for group chats (5.3), as an engine bot's are.

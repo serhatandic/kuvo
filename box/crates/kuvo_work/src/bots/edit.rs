@@ -3,7 +3,6 @@
 
 use std::{collections::BTreeSet, path::Path};
 
-use http::Method;
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -13,7 +12,7 @@ use super::{
     kit::{NO_KIT, runs_with_agents},
     list::limits_from,
     make::{bot_look, bot_model},
-    reach::{self, BOT_STEP, segment},
+    reach,
 };
 
 /// What a bot's work may do without asking, when you allow it.
@@ -132,8 +131,9 @@ async fn move_folder(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// `fields` of a bot (in `folder`) changed now, each unless it was changed later already.
-fn note_edited(folder: &Path, fields: &[&str]) {
+/// `fields` of a bot (in `folder`) changed now, or as of when each was given (`at`, never later
+/// than now), each unless it was changed later already.
+fn note_edited(folder: &Path, fields: &[&str], at: Option<&Map<String, Value>>) {
     if fields.is_empty() {
         return;
     }
@@ -158,15 +158,42 @@ fn note_edited(folder: &Path, fields: &[&str]) {
         .collect();
     for field in fields {
         let was = times.get(*field).and_then(Value::as_f64).unwrap_or(0.0);
-        times.insert((*field).into(), json!((was.max(now as f64)) as i64));
+        let given = at
+            .and_then(|at| at.get(*field))
+            .and_then(Value::as_f64)
+            .map_or(now as f64, |given| given.min(now as f64));
+        times.insert((*field).into(), json!((was.max(given)) as i64));
     }
     let text = serde_json::to_string(&Value::Object(times)).expect("JSON");
     let _ = kuvo_store::files::write_secret(&file, text.as_bytes());
 }
 
+/// A change made as of when each field was given (`times`, by this clock), where only a submitting
+/// device still allowed (`authorize`) may make it: an edit another computer held for a bot here.
+#[derive(Clone, Copy)]
+pub(crate) struct AsOf<'a> {
+    pub times: &'a Map<String, Value>,
+    pub authorize: Option<&'a (dyn Fn() -> bool + Send + Sync)>,
+}
+
+/// What's said while the submitting device is being confirmed.
+const CONFIRMING: &str = "Waiting to confirm the submitting device.";
+
 impl Bots {
     /// `PATCH kuvo/bots/<id>`: a bot here changed as Edit Bot changes it.
     pub(crate) async fn change(&self, id: &str, given: Value) -> Answer {
+        self.change_as_of(id, given, None).await
+    }
+
+    /// A bot here changed as Edit Bot changes it, now or `as_of` when it was given.
+    pub(crate) async fn change_as_of(
+        &self,
+        id: &str,
+        given: Value,
+        as_of: Option<AsOf<'_>>,
+    ) -> Answer {
+        let authorize = as_of.and_then(|as_of| as_of.authorize);
+        let allowed = || authorize.is_none_or(|authorize| authorize());
         let Some(session) = BotHere::read(&self.inner.bots, id).map(|here| here.session) else {
             return no(404, GONE);
         };
@@ -256,8 +283,15 @@ impl Bots {
             };
             if !same_model(Some(&model), described.get("model")) {
                 if runs_with_agents(Some(&model)) {
+                    if !here.agents && authorize.is_some() {
+                        return no(
+                            422,
+                            "Open the bot on its current computer to change to a coding-agent model.",
+                        );
+                    }
                     if !here.agents {
-                        // (Carrying a conversation to the coding agents is theirs, not in this box yet.)
+                        // (Carrying a conversation on to the coding agents is row 4.6's, not in
+                        // this box yet.)
                         return no(503, AGENTS_DOWN);
                     }
                 } else {
@@ -330,6 +364,9 @@ impl Bots {
             change_description(
                 &folder,
                 |now| {
+                    if !allowed() {
+                        return Err(std::io::Error::other(CONFIRMING));
+                    }
                     let next = keep_allowed(
                         onto(now.clone(), &described, changed),
                         now.as_ref(),
@@ -348,14 +385,24 @@ impl Bots {
                 return no(503, format!("The bot couldn’t be changed: {error}"));
             }
             self.changed();
-            note_edited(&here.folder, &["work"]);
+            note_edited(&here.folder, &["work"], as_of.map(|as_of| as_of.times));
             return Ok(json!({ "bot": self.listed_one(id) }));
         }
-        if here.agents {
-            return no(503, AGENTS_DOWN);
-        }
-        let Some(engine) = self.inner.engine.bot_engine().await else {
-            return no(503, "The engine isn’t running.");
+        let engine = if here.agents {
+            let engine = self.inner.engine.work_engine().await;
+            engine.agents_here().then_some(engine)
+        } else {
+            self.inner.engine.bot_engine().await
+        };
+        let Some(engine) = engine else {
+            return no(
+                503,
+                if here.agents {
+                    AGENTS_DOWN
+                } else {
+                    "The engine isn’t running."
+                },
+            );
         };
         // (Its approval kept first, for one from before there were approvals: what's said to it
         // next is the last its conversation hears of this change.)
@@ -364,7 +411,7 @@ impl Bots {
             .settle_session(&engine, &here.session)
             .await;
         let renamed = changed.get("name") != described.get("name");
-        let was = job_of(&here, true);
+        let was = job_of(&here, authorize.is_none());
         if job_line.is_some() || job_details.is_some() {
             let mut whole = job.clone().unwrap_or_else(|| was.clone());
             if let Some(line) = job_line {
@@ -389,6 +436,9 @@ impl Bots {
             if renamed || switched || looks || personality_changed {
                 changed.insert("updated".into(), json!(stamp()));
             }
+            if !allowed() {
+                return no(503, CONFIRMING);
+            }
             if new_job {
                 let job = job.as_ref().expect("a new job");
                 if let Err(error) = write_job(&here, job) {
@@ -402,26 +452,12 @@ impl Bots {
             }
             // Its conversation hears of a new name, personality or model, once its details are
             // saved, whatever becomes of the request.
-            let session = segment(&here.session);
             if renamed {
-                let _ = engine
-                    .call(
-                        Method::PATCH,
-                        &format!("api/session/{session}"),
-                        Some(&json!({"title": changed["name"]})),
-                        BOT_STEP,
-                    )
-                    .await;
+                let name = changed["name"].as_str().unwrap_or_default();
+                engine.rename(&here.session, name).await;
             }
             if switched && let Some(model) = changed.get("model") {
-                let _ = engine
-                    .call(
-                        Method::POST,
-                        &format!("api/session/{session}/model"),
-                        Some(&json!({ "model": model })),
-                        BOT_STEP,
-                    )
-                    .await;
+                engine.select_model(&here.session, model).await;
             }
             if retold {
                 let text = self.told_now(&kit, &here, &changed);
@@ -434,7 +470,7 @@ impl Bots {
             .copied()
             .filter(|field| given.contains_key(*field))
             .collect();
-        note_edited(&here.folder, &fields);
+        note_edited(&here.folder, &fields, as_of.map(|as_of| as_of.times));
         Ok(json!({ "bot": self.listed_one(id) }))
     }
 
@@ -453,7 +489,7 @@ impl Bots {
         let here = self.here();
         let id = model["id"].as_str().unwrap_or_default();
         let models = if runs_with_agents(Some(model)) {
-            Vec::new()
+            reach::usable_agent_models(&self.inner.engine.work_engine().await).await
         } else {
             match self.inner.engine.bot_engine().await {
                 Some(engine) => reach::usable_models(&engine).await,
@@ -540,11 +576,14 @@ impl Bots {
     /// A deleted bot's conversation gone as far as it can be now; its group chats are the coding
     /// agents' (not in this box yet), so they're left noted. Whether anything is still left.
     async fn leave_behind(&self, left: &mut Value) -> bool {
-        if left["conversation"] == true
-            && left["agents"] != true
+        let session = left["session"].as_str().unwrap_or_default().to_owned();
+        if left["conversation"] == true && left["agents"] == true {
+            let engine = self.inner.engine.work_engine().await;
+            let gone = engine.delete_agent_session(&session).await;
+            left["conversation"] = json!(!gone);
+        } else if left["conversation"] == true
             && let Some(engine) = self.inner.engine.bot_engine().await
         {
-            let session = left["session"].as_str().unwrap_or_default().to_owned();
             let gone = engine.delete_session(&session).await;
             left["conversation"] = json!(!gone);
         }

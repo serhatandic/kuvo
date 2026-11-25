@@ -272,6 +272,46 @@ impl SessionStore {
         .await?
     }
 
+    /// Kuvo Code's instructions for the conversation (`kuvoInstructions`); none for one not here.
+    pub async fn kuvo_instructions(&self, id: &str) -> io::Result<Option<Map<String, Value>>> {
+        self.mutate_existing_with(id, |folder| {
+            let agent = read_agent(folder)?;
+            Ok(agent
+                .get("kuvoInstructions")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default())
+        })
+        .await
+    }
+
+    /// One of Kuvo Code's instructions for the conversation (`kuvoInstructions`), set or taken
+    /// away (`None`). False for one not here.
+    pub async fn set_instruction(
+        &self,
+        id: &str,
+        key: &str,
+        text: Option<String>,
+    ) -> io::Result<bool> {
+        let key = key.to_owned();
+        self.mutate_existing(id, move |folder| {
+            let mut agent = read_agent(folder)?;
+            let entries = agent
+                .entry("kuvoInstructions")
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !entries.is_object() {
+                *entries = Value::Object(Map::new());
+            }
+            let entries = entries.as_object_mut().expect("an object");
+            match text {
+                Some(text) => entries.insert(key, Value::String(text)),
+                None => entries.remove(&key),
+            };
+            files::write_atomic(&folder.join("agent.json"), &serde_json::to_vec(&agent)?)
+        })
+        .await
+    }
+
     pub async fn write_messages(&self, id: &str, rows: Vec<Value>) -> io::Result<bool> {
         self.prepare(id).await;
         self.write_rows(id, rows).await
