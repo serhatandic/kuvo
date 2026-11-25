@@ -443,6 +443,7 @@ pub async fn run(
         setup.handle(),
         backup_mail,
         Some(vault.clone()),
+        Some(work_queue.queue_review()),
     );
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone());
     peers.register_moves(&mut routes, engine.clone());

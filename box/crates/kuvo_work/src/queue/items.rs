@@ -7,6 +7,7 @@ mod hand;
 mod importing;
 mod offline;
 mod peer_actions;
+mod review;
 mod session_links;
 mod started;
 mod tools;
@@ -215,6 +216,7 @@ pub(super) fn register(
 pub struct Runtime {
     task: tokio::task::JoinHandle<()>,
     pub(super) edits: Arc<dyn kuvo_setup::RecordEdits>,
+    pub(super) review: Arc<dyn kuvo_setup::backup::QueueReview>,
 }
 
 impl Drop for Runtime {
@@ -238,6 +240,7 @@ impl Writer {
         let mut upkeep = tokio::time::interval(Duration::from_secs(2));
         upkeep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let edits = Arc::new(offline::Routes(self.clone()));
+        let review = Arc::new(self.clone());
         let task = tokio::spawn(async move {
             let mut exchange = Exchange::default();
             loop {
@@ -257,7 +260,11 @@ impl Writer {
                 }
             }
         });
-        Runtime { task, edits }
+        Runtime {
+            task,
+            edits,
+            review,
+        }
     }
 
     async fn upkeep(
@@ -847,15 +854,11 @@ impl Writer {
 
     async fn lock(&self) -> Result<OwnedLock, Refusal> {
         let root = self.store.root.clone();
-        blocking(move || {
-            files::create_private_dirs(&root)?;
-            migration::migrate(&root)?;
-            Ok(store::exclusive(
-                &root.join(".lock"),
-                Duration::from_secs(3),
-            )?)
-        })
-        .await
+        blocking(move || lock_queue(&root)).await
+    }
+
+    fn lock_here(&self) -> Result<OwnedLock, Refusal> {
+        lock_queue(&self.store.root).map_err(storage_refusal)
     }
 
     fn strict_items(&self, now: i64) -> Result<(Vec<String>, Vec<Item>), Refusal> {
@@ -1041,6 +1044,15 @@ impl Document {
         let run = store.root.parent().expect("Work Queue under run");
         files::write_atomic_through(&self.path, &bytes, run).map_err(Into::into)
     }
+}
+
+fn lock_queue(root: &Path) -> Result<OwnedLock, Error> {
+    files::create_private_dirs(root)?;
+    migration::migrate(root)?;
+    Ok(store::exclusive(
+        &root.join(".lock"),
+        Duration::from_secs(3),
+    )?)
 }
 
 fn aside(path: &Path, owner: &str, now: i64) -> Refusal {
