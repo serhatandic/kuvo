@@ -78,17 +78,17 @@ impl SignIn {
         }
     }
 }
-fn fingerprint(secret: &str) -> String {
+pub(super) fn fingerprint(secret: &str) -> String {
     hex::encode(&Sha256::digest(secret.as_bytes())[..8])
 }
-fn text(value: &Value) -> Option<String> {
+pub(super) fn text(value: &Value) -> Option<String> {
     value
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_ascii_lowercase)
 }
-fn claims(token: Option<&str>) -> Option<Value> {
+pub(super) fn claims(token: Option<&str>) -> Option<Value> {
     let part = token?.split('.').nth(1)?;
     serde_json::from_slice(&URL_SAFE_NO_PAD.decode(part.trim_end_matches('=')).ok()?).ok()
 }
@@ -117,12 +117,12 @@ fn identity(kind: Integration, sign_in: &SignIn) -> Option<String> {
             .map(|key| format!("key:{key}")),
     }
 }
-fn number(v: &Value) -> Option<f64> {
+pub(super) fn number(v: &Value) -> Option<f64> {
     v.as_f64()
         .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
         .filter(|v| v.is_finite())
 }
-fn date(v: &Value) -> Option<u64> {
+pub(super) fn date(v: &Value) -> Option<u64> {
     let s = v.as_str()?;
     if let Ok(ts) = s.parse::<Timestamp>() {
         return ts.as_millisecond().try_into().ok();
@@ -136,7 +136,7 @@ fn date(v: &Value) -> Option<u64> {
         .try_into()
         .ok()
 }
-fn title(v: &Value) -> Option<String> {
+pub(super) fn title(v: &Value) -> Option<String> {
     let s = v.as_str()?.trim();
     if s.is_empty() {
         return None;
@@ -153,7 +153,7 @@ fn title(v: &Value) -> Option<String> {
             .join(" "),
     )
 }
-fn window(
+pub(super) fn window(
     id: &str,
     used: f64,
     minutes: Option<u32>,
@@ -686,7 +686,10 @@ fn chatgpt(body: &Value, now: u64) -> (Vec<Window>, Facts, Option<String>) {
         None,
     )
 }
-fn grok(body: &Value, now: u64) -> Result<(Vec<Window>, Facts, Option<String>), Problem> {
+pub(super) fn grok(
+    body: &Value,
+    now: u64,
+) -> Result<(Vec<Window>, Facts, Option<String>), Problem> {
     let config = &body["config"];
     if config.as_object().is_some_and(|c| {
         !c.keys().any(|key| {

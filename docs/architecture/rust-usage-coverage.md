@@ -26,6 +26,10 @@ Inventory: 392 named or parameterized test declarations. Parameterized declarati
 | Resets | `an agent has to ask before spending a reset, and Always Allow is account-specific` | Rust native and engine fixtures through the existing work-ask routes |
 | Menu | `a connected Helper menu requests fresh rings and the same accepted reading reaches its feed` | Rust demand reader |
 | Resets | `reset routes refuse missing or unknown accounts without creating a spend` | Both boxes |
+| Standalone plans | `standalone Grok, Cursor and Antigravity read their own fixture accounts` | Rust CLI and loopback HTTP fixtures, including a fake Antigravity refill |
+| SQLite projection cursor | `Insights decodes only changed SQLite transcript projections` | Real Rust transcript writer, watcher and query |
+| Price cache | `a_price_book_is_shared_until_a_catalog_file_changes` | Scoped Rust test |
+| Native log cursor | `usage_native_logs.rs` | Scoped Rust tests for append/partial-line/rewrite, Codex running state, Grok multi-model ticks |
 | Pace | `usage_readings.rs` | Deterministic window regression, single false refill, same-window alert deduplication, previous-window pace exclusion |
 | Pricing | `usage_pricing.rs` | Bundled price resolution, exact fallback, cache writes and fast rates |
 
@@ -49,13 +53,20 @@ start rarely used work only on demand.
   no deadline, there is no periodic wake. The immediate rail/menu cases and the idle
   startup case demonstrate the difference. A separately timed periodic/client-detach
   and deadline scenario remains open.
-- Potential further improvements: `usage/insights.rs`'s `scan_changed` reparses
-  about 416 KiB of bundled price catalogs per change batch and re-reads compact
-  projections within a changed SQLite transcript; cache price resolution and add
-  a per-transcript mutation cursor when native log cursors are introduced. The
-  platform watch fallback (`kuvo_os/src/watch.rs`, `start_watcher`) can compare
-  contents on a polling filesystem when a native watch cannot start; avoid a
-  history-wide fallback on large provider roots.
+- The price catalog (about 416 KiB bundled) is parsed once per Insights service;
+  a new file stamp on one of its three catalog files invalidates the in-memory
+  book. The transcript writer adds compatible mutation-bounded SQLite tables and
+  triggers, keeping the existing transcript schema version. An unchanged ownership
+  header and generation allow Insights to select only rows whose projection
+  revision advanced. A v1 file not yet opened for writing by Rust, a new database
+  generation, or an actual attribution change needs a one-time compact catch-up.
+  The fixture updates one of multiple projections and verifies that only one
+  projection was decoded. This additive index is a deliberate transcript-file
+  inventory difference; the client answers do not change.
+- Remaining lightness risk: the platform watch fallback (`kuvo_os/src/watch.rs`,
+  `start_watcher`) can compare contents on a polling filesystem when a native
+  watch cannot start; avoid a history-wide fallback on large provider roots.
+
 
 ## Verification of the first port slice
 
@@ -120,12 +131,38 @@ modules plus 21,012 added characters in existing Rust files (172,158 total,
 0.25× the 687,546-character TypeScript usage directory). The count includes the
 adapter and work-ask hooks, excludes tests and the unchanged bundled data.
 
+## Verification of the third port slice
+
+Mac usage 20/20, engine-sessions 81/81, workspace check and Bun check clean.
+TypeScript usage 5/5 applicable (15 isolated fixture/correction/timing skips).
+All six seeded differential route answers match; inventory gaps remain as above.
+The three native JSONL cursor tests, price-book cache test, and six saved-transcript
+tests passed. Static musl on Lokum (one capped container), WSL2 Ubuntu 24.04,
+and native Windows with libunwind.dll each passed 20/20. Temporary platform
+fixtures and binaries were removed from the test computers.
+
+The first changed-projection test queried before the file watcher had folded the
+completed turn (the initial checkpoint only held the open turn); the fixture now
+waits for the completed mutation revision and token row. The targeted rerun and
+the entire 20-case rerun passed. The tests confirm the requested catalog cache
+and changed-row cursor rather than only setting internal flags.
+
+Grok's native ACP reader uses its cached-token authentication only when the maker
+turns away the first billing request. Cursor's key exchange and plan/credits are
+read with its own fixture key. Antigravity's two-host summary merges its named
+pools, and a single erroneous full refill cannot replace the 80% accepted reading.
+No real maker credentials or API calls were used in tests.
+
+Cumulative size: 209,899 characters in new Rust usage modules and 23,779 added
+characters in existing production Rust files (233,678 total, 0.34× the 687,546
+TS characters; tests and unchanged catalog data excluded).
+
 ## Remaining implementation gaps
 
-- Direct provider limits: Claude native readings and engine credential readers have local fixtures. Claude Linux reset grants, standalone Grok, Cursor, Antigravity, full engine-reader edge cases, and peer account merge/refresh and read hold/backoff parity remain open.
+- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Claude Linux grants, Antigravity running-profile quota fallback and durable credential refusal/hold semantics (including refresh-only defaults), Cursor history and full fallback/hold parity, full engine-reader edge cases, and peer account merge/refresh.
 - Reset spending: local Codex credit confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Claude grants, peer forwarding/decisions, prolonged unsettled-spend settlement and other reset edge cases remain open.
 - Reading preservation across TS-to-Rust upgrade, multi-computer account identity and notice forwarder election, all card/rail/detail presentation and notice visibility cases.
-- Native provider histories and engine SQLite scan, pricing feeds/repricing, history quarter-hour slots, Insights cursor exchange and lineage, model naming and full summary readiness. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
+- Native Claude/Codex/Grok JSONL parsers and offset checkpoints have scoped tests but are not yet folded into the production index; Antigravity native history, engine SQLite scan, pricing feeds/repricing, history quarter-hour slots, Insights cursor exchange/lineage, model naming and full summary readiness remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
 
 ## TypeScript case inventory
@@ -344,11 +381,11 @@ adapter and work-ask hooks, excludes tests and the unchanged bundled data.
 - L71: a Codex account signed out in its folder shows nothing to read, and Codex isn't started for it — open.
 - L81: Codex publishes its limits immediately after sign-in and reports the first later threshold crossing — open.
 - L127: a Codex reset credit is spent through Codex: the soonest to expire, once, as the journal's request, even confirmed twice — covered by the local Codex reset replay scenario (including earliest expiry and duplicate confirmation).
-- L152: Grok's plan is what Grok itself says in the account's folder, signing in with the sign-in it keeps there — open.
+- L152: Grok's plan is what Grok itself says in the account's folder, signing in with the sign-in it keeps there — covered by standalone Grok ACP cached-token fixture.
 
 ### `box/test/usage/service.test.ts`
 
-- L46: the limits route reads and renders all six plans from their fixture credentials and APIs — open.
+- L46: the limits route reads and renders all six plans from their fixture credentials and APIs — partial — native Claude/Codex/Grok/Cursor/Antigravity and engine fixtures; exact all-six contract/display case open.
 - L148: an open bridge feed learns of an external sign-in switch and a removed CLI with credentials left behind — open.
 - L230: the bridge retries its latest window after the services process restarts — open.
 - L267: a provider removed from the admitted accounts during a round is not read — open.
@@ -379,7 +416,7 @@ adapter and work-ask hooks, excludes tests and the unchanged bundled data.
 
 - L24: shared legacy and plan-name parity fixtures — open.
 - L29: shared Swift parity fixtures — open.
-- L32: exact pools, first usable wins, clamp and Swift rounding — open.
+- L32: exact pools, first usable wins, clamp and Swift rounding — partial — named Antigravity pool reader and fake-refill scenario; complete shared fixtures open.
 - L38: all three pools retain independent windows in client rows — open.
 - L48: Argon is separate and unambiguous — open.
 - L54: legacy worst pool, blacklist, missing fraction and Argon exclusions — open.
@@ -423,12 +460,12 @@ adapter and work-ask hooks, excludes tests and the unchanged bundled data.
 
 ### `box/test/usage/usage-codex.test.ts`
 
-- L62: Codex's logs: turns from running totals, replays and repeats left out, tiers and model switches, priced by Codex's rules (UsageKit's CodexLogUsageScanner) — open.
+- L62: Codex's logs: turns from running totals, replays and repeats left out, tiers and model switches, priced by Codex's rules (UsageKit's CodexLogUsageScanner) — partial — native JSONL parser running-total/tier test; pricing and full fixture integration open.
 - L67: with a fallback model chosen, a model with no price is estimated at its rates, and the day says so; still an unknown model — open.
 - L77: the engine's rows: only those priced at nothing, a message copied between databases once, priced as Codex's (UsageKit's OpenCodeCodexUsageScanner) — open.
 - L83: auto-review is priced by its date: the model it ran on then, free from 2026-10-06 (UTC); a snapshot date comes off a model's name — open.
 - L159: an account's sessions and archived sessions: a log in both counted once, as its sessions copy; a row by the account, Codex's total — open.
-- L183: a log as it grows is read on with its running total, through a restart; one rewritten is read again whole — open.
+- L183: a log as it grows is read on with its running total, through a restart; one rewritten is read again whole — partial — native JSONL append/saved cursor test; integration and rewritten Codex fixture open.
 - L213: on a Mac an added account's history is your own Codex's (its sessions link there): counted once, with yours — open.
 - L230: two accounts that link to a folder neither is in (your ~/.codex while CODEX_HOME names another): it's the first's, and each keeps its own — open.
 - L252: your own Codex reads each home a comma-separated CODEX_HOME names, as UsageKit did; a home with neither sessions nor archived sessions is read itself — open.
@@ -444,7 +481,7 @@ adapter and work-ask hooks, excludes tests and the unchanged bundled data.
 - L51: ${each.fn}: ${each.name} — open.
 - L91: usage events: each page's events, its total and those it couldn't read; by the day, priced without long-context rates, by family (UsageKit's CursorUsageEvents and appendSpendLines) — open.
 - L109: a page that isn't one, or an event that isn't, as UsageKit takes them — open.
-- L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — open.
+- L142: its meters, its credits and its plan, read with its own sign-in; who it is from Cursor's answer, only as a hash — partial — standalone Cursor key/plan/meters/credits fixture; exact identity and full mapper variants open.
 - L166: its token is kept while it lasts, and exchanged again once when Cursor turns it away — open.
 - L178: a key Cursor turns away is a sign-in to renew; a 429 holds off as long as it says; no sign-in, no row — open.
 - L193: an on-demand spend with no cap: no window, but what the plan has beyond them (′extras′), on its row across your computers — open.
@@ -563,7 +600,7 @@ adapter and work-ask hooks, excludes tests and the unchanged bundled data.
 - L36: Claude's logs: the lines that count, deduplicated, priced, by the day (UsageKit's ClaudeLogUsageScanner) — open.
 - L58: the bundled prices name each model's rates as UsageKit's do: aliases, fast variants, fuzzy keys, models.dev, none — open.
 - L106: an account's logs as days in the zone a client asks for: late evening in UTC is the next day in Istanbul — open.
-- L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — open.
+- L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — partial — native JSONL complete-line/append/rewrite test; full retained usage index open.
 - L170: a subagent's log replaying its parent's reply counts once; an account removed goes; one with no identity yet is its box's own row — open.
 - L189: a client's days are today and the 30 before it, in its zone — open.
 - L201: fetched hourly with what it was last sent, used from the next scan on, kept for the next start; a feed that fails or says nonsense changes nothing — open.

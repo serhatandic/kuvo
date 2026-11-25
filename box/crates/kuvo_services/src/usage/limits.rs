@@ -372,16 +372,41 @@ impl Service {
     }
     /// Only current sign-ins may expose kept readings after restart.
     pub fn confirm_accounts(&self, accounts: &[Account], now: u64) {
+        self.confirm_group(accounts, &Default::default(), false, now)
+    }
+    pub fn confirm_standalone_accounts(
+        &self,
+        accounts: &[Account],
+        unreadable: &std::collections::BTreeSet<String>,
+        now: u64,
+    ) {
+        self.confirm_group(accounts, unreadable, true, now)
+    }
+    fn confirm_group(
+        &self,
+        accounts: &[Account],
+        unreadable: &std::collections::BTreeSet<String>,
+        standalone: bool,
+        now: u64,
+    ) {
+        let belongs = |account: &Account| {
+            account.account.is_some()
+                && (matches!(
+                    account.service,
+                    Provider::Cursor | Provider::Antigravity | Provider::Grok
+                ) == standalone)
+        };
         let mut state = self.state.lock().expect("limits lock");
         let before = state.entries.len();
         state.entries.retain(|provider, entry| {
-            entry.account.account.is_none()
-                || accounts.iter().any(|account| {
-                    provider == &account.provider && account.identity == entry.account.identity
-                })
+            !belongs(&entry.account)
+                || unreadable.contains(provider)
+                || accounts
+                    .iter()
+                    .any(|a| provider == &a.provider && same_sign_in(a, &entry.account))
         });
         for account in accounts {
-            state
+            let entry = state
                 .entries
                 .entry(account.provider.clone())
                 .or_insert_with(|| Entry {
@@ -389,29 +414,44 @@ impl Service {
                     facts: Default::default(),
                     trails: BTreeMap::new(),
                     notices: vec![],
-                })
-                .account = account.clone();
+                });
+            // Cursor's stable maker identity is learned during the token exchange.
+            // The same unchanged key keeps that identity between demand reads.
+            let mut a = account.clone();
+            if a.identity.is_none() && a.sign_in == entry.account.sign_in {
+                a.identity = entry.account.identity.clone();
+            }
+            entry.account = a;
         }
-        let mut order = accounts
+        let mut order = state
+            .order
             .iter()
-            .map(|a| a.provider.clone())
+            .filter(|id| {
+                state
+                    .entries
+                    .get(*id)
+                    .is_some_and(|e| !belongs(&e.account) || unreadable.contains(*id))
+            })
+            .cloned()
             .collect::<Vec<_>>();
-        order.extend(
+        for account in accounts {
+            if !order.contains(&account.provider) {
+                order.push(account.provider.clone());
+            }
+        }
+        // Coding agent accounts come before engine-only sign-ins in the contract.
+        order.sort_by_key(|id| {
             state
-                .order
-                .iter()
-                .filter(|p| {
-                    state
-                        .entries
-                        .get(*p)
-                        .is_some_and(|e| e.account.account.is_none())
-                })
-                .cloned(),
-        );
+                .entries
+                .get(id)
+                .is_some_and(|e| e.account.account.is_none())
+        });
         state.order = order;
         if state.entries.len() < before && self.file.exists() && self.cache_error.is_none() {
             if let Ok(bytes) = serde_json::to_vec(&*state) {
-                let _ = kuvo_store::files::write_secret(&self.file, &bytes);
+                if let Err(error) = kuvo_store::files::write_secret(&self.file, &bytes) {
+                    eprintln!("Couldn't keep the current plan sign-ins: {error}");
+                }
             }
         }
         self.publish(&state, now);
