@@ -74,6 +74,11 @@ impl StartupTask {
         self.scheduler("remove").map(drop)
     }
 
+    /// Whether Task Scheduler still has this installation's task.
+    pub fn registered(&self) -> io::Result<bool> {
+        Ok(self.scheduler("exists")?.trim() == "present")
+    }
+
     fn scheduler(&self, operation: &str) -> io::Result<String> {
         let script = STANDARD.encode(
             include_str!("windows/task.ps1")
