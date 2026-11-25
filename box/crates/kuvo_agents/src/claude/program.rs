@@ -178,6 +178,8 @@ impl Program {
         if !updates || env.contains_key(OsStr::new("KUVO_AGENTS_REMOTE")) {
             env.insert("DISABLE_AUTOUPDATER".into(), "1".into());
         }
+        // It reaches the relay's servers on this computer: never through a proxy.
+        crate::tool_relay::unproxied_loopback(&mut env);
         env
     }
 

@@ -53,6 +53,7 @@ async function play(threadId, turnId, steps) {
     if (step.ask) {
       const id = "ask-" + ++asked;
       send({ id, method: step.ask[0], params: fill(step.ask[1]) });
+      heard({ asked: { id, method: step.ask[0], params: fill(step.ask[1]) } });
       await new Promise((resolve) => waiting.set(id, resolve));
       continue;
     }
@@ -242,6 +243,9 @@ export async function scriptedCodex(fixture = {}) {
         return rows.filter((row) => row.type === "idle").length >= count && rows;
       }, () => [why, JSON.stringify(rows.slice(-4)), JSON.stringify(codex.heard().slice(-6)), codex.log()].join("\n"), 20000);
     },
+    async compact(id) {
+      return request(listener, "POST", codex.route(id) + "/compact", {}, headers, 20000);
+    },
     async interrupt(id) {
       const answer = await request(listener, "POST", codex.route(id) + "/interrupt", {}, headers, 20000);
       assert.equal(answer.status, 200, answer.text);
@@ -263,6 +267,11 @@ export async function scriptedCodex(fixture = {}) {
     async replyForm(id, form, answers) {
       return request(listener, "POST", `${codex.route(id)}/form/${form}/reply`, { answer: answers }, headers);
     },
+    /** The box's answer to the stand-in's ask about item `item`. */
+    answeredFor: (item) => until(() => {
+      const asked = codex.heard().find((line) => line.asked?.params.itemId === item)?.asked;
+      return asked && codex.heard().find((line) => line.message?.id === asked.id && line.message.method === undefined)?.message;
+    }, `The box never answered the ask about ${item}.`),
     /** The box's answer to the stand-in's ask `ask`. */
     answered: (ask) => until(() => codex.heard().find((line) => line.message?.id === ask && line.message.method === undefined)?.message,
       `The box never answered ${ask}.`),

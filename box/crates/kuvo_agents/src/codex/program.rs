@@ -94,6 +94,8 @@ impl Program {
             env.retain(|name, _| !name.eq_ignore_ascii_case("CODEX_HOME"));
             env.insert("CODEX_HOME".into(), home.as_os_str().into());
         }
+        // It reaches the relay's servers on this computer: never through a proxy.
+        crate::tool_relay::unproxied_loopback(&mut env);
         env
     }
 

@@ -3,12 +3,15 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  boxBinary, isolatedEnv, launch, localRelay, privateHome, scratch, startBox,
+  boxBinary, boxCommand, isolatedEnv, launch, localRelay, privateHome, scratch, startBox,
   typescriptRuntime, until, write,
 } from "./adapter.mjs";
+import { keptListener, stopPids, twoReleases } from "./claude.mjs";
 
-// Use the TypeScript bridge or the built-in Rust fixture with the same home.
-export async function withAgentFixture(t, seed, run, { env: extra = {} } = {}) {
+// Use the TypeScript bridge or the built-in Rust fixture with the same home. `kept`: the Rust
+// resident runs under its keeper, and `restart` replaces it as an update does (a release switch,
+// which hands its agents over); otherwise `restart` stops it plainly, for good, and starts another.
+export async function withAgentFixture(t, seed, run, { env: extra = {}, kept = false } = {}) {
   const binary = boxBinary();
   if (binary.typescript && process.platform === "win32") {
     t.skip("The reference bridge runs on Unix.");
@@ -21,7 +24,8 @@ export async function withAgentFixture(t, seed, run, { env: extra = {} } = {}) {
   const root = scratch();
   const home = path.join(root, "box");
   const relay = await localRelay();
-  let resident, bridge;
+  let resident, bridge, keeper, releases;
+  const residents = [];
   try {
     privateHome(home);
     const env = { ...isolatedEnv(root), ...extra };
@@ -41,8 +45,25 @@ export async function withAgentFixture(t, seed, run, { env: extra = {} } = {}) {
     } else {
       write(path.join(home, "run", "agent-fixture-program"), process.execPath);
     }
+    if (kept && !binary.typescript) {
+      releases = twoReleases(binary, home, env, relay);
+      let release = releases.old;
+      await releases.control(["select", release]);
+      keeper = boxCommand(binary, home, env, relay, ["keep"]);
+      let listener = await keptListener(home, keeper);
+      residents.push(listener.pid);
+      const restart = async () => {
+        release = release === releases.old ? releases.next : releases.old;
+        await releases.control(["select", release]);
+        listener = await keptListener(home, keeper, listener.pid);
+        residents.push(listener.pid);
+        return listener;
+      };
+      await run(listener, home, { restart });
+      return;
+    }
     resident = startBox({ binary, home, env, relay });
-    // The resident replaced on the same computer, as an update replaces it.
+    // The resident stopped plainly (for good: its agents stop with it), and another started.
     const restart = async () => {
       await resident.stop();
       resident = startBox({ binary, home, env, relay });
@@ -50,6 +71,9 @@ export async function withAgentFixture(t, seed, run, { env: extra = {} } = {}) {
     };
     await run(await resident.ready(), home, { restart });
   } finally {
+    if (releases) await releases.control(["off"]).catch(() => {});
+    await keeper?.stop();
+    await stopPids(residents);
     await resident?.stop();
     await bridge?.stop();
     await relay.close();
