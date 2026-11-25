@@ -1431,7 +1431,7 @@ async fn a_quiet_peers_move_disappears_from_a_followed_list() {
             .unwrap()
             .devices;
         let mut routes = Registry::new();
-        kuvo_peers::routes::register(&mut routes, resident.reader(), devices, Vec::new);
+        kuvo_peers::routes::register(&mut routes, resident.reader(), devices, Default::default);
         let dispatcher = routes.build(LineTiming::default());
         let line = dispatcher
             .dispatch(

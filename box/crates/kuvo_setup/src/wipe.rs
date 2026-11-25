@@ -81,6 +81,15 @@ impl LocalWipe {
     }
 }
 
+/// This computer can be wiped from here: its folder is the account's own, or the Mac app's.
+pub(crate) fn supported_here(home: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("KUVO_BOX").is_some_and(|kind| kind == "mac") {
+        return app::Target::for_box(home).ok().flatten().is_some();
+    }
+    boundary(home).ok().flatten().is_some()
+}
+
 fn boundary(home: &Path) -> io::Result<Option<PathBuf>> {
     let platform = Platform::current();
     if std::env::var_os("KUVO_BOX")

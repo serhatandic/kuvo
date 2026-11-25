@@ -229,24 +229,7 @@ impl Owner {
     }
 
     pub(super) fn provisional(&self, key: &str) -> bool {
-        [
-            SharedKind::OwnershipAssignments,
-            SharedKind::OwnershipRecovery,
-        ]
-        .iter()
-        .any(|kind| {
-            self.link
-                .value(*kind)
-                .and_then(|value| value.get("installer recovery"))
-                .and_then(|rows| rows.get(key))
-                .is_some()
-        }) || self.roster().is_ok_and(|members| {
-            members
-                .extra
-                .get("installerRecoveries")
-                .and_then(|rows| rows.get(key))
-                .is_some()
-        })
+        provisional_in(&self.link, key)
     }
 
     async fn promote(&mut self) -> Result<(), Error> {
@@ -842,4 +825,25 @@ impl Owner {
         )
         .await
     }
+}
+
+/// A computer enrolled by an installer code whose recovery is still open.
+pub(super) fn provisional_in(link: &crate::model::Link, key: &str) -> bool {
+    [
+        SharedKind::OwnershipAssignments,
+        SharedKind::OwnershipRecovery,
+    ]
+    .iter()
+    .any(|kind| {
+        link.value(*kind)
+            .and_then(|value| value.get("installer recovery"))
+            .and_then(|rows| rows.get(key))
+            .is_some()
+    }) || link.member_list().is_ok_and(|members| {
+        members
+            .extra
+            .get("installerRecoveries")
+            .and_then(|rows| rows.get(key))
+            .is_some()
+    })
 }

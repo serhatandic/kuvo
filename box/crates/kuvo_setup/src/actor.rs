@@ -38,6 +38,7 @@ pub(crate) mod computer_requests;
 mod device_access;
 mod edit_delivery;
 mod handover;
+mod manage_facts;
 mod marketplace;
 mod model_stars;
 mod predecessor;
@@ -165,10 +166,14 @@ impl SetupHandle {
         self.views.borrow().ownership.clone()
     }
 
-    pub fn pending_wipes(
-        &self,
-    ) -> Vec<kuvo_protocol::routes::types::GetKuvoComputersStatus200WipePendingItem> {
-        self.views.borrow().pending_wipes.clone()
+    /// What the computers list needs from the setup: its pending wipes, and who keeps the
+    /// machines' records.
+    pub fn computers_listing(&self) -> kuvo_peers::manage::Listing {
+        let view = self.views.borrow();
+        kuvo_peers::manage::Listing {
+            wipe_pending: view.pending_wipes.clone(),
+            manage: view.manage.clone(),
+        }
     }
 
     pub async fn phone_activity(&self) {
@@ -301,6 +306,7 @@ pub(crate) struct View {
     ownership: kuvo_peers::ownership::SetupState,
     local_wipe: bool,
     pending_wipes: Vec<kuvo_protocol::routes::types::GetKuvoComputersStatus200WipePendingItem>,
+    manage: kuvo_peers::manage::ManageFacts,
     insight_origins: std::collections::BTreeMap<String, String>,
 }
 
@@ -1103,6 +1109,7 @@ fn make_view(
             .map(|value| model_stars::list(Some(value))),
         local_wipe: crate::wipe::ready_for_shutdown(files.root(), link),
         pending_wipes: removal::pending_wipes(link),
+        manage: manage_facts::manage_facts(files, link, own, kind),
         personalities: match preferences::library(files, link) {
             Ok(library) => Ok(library.document()),
             Err(Error::PersonalityVersion(version)) => Err(version),
@@ -1307,6 +1314,7 @@ impl Owner {
                     && old.marketplace == view.marketplace
                     && old.access == view.access
                     && old.pending_wipes == view.pending_wipes
+                    && old.manage == view.manage
                     && old.local_wipe == view.local_wipe
                     && old.model_stars == view.model_stars
                     && old.ownership.id == view.ownership.id

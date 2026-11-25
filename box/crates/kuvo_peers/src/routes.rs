@@ -26,6 +26,8 @@ use crate::{
 pub const FEATURES: &[&str] = &[
     "attention",
     "computers",
+    crate::manage::MANAGE_FEATURE,
+    crate::manage::RELAY_LEASE_FEATURE,
     "line.merged-notices",
     crate::setup_lists::ARCHIVE_FEATURE,
     "line.merged-sessions",
@@ -53,7 +55,7 @@ pub fn register(
     registry: &mut Registry,
     peers: Reader,
     devices: Devices,
-    pending_wipes: impl Fn() -> Vec<GetKuvoComputersStatus200WipePendingItem>
+    listing: impl Fn() -> crate::manage::Listing
     + Clone
     + Send
     + Sync
@@ -108,16 +110,16 @@ pub fn register(
         |view, now| Some(view.notices(now)),
         None,
     );
-    let pending = pending_wipes.clone();
+    let listed = listing.clone();
     follow::<get_kuvo_computers_events::Spec>(
         registry,
         &peers,
-        move |view, now| Some(computers(view, now, pending())),
+        move |view, now| Some(computers(view, now, listed())),
         None,
     );
     read::<get_kuvo_notices::Spec>(registry, &peers, |view, now| Some(view.notices(now)));
     read::<get_kuvo_computers::Spec>(registry, &peers, move |view, now| {
-        Some(computers(view, now, pending_wipes()))
+        Some(computers(view, now, listing()))
     });
     read::<get_kuvo_setup_waiting_counts::Spec>(registry, &peers, View::waiting_counts);
 
@@ -468,8 +470,12 @@ fn tools(
 fn computers(
     view: &View,
     now: Millis,
-    pending_wipes: Vec<GetKuvoComputersStatus200WipePendingItem>,
+    listing: crate::manage::Listing,
 ) -> get_kuvo_computers::Status200 {
+    let crate::manage::Listing {
+        wipe_pending: pending_wipes,
+        manage,
+    } = listing;
     use GetKuvoComputersStatus200ComputersItemReach4 as Reach;
     use GetKuvoComputersStatus200ComputersItemVia3 as Via;
     let here = view.roster.local();
@@ -506,6 +512,8 @@ fn computers(
     active.truncate(100);
     local.at_work = Some(active);
     let mut rows = vec![local];
+    // Away released beta.1 Macs: let go from here, as they never update to leave by themselves.
+    let mut released = std::collections::BTreeSet::new();
     for peer in view.roster.members_by_name() {
         let id = encode(&peer.key);
         let said = view.announced.get(&id);
@@ -525,7 +533,7 @@ fn computers(
             row.kind = GetKuvoBotsStatus200ElsewhereItemKind3::Mac;
         }
         if reach == Reach::Away && view.legacy_macs.contains(&peer.key) {
-            row.actions = vec![legacy_removal(&peer.name)];
+            released.insert(row.key.clone());
         }
         let features = said
             .filter(|said| !said.features_cut)
@@ -561,6 +569,23 @@ fn computers(
             }
         }
         rows.push(row);
+    }
+    let manage = crate::manage::Manage::new(&manage, view, &here.name, now);
+    for row in &mut rows {
+        row.actions = manage.actions(
+            &crate::manage::Row {
+                key: &row.key,
+                name: &row.name,
+                mac: row.kind == GetKuvoBotsStatus200ElsewhereItemKind3::Mac,
+                here: row.here.is_some(),
+                relay: row.via == Via::Relay,
+                away: row.reach == Reach::Away,
+            },
+            false,
+        );
+        if released.contains(&row.key) {
+            row.actions = vec![legacy_removal(&row.name)];
+        }
     }
     get_kuvo_computers::Status200 {
         computers: rows,

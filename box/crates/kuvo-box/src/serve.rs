@@ -677,7 +677,7 @@ pub async fn run(
     );
     let removal = setup.handle();
     kuvo_peers::routes::register(&mut routes, peers.reader(), devices.clone(), move || {
-        removal.pending_wipes()
+        removal.computers_listing()
     });
     peers.register_moves(&mut routes, engine.clone());
     routes.register::<info::Spec, _, _>(Access::Any, move |_| {
