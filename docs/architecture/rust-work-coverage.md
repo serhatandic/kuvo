@@ -1085,3 +1085,12 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   the folders (`fire::wanted_by`), not one each.
 - What's held is looked at on a 15-second round and as the relay connects, and only read when the
   `bots-held` folder has files; nothing is held in memory but when each went.
+
+## 5.1d-3b — offline bot setting edits
+
+Not ported, with the `kuvo/data/edits*` adapters ([what not to port](rust-box.md#5-what-not-to-port)):
+`bots/offline.ts` (`botEditView`, `editBot`) answers only `botSettings` record edits, which only
+those adapters submit, and no client calls them (nothing in `gpui/` asks `kuvo/data/edits`). What a
+TypeScript box left of them stays: a bot's `offlineEdits` history and its `offlineJob` are kept as
+its description changes (`bots/here.rs` `change_description`) and its job is read from them
+(`bots/job.rs`), covered by the `bots` fixtures.
