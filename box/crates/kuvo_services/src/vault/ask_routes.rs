@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use super::{
     Error,
     asks::{Answer, Decision},
-    routes::{Resident, body, typed},
+    routes::{Resident, VerifiedVaultClient, body, typed},
     store::missing,
 };
 
@@ -20,7 +20,9 @@ pub(super) fn register(resident: &Arc<Resident>, routes: &mut Registry) {
     routes.register::<list::Spec, _, _>(Access::Any, move |call| {
         let resident = list_resident.clone();
         async move {
-            resident.block(|local| local.client(&call.request))?;
+            resident.block(|local| {
+                local.client_as(&call.request, call.extension::<VerifiedVaultClient>())
+            })?;
             typed::<_, 200>(json!({ "asks": resident.broker.asks.list() }))
         }
     });
@@ -28,7 +30,9 @@ pub(super) fn register(resident: &Arc<Resident>, routes: &mut Registry) {
     routes.register::<events::Spec, _, _>(Access::Any, move |call| {
         let resident = events_resident.clone();
         async move {
-            resident.block(|local| local.client(&call.request))?;
+            resident.block(|local| {
+                local.client_as(&call.request, call.extension::<VerifiedVaultClient>())
+            })?;
             let mut stream = resident.broker.asks.events();
             let cancel = call.cancel;
             Ok(RouteReply::ndjson::<200>(async_stream::try_stream! {
@@ -48,7 +52,9 @@ pub(super) fn register(resident: &Arc<Resident>, routes: &mut Registry) {
     routes.register::<answer::Spec, _, _>(Access::Any, move |call| {
         let resident = answer_resident.clone();
         async move {
-            let by = resident.block(|local| local.client(&call.request))?;
+            let by = resident.block(|local| {
+                local.client_as(&call.request, call.extension::<VerifiedVaultClient>())
+            })?;
             let given = body(&call.request);
             let decision = given
                 .get("answer")

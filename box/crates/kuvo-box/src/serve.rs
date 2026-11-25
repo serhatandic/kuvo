@@ -362,7 +362,7 @@ pub async fn run(
         .handle()
         .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
-    kuvo_services::settings::register(&mut routes, home.to_owned(), setup.handle());
+    kuvo_services::settings::register(&mut routes, home.to_owned(), setup.handle(),kind == ComputerKind::Mac,vault.clone());
     kuvo_services::files::register(
         &mut routes,
         kuvo_services::files::Places {

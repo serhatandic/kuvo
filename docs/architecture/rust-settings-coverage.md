@@ -6,7 +6,7 @@
 
 - Auto mode, its reviewer and the sandbox are postponed past 0.8 (user 11-25). Settings omits their rows; compatibility routes return the unavailable state. Existing approval records are retained; their effective and displayed mode is Ask First. Custom Auto model lists are separate.
 - Browser settings and Never Offered action: 6.4. Worktrees place/list/removal: 6.3. Pages report unavailable state rather than inventing data.
-- Config change receipts (`configChanges`) are recorded under the config writer’s existing lock in `box/config-apply/receipts.json`; Git conformance checks the actual receipt and its setup scope. Consuming receipts for Also Apply change sets remains open. Git settings migration, peer archived-session snapshots, Agents, Vault and Custom Auto still need completion in 6.1b (Custom Auto underlying list routes also absent). MCP server OAuth/sign-in moves to row 4.7e (Work Queue #991).
+- Config change receipts (`configChanges`) are recorded under the config writer’s existing lock in `box/config-apply/receipts.json`; Git conformance checks the actual receipt and its setup scope. Consuming receipts for Also Apply change sets remains open. Git migration and the Agents, Vault and Custom Auto pages now have their own process scenarios. Peer archived-session snapshots and owner actions remain in 6.1b. Custom Auto turn-level fallback and model-picker advertisement → 4.6; list storage and Settings forms are present but not runnable until then. MCP server OAuth/sign-in moves to row 4.7e (Work Queue #991).
 - Computer login items, permissions, device switch and exact running/working status need the remaining system-owner wiring. Storage measures the current layout; native Windows allocation parity, compatibility roots and refresh races still need proof.
 
 ## TypeScript cases
@@ -15,17 +15,17 @@
 
 | Case (source line) | Coverage / gap |
 |---|---|
-| 83: the page lists the built-in agents, then yours, each with how it's used and what it offers | Gap — Agents Settings page (6.1b). |
-| 105: with its engine down, the agents are still listed from the settings, and the page says what it can't know | Gap — Agents Settings page (6.1b). |
-| 115: an agent is turned off and on through the engine's settings, and one turned off stops being where new sessions start | Gap — Agents Settings page (6.1b). |
-| 132: New Agent's form is checked as it's typed, refused with the same words, and makes an agent the engine reads | Gap — Agents Settings page (6.1b). |
-| 186: Edit… saves what's changed, keeps what it doesn't show, writes nothing for what's built in, and is stale once the agent changed | Gap — Agents Settings page (6.1b). |
-| 213: permissions kept in an order the form can't show are left exactly as they are, and said so | Gap — Agents Settings page (6.1b). |
-| 231: what the form can't show is kept: a model written as an object, and one of yours that's only turned off | Gap — Agents Settings page (6.1b). |
-| 242: a name the settings can't keep an agent by is refused | Gap — Agents Settings page (6.1b). |
-| 253: Reset to Built-In and Delete take the agent's settings out, and a deleted one stops being where sessions start | Gap — Agents Settings page (6.1b). |
-| 265: Claude Code's agents on this computer are offered, and one imported comes over as a subagent | Gap — Agents Settings page (6.1b). |
-| 280: a settings file whose agents aren't an object is left alone, and the page says so | Gap — Agents Settings page (6.1b). |
+| 83: the page lists the built-in agents, then yours, each with how it's used and what it offers | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 105: with its engine down, the agents are still listed from the settings, and the page says what it can't know | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 115: an agent is turned off and on through the engine's settings, and one turned off stops being where new sessions start | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 132: New Agent's form is checked as it's typed, refused with the same words, and makes an agent the engine reads | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 186: Edit… saves what's changed, keeps what it doesn't show, writes nothing for what's built in, and is stale once the agent changed | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 213: permissions kept in an order the form can't show are left exactly as they are, and said so | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 231: what the form can't show is kept: a model written as an object, and one of yours that's only turned off | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 242: a name the settings can't keep an agent by is refused | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 253: Reset to Built-In and Delete take the agent's settings out, and a deleted one stops being where sessions start | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
+| 265: Claude Code's agents on this computer are offered, and one imported comes over as a subagent | Covered — settings: Agents independent records; Markdown fixture imports into the same engine config. |
+| 280: a settings file whose agents aren't an object is left alone, and the page says so | Partial — settings: Agents independent records, add/check/edit/stale/delete; other details unproven. |
 
 ### `settings-change-shape.test.ts`
 
@@ -37,19 +37,19 @@
 
 | Case (source line) | Coverage / gap |
 |---|---|
-| 43: Custom Auto lists, ordered models, exact Swift words and ordinary forms | Gap — Custom Auto model-list page and underlying list routes. |
-| 53: name check and refused submit have the same words; wrong types never write | Gap — Custom Auto model-list page and underlying list routes. |
-| 59: add and rename; unrelated list changes do not stale a form; changed form returns 409 | Gap — Custom Auto model-list page and underlying list routes. |
-| 65: ordered model edits and list reordering use the existing route | Gap — Custom Auto model-list page and underlying list routes. |
-| 73: can.why returns 403 with storage untouched | Gap — Custom Auto model-list page and underlying list routes. |
-| 78: unavailable source has no invented defaults | Gap — Custom Auto model-list page and underlying list routes. |
-| 82: external changes and every mutation route update the events page | Gap — Custom Auto model-list page and underlying list routes. |
-| 95: model forms have bounded fields and unsupported efforts never write | Gap — Custom Auto model-list page and underlying list routes. |
-| 108: first and last entries omit impossible moves | Gap — Custom Auto model-list page and underlying list routes. |
-| 117: a large catalog keeps two fields per form and only the edited model's efforts | Gap — Custom Auto model-list page and underlying list routes. |
-| 130: signed-out accounts say why Custom Auto passes their models by | Gap — Custom Auto model-list page and underlying list routes. |
-| 136: limit resets use the computer's configured zone and include a date only outside today | Gap — Custom Auto model-list page and underlying list routes. |
-| 156: editing a model and its different supported effort uses a single editable field | Gap — Custom Auto model-list page and underlying list routes. |
+| 43: Custom Auto lists, ordered models, exact Swift words and ordinary forms | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 53: name check and refused submit have the same words; wrong types never write | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 59: add and rename; unrelated list changes do not stale a form; changed form returns 409 | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 65: ordered model edits and list reordering use the existing route | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 73: can.why returns 403 with storage untouched | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 78: unavailable source has no invented defaults | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 82: external changes and every mutation route update the events page | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 95: model forms have bounded fields and unsupported efforts never write | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 108: first and last entries omit impossible moves | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 117: a large catalog keeps two fields per form and only the edited model's efforts | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 130: signed-out accounts say why Custom Auto passes their models by | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 136: limit resets use the computer's configured zone and include a date only outside today | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
+| 156: editing a model and its different supported effort uses a single editable field | Partial — settings: Custom Auto list storage, check/add/edit/order/stale/clear; other details unproven. |
 
 ### `settings-mcp.test.ts`
 
@@ -158,22 +158,22 @@
 
 | Case (source line) | Coverage / gap |
 |---|---|
-| 77: it's one of this computer's sections, and before there's a vault it says where its first item is added | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 92: the items are listed by name with what each is and how it's used, and never a value | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 111: Add Item is checked as it's typed without the values themselves, refused in the same words, and adds an item | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 160: Edit… opens empty for each value, shows one only through the vault's values route, and saves only what changed | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 199: Who Can Use It… takes access away from any client, and lets it be used more only from one that makes sure it's you | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 241: a key's other field is taken away from Edit…, and a new file is added only with its bytes | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 257: Delete… takes the item away with its values and grants | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 267: what agents wait on you for is answered from the page: once from any client, always and from now on only from one that makes sure it's you | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 313: Pause stops every agent's use; a paused bot is let go on | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 329: the activity says what happened in a sentence, yours plainly, and never a value | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 337: a locked vault says so and shows nothing else; a request that isn't a client's reads nothing | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 349: the page followed is sent again as the vault changes, without a value | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 365: no section's form can carry what's secret, nor read a value but through the vault's own route | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 405: vault pause accepts the original signed envelope and refuses to replace a future one | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 422: vault activity upgrades mixed lines and keeps a future entry through an append and prune | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
-| 442: the vault socket accepts a legacy hello and refuses a future request before dispatch | Gap — Vault Settings page (6.1b); underlying vault service cases in rust-vault-coverage.md. |
+| 77: it's one of this computer's sections, and before there's a vault it says where its first item is added | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 92: the items are listed by name with what each is and how it's used, and never a value | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 111: Add Item is checked as it's typed without the values themselves, refused in the same words, and adds an item | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 160: Edit… opens empty for each value, shows one only through the vault's values route, and saves only what changed | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 199: Who Can Use It… takes access away from any client, and lets it be used more only from one that makes sure it's you | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 241: a key's other field is taken away from Edit…, and a new file is added only with its bytes | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 257: Delete… takes the item away with its values and grants | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 267: what agents wait on you for is answered from the page: once from any client, always and from now on only from one that makes sure it's you | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 313: Pause stops every agent's use; a paused bot is let go on | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 329: the activity says what happened in a sentence, yours plainly, and never a value | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 337: a locked vault says so and shows nothing else; a request that isn't a client's reads nothing | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 349: the page followed is sent again as the vault changes, without a value | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 365: no section's form can carry what's secret, nor read a value but through the vault's own route | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 405: vault pause accepts the original signed envelope and refuses to replace a future one | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 422: vault activity upgrades mixed lines and keeps a future entry through an append and prune | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
+| 442: the vault socket accepts a legacy hello and refuses a future request before dispatch | Partial — settings: Vault forms hide values, add and edit, direct value comparison, unauthorized read; other details unproven. Underlying service: rust-vault-coverage.md. |
 
 ### `approval-settings-round.test.ts`
 
@@ -185,11 +185,11 @@
 
 | Case (source line) | Coverage / gap |
 |---|---|
-| 75: a box updated before your Mac keeps the branch prefix its worktrees started with, once: a phone's starts as yours did | Gap — old Git settings migration route. |
-| 94: a box whose settings weren't its own as it started takes its old branch prefix when your Mac moves its Settings › Git there | Gap — old Git settings migration route. |
-| 109: your Mac's own branch prefix, moved as the box's settings become its own, comes before the one the box kept | Gap — old Git settings migration route. |
-| 119: a Mac whose instructions the box had its own of already doesn't bring them back after you clear the box's | Gap — old Git settings migration route. |
-| 133: a Mac with nothing to give doesn't turn a later Mac's Settings › Git away | Gap — old Git settings migration route. |
+| 75: a box updated before your Mac keeps the branch prefix its worktrees started with, once: a phone's starts as yours did | Partial — settings: Git migration legacy prefix and one-time Mac preferences; other cases unproven. |
+| 94: a box whose settings weren't its own as it started takes its old branch prefix when your Mac moves its Settings › Git there | Partial — settings: Git migration legacy prefix and one-time Mac preferences; other cases unproven. |
+| 109: your Mac's own branch prefix, moved as the box's settings become its own, comes before the one the box kept | Partial — settings: Git migration legacy prefix and one-time Mac preferences; other cases unproven. |
+| 119: a Mac whose instructions the box had its own of already doesn't bring them back after you clear the box's | Partial — settings: Git migration legacy prefix and one-time Mac preferences; other cases unproven. |
+| 133: a Mac with nothing to give doesn't turn a later Mac's Settings › Git away | Partial — settings: Git migration legacy prefix and one-time Mac preferences; other cases unproven. |
 
 ### `group-settings.test.ts`
 
@@ -206,6 +206,8 @@ Mac: 8/8 Rust settings scenarios; 7/7 applicable TypeScript scenarios (the new A
 
 Linux static musl (lokum, capped container), WSL Ubuntu-24.04, and native Windows: 8/8 each. The first Linux run used a binary built before the new-session default adjustment and caught the saved-mode assertion; rebuilt and passed. Mac Clock conformance 1/1, Rust engine-sessions 81/81, workspace check with tests and TS check clean. No settings feature is advertised as fully ported yet.
 
-134 source-case entries.
+Second slice (Agents, Vault, Custom Auto, Git migration): Mac settings 12/12 Rust and 11/11 applicable TS cases; Linux static musl on lokum 12/12. WSL and native Windows binaries are built; shared PC run pending. The four new scenarios run on actual boxes; the reference bridge is started only for Custom Auto. They uncovered missing JSON content type in the TS Settings-to-bridge request; fixed with that scenario. Signed outer Vault requests have a Rust-only mutation/replay assertion. The differential used the same fixed seed with a custom agent, a legacy Git prefix, and two Custom Auto lists: seven answers and the three resulting settings files match with an app-origin Agents read. Unrelated startup files still differ; this is not full-home parity. Rust engine-sessions 81/81, workspace check with tests and TS check clean.
 
-Size of the partial port: 112,781 non-test characters (new settings modules, disk measurement and receipt recorder), compared with 212,905 in the full TS settings-page modules, excluding indentation. This is not a completed 1:1 size comparison.
+134 source-case entries. The Claude import has a process scenario; it deliberately rejects hardlinked files (including the Nix-store exception). Richer Markdown frontmatter and import validation still need matching scenarios. Custom Auto unavailable-bridge behavior is now different because its storage is resident; per-model availability notices and effort/catalog parity need proof.
+
+Size after the second slice: 207,162 non-test characters (Settings modules, disk measurement, receipt recorder, Custom Auto storage and Git migration), compared with 212,700 in the TS settings-page modules, excluding indentation. The Rust count includes storage and migration code whose TS equivalents are separate; the 0.97× ratio is a conservative partial comparison, not a completed 1:1 size comparison.

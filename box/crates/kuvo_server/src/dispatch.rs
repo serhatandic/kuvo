@@ -186,12 +186,18 @@ pub struct RouteCall<T> {
     pub cancel: CancellationToken,
     params: Vec<(&'static str, String)>,
     dispatcher: Dispatcher,
+    extensions: http::Extensions,
 }
 
 impl<T> RouteCall<T> {
     /// The same authenticated dispatcher, for sections composed from existing routes.
     pub fn dispatcher(&self) -> Dispatcher {
         self.dispatcher.clone()
+    }
+
+    /// Server-created request authority, never decoded from wire headers or bodies.
+    pub fn extension<U: Send + Sync + 'static>(&self) -> Option<&U> {
+        self.extensions.get::<U>()
     }
 
     /// An encoded path segment matched by the generated route pattern.
@@ -387,6 +393,7 @@ type Handler = Box<
             CancellationToken,
             Vec<(&'static str, String)>,
             Dispatcher,
+            http::Extensions,
         ) -> FutureReply
         + Send
         + Sync,
@@ -475,7 +482,7 @@ impl Registry {
         self.entries.push(Entry {
             route: R::ROUTE,
             access,
-            handler: Box::new(move |request, cancel, params, dispatcher| {
+            handler: Box::new(move |request, cancel, params, dispatcher, extensions| {
                 let bytes = if R::ROUTE.body.is_none() {
                     b"null"
                 } else {
@@ -489,6 +496,7 @@ impl Registry {
                             cancel,
                             params,
                             dispatcher,
+                            extensions,
                         });
                         Box::pin(async move {
                             answer.await.map_or_else(Refusal::reply, |typed| typed.0)
@@ -552,7 +560,18 @@ impl Dispatcher {
 
     /// All transport entries enter here after transport authentication.
     pub async fn dispatch(&self, request: DispatchRequest, cancel: CancellationToken) -> Reply {
-        let reply = self.route(request, cancel).await;
+        self.dispatch_scoped(request, cancel, http::Extensions::new())
+            .await
+    }
+
+    /// An internal composed route may carry authority it already established on the original request.
+    pub async fn dispatch_scoped(
+        &self,
+        request: DispatchRequest,
+        cancel: CancellationToken,
+        extensions: http::Extensions,
+    ) -> Reply {
+        let reply = self.route(request, cancel, extensions).await;
         let mut reply = reply;
         reply.headers.insert(
             ROUTE_VERSION_HEADER,
@@ -579,7 +598,12 @@ impl Dispatcher {
         handler(request, cancel).await
     }
 
-    async fn route(&self, mut request: DispatchRequest, cancel: CancellationToken) -> Reply {
+    async fn route(
+        &self,
+        mut request: DispatchRequest,
+        cancel: CancellationToken,
+        extensions: http::Extensions,
+    ) -> Reply {
         if let Err(refusal) = admissible(&request) {
             return refusal.reply();
         }
@@ -617,7 +641,7 @@ impl Dispatcher {
         }
         if let Some((entry, params)) = best {
             if entry.access.admits(&request.caller) {
-                return (entry.handler)(request, cancel, params, self.clone()).await;
+                return (entry.handler)(request, cancel, params, self.clone(), extensions).await;
             }
             return Refusal::new(
                 StatusCode::FORBIDDEN,

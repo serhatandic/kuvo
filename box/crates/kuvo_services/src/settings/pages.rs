@@ -417,13 +417,11 @@ pub async fn read(ctx: &Context, section: Section) -> Value {
         Section::Worktrees => worktrees::read(ctx).await,
         Section::Archived => archived::read(ctx).await,
         Section::Skills => skills::read(ctx).await,
+        Section::Agents => agents::read(ctx).await,
+        Section::Vault => vault::read(ctx).await,
+        Section::CustomAuto => custom_auto::read(ctx).await,
         Section::Mcp => mcp::read(ctx).await,
         Section::Computer => computer::read(ctx).await,
-        _ => unread(
-            section.id(),
-            description(section).0,
-            "This computer's settings couldn't be read.",
-        ),
     }
 }
 
@@ -490,6 +488,8 @@ pub async fn change(
         Section::Storage => storage::change(ctx, at, given).await?,
         Section::Worktrees => worktrees::change(ctx, at, value).await?,
         Section::Skills => skills::change(ctx, at, value).await?,
+        Section::Agents => agents::change(ctx, at, value).await?,
+        Section::Vault => vault::change(ctx, at, value).await?,
         Section::Mcp => mcp::change(ctx, at, value).await?,
         Section::Computer => computer::change(ctx, at, value).await?,
         Section::Browser => {
@@ -518,6 +518,15 @@ pub async fn act(
     action: &Value,
     _values: &Value,
 ) -> Result<(), Refusal> {
+    if section == Section::CustomAuto {
+        return custom_auto::act(ctx, row, action, _values).await;
+    }
+    if section == Section::Vault {
+        return vault::act(ctx, row, action, _values).await;
+    }
+    if section == Section::Agents {
+        return agents::act(ctx, row, action, _values).await;
+    }
     if section == Section::Mcp {
         return mcp::act(ctx, row, action, _values).await;
     }
@@ -546,6 +555,15 @@ pub async fn check(
     action: &Value,
     values: &Value,
 ) -> Value {
+    if section == Section::CustomAuto {
+        return custom_auto::check(ctx, row, action, values).await;
+    }
+    if section == Section::Vault {
+        return vault::check(ctx, row, action, values).await;
+    }
+    if section == Section::Agents {
+        return agents::check(ctx, row, action, values).await;
+    }
     if section == Section::Mcp {
         return mcp::check(ctx, row, action, values).await;
     }

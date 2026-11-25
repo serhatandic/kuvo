@@ -1,7 +1,10 @@
 //! Settings pages are projections of the computer's own routes. Changes to a
 //! section run in order, against the revision of the affected row or form.
+mod agents;
 mod archived;
+mod claude;
 mod computer;
+mod custom_auto;
 mod kit;
 mod mcp;
 mod pages;
@@ -10,6 +13,7 @@ mod sandbox;
 mod sizes;
 mod skills;
 mod storage;
+mod vault;
 mod worktrees;
 
 use std::{io, path::PathBuf, sync::Arc, time::Duration};
@@ -96,6 +100,7 @@ impl Section {
 struct Settings {
     home: PathBuf,
     setup: SetupHandle,
+    vault: Arc<crate::vault::Resident>,
     turns: [Mutex<()>; Section::ALL.len()],
     changed: watch::Sender<u64>,
     measurement: Arc<sizes::Measurement>,
@@ -108,6 +113,8 @@ struct Context {
     request: DispatchRequest,
     cancel: CancellationToken,
     receipts: Arc<std::sync::Mutex<Vec<String>>>,
+    vault_client: Arc<tokio::sync::OnceCell<Option<crate::vault::VerifiedVaultClient>>>,
+    quiet: bool,
 }
 
 impl Context {
@@ -118,11 +125,14 @@ impl Context {
             request: call.request.clone(),
             cancel: call.cancel.clone(),
             receipts: Default::default(),
+            vault_client: Default::default(),
+            quiet: false,
         }
     }
 
     async fn ask(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value, Refusal> {
-        let receipt = (method == Method::PATCH && path == "kuvo/config") || (method == Method::POST && path.starts_with("kuvo/mcp/catalog/"));
+        let receipt = (method == Method::PATCH && path == "kuvo/config")
+            || (method == Method::POST && path.starts_with("kuvo/mcp/catalog/"));
         let request = DispatchRequest {
             method,
             path: if receipt {
@@ -136,9 +146,30 @@ impl Context {
                 .unwrap_or_default(),
             caller: self.request.caller.clone(),
         };
+        let mut extensions = http::Extensions::new();
+        if path.starts_with("kuvo/vault") {
+            let client = self
+                .vault_client
+                .get_or_init(|| async {
+                    let vault = self.settings.vault.clone();
+                    let request = self.request.clone();
+                    tokio::task::spawn_blocking(move || vault.settings_client(&request).ok())
+                        .await
+                        .ok()
+                        .flatten()
+                })
+                .await;
+            let Some(client) = client else {
+                return Err(refused(
+                    StatusCode::FORBIDDEN,
+                    "Only Kuvo Code on your Mac or iPhone can do this.",
+                ));
+            };
+            extensions.insert(client.clone());
+        }
         let reply = self
             .dispatcher
-            .dispatch(request, self.cancel.child_token())
+            .dispatch_scoped(request, self.cancel.child_token(), extensions)
             .await;
         let status = reply.status;
         let bytes = reply
@@ -311,15 +342,24 @@ async fn mutate(
     Ok(page)
 }
 
-pub fn register(routes: &mut Registry, home: PathBuf, setup: SetupHandle) {
+pub fn register(
+    routes: &mut Registry,
+    home: PathBuf,
+    setup: SetupHandle,
+    is_mac: bool,
+    vault: Arc<crate::vault::Resident>,
+) {
+    claude::register(routes, home.clone(), is_mac);
     sandbox::register(routes, home.clone());
     let settings = Arc::new(Settings {
         home,
         setup,
+        vault,
         turns: std::array::from_fn(|_| Mutex::new(())),
         changed: watch::channel(0).0,
         measurement: Arc::new(sizes::Measurement::default()),
     });
+    custom_auto::register(routes, settings.clone());
     let state = settings.clone();
     routes.register::<get_kuvo_settings::Spec, _, _>(Access::Any, move |call| {
         let ctx = Context::new(state.clone(), &call);
@@ -415,7 +455,8 @@ pub fn register(routes: &mut Registry, home: PathBuf, setup: SetupHandle) {
         Access::Any,
         |bytes| decode_or(bytes, json!({"values":{}})),
         move |call| {
-            let ctx = Context::new(settings.clone(), &call);
+            let mut ctx = Context::new(settings.clone(), &call);
+            ctx.quiet = true;
             async move {
                 let section = Section::parse(&decoded(call.param("section")))?;
                 let given = body::<post_kuvo_settings_section_row_action_check::Spec>(

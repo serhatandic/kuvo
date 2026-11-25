@@ -2,6 +2,7 @@
 
 pub mod artifacts;
 pub mod config;
+pub mod git_preferences;
 mod config_receipts;
 pub mod files;
 pub mod git;
