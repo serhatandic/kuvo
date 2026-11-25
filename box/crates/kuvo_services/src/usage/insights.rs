@@ -94,6 +94,15 @@ pub struct Service {
     gate: Arc<Mutex<()>>,
     caught_up: Arc<std::sync::atomic::AtomicBool>,
     prices: Arc<Mutex<Option<PriceBook>>>,
+    history: Option<HistoryContext>,
+    native_ready: Arc<std::sync::atomic::AtomicBool>,
+    engine_ready: Arc<std::sync::atomic::AtomicBool>,
+    issues: Arc<Mutex<BTreeSet<String>>>,
+}
+#[derive(Clone)]
+struct HistoryContext {
+    settings: super::settings::Service,
+    limits: super::limits::Service,
 }
 impl Service {
     pub fn new(home: PathBuf, name: String, key: String, hostname: &str) -> Self {
@@ -106,7 +115,75 @@ impl Service {
             gate: Arc::default(),
             caught_up: Arc::default(),
             prices: Arc::default(),
+            history: None,
+            native_ready: Arc::default(),
+            engine_ready: Arc::default(),
+            issues: Arc::default(),
         }
+    }
+    pub fn with_history(
+        mut self,
+        settings: super::settings::Service,
+        limits: super::limits::Service,
+    ) -> Self {
+        self.history = Some(HistoryContext { settings, limits });
+        self
+    }
+    fn fallback(&self) -> (Option<String>, bool) {
+        self.history
+            .as_ref()
+            .map(|history| history.settings.codex_fallback())
+            .unwrap_or_default()
+    }
+    fn ready(&self) -> bool {
+        use std::sync::atomic::Ordering::Acquire;
+        self.caught_up.load(Acquire)
+            && self.native_ready.load(Acquire)
+            && self.engine_ready.load(Acquire)
+    }
+    fn counted(&self, db: &Connection) -> Result<Option<i64>> {
+        Ok(get(db, "rust-local-scan")?.and_then(|v| v.as_i64()))
+    }
+    fn price_index(
+        &self,
+        db: &mut Connection,
+        now: i64,
+    ) -> Result<(Arc<Pricing>, Option<String>, bool)> {
+        let pricing = self.pricing()?;
+        let (fallback, chosen) = self.fallback();
+        let stamp = self
+            .prices
+            .lock()
+            .expect("price book")
+            .as_ref()
+            .map(|book| book.stamp)
+            .unwrap_or_default();
+        let catalog = hash(&json!(["usage-pricing-v1", stamp]));
+        let history_epoch = hash(&json!([catalog, fallback]));
+        super::history::reprice(db, &history_epoch, &pricing, fallback.as_deref(), now)?;
+        if get(db, "rust-insight-price-v1")?
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .as_deref()
+            != Some(&catalog)
+        {
+            let tx = db.transaction()?;
+            {
+                let mut query = tx.prepare("SELECT key,body FROM event WHERE human=0")?;
+                let mut rows = query.query([])?;
+                while let Some(row) = rows.next()? {
+                    let key: String = row.get(0)?;
+                    let body: String = row.get(1)?;
+                    let cost = estimate_body(&serde_json::from_str(&body)?, &pricing, now);
+                    tx.execute(
+                        "UPDATE event SET cost=? WHERE key=? AND cost IS NOT ?",
+                        params![cost, key, cost],
+                    )?;
+                }
+            }
+            set(&tx, "rust-insight-price-v1", &json!(catalog))?;
+            tx.commit()?;
+        }
+        Ok((pricing, fallback, chosen))
     }
     fn alias(&self) -> &str {
         self.alias.get_or_init(|| {
@@ -144,6 +221,7 @@ impl Service {
             &[|db| db.execute_batch(SQL)],
         )?;
         native_index::schema(&db)?;
+        super::history::schema(&db)?;
         Ok(db)
     }
     fn pricing(&self) -> Result<Arc<Pricing>> {
@@ -326,9 +404,7 @@ impl Service {
                 };
                 let partial = !human && tokens.is_none();
                 let model_id = model["id"].as_str();
-                let cost = tokens
-                    .as_ref()
-                    .and_then(|t| pricing.resolve(model_id?).map(|r| r.cost(t, true)));
+
                 let count = tokens
                     .as_ref()
                     .map(|t| t.input + t.output + t.cache_write_5m + t.cache_write_1h);
@@ -390,6 +466,7 @@ impl Service {
                         created,
                     )?;
                 }
+                let cost = estimate_body(&body, &pricing, now);
                 save_event(
                     &tx, &mut seq, now, body, cost, count, processed, input, cached, creation,
                     output,
@@ -469,8 +546,9 @@ impl Service {
         set(
             &tx,
             "rust-portable-scan",
-            &json!({"scanned":now,"issues":["native agent and engine history"]}),
+            &json!({"scanned":now,"issues":[]}),
         )?;
+        set(&tx, "rust-local-scan", &json!(now))?;
         tx.commit()?;
         Ok(())
     }
@@ -501,17 +579,42 @@ impl Service {
                 }
             }
             let _registry = Stop(registry);
+            let mut pending = BTreeSet::new();
+            let mut scanned = BTreeSet::new();
             while let Some(change) = changes.recv().await {
-                let service = service.clone();
+                match &change {
+                    native_index::Change::Roster(roots) => {
+                        scanned.retain(|root| roots.contains(root));
+                        pending = roots
+                            .iter()
+                            .filter(|root| !scanned.contains(*root))
+                            .cloned()
+                            .collect();
+                        service
+                            .native_ready
+                            .store(false, std::sync::atomic::Ordering::Release);
+                    }
+                    native_index::Change::Scan(root) | native_index::Change::Removed(root) => {
+                        pending.remove(root);
+                        scanned.insert(root.clone());
+                    }
+                    _ => {}
+                }
+                let worker = service.clone();
                 let limits = limits.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    service
+                    worker
                         .fold_native(change, &limits)
                         .map_err(|e| e.to_string())
                 })
                 .await;
                 if !matches!(result, Ok(Ok(()))) {
                     eprintln!("Couldn't fold native usage: {result:?}");
+                }
+                if pending.is_empty() {
+                    service
+                        .native_ready
+                        .store(true, std::sync::atomic::Ordering::Release);
                 }
             }
         })
@@ -522,38 +625,94 @@ impl Service {
         limits: &super::limits::Service,
     ) -> Result<()> {
         let now = Timestamp::now().as_millisecond();
-        // Enumerate only on startup/new root or after event loss, outside the query gate.
-        let (root, files) = match change {
+        let affected;
+        match change {
+            native_index::Change::Roster(roots) => {
+                let _gate = self.gate.lock().expect("insights gate");
+                let mut db = self.open()?;
+                affected = native_index::reconcile_roots(
+                    &mut db,
+                    &roots,
+                    &kuvo_os::usage_computer::identity(&self.hostname),
+                    now,
+                )?;
+            }
+            native_index::Change::Removed(root) => {
+                let _gate = self.gate.lock().expect("insights gate");
+                let mut db = self.open()?;
+                affected = native_index::remove_root(&mut db, &root)?;
+            }
             native_index::Change::Scan(root) => {
-                let paths = native_index::files(&root.folder, now - native_index::KEEP);
-                (root, Some(paths))
+                let files = native_index::files(&root.folder, root.kind, now - native_index::KEEP);
+                affected = self.fold_native_files(&root, files, limits, now)?;
             }
             native_index::Change::Files(root, changed) => {
-                let paths =
-                    native_index::changed_files(&root.folder, &changed, now - native_index::KEEP);
-                (root, Some(paths))
+                let files = native_index::changed_files(
+                    &root.folder,
+                    root.kind,
+                    &changed,
+                    now - native_index::KEEP,
+                );
+                affected = self.fold_native_files(&root, files, limits, now)?;
             }
-            native_index::Change::Removed(root) => (root, None),
-        };
+        }
+        self.reconcile_native(affected, now)?;
+        Ok(())
+    }
+    fn fold_native_files(
+        &self,
+        root: &native_index::Root,
+        files: Vec<PathBuf>,
+        limits: &super::limits::Service,
+        now: i64,
+    ) -> Result<BTreeSet<String>> {
         let mut affected = BTreeSet::new();
-        if let Some(files) = files {
-            let mut db = self.open()?;
-            for path in files {
-                let _gate = self.gate.lock().expect("insights gate");
-                match native_index::fold_file(&mut db, &self.home, &root, &path, now) {
-                    Ok(sessions) => affected.extend(sessions),
-                    Err(error) => eprintln!("Couldn't fold usage file {}: {error}", path.display()),
+        let mut db = self.open()?;
+        let (pricing, fallback, _) = {
+            let _gate = self.gate.lock().expect("insights gate");
+            self.price_index(&mut db, now)?
+        };
+        let mut failed = false;
+        for path in files {
+            let _gate = self.gate.lock().expect("insights gate");
+            match native_index::fold_file(
+                &mut db,
+                &self.home,
+                root,
+                &path,
+                now,
+                &pricing,
+                fallback.as_deref(),
+            ) {
+                Ok(sessions) => affected.extend(sessions),
+                Err(error) => {
+                    failed = true;
+                    eprintln!("Couldn't fold usage file {}: {error}", path.display());
                 }
             }
-            let logged = native_index::recent_limits(&db, &root, now.max(0) as u64)?;
-            if !logged.is_empty() {
-                limits.observe_logged(&root.provider, logged, now.max(0) as u64);
-            }
-        } else {
-            let _gate = self.gate.lock().expect("insights gate");
-            let mut db = self.open()?;
-            affected = native_index::remove_root(&mut db, &root)?;
         }
+        {
+            let mut issues = self.issues.lock().expect("usage issues");
+            if failed {
+                issues.insert(root.provider.clone());
+            } else {
+                issues.remove(&root.provider);
+            }
+        }
+        {
+            let _gate = self.gate.lock().expect("insights gate");
+            if !failed {
+                native_index::scanned(&db, root, now)?;
+            }
+            set(&db, "rust-local-scan", &json!(now))?;
+        }
+        let logged = native_index::recent_limits(&db, root, now.max(0) as u64)?;
+        if !logged.is_empty() {
+            limits.observe_logged(&root.provider, logged, now.max(0) as u64);
+        }
+        Ok(affected)
+    }
+    fn reconcile_native(&self, affected: BTreeSet<String>, now: i64) -> Result<()> {
         if !affected.is_empty() {
             let _gate = self.gate.lock().expect("insights gate");
             let mut db = self.open()?;
@@ -590,6 +749,347 @@ impl Service {
             set(&tx, "sequence", &json!(seq))?;
             tx.commit()?;
         }
+        Ok(())
+    }
+    fn engine_folder(&self) -> PathBuf {
+        std::env::var_os("KUVO_ENGINE_DATA")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.home.join("data/opencode"))
+    }
+    pub async fn recount(&self) {
+        let Some(history) = self.history.clone() else {
+            return;
+        };
+        let roots = match native_index::roots(&self.home).await {
+            Ok(roots) => roots,
+            Err(error) => {
+                eprintln!("Couldn't list usage roots: {error}");
+                return;
+            }
+        };
+        let service = self.clone();
+        let _ = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
+            let count = || -> Result<()> {
+                service
+                    .fold_native(native_index::Change::Roster(roots.clone()), &history.limits)?;
+                for root in roots {
+                    service.fold_native(native_index::Change::Scan(root), &history.limits)?;
+                }
+                service
+                    .native_ready
+                    .store(true, std::sync::atomic::Ordering::Release);
+                service.fold_engine(super::engine_index::databases(&service.engine_folder())?)?;
+                service
+                    .engine_ready
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let _gate = service.gate.lock().expect("insights gate");
+                let mut db = service.open()?;
+                service.scan(&mut db, Timestamp::now().as_millisecond())?;
+                service
+                    .caught_up
+                    .store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            };
+            count().map_err(|error| error.to_string())
+        })
+        .await;
+    }
+    fn history_view(&self, params: BTreeMap<String, String>) -> Result<Value> {
+        let now = Timestamp::now().as_millisecond();
+        let zone = params
+            .get("zone")
+            .and_then(|zone| TimeZone::get(zone).ok())
+            .unwrap_or_else(TimeZone::system);
+        let _gate = self.gate.lock().expect("insights gate");
+        let mut db = self.open()?;
+        let (pricing, fallback, chosen) = self.price_index(&mut db, now)?;
+        let identities = self
+            .history
+            .as_ref()
+            .map(|history| {
+                history
+                    .limits
+                    .peer_snapshot(None, now.max(0) as u64)
+                    .accounts
+                    .into_iter()
+                    .filter_map(|a| Some((a.provider, a.identity?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let accounts = super::history::own(&db, now, &identities)?;
+        let computer = super::history::Computer {
+            key: self.own_key().into(),
+            name: self.name.clone(),
+            here: true,
+            away: false,
+            accounts,
+        };
+        super::history::view(
+            vec![computer],
+            now,
+            zone,
+            &pricing,
+            fallback.as_deref(),
+            chosen,
+        )
+    }
+    pub fn follow_prices(&self, personal: &std::path::Path) -> Option<tokio::task::JoinHandle<()>> {
+        let mut feeds = super::price_feed::Feeds::for_home(&self.home, personal)?;
+        let service = self.clone();
+        Some(tokio::spawn(async move {
+            loop {
+                let now = super::limits::now();
+                if feeds.refresh_due(now).await {
+                    let service = service.clone();
+                    let result =
+                        tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
+                            let _gate = service.gate.lock().expect("insights gate");
+                            let mut db = service.open().map_err(|e| e.to_string())?;
+                            service
+                                .price_index(&mut db, Timestamp::now().as_millisecond())
+                                .map_err(|e| e.to_string())?;
+                            Ok(())
+                        })
+                        .await;
+                    if !matches!(result, Ok(Ok(()))) {
+                        eprintln!("Couldn't update usage prices: {result:?}");
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    feeds.next().saturating_sub(super::limits::now()).max(1000),
+                ))
+                .await;
+            }
+        }))
+    }
+    pub fn follow_engine(&self, hub: kuvo_os::watch::WatchHub) -> tokio::task::JoinHandle<()> {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let root = service.engine_folder();
+            let (send, mut inbox) = tokio::sync::mpsc::channel(8);
+            let task = tokio::spawn(super::engine_index::follow(root, hub, send));
+            struct Stop(tokio::task::JoinHandle<()>);
+            impl Drop for Stop {
+                fn drop(&mut self) {
+                    self.0.abort();
+                }
+            }
+            let _watch = Stop(task);
+            while let Some(paths) = inbox.recv().await {
+                let worker = service.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    worker.fold_engine(paths).map_err(|e| e.to_string())
+                })
+                .await;
+                if !matches!(result, Ok(Ok(()))) {
+                    eprintln!("Couldn't fold engine usage: {result:?}");
+                }
+                service
+                    .engine_ready
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        })
+    }
+    fn fold_engine(&self, paths: Vec<PathBuf>) -> Result<()> {
+        let now = Timestamp::now().as_millisecond();
+        let prices = self.pricing()?;
+        let mut failed = false;
+        for path in paths {
+            let _gate = self.gate.lock().expect("insights gate");
+            let result = (|| -> Result<()> {
+                let mut db = self.open()?;
+                let key = format!(
+                    "scan/rust-engine-v1/{}",
+                    hex::encode(Sha256::digest(path.as_os_str().as_encoded_bytes()))
+                );
+                let checkpoint = get(&db, &key)?
+                    .and_then(|v| serde_json::from_value::<super::engine_index::Checkpoint>(v).ok())
+                    .unwrap_or_default();
+                let tx = db.transaction()?;
+                let mut seq = get(&tx, "sequence")?.and_then(|v| v.as_u64()).unwrap_or(0);
+                let mut decoded = 0u64;
+                let next = super::engine_index::read(
+                    &path,
+                    now - 366 * DAY,
+                    &checkpoint,
+                    |record, sessions| {
+                        decoded += 1;
+                        self.accept_engine(&tx, &mut seq, now, &prices, record, sessions)
+                    },
+                )?;
+                if let Some(next) = next {
+                    set(&tx, &key, &serde_json::to_value(next)?)?;
+                    set(&tx, &format!("{key}/decoded"), &json!(decoded))?;
+                    set(&tx, "sequence", &json!(seq))?;
+                }
+                tx.commit()?;
+                Ok(())
+            })();
+            if let Err(error) = result {
+                failed = true;
+                eprintln!(
+                    "Couldn't read engine usage database {}: {error}",
+                    path.display()
+                );
+            }
+        }
+        {
+            let mut issues = self.issues.lock().expect("usage issues");
+            if failed {
+                issues.insert("opencode".into());
+            } else {
+                issues.remove("opencode");
+            }
+        }
+        let _gate = self.gate.lock().expect("insights gate");
+        let db = self.open()?;
+        set(&db, "rust-local-scan", &json!(now))?;
+        Ok(())
+    }
+    fn accept_engine(
+        &self,
+        db: &Connection,
+        seq: &mut u64,
+        now: i64,
+        pricing: &Pricing,
+        record: super::engine_index::Record,
+        sessions: &BTreeMap<String, super::engine_index::Session>,
+    ) -> Result<()> {
+        let human = record.role == "user";
+        let saved = sessions.get(&record.session);
+        if human
+            && (saved.is_some_and(|s| s.parent.is_some() || s.seat)
+                || matches!(
+                    record.source.as_deref(),
+                    Some("agent" | "group" | "queue" | "wake" | "system")
+                ))
+        {
+            return Ok(());
+        }
+        if !human && record.completed.is_none() && record.usage.is_none() {
+            return Ok(());
+        }
+        let at = record.completed.unwrap_or(record.created);
+        if at < now - 366 * DAY || at > now + DAY {
+            return Ok(());
+        }
+        let computer = record.origin.as_deref().unwrap_or(self.alias());
+        if computer != self.alias() && computer != self.own_key() {
+            return Ok(());
+        }
+        let provider = record.provider.as_deref().unwrap_or("opencode");
+        if !human && matches!(provider, "opencode-go" | "opencode") {
+            if let Some(billed) = record.cost.filter(|n| n.is_finite() && *n >= 0.) {
+                let usage = record.usage.as_ref().cloned().unwrap_or_default();
+                let total = usage["total"].as_u64().unwrap_or_else(|| {
+                    ["input", "output", "reasoning"]
+                        .into_iter()
+                        .map(|key| usage[key].as_u64().unwrap_or(0))
+                        .chain([
+                            usage["cache"]["read"].as_u64().unwrap_or(0),
+                            usage["cache"]["write"].as_u64().unwrap_or(0),
+                        ])
+                        .fold(0u64, u64::saturating_add)
+                });
+                db.execute(
+                    "INSERT OR REPLACE INTO hosted_call VALUES(?,?,?,?,?,?,?)",
+                    params![
+                        record.call,
+                        provider,
+                        record.created,
+                        record.model.as_deref().unwrap_or(""),
+                        total.min(1_000_000_000_000_000),
+                        billed,
+                        now
+                    ],
+                )?;
+            }
+        }
+        let account = record
+            .observed_account
+            .clone()
+            .unwrap_or_else(|| format!("{computer}/{provider}"));
+        let key = hash(&json!(["engine", record.session, record.call]));
+        let mut body = json!({"key":key,"at":at,"session":record.session,"call":record.call,"computer":computer,"provider":provider,"account":account});
+        if let Some(s) = saved {
+            if let Some(title) = &s.title {
+                body["title"] = json!(title);
+            }
+        }
+        let mut lineage = record.session.as_str();
+        let mut seen = BTreeSet::new();
+        while seen.insert(lineage) {
+            let Some(parent) = sessions.get(lineage).and_then(|s| s.parent.as_deref()) else {
+                break;
+            };
+            if !sessions.contains_key(parent) || seen.contains(parent) {
+                break;
+            }
+            lineage = parent;
+        }
+        if lineage != record.session {
+            body["root"] = json!(lineage);
+        }
+        if let Some(s) = sessions.get(lineage) {
+            if let Some(bot) = &s.bot {
+                body["bot"] = json!(bot);
+            }
+            if let Some(name) = &s.bot_name {
+                body["botName"] = json!(name);
+            }
+        }
+        if record.origin.is_some() {
+            body["attributed"] = json!(true);
+        }
+        if record.observed_account.is_some() {
+            body["accountObserved"] = json!(true);
+        }
+        if let Some(model) = &record.model {
+            body["model"] = json!(model);
+        }
+        if let Some(agent) = &record.agent {
+            body["agent"] = json!(agent);
+        }
+        let mut input = None;
+        let mut output = None;
+        let mut cached = None;
+        let mut creation = None;
+        let mut processed = None;
+        let mut count = None;
+        if human {
+            body["human"] = json!(true);
+        } else if let Some(raw) = record.usage {
+            input = raw["input"].as_u64();
+            output = raw["output"]
+                .as_u64()
+                .map(|n| n.saturating_add(raw["reasoning"].as_u64().unwrap_or(0)));
+            cached = raw["cache"]["read"].as_u64();
+            creation = raw["cache"]["write"].as_u64();
+            count = [input, output, creation]
+                .into_iter()
+                .flatten()
+                .reduce(u64::saturating_add);
+            processed = raw["total"].as_u64().or_else(|| {
+                [count, cached]
+                    .into_iter()
+                    .flatten()
+                    .reduce(u64::saturating_add)
+            });
+            body["tokens"] = json!({"input":input,"output":output,"cacheRead":cached,"cacheWrite5m":creation,"cacheWrite1h":0});
+            if let Some(total) = raw["total"].as_u64() {
+                body["reportedTotal"] = json!(total);
+            }
+            if tokens(&raw).is_none() {
+                body["partial"] = json!(true);
+            }
+        } else {
+            body["partial"] = json!(true);
+        }
+        let cost = estimate_body(&body, pricing, now);
+        save_event(
+            db, seq, now, body, cost, count, processed, input, cached, creation, output,
+        )?;
         Ok(())
     }
     pub fn follow(&self, hub: kuvo_os::watch::WatchHub) -> tokio::task::JoinHandle<()> {
@@ -690,7 +1190,9 @@ fn reconcile_native_step(
             created.saturating_sub(1000),
             at.saturating_add(1000),
         )? {
-            let native_call = if provider == "claude" {
+            let native_call = if provider == "antigravity" {
+                native.call.as_deref().unwrap_or(&dedup)
+            } else if provider == "claude" {
                 native
                     .message
                     .as_deref()
@@ -724,23 +1226,21 @@ fn reconcile_native_step(
                 actual["model"] = json!(model);
             }
             if let Some(pricing_model) = &native.pricing_model {
-                actual["pricingModels"] = json!([pricing_model]);
+                actual["pricingModels"] = if provider == "antigravity" {
+                    json!([native.model, pricing_model])
+                } else {
+                    json!([pricing_model])
+                };
             }
             let t = native.counts.price_tokens();
             actual["tokens"] = json!({"input":t.input,"output":t.output,"cacheRead":t.cache_read,"cacheWrite5m":t.cache_write_5m,"cacheWrite1h":t.cache_write_1h,"fast":t.fast});
             if let Some(total) = native.counts.total {
                 actual["reportedTotal"] = json!(total);
             }
-            let cost = native.billed.or_else(|| {
-                pricing
-                    .resolve(
-                        native
-                            .pricing_model
-                            .as_deref()
-                            .or(native.model.as_deref())?,
-                    )
-                    .map(|r| r.cost(&t, true))
-            });
+            if native.counts.ultrafast {
+                actual["tokens"]["ultrafast"] = json!(true);
+            }
+            let cost = estimate_body(&actual, pricing, now);
             let count = t
                 .input
                 .saturating_add(t.output)
@@ -809,6 +1309,37 @@ fn save_event(
         WHERE event.sender IS NULL AND event.computer=excluded.computer AND (event.partial=1 OR excluded.partial=0)",
         params![key,*seq,now,body["at"].as_i64(),field("session"),field("computer"),field("bot"),field("botName"),field("title"),field("provider"),field("account"),field("model"),field("agent"),body["human"].as_bool().unwrap_or(false),body["partial"].as_bool().unwrap_or(false),cost,count,input,cached,creation,output,encoded,field("supersedes"),processed])?;
     Ok(())
+}
+fn estimate_body(body: &Value, pricing: &Pricing, now: i64) -> Option<f64> {
+    if body["human"] == true || body["partial"] == true {
+        return None;
+    }
+    let t = &body["tokens"];
+    let counts = super::native_logs::Counts {
+        input: t["input"].as_u64()?,
+        output: t["output"].as_u64()?,
+        cache_read: t["cacheRead"].as_u64()?,
+        cache_write_5m: t["cacheWrite5m"].as_u64()?,
+        cache_write_1h: t["cacheWrite1h"].as_u64()?,
+        fast: t["fast"] == true,
+        ultrafast: t["ultrafast"] == true,
+        ..Default::default()
+    };
+    let model = body["model"].as_str()?;
+    let models = body["pricingModels"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![model]);
+    if body["provider"] == "codex" {
+        return models
+            .into_iter()
+            .find_map(|m| super::codex_pricing::price(pricing, m, now, &counts, None).cost);
+    }
+    models.into_iter().find_map(|m| {
+        pricing
+            .resolve(m)
+            .map(|rates| rates.cost(&counts.price_tokens(), body["provider"] != "cursor"))
+    })
 }
 fn provider_name(provider: &str) -> &str {
     match provider.split('@').next().unwrap_or(provider) {
@@ -1136,11 +1667,12 @@ impl Service {
             } else {
                 ("bots", "Bots")
             };
-        // This reader cannot claim a complete summary until native and engine history
-        // sources are indexed. Existing local portable evidence is still queryable.
-        Ok(
-            json!({"data":{"state":"loading","period":period,"zone":zone.iana_name().unwrap_or("UTC"),"pendingComputers":[],"totals":total.measures(),"change":change,"trend":trend,"lists":[{"key":first_key,"name":first_name,"rows":sessions},{"key":"providers","name":"Providers","rows":providers},{"key":"models","name":"Models","rows":models},{"key":"computers","name":"Computers","rows":computers}],"standouts":[]}}),
-        )
+        let ready = self.ready();
+        let mut answer = json!({"data":{"state":if !ready{"loading"}else if current.is_empty(){"empty"}else{"ready"},"period":period,"zone":zone.iana_name().unwrap_or("UTC"),"pendingComputers":[],"totals":total.measures(),"change":change,"trend":trend,"lists":[{"key":first_key,"name":first_name,"rows":sessions},{"key":"providers","name":"Providers","rows":providers},{"key":"models","name":"Models","rows":models},{"key":"computers","name":"Computers","rows":computers}],"standouts":[]}});
+        if let Some(counted) = self.counted(&db)? {
+            answer["data"]["countedAt"] = json!(counted);
+        }
+        Ok(answer)
     }
 }
 struct Summary;
@@ -1157,12 +1689,144 @@ impl RouteSpec for Summary {
 impl JsonStatus<200> for Summary {
     type Body = Value;
 }
+macro_rules! usage_route {
+    ($name:ident,$method:literal,$path:literal,$body:ty,$shape:expr,$status:literal) => {
+        struct $name;
+        impl RouteSpec for $name {
+            type Body = $body;
+            const ROUTE: &'static Route = &Route {
+                method: $method,
+                path: $path,
+                feature: "",
+                answers: &[($status, &Shape::Primitive(Primitive::Any))],
+                body: $shape,
+            };
+        }
+        impl JsonStatus<$status> for $name {
+            type Body = Value;
+        }
+    };
+}
+usage_route!(History, "GET", "kuvo/agents/api/kuvo/usage", (), None, 200);
+usage_route!(
+    HistoryRefresh,
+    "POST",
+    "kuvo/agents/api/kuvo/usage/refresh",
+    (),
+    None,
+    200
+);
+usage_route!(
+    HistoryPricing,
+    "PUT",
+    "kuvo/agents/api/kuvo/usage/pricing",
+    Value,
+    Some(&Shape::Primitive(Primitive::Any)),
+    200
+);
+usage_route!(
+    InsightsRefresh,
+    "POST",
+    "kuvo/agents/api/kuvo/insights/refresh",
+    (),
+    None,
+    202
+);
+async fn read_history(
+    service: Service,
+    params: BTreeMap<String, String>,
+) -> std::result::Result<Value, Refusal> {
+    tokio::task::spawn_blocking(move || {
+        service
+            .history_view(params)
+            .map_err(|e| Refusal::new(StatusCode::SERVICE_UNAVAILABLE, format!("Usage: {e}")))
+    })
+    .await
+    .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+fn register_history(routes: &mut Registry, service: Service) {
+    let get = service.clone();
+    routes.register::<History, _, _>(Access::Any, move |call| {
+        let service = get.clone();
+        let params = crate::artifacts::routes::parse_query(&call.request.path);
+        async move {
+            read_history(service, params)
+                .await
+                .map(RouteReply::json::<200>)
+        }
+    });
+    let refresh = service.clone();
+    routes.register::<HistoryRefresh, _, _>(Access::Any, move |call| {
+        let service = refresh.clone();
+        let params = crate::artifacts::routes::parse_query(&call.request.path);
+        async move {
+            let reader = service.clone();
+            let task = tokio::spawn(async move {
+                reader.recount().await;
+            });
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+            read_history(service, params)
+                .await
+                .map(RouteReply::json::<200>)
+        }
+    });
+    let pricing = service.clone();
+    routes.register::<HistoryPricing, _, _>(Access::Any, move |call| {
+        let service = pricing.clone();
+        let params = crate::artifacts::routes::parse_query(&call.request.path);
+        async move {
+            let model = call.body["codex"]
+                .get("fallback")
+                .filter(|v| v.is_null() || v.is_string())
+                .ok_or_else(|| {
+                    Refusal::new(
+                        StatusCode::BAD_REQUEST,
+                        "Say {codex: {fallback}}: a model, or null for none.",
+                    )
+                })?;
+            let model = if model == "" {
+                Value::Null
+            } else {
+                model.clone()
+            };
+            let Some(history) = service.history.as_ref() else {
+                return Err(Refusal::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Usage settings aren't kept on this computer.",
+                ));
+            };
+            let kept = history.settings.set_codex_fallback(model).await?;
+            let mut result = read_history(service, params).await?;
+            if let Some(save) = kept["data"].get("save") {
+                result["data"]["save"] = save.clone();
+            }
+            Ok(RouteReply::json::<200>(result))
+        }
+    });
+    routes.register::<InsightsRefresh, _, _>(Access::Any, move |_| {
+        let service = service.clone();
+        async move {
+            tokio::spawn(async move {
+                service.recount().await;
+            });
+            Ok(RouteReply::json::<202>(json!({"data":{"scanning":true}})))
+        }
+    });
+}
 pub fn register(routes: &mut Registry, service: Service) {
     register_views(routes, service.clone());
+    register_history(routes, service.clone());
     routes.register::<Summary, _, _>(Access::Any, move |call| {
         let service = service.clone();
         let params = crate::artifacts::routes::parse_query(&call.request.path);
         async move {
+            if params.get("refresh").is_some_and(|value| value == "1") {
+                let reader = service.clone();
+                let task = tokio::spawn(async move {
+                    reader.recount().await;
+                });
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(60), task).await;
+            }
             tokio::task::spawn_blocking(move || {
                 service
                     .summary(params)
@@ -1425,9 +2089,23 @@ impl Service {
             .collect::<Vec<_>>();
         let mut total = json!(totals);
         total["sessions"] = json!(sessions);
-        let coverage = json!([{"key":self.own_key(),"name":self.name,"stale":false,"issues":["native agent and engine history"]}]);
+        let issues = self.issues.lock().expect("usage issues").clone();
+        let counted = self.counted(&db)?;
+        let coverage = json!([{"key":self.own_key(),"name":self.name,"scanned":counted,"stale":false,"issues":issues}]);
+        let state = if !self.ready() {
+            "loading"
+        } else if !issues.is_empty() || totals.partial > 0 {
+            "partial"
+        } else if sessions == 0 {
+            "empty"
+        } else {
+            "ready"
+        };
+        let updated_day = counted
+            .and_then(|at| Timestamp::from_millisecond(at).ok())
+            .map(|at| at.to_zoned(zone.clone()).date().to_string());
         Ok(
-            json!({"data":{"totals":total,"daily":daily,"providers":providers,"breakdowns":{"model":models,"agent":agents,"skill":skills,"day":days_shared},"computers":[{"key":self.own_key(),"name":self.name}],"bots":[],"coverage":coverage,"state":"partial","zone":zone.iana_name().unwrap_or("UTC"),"period":period,"pendingComputers":[],"updatedDay":null,"scanning":false,"localComputers":local_computers,"unavailable":[]}}),
+            json!({"data":{"totals":total,"daily":daily,"providers":providers,"breakdowns":{"model":models,"agent":agents,"skill":skills,"day":days_shared},"computers":[{"key":self.own_key(),"name":self.name}],"bots":[],"coverage":coverage,"state":state,"zone":zone.iana_name().unwrap_or("UTC"),"period":period,"pendingComputers":[],"updatedDay":updated_day,"scanning":!self.ready(),"localComputers":local_computers,"unavailable":[]}}),
         )
     }
 }

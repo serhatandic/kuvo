@@ -246,6 +246,22 @@ impl Service {
             gate: Arc::default(),
         }
     }
+    pub fn codex_fallback(&self) -> (Option<String>, bool) {
+        let shared = self.shared();
+        self.read(shared.as_ref())
+            .ok()
+            .and_then(|settings| {
+                settings
+                    .units
+                    .get("codexFallback")
+                    .map(|unit| (unit.value.as_str().map(str::to_owned), true))
+            })
+            .unwrap_or_default()
+    }
+    pub async fn set_codex_fallback(&self, value: Value) -> Result<Value, Refusal> {
+        self.route(Some(json!({"codexFallback":value})), false)
+            .await
+    }
     fn shared(&self) -> Option<Shared> {
         let link: Value =
             serde_json::from_str(&std::fs::read_to_string(self.run.join("link.json")).ok()?)

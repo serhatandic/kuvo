@@ -1,6 +1,6 @@
 //! Model price resolution against the shipped catalogs and the last fetched copies.
 //! Unknown models stay unknown, never zero-cost estimates.
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
 fn one() -> f64 {
@@ -9,7 +9,7 @@ fn one() -> f64 {
 fn yes() -> bool {
     true
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Rates {
     #[serde(rename = "i")]
     pub input: f64,
@@ -106,6 +106,21 @@ struct SupplementFile {
     fallback_models: BTreeMap<String, Vec<String>>,
     updated_at: Option<String>,
 }
+pub(super) fn validate_supplement(value: &serde_json::Value) -> Result<(), String> {
+    let supplement: SupplementFile =
+        serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    let valid = |n: f64| n.is_finite() && n >= 0.;
+    if !supplement.pricing.values().all(|r| {
+        valid(r.input_per_million)
+            && valid(r.output_per_million)
+            && r.cache_read_per_million.is_none_or(valid)
+            && r.cache_write_per_million.is_none_or(valid)
+    }) || !supplement.fast_multipliers.values().copied().all(valid)
+    {
+        return Err("Invalid price supplement rates".into());
+    }
+    Ok(())
+}
 pub struct Pricing {
     own: BTreeMap<String, Rates>,
     primary: BTreeMap<String, Rates>,
@@ -180,6 +195,15 @@ impl Pricing {
             .get(name)
             .or_else(|| self.primary.get(name))
             .or_else(|| self.secondary.get(name))
+    }
+    pub fn fallback_choices(&self, provider: &str) -> Vec<String> {
+        self.fallback
+            .get(provider)
+            .into_iter()
+            .flatten()
+            .filter(|name| self.fallback_rates(name, provider).is_some())
+            .cloned()
+            .collect()
     }
     pub fn fallback_rates(&self, model: &str, provider: &str) -> Option<&Rates> {
         if !self.fallback.get(provider)?.iter().any(|m| m == model) {

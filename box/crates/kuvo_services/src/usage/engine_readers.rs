@@ -234,6 +234,17 @@ impl Endpoint {
         }
     }
 }
+pub async fn kept_credentials(home: std::path::PathBuf) -> Result<Option<Value>, String> {
+    tokio::task::spawn_blocking(move || {
+        let root = std::env::var_os("KUVO_ENGINE_DATA")
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| home.join("data/opencode"));
+        super::engine_index::credentials(&root).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 #[derive(Clone)]
 pub struct Reader {
     client: reqwest::Client,

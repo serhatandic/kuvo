@@ -212,6 +212,7 @@ pub async fn refresh_engine(
     service: Service,
     engine: kuvo_engine::Engine,
     reader: kuvo_services::usage::engine_readers::Reader,
+    home: std::path::PathBuf,
     selected: Option<String>,
 ) -> bool {
     // Never wake the engine solely to poll quota. If it hasn't opened its credential
@@ -222,21 +223,32 @@ pub async fn refresh_engine(
     {
         return false;
     }
-    let Some(engine) = engine.running_bot_engine().await else {
-        return false;
-    };
-    let credentials = match engine
-        .call(
-            http::Method::GET,
-            "api/credential",
-            None,
-            std::time::Duration::from_secs(15),
-        )
-        .await
-    {
-        Ok(value) => value,
+    let credentials = match kuvo_services::usage::engine_readers::kept_credentials(home).await {
+        Ok(Some(credentials)) => credentials,
+        Ok(None) => {
+            // Legacy installations without a credential table may ask an engine
+            // which is already running; the quota path never launches one.
+            let Some(engine) = engine.running_bot_engine().await else {
+                return false;
+            };
+            match engine
+                .call(
+                    http::Method::GET,
+                    "api/credential",
+                    None,
+                    std::time::Duration::from_secs(15),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("Could not read engine plan accounts: {error}");
+                    return true;
+                }
+            }
+        }
         Err(error) => {
-            eprintln!("Could not read engine plan accounts: {error}");
+            eprintln!("Could not read saved engine plan accounts: {error}");
             return true;
         }
     };
@@ -457,7 +469,13 @@ impl kuvo_services::usage::resets::Port for ResetPort {
     fn refresh<'a>(&'a self, provider: &'a str) -> futures_core::future::BoxFuture<'a, ()> {
         Box::pin(async move {
             if let Some(agents) = self.agents.as_ref() {
-                refresh(self.limits.clone(), agents.clone(), Some(provider.into()), false).await;
+                refresh(
+                    self.limits.clone(),
+                    agents.clone(),
+                    Some(provider.into()),
+                    false,
+                )
+                .await;
             }
         })
     }
