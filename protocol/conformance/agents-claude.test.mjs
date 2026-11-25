@@ -356,7 +356,7 @@ test("a saved Claude session in each agent's slot resumes its own conversation",
   });
 });
 
-test("the Rust keeper keeps an actual Claude adapter turn across a release switch",
+for (const idle of [false, true]) test(idle ? "the Rust keeper adopts idle Claude background commands" : "the Rust keeper keeps an actual Claude adapter turn across a release switch",
   { timeout: 90000 }, async t => {
     const binary = boxBinary();
     if (binary.typescript) {
@@ -375,6 +375,14 @@ test("the Rust keeper keeps an actual Claude adapter turn across a release switc
       const env = { ...claudeEnvironment(binary, home, isolatedEnv(root), { turns: true }), KUVO_SANDBOX: "off" };
       write(path.join(home, "folder-version.json"), '{"version":23}\n');
       seedSession(home, session);
+      if (idle) {
+        write(path.join(env.HOME, "claude-task-output.json"), JSON.stringify({ t_watch: "Listening\n" }));
+        write(path.join(env.HOME, "claude-script.json"), JSON.stringify({ "wait for update": [
+          { type: "assistant", message: { id: "m_bash", role: "assistant", model: "opus", content: [{ type: "tool_use", id: "tool_watch", name: "Bash", input: { command: "npm run watch", run_in_background: true } }] }, parent_tool_use_id: null, session_id: "$SESSION" },
+          { type: "system", subtype: "task_started", task_id: "t_watch", task_type: "local_bash", description: "In the background", tool_use_id: "tool_watch", is_backgrounded: true, session_id: "$SESSION" },
+          { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "t_watch", task_type: "local_bash", description: "In the background" }], session_id: "$SESSION" }, result(["$UUID"]),
+        ] }));
+      }
       const { old, next, control } = twoReleases(binary, home, env, relay);
       try {
         await control(["select", old]);
@@ -385,6 +393,28 @@ test("the Rust keeper keeps an actual Claude adapter turn across a release switc
           id: "msg_fixture_kept", text: "wait for update",
         }, headers);
         assert.equal(started.status, 200, started.text);
+        if (idle) {
+          const bar = async record => (await request(record, "GET", `kuvo/work/background/${session}`, undefined, headers)).json;
+          await until(async () => (await transcript(first, route)).at(-1)?.outcome === "succeeded", "the first turn should finish");
+          const [command] = (await until(async () => { const value = await bar(first); return value?.commands?.length && value; }, "command should be listed")).commands;
+          const initial = await until(() => { const record = heldClaude(home, session); return record && Object.keys(record.meta.turns ?? {}).length === 0 && record; }, "holder should have no active turn");
+          await control(["select", next]);
+          const second = await keptListener(home, keeper, first.pid);
+          residents.push(second.pid);
+          const [restored] = (await until(async () => { const value = await bar(second); return value?.commands?.length && value; }, "idle command should be adopted", 10000)).commands;
+          assert.deepEqual([restored.id, restored.started, restored.command], [command.id, command.started, command.command]);
+          const output = await request(second, "GET", `kuvo/work/background/${session}/commands/${restored.id}/output`, undefined, headers);
+          assert.equal(output.json.output, "Listening");
+          const after = heldClaude(home, session);
+          assert.deepEqual([after.pid, after.child, after.generation], [initial.pid, initial.child, initial.generation + 1]);
+          assert.equal((await request(second, "DELETE", route + "/background", undefined, headers)).status, 200);
+          await until(async () => !(await bar(second)).commands?.length, "Stop must reach the adopted command");
+          const heard = fs.readFileSync(path.join(env.HOME, "claude-heard.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+          assert.equal(heard.filter(line => line.type === "user").length, 1);
+          assert.equal(heard.filter(line => line.request?.subtype === "stop_task" && line.request.task_id === "t_watch").length, 1);
+          kept = after.pid;
+          return;
+        }
         await until(async () => (await transcript(first, route)).some(row =>
           row.content?.[0]?.text === "Before the switch."
         ), "The fixture never began its turn.");

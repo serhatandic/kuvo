@@ -184,7 +184,10 @@ pub async fn run(
         peers.clone(),
     )
     .await?;
-    let sessions = kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions"));
+    let sessions = resident_agents.as_ref().map_or_else(
+        || kuvo_agents::session_store::SessionStore::new(home.join("agents/sessions")),
+        |(runtime, _)| runtime.sessions().clone(),
+    );
     agents::sessions::register(sessions.clone(), &mut routes);
     let agent_background = sessions.background().clone();
     let engine = if let Some((runtime, accounts)) = resident_agents {

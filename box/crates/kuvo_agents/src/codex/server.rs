@@ -74,14 +74,14 @@ impl Server {
     }
 
     /// Keeps whether `session` has commands left running in it in its holder's record.
-    pub async fn note_background(&self, session: &str, working: bool) {
+    pub async fn note_background(&self, session: &str, snapshot: Option<Value>) {
         let sessions = {
             let mut sessions = lock(&self.background);
-            if sessions.contains_key(session) == working {
+            if sessions.get(session) == snapshot.as_ref() {
                 return;
             }
-            if working {
-                sessions.insert(session.to_owned(), Value::Bool(true));
+            if let Some(snapshot) = snapshot {
+                sessions.insert(session.to_owned(), snapshot);
             } else {
                 sessions.remove(session);
             }
@@ -283,7 +283,10 @@ impl Shared {
         server.rpc.notify("initialized", None).await;
         server
             .rpc
-            .note(Metadata::from_iter([("initialized".into(), Value::Bool(true))]))
+            .note(Metadata::from_iter([(
+                "initialized".into(),
+                Value::Bool(true),
+            )]))
             .await;
         Ok(server)
     }
@@ -367,7 +370,10 @@ impl Shared {
                 filter: None,
             },
         );
-        let waiting: std::collections::HashSet<String> = turns.keys().cloned().collect();
+        let mut waiting: std::collections::HashSet<String> = turns.keys().cloned().collect();
+        if !background.is_empty() {
+            waiting.insert("background".into());
+        }
         let (gate, mut open) = tokio::sync::watch::channel(waiting.is_empty());
         let server = Arc::new(Server {
             id: self.next.fetch_add(1, Ordering::Relaxed) + 1,
