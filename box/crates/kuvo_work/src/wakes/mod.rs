@@ -8,7 +8,7 @@
 
 pub mod check;
 pub mod clock;
-mod fire;
+pub(crate) mod fire;
 pub mod folder;
 mod inbox;
 mod routes;

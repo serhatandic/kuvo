@@ -1615,6 +1615,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "hmac 0.12.1",
  "hostname",
  "http",
  "http-body-util",
