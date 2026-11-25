@@ -73,6 +73,23 @@ case: a Helper test where the Rust pack's `bin/kuvo-start` has been replaced by 
 (`exit 1`) still starts `keep` from the saved keeper, which then repairs `bin/kuvo-start`; and
 the 9.3 rehearsal's released-Mac visit to the Mac's own box.
 
+## Part C: `stays` and `next` items
+
+| Item | Proof or owner |
+| --- | --- |
+| 0.7 files, keeper, leave-running | R5. The Helper's own keeper path is row 9.3 (below). |
+| 0.7 first-launch | `compat-stays`: `kuvo/accounts/found` lists an opencode's keys and sign-ins (never a key), the engine's shell keys and connected providers, and the coding agents, saying which parts weren't read; `/use` copies a key into the engine once, refuses a sign-in and one that's gone. The Rust box advertises `accounts.found`. New in Rust (`serve/found.rs`). |
+| 0.7 engine-stop | `compat-stays`: with `run/stopped`, `kuvo/info` says stopped, the engine's routes answer "The engine isn't running.", there's no Stop, and Start takes the older Mac's Stop away. |
+| 0.7 visits | `updates`' "the shell keepers wait for a preparing member, then an offline computer catches up" seeds `run/older-mac` and an older Mac's launcher and still updates the fleet (7.2); R5 records the visit. |
+| 0.7 keeper-number | `bin/kuvo-browser.js`, which carries `keeper: 51`, ships unchanged in every Rust pack (`release-catalogs`); its own scenarios are `browser-keeper-version.test.js`. |
+| 0.7 app-agents-stopped | Only for a box still in the retired app's folder. A Rust Mac box always lives in its own home: the move takes it there and leaves `run/agents-stopped` behind (`kuvo_move/src/mac.rs`, move cases C1/C2). |
+| 0.7 bot-json-job | `agents-bots`: a changed job's line is in the bot's `bot.json` beside its `job.json`. |
+| 0.7 own-envelope | `compat-stays`: a message a client wrote the blocks of itself (`text`, no `words`) reaches the engine as written, with `metadata.kuvo.parts`; a plain one gets none. The phone's `<from-phone>` marking goes with the phone app. |
+| 0.7 limits-own-numbers | Row 5.4: it sits on peer plan limits (`limits-peers.test.ts`, all open there). |
+| beta.1 box-read-change, peers-list | R1–R3, R6. |
+| beta.1 deleted-bots | `agents-bots`: a deleted bot is first in `bots/deleted.json`. |
+| beta.1 mac-moves | Open: Rust keeps a beta.1 Mac's legacy `moved` list but doesn't use it for where a conversation lives. |
+
 **Not served by design** (the lead, 2026-11-25): beta.1's `kuvo-link.js setup` (its
 phone link sync; the phone app is dropped), `kuvo-link.js leave <key>` (removing a machine
 from a beta.1 Mac before it updates) and `box bot-keys-refresh` (the TypeScript box refused it
