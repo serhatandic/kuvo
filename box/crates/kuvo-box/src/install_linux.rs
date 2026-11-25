@@ -113,6 +113,9 @@ fn apply(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
     for directory in [home.root(), updates.as_path(), &install] {
         regular(directory, true)?;
     }
+    if super::refused_install_attempt(&home) {
+        return Ok(1);
+    }
     let scratch = profile != account.home.canonicalize()?;
     let key = scratch
         .then(|| std::env::var("KUVO_TEST_RELEASE_KEY").ok())

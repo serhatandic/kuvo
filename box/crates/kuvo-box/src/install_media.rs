@@ -67,6 +67,9 @@ fn move_app(args: &[OsString]) -> Result<u8, Box<dyn std::error::Error>> {
         .into());
     }
     let home = Home::new(target)?;
+    if super::refused_install_attempt(&home) {
+        return Ok(1);
+    }
     let app = profile.join("Library/Application Support").join(&app_id);
     let before = install::judge(&home, Some(&app), Platform::Mac, None)?;
     if let Some(message) = before.unreadable_move() {

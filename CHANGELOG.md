@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- An installer leaves an interrupted installation from a newer version untouched instead of offering to start over.
+
 - Kuvo Helper’s menu on a Rust computer shows current work, what waits on you, background work, and what your other computers last told it.
 
 - Kuvo on a Mac tells the desktop app when it runs a newer release, and keeps the desktop’s location separate from its browser connection.
