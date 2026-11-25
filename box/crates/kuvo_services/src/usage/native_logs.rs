@@ -12,7 +12,7 @@ use std::{
 const HEAD: usize = 4096;
 // The existing readers skip larger individual records but continue after their newline.
 const LONGEST: usize = 64 << 20;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Claude,
@@ -93,9 +93,12 @@ impl Observation {
                 self.counts.total
             ]),
         };
-        Some(hex::encode(Sha256::digest(
-            serde_json::to_vec(&value).ok()?,
-        )))
+        let key = if kind == Kind::Codex {
+            json!([serde_json::to_string(&value).ok()?])
+        } else {
+            value
+        };
+        Some(hex::encode(Sha256::digest(serde_json::to_vec(&key).ok()?)))
     }
 }
 fn text(v: &Value) -> Option<&str> {
@@ -545,10 +548,80 @@ fn hash_part(file: &mut File, start: u64, length: usize) -> io::Result<String> {
     file.read_exact(&mut buf)?;
     Ok(hex::encode(Sha256::digest(buf)))
 }
+/// Codex writes the app-server's quota snapshot along with token_count events.
+fn codex_limits(row: &Value) -> Vec<super::readings::Window> {
+    use super::readings::{Source, Window};
+    if row["payload"]["type"] != "token_count" {
+        return vec![];
+    }
+    let Some(at) = time(&row["timestamp"]).and_then(|at| u64::try_from(at).ok()) else {
+        return vec![];
+    };
+    let reading = row["payload"]
+        .get("rate_limits")
+        .or_else(|| row["payload"].get("rateLimits"))
+        .unwrap_or(&Value::Null);
+    let limit = reading["limit_id"]
+        .as_str()
+        .or_else(|| reading["limitId"].as_str())
+        .filter(|id| !id.is_empty())
+        .unwrap_or("codex");
+    let model = (limit != "codex").then(|| {
+        reading["limit_name"]
+            .as_str()
+            .or_else(|| reading["limitName"].as_str())
+            .unwrap_or(limit)
+            .to_owned()
+    });
+    ["primary", "secondary"]
+        .into_iter()
+        .filter_map(|id| {
+            let w = &reading[id];
+            let used = w["used_percent"]
+                .as_f64()
+                .or_else(|| w["usedPercent"].as_f64())?;
+            if !used.is_finite() {
+                return None;
+            }
+            let minutes = w["window_minutes"]
+                .as_u64()
+                .or_else(|| w["windowDurationMins"].as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|n| *n > 0);
+            let resets_at = w["resets_at"]
+                .as_u64()
+                .or_else(|| w["resetsAt"].as_u64())
+                .filter(|n| *n > 0)
+                .and_then(|n| {
+                    if n < 10_000_000_000 {
+                        n.checked_mul(1000)
+                    } else {
+                        Some(n)
+                    }
+                });
+            Some(Window {
+                id: if limit == "codex" {
+                    id.into()
+                } else {
+                    format!("{limit}.{id}")
+                },
+                used: used / 100.0,
+                minutes,
+                resets_at,
+                model: model.clone(),
+                name: None,
+                amount: None,
+                read: at,
+                source: Source::Turn,
+            })
+        })
+        .collect()
+}
 pub struct Changes {
     pub cursor: Cursor,
     pub rewritten: bool,
     pub events: Vec<(u64, Observation)>,
+    pub limits: Vec<super::readings::Window>,
 }
 /// A file unchanged since the checkpoint incurs no open/read. For an append, only
 /// the bounded anchors and complete new lines are read. A failed read leaves the
@@ -589,6 +662,7 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
     let mut skipping = false;
     let mut position = cursor.offset;
     let mut observed = vec![];
+    let mut limits = vec![];
     while position < size {
         let available = reader.fill_buf()?;
         if available.is_empty() {
@@ -624,6 +698,9 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
                 };
                 if keep {
                     if let Ok(row) = serde_json::from_slice::<Value>(&buf) {
+                        if kind == Kind::Codex {
+                            limits.extend(codex_limits(&row));
+                        }
                         let events = match kind {
                             Kind::Claude => claude(&row),
                             Kind::Grok => grok(&row),
@@ -661,5 +738,6 @@ pub fn read(file: &Path, kind: Kind, previous: &Cursor, since: i64) -> io::Resul
         cursor,
         rewritten: !append,
         events: observed,
+        limits,
     }))
 }

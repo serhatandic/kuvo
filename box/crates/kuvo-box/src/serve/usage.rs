@@ -64,7 +64,12 @@ fn windows(reading: PlanLimitReading, at: u64, source: Source) -> Vec<Window> {
         })
         .collect()
 }
-pub async fn refresh(service: Service, agents: ResidentAgents, selected: Option<String>) -> bool {
+pub async fn refresh(
+    service: Service,
+    agents: ResidentAgents,
+    selected: Option<String>,
+    explicit: bool,
+) -> bool {
     let roster = agents.roster();
     let mut failed = false;
     for entry in roster.all() {
@@ -75,7 +80,7 @@ pub async fn refresh(service: Service, agents: ResidentAgents, selected: Option<
         {
             continue;
         }
-        match entry.agent.read_plan_limits().await {
+        match entry.agent.read_plan_limits(explicit).await {
             Ok(Some(reading)) => {
                 let Some((mark, identity)) = entry.agent.plan_sign_in().await else {
                     continue;
@@ -410,7 +415,7 @@ impl kuvo_services::usage::resets::Port for ResetPort {
         Box::pin(async move {
             let (agent, _) = self.agent(account).await?;
             let plan = agent
-                .read_plan_limits()
+                .read_plan_limits(false)
                 .await
                 .map_err(|_| Outcome::NotNow)?
                 .ok_or(Outcome::NotNow)?;
@@ -452,7 +457,7 @@ impl kuvo_services::usage::resets::Port for ResetPort {
     fn refresh<'a>(&'a self, provider: &'a str) -> futures_core::future::BoxFuture<'a, ()> {
         Box::pin(async move {
             if let Some(agents) = self.agents.as_ref() {
-                refresh(self.limits.clone(), agents.clone(), Some(provider.into())).await;
+                refresh(self.limits.clone(), agents.clone(), Some(provider.into()), false).await;
             }
         })
     }

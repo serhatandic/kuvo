@@ -273,6 +273,14 @@ impl Trail {
     }
     /// Wake only for a known reset or an estimate of the 90% crossing.
     /// A wake confirms with the maker; it is not itself a new reading.
+    pub fn mark_fired(&mut self, milestone: Milestone) {
+        self.fired.insert(milestone);
+    }
+    pub fn merge_fired(&mut self, other: &Self) {
+        if self.current.resets_at == other.current.resets_at {
+            self.fired.extend(other.fired.iter().copied());
+        }
+    }
     pub fn check_at(&self) -> Option<u64> {
         let reset = self.current.resets_at?;
         let mut due = reset.saturating_add(MINUTE);

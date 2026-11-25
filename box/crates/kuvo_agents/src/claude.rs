@@ -163,8 +163,15 @@ impl Agent for Claude {
         Box::pin(self.program.plan_sign_in())
     }
 
-    fn read_plan_limits(&self) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
-        Box::pin(async {
+    fn read_plan_limits(
+        &self,
+        explicit: bool,
+    ) -> AdapterCall<'_, Option<crate::session::DirectPlanReading>> {
+        Box::pin(async move {
+            // A passive usage request must not launch a separate Claude native probe.
+            if !explicit {
+                return Ok(None);
+            }
             let Some((_, identity)) = self.plan_sign_in().await else {
                 return Ok(None);
             };

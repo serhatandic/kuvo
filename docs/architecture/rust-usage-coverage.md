@@ -15,7 +15,7 @@ Inventory: 392 named or parameterized test declarations. Parameterized declarati
 | Notices | `usage warnings arrive through the existing in-app notice history` | Rust-only correction |
 | Menu | `the Helper menu and warning facts use the same accepted reading` | Rust-only correction |
 | Demand | `manual refresh reads Codex on demand, not on an idle startup` | Rust-only design change |
-| Demand | `a subscribed rail asks for a current reading without an idle polling loop` | Rust-only design change |
+| Demand | `a subscribed rail reads Codex logs without starting an app-server` | Rust-only design change |
 | Insights | `Insights catches up before first open and folds changed transcripts without double-counting` | Rust-only design change (supersedes first-slice demand-only index) |
 | Insights | `a portable transcript contributes its tokens and cache reads to Insights on either box` | Both boxes |
 | Limits | `the empty limits answer states every service and refresh state in the contract order` | Both boxes |
@@ -24,7 +24,9 @@ Inventory: 392 named or parameterized test declarations. Parameterized declarati
 | Claude | `Claude Code answers its plan via its own demand-started control process` | Rust native fixture |
 | Resets | `a Codex reset is offered without spending, journaled before the maker, and replayed once after restart` | Rust native fixture; account switch also refuses the old offer |
 | Resets | `an agent has to ask before spending a reset, and Always Allow is account-specific` | Rust native and engine fixtures through the existing work-ask routes |
-| Menu | `a connected Helper menu requests fresh rings and the same accepted reading reaches its feed` | Rust demand reader |
+| Menu | `a connected Helper menu displays fresh log rings without launching Codex` | Rust passive reader |
+| Native Insights | `native Claude calls replace portable estimates without counting private logs or replays` | Both boxes; Rust append, restart and rewrite checks |
+| Limits peers | `two computers keep one account ring and never replace it with a peer’s older reset` | Two Rust residents through the real relay, local HTTP maker fixtures |
 | Resets | `reset routes refuse missing or unknown accounts without creating a spend` | Both boxes |
 | Standalone plans | `standalone Grok, Cursor and Antigravity read their own fixture accounts` | Rust CLI and loopback HTTP fixtures, including a fake Antigravity refill |
 | SQLite projection cursor | `Insights decodes only changed SQLite transcript projections` | Real Rust transcript writer, watcher and query |
@@ -44,14 +46,24 @@ start rarely used work only on demand.
   index, not a periodic history walk. A lost watcher event permits a checkpoint
   recovery pass. There is no separate Insights process. The startup/file-change
   conformance scenario checks SQLite before the first client query and before the next
-  query, as well as duplicate prevention. Native-file offset cursors and complete
-  native history coverage remain open.
+  query, as well as duplicate prevention. Claude/Codex/Grok JSONL roots have
+  event-driven per-file offsets with bounded prefix/suffix anchors; observations and
+  cursor commit together. Native changes reattribute only saved compact steps, not
+  unchanged transcripts; unowned personal observations are not projected into Insights.
+  Antigravity and engine SQLite history remain open.
 - Limits are refreshed on a rail/menu subscription, a manual refresh, turn readings,
   when a reset/projected crossing becomes due, and on a one-minute wake while an
   authenticated client request or stream is active (provider reads are throttled to
   ten minutes between non-manual refreshes). When there are no connected clients and
   no deadline, there is no periodic wake. The immediate rail/menu cases and the idle
-  startup case demonstrate the difference. A separately timed periodic/client-detach
+  startup case demonstrate the difference. The fourth slice additionally forbids a
+  passive quota read from starting a coding agent: Codex uses an already running
+  app-server, watched recent quota snapshots from its own JSONL logs, or turn events.
+  The app can explicitly refresh to ask the native CLI. Claude and Grok's native probes
+  are also explicit-only; HTTP-only sources do not start CLI processes. The rail and
+  Helper scenarios verify no Codex initialize or quota RPC occurs while log readings
+  reach both surfaces. The deadline wake may read already running providers and HTTP
+  makers, never launch a CLI. A separately timed periodic/client-detach
   and deadline scenario remains open.
 - The price catalog (about 416 KiB bundled) is parsed once per Insights service;
   a new file stamp on one of its three catalog files invalidates the in-memory
@@ -157,12 +169,32 @@ Cumulative size: 209,899 characters in new Rust usage modules and 23,779 added
 characters in existing production Rust files (233,678 total, 0.34× the 687,546
 TS characters; tests and unchanged catalog data excluded).
 
+## Verification of the fourth port slice
+
+Mac usage 22/22; engine-sessions 81/81; TS usage 6/6 applicable (16 fixture,
+correction or timing skips). The same six seeded differential answers match; the
+inventory still differs. The peer scenario first reproduced a new regression:
+two nearly simultaneous reports meant time-ordering alone could prime the merged
+row with the stale 99% reset. Seeding the account's consensus on the first known
+reading, before another participant arrives, fixed it. The full Mac rerun passed
+both computers' merged ring, new readings and restart. The native Claude case
+failed against the previous Rust binary and passes the unchanged TS box; the
+Rust-specific append, rewrite and restart checks passed with the watched index.
+The 4.8 agent-process guard is included. The shared build has an unrelated
+existing dead-code warning (`kuvo_work/src/wakes/fire.rs:129`).
+
+Cumulative size: 266,953 characters in new usage modules and 25,752 added
+characters in existing production Rust files (292,705 total, 0.43× the 687,546
+TS characters, same measure). Static musl on Lokum (one capped container),
+WSL2 Ubuntu 24.04 and native Windows (with libunwind.dll) passed 22/22 each.
+All platform scratch and cross-target build folders were removed.
+
 ## Remaining implementation gaps
 
-- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Claude Linux grants, Antigravity running-profile quota fallback and durable credential refusal/hold semantics (including refresh-only defaults), Cursor history and full fallback/hold parity, full engine-reader edge cases, and peer account merge/refresh.
+- Direct provider limits: all requested provider families now have a local reader fixture. Remaining provider gaps are Claude Linux grants, Antigravity running-profile quota fallback and durable credential refusal/hold semantics (including refresh-only defaults), Cursor history and full fallback/hold parity, full engine-reader edge cases, freshness-based duplicate provider fetch suppression, and full peer refresh/away/notice-state parity.
 - Reset spending: local Codex credit confirmation, replay journal, local Always Allow and the work-ask path are implemented and exercised. Claude grants, peer forwarding/decisions, prolonged unsettled-spend settlement and other reset edge cases remain open.
-- Reading preservation across TS-to-Rust upgrade, multi-computer account identity and notice forwarder election, all card/rail/detail presentation and notice visibility cases.
-- Native Claude/Codex/Grok JSONL parsers and offset checkpoints have scoped tests but are not yet folded into the production index; Antigravity native history, engine SQLite scan, pricing feeds/repricing, history quarter-hour slots, Insights cursor exchange/lineage, model naming and full summary readiness remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
+- Reading preservation across TS-to-Rust upgrade, full mixed-version multi-computer account identity, notice-state handoff and forwarder election, all card/rail/detail presentation and notice visibility cases.
+- Native Claude/Codex/Grok JSONL parsers and offset checkpoints now fold into the production SQLite index and attach managed calls to portable steps; only the Claude boundary scenario is verified so far. Antigravity native history, engine SQLite scan, pricing feeds/repricing, history quarter-hour slots, Insights cursor exchange/lineage, model naming and full summary readiness remain open. The partial Insights overview is explicitly partial and the summary is not advertised as complete.
 - Shared-settings legacy peer mail/version interop and setup migration cases beyond the existing authority's shared save path.
 
 ## TypeScript case inventory
@@ -188,7 +220,7 @@ TS characters; tests and unchanged catalog data excluded).
 
 ### `box/test/usage/insights-checkpoints.test.ts`
 
-- L11: Insights checkpoints local history and counts only changed transcripts after restart — partial — startup/file-change portable index scenario; native checkpoints and restart case open.
+- L11: Insights checkpoints local history and counts only changed transcripts after restart — partial — startup/file-change portable index, compact mutation cursor, native Claude append/rewrite/restart scenario; exact all-source case remains open.
 - L41: Insights adds engine updates without replaying the older calls in the same database — open.
 - L74: learning the box's peer name leaves its unchanged local history checkpoint in place — open — related portable checkpoint scenario above; this exact case not yet ported.
 - L111: a large backfill keeps all usage as it releases batches and stays finished after a restart — open.
@@ -226,7 +258,7 @@ TS characters; tests and unchanged catalog data excluded).
 - L207: resume peer pages, reject vouched computers, and price incoming records locally — open.
 - L231: rewind an in-range cursor, then reset again when the serving peer learns the retired origin — open.
 - L281: historical replay converges on complete counts and rejects a conflicting unrelated origin — open.
-- L312: isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and the Kuvo engine uses its SQLite reader — open.
+- L312: isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and the Kuvo engine uses its SQLite reader — partial — managed native Claude supplies portable step counts, duplicate/private log excluded, native Codex/Grok integration not yet boundary-tested; AG and engine SQLite open.
 - L423: legacy history stays on its provider slot through sign-in changes, while observed accounts stay pinned — open.
 - L458: opening an unversioned Insights database stamps it without losing records — open.
 
@@ -263,7 +295,7 @@ TS characters; tests and unchanged catalog data excluded).
 
 ### `box/test/usage/limits-peers.test.ts`
 
-- L233: an account signed in on three computers is read from its maker once each round, by one of them, and every one lists it once with its newest reading — open.
+- L233: an account signed in on three computers is read from its maker once each round, by one of them, and every one lists it once with its newest reading — partial — two-computer merged account with stale reset rejection and restart; one maker fetch per round not yet proved.
 - L285: computers that read at the same moment settle on one reader by the next round — open.
 - L301: a refresh asked of one computer reads there only what's due, and asks the computer an account is on for one it doesn't have — open.
 - L324: a computer that's off keeps its last reading, listed as of when it was read and away, through a restart; what it read is read elsewhere once it's due — open.
@@ -279,7 +311,7 @@ TS characters; tests and unchanged catalog data excluded).
 - L579: a computer you removed goes from the list, with its accounts — open.
 - L588: a peer whose clock is an hour ahead holds this box back no longer than one whose clock is right — open.
 - L604: what goes between them is the readings, never a sign-in or who the account is at its maker — open.
-- L624: what your own machine last told is kept whole through a restart: shown once the link confirms the computer is a peer — open.
+- L624: what your own machine last told is kept whole through a restart: shown once the link confirms the computer is a peer — partial — two-computer peer reading survives restart, exact old wire/cache fixture still open.
 - L653: a weekly forecast combines both computers' readings and survives a fallback to an older reading — open.
 - L688: a box still shows the weekly forecast it learned from a peer after it restarts — open.
 - L710: usage names a reachable computer while its first limits snapshot is in flight — open.
@@ -600,7 +632,7 @@ TS characters; tests and unchanged catalog data excluded).
 - L36: Claude's logs: the lines that count, deduplicated, priced, by the day (UsageKit's ClaudeLogUsageScanner) — open.
 - L58: the bundled prices name each model's rates as UsageKit's do: aliases, fast variants, fuzzy keys, models.dev, none — open.
 - L106: an account's logs as days in the zone a client asks for: late evening in UTC is the next day in Istanbul — open.
-- L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — partial — native JSONL complete-line/append/rewrite test; full retained usage index open.
+- L142: a log as it grows is read on from where it was; one rewritten shorter is read again whole; the numbers stay through a restart — partial — native JSONL complete-line/append/rewrite test and native Claude Insights append/rewrite/restart. Usage history totals route open.
 - L170: a subagent's log replaying its parent's reply counts once; an account removed goes; one with no identity yet is its box's own row — open.
 - L189: a client's days are today and the 30 before it, in its zone — open.
 - L201: fetched hourly with what it was last sent, used from the next scan on, kept for the next start; a feed that fails or says nonsense changes nothing — open.

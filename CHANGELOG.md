@@ -13,6 +13,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Rust computers serve Settings pages and keep individual changes with their own revisions. New conversations start in Ask First when no supported mode has been chosen.
 - Rust computers keep usage notice settings and use accepted Claude Code and Codex turn readings for the menu rings and in-app usage warnings.
 - Rust computers read Claude Code, Codex, Grok, Cursor, Antigravity and supported engine plan limits, offer Codex resets through the existing confirmation cards, and keep the portable Insights index ready by reading changed transcript projections.
+- Rust computers share plan limit readings and keep one consistent ring per account. Codex rings and Insights update from watched native logs without starting an idle coding agent.
 
 - Rust computers support editing projects and using Changes to view, stage, discard, commit, switch branches, merge worktrees and create pull requests.
 - Changes and project edits accept Windows folder paths.
