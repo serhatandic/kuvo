@@ -88,6 +88,14 @@ fn an_install_is_owned_by_where_it_really_is() {
 }
 
 #[test]
+fn a_program_is_shown_as_you_type_it() {
+    assert_eq!(shown_name(Path::new("/home/me/.local/bin/codex")), "codex");
+    assert_eq!(shown_name(Path::new("/home/me/bin/codex.CMD")), "codex");
+    assert_eq!(shown_name(Path::new("/home/me/bin/codex.exe")), "codex");
+    assert_eq!(shown_name(Path::new("/opt/tools/codex.js")), "codex.js");
+}
+
+#[test]
 fn what_an_installer_printed_is_read_as_words() {
     let printed = "\x1b[1;31merror\x1b[0m:\x1b[3Cfailed\x1b]0;title\x07\x1b(B\x1b[2Hnext";
     assert_eq!(versions::plain(printed), "error:   failed\nnext");

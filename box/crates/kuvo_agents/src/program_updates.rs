@@ -235,9 +235,7 @@ struct Updater {
 async fn resolve_updater(definition: &Definition) -> Updater {
     let executable = &definition.executable;
     let real = std::fs::canonicalize(executable).unwrap_or_else(|_| executable.clone());
-    let name = executable
-        .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let name = shown_name(executable);
     let native = definition.native.as_ref().map(|native| Updater {
         command: Some(
             std::iter::once(executable.to_string_lossy().into_owned())
@@ -301,6 +299,21 @@ async fn resolve_updater(definition: &Definition) -> Updater {
         return Updater::default();
     }
     native.unwrap_or_default()
+}
+
+/// A program's name as you'd type it: `codex`, also where Windows found `codex.CMD`.
+fn shown_name(executable: &Path) -> String {
+    let runs = executable.extension().is_some_and(|extension| {
+        ["exe", "cmd", "bat"]
+            .iter()
+            .any(|known| extension.eq_ignore_ascii_case(known))
+    });
+    let name = if runs {
+        executable.file_stem()
+    } else {
+        executable.file_name()
+    };
+    name.map_or_else(String::new, |name| name.to_string_lossy().into_owned())
 }
 
 /// The Homebrew that owns `keg`, its upgrade and the newest it has.

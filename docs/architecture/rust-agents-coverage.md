@@ -935,6 +935,16 @@ installer, which isn't ported here. It's to be looked at again in 9.0.
 | WSL2, Ubuntu 24.04 (musl) | 94/94 | — | 6/6 | — |
 | Native Windows x64 | 94/94 | — | 6/6 | — |
 
+| Platform | agents-updates, Rust | agents-updates, TypeScript | agents-session-reads, Rust | agents-session-reads, TypeScript |
+|---|---:|---:|---:|---:|
+| macOS | 9/9 | 9/9 | 4/4 | 4/4 |
+| Linux x86-64, lokum (musl) | 9/9 | — | 4/4 | — |
+| WSL2, Ubuntu 24.04 (musl) | 9/9 | — | 4/4 | — |
+| Native Windows x64 | 8/8, 1 skipped (links to programs are Unix's) | — | 4/4 | — |
+
+On Windows the PATH finds `codex.CMD`; the command shown to update it by hand is still
+"codex update", as people type it.
+
 "Two asked in one turn" answered before Codex began the sleep it asked from, on WSL, and that answer was told again as the sleep began, as the reference does. The case now waits for the sleep, as the next case does.
 
 Seen once: one case of agents-codex failed against the reference on macOS after the merge of main at c8d59d9da and passed on two reruns (unnamed in that run's output).
