@@ -449,7 +449,7 @@ fn file_entry(path: &Path) -> io::Result<Option<(String, u64)>> {
             text,
             file.file.to_string(),
             file.size.to_string(),
-            file.changed_ns.to_string()
+            file.retained_change_ns().to_string()
         ])),
         file.size,
     )))

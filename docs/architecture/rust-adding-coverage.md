@@ -103,10 +103,13 @@ At the branch tip after merging main on 2026-11-25, the five process areas
 with no skips; TypeScript 52 with thirteen skips. Rust SSH cases need a copied
 release under 128 MiB, so they run with a build at `opt-level=1`, without debug
 information and stripped. The static x86-64 musl build in WSL 2 passes 60 with
-five skips; TypeScript there passes 47 with eighteen skips. Native Windows passes
-29 with 34 platform skips. Its two re-enrollment cases failed until the
-disposable artifact index was left out of retained work, and are rerun below.
-The TypeScript box does not run natively (it cannot fsync there). Seen once:
+five skips; TypeScript there passes 47 with eighteen skips, and a lokum
+container capped at one CPU and 1 GB passes the same 60 with five skips. Native
+Windows passes 31 with 34 platform skips. Its two re-enrollment cases first
+failed: Windows moves every file's change time between Kuvo's starts, so there
+retained work is stamped by last write time, and the disposable artifact index
+is left out on every platform. The TypeScript box does not run natively (it
+cannot fsync there). Seen once:
 TypeScript's offline wipe case timed out waiting for the member to learn the
 main's removal capability, and passed on the next run.
 
