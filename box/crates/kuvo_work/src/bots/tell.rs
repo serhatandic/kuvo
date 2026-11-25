@@ -260,25 +260,38 @@ impl Bots {
         }
     }
 
-    /// Every bot whose conversation is on the engine, told what it is now where that changed, and
-    /// its rules put right: as the box finds its engine, and as its app asks after a change to its
-    /// words. Those with the coding agents are left to their bridge.
+    /// Every bot whose conversation is on the engine or the coding agents, told what it is now
+    /// where that changed, and its rules put right: as the box finds its engine, and as its app
+    /// asks after a change to its words.
     pub async fn freshen_all(&self) {
+        self.freshen_those(false).await;
+    }
+
+    /// As `freshen_all`, the coding agents' bots alone (`agents`): as the box starts, with them.
+    pub(super) async fn freshen_those(&self, agents: bool) {
         let ids = crate::wakes::folder::names(&self.inner.bots);
-        let mut engine = None;
+        let (mut engine, mut theirs) = (None, None);
         for id in ids {
             let Some(here) = BotHere::read(&self.inner.bots, &id).filter(|here| !here.moving())
             else {
                 continue;
             };
-            if here.agents {
+            let engine = if here.agents {
+                if theirs.is_none() {
+                    let work = self.inner.engine.work_engine().await;
+                    theirs = Some(work.agents_here().then_some(work));
+                }
+                theirs.as_ref().and_then(Option::as_ref)
+            } else if agents {
                 continue;
-            }
-            if engine.is_none() {
-                engine = self.inner.engine.running_bot_engine().await;
-            }
-            let Some(engine) = engine.as_ref() else {
-                return;
+            } else {
+                if engine.is_none() {
+                    engine = Some(self.inner.engine.running_bot_engine().await);
+                }
+                engine.as_ref().and_then(Option::as_ref)
+            };
+            let Some(engine) = engine else {
+                continue;
             };
             if reach::told_there(engine, &here.session).await.is_none()
                 && !engine.has_session(&here.session).await
@@ -299,15 +312,14 @@ impl Bots {
         self.settle_folder(&here, kit.as_ref());
         self.changed();
         let kit = kit.ok_or_else(|| (409, super::kit::NO_KIT.to_owned()))?;
-        if here.agents {
-            return Err((503, super::AGENTS_DOWN.to_owned()));
-        }
-        let engine = self
-            .inner
-            .engine
-            .bot_engine()
-            .await
-            .ok_or_else(|| (503, "The engine isn’t running.".to_owned()))?;
+        let engine = if here.agents {
+            let engine = self.inner.engine.work_engine().await;
+            let down = || (503, super::AGENTS_DOWN.to_owned());
+            engine.agents_here().then_some(engine).ok_or_else(down)?
+        } else {
+            let down = || (503, "The engine isn’t running.".to_owned());
+            self.inner.engine.bot_engine().await.ok_or_else(down)?
+        };
         let text = self.told_now(&kit, &here, &here.described);
         let there = reach::told_there(&engine, &here.session).await;
         let already = there

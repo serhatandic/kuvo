@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use http::Method;
 use kuvo_server::Refusal;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::{
     Engine, NoteEdits,
@@ -161,8 +161,11 @@ impl BotEngine {
         source.stop_background(session).await.ok()
     }
 
-    /// Whether the engine has the conversation.
+    /// Whether the engine, or the coding agents, have the conversation.
     pub async fn has_session(&self, session: &str) -> bool {
+        if self.theirs(session).await.is_some() {
+            return true;
+        }
         sessions::valid_id(session)
             && self
                 .call(Method::GET, &sessions::path(session), None, WAIT)
@@ -207,6 +210,32 @@ impl BotEngine {
         session: &str,
         change: impl FnOnce(&Value) -> Option<NoteEdits>,
     ) -> Result<(), Refusal> {
+        if let Some((source, header)) = self.engine.agent_session(session).await? {
+            let mut metadata = header
+                .get("metadata")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            let Some(edits) = change(&Value::Object(header)) else {
+                return Ok(());
+            };
+            let Some(mut patch) = edits.change(&mut metadata) else {
+                return Ok(());
+            };
+            let patch = crate::AgentSessionPatch {
+                title: None,
+                permissions: patch.get_mut("permissions").map(Value::take),
+                metadata: patch
+                    .get_mut("metadata")
+                    .and_then(|metadata| metadata.as_object_mut().map(std::mem::take)),
+            };
+            let saved = source.update(session, patch).await.map_err(|error| {
+                Refusal::new(http::StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            })?;
+            return saved.map(|_| ()).ok_or_else(|| {
+                Refusal::new(http::StatusCode::NOT_FOUND, "That conversation isn't here.")
+            });
+        }
         let mut writer = self.engine.note_writer(session).await?;
         let now = writer.current().await?;
         if let Some(edits) = change(&now) {
@@ -216,97 +245,111 @@ impl BotEngine {
     }
 }
 
-/// A bot's conversation with the coding agents: made, its rules and notes kept, told what it is,
-/// greeted, and taken away again where making it didn't finish.
+/// A bot's conversation with the coding agents: made, renamed, put on another model, told what it
+/// is, greeted, and taken away.
 impl BotEngine {
     /// Whether the coding agents run on this computer.
     pub fn agents_here(&self) -> bool {
         self.engine.agent_sessions.is_some()
     }
 
-    fn agent_source(&self) -> Result<std::sync::Arc<dyn crate::AgentSessionSource>, Unreachable> {
-        self.engine
-            .agent_sessions
-            .clone()
-            .ok_or_else(|| Unreachable("The coding agents aren’t on this computer.".into()))
+    /// The models the coding agents run here, as the picker lists them; none where they can't
+    /// say.
+    pub async fn agent_models(&self) -> Vec<Value> {
+        let Some(models) = self.engine.agent_models.as_ref() else {
+            return Vec::new();
+        };
+        match models.catalog(false).await {
+            Ok(catalog) => catalog.models().collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// The coding agents, where `session` is one of their conversations.
+    async fn theirs(&self, session: &str) -> Option<std::sync::Arc<dyn crate::AgentSessionSource>> {
+        Some(self.engine.agent_session(session).await.ok()??.0)
     }
 
     /// A coding agent's conversation made, `body` as `POST api/session` takes it: as made.
     pub async fn agent_create(&self, body: Value) -> Result<Value, Unreachable> {
-        let source = self.agent_source()?;
+        let source = self.engine.agent_sessions.clone();
+        let source = source
+            .ok_or_else(|| Unreachable("The coding agents aren’t on this computer.".into()))?;
         crate::start_session::create_on_agents(&self.engine, source.as_ref(), body)
             .await
             .map_err(|error| Unreachable(error.to_string()))
     }
 
-    /// Its rules (`permissions`) and Kuvo Code's notes on it (`kuvo`, onto those it has).
-    pub async fn agent_keep(
-        &self,
-        session: &str,
-        notes: Map<String, Value>,
-        permissions: Value,
-    ) -> Result<(), Unreachable> {
-        let source = self.agent_source()?;
-        let gone = || Unreachable("The conversation it made went.".into());
-        let unread = |error: std::io::Error| Unreachable(error.to_string());
-        let now = source
-            .session(session)
-            .await
-            .map_err(unread)?
-            .ok_or_else(gone)?;
-        let mut metadata = now
-            .get("metadata")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let mut kuvo = metadata
-            .get("kuvo")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        kuvo.extend(notes);
-        metadata.insert("kuvo".into(), Value::Object(kuvo));
-        let patch = crate::AgentSessionPatch {
-            title: None,
-            permissions: Some(permissions),
-            metadata: Some(metadata),
-        };
-        source
-            .update(session, patch)
-            .await
-            .map_err(unread)?
-            .map(|_| ())
-            .ok_or_else(gone)
-    }
-
-    /// One of Kuvo Code's instructions for a coding agent's conversation set; whether it was.
-    pub async fn agent_tell(&self, session: &str, key: &str, text: &str) -> bool {
-        let Ok(source) = self.agent_source() else {
-            return false;
-        };
-        source
-            .set_instruction(session, key, Some(text.to_owned()))
-            .await
-            .unwrap_or(false)
-    }
-
-    /// A message from Kuvo Code into a coding agent's conversation.
-    pub async fn agent_synthetic(&self, session: &str, text: &str, description: &str) -> bool {
-        let Ok(source) = self.agent_source() else {
-            return false;
-        };
-        source
-            .synthetic(session, text.to_owned(), Some(description.to_owned()))
+    /// The conversation renamed, the engine's or the coding agents'; whether it was.
+    pub async fn rename(&self, session: &str, title: &str) -> bool {
+        if let Some(source) = self.theirs(session).await {
+            let patch = crate::AgentSessionPatch {
+                title: Some(title.to_owned()),
+                permissions: None,
+                metadata: None,
+            };
+            return matches!(source.update(session, patch).await, Ok(Some(_)));
+        }
+        let path = sessions::path(session);
+        let body = serde_json::json!({ "title": title });
+        self.call(Method::PATCH, &path, Some(&body), WAIT)
             .await
             .is_ok()
     }
 
-    /// A coding agent's conversation taken away.
-    pub async fn agent_delete(&self, session: &str) -> bool {
-        let Ok(source) = self.agent_source() else {
+    /// The conversation put on `model` from its next turn; whether it was.
+    pub async fn select_model(&self, session: &str, model: &Value) -> bool {
+        if let Some(source) = self.theirs(session).await {
+            return source
+                .select_model(session, model.clone())
+                .await
+                .unwrap_or(false);
+        }
+        let path = format!("{}/model", sessions::path(session));
+        let body = serde_json::json!({ "model": model });
+        self.call(Method::POST, &path, Some(&body), WAIT)
+            .await
+            .is_ok()
+    }
+
+    /// What a coding agents' conversation is told under `key`: `None` where it isn't theirs
+    /// (or they can't say), `Some(None)` for nothing.
+    pub async fn agent_told(&self, session: &str, key: &str) -> Option<Option<String>> {
+        let entries = self.theirs(session).await?.instructions(session).await;
+        let entries = entries.ok()??;
+        Some(entries.get(key).and_then(Value::as_str).map(str::to_owned))
+    }
+
+    /// A coding agents' conversation told `text` under `key`: `None` where it isn't theirs,
+    /// else whether it was.
+    pub async fn agent_tell(&self, session: &str, key: &str, text: &str) -> Option<bool> {
+        let source = self.theirs(session).await?;
+        let told = source.set_instruction(session, key, Some(text.to_owned()));
+        Some(told.await.unwrap_or(false))
+    }
+
+    /// A message from Kuvo Code into a coding agent's conversation.
+    pub async fn agent_synthetic(&self, session: &str, text: &str, description: &str) -> bool {
+        let Some(source) = self.theirs(session).await else {
             return false;
         };
-        source.delete(session).await.unwrap_or(false)
+        let description = Some(description.to_owned());
+        source
+            .synthetic(session, text.to_owned(), description)
+            .await
+            .is_ok()
+    }
+
+    /// A coding agent's conversation taken away; whether it's gone (or wasn't there).
+    pub async fn delete_agent_session(&self, session: &str) -> bool {
+        let Some(source) = self.engine.agent_sessions.clone() else {
+            return false;
+        };
+        match source.session(session).await {
+            Ok(Some(_)) => source.delete(session).await.is_ok(),
+            Ok(None) => true,
+            Err(_) => false,
+        }
     }
 }
 

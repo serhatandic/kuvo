@@ -1,6 +1,7 @@
 // Bots on a coding agent's model (PROTOCOL.md, `kuvo/bots`): made with that agent, its conversation
-// kept as a bot's (its rules, its notes), told what it is, and greeting you; and Add Agent in the
-// Marketplace makes one the same way. Claude Code and Codex, each with its stand-in.
+// kept as a bot's (its rules, its notes), told what it is, and greeting you; changed, brought here,
+// told again and deleted through it; and Add Agent in the Marketplace makes one the same way.
+// Claude Code and Codex, each with its stand-in.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -19,7 +20,7 @@ const agents = [
 ];
 
 for (const [name, providerID, id, scripted] of agents) {
-  test(`a bot on ${name}'s model is made with it, kept as a bot's, told what it is, and greets you; Add Agent makes one too`, { timeout: 120000, skip }, async () => {
+  test(`a bot on ${name}'s model is made, changed, told again and deleted with it; Add Agent makes one too`, { timeout: 120000, skip }, async () => {
     const harness = await scripted({});
     try {
       write(path.join(harness.home, "bin", "bot-words.json"), fs.readFileSync(words));
@@ -56,6 +57,30 @@ for (const [name, providerID, id, scripted] of agents) {
       const heard = JSON.stringify(providerID === codex ? harness.sent("thread/start") : harness.heard());
       assert.match(heard, /Scout/, "its agent wasn't told what it is");
 
+      // Changed: renamed and given a job, its conversation renamed and told so.
+      const changed = await ask("PATCH", `kuvo/bots/${bot.id}`, { name: "Scout Two", jobLine: "Watch the build" });
+      assert.equal(changed.status, 200, changed.text);
+      assert.equal(changed.json.bot.name, "Scout Two");
+      assert.equal(readJSON(path.join(harness.home, "agents", "sessions", session, "session.json")).title, "Scout Two");
+      const told = () => readJSON(path.join(harness.home, "agents", "sessions", session, "agent.json")).kuvoInstructions["kuvo.bot"];
+      assert.match(told(), /Scout Two/);
+      assert.match(told(), /Watch the build/);
+      // Its effort, one of its model's own, as its coding agent lists them.
+      if (providerID === codex) {
+        const effort = await ask("PATCH", `kuvo/bots/${bot.id}`, { effort: "high" });
+        assert.equal(effort.status, 200, effort.text);
+        assert.deepEqual(effort.json.bot.model, { providerID, id, variant: "high" });
+        assert.equal((await ask("PATCH", `kuvo/bots/${bot.id}`, { effort: "max" })).status, 400, "not one of its efforts");
+      }
+      // Brought here (Move to Computer); and told again what it is as its words change (an update).
+      const arrived = await ask("POST", `kuvo/bots/${bot.id}/arrived`, {});
+      assert.equal(arrived.status, 200, arrived.text);
+      const kit = JSON.parse(fs.readFileSync(words, "utf8"));
+      kit.instructions = [...kit.instructions, "Words from an update."];
+      write(path.join(harness.home, "bin", "bot-words.json"), JSON.stringify(kit));
+      assert.equal((await ask("POST", "kuvo/bots/retell", {})).status, 200);
+      await until(() => /Words from an update/.test(told()), "It wasn't told again what it is.", 15000, 100);
+
       // Add Agent in the Marketplace, on the same model.
       const details = await ask("GET", "kuvo/marketplace/agents/coding-reviewer");
       assert.equal(details.status, 200, details.text);
@@ -68,6 +93,13 @@ for (const [name, providerID, id, scripted] of agents) {
       assert.equal(added.json.bot.job, "Review changes for regressions and summarize findings for the author.");
       const reviewer = readJSON(path.join(harness.home, "agents", "sessions", added.json.bot.session, "agent.json"));
       assert.match(reviewer.kuvoInstructions["kuvo.bot"], /Review a selected diff/);
+
+      // Deleted: its conversation goes with it.
+      const deleted = await ask("DELETE", `kuvo/bots/${bot.id}`);
+      assert.equal(deleted.status, 200, deleted.text);
+      await until(() => !fs.existsSync(path.join(harness.home, "agents", "sessions", session)), "Its conversation stayed.", 15000, 100);
+      const left = fs.existsSync(path.join(harness.home, "run", "bots-left.json")) ? readJSON(path.join(harness.home, "run", "bots-left.json")).left : [];
+      assert.notEqual(left.find(each => each.id === bot.id)?.conversation, true, "its conversation isn't left to go later");
     } catch (error) {
       throw new Error([error.message, harness.log()].join("\n"), { cause: error });
     } finally {

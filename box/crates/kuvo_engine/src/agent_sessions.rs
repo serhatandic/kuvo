@@ -134,6 +134,17 @@ pub trait AgentSessionSource: Send + Sync {
         Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
     }
 
+    /// Kuvo Code's instructions for the conversation, by key; `None` when it isn't here.
+    fn instructions<'a>(&'a self, _id: &'a str) -> AgentCall<'a, Option<Map<String, Value>>> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
+    /// The conversation put on `model` from its next turn, as a client's picker does. False
+    /// when it isn't here.
+    fn select_model<'a>(&'a self, _id: &'a str, _model: Value) -> AgentCall<'a, bool> {
+        Box::pin(async { Err(io::ErrorKind::Unsupported.into()) })
+    }
+
     /// What waits in the conversation's line, as the engine lists its inbox,
     /// or `None` when the coding agents don't keep it.
     fn line<'a>(&'a self, _id: &'a str) -> AgentCall<'a, Option<Vec<Value>>> {

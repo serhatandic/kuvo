@@ -272,6 +272,19 @@ impl SessionStore {
         .await?
     }
 
+    /// Kuvo Code's instructions for the conversation (`kuvoInstructions`); none for one not here.
+    pub async fn kuvo_instructions(&self, id: &str) -> io::Result<Option<Map<String, Value>>> {
+        self.mutate_existing_with(id, |folder| {
+            let agent = read_agent(folder)?;
+            Ok(agent
+                .get("kuvoInstructions")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default())
+        })
+        .await
+    }
+
     /// One of Kuvo Code's instructions for the conversation (`kuvoInstructions`), set or taken
     /// away (`None`). False for one not here.
     pub async fn set_instruction(

@@ -107,6 +107,30 @@ pub async fn usable_models(engine: &BotEngine) -> Vec<Usable> {
         .collect()
 }
 
+/// The coding agents' models here, as `usable_models` reads the engine's.
+pub async fn usable_agent_models(engine: &BotEngine) -> Vec<Usable> {
+    let strings = |value: &Value| -> Vec<String> {
+        let list = value.as_array().into_iter().flatten();
+        list.filter_map(Value::as_str).map(str::to_owned).collect()
+    };
+    let models = engine.agent_models().await;
+    models
+        .iter()
+        .filter_map(|each| {
+            let id = each.get("id")?.as_str()?;
+            let name = each["name"].as_str().filter(|name| !name.is_empty());
+            Some(Usable {
+                provider: each.get("providerID")?.as_str()?.to_owned(),
+                id: id.to_owned(),
+                name: name.unwrap_or(id).to_owned(),
+                efforts: strings(&each["efforts"]),
+                aliases: strings(&each["aliases"]),
+                retiring: each["retiring"] == true,
+            })
+        })
+        .collect()
+}
+
 /// The model named `model` among `models`: by its own id, else one it's an alias of.
 pub fn model_named<'a>(model: &Value, models: &'a [Usable]) -> Option<&'a Usable> {
     let provider = model["providerID"].as_str()?;
@@ -164,6 +188,9 @@ fn instructions(session: &str) -> String {
 /// What a conversation is told as a bot (its `kuvo.bot` entry): its words, `Some(None)` for none,
 /// `None` where that can't be read.
 pub async fn told_there(engine: &BotEngine, session: &str) -> Option<Option<String>> {
+    if let Some(told) = engine.agent_told(session, "kuvo.bot").await {
+        return Some(told);
+    }
     let entries = engine
         .call(Method::GET, &instructions(session), None, BOT_STEP)
         .await
@@ -179,6 +206,9 @@ pub async fn told_there(engine: &BotEngine, session: &str) -> Option<Option<Stri
 
 /// The conversation told `text` as a bot; whether it got there.
 pub async fn tell(engine: &BotEngine, session: &str, text: &str) -> bool {
+    if let Some(told) = engine.agent_tell(session, "kuvo.bot", text).await {
+        return told;
+    }
     engine
         .call(
             Method::PUT,

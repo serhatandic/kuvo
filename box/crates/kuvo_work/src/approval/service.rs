@@ -237,8 +237,10 @@ impl ApprovalService {
     /// A conversation's rules made for what its approval comes to now, where they aren't (a bot's
     /// from before there were approvals: this computer's default). Whether it's so.
     pub async fn settle_session(&self, engine: &BotEngine, id: &str) -> bool {
-        match self.session(engine, id).await {
-            Some(at) => self.settle(engine, &at).await,
+        // (A bot's, which may be the coding agents'.)
+        let data = engine.session_data(id).await.ok();
+        match data.filter(|data| data["id"].is_string()) {
+            Some(data) => self.settle(engine, &self.found(data)).await,
             None => false,
         }
     }

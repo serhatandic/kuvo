@@ -292,8 +292,6 @@ impl Bots {
         };
         let given_model = given.get("model").and_then(bot_model);
         let agents = runs_with_agents(given_model.as_ref());
-        // (The engine for the model it starts on and for its conversation; the coding agents' bridge
-        // isn't in this box yet.)
         // (The engine for a model of its own, and for its conversation; the coding agents', which
         // run in this box, for one of theirs.)
         let engine = if agents {
@@ -373,16 +371,9 @@ impl Bots {
         if let Err(error) = made {
             if let Some(session) = &session {
                 if agents {
-                    engine.agent_delete(session).await;
+                    engine.delete_agent_session(session).await;
                 } else {
-                    let _ = engine
-                        .call(
-                            Method::DELETE,
-                            &format!("api/session/{}", segment(session)),
-                            None,
-                            BOT_STEP,
-                        )
-                        .await;
+                    engine.delete_session(session).await;
                 }
             }
             let _ = std::fs::remove_dir_all(&folder);
@@ -500,31 +491,19 @@ impl Bots {
             ("approval", json!(kept.approval.word())),
             ("applied", json!(kept.effective.word())),
         ];
-        if agents {
-            let permissions = json!(made_rules.iter().map(permission).collect::<Vec<_>>());
-            let notes = notes
-                .into_iter()
-                .map(|(key, value)| (key.to_owned(), value))
-                .collect();
-            engine
-                .agent_keep(&made, notes, permissions)
-                .await
-                .map_err(|error| error.to_string())?;
-        } else {
-            engine
-                .rewrite(&made, |_| {
-                    Some(NoteEdits {
-                        kuvo: notes
-                            .into_iter()
-                            .map(|(key, value)| (key.to_owned(), Some(value)))
-                            .collect(),
-                        permissions: Some(made_rules.iter().map(permission).collect()),
-                        ..NoteEdits::default()
-                    })
+        engine
+            .rewrite(&made, |_| {
+                Some(NoteEdits {
+                    kuvo: notes
+                        .into_iter()
+                        .map(|(key, value)| (key.to_owned(), Some(value)))
+                        .collect(),
+                    permissions: Some(made_rules.iter().map(permission).collect()),
+                    ..NoteEdits::default()
                 })
-                .await
-                .map_err(|_| "The conversation it made went.".to_owned())?;
-        }
+            })
+            .await
+            .map_err(|_| "The conversation it made went.".to_owned())?;
         let told = kit.instructions_for(
             name,
             &folder.display().to_string(),
@@ -537,12 +516,7 @@ impl Bots {
                 })
                 .as_ref(),
         );
-        let told_it = if agents {
-            engine.agent_tell(&made, "kuvo.bot", &told).await
-        } else {
-            reach::tell(engine, &made, &told).await
-        };
-        if !told_it {
+        if !reach::tell(engine, &made, &told).await {
             return Err("Its conversation wasn’t told what it is.".into());
         }
         std::fs::write(folder.join("session"), &made).map_err(fail)?;
