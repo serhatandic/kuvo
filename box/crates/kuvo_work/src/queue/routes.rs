@@ -204,6 +204,10 @@ impl Runtime {
         self._writer.edits.clone()
     }
 
+    pub fn queue_review(&self) -> Arc<dyn kuvo_setup::backup::QueueReview> {
+        self._writer.review.clone()
+    }
+
     pub fn peer_reads(&self) -> PeerReads {
         self.reads.clone()
     }
