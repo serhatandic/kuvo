@@ -5,12 +5,13 @@
 
 use kuvo_os::{
     platform::{Environment, git_bash, git_bash_spawn},
-    process::Stdio,
+    process::{Spawn, Stdio, process_parents, process_started, tcp_listeners},
     windows::{private_folder, private_home, system_directory},
 };
 use std::{
     env, fs,
-    io::{ErrorKind, Read},
+    io::{BufRead, BufReader, ErrorKind, Read},
+    net::TcpListener,
     path::Path,
     process::Command,
 };
@@ -120,6 +121,42 @@ fn git_bash_runs_crlf_commands_and_git_tracks_a_long_path_with_spaces() {
             "{link:?}"
         );
     }
+}
+
+#[test]
+fn listening_sockets_name_their_process_and_its_parent() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let own = std::process::id();
+    assert!(tcp_listeners().unwrap().contains(&(own, port)));
+
+    // A child that listens names this process as its parent, and started after it.
+    let powershell = system_directory()
+        .unwrap()
+        .join(r"WindowsPowerShell\v1.0\powershell.exe");
+    let environment = env::vars_os().filter(|(name, _)| !name.as_encoded_bytes().contains(&b'='));
+    let mut spawn = Spawn::new(powershell, environment.collect());
+    spawn.args = [
+        "-NoProfile",
+        "-Command",
+        "$l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::IPv6Loopback,0);$l.Start();\
+         [Console]::WriteLine($l.LocalEndpoint.Port);Start-Sleep 60",
+    ]
+    .map(Into::into)
+    .to_vec();
+    spawn.stdout = Stdio::Pipe;
+    let mut child = spawn.spawn().unwrap();
+    let pid = child.identity().pid;
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let port: u16 = line.trim().parse().unwrap();
+    assert!(tcp_listeners().unwrap().contains(&(pid, port)));
+    assert_eq!(process_parents().unwrap().get(&pid), Some(&own));
+    assert!(process_started(own).unwrap() <= process_started(pid).unwrap());
+    child.stop(std::time::Duration::ZERO, |_| {}).unwrap();
+    assert_eq!(process_started(pid), None);
 }
 
 #[test]

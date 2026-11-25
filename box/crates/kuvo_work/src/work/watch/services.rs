@@ -1,7 +1,7 @@
 //! Which of the commands a session left running are services, listening on TCP ports (a dev
 //! server): its finish doesn't wait on those. Each command leads a process group of its own, so
-//! the ports are found by group: `lsof` on macOS, `/proc` on Linux. Windows has no process groups
-//! of this kind; nothing there is found to listen yet.
+//! the ports are found by group: `lsof` on macOS, `/proc` on Linux. Windows has no process groups:
+//! there the group is the command's process tree.
 
 use std::collections::BTreeMap;
 
@@ -139,14 +139,75 @@ fn from_proc(groups: &[u32], proc: &std::path::Path) -> BTreeMap<u32, Vec<u16>> 
     found
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Each listening socket's owner, and its parents up to a command's process: like a group, it
+/// still counts after the command's own shell has exited.
+#[cfg(windows)]
+async fn found_in(groups: Vec<u32>) -> BTreeMap<u32, Vec<u16>> {
+    use kuvo_os::process::{process_parents, process_started, tcp_listeners};
+    tokio::task::spawn_blocking(move || {
+        let (Ok(listeners), Ok(parents)) = (tcp_listeners(), process_parents()) else {
+            return BTreeMap::new();
+        };
+        from_tree(&groups, &listeners, |pid| parents.get(&pid).copied(), process_started)
+    })
+    .await
+    .unwrap_or_default()
+}
+
+#[cfg(any(windows, test))]
+fn from_tree(
+    groups: &[u32],
+    listeners: &[(u32, u16)],
+    parent: impl Fn(u32) -> Option<u32>,
+    started: impl Fn(u32) -> Option<u64>,
+) -> BTreeMap<u32, Vec<u16>> {
+    let mut found = BTreeMap::new();
+    for &(owner, port) in listeners.iter().filter(|(_, port)| *port > 0) {
+        let mut pid = owner;
+        // (A loop in stale parents ends with the depth.)
+        for _ in 0..64 {
+            if groups.contains(&pid) {
+                add(&mut found, pid, port);
+                break;
+            }
+            let Some(up) = parent(pid).filter(|up| *up > 1 && *up != pid) else {
+                break;
+            };
+            // A parent younger than its child has another's reused PID.
+            if let (Some(older), Some(child)) = (started(up), started(pid))
+                && older > child
+            {
+                break;
+            }
+            pid = up;
+        }
+    }
+    found
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 async fn found_in(_groups: Vec<u32>) -> BTreeMap<u32, Vec<u16>> {
     BTreeMap::new()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::from_proc;
+    use super::{from_proc, from_tree};
+
+    #[test]
+    fn a_process_tree_holding_a_listening_socket_is_a_service() {
+        // 70 ran `npm run dev` (71), which started the server (72) and exited; 90 started
+        // later with a PID 80 once had, so its listener isn't 80's.
+        let parents = [(71, 70), (72, 71), (73, 72), (91, 80), (95, 95)];
+        let starts = [(70, 10), (72, 12), (73, 13), (80, 50), (91, 20), (95, 5)];
+        let parent = |pid| parents.iter().find(|(child, _)| *child == pid).map(|(_, up)| *up);
+        let started = |pid| starts.iter().find(|(each, _)| *each == pid).map(|(_, at)| *at);
+        let listeners = [(73, 5173), (73, 5173), (72, 24678), (91, 8080), (95, 9000), (70, 0)];
+        let found = from_tree(&[70, 80, 95], &listeners, parent, started);
+        assert_eq!(found.get(&70), Some(&vec![5173, 24678]));
+        assert_eq!(found.get(&80), None);
+        assert_eq!(found.get(&95), Some(&vec![9000]));
+    }
 
     #[test]
     fn a_group_holding_a_listening_socket_is_a_service() {
@@ -162,6 +223,32 @@ mod tests {
         let found = from_proc(&[70], root);
         #[cfg(unix)]
         assert_eq!(found.get(&70), Some(&vec![5173]));
+        #[cfg(not(unix))]
+        assert!(found.is_empty());
         assert!(from_proc(&[71], root).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_server_a_windows_command_left_running_is_a_service() {
+        use kuvo_os::{platform::git_bash_spawn, process::Stdio};
+        use std::io::BufRead as _;
+        let folder = tempfile::tempdir().unwrap();
+        let source = "powershell.exe -NoProfile -Command '$l=[Net.Sockets.TcpListener]::new(\
+                      [Net.IPAddress]::Loopback,0);$l.Start();\
+                      [Console]::WriteLine($l.LocalEndpoint.Port);Start-Sleep 60'";
+        let env = std::env::vars_os().collect();
+        let mut spawn = git_bash_spawn(env, folder.path(), source).unwrap();
+        spawn.stdout = Stdio::Pipe;
+        let mut child = spawn.spawn().unwrap();
+        let group = child.identity().pid;
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let port: u16 = line.trim().parse().unwrap();
+        let found = super::listening_ports(&[group]).await;
+        child.stop(std::time::Duration::ZERO, |_| {}).unwrap();
+        assert_eq!(found.get(&group), Some(&vec![port]));
     }
 }
