@@ -158,6 +158,8 @@ impl Program {
         let meta = json!({
             "provider": self.provider, "kind": "codex", "key": "", "compaction": compaction,
             "fence": "", "fenced": false, "turns": {},
+            // (Until it's initialized: one whose resident went before then is of no use to the next.)
+            "initialized": false,
         });
         Ok(Start {
             command,

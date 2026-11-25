@@ -254,11 +254,15 @@ impl Adoption for Codex {
     fn attach<'a>(
         &'a self,
         _: &'a Account,
-        _record: Record,
+        record: Record,
         _turns: BTreeMap<String, TurnNote>,
         controller: Controller,
     ) -> AdapterCall<'a, ()> {
         Box::pin(async move {
+            if record.meta.get("initialized") == Some(&Value::Bool(false)) {
+                self.shared.discard(controller).await;
+                return Ok(());
+            }
             self.shared.adopt(controller).await?;
             Ok(())
         })

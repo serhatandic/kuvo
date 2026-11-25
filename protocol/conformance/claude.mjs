@@ -83,14 +83,25 @@ export function heldClaude(home, session) {
 export async function stopFixtureHolders(home) {
   const folder = path.join(home, "run", "agents", "hold");
   const journals = () => fs.existsSync(folder) ? fs.readdirSync(folder).filter(name => /^[a-f\d]{12}\.journal$/.test(name)) : [];
-  const records = holderRecords(home);
-  const known = new Set(records.map(record => `${record.id}.journal`));
-  await stopPids(records.map(record => record.pid));
-  // A holder still starting as its resident went (on Windows, ended outright) has no record to stop
-  // it by yet: it ends by itself, and its journal with it.
-  const starting = () => journals().some(name => !known.has(name));
+  const stopped = new Set();
+  // (Stopped outright on Windows, a holder leaves its journal: one with a record is known gone.)
+  const known = new Set();
+  const stopNew = async () => {
+    const records = holderRecords(home).filter(record => !stopped.has(record.pid));
+    for (const record of records) {
+      stopped.add(record.pid);
+      known.add(`${record.id}.journal`);
+    }
+    await stopPids(records.map(record => record.pid));
+  };
+  await stopNew();
+  // A holder still starting as its resident went (on Windows, ended outright) has no record yet:
+  // it's stopped once it has one, or ends by itself, its journal with it.
   const deadline = Date.now() + 10000;
-  while (starting() && Date.now() < deadline) await new Promise(done => setTimeout(done, 50));
+  while (journals().some(name => !known.has(name)) && Date.now() < deadline) {
+    await stopNew();
+    await new Promise(done => setTimeout(done, 50));
+  }
 }
 
 export async function stopPids(pids) {

@@ -919,6 +919,26 @@ describe("Codex that won't start", { skip }, () => {
   });
 });
 
+test("an app-server its resident left as it was starting, never initialized, is stopped by the next rather than taken up", { timeout: 60000, skip: boxBinary().typescript ? "The reference doesn't mark an app-server it hasn't initialized." : skip }, async () => {
+  const id = "ses_codex_orphan";
+  await withCodex({}, async (codex) => {
+    await codex.prompt(id, "Hello.");
+    const started = () => [...new Set(codex.heard().filter((line) => line.message?.method === "initialize").map((line) => line.pid))];
+    const [pid] = await until(() => started().length && started(), "Codex was never started.");
+    const alive = (each) => { try { process.kill(each, 0); return true; } catch { return false; } };
+    // The resident ends outright (as a crash, or Windows ending it), its start under way.
+    process.kill(codex.listener.pid, "SIGKILL");
+    await until(() => !alive(codex.listener.pid), "The resident didn't end.");
+    assert.ok(alive(pid), "Its holder didn't keep the app-server for a next resident.");
+    await codex.stop();
+    await codex.start();
+    await until(() => !alive(pid), "The next resident left the app-server it couldn't use running.", 15000);
+  }, (codex) => {
+    codex.seed(id, { directory: codex.root });
+    write(path.join(codex.root, "codex-never-initializes"), "");
+  });
+});
+
 describe("Codex in the session's modes, and MCP asks", { skip }, () => {
   const box = resident();
   const mcpAsk = (item, server, tool) => ({ ask: ["mcpServer/elicitation/request", { itemId: item, serverName: server, message: `Allow the ${server} MCP server to run tool "${tool}"?`, mode: "form", requestedSchema: { type: "object", properties: {} }, _meta: { codex_approval_kind: "mcp_tool_call", tool_name: tool } }] });

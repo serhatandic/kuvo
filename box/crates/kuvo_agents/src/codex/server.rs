@@ -281,7 +281,25 @@ impl Shared {
             return Err(error);
         }
         server.rpc.notify("initialized", None).await;
+        server
+            .rpc
+            .note(Metadata::from_iter([("initialized".into(), Value::Bool(true))]))
+            .await;
         Ok(server)
+    }
+
+    /// An app-server an earlier resident left as it was starting, never initialized: of no use (Codex
+    /// refuses a second time), so it's stopped, its holder with it.
+    pub async fn discard(&self, controller: Controller) {
+        let options = Options {
+            framing: Framing::Bare,
+            first_id: 1,
+            filter: None,
+        };
+        let (rpc, _incoming) = Rpc::over(controller, options);
+        eprintln!("Stopping Codex app-server: never initialized");
+        rpc.stop().await;
+        rpc.ended(ENDS).await;
     }
 
     /// An app-server an earlier resident left held, this resident's own again as it is
