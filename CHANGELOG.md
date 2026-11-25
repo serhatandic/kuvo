@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- When one computer cannot download an update, another can send the right build even if they use different systems.
+
 - Send Now, Steer and Resume still arrange waiting messages during an engine update, and attached files wait with them.
 - Saved Work Queue attachments on Rust computers stay available while other work is being saved.
 
