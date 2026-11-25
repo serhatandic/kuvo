@@ -857,17 +857,61 @@ impl Writer {
 
     fn strict_items(&self, now: i64) -> Result<(Vec<String>, Vec<Item>), Refusal> {
         let mut owners = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut repeated = std::collections::HashSet::new();
         for file in queue_files(&self.store.root.join("queues")) {
             if let Some(owner) = file
                 .file_stem()
                 .and_then(|name| name.to_str())
                 .filter(|name| owner_id(name))
             {
-                self.read_owner(owner, now)?;
+                let document = self.read_owner(owner, now)?;
+                for row in &document.items {
+                    if let Some(id) = row["id"].as_str().filter(|id| store::item_id(id))
+                        && row["title"].is_string()
+                        && !seen.insert(id.to_owned())
+                    {
+                        repeated.insert(id.to_owned());
+                    }
+                }
                 owners.push(owner.to_owned());
             }
         }
-        Ok((owners, self.store.items().map_err(storage_refusal)?))
+        let items = self.store.items().map_err(storage_refusal)?;
+        // A handoff can leave the old row behind if the source write was interrupted.
+        // Remove only duplicate rows after all owner files have been validated,
+        // keeping the same winner as ordinary reads, before the next mutation.
+        if !repeated.is_empty() {
+            let winners = items
+                .iter()
+                .filter(|item| repeated.contains(&item.id))
+                .map(|item| (item.id.as_str(), item.owner.as_str()))
+                .collect::<std::collections::HashMap<_, _>>();
+            for owner in &owners {
+                let mut document = self.read_owner(owner, now)?;
+                let before = document.items.len();
+                let mut kept = std::collections::HashSet::new();
+                document.items.retain(|row| {
+                    let Some(id) = row["id"].as_str() else {
+                        return true;
+                    };
+                    !row["title"].is_string()
+                        || winners.get(id).is_none_or(|winner| {
+                            *winner == owner.as_str() && kept.insert(id.to_owned())
+                        })
+                });
+                if document.items.len() != before {
+                    if document.items.is_empty() {
+                        files::remove_file_synced(&document.path)
+                            .map_err(Error::from)
+                            .map_err(storage_refusal)?;
+                    } else {
+                        document.save(&self.store).map_err(storage_refusal)?;
+                    }
+                }
+            }
+        }
+        Ok((owners, items))
     }
 
     fn read_owner(&self, owner: &str, now: i64) -> Result<Document, Refusal> {

@@ -43,15 +43,32 @@ fn current(root: &Path) -> Result<bool, Error> {
 }
 
 pub(super) fn migrate(root: &Path) -> Result<(), Error> {
+    migrate_once(root).map_err(|error| match error {
+        Error::Io(error) => Error::Migration(format!(
+            "The Work Queue's items couldn't be moved over to statuses on this computer ({error}), so nothing was changed. Check {} (is the disk full?), then try again.",
+            root.display()
+        )),
+        error => error,
+    })
+}
+
+fn migrate_once(root: &Path) -> Result<(), Error> {
     if current(root)? || !root.try_exists()? {
         return Ok(());
     }
     let _moving = StaleLock::acquire(
         &root.join(".moving-to-statuses"),
         STALE,
-        Duration::ZERO,
+        Duration::from_millis(25),
         OnBusy::Refuse,
-    )?;
+    )
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::WouldBlock {
+            Error::Migration("The Work Queue's items are being moved over to statuses on this computer right now, so nothing was changed. Try again in a moment (two minutes at most, if what was moving them was cut off).".into())
+        } else {
+            error.into()
+        }
+    })?;
     let _queues = store::exclusive(&root.join(".lock"), Duration::from_secs(10))?;
     if current(root)? {
         return Ok(());

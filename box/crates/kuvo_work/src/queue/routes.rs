@@ -393,6 +393,7 @@ pub(super) fn storage_refusal(error: Error) -> Refusal {
                 "message": error.to_string(),
             }),
         ),
+        Error::Migration(message) => Refusal::new(StatusCode::BAD_REQUEST, message),
         _ => internal(error),
     }
 }
