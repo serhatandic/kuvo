@@ -808,3 +808,61 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
   wake-ups' commands).
 - Those following wake-ups are told as a tool changes them (`Wakes::changed`), as there.
 
+
+## 5.1c — notices
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `notices` (`Notices`, `Notice`, `Told`): kept in `run/notices/told.json` under its lock, short and in plain words, news ten minutes and what agents sent a day, three hundred at most; the history clients follow (`kuvo/notices`, 2.2) read again as each is kept | `notices/told.ts` `keepTold`, `readTold` |
+| `notices::news`: what's news in an event (a permission in a few plain words with what Always saves, a question, a failure with its reason, a reply that answers you: NOTIFY_RULE, `turn_for`, `answers_you`), where it opens and its project's name (`kuvo_services::git::ProjectNames`); from the engine's events and the coding agents' turns that ended (`Engine::agent_events`), followed in `Work::watch` | `notices/news.ts` `noticeFor`, `turnFor`, `answersYou`, `describePermission`, `describeForm`, `alwaysTitle`, `projectNameOf`; `engine/watch.ts`; `work/answers.ts` `sessionsWaitingOnServer` |
+| `notices::notify`: notify_user's sentence and limits (three an hour, twelve a day, two minutes apart, ten an hour from all agents, never the same sentence twice a day); the tool in `agent_tools::own` | `notices/notify.ts` |
+| `notices::words`: a reply's first sentence, Markdown taken off, addresses as names, a command as its programs, a reason only where it's words | `notices/sentence.ts`, `notices/plain.ts` |
+| `notices::mask`: what looks like a secret as dots, held to `box/test/fixtures/masking.json` | `notices/mask.ts` |
+
+### Proof
+
+- `KUVO_CONFORMANCE_AREA=notices`, a new area, on the machine and the Mac: a reply to you is news in
+  its first sentence; a lead's session answering it isn't; a failure with its reason; a permission
+  in a few plain words, its command never shown, so its buttons don't answer it, with what Always
+  saves. notify_user sends a sentence once; the same again, and nothing to say, are refused (on the
+  Mac only: the reference tells from a machine only through its bridge). Both pass against both
+  boxes; on the old Rust nothing was told and notify_user was refused.
+- `agents-codex.test.mjs`, a new case: a Codex conversation's reply to you is news. Both boxes.
+- Unit tests: the 41 masking cases; sentences, permissions and reasons; what began a turn; Always's
+  words; notify_user's limits.
+- Regressions: `tools` 10/10, `work` 15/15, `bots` 40/40, `agent-tools` 2/2, `agents-codex`,
+  `engine-sessions` 81/81, both boxes.
+- Size: about 50,800 characters of Rust for about 50,500 of TypeScript: 1.0×.
+
+### TypeScript tests
+
+| Test | Cases | Rust |
+|---|---|---|
+| [notices-rule](../../box/test/notices-rule.test.ts) | 1, 4, 6 a reply to you, a lead's session's, a failure | `notices` scenario |
+| | 2, 3, 13 a bot's report and its own wake-up, a timer turn, a turn whose start is out of reach | `turn_for` and `answers_you` unit tests |
+| | 7 a question said as its question | `describe_form`'s unit test; `notice_for` |
+| | 8, 15 a reply's sentence | `words` unit tests |
+| | 9, 14, 16 notify_user once, its limits, all agents together, the same sentence after other writes | `notices` scenario; `past_limit`'s unit test |
+| | 12 a long turn read back to its start | `News::latest_turn`, unproven by a scenario |
+| | 5 a goal's word | retired with goal cards |
+| | 10 what agents send goes to your phones once | retired with phone push |
+| | 11 the history clients read | 2.2 |
+| [notices-plain](../../box/test/notices-plain.test.ts) | 1–7 commands, permissions, questions, finishes and asks in a few plain words | `words` unit tests and the `notices` scenario; the vault's, sandbox's and project asks' words with them (6.1) |
+| [masking](../../box/bridge-tests/masking.test.js) | the fixture | `mask`'s unit test |
+
+### Gaps and owners
+
+- **Holds and pushes to phones** (`notices/hold.ts`, `push.ts`, `run/held-notices.json`): retired
+  with phone push. The phone app is dropped for now and will be rebuilt as a new client, which can
+  bring its own delivery then. `kuvo/attention`'s leases stay (2.2).
+- **notify_user on a machine**: the Rust resident always tells (it is the bridge as well); the
+  reference tells from a machine only while its bridge runs.
+- **What the coding agents ask** (their cards): not news here yet; their turns' ends are. 4.x, with
+  their asks as events.
+- **Group chats' news** (`groupNotice`): 5.3. **A coding agent's update notice** (`updateNotice`):
+  4.x, with the agents' updates.
+- **Asks the box keeps** (`notices/asking.ts`: the vault's and the sandbox's): 6.1. **Usage
+  notices**: 5.4.
+- **A permission Auto's reviewer took up** is told as any other: the reviewer is 6.1.
