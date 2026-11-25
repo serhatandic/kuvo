@@ -526,3 +526,47 @@ Fixed in `allWakes`, with `box/test/wakes-events-shape.test.ts` (fails on the ol
 - **A conversation that isn't anywhere**: Stop's refusal is worded differently in the two boxes
   ("There's no such conversation here." against "That conversation isn't here."). This was so
   before this change; the queue routes own it (4.x).
+
+## 5.1f-1 — a lead's sessions here, from another computer
+
+### Where it lives
+
+| Rust | TypeScript |
+|---|---|
+| `work::elsewhere::Elsewhere` (`RemoteWork`): `inspect` (who it's for lives elsewhere, the session is here), `apply` (list_sessions, stop_session, compact_session), attached in `serve.rs` through `ResidentPeers::attach_work`, which advertises `work.elsewhere` | `letters/calls.ts` `takeCall` (its checks against the sessions here, and the three tools' part) |
+| `Work::tell_rows`, `rows_elsewhere`: the rows of sessions whose lead lives elsewhere, worked out again as work or moves change and each minute, published through `WorkHandle::publish` | `work/elsewhere.ts` `rowsElsewhere`, `pushRows` (the sending and the per-computer bookkeeping are the peers', `work_rows::Snapshots`) |
+| `watch::tools`: `live_rows`, `describe_work`, `context_of`, `under`, `line_of`, `one_of_mine`, `stop_session_tool`, `compact_session_tool`. These are the cores 5.1e's own tools use too. | `work/tools.ts` `liveRows`, `oneOfMine`, `stopSessionTool`, `compactSessionTool`; `work/tree.ts` `describeWork`, `contextOf`, `under`, `lineOf` |
+| `remote_work`: a computer that work isn't admitted with now (`View::work_admitted`: mid-handover of the coding agents' bridge, or this one on a trial) counts as away at offer and retry, and a call from it isn't taken, so its sender tries again | The letters' and moves' gate, the same `work_admitted` |
+| `wakes::folder::hold_archived`, shared by the wake-up routes and stop_session's `archive` | `areas/wakes.ts` `holdArchived` |
+
+### Proof
+
+- `work-elsewhere.test.mjs`, new: two computers joined through the relay. A TypeScript lead on
+  Studio runs its sessions on Lab:
+  - list_sessions lists Lab's two sessions of its, latest first, and not Lab's own conversation;
+  - Lab tells Studio their rows (`run/work/elsewhere`);
+  - stop_session stops one there;
+  - compact_session summarizes one there.
+
+  It passes with Lab running either box on macOS, and with Lab running the Rust box on Linux (WSL,
+  static musl). The lead is the TypeScript box (`KUVO_LEAD_BIN`) until 5.1e gives the Rust box its
+  own tools. The TypeScript box doesn't run on native Windows, so the case is skipped there until
+  then.
+- On native Windows and Linux: `work` 15/15, `bots` 40/40, `peers` and `two-boxes` against the
+  Rust box.
+- `work` 15/15, `bots` 40/40, `engine-sessions`, `peers` and `two-boxes` against the Rust box.
+
+### Gaps and owners
+
+- **answer_ask from another computer**: Lab refuses it as something it can't do yet. Answering
+  needs the allow policy (`policy.ts` `allowRefusal`), the sandbox state and the ask's call: 5.1f-1b.
+- **start_session, list_models, list_projects and stop_work from another computer**: these go under
+  `work.elsewhere.start`, which isn't advertised yet. A lead's homes come from a start's call; the
+  case seeds `run/work/homes.json` meanwhile. 5.1f-2.
+- **Answers to this computer's own calls** (`RemoteWork::deliver`): it makes none until its leads
+  have the tools, 5.1e.
+- **The coding agents' sessions**: only the engine's sessions are listed and reached from another
+  computer; the bridge's are 4.6.
+- **Native Windows** for the two-computer case: it needs a Rust lead, 5.1e.
+- **Calls while work isn't admitted**: no case puts two computers mid-handover. The check is the
+  one the letters and moves use. The switch-over cases (7.x) own handover.
