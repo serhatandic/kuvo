@@ -40,7 +40,8 @@ pub(super) struct Account {
     /// The plan Codex last said, and who it said it of.
     plan_read: Plain<Option<(Option<String>, String)>>,
     token_plan: Plain<Option<String>>,
-    models: Plain<Option<Models>>,
+    models: Plain<Option<CachedModels>>,
+    listing: tokio::sync::Mutex<()>,
     /// Moves as what Codex listed goes: a listing begun before isn't kept.
     generation: AtomicU64,
     /// This adapter's own, so a client tells its lists from another's.
@@ -49,6 +50,12 @@ pub(super) struct Account {
     windows: Plain<HashMap<String, u64>>,
     /// Where it says its sign-in changed, and of which account.
     told: std::sync::OnceLock<(crate::feed::Feed, String)>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct CachedModels {
+    identity: Option<String>,
+    models: Models,
 }
 
 impl Account {
@@ -179,7 +186,16 @@ impl Account {
         lock(&self.rate_limits).clear();
         *lock(&self.plan_read) = None;
         *lock(&self.token_plan) = None;
+        // A sign-in can expose a different catalog. Don't serve the prior account's copy.
+        self.clear_catalog(shared).await;
+        let _ = self.refresh_models(shared, server, false).await;
+    }
+
+    pub async fn clear_catalog(&self, shared: &Shared) {
         self.forget_models();
+        let _listing = self.listing.lock().await;
+        self.forget_models();
+        let _ = tokio::fs::remove_file(shared.program.catalog_file()).await;
     }
 
     pub fn forget_models(&self) {
@@ -204,31 +220,10 @@ impl Account {
             return Ok(answer);
         }
         answer.installed = true;
-        let failed = |error: io::Error| match error.kind() {
-            io::ErrorKind::TimedOut => CheckFailure::TimedOut,
-            _ => CheckFailure::Failed(error.to_string()),
-        };
-        let server = shared.server().await.map_err(failed)?;
-        let identity = shared.program.identity().await;
-        let result = server
-            .rpc
-            .request(
-                "account/read",
-                Some(json!({})),
-                Some(Duration::from_secs(20)),
-            )
-            .await
-            .map_err(|error| failed(error.into()))?;
-        if !result.is_object() {
-            return Err(CheckFailure::Failed(
-                "Codex couldn't say whether it's signed in.".into(),
-            ));
-        }
-        let info = &result["account"];
-        if info.is_null() {
+        let Some((info, identity)) = shared.program.account_info().await else {
             answer.message = Some("Sign in to Codex with ChatGPT or an OpenAI API key.".into());
             return Ok(answer);
-        }
+        };
         answer.signed_in = true;
         if info["type"] == "chatgpt" {
             let plan = info["planType"].as_str().map(str::to_owned);
@@ -328,34 +323,110 @@ impl Account {
         Ok(())
     }
 
-    /// Codex's models, as it lists them (with those it hides from its picker, which it still runs):
-    /// the ones it listed last while it can't say.
+    /// Listing models never starts a server. Keep the last complete list through a restart; on
+    /// first use, Codex's own cache may already know what an installed Codex runs.
     pub async fn models(&self, shared: &Arc<Shared>, refresh: bool) -> io::Result<Models> {
-        let generation = {
-            let models = lock(&self.models);
-            if let (Some(models), false) = (&*models, refresh) {
-                return Ok(models.clone());
-            }
-            self.generation.load(Ordering::Relaxed)
-        };
-        match self.list(shared, refresh).await {
-            Ok(mut models) => {
-                models.generation = Some(format!("{}-{generation}", self.prefix));
-                let mut kept = lock(&self.models);
-                if self.generation.load(Ordering::Relaxed) == generation {
-                    *kept = Some(models.clone());
-                }
-                Ok(models)
-            }
-            Err(error) => match (&*lock(&self.models), refresh) {
-                (Some(models), false) => Ok(models.clone()),
-                _ => Err(error),
-            },
+        let identity = shared.program.identity().await;
+        if !refresh
+            && let Some(cached) = lock(&self.models).clone()
+            && cached.identity == identity
+        {
+            return Ok(cached.models);
         }
+        if let Some(server) = shared.current().await
+            && *lock(&server.signed_in_as) == identity
+        {
+            if let Ok(models) = self.refresh_models(shared, &server, refresh).await {
+                return Ok(models);
+            }
+        }
+        let mut models = match tokio::fs::read(shared.program.catalog_file()).await {
+            Ok(bytes) => serde_json::from_slice::<CachedModels>(&bytes)
+                .ok()
+                .filter(|cached| cached.identity == identity)
+                .map(|cached| cached.models),
+            Err(_) => None,
+        };
+        if models.is_none()
+            && let Some(home) = shared.program.codex_home()
+        {
+            models = tokio::fs::read(home.join("models_cache.json"))
+                .await
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|cache| native_models(&cache));
+        }
+        let mut models = models.unwrap_or_default();
+        for model in &mut models.models {
+            if let Some(window) = lock(&self.windows).get(&model.id) {
+                model.context = Some(*window);
+            }
+        }
+        models.generation = Some(format!(
+            "{}-{}",
+            self.prefix,
+            self.generation.load(Ordering::Relaxed)
+        ));
+        Ok(models)
     }
 
-    async fn list(&self, shared: &Arc<Shared>, refresh: bool) -> io::Result<Models> {
-        let server = shared.server().await?;
+    /// Update the cache while a real turn or sign-in already has a server. A change tells the
+    /// model picker, even if it was opened before the first turn.
+    pub async fn refresh_models(
+        &self,
+        shared: &Shared,
+        server: &Server,
+        refresh: bool,
+    ) -> io::Result<Models> {
+        let _listing = self.listing.lock().await;
+        let generation = self.generation.load(Ordering::Relaxed);
+        let identity = lock(&server.signed_in_as).clone();
+        let mut models = self.list(shared, server, refresh).await?;
+        // A concurrently changed sign-in or stopped server cannot publish the old list.
+        if server.closed() || *lock(&server.signed_in_as) != identity {
+            return Err(io::Error::other(
+                "Codex's account changed while listing models.",
+            ));
+        }
+        let changed = {
+            let mut kept = lock(&self.models);
+            if self.generation.load(Ordering::Relaxed) != generation {
+                return Ok(models);
+            }
+            let changed = kept.as_ref().is_none_or(|before| {
+                before.identity != identity
+                    || before.models.models != models.models
+                    || before.models.complete != models.complete
+            });
+            let generation = if changed {
+                self.generation.fetch_add(1, Ordering::Relaxed) + 1
+            } else {
+                generation
+            };
+            models.generation = Some(format!("{}-{generation}", self.prefix));
+            *kept = Some(CachedModels {
+                identity: identity.clone(),
+                models: models.clone(),
+            });
+            changed
+        };
+        if changed {
+            let path = shared.program.catalog_file();
+            let bytes = serde_json::to_vec(&CachedModels {
+                identity,
+                models: models.clone(),
+            })?;
+            let _ =
+                tokio::task::spawn_blocking(move || kuvo_store::files::write_atomic(&path, &bytes))
+                    .await;
+            if let Some((feed, _)) = self.told.get() {
+                feed.emit("model.updated", json!({"program":"codex"}));
+            }
+        }
+        Ok(models)
+    }
+
+    async fn list(&self, shared: &Shared, server: &Server, refresh: bool) -> io::Result<Models> {
         if refresh {
             // model/list reads its cache first: only that file goes, after it started.
             shared.program.forget_model_cache()?;
@@ -475,6 +546,40 @@ impl Account {
             resets_at: resets(&plan),
         })
     }
+}
+
+/// Codex keeps its catalog in its own `models_cache.json` as model specifications. Until the
+/// app-server has provided the definitive picker list, this is a useful initial list, not proof
+/// that a model missing from it is gone.
+fn native_models(cache: &Value) -> Option<Models> {
+    let mut specs = cache["models"].as_array()?.iter().collect::<Vec<_>>();
+    specs.sort_by_key(|info| info["priority"].as_i64().unwrap_or(i64::MAX));
+    let models = specs
+        .into_iter()
+        .filter_map(|info| {
+            let id = info["slug"].as_str()?;
+            Some(Model {
+                id: id.into(),
+                name: info["display_name"].as_str().unwrap_or(id).into(),
+                aliases: Vec::new(),
+                efforts: info["supported_reasoning_levels"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|level| level["effort"].as_str().map(str::to_owned))
+                    .collect(),
+                speeds: speeds(&info["service_tiers"]),
+                hidden: info["visibility"] == "hide",
+                retiring: false,
+                provisional: false,
+                context: info["context_window"].as_u64(),
+            })
+        })
+        .collect();
+    Some(Models {
+        models,
+        ..Models::default()
+    })
 }
 
 /// The speeds a model runs at besides its standard one: its service tiers (one called `default`

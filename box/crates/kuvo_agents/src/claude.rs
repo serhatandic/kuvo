@@ -41,6 +41,7 @@ use crate::{
 pub struct ClaudeFactory {
     home: Home,
     holder_binary: PathBuf,
+    feed: Option<crate::feed::Feed>,
 }
 
 impl ClaudeFactory {
@@ -48,7 +49,13 @@ impl ClaudeFactory {
         Self {
             home,
             holder_binary,
+            feed: None,
         }
+    }
+
+    pub fn with_feed(mut self, feed: crate::feed::Feed) -> Self {
+        self.feed = Some(feed);
+        self
     }
 }
 
@@ -89,16 +96,18 @@ pub async fn adopt_console_folder(home: &Home) -> io::Result<()> {
 
 impl Factory for ClaudeFactory {
     fn create(&self, account: &Account, home: Option<PathBuf>) -> io::Result<Arc<dyn Agent>> {
+        let program = program::Program::new(
+            self.home.clone(),
+            self.holder_binary.clone(),
+            account.id.clone(),
+            home,
+        );
+        let models = model::Catalog::new(program.catalog_file(), self.feed.clone())?;
         Ok(Arc::new(Claude {
-            program: program::Program::new(
-                self.home.clone(),
-                self.holder_binary.clone(),
-                account.id.clone(),
-                home,
-            ),
+            program,
             provider: account.provider().to_string(),
             threads: Mutex::new(Threads::default()),
-            models: model::Catalog::new()?,
+            models,
         }))
     }
 }

@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Opening the app on a Rust computer no longer starts unused coding agents to list their accounts and models. Agent update checks are daily or on demand, and unchanged programs are not run to read their versions.
+
 - Rust computers show Archived Sessions from other computers with the owner’s confirmation and follow their changes. Opening Settings does not start OpenCode.
 
 - Rust computers keep Agents, Vault and Custom Auto list settings, and carry older Git preferences into their own settings.

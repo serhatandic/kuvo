@@ -8,7 +8,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { test } from "node:test";
-import { openLine, request, until, write } from "./adapter.mjs";
+import { boxBinary, openLine, request, until, write } from "./adapter.mjs";
 import { provider, scriptedCodex } from "./codex.mjs";
 
 const headers = { "x-kuvo-from": "app" };
@@ -91,6 +91,35 @@ async function withPrograms({ installed, latest, work = false, prepare = () => {
   }
 }
 
+
+// Simulating a real terminal update means the installed executable changed, not just the
+// stand-in's version answer. Append a harmless blank line to change its file stamp.
+function terminalUpdate(codex, version) {
+  write(path.join(codex.root,"codex-version"),version);
+  const executable=path.join(codex.root,".local","bin",process.platform==="win32"?"codex.cmd":"codex");
+  fs.appendFileSync(executable,process.platform==="win32"?"\r\n":"\n");
+}
+
+test("a version read is lazy, and reopening Settings or restarting doesn't run the unchanged binary", {skip:boxBinary().typescript,timeout:90000}, () =>
+  withPrograms({installed:"1.0.0",latest:"2.0.0"}, async box => {
+    const versions=()=>box.codex.heard().filter(line=>line.version).length;
+    // Reading the model picker is not opening the agents settings.
+    const picker = await box.ask("kuvo/models/offered","GET");
+    assert.equal(picker.status,200,picker.text);
+    assert.equal(versions(),0);
+    assert.equal((await box.known())[provider].version,"1.0.0");
+    assert.equal(versions(),1);
+    await box.rows(true);
+    assert.equal(versions(),1);
+    await box.codex.stop();
+    box.listener=await box.codex.start();
+    assert.equal((await box.known())[provider].version,"1.0.0");
+    assert.equal(versions(),1);
+    terminalUpdate(box.codex,"1.1.0");
+    assert.equal((await box.known())[provider].version,"1.1.0");
+    assert.equal(versions(),2);
+  }));
+
 test("Update All: the box picks a program behind once, answers as it starts, a second client sees it under way on every account with it, then how it went", { skip, timeout: 90000 }, () =>
   withPrograms({ installed: "1.0.0", latest: "2.0.0", work: true, prepare: (codex) => {
     codex.go("codex-update-waits");
@@ -151,7 +180,7 @@ test("one that fails says why to every client, and is offered again until the ve
     assert.equal(failed.programUpdate.message, "Codex is still 1.0.0 after “codex update”.\n\nno network");
     assert.equal(failed.updateAll, true);
     // Updated in a terminal since: no longer news.
-    write(path.join(box.codex.root, "codex-version"), "1.1.0");
+    terminalUpdate(box.codex, "1.1.0");
     assert.equal((await box.rows(true))[provider].programUpdate, undefined);
   }));
 
@@ -223,7 +252,7 @@ test("update notices, off: a newer version is available with Update, once, also 
     // A newer one is raised; once it's updated in Terminal, it goes.
     box.npm.said.latest = "2.1.0";
     await box.noticesAre(["codex-available-2.1.0"]);
-    write(path.join(box.codex.root, "codex-version"), "2.1.0");
+    terminalUpdate(box.codex, "2.1.0");
     await box.noticesAre([]);
   }));
 
@@ -231,7 +260,7 @@ test("update notices, on: nothing is raised for what's out; once it updated itse
   withPrograms({ installed: "1.0.0", latest: "2.0.0", prepare: (codex) => write(path.join(codex.home, "box", "agents-update-themselves.json"), "true") }, async (box) => {
     await box.known();
     assert.deepEqual(await box.notices(), []);
-    write(path.join(box.codex.root, "codex-version"), "2.0.0");
+    terminalUpdate(box.codex, "2.0.0");
     await box.rows(true);
     const notices = await until(async () => {
       const notices = await box.notices();
