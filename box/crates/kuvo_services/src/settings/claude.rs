@@ -240,9 +240,10 @@ fn list(account: &Path, home: &Path, settings: &Value) -> Value {
     json!({"agents":agents,"commands":[]})
 }
 
-pub fn register(routes: &mut Registry, home: PathBuf, is_mac: bool) {
+pub fn register(routes: &mut Registry, home: PathBuf, account: PathBuf, is_mac: bool) {
     routes.register::<get_kuvo_claude_code::Spec, _, _>(Access::Any, move |call| {
         let home = home.clone();
+        let account = account.clone();
         async move {
             let query = form_urlencoded::parse(
                 call.request
@@ -256,21 +257,14 @@ pub fn register(routes: &mut Registry, home: PathBuf, is_mac: bool) {
                 return Err(missing("This computer lists its own Claude Code only."));
             }
             let page = tokio::task::spawn_blocking(move || {
-                let account = kuvo_os::platform::Account::current().and_then(|a| {
-                    a.home_folder(
-                        kuvo_os::platform::Platform::current(),
-                        &std::env::vars_os().collect(),
-                    )
-                });
                 let config = crate::config::ConfigPaths::for_home(&home, is_mac);
                 let settings = match config.read_settings() {
                     crate::config::SettingsRead::Ok(v) => Value::Object(v),
                     _ => json!({}),
                 };
-                account.map(|account| list(&account, &home, &settings))
+                list(&account, &home, &settings)
             })
             .await
-            .map_err(|e| refused(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .map_err(|e| refused(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             Ok(typed(page))
         }

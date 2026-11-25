@@ -1,7 +1,7 @@
 // The actual settings routes, with a private home and the same stored records on both boxes.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { bench } from "./bench.mjs";
@@ -17,6 +17,8 @@ test("settings lists sections and keeps the conversation threshold with its own 
   const box = await computer("Settings");
   const record = await box.start().ready();
   const ask = box.connect(record);
+  const features=(await ask("GET","kuvo/info")).json.features;
+  for (const feature of ["settings","settings.vault","auto.lists"]) assert.ok(features.includes(feature));
   const index = await ask("GET","kuvo/settings");
   assert.equal(index.status,200,index.text);
   assert.deepEqual(index.json.sections.map(s => s.id),["clock","conversations","permissions","browser","computer","git","worktrees","storage","archived","agents","vault","mcp","custom-auto"]);
@@ -310,6 +312,10 @@ test("Agents keeps independent custom records and refuses invalid or stale forms
 test("Custom Auto keeps list revisions, form checks, order and limits in its own file", async t => {
   const {computer} = await bench(t);
   const box=await computer("Model Lists");
+  box.engine.providers=[{id:"opencode"}];
+  box.engine.models=[{providerID:"opencode",id:"fast",name:"Fast",variants:[{id:"high"}]},
+    {providerID:"opencode",id:"small",name:"Small",variants:[]}];
+  box.engine.integrations=[{id:"opencode",name:"OpenCode Zen",connections:[]},{id:"lab",name:"Lab",connections:[],methods:[{type:"oauth",id:"login"}]}];
   const {startClaudeBridge}=await import("./claude.mjs");
   const bridge=await startClaudeBridge(boxBinary(),box.home,box.env,{engine:box.engine});
   t.after(async()=>{await bridge?.stop()});
@@ -334,6 +340,31 @@ test("Custom Auto keeps list revisions, form checks, order and limits in its own
   const moved=await perform(ask,"custom-auto",item(edited.json,list.id),"up");
   assert.equal(moved.status,200,moved.text);
   assert.equal(row(moved.json,"lists").items[0].title,"Build");
+  const id=list.id.slice("list-".length);
+  const modelRow=row(moved.json,"models-"+id);
+  const wrong={model:JSON.stringify(["opencode","small"]),variant:"high"};
+  const checked=await perform(ask,"custom-auto",modelRow,"add-model",wrong,undefined,true);
+  assert.equal(checked.status,200,checked.text);
+  assert.equal(checked.json.ready,false);
+  const badModel=await perform(ask,"custom-auto",modelRow,"add-model",wrong);
+  assert.equal(badModel.status,400,badModel.text);
+  assert.deepEqual(badModel.json.fields,checked.json.fields);
+  const one=await perform(ask,"custom-auto",modelRow,"add-model",{model:JSON.stringify(["opencode","fast"]),variant:"high"});
+  assert.equal(one.status,200,one.text);
+  const two=await perform(ask,"custom-auto",row(one.json,"models-"+id),"add-model",{model:JSON.stringify(["opencode","small"]),variant:""});
+  assert.equal(two.status,200,two.text);
+  const reordered=await perform(ask,"custom-auto",item(two.json,"entry-"+id+"-1"),"up");
+  assert.equal(reordered.status,200,reordered.text);
+  assert.deepEqual(row(reordered.json,"models-"+id).items.map(r=>r.value.entry.modelID),["small","fast"]);
+  if (!boxBinary().typescript) {
+    const picker=await ask("GET","kuvo/models/offered");
+    assert.ok(!picker.json.models.some(model=>model.providerID==="auto"));
+  }
+  const direct=await ask("GET",root);
+  const revision=direct.json.data.lists.find(l=>l.id===id).revision;
+  assert.equal((await ask("PUT",root+"/"+id,{revision,entries:[{providerID:"lab",modelID:"private"}]})).status,200);
+  const unavailable=await ask("GET","kuvo/settings/custom-auto");
+  assert.equal(item(unavailable.json,"entry-"+id+"-0").notice.words,"Not signed in: Custom Auto passes it by");
   const persisted=JSON.parse(readFileSync(path.join(box.home,"agents/auto.json"),"utf8"));
   assert.equal(persisted.lists[0].name,"Build");
   assert.equal((await ask("DELETE",root+"/limits")).status,200);
@@ -391,4 +422,131 @@ test("Vault Settings forms never return values and edits keep the empty secret u
     assert.equal(row(paused.json,"pause").value,true);
     assert.notEqual((await ask("PATCH",route,body,signed)).status,200);
   }
+});
+test("Archived Sessions publishes owner menus and checks a remote change again on its computer", {timeout:90000}, async t => {
+  const {computer,leases}=await bench(t);
+  const main = await computer("Studio");
+  const peerBinary=process.env.KUVO_CONFORMANCE_SETTINGS_PEER_BIN?boxBinary(process.env.KUVO_CONFORMANCE_SETTINGS_PEER_BIN):boxBinary();
+  const other = await computer("Lab",peerBinary);
+  const nearRecord=await main.start().ready();
+  const near = main.connect(nearRecord);
+  const original=await near("GET","kuvo/setup");
+  assert.equal(original.status,200,original.text);
+  await until(()=>leases.leaseFor(original.json.setup),"The main computer did not claim a relay lease.");
+  const invite=await near("POST","kuvo/computers/add/code",{},{"x-kuvo-from":"mac"});
+  assert.equal(invite.status,201,invite.text);
+  const joined=await other.join(invite.json.code);
+  assert.equal(joined.code,0,joined.log);
+  const session=sessionOf({id:"ses_archive_owner",title:"Archived on Lab"});
+  session.metadata={"kuvo.archived":true};
+  other.engine.sessions.push(session);
+  const far = other.connect(await other.start().ready());
+  const theirs=await far("GET","kuvo/setup");
+  const peer=theirs.json.you.key;
+  const remoteId=`session-${peer}:${session.id}`;
+  const owner=await until(async()=>{
+    const reply=await far("GET","kuvo/settings/archived");
+    return item(reply.json,"session-"+session.id)&&reply.json;
+  },"The owner must list the archived session.");
+  const remote=await until(async()=>{
+    const reply=await near("GET","kuvo/settings/archived");
+    return item(reply.json,remoteId)&&reply.json;
+  },"The archived menu must come from its owner.",20000);
+  const copied=item(remote,remoteId);
+  assert.deepEqual(copied.computer,{id:peer,name:"Lab"});
+  assert.deepEqual(copied.actions,item(owner,"session-"+session.id).actions);
+  assert.match(copied.line,/^[A-Z][a-z]{2} \d{1,2}, \d{4} at \d{1,2}:\d{2} [AP]M$/);
+  assert.ok(item(remote,"delete-all-"+peer));
+  const followed=await openLine(nearRecord,"","kuvo/settings/archived/events",{},45000);
+  try {
+    const frames=followed.frames();
+    assert.ok(item((await frames.next()).value,remoteId));
+    const restored=await perform(near,"archived",copied,"unarchive");
+    assert.equal(restored.status,200,restored.text);
+    let next;
+    do { next=await frames.next(); assert.equal(next.done,false); } while(item(next.value,remoteId));
+  } finally {followed.close();}
+});
+
+test("Agents and MCP read the running engine's catalog rather than inventing unavailable state", async t => {
+  const {computer}=await bench(t);
+  const box=await computer("Live Settings");
+  write(path.join(box.home,"box/opencode.json"),JSON.stringify({mcp:{servers:{sample:{type:"local",command:["sample"]}}}}));
+  box.engine.agents=[{id:"build",name:"Build",mode:"primary",description:"Builds things",permissions:[]}];
+  box.engine.providers=[{id:"lab",name:"Lab"}];
+  box.engine.models=[{id:"fast",providerID:"lab",name:"Fast"}];
+  box.engine.mcpServers=[{name:"sample",status:{status:"connected"}}];
+  const ask=box.connect(await box.start().ready());
+  const agents=await ask("GET","kuvo/settings/agents");
+  assert.equal(agents.status,200,agents.text);
+  const model=action(row(agents.json,"agents"),"add").form.fields.find(f=>f.id==="model");
+  assert.deepEqual(model.choices.map(c=>c.id),["","lab/fast"]);
+  const mcp=await ask("GET","kuvo/settings/mcp");
+  assert.equal(mcp.status,200,mcp.text);
+  assert.ok(allRows(mcp.json).some(r=>r.title==="sample" && r.badge?.words==="Connected"),mcp.text);
+  if (!boxBinary().typescript) {
+    const catalogReads=()=>box.engine.asked.filter(r=>r.method==="GET"&&r.path==="/api/model").length;
+    const initial=catalogReads();
+    await ask("GET","kuvo/settings/agents");
+    await ask("GET","kuvo/settings/custom-auto");
+    assert.equal(catalogReads(),initial,"the pages share the existing model catalog cache");
+  }
+});
+
+test("Permissions changes serialize per row, keep unrelated rows and follow the old route", async t => {
+  const {computer}=await bench(t);
+  const box=await computer("Permission Revisions");
+  const otherRule={action:"read",resource:"example.txt",effect:"deny"};
+  write(path.join(box.home,"box/opencode.json"),JSON.stringify({permissions:[otherRule]}));
+  const record=await box.start().ready();
+  const ask=box.connect(record);
+  const first=(await ask("GET","kuvo/settings/permissions")).json;
+  const shell=row(first,"when-shell"), other=row(first,"other-computers");
+  const parallel=await Promise.all(["ask","deny"].map(value=>ask("PATCH","kuvo/settings/permissions",{row:shell.id,was:shell.revision,value})));
+  assert.deepEqual(parallel.map(r=>r.status).sort(),[200,409]);
+  const current=parallel.find(r=>r.status===200).json;
+  assert.equal(row(current,other.id).revision,other.revision);
+  const disabled=await ask("PATCH","kuvo/settings/permissions",{row:other.id,was:other.revision,value:false});
+  assert.equal(disabled.status,200,disabled.text);
+  assert.equal((await ask("GET","kuvo/approval")).json.otherComputers,false);
+  const saved=row(disabled.json,shell.id);
+  const reset=await ask("PATCH","kuvo/settings/permissions",{row:saved.id,was:saved.revision,value:"allow"});
+  assert.equal(reset.status,200,reset.text);
+  assert.deepEqual((await ask("GET","kuvo/config")).json.permissions,[otherRule]);
+  const stream=await openLine(record,"","kuvo/settings/permissions/events");
+  try {
+    const iter=stream.frames();
+    assert.equal(row((await iter.next()).value,other.id).value,false);
+    assert.equal((await ask("PATCH","kuvo/approval",{otherComputers:true})).status,200);
+    assert.equal(row((await iter.next()).value,other.id).value,true);
+  } finally {stream.close();}
+});
+
+test("This Computer uses the added computer's update and device state", async t => {
+  const {computer}=await bench(t);
+  const box=await computer("Computer Settings");
+  const ask=box.connect(await box.start().ready());
+  const answer=await ask("GET","kuvo/settings/computer");
+  assert.equal(answer.status,200,answer.text);
+  const page=answer.json;
+  assert.equal(row(page,"state").title,"Running");
+  assert.equal(row(page,"devices").value,"On");
+  assert.equal(row(page,"devices").kind,"status");
+  assert.equal(page.groups.some(g=>g.id==="macos"),false);
+  assert.ok(row(page,"version"));
+});
+
+test("reading catalog-backed Settings pages does not start an absent OpenCode", {skip:boxBinary().typescript}, async t => {
+  const {computer}=await bench(t);
+  const box=await computer("Cold Settings");
+  write(path.join(box.home,"box/opencode.json"),'{}');
+  const engineRecord=path.join(box.home,"run/engine.json");
+  rmSync(engineRecord);
+  const ask=box.connect(await box.start().ready());
+  for (const section of ["agents","mcp","skills","custom-auto","computer"]) {
+    const answer=await ask("GET","kuvo/settings/"+section);
+    assert.equal(answer.status,200,answer.text);
+  }
+  assert.equal(existsSync(engineRecord),false);
+  assert.equal(box.engine.asked.length,0);
 });

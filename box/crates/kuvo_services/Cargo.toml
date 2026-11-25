@@ -26,7 +26,9 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 icu_collator = "2"
 jiff = "0.2"
 kuvo_agents = { path = "../kuvo_agents" }
+kuvo_engine = { path = "../kuvo_engine" }
 kuvo_os = { path = "../kuvo_os" }
+kuvo_peers = { path = "../kuvo_peers" }
 kuvo_protocol = { path = "../kuvo_protocol" }
 kuvo_server = { path = "../kuvo_server" }
 kuvo_setup = { path = "../kuvo_setup" }

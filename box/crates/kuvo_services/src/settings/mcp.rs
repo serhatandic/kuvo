@@ -46,18 +46,10 @@ async fn facts(ctx: &Context) -> Result<Facts, Refusal> {
             )
         })
         .collect();
-    let running = std::fs::read(ctx.settings.home.join("run/engine.json"))
-        .ok()
-        .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
-        .is_some_and(|v| v["port"].as_u64().is_some_and(|p| p > 0));
-    let servers = if running {
-        ctx.ask(Method::GET, "api/mcp", None)
-            .await
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-    } else {
-        None
-    };
+    let servers = ctx
+        .engine_get("api/mcp")
+        .await
+        .and_then(|v| v.as_array().cloned());
     let title = computer_title(ctx).await;
     let where_ = match title.as_str() {
         "This Mac" => "this Mac".into(),

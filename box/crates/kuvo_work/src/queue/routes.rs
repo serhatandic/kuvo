@@ -211,6 +211,19 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    pub fn archive_forward(&self) -> Arc<dyn kuvo_services::settings::ArchiveForward> {
+        self._writer.archive_forward.clone()
+    }
+    pub fn serve_archives(
+        &self,
+        settings: kuvo_services::settings::ArchiveHandle,
+        dispatcher: kuvo_server::Dispatcher,
+    ) {
+        let _ = self
+            ._writer
+            .archives
+            .set((settings, dispatcher.downgrade()));
+    }
     pub fn record_edits(&self) -> Arc<dyn kuvo_setup::RecordEdits> {
         self._writer.edits.clone()
     }
