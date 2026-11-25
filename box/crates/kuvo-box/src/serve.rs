@@ -392,9 +392,10 @@ pub async fn run(
     if memory_reads.is_some() {
         peers.advertise_conversation_search().await?;
     }
-    setup
-        .handle()
-        .register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
+    let setup_routes = setup.handle();
+    // Outside a setup, a released beta.1 Mac that enrolled this machine can be let go here.
+    let setup_routes = if managed { setup_routes } else { setup_routes.with_legacy(devices.clone()) };
+    setup_routes.register_with_record_edits(&mut routes, Some(work_queue.record_edits()));
     setup.handle().register_ssh(&mut routes, home);
     let archives = kuvo_services::settings::register(
         &mut routes,

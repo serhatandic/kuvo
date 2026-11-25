@@ -108,6 +108,30 @@ pub(super) fn members(fields: &Map<String, Value>, here: Option<ComputerKey>) ->
         .collect()
 }
 
+/// A released Mac that never updates is no dead end: you can let it go from a machine. Like it
+/// leaving: its list goes with it (TypeScript only aged one out, after 30 days of running).
+pub(super) fn leave(fields: &mut Map<String, Value>, mac: ComputerKey) -> bool {
+    if !enrollers(fields).contains(&mac) {
+        return false;
+    }
+    let text = encode(&mac);
+    if signs(fields, &text) {
+        return false;
+    }
+    if let Some(Value::Array(macs)) = fields.get_mut("macs") {
+        macs.retain(|each| each.as_str() != Some(&text));
+    }
+    if fields.get("mac").and_then(Value::as_str) == Some(&text) {
+        fields.remove("mac");
+    }
+    for field in ["legacy", "macSeen", "macNames"] {
+        if let Some(Value::Object(by_mac)) = fields.get_mut(field) {
+            by_mac.remove(&text);
+        }
+    }
+    true
+}
+
 pub(super) fn take(
     fields: &mut Map<String, Value>,
     mac: ComputerKey,

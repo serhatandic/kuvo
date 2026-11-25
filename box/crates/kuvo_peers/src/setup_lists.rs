@@ -28,7 +28,7 @@ use tokio::{
 
 use crate::{
     activity,
-    devices::Devices,
+    devices::{Devices, LegacyRoster},
     directory::{
         AgentKind, AnnouncedAgent, Announcement, Announcements, ComputerKey, Owner, Ownership,
         PreparedRelease, RecordScope, Roster, UpdateFacts, owned_digest,
@@ -96,6 +96,8 @@ pub struct View {
     pub(crate) endpoint: Option<Arc<relay::Endpoint>>,
     pub(crate) system: Option<Arc<str>>,
     pub(crate) versions: LocalVersions,
+    /// The released beta.1 Macs that enrolled this machine (none in a setup).
+    pub(crate) legacy_macs: Arc<Vec<ComputerKey>>,
 }
 
 impl View {
@@ -944,6 +946,7 @@ impl Resident {
             endpoint,
             system: system_name(),
             versions: LocalVersions::default(),
+            legacy_macs: Arc::default(),
         };
         Self {
             run,
@@ -983,6 +986,10 @@ impl Resident {
             .as_ref()
             .map(|relay| Publisher::start(relay.sender.clone(), self.run.clone(), sent_agents));
         let mut grants = devices.as_ref().map_or_else(HashMap::new, Devices::grants);
+        let mut legacy = devices.as_ref().map(Devices::legacy_watch);
+        if let Some(legacy) = &legacy {
+            self.view.legacy_macs = Arc::new(legacy.borrow().macs.clone());
+        }
         let mut pending_trust = None;
         let mut setup_rosters = None;
         loop {
@@ -1082,6 +1089,20 @@ impl Resident {
                 roster = setup_roster_changed(&mut setup_rosters) => {
                     if let Some(roster) = roster {
                         self.view.roster = roster;
+                        if let Some(publisher) = &mut publisher {
+                            publisher.request(self.view.clone(), clock(), Refresh::All);
+                        }
+                    }
+                }
+                () = legacy_changed(&mut legacy) => {
+                    // A released Mac's list changed, or one was let go here.
+                    if let Some(legacy) = legacy.as_ref().map(|legacy| legacy.borrow().clone()) {
+                        self.view.legacy_macs = Arc::new(legacy.macs.clone());
+                        Arc::make_mut(&mut self.view.roster).members = legacy.members.clone();
+                        if let Some(relay) = &relay {
+                            let hosts = self.view.roster.members.iter().filter_map(|member| member.host()).collect();
+                            let _ = relay.sender.trust(grants.clone(), hosts).await;
+                        }
                         if let Some(publisher) = &mut publisher {
                             publisher.request(self.view.clone(), clock(), Refresh::All);
                         }
@@ -1355,6 +1376,15 @@ async fn wait_for_trust(until: Option<tokio::time::Instant>) {
     } else {
         std::future::pending::<()>().await;
     }
+}
+
+async fn legacy_changed(legacy: &mut Option<watch::Receiver<Arc<LegacyRoster>>>) {
+    if let Some(legacy) = legacy
+        && legacy.changed().await.is_ok()
+    {
+        return;
+    }
+    std::future::pending().await
 }
 
 async fn grants_changed(devices: &mut Option<Devices>) {
